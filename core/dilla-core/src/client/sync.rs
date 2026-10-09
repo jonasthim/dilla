@@ -110,7 +110,18 @@ type StoredKind = (
     Option<[u8; 16]>,
     String,
 );
-type PendingHistoryRow = (u64, Vec<u8>, u32, Vec<u8>, u64, u64, [u8; 16], [u8; 32]);
+type PendingHistoryRow = (
+    u64,
+    Vec<u8>,
+    u32,
+    Vec<u8>,
+    u64,
+    u64,
+    [u8; 16],
+    [u8; 32],
+    [u8; 16],
+    [u8; 16],
+);
 fn stored_kind(
     c: &rusqlite::Connection,
     id: &[u8; 16],
@@ -308,16 +319,17 @@ impl ClientCore {
             ));
         }
         let own = self.own()?;
+        let (pending_user, pending_device) = self.current_leaf_pair(id, leaf_index)?;
         let mut cursor = -1_i64;
         let mut total_recovered = 0_u32;
         loop {
             let pending: Vec<PendingHistoryRow> = self.read(|c| {
-                let mut stmt = c.prepare("SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag \
+                let mut stmt = c.prepare("SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag,p.user_id,p.device_id \
                     FROM app_pending_history p INDEXED BY app_pending_history_by_leaf_seq JOIN app_messages m ON m.group_id=p.group_id AND m.seq=p.seq \
-                    WHERE p.group_id=?1 AND p.sender_leaf=?2 AND p.seq>?3 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?4")?;
-                stmt.query_map(params![id.as_slice(), i64::from(leaf_index), cursor, i64::from(limit)], |r| {
+                    WHERE p.group_id=?1 AND p.user_id=?2 AND p.device_id=?3 AND p.sender_leaf=?4 AND p.seq>?5 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?6")?;
+                stmt.query_map(params![id.as_slice(),pending_user.as_slice(),pending_device.as_slice(), i64::from(leaf_index), cursor, i64::from(limit)], |r| {
                     Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?,
-                        r.get::<_, i64>(4)? as u64, r.get::<_, i64>(5)? as u64, r.get(6)?, r.get(7)?))
+                        r.get::<_, i64>(4)? as u64, r.get::<_, i64>(5)? as u64, r.get(6)?, r.get(7)?,r.get(8)?,r.get(9)?))
                 })?.collect::<Result<_, _>>().map_err(Into::into)
             })?;
             if pending.is_empty() {
@@ -331,14 +343,14 @@ impl ClientCore {
                 let group = this.take_group(id)?.ok_or_else(absent)?;
                 let result = this.write(|_, u| {
                     let mut recovered = 0u32;
-                    for (seq, envelope_bytes, leaf, credential, epoch, recv_ts, uploader, franking) in &pending {
+                    for (seq, envelope_bytes, leaf, credential, epoch, recv_ts, uploader, franking, user, device) in &pending {
                         let envelope = match Envelope::decode(envelope_bytes) { Ok(v) => v, Err(_) => continue };
                         let valid = u.with_conn(|c| Ok(super::trust::validate_pending_sender(c, &group, id, *leaf, credential)))?;
                         if valid.is_err() { continue; }
                         let Some(member) = group.member_at(*leaf) else { continue };
                         let basic = match openmls::prelude::BasicCredential::try_from(member.credential) { Ok(v) => v, Err(_) => continue };
                         let sender = match crate::identity::CredentialIdentity::decode(basic.identity()) { Ok(v) => v, Err(_) => continue };
-                        if sender.device_id.as_bytes() != uploader { continue; }
+                        if sender.device_id.as_bytes() != uploader || sender.user_id.as_bytes() != user || sender.device_id.as_bytes() != device { continue; }
                         u.with_conn(|c| {
                             let still_pending: bool = c.query_row(
                                 "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=1 AND reason='E_DEVICE_LIST_STALE'",
@@ -660,7 +672,7 @@ impl ClientCore {
                                 let message = wire::protocol_message(&h.blob)?;
                                 if message.epoch().as_u64() < group.epoch() { return Ok(false); }
                                 match group.process_message(ctx.provider, message)? {
-                                    DillaProcessed::StagedCommit(commit, author_device) => {
+                                    DillaProcessed::StagedCommit(commit, author) => {
                                         if commit.self_removed() {
                                             // The epoch this device held last is already the
                                             // floor (F6): it was written when it was reached.
@@ -684,13 +696,12 @@ impl ClientCore {
                                             u.with_conn(|c| set_pending(c, id, false))?;
                                         }
                                         let old_devices = super::trust::member_devices(&group);
+                                        let old_leaves = super::trust::member_fingerprints(&group);
                                         group.merge_staged_commit(ctx.provider, *commit)?;
                                         let current_devices = super::trust::member_devices(&group);
                                         u.with_conn(|c| {
-                                            super::trust::audit_tree(c,&group,id,&own.device_id,Some(&author_device))?;
-                                            for device in old_devices.iter().filter(|d| !current_devices.contains(d)) {
-                                                super::trust::clear_group_block(c,id,device)?;
-                                            }
+                                            super::trust::audit_tree(c,&group,id,&own.user_id,&own.device_id,Some((&author.0,&author.1)),Some(&old_leaves))?;
+                                            super::trust::clear_removed_blocks(c,id,&old_devices,&current_devices)?;
                                             Ok(())
                                         })?;
                                         let held = checked("epoch", group.epoch())?;
@@ -698,8 +709,9 @@ impl ClientCore {
                                         epoch_changed = true;
                                     }
                                     DillaProcessed::OwnPendingCommit => {
+                                        let old_leaves = super::trust::member_fingerprints(&group);
                                         group.merge_pending_commit(ctx.provider)?;
-                                        u.with_conn(|c| super::trust::audit_tree(c,&group,id,&own.device_id,Some(&own.device_id)))?;
+                                        u.with_conn(|c| super::trust::audit_tree(c,&group,id,&own.user_id,&own.device_id,Some((&own.user_id,&own.device_id)),Some(&old_leaves)))?;
                                         let held = checked("epoch", group.epoch())?;
                                         u.with_conn(|c| { c.execute("DELETE FROM app_proposals WHERE group_id=?1", [id.as_slice()])?; raise_floor(c, id, held)?; set_mls(c, id, held, false) })?;
                                         epoch_changed = true;
@@ -817,8 +829,8 @@ impl ClientCore {
                                     } else {
                                         insert_message(c, &empty_message(id, m, status, reason))?;
                                         if let Some(r) = pending_application.as_ref() {
-                                            c.execute("INSERT INTO app_pending_history(group_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,?2,?3,?4,?5,?6)",
-                                                params![id.as_slice(),m.seq as i64,m.blob.as_deref().unwrap_or_default(),
+                                            c.execute("INSERT INTO app_pending_history(group_id,user_id,device_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                                                params![id.as_slice(),r.sender.user_id.as_bytes(),r.sender.device_id.as_bytes(),m.seq as i64,m.blob.as_deref().unwrap_or_default(),
                                                     r.envelope.encode().map_err(|e| StorageError::Codec(e.to_string()))?,
                                                     i64::from(r.sender_leaf),r.sender.encode()])?;
                                         }

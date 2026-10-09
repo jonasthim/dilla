@@ -135,7 +135,7 @@ pub enum DillaProcessed {
     Application(Box<ReceivedApplication>),
     Proposal(Box<QueuedProposal>),
     ExternalJoinProposal(Box<QueuedProposal>),
-    StagedCommit(Box<StagedCommit>, [u8; 16]),
+    StagedCommit(Box<StagedCommit>, ([u8; 16], [u8; 16])),
     OwnPendingCommit,
     OwnPrivateMessage,
 }
@@ -727,7 +727,10 @@ impl DillaGroup {
                 let basic = BasicCredential::try_from(credential).map_err(openmls)?;
                 let identity = crate::identity::CredentialIdentity::decode(basic.identity())
                     .map_err(MlsError::Protocol)?;
-                DillaProcessed::StagedCommit(c, *identity.device_id.as_bytes())
+                DillaProcessed::StagedCommit(
+                    c,
+                    (*identity.user_id.as_bytes(), *identity.device_id.as_bytes()),
+                )
             }
             ProcessedMessageContent::OwnPendingCommit => DillaProcessed::OwnPendingCommit,
             ProcessedMessageContent::OwnPrivateMessage => DillaProcessed::OwnPrivateMessage,

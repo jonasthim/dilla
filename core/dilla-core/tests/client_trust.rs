@@ -244,8 +244,8 @@ fn one_history_ingest_revalidates_more_than_one_page_past_an_unrecoverable_row()
         let db = alice.probe.lock().expect("db");
         db.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,reason,sender_device,franking_tag) VALUES(?1,0,1,1,1,'E_DEVICE_LIST_STALE',?2,?3)",
             rusqlite::params![GROUP.as_slice(), bob.device.as_slice(), [0x44u8; 32].as_slice()]).expect("unrecoverable row");
-        db.execute("INSERT INTO app_pending_history(group_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,0,x'80',x'80',?2,x'80')",
-            rusqlite::params![GROUP.as_slice(), i64::from(leaf)]).expect("retained invalid evidence");
+        db.execute("INSERT INTO app_pending_history(group_id,user_id,device_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,?2,?3,0,x'80',x'80',?4,x'80')",
+            rusqlite::params![GROUP.as_slice(),bob.user.as_slice(),bob.device.as_slice(), i64::from(leaf)]).expect("retained invalid evidence");
     }
     let mut last = 0;
     for n in 0..257 {
@@ -302,13 +302,15 @@ fn pending_leaf_revalidation_uses_the_leaf_sequence_index() {
     let db = alice.probe.lock().expect("db");
     let plan: Vec<String> = db.prepare("EXPLAIN QUERY PLAN SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag \
         FROM app_pending_history p INDEXED BY app_pending_history_by_leaf_seq JOIN app_messages m ON m.group_id=p.group_id AND m.seq=p.seq \
-        WHERE p.group_id=?1 AND p.sender_leaf=?2 AND p.seq>?3 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?4")
-        .expect("plan").query_map(rusqlite::params![GROUP.as_slice(), 1_i64, -1_i64, 256_i64], |r| r.get(3))
+        WHERE p.group_id=?1 AND p.user_id=?2 AND p.device_id=?3 AND p.sender_leaf=?4 AND p.seq>?5 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?6")
+        .expect("plan").query_map(rusqlite::params![GROUP.as_slice(), [0xb2u8;16].as_slice(), [0xb2u8;16].as_slice(), 1_i64, -1_i64, 256_i64], |r| r.get(3))
         .expect("rows").collect::<Result<_, _>>().expect("plan rows");
     assert!(
         plan.iter()
             .any(|step| step.contains("app_pending_history_by_leaf_seq")
                 && step.contains("group_id=?")
+                && step.contains("user_id=?")
+                && step.contains("device_id=?")
                 && step.contains("sender_leaf=?")
                 && step.contains("seq>?")),
         "pending query must seek by leaf and sequence: {plan:?}"
@@ -345,8 +347,8 @@ fn revalidation_is_scoped_to_the_leaf_whose_history_arrived() {
         let db = alice.probe.lock().expect("db");
         db.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,reason,sender_device,franking_tag) VALUES(?1,0,1,1,1,'E_DEVICE_LIST_STALE',?2,?3)",
             rusqlite::params![GROUP.as_slice(), [0x33u8; 16].as_slice(), [0x44u8; 32].as_slice()]).expect("earlier pending row");
-        db.execute("INSERT INTO app_pending_history(group_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,0,x'80',x'80',999,x'80')",
-            [GROUP.as_slice()]).expect("earlier other leaf");
+        db.execute("INSERT INTO app_pending_history(group_id,user_id,device_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,?2,?3,0,x'80',x'80',999,x'80')",
+            rusqlite::params![GROUP.as_slice(),[0x98u8;16].as_slice(),[0x99u8;16].as_slice()]).expect("earlier other leaf");
     }
     let (history, head) = list_wire(&bob);
     alice
@@ -623,6 +625,15 @@ fn another_users_bad_cached_leaf_does_not_quarantine_an_honest_commit_author() {
         )
         .unwrap();
     assert_eq!(bad_leaf_blocked, 1);
+    let falsely_credited: i64 = alice.probe.lock().unwrap().query_row(
+        "SELECT count(*) FROM app_trust_audit WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND added_by_user IS NOT NULL",
+        rusqlite::params![GROUP.as_slice(),bob.user.as_slice(),bob.device.as_slice()],
+        |r|r.get(0),
+    ).unwrap();
+    assert_eq!(
+        falsely_credited, 0,
+        "an existing failed leaf was not added by this committer"
+    );
 }
 
 #[test]
@@ -664,8 +675,8 @@ fn exact_key_verification_rechecks_the_signed_cache_and_releases_changed_key_blo
         .expect("simulate pending changed key");
         for group in [GROUP, OTHER_GROUP] {
             db.execute(
-                "INSERT INTO app_quarantine(group_id,device_id,code) VALUES(?1,?2,'E_UMK_CHANGED')",
-                rusqlite::params![group.as_slice(), bob.device.as_slice()],
+                "INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,'E_UMK_CHANGED')",
+                rusqlite::params![group.as_slice(), bob.user.as_slice(), bob.device.as_slice()],
             )
             .expect("block");
         }
@@ -852,6 +863,30 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
     rotated.join_external(&mut relay);
     alice.sync(&relay);
     alice.core.trust_verify(&bob.user, &expected).unwrap();
+    let state = alice.core.trust_state().unwrap();
+    let bob_state = decode_strict(&state, |d| {
+        let n = d.array_len()?;
+        let mut found = None;
+        for _ in 0..n {
+            d.array(5)?;
+            let user = d.bytes_exact::<16>()?;
+            let umk = d.bytes_exact::<32>()?;
+            d.uint()?;
+            let verified = d.uint()?;
+            let changed = d.opt_bytes_exact::<32>()?;
+            if user == bob.user {
+                found = Some((umk, verified, changed));
+            }
+        }
+        Ok(found)
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        bob_state,
+        (expected, 1, None),
+        "all pair pins reflect the verified user key"
+    );
 }
 #[test]
 fn another_users_signed_list_cannot_clear_a_victims_block() {
@@ -875,13 +910,13 @@ fn another_users_signed_list_cannot_clear_a_victims_block() {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO app_quarantine(group_id,device_id,code) VALUES(?1,?2,'E_UMK_CHANGED')",
-        rusqlite::params![group.as_slice(), victim_device.as_slice()],
+        "INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,'E_UMK_CHANGED')",
+        rusqlite::params![group.as_slice(), victim.as_slice(), victim_device.as_slice()],
     )
     .unwrap();
     db.execute(
-        "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,1,0,?3)",
-        rusqlite::params![victim.as_slice(), [0x55u8;32].as_slice(), [0x44u8;32].as_slice()],
+        "INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,1,0,?4)",
+        rusqlite::params![victim.as_slice(), victim_device.as_slice(), [0x55u8;32].as_slice(), [0x44u8;32].as_slice()],
     ).unwrap();
     drop(db);
     let _ = alice.core.trust_verify(&attacker, &key);

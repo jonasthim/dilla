@@ -679,6 +679,7 @@ fn open_creates_app_schema_v4_and_reopens_idempotently() {
             "app_search_rows",
             "app_search_rows_recent",
             "app_settings",
+            "app_trust_audit",
             "app_trust_pins",
         ]
     );

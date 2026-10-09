@@ -183,18 +183,23 @@ CREATE TABLE IF NOT EXISTS app_device_lists (
   ssk_pub BLOB NOT NULL CHECK(length(ssk_pub)=32)
 );
 CREATE TABLE IF NOT EXISTS app_trust_pins (
-  user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
   umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
   first_seen INTEGER NOT NULL,
   verified INTEGER NOT NULL CHECK(verified IN(0,1)),
-  changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32)
+  changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32),
+  PRIMARY KEY(user_id,device_id)
 );
 CREATE TABLE IF NOT EXISTS app_quarantine (
-  group_id BLOB NOT NULL, device_id BLOB NOT NULL, code TEXT NOT NULL,
-  PRIMARY KEY(group_id,device_id)
+  group_id BLOB NOT NULL, user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16), code TEXT NOT NULL,
+  PRIMARY KEY(group_id,user_id,device_id)
 );
 CREATE TABLE IF NOT EXISTS app_pending_history (
   group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
   seq INTEGER NOT NULL,
   ciphertext BLOB NOT NULL,
   envelope BLOB NOT NULL,
@@ -202,15 +207,27 @@ CREATE TABLE IF NOT EXISTS app_pending_history (
   sender_credential BLOB NOT NULL,
   PRIMARY KEY(group_id,seq)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS app_pending_history_by_leaf_seq ON app_pending_history(group_id,sender_leaf,seq);
+CREATE INDEX IF NOT EXISTS app_pending_history_by_leaf_seq ON app_pending_history(group_id,user_id,device_id,sender_leaf,seq);
 CREATE TABLE IF NOT EXISTS app_search_rows (
   rowid INTEGER PRIMARY KEY,
   group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
   seq INTEGER NOT NULL, body TEXT NOT NULL, terms TEXT NOT NULL,
   UNIQUE(group_id,seq)
 );
 CREATE INDEX IF NOT EXISTS app_search_rows_recent ON app_search_rows(group_id DESC,seq DESC);
-CREATE INDEX IF NOT EXISTS app_quarantine_device ON app_quarantine(device_id,group_id);
+CREATE INDEX IF NOT EXISTS app_quarantine_device ON app_quarantine(user_id,device_id,group_id);
+CREATE TABLE IF NOT EXISTS app_trust_audit (
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  epoch INTEGER NOT NULL, leaf_index INTEGER NOT NULL,
+  signature_key BLOB NOT NULL, code TEXT NOT NULL,
+  added_by_user BLOB CHECK(added_by_user IS NULL OR length(added_by_user)=16),
+  added_by_device BLOB CHECK(added_by_device IS NULL OR length(added_by_device)=16),
+  PRIMARY KEY(group_id,user_id,device_id,epoch,leaf_index)
+) WITHOUT ROWID;
 ";
 
 const APP_FTS5: &str = "
@@ -312,6 +329,8 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found <= 4 {
         c.execute_batch(APP_INDEXES_V3)?;
         c.execute_batch(APP_SCHEMA_V4)?;
+        migrate_quarantine_pairs(c)?;
+        migrate_trust_artifact_pairs(c)?;
         if found < 4 {
             backfill_search_rows(c)?;
         }
@@ -321,6 +340,158 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
         meta_put(c, SCHEMA, &[4])?;
     }
     Ok(found)
+}
+
+// Task 2's earlier v4 preview stored one quarantine verdict per bare device id.
+// Preserve an ambiguous old block under an unknown owner so opening the store
+// cannot silently enable sending or assign another user's message as its owner.
+fn migrate_quarantine_pairs(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let mut columns = c.prepare("PRAGMA table_info(app_quarantine)")?;
+    let has_user = columns
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "user_id");
+    if has_user {
+        return Ok(());
+    }
+    c.execute_batch(
+        "ALTER TABLE app_quarantine RENAME TO app_quarantine_old;
+         DROP INDEX IF EXISTS app_quarantine_device;
+         CREATE TABLE app_quarantine (
+           group_id BLOB NOT NULL, user_id BLOB NOT NULL CHECK(length(user_id)=16),
+           device_id BLOB NOT NULL CHECK(length(device_id)=16), code TEXT NOT NULL,
+           PRIMARY KEY(group_id,user_id,device_id)
+         );
+         INSERT INTO app_quarantine(group_id,user_id,device_id,code)
+         SELECT q.group_id,zeroblob(16),q.device_id,q.code
+           FROM app_quarantine_old q;
+         DROP TABLE app_quarantine_old;
+         CREATE INDEX app_quarantine_device ON app_quarantine(user_id,device_id,group_id);",
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod pair_migration_tests {
+    use super::*;
+
+    #[test]
+    fn ambiguous_legacy_quarantine_does_not_inherit_a_colliding_senders_user() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE app_quarantine(group_id BLOB,device_id BLOB,code TEXT,PRIMARY KEY(group_id,device_id));
+             CREATE TABLE app_messages(group_id BLOB,sender_user BLOB,sender_device BLOB);",
+        )
+        .unwrap();
+        let group = [0x31u8; 16];
+        let honest = [0x32u8; 16];
+        let device = [0x33u8; 16];
+        c.execute(
+            "INSERT INTO app_messages VALUES(?1,?2,?3)",
+            rusqlite::params![group.as_slice(), honest.as_slice(), device.as_slice()],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO app_quarantine VALUES(?1,?2,'E_UMK_CHANGED')",
+            rusqlite::params![group.as_slice(), device.as_slice()],
+        )
+        .unwrap();
+        migrate_quarantine_pairs(&c).unwrap();
+        let migrated: [u8; 16] = c
+            .query_row("SELECT user_id FROM app_quarantine", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            migrated, [0; 16],
+            "the message sender cannot identify the blocked leaf"
+        );
+    }
+}
+
+fn has_column(c: &rusqlite::Connection, table: &str, name: &str) -> Result<bool, StorageError> {
+    let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
+    Ok(stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == name))
+}
+
+fn migrate_trust_artifact_pairs(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    if !has_column(c, "app_trust_pins", "device_id")? {
+        type LegacyPin = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>);
+        let rows: Vec<LegacyPin> = {
+            let mut stmt = c.prepare(
+                "SELECT user_id,umk_pub,first_seen,verified,changed_umk FROM app_trust_pins",
+            )?;
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<Result<_, _>>()?
+        };
+        c.execute_batch(
+            "CREATE TABLE app_trust_pins_pair (
+          user_id BLOB NOT NULL CHECK(length(user_id)=16),
+          device_id BLOB NOT NULL CHECK(length(device_id)=16),
+          umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+          first_seen INTEGER NOT NULL, verified INTEGER NOT NULL CHECK(verified IN(0,1)),
+          changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32),
+          PRIMARY KEY(user_id,device_id));",
+        )?;
+        for (user, umk, first, verified, changed) in rows {
+            let list: Option<Vec<u8>> = c
+                .query_row(
+                    "SELECT list FROM app_device_lists WHERE user_id=?1",
+                    [user.as_slice()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let devices: Vec<[u8; 16]> = list
+                .and_then(|bytes| crate::identity::DeviceList::decode(&bytes).ok())
+                .filter(|list| list.unsigned.user_id.as_bytes() == &user)
+                .map(|list| {
+                    list.unsigned
+                        .entries
+                        .iter()
+                        .map(|entry| *entry.device_id.as_bytes())
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![[0; 16]]);
+            for device in devices {
+                c.execute("INSERT OR IGNORE INTO app_trust_pins_pair(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,?5,?6)",
+                    rusqlite::params![user.as_slice(),device.as_slice(),umk.as_slice(),first,verified,changed.as_ref().map(|key|key.as_slice())])?;
+            }
+        }
+        c.execute_batch(
+            "DROP TABLE app_trust_pins; ALTER TABLE app_trust_pins_pair RENAME TO app_trust_pins;",
+        )?;
+    }
+    if !has_column(c, "app_pending_history", "user_id")? {
+        c.execute_batch("ALTER TABLE app_pending_history ADD COLUMN user_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';
+            ALTER TABLE app_pending_history ADD COLUMN device_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';")?;
+        let rows: Vec<([u8; 16], i64, Vec<u8>)> = {
+            let mut stmt =
+                c.prepare("SELECT group_id,seq,sender_credential FROM app_pending_history")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        for (group, seq, credential) in rows {
+            if let Ok(identity) = crate::identity::CredentialIdentity::decode(&credential) {
+                c.execute("UPDATE app_pending_history SET user_id=?3,device_id=?4 WHERE group_id=?1 AND seq=?2",
+                    rusqlite::params![group.as_slice(),seq,identity.user_id.as_bytes(),identity.device_id.as_bytes()])?;
+            }
+        }
+        c.execute_batch("DROP INDEX IF EXISTS app_pending_history_by_leaf_seq;
+            CREATE INDEX app_pending_history_by_leaf_seq ON app_pending_history(group_id,user_id,device_id,sender_leaf,seq);")?;
+    }
+    if !has_column(c, "app_search_rows", "user_id")? {
+        c.execute_batch("ALTER TABLE app_search_rows ADD COLUMN user_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';
+            ALTER TABLE app_search_rows ADD COLUMN device_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';
+            UPDATE app_search_rows SET
+              user_id=COALESCE((SELECT sender_user FROM app_messages m WHERE m.group_id=app_search_rows.group_id AND m.seq=app_search_rows.seq),zeroblob(16)),
+              device_id=COALESCE((SELECT sender_device FROM app_messages m WHERE m.group_id=app_search_rows.group_id AND m.seq=app_search_rows.seq),zeroblob(16));")?;
+    }
+    Ok(())
 }
 
 /// Runs the schema migrations and their backfills in one unit. Returns the value it found: 1 or

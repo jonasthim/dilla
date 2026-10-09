@@ -265,8 +265,8 @@ fn postfilter_rejects_a_stale_auxiliary_row_for_a_deleted_message() {
     let (_, seq) = alice.send(&mut relay, &GROUP, "naïve lantern", NOW + 1);
     alice.core.message_deleted(&GROUP, seq).expect("delete");
     alice.probe.lock().expect("db").execute(
-        "INSERT INTO app_search_rows(group_id,seq,body,terms) VALUES(?1,?2,'naïve lantern',' naive lantern')",
-        rusqlite::params![GROUP.as_slice(), seq as i64],
+        "INSERT INTO app_search_rows(group_id,seq,user_id,device_id,body,terms) VALUES(?1,?2,?3,?4,'naïve lantern',' naive lantern')",
+        rusqlite::params![GROUP.as_slice(), seq as i64, alice.user.as_slice(), alice.device.as_slice()],
     ).expect("simulate stale auxiliary row");
     assert!(
         hits(

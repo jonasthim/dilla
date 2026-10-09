@@ -125,6 +125,9 @@ Every endpoint in this document requires a **device session**. A device session 
    nonce is spent either way). Both device creation routes refuse a `dsk_pub` that a live device of
    the same user already holds (`409 E_INVALID_REQUEST`), so a stolen session can register no row
    under a key it does not hold, and no row shares another's listing.
+   A `device_id` is unique across the instance: `POST /v1/accounts`, `POST /v1/devices`, and
+   assertion registration refuse a device id already held by another user with
+   `409 E_INVALID_REQUEST`, even if that row is no longer listed.
 
 Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, an
 unknown device without a registration assertion, an unknown or spent assertion, a user with no

@@ -128,6 +128,7 @@ fn v3_fixture_migrates_and_keeps_settings_with_or_without_fts() {
         "app_device_lists",
         "app_trust_pins",
         "app_quarantine",
+        "app_trust_audit",
         "app_search_rows",
     ] {
         let count: i64 = db

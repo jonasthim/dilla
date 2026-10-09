@@ -106,16 +106,17 @@ pub(super) fn index_fold(
     group_id: &[u8; 16],
     seq: u64,
 ) -> Result<(), StorageError> {
-    let row:Option<(i64,Option<i64>,String)>=c.query_row(
-        "SELECT status,type,COALESCE(edit_body,body) FROM app_messages WHERE group_id=?1 AND seq=?2",
-        params![group_id.as_slice(),seq as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-    if let Some((0, Some(0), body)) = row
+    type IndexedMessage = (i64, Option<i64>, String, Option<[u8; 16]>, Option<[u8; 16]>);
+    let row:Option<IndexedMessage>=c.query_row(
+        "SELECT status,type,COALESCE(edit_body,body),sender_user,sender_device FROM app_messages WHERE group_id=?1 AND seq=?2",
+        params![group_id.as_slice(),seq as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    if let Some((0, Some(0), body, Some(user), Some(device))) = row
         && !body.is_empty()
     {
         let terms = tokenize(&body);
         if !terms.is_empty() {
             let terms = format!(" {}", terms.join(" "));
-            c.execute("INSERT INTO app_search_rows(group_id,seq,body,terms) VALUES(?1,?2,?3,?4) ON CONFLICT(group_id,seq) DO UPDATE SET body=excluded.body,terms=excluded.terms",params![group_id.as_slice(),seq as i64,body,terms])?;
+            c.execute("INSERT INTO app_search_rows(group_id,seq,user_id,device_id,body,terms) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(group_id,seq) DO UPDATE SET user_id=excluded.user_id,device_id=excluded.device_id,body=excluded.body,terms=excluded.terms",params![group_id.as_slice(),seq as i64,user.as_slice(),device.as_slice(),body,terms])?;
             return Ok(());
         }
     }
@@ -173,7 +174,7 @@ impl ClientCore {
         })?;
         let mut e = Encoder::new();
         let safe:Vec<_>=rows.into_iter().filter(|(group,seq,_)|self.read(|c| {
-            let visible:Option<i64>=c.query_row("SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=0 AND type=0",params![group.as_slice(),*seq as i64],|r|r.get(0)).optional()?;
+            let visible:Option<i64>=c.query_row("SELECT 1 FROM app_messages m JOIN app_search_rows r ON r.group_id=m.group_id AND r.seq=m.seq AND r.user_id=m.sender_user AND r.device_id=m.sender_device WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.type=0",params![group.as_slice(),*seq as i64],|r|r.get(0)).optional()?;
             Ok(visible.is_some())
         }).unwrap_or(false)).collect();
         e.array(safe.len());
