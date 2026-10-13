@@ -66,6 +66,8 @@ interface Live {
   postedEpoch: bigint; leaving: boolean; outgoing: { ringing: string[]; declined: string[] } | null;
   /** The users of the last keyed roster: the candidates of a pause's changedUser (review M4). */
   rosterUsers: string[];
+  /** The leave in flight (one per call): a second leave awaits it and sends nothing (task 8b review I1). */
+  leaveRun: Promise<void> | null;
 }
 /** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
  *  'reset' (forgotten locally, nothing sent); `done` settles once the join has torn down or finished. */
@@ -179,7 +181,7 @@ export class CallController {
     const others = target.members.filter((u) => u !== own);
     const outgoing = dm && started.created ? { ringing: others.filter((u) => !this.book.usersIn(channel).has(u)), declined: [] } : null;
     this.live = { channel, channelId, dm, members: target.members, groupId, callId: started.callId, vdec, postedEpoch: media.epoch,
-      leaving: false, outgoing, rosterUsers: [] };
+      leaving: false, outgoing, rosterUsers: [], leaveRun: null };
     // The join epoch's key: a push posted before this command's ret, its buffer transferred (L-TS-52).
     this.postKeys(this.live, media);
     this.setIn(media);
@@ -289,9 +291,20 @@ export class CallController {
     }
     const live = this.live;
     if (live === null) {
-      if (!blocked) this.setState({ ...CALL_IDLE });
+      // Task 8b review I1: the page's leave after the worker's own blocked or removed end keeps that phase, with its error
+      // and changedUser (plan :403, "stays blocked when leaving because of a block"); only a live call's leave idles.
+      if (!blocked && this.state.phase !== 'blocked' && this.state.phase !== 'removed') this.setState({ ...CALL_IDLE });
       return null;
     }
+    // A leave already running (the worker's own blocked leave, or an earlier callLeave): wait for it, never a second
+    // self-Remove, and its outcome stands.
+    if (live.leaveRun !== null) { await live.leaveRun; return null; }
+    live.leaveRun = this.leaveLive(live, blocked);
+    await live.leaveRun;
+    return null;
+  }
+
+  private async leaveLive(live: Live, blocked: boolean): Promise<void> {
     // Never a rotation after this point: call_rotate would cancel the posted self-Remove (task 5, progress note).
     live.leaving = true;
     this.stopRotation();
@@ -300,7 +313,6 @@ export class CallController {
     if (this.live === live) this.live = null;
     this.deps.callEnded(toHex(live.callId));
     this.setState(blocked ? { ...this.state, phase: 'blocked' } : { ...CALL_IDLE });
-    return null;
   }
 
   /** The self-Remove (a 409 E_REMOVE_PENDING is fine, any failure leaves the group to the instance) and the forget, on the

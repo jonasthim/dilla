@@ -1064,4 +1064,87 @@ describe('re-review hardening', () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// Task 8b review I1: the page's callLeave after the worker's own blocked or removed end keeps that phase.
+// ---------------------------------------------------------------------------------------------
+
+describe("the page's leave after a block or a removal (task 8b review I1)", () => {
+  const proposals = (w: World): number => w.server.routes().filter((r) => r === 'POST proposal').length;
+
+  it('a callLeave after the worker finished its blocked leave keeps blocked, its error and changedUser', async () => {
+    const w = await joined();
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    const blocked = w.slice('call');
+    expect(blocked).toMatchObject({ phase: 'blocked', error: { code: 'E_DEVICE_UNLISTED' } });
+    expect(await w.call({ m: 'callLeave', reason: 'user' })).toBeNull();
+    expect(w.slice('call')).toEqual(blocked);
+    expect(proposals(w)).toBe(1);
+  });
+
+  it('a callLeave while the worker\'s blocked leave is in flight awaits it and sends no second self-Remove', async () => {
+    const w = await joined();
+    const held = w.server.hold('POST proposal');
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await held.reached;
+    const leave = w.send({ m: 'callLeave', reason: 'user' });
+    await settled(w);
+    expect(w.ret(leave)).toBeUndefined();
+    held.release();
+    await waitRet(w, leave);
+    await settled(w);
+    expect(w.ret(leave)).toMatchObject({ ok: true, value: null });
+    expect(proposals(w)).toBe(1);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', error: { code: 'E_DEVICE_UNLISTED' } });
+    const phases = w.posted().map((p) => p.message)
+      .filter((m): m is Extract<FromWorker, { t: 'slice' }> => m.t === 'slice' && m.name === 'call').map((m) => (m.value as CallState).phase);
+    expect(phases.slice(phases.indexOf('blocked'))).not.toContain('leaving');
+    expect(phases.slice(phases.indexOf('blocked'))).not.toContain('idle');
+  });
+
+  it('a callLeave after a removal keeps removed', async () => {
+    const w = await joined();
+    w.ds.propose(w.callGroup, 'remove', ME.device);
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    const removed = w.slice('call');
+    expect(removed.phase).toBe('removed');
+    expect(await w.call({ m: 'callLeave', reason: 'user' })).toBeNull();
+    expect(w.slice('call')).toEqual(removed);
+    expect(proposals(w)).toBe(0);
+  });
+
+  // RV-3: the page pauses media on a paused slice and resumes on a non-paused one; it installs a key only if the call
+  // slice that follows its callKeys says the call is not paused. So every callKeys post is followed at once, with nothing
+  // in between, by a call slice that is not paused: at the join, at a new epoch, at a rotation and at a resume.
+  it('every callKeys post is followed at once by a call slice that is not paused', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    await w.call(JOIN(w));
+    await settled(w);
+    await w.deliverHandshakes(w.callGroup);                              // a new epoch
+    await settled(w);
+    await w.clock.advance(3_600_000);                                     // a rotation
+    await settled(w);
+    w.model.changeIdentity(PEER.user);                                    // a pause, then a resume on a new epoch
+    await w.deliverHandshakes(w.callGroup, THIRD);
+    await settled(w);
+    expect(w.slice('call').phase).toBe('paused');
+    await w.call({ m: 'verifyContact', userId: toHex(PEER.user), umk: 'c4'.repeat(32) });
+    await settled(w, 8);
+    const posted = w.posted().map((p) => p.message);
+    const keys = posted.flatMap((m, i) => (m.t === 'callKeys' ? [i] : []));
+    expect(keys.length).toBeGreaterThanOrEqual(4);
+    for (const i of keys) {
+      const next = posted[i + 1];
+      expect(next?.t === 'slice' && next.name === 'call', `after callKeys #${String(i)}`).toBe(true);
+      expect(((next as Extract<FromWorker, { t: 'slice' }>).value as CallState).phase).toBe('in');
+      expect(((next as Extract<FromWorker, { t: 'slice' }>).value as CallState).epoch)
+        .toBe((posted[i] as Extract<FromWorker, { t: 'callKeys' }>).keys.epoch);
+    }
+  });
+});
+
 export { fromHex };
