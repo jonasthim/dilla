@@ -153,7 +153,7 @@ leaves are `E_UMK_CHANGED`, the pinned UMK's leaves are pending (their new messa
 they sent before is retracted), and the list revokes no device of the pinned UMK until exact-key
 verification approves it. A later list back under the pinned UMK ends the pending change; a list
 no newer than the one cached, validated through a leaf of the pinned UMK (one SSK both UMKs
-signed can name devices of both), is the list that raised the change seen again: it ends nothing
+signed can name devices of both), is the cached list itself seen again: it ends nothing
 and leaves the changed UMK the cached list's key, still open to verification. A
 leaf's send block is never released by a later list: only exact-key verification of that leaf's
 UMK, or a `Remove` of that leaf from that group (whoever commits it), releases it. The block is

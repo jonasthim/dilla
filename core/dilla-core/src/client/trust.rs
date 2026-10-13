@@ -266,9 +266,27 @@ fn own_user_key(c: &rusqlite::Connection) -> Result<Option<OwnUserKey>, StorageE
         }))
 }
 
+/// The pin to write after a validated signed list under `key`, or `None` when the list changes
+/// nothing. While a change is pending, the cached list itself (`newer_than_cached` false: the
+/// anchor check makes a list no newer than the cached one that list, byte for byte) seen again
+/// through a leaf of the pinned key (one SSK cross-signed by both keys names both devices) is no
+/// later list back under the pinned key: it ends nothing and rebinds no cached key, so the changed
+/// key stays pending and verifiable. This is `next_pin`'s precondition, enforced here.
+fn pin_after_list(
+    prior: Option<Pin>,
+    key: &[u8; 32],
+    now: i64,
+    newer_than_cached: bool,
+) -> Option<Pin> {
+    if prior.is_some_and(|p| p.changed.is_some() && p.umk == *key) && !newer_than_cached {
+        return None;
+    }
+    Some(next_pin(prior, key, now))
+}
+
 /// The pin after a validated signed list under `key`. First sight pins it unverified; the pinned
-/// key keeps the pin (and ends a pending change: its newest list is the pinned key's again; the
-/// caller never passes the pinned key's view of the list already cached, see `ingest_leaf`); any
+/// key keeps the pin (and ends a pending change: its newest list is the pinned key's again; only
+/// `pin_after_list` calls this, never for the pinned key's view of the list already cached); any
 /// other key becomes the one pending change and withdraws an earlier verification.
 fn next_pin(prior: Option<Pin>, key: &[u8; 32], now: i64) -> Pin {
     match prior {
@@ -1503,16 +1521,12 @@ impl ClientCore {
         let (changed, quarantined) = self.write(|_, u| {
             u.with_conn(|c| {
                 let prior = read_pin(c, requested_user)?;
-                // While a change is pending, the cached list is the changed key's. The same list
-                // seen again through a leaf of the pinned key (one SSK cross-signed by both keys
-                // names both devices) is no later list back under the pinned key: it ends nothing
-                // and rebinds no cached key, so the changed key stays pending and verifiable.
-                if prior.is_some_and(|p| p.changed.is_some() && p.umk == validated.umk_pub)
-                    && cached.as_ref().is_some_and(|(version, ..)| validated.version <= *version as u64)
-                {
+                let newer_than_cached = cached
+                    .as_ref()
+                    .is_none_or(|(version, ..)| validated.version > *version as u64);
+                let Some(pin) = pin_after_list(prior, &validated.umk_pub, now, newer_than_cached) else {
                     return Ok((false, 0));
-                }
-                let pin = next_pin(prior, &validated.umk_pub, now);
+                };
                 write_pin(c, requested_user, &pin)?;
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice()])?;
                 // First sight pins without changing anything displayed; a key change or its end does.
@@ -1809,6 +1823,36 @@ mod tests {
             dsk_pub,
         };
         (leaf, list)
+    }
+
+    #[test]
+    fn the_pin_after_the_cached_list_seen_again_through_the_pinned_key_is_no_write() {
+        let old = [1u8; 32];
+        let new = [2u8; 32];
+        let pending = Pin {
+            umk: old,
+            first_seen: 5,
+            verified: false,
+            changed: Some(new),
+        };
+        // The cached list itself, through a leaf of the pinned key: nothing ends, nothing is written.
+        assert!(pin_after_list(Some(pending), &old, 9, false).is_none());
+        // A strictly newer list under the pinned key ends the change.
+        let ended = Pin {
+            changed: None,
+            ..pending
+        };
+        assert!(pin_after_list(Some(pending), &old, 9, true) == Some(ended));
+        // Through the changed key, or with no change pending, the pin follows next_pin.
+        assert!(pin_after_list(Some(pending), &new, 9, false) == Some(pending));
+        assert!(pin_after_list(Some(ended), &old, 9, false) == Some(ended));
+        let first = Pin {
+            umk: old,
+            first_seen: 9,
+            verified: false,
+            changed: None,
+        };
+        assert!(pin_after_list(None, &old, 9, false) == Some(first));
     }
 
     #[test]
