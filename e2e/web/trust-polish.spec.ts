@@ -94,9 +94,8 @@ test('after a reload Privacy has names and Compare; a changed contact can be com
   await closeSettings(page);
   const rotated = await peer.rotateUmk();
   await peer.send('changed while away');
-  // The browser has taken the rotation in before the reload. A reload in the middle of that ingest can leave the
-  // Firefox store unreadable ("database disk image is malformed", fix wave C2 report); that is the core's to fix.
-  await expect(page.getByRole('alert').filter({ hasText: copy('privacy.changed') })).toBeVisible({ timeout: WAIT });
+  // Reload at once, in the middle of the browser's ingest of the rotation and the message: an interrupted write
+  // must roll back on the next open, never leave the store unreadable (opfs-report).
   await page.reload();
   await expectShell(page);
   await openChannel(page, peer.communityName, peer.channelName);
