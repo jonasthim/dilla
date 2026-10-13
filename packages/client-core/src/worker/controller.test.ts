@@ -839,6 +839,20 @@ it('ownKey gives the page the own account key to compare, and approving its pend
   w.call(9806, { m: 'verifyContact', userId: toHex(USER), umk: toHex(CHANGED_UMK) });
   await vi.waitFor(() => expect(w.ret(9806)).toMatchObject({ ok: true }));
   expect(w.core.trustVerify).toHaveBeenCalledWith(USER, CHANGED_UMK);
+  // The approval ends the change in the core, but the own leaves are not read again yet: the banner stays until they are
+  // (lead (s): a stale view never reads as clean), then ends.
+  w.core.trustState.mockReturnValue([{ userId: USER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null }]);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  const signedHead = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
+  w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
+  w.call(9807, { m: 'verifyContact', userId: toHex(USER), umk: toHex(CHANGED_UMK) });
+  await vi.waitFor(() => expect(w.ret(9807)).toMatchObject({ ok: true }));
+  expect(w.account()?.ownTrust).toBe('changed');
+  gate.resolve({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
+  w.core.deviceListIngest.mockReturnValue({ version: 1n, changed: false, quarantined: 0 });
+  await vi.waitFor(() => expect(w.account()?.ownTrust).toBeNull());
 });
 
 it('keeps an own leaf the core refused against the own signed list on the account slice', async () => {

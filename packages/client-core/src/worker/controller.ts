@@ -2084,7 +2084,9 @@ export class Controller {
     const own = this.me === null ? null : toHex(this.me.userId);
     const rows = this.core.trustState();
     const ownRow = own === null ? undefined : rows.find((row) => toHex(row.userId) === own);
-    const ownTrust: AccountState['ownTrust'] = ownRow !== undefined && ownRow.changedUmk !== null ? 'changed'
+    // An own key approved on this page (ruling M6) stays changed until its leaves are read again, as an approved contact
+    // stays pending (lead (s)): a stale view never reads as clean.
+    const ownTrust: AccountState['ownTrust'] = ownRow !== undefined && (ownRow.changedUmk !== null || (own !== null && this.recheckUsers.has(own))) ? 'changed'
       : own !== null && this.unlistedUsers.has(own) ? 'unlisted' : null;
     if (!this.storeCleared && this.accountState.ownTrust !== ownTrust) this.setAccount({ ownTrust });
     this.slices.set('trust', rows.filter((row) => toHex(row.userId) !== own).map((row): TrustSummary => {
