@@ -321,6 +321,9 @@ export class Controller {
   private noticeFloor: bigint | null = null;
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
+  /** This browser's clock (ms) when that ticket's answer arrived: the instance clock advances from ticketTime by what
+   *  has elapsed here since. */
+  private ticketMintedMs = 0;
   private readonly refusedChannels = new Set<string>();
   private readonly notMember = new Set<string>();
   private readonly resyncing = new Set<string>();
@@ -517,8 +520,13 @@ export class Controller {
 
   private nowS(): bigint { return BigInt(Math.floor(this.deps.now() / 1000)); }
 
-  /** The instance clock as the last ticket showed it, else this browser's (no socket has connected yet). */
-  private serverNowS(): bigint { return this.ticketTime ?? this.nowS(); }
+  /** The instance clock now: the last ticket's mint time plus the whole seconds elapsed here since, else this browser's
+   *  clock (no socket has connected yet). A snapshot alone would stand still and hold every later frame as fresh. */
+  private serverNowS(): bigint {
+    if (this.ticketTime === null) return this.nowS();
+    const elapsed = Math.max(0, Math.floor((this.deps.now() - this.ticketMintedMs) / 1000));
+    return this.ticketTime + BigInt(elapsed);
+  }
 
   // ---- start, leadership and boot ----
 
@@ -689,6 +697,7 @@ export class Controller {
           // The instance's clock at the mint (a ticket is valid TICKET_TTL_S seconds, protocol/09): the notice
           // floor compares server receive times with server time, never with this browser's clock.
           this.ticketTime = minted.expires - TICKET_TTL_S;
+          this.ticketMintedMs = this.deps.now();
           return minted.ticket;
         },
         WebSocket: this.deps.WebSocket, now, random, setTimeout, clearTimeout,
@@ -860,8 +869,9 @@ export class Controller {
       || typeof on !== 'bigint' || typeof expires !== 'bigint' || this.me === null || toHex(user) === toHex(this.me.userId)) return;
     const channelId = toHex(channel);
     if (!this.open.has(channelId) || this.groupState(channelId) !== 'active' || this.connectionState.status !== 'online') return;
-    // expires_ts is on the instance's clock (L-HTTP-96: its now + 10 s), read against that clock as of this connection's
-    // ticket; the row then lives on this browser's clock for what remains, never longer than the 10 s relay window.
+    // expires_ts is on the instance's clock (L-HTTP-96: its now + 10 s), read against that clock as estimated from this
+    // connection's ticket; the row then lives on this browser's clock for what remains, never longer than the 10 s relay
+    // window.
     const remaining = expires - this.serverNowS();
     if (remaining <= 0n) return;
     const expiry = this.deps.now() + Number(remaining < 10n ? remaining : 10n) * 1000;

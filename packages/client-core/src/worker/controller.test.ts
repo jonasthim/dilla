@@ -827,6 +827,31 @@ it('reads a typing expiry on the instance clock and holds it at most the relay w
   expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toMatchObject([{ userId: toHex(STRANGER) }]);
 });
 
+// The ticket shows the instance clock once, at the mint. Time passes on both clocks after it, so the instance's now is the
+// mint time plus what elapsed here; a frame whose expires_ts is already behind that estimate is stale and never shown.
+it('advances the instance clock from the ticket by the time elapsed here, and drops a frame already expired on it', async () => {
+  let nowMs = 1_700_000_000_000;
+  const w = world({ now: () => nowMs });
+  await toReady(w);
+  await openGeneral(w);
+  // The instance is ten minutes behind this browser at the mint.
+  w.routes.postTicket.mockImplementationOnce(() => Promise.resolve({ ticket: 'ticket', expires: NOW_S - 600n + 30n }));
+  expect(await w.gatewayDeps.value!.mintTicket()).toBe('ticket');
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  nowMs += 20_000;                                            // 20 s later on both clocks: the instance is at mint + 20
+  // Expired 5 s ago on the instance clock (mint + 15): dropped, never held for a fresh window.
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, new Uint8Array(16).fill(0x6b), OTHER_DEVICE, 1n, NOW_S - 600n + 15n],
+  } });
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`) ?? []).toEqual([]);
+  // Four seconds left on the instance clock (mint + 24): shown for those four seconds here.
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S - 600n + 24n],
+  } });
+  expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`))
+    .toEqual([{ userId: toHex(STRANGER), name: expect.any(String), expiresAt: 1_700_000_024_000 }]);
+});
+
 it('clears incoming typing on membership loss without local typing', async () => {
   const w = world();
   await toReady(w);
