@@ -42,7 +42,19 @@ export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created
 export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; }
 export interface PurgeRow { groupId: Id; seq: bigint; channelId: Id; blobIds: Uint8Array[]; }
 export interface PendingLeaf { groupId: Id; leafIndex: number; userId: Id; cachedVersion: bigint; reason: string; }
-export interface TrustRecord { userId: Id; umk: Uint8Array; firstSeen: bigint; verified: boolean; changedUmk: Uint8Array | null; }
+/** The stored verdict that blocks a user's leaf (and with it sending in its group); E_UMK_CHANGED wins (ABI 8). */
+export type TrustBlock = 'E_UMK_CHANGED' | 'E_CREDENTIAL' | 'E_DEVICE_UNLISTED' | 'E_TIER_MISMATCH';
+const TRUST_BLOCKS: readonly string[] = ['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'];
+/** The core's block_code: a known verdict as it is, any other stored code as a failed identity check (fail closed). */
+export function trustBlock(code: string): TrustBlock {
+  return TRUST_BLOCKS.includes(code) ? code as TrustBlock : 'E_CREDENTIAL';
+}
+/**
+ * One trust_state row (ABI 8). `blocked` is the stored verdict of this user's leaves still in an active group, read from
+ * the store (right after a reload too). The own user's row is always present: its own credential's key, verified, never
+ * changed; its `blocked` reports an own-user leaf under another key (E_UMK_CHANGED) or an unlisted own device.
+ */
+export interface TrustRecord { userId: Id; umk: Uint8Array; firstSeen: bigint; verified: boolean; changedUmk: Uint8Array | null; blocked: TrustBlock | null; }
 export interface SearchScope { kind: 'channel' | 'community' | 'all'; id: Id | null; }
 export interface SearchCursor { rank: bigint; groupId: Id; seq: bigint; }
 export interface SearchHit { groupId: Id; seq: bigint; snippet: string; rank: bigint; }
@@ -113,7 +125,11 @@ export interface CorePort {
   trustState(): TrustRecord[];
   trustGeneration(): bigint;
   trustVerify(userId: Id, umk: Uint8Array): void;
-  safetyNumberFor(userId: Id): string;
+  /** Pairwise digits for exactly the key the page will approve (the pending changed key, else the pinned one);
+   *  E_DEVICE_LIST_STALE when `expectedUmk` is not that key, E_CORE_NOT_FOUND with no cached list or no shared group. */
+  safetyNumberFor(userId: Id, expectedUmk: Uint8Array): string;
+  /** The code send_prepare/send_encrypt refuse with in this group, or null when sending is open (ABI 8). */
+  sendBlockCode(groupId: Id): TrustBlock | null;
   search(scope: SearchScope, query: string, cursor: SearchCursor | null, limit: number): SearchHit[];
 }
 
@@ -174,7 +190,8 @@ export interface CoreHandle {
       trust_state(): Uint8Array;
       trust_generation(): bigint;
       trust_verify(user_id: Uint8Array, expected_umk: Uint8Array): void;
-      safety_number_for(user_id: Uint8Array): string;
+      safety_number_for(user_id: Uint8Array, expected_umk: Uint8Array): string;
+      send_block_code(group_id: Uint8Array): string | undefined;
       search(scope_kind: number, scope_id: Uint8Array | null, query: string, before: Uint8Array | null, limit: number): Uint8Array;
       state_sealed_uploaded(): void;
       state_sealed_current(): boolean;
@@ -421,7 +438,15 @@ export function wrapCore(handle: CoreHandle): CorePort {
       if (userId.length !== 16 || umk.length !== 32) throw new CoreError('E_CORE_INPUT');
       handle.trust_verify(userId, umk);
     }),
-    safetyNumberFor: (userId) => call(() => handle.safety_number_for(userId)),
+    safetyNumberFor: (userId, expectedUmk) => call(() => {
+      if (userId.length !== 16 || expectedUmk.length !== 32) throw new CoreError('E_CORE_INPUT');
+      return handle.safety_number_for(userId, expectedUmk);
+    }),
+    sendBlockCode: (groupId) => call(() => {
+      if (groupId.length !== 16) throw new CoreError('E_CORE_INPUT');
+      const code = handle.send_block_code(groupId);
+      return code === undefined || code === null ? null : trustBlock(code);
+    }),
     search: (scope, query, cursor, limit) => call(() => {
       validateSearch(scope, query, cursor, limit);
       const kind = scope.kind === 'channel' ? 0 : scope.kind === 'community' ? 1 : 2;

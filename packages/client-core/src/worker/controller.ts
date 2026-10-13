@@ -2131,7 +2131,10 @@ export class Controller {
 
   private safetyNumber(userId: string): string {
     if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
-    return this.requireCore().safetyNumberFor(fromHex(userId));
+    // ABI 8 binds the digits to the compared key; the page-side key arrives with the next commit.
+    const row = this.requireCore().trustState().find((r) => toHex(r.userId) === userId);
+    if (row === undefined) throw new Refusal('E_CORE_NOT_FOUND', '');
+    return this.requireCore().safetyNumberFor(fromHex(userId), row.changedUmk ?? row.umk);
   }
 
   private search(command: Extract<Command, { m: 'search' }>, requestId: number): Promise<null> {

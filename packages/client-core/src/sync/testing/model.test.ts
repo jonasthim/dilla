@@ -8,6 +8,9 @@ import type { Frame } from '../../gateway/frames';
 import { fakeDskPub, fakeListBlob } from '../../testing/fake-list';
 
 const bytes = (n: number, value: number): Uint8Array => new Uint8Array(n).fill(value);
+/** ABI 8 (fixA F3): the own row is always present, this device's own credential key, verified, never changed. */
+const ownRow = (blocked: string | null = null) =>
+  ({ userId: ME.user, umk: fakeDskPub(ME.user), firstSeen: 0n, verified: true, changedUmk: null, blocked });
 const signed = (v: number, user = PEER.user): [number, Uint8Array, Uint8Array, Uint8Array] =>
   [v, fakeListBlob(user, [{ deviceId: PEER.device, revokedAt: null, dskPub: fakeDskPub(PEER.device) }], BigInt(v)),
     bytes(64, v), bytes(32, v - 1)];
@@ -21,7 +24,7 @@ it('matches client_trust gap and cross-user refusals without a pin', () => {
     .toThrow('E_DEVICE_LIST_STALE');
   expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1, ME.user)]), signed(1, ME.user)[1], 10n))
     .toThrow('E_CREDENTIAL');
-  expect(model.trustState()).toEqual([]);
+  expect(model.trustState()).toEqual([ownRow()]);
 });
 
 it('pins a leaf first listed in the final signed history head', () => {
@@ -34,7 +37,7 @@ it('pins a leaf first listed in the final signed history head', () => {
   const second = signed(2);
   expect(model.deviceListIngest(group, 0, PEER.user, encode([first, second]), second[1], 10n))
     .toEqual({ version: 2n, changed: false, quarantined: 0 });
-  expect(model.trustState()).toMatchObject([{ userId: PEER.user, firstSeen: 10n, verified: false }]);
+  expect(model.trustState()).toMatchObject([ownRow(), { userId: PEER.user, firstSeen: 10n, verified: false, blocked: null }]);
 });
 
 it('refuses a substituted modeled leaf key without a pin', () => {
@@ -44,7 +47,7 @@ it('refuses a substituted modeled leaf key without a pin', () => {
   model.addPendingLeaf(group, 0, PEER.user, PEER.device, bytes(32, 0x98), 1);
   expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), signed(1)[1], 10n))
     .toThrow('E_CREDENTIAL');
-  expect(model.trustState()).toEqual([]);
+  expect(model.trustState()).toEqual([ownRow()]);
 });
 
 it('refuses a leaf whose tier differs from the modeled list entry', () => {
@@ -53,7 +56,7 @@ it('refuses a leaf whose tier differs from the modeled list entry', () => {
   model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 0);
   expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), signed(1)[1], 10n))
     .toThrow('E_TIER_MISMATCH');
-  expect(model.trustState()).toEqual([]);
+  expect(model.trustState()).toEqual([ownRow()]);
 });
 
 it('does not truncate an overfull modeled pending-leaf set', () => {
@@ -70,7 +73,7 @@ it('refuses a modeled list with the wrong fixture signature', () => {
   wrong[2] = bytes(64, 0);
   expect(() => model.deviceListIngest(group, 0, PEER.user, encode([wrong]), wrong[1], 10n))
     .toThrow('E_CREDENTIAL');
-  expect(model.trustState()).toEqual([]);
+  expect(model.trustState()).toEqual([ownRow()]);
 });
 
 const G = idOf(0x9b, 1);
@@ -1121,7 +1124,7 @@ describe('trust send block (trust.rs leaf_verdict/send_block, messages.rs send_p
     expect(core.sendPrepare(G2, textRequest('y'), 2n)).toHaveLength(16);
   });
 
-  it('answers proposedAdds and refuses a failed Add candidate by its verdict, writing nothing', () => {
+  it('answers proposedAdds and refuses a failed Add candidate by its verdict, without a generation bump', () => {
     const core = trusted();
     const v1 = listOf(1, [PEER.device]);
     core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
@@ -1160,5 +1163,151 @@ describe('trust send block (trust.rs leaf_verdict/send_block, messages.rs send_p
     expect(core.deviceListIngestAdd(G, body, 0n, PEER.user, encode([v1, v2]), v2[1], 12n)).toEqual({ version: 2n, changed: false, quarantined: 0 });
     const built = arr(decode(core.commitBuild(G, body)), 5);
     expect(arr(at(arr(decode(bin(at(built, 1))), 5), 3))).toEqual([PEER_2]);
+  });
+
+  // ---- ABI 8 (fixA-abi.md): the double mirrors trust_state's blocked, the own row, send_block_code, the bound safety
+  // number, held messages released at the same seq, the recorded failed Add and the own-user foreign key.
+  const CHANGED = bytes(32, 0xc4);
+  const peerTwo = { user: PEER.user, device: PEER_2 };
+  const msgFrom = (seq: bigint, from: { user: Id; device: Id }, body: string): Uint8Array =>
+    encode([[seq, 0n, from.device, wire.app(from, idOf(0x7e, Number(seq)), body), new Uint8Array(32), new Uint8Array(32), 1_700_000_000n + seq, 0]]);
+  const rowOf = (core: ModelCore, seq: bigint) => core.timeline(G, 0n, 200).find((row) => row.seq === seq);
+
+  it('reports the stored verdict of a user\'s current leaves as blocked, a changed key winning', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    expect(core.trustState()).toEqual([ownRow(),
+      { userId: PEER.user, umk: fakeDskPub(PEER.user), firstSeen: 10n, verified: false, changedUmk: null, blocked: 'E_DEVICE_UNLISTED' }]);
+    core.setLeafVerdict(G, 1, 'E_UMK_CHANGED');
+    expect(core.trustState()[1]).toMatchObject({ changedUmk: CHANGED, blocked: 'E_UMK_CHANGED' });
+  });
+
+  it('counts only leaves of an active group, and a Remove of the failed leaf clears its verdict', () => {
+    const core = trusted();
+    const OTHER_G = idOf(0x9b, 40);
+    core.addPendingLeaf(OTHER_G, 1, THIRD.user, THIRD.device, fakeDskPub(THIRD.device), 1);
+    const third = listOf(1, [THIRD.device], THIRD.user);
+    core.deviceListIngest(OTHER_G, 1, THIRD.user, encode([third]), third[1], 10n);
+    core.setLeafVerdict(OTHER_G, 1, 'E_CREDENTIAL');
+    expect(toHex(core.trustState().at(-1)?.userId ?? new Uint8Array())).toBe(toHex(THIRD.user));
+    expect(core.trustState().at(-1)?.blocked).toBeNull();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    const generation = core.trustGeneration();
+    core.removeLeaf(G, 2);
+    expect(core.trustGeneration()).toBe(generation + 1n);
+    expect(core.trustState()[1]?.blocked).toBeNull();
+    expect(core.sendBlockCode(G)).toBeNull();
+  });
+
+  it('answers send_block_code per group as send_prepare refuses, open as null, and fails closed for an unloaded group', () => {
+    const core = trusted();
+    expect(core.sendBlockCode(G)).toBeNull();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    expect(core.sendBlockCode(G)).toBe('E_DEVICE_UNLISTED');
+    core.setLeafVerdict(G, 1, 'E_UMK_CHANGED');
+    expect(core.sendBlockCode(G)).toBe('E_UMK_CHANGED');
+    expect(thrown(() => core.sendPrepare(G, textRequest('x'), 2n))).toMatchObject({ code: 'E_UMK_CHANGED' });
+    // A group whose state is not held answers from any stored verdict row of the group (fail closed).
+    const UNLOADED = idOf(0x9b, 41);
+    expect(core.sendBlockCode(UNLOADED)).toBeNull();
+    core.addPendingLeaf(UNLOADED, 1, PEER.user, PEER_2, fakeDskPub(PEER_2), 1);
+    core.setLeafVerdict(UNLOADED, 1, 'E_TIER_MISMATCH');
+    expect(core.sendBlockCode(UNLOADED)).toBe('E_TIER_MISMATCH');
+  });
+
+  it('binds the safety number to the comparison key: the pending changed key, else the pinned one', () => {
+    const core = trusted();
+    expect(thrown(() => core.safetyNumberFor(PEER.user, fakeDskPub(PEER.user)))).toMatchObject({ code: 'E_CORE_NOT_FOUND' });
+    const v1 = listOf(1, [PEER.device, PEER_2]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    const digits = core.safetyNumberFor(PEER.user, fakeDskPub(PEER.user));
+    expect(digits).toMatch(/^\d{5}( \d{5}){11}$/);
+    expect(thrown(() => core.safetyNumberFor(PEER.user, CHANGED))).toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    expect(thrown(() => core.safetyNumberFor(PEER.user, bytes(31, 1)))).toMatchObject({ code: 'E_CORE_INPUT' });
+    core.setLeafVerdict(G, 1, 'E_UMK_CHANGED');
+    expect(thrown(() => core.safetyNumberFor(PEER.user, fakeDskPub(PEER.user)))).toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    expect(core.safetyNumberFor(PEER.user, CHANGED)).not.toBe(digits);
+  });
+
+  it('holds a failed leaf\'s message unreadable and releases it at the same seq when a later list names the leaf', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    core.groupApply(G, encode([]), msgFrom(1n, peerTwo, 'held back'), 1n);
+    expect(rowOf(core, 1n)).toMatchObject({ status: 1, reason: 'E_DEVICE_UNLISTED', body: '' });
+    expect(core.revalidatePending(G, 2, 256)).toBe(0);
+    const v2 = listOf(2, [PEER.device, PEER_2]);
+    core.deviceListIngest(G, 2, PEER.user, encode([v1, v2]), v2[1], 11n);
+    const generation = core.trustGeneration();
+    expect(core.revalidatePending(G, 2, 256)).toBe(1);
+    expect(core.trustGeneration()).toBe(generation + 1n);
+    expect(rowOf(core, 1n)).toMatchObject({ status: 0, reason: '', body: 'held back', senderUser: PEER.user, senderDevice: PEER_2 });
+    expect(core.revalidatePending(G, 2, 256)).toBe(0);
+    expect(thrown(() => core.revalidatePending(G, 2, 0))).toMatchObject({ code: 'E_CORE_INPUT' });
+  });
+
+  it('trust_verify approves only the comparison key and releases the changed key\'s held messages at their seq', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device, PEER_2]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    core.setLeafVerdict(G, 1, 'E_UMK_CHANGED');
+    core.groupApply(G, encode([]), msgFrom(1n, PEER, 'under the new key'), 1n);
+    expect(rowOf(core, 1n)).toMatchObject({ status: 1, reason: 'E_UMK_CHANGED' });
+    expect(thrown(() => core.trustVerify(PEER.user, fakeDskPub(PEER.user)))).toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    const generation = core.trustGeneration();
+    core.trustVerify(PEER.user, CHANGED);
+    expect(core.trustGeneration()).toBeGreaterThan(generation);
+    // PEER_2's leaf still carries the replaced key: under the approved pin it fails (leaf_verdict: another key).
+    expect(core.trustState()[1]).toMatchObject({ umk: CHANGED, verified: true, changedUmk: null, blocked: 'E_CREDENTIAL' });
+    expect(rowOf(core, 1n)).toMatchObject({ status: 0, body: 'under the new key' });
+    expect(core.sendBlockCode(G)).toBe('E_CREDENTIAL');
+    core.removeLeaf(G, 2);
+    expect(core.trustState()[1]?.blocked).toBeNull();
+    expect(core.sendBlockCode(G)).toBeNull();
+    expect(thrown(() => core.trustVerify(THIRD.user, CHANGED))).toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+  });
+
+  it('records a fetched Add verdict so commitBuild leaves the Add out, also for a never-cached user', () => {
+    const core = trusted();
+    core.addKeyPackage(THIRD.user, THIRD.device, fakeDskPub(THIRD.device), 1);
+    const body = proposals(THIRD.device);
+    expect(thrown(() => core.commitBuild(G, body))).toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    const third = listOf(1, [], THIRD.user);
+    expect(thrown(() => core.deviceListIngestAdd(G, body, 0n, THIRD.user, encode([third]), third[1], 12n)))
+      .toMatchObject({ code: 'E_DEVICE_UNLISTED' });
+    const built = arr(decode(core.commitBuild(G, body)), 5);
+    expect(arr(at(arr(decode(bin(at(built, 1))), 5), 3))).toEqual([]);
+    expect(arr(at(built, 3))).toEqual([]);
+  });
+
+  it('refuses an own-user leaf under another key as E_UMK_CHANGED on the own row; only its Remove clears it', () => {
+    const core = trusted();
+    const IMPOSTOR = idOf(0xd0, 50);
+    core.addPendingLeaf(G, 3, ME.user, IMPOSTOR, fakeDskPub(IMPOSTOR), 1);
+    core.setLeafVerdict(G, 3, 'E_UMK_CHANGED');
+    // The own pin never takes a pending change.
+    expect(core.trustState()[0]).toEqual(ownRow('E_UMK_CHANGED'));
+    expect(core.pendingLeaves().find((leaf) => leaf.leafIndex === 3)?.reason).not.toBe('changed');
+    expect(core.sendBlockCode(G)).toBe('E_UMK_CHANGED');
+    const own = listOf(1, [ME.device, IMPOSTOR], ME.user);
+    expect(thrown(() => core.deviceListIngest(G, 3, ME.user, encode([own]), own[1], 10n))).toMatchObject({ code: 'E_UMK_CHANGED' });
+    expect(thrown(() => core.trustVerify(ME.user, CHANGED))).toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    core.removeLeaf(G, 3);
+    expect(core.trustState()[0]).toEqual(ownRow());
+    expect(core.sendBlockCode(G)).toBeNull();
+  });
+
+  it('records an own-user Add candidate under another key as E_UMK_CHANGED and leaves it out of the commit', () => {
+    const core = trusted();
+    const IMPOSTOR = idOf(0xd0, 51);
+    core.addKeyPackage(ME.user, IMPOSTOR, fakeDskPub(IMPOSTOR), 1, CHANGED);
+    const body = proposals(IMPOSTOR);
+    const own = listOf(1, [ME.device, IMPOSTOR], ME.user);
+    expect(thrown(() => core.deviceListIngestAdd(G, body, 0n, ME.user, encode([own]), own[1], 12n))).toMatchObject({ code: 'E_UMK_CHANGED' });
+    const built = arr(decode(core.commitBuild(G, body)), 5);
+    expect(arr(at(built, 3))).toEqual([]);
   });
 });

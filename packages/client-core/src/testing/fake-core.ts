@@ -38,6 +38,7 @@ export class FakeCore implements CorePort {
   trustGeneration(): bigint { this.enter('trustGeneration'); return 0n; }
   trustVerify(): void { this.enter('trustVerify'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
   safetyNumberFor(): string { this.enter('safetyNumberFor'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
+  sendBlockCode(): null { this.enter('sendBlockCode'); throw new CoreError('E_CORE_STATE', 'not modelled'); }
   search(): SearchHit[] { this.enter('search'); return []; }
   readonly calls: string[] = [];
   private readonly failures = new Map<keyof CorePort, CoreError>();

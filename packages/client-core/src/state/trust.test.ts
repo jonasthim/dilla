@@ -26,9 +26,19 @@ function routes(heads: (number | null)[], pages: Record<number, number[]>) {
 it('bounds core-owned pending and trust rows before copying', () => {
   expect(decodePendingLeaves(encode([[id16(1), 0, id16(2), 0, 'unknown']]))).toMatchObject([{ leafIndex: 0, reason: 'unknown' }]);
   expect(() => decodePendingLeaves(encode(Array.from({ length: 4097 }, () => [id16(1), 0, id16(2), 0, 'unknown'])))).toThrow(CoreError);
-  expect(decodeTrustState(encode([[id16(2), key32(4), 12, 0, null]]))).toMatchObject([{ firstSeen: 12n, verified: false }]);
-  expect(() => decodeTrustState(encode([[id16(2), new Uint8Array(31), 12, 0, null]]))).toThrow(CoreError);
+  expect(decodeTrustState(encode([[id16(2), key32(4), 12, 0, null, null]]))).toMatchObject([{ firstSeen: 12n, verified: false, blocked: null }]);
+  expect(() => decodeTrustState(encode([[id16(2), new Uint8Array(31), 12, 0, null, null]]))).toThrow(CoreError);
   expect(() => decodePendingLeaves(Uint8Array.of(0x99, 0x10, 0x01))).toThrow('limit');
+});
+// ABI 8: the sixth element is the stored verdict of the user's leaves still in an active group (E_UMK_CHANGED wins).
+it('reads the ABI-8 blocked verdict of a trust row and refuses the ABI-7 five-element row', () => {
+  for (const code of ['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'] as const)
+    expect(decodeTrustState(encode([[id16(2), key32(4), 12, 1, null, code]]))).toMatchObject([{ verified: true, blocked: code }]);
+  expect(decodeTrustState(encode([[id16(2), key32(4), 12, 0, key32(5), 'E_UMK_CHANGED']]))[0]?.changedUmk).toEqual(key32(5));
+  // A code the page has no copy for fails closed as a failed identity check, as the core's own block_code does.
+  expect(decodeTrustState(encode([[id16(2), key32(4), 12, 1, null, 'E_SOMETHING_NEW']]))[0]?.blocked).toBe('E_CREDENTIAL');
+  expect(() => decodeTrustState(encode([[id16(2), key32(4), 12, 0, null]]))).toThrow(CoreError);
+  expect(() => decodeTrustState(encode([[id16(2), key32(4), 12, 0, null, 7]]))).toThrow(CoreError);
 });
 it('accepts a complete signed history ending at the unchanged head', async () => {
   const result = await readDeviceListHistory(routes([3, 3], { 0: [1, 2, 3] }), id16(2), 0n);

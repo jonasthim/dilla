@@ -380,7 +380,8 @@ function world(opts: {
     }),
     ownRolesSet: vi.fn((_c: Uint8Array, _ids: Uint8Array[]): void => {}),
     trustVerify: vi.fn((_u: Uint8Array, _k: Uint8Array): void => {}),
-    safetyNumberFor: vi.fn((_u: Uint8Array): string => Array.from({ length: 12 }, () => '12345').join(' ')),
+    safetyNumberFor: vi.fn((_u: Uint8Array, _k: Uint8Array): string => Array.from({ length: 12 }, () => '12345').join(' ')),
+    sendBlockCode: vi.fn((_g: Uint8Array): null => null),
     keyPackages: vi.fn((_count: number, _last: boolean): Uint8Array => new Uint8Array([1])),
     search: vi.fn((_scope: unknown, _query: string, _cursor: unknown, _limit: number) => [] as {
       groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint }[]),
@@ -621,7 +622,7 @@ it('republishes trust when a member slice or the DMs land after it, so a reloade
   await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ name: 'Björn', shared: true }));
   // A DM with a person no community lists: the DM list landing republishes too.
   const dmPeer = new Uint8Array(16).fill(0x3d);
-  w.core.trustState.mockReturnValue([...strangerTrust(null), { userId: dmPeer, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: null }]);
+  w.core.trustState.mockReturnValue([...strangerTrust(null), { userId: dmPeer, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: null, blocked: null }]);
   w.state.groups = [textGroup(2), { ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
   w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, dmPeer] }];
   w.gateway.emit({ type: 'ready', info: READY_INFO });
@@ -780,7 +781,7 @@ it('publishes channel destinations for community and DM hits and drops unknown g
 const STRANGER_UMK = new Uint8Array(32).fill(0xbb);
 const CHANGED_UMK = new Uint8Array(32).fill(0xcc);
 const strangerTrust = (changed: Uint8Array | null): TrustRecord[] =>
-  [{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: changed }];
+  [{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: changed, blocked: null }];
 
 // Task 10 found Privacy listing the browser's own user as a contact ("Compare with web tester"): the core pins the
 // user's own key too, and a person never compares a safety number with themselves.
@@ -788,7 +789,7 @@ it('leaves the own user out of the trust slice', async () => {
   const w = world();
   await toReady(w);
   w.core.trustState.mockReturnValue([
-    { userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: false, changedUmk: null },
+    { userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: false, changedUmk: null, blocked: null },
     ...strangerTrust(null),
   ]);
   w.call(980, { m: 'refreshTrust' });
@@ -804,7 +805,7 @@ it('keeps a changed own key on the account slice, out of the contacts, until the
   await toReady(w);
   const ownUmk = new Uint8Array(32).fill(0xaa);
   w.core.trustState.mockReturnValue([
-    { userId: USER, umk: ownUmk, firstSeen: 1n, verified: false, changedUmk: CHANGED_UMK },
+    { userId: USER, umk: ownUmk, firstSeen: 1n, verified: false, changedUmk: CHANGED_UMK, blocked: null },
     ...strangerTrust(null),
   ]);
   w.call(9801, { m: 'refreshTrust' });
@@ -812,7 +813,7 @@ it('keeps a changed own key on the account slice, out of the contacts, until the
   expect(w.last<TrustSummary[]>('trust')?.map((row) => row.userId)).toEqual([toHex(STRANGER)]);
   expect(w.account()?.ownTrust).toBe('changed');
   w.core.trustState.mockReturnValue([
-    { userId: USER, umk: ownUmk, firstSeen: 1n, verified: false, changedUmk: null },
+    { userId: USER, umk: ownUmk, firstSeen: 1n, verified: false, changedUmk: null, blocked: null },
     ...strangerTrust(null),
   ]);
   w.call(9802, { m: 'refreshTrust' });
@@ -827,7 +828,7 @@ it('ownKey gives the page the own account key to compare, and approving its pend
   await vi.waitFor(() => expect(w.ret(9803)).toBeDefined());
   expect(w.ret(9803)).toEqual({ t: 'ret', id: 9803, ok: true, value: null });
   const ownUmk = new Uint8Array(32).fill(0xaa);
-  w.core.trustState.mockReturnValue([{ userId: USER, umk: ownUmk, firstSeen: 1n, verified: true, changedUmk: CHANGED_UMK }]);
+  w.core.trustState.mockReturnValue([{ userId: USER, umk: ownUmk, firstSeen: 1n, verified: true, changedUmk: CHANGED_UMK, blocked: null }]);
   w.call(9804, { m: 'ownKey' });
   await vi.waitFor(() => expect(w.ret(9804)).toBeDefined());
   expect(w.ret(9804)).toEqual({ t: 'ret', id: 9804, ok: true,
@@ -841,7 +842,7 @@ it('ownKey gives the page the own account key to compare, and approving its pend
   expect(w.core.trustVerify).toHaveBeenCalledWith(USER, CHANGED_UMK);
   // The approval ends the change in the core, but the own leaves are not read again yet: the banner stays until they are
   // (lead (s): a stale view never reads as clean), then ends.
-  w.core.trustState.mockReturnValue([{ userId: USER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null }]);
+  w.core.trustState.mockReturnValue([{ userId: USER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
   w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
   const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
   const signedHead = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
@@ -859,7 +860,7 @@ it('keeps an own leaf the core refused against the own signed list on the accoun
   const w = world();
   await toReady(w);
   w.core.trustState.mockReturnValue([
-    { userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: false, changedUmk: null },
+    { userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: false, changedUmk: null, blocked: null },
   ]);
   w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
     raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
@@ -917,7 +918,7 @@ it('reads an approved contact again before it stands as verified', async () => {
   expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ shared: true, changedUmk: toHex(CHANGED_UMK) });
   expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
   // The approval: the core now pins the new key verified and re-judged the leaves; the worker has not read them yet.
-  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null }]);
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
   w.core.pendingLeaves.mockReturnValue([{ groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
   const read = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
   w.routes.getDeviceList.mockImplementationOnce(() => read.promise);
@@ -939,7 +940,7 @@ it('lets an approved contact stand as verified once a clean ingest read it again
   w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
   await toReady(w);
   w.state.groups = [{ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
-  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null }]);
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
   w.core.pendingLeaves.mockReturnValue([{ groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
   w.core.deviceListIngest.mockReturnValue({ version: 1n, changed: false, quarantined: 0 });
   w.call(9783, { m: 'verifyContact', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });

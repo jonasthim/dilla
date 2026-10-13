@@ -123,6 +123,36 @@ describe('a failed Add candidate (security F2, controller ruling 3)', () => {
     expect(d.core.groupRow(g)?.epoch).toBe(1n);
   });
 
+  // ABI 8: device_list_ingest_add records the failed verdict, so the commit leaves the Add out even for a user this device
+  // never cached (before, commit_build answered E_DEVICE_LIST_STALE and the device could not commit).
+  it('of a never-cached user whose fetched list leaves it out is left out, and the commit is posted', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.publishList(THIRD.user, []);
+    d.core.addKeyPackage(THIRD.user, THIRD.device, fakeDskPub(THIRD.device), 1);
+    ds.propose(g, 'add', THIRD.device);
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(count('postCommit')).toBe(1);
+    expect(ds.welcomesFor(THIRD.device)).toEqual([]);
+  });
+
+  it('of the own user under another key (E_UMK_CHANGED) is left out without a retry, and the commit is posted', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.publishList(ME.user, [{ device: ME.device }, { device: FORGED }]);
+    d.core.addKeyPackage(ME.user, FORGED, fakeDskPub(FORGED), 1, new Uint8Array(32).fill(0xc4));
+    ds.propose(g, 'add', FORGED);
+    let refusals = 0;
+    const ingest = d.core.deviceListIngestAdd.bind(d.core);
+    d.core.deviceListIngestAdd = (...args: Parameters<typeof ingest>) => {
+      try { return ingest(...args); } catch (e) { if (e instanceof CoreError) refusals += e.code === 'E_UMK_CHANGED' ? 1 : 0; throw e; }
+    };
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(refusals).toBe(1);
+    expect(count('postCommit')).toBe(1);
+    expect(ds.welcomesFor(FORGED)).toEqual([]);
+  });
+
   it('a candidate whose history is unknown still refuses, aborts and posts nothing', async () => {
     const d = device(ds, clock, ME);
     const g = await openRegistered(ds, d);

@@ -29,8 +29,9 @@ import {
   type OwnDeviceList,
   type SealedObjects,
   type SignedLists,
-  type PendingLeaf, type TrustRecord, type SearchHit,
+  type PendingLeaf, type TrustRecord, type SearchHit, type TrustBlock, trustBlock,
 } from '../../core-port';
+import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
@@ -281,6 +282,8 @@ interface MGroup {
   /** app_groups.max_epoch: the highest epoch held; only ever raised. */
   maxEpoch: bigint;
   rows: Map<bigint, MRow>;
+  /** app_pending_history: seq → the evidence of a row held unreadable by its sender leaf's verdict. */
+  held: Map<bigint, Held>;
   /** app_reactions as the model holds it: target hex → (user hex + U+0000 + emoji) → the present reaction. */
   reactions: Map<string, Map<string, { user: Id; emoji: string; seq: bigint }>>;
   /** app_pins: target hex → the pin. */
@@ -371,60 +374,95 @@ export interface ApplyCall {
 
 type HsOutcome = 'ok' | 'skip' | 'changed' | 'stop' | 'gone';
 
+/** A leaf as the trust double judges it: its credential's user, device, key, tier and UMK. */
+interface MCandidate { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; umk: Uint8Array }
+/** A current leaf of a group, with the signed-list version and head its last ingest cached. */
+interface MLeaf extends MCandidate { groupId: Id; leafIndex: number; version: bigint; head: Uint8Array | null }
+/** The MLS-authenticated evidence of a message held unreadable by its sender leaf's verdict (app_pending_history). */
+type Held = NonNullable<ReturnType<typeof readApp>>;
+
 export class ModelCore implements CorePort {
-  private readonly leaves = new Map<string, { groupId: Id; leafIndex: number; userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; version: bigint; head: Uint8Array | null }>();
+  /** A current leaf of a modelled group. `umk` is the key its credential carries (fakeDskPub(user) unless a test sets it). */
+  private readonly leaves = new Map<string, MLeaf>();
   private readonly trustPins = new Map<string, TrustRecord>();
   addPendingLeaf(groupId: Id, leafIndex: number, userId: Id, deviceId: Id, dskPub: Uint8Array, tier: 0 | 1): void {
     if (groupId.length !== 16 || userId.length !== 16 || deviceId.length !== 16 || dskPub.length !== 32 ||
       !Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > 0xffff_ffff || (tier !== 0 && tier !== 1))
       throw coreError('E_CORE_INPUT');
     this.leaves.set(`${toHex(groupId)}/${leafIndex}`, { groupId: groupId.slice(), leafIndex,
-      userId: userId.slice(), deviceId: deviceId.slice(), dskPub: dskPub.slice(), tier, version: 0n, head: null });
+      userId: userId.slice(), deviceId: deviceId.slice(), dskPub: dskPub.slice(), tier, umk: fakeDskPub(userId), version: 0n, head: null });
   }
-  /** app_device_lists: user hex → the newest signed list an ingest accepted (trust.rs ingest_leaf). */
-  private readonly userLists = new Map<string, { version: bigint; list: FakeList; head: Uint8Array }>();
+  /** app_device_lists: user hex → the newest signed list an ingest accepted (trust.rs ingest_leaf), with the UMK it is under. */
+  private readonly userLists = new Map<string, { version: bigint; list: FakeList; head: Uint8Array; umk: Uint8Array }>();
   /** app_quarantine: `${group hex}/${leaf key hex}` → the stored verdict, keyed by the leaf identity (ruling D1'). */
   private readonly verdicts = new Map<string, string>();
   /** meta trust_generation (trust.rs bump_generation). */
   private generation = 0n;
   /** The KeyPackages an Add proposal can carry: device hex → its leaf (the credential the core reads from it). */
-  private readonly keyPackageLeaves = new Map<string, { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 }>();
+  private readonly keyPackageLeaves = new Map<string, MCandidate>();
+  /** This device's own credential key: the own pin (F3), verified from signup on and never changed. */
+  private get ownUmk(): Uint8Array { return fakeDskPub(this.me.user); }
   pendingLeaves(): PendingLeaf[] {
     if (this.leaves.size > 4096) throw coreError('E_CORE_LIMIT');
     return [...this.leaves.values()].map((leaf) => ({ groupId: leaf.groupId, leafIndex: leaf.leafIndex,
       userId: leaf.userId, cachedVersion: leaf.version,
       reason: this.trustPins.get(toHex(leaf.userId))?.changedUmk != null ? 'changed' : leaf.version === 0n ? 'unknown' : 'ready-refresh' }));
   }
-  /** Test hook: a KeyPackage of `deviceId` that an Add proposal of the model DS may carry. */
-  addKeyPackage(userId: Id, deviceId: Id, dskPub: Uint8Array, tier: 0 | 1): void {
-    this.keyPackageLeaves.set(toHex(deviceId), { userId: userId.slice(), deviceId: deviceId.slice(), dskPub: dskPub.slice(), tier });
+  /** Test hook: a KeyPackage of `deviceId` that an Add proposal of the model DS may carry; `umk` is its credential's key. */
+  addKeyPackage(userId: Id, deviceId: Id, dskPub: Uint8Array, tier: 0 | 1, umk: Uint8Array = fakeDskPub(userId)): void {
+    this.keyPackageLeaves.set(toHex(deviceId), { userId: userId.slice(), deviceId: deviceId.slice(), dskPub: dskPub.slice(), tier, umk: umk.slice() });
   }
   /**
    * Test hook: the verdict a transition audit (trust.rs audit_member) or a changed-key ingest writes for one current
-   * leaf, through the same apply_verdict rule; `E_UMK_CHANGED` also marks the user's pin changed. null is a valid leaf.
+   * leaf, through the same apply_verdict rule; null is a valid leaf. `E_UMK_CHANGED` for a contact is a validated list
+   * under a new key (0xc4…): the pin takes it as its pending change and the leaf carries it. For the own user it is a
+   * leaf under a foreign key (F3): the own pin never takes a change.
    */
   setLeafVerdict(groupId: Id, leafIndex: number, code: string | null): void {
     const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);
     if (leaf === undefined) throw coreError('E_CORE_NOT_FOUND');
     let touched = this.applyVerdict(leaf, code);
     if (code === 'E_UMK_CHANGED') {
+      const changed = new Uint8Array(32).fill(0xc4);
+      leaf.umk = changed;
       const user = toHex(leaf.userId);
-      const pin = this.trustPins.get(user) ?? { userId: leaf.userId, umk: fakeDskPub(leaf.userId), firstSeen: 0n, verified: false, changedUmk: null };
-      if (pin.changedUmk === null) { this.trustPins.set(user, { ...pin, changedUmk: new Uint8Array(32).fill(0xc4) }); touched = true; }
+      if (!same(leaf.userId, this.me.user)) {
+        const pin = this.trustPins.get(user) ?? { userId: leaf.userId, umk: fakeDskPub(leaf.userId), firstSeen: 0n, verified: false, changedUmk: null, blocked: null };
+        if (pin.changedUmk === null) { this.trustPins.set(user, { ...pin, changedUmk: changed }); touched = true; }
+        const cached = this.userLists.get(user);
+        if (cached !== undefined) cached.umk = changed;
+      }
     }
     if (touched) this.generation += 1n;
   }
-  /** trust.rs leaf_verdict against the cached list (the double's leaves all carry their user's pinned key). */
-  private judge(leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 }): string | null {
+  /** Test hook: a validated Remove of a current leaf (sync.rs clear_removed_blocks): the leaf and its verdict go. */
+  removeLeaf(groupId: Id, leafIndex: number): void {
+    const key = `${toHex(groupId)}/${leafIndex}`;
+    const leaf = this.leaves.get(key);
+    if (leaf === undefined) throw coreError('E_CORE_NOT_FOUND');
+    this.leaves.delete(key);
+    if (this.verdicts.delete(`${toHex(groupId)}/${toHex(leaf.dskPub)}`)) this.generation += 1n;
+  }
+  /** trust.rs leaf_verdict: the pin first (rule 2), then the cached signed list (rule 3). */
+  private judge(leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; umk: Uint8Array }): string | null {
+    const pin = this.trustPins.get(toHex(leaf.userId));
+    if (pin !== undefined) {
+      if (pin.changedUmk !== null) {
+        if (same(pin.changedUmk, leaf.umk)) return 'E_UMK_CHANGED';
+        // While a change is pending, a leaf of the pinned key is pending: an unverified list vouches for nobody.
+        return same(pin.umk, leaf.umk) ? 'E_DEVICE_LIST_STALE' : 'E_CREDENTIAL';
+      }
+      // A leaf of the own user under another key than this device's own (F3 ruling).
+      if (!same(pin.umk, leaf.umk)) return same(leaf.userId, this.me.user) ? 'E_UMK_CHANGED' : 'E_CREDENTIAL';
+    }
     const cached = this.userLists.get(toHex(leaf.userId));
     if (cached === undefined) return 'E_DEVICE_LIST_STALE';
-    // While a change is pending, a leaf of the pinned key is pending: an unverified list vouches for nobody.
-    if (this.trustPins.get(toHex(leaf.userId))?.changedUmk != null) return 'E_DEVICE_LIST_STALE';
+    if (!same(cached.umk, leaf.umk)) return 'E_CREDENTIAL';
     const entry = cached.list.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
     if (entry === undefined) return 'E_DEVICE_UNLISTED';
     if (!same(entryKey(entry), leaf.dskPub)) return 'E_CREDENTIAL';
     if ((entry.tier ?? 1) !== leaf.tier) return 'E_TIER_MISMATCH';
-    return this.trustPins.has(toHex(leaf.userId)) ? null : 'E_DEVICE_LIST_STALE';
+    return pin !== undefined ? null : 'E_DEVICE_LIST_STALE';
   }
   /** trust.rs apply_verdict: whether a stored verdict changed. A changed-key block is never overwritten or cleared here. */
   private applyVerdict(leaf: { groupId: Id; dskPub: Uint8Array }, code: string | null): boolean {
@@ -439,22 +477,32 @@ export class ModelCore implements CorePort {
     this.verdicts.set(key, code);
     return true;
   }
-  /** trust.rs send_block over the group's current leaves: a changed-key block wins; a leaf that left does not count. */
-  private sendBlock(groupId: Id): string | null {
-    let found: string | null = null;
+  /** trust.rs member_blocks: each current leaf of `groupId` with a stored verdict, as block_code answers it. */
+  private memberBlocks(groupId: Id): { userId: Id; code: TrustBlock }[] {
+    const out: { userId: Id; code: TrustBlock }[] = [];
     for (const leaf of this.leaves.values()) {
       if (!same(leaf.groupId, groupId)) continue;
       const code = this.verdicts.get(`${toHex(groupId)}/${toHex(leaf.dskPub)}`);
-      if (code === undefined) continue;
-      if (code === 'E_UMK_CHANGED') return code;
-      found ??= ['E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'].includes(code) ? code : 'E_CREDENTIAL';
+      if (code !== undefined) out.push({ userId: leaf.userId, code: trustBlock(code) });
     }
-    return found;
+    return out;
+  }
+  /** trust.rs send_block over the group's current leaves: a changed-key block wins; a leaf that left does not count. */
+  private sendBlock(groupId: Id): TrustBlock | null {
+    const codes = this.memberBlocks(groupId).map((b) => b.code);
+    return codes.includes('E_UMK_CHANGED') ? 'E_UMK_CHANGED' : codes[0] ?? null;
+  }
+  /** trust.rs send_block_code: the live tree of a held group, else any stored verdict row of the group (fail closed). */
+  sendBlockCode(groupId: Id): TrustBlock | null {
+    if (groupId.length !== 16) throw coreError('E_CORE_INPUT');
+    if (this.gs.has(toHex(groupId))) return this.sendBlock(groupId);
+    const rows = [...this.verdicts].filter(([key]) => key.startsWith(`${toHex(groupId)}/`)).map(([, code]) => trustBlock(code));
+    return rows.includes('E_UMK_CHANGED') ? 'E_UMK_CHANGED' : rows[0] ?? null;
   }
   /** The Add candidates of a proposals body, by position (trust.rs candidate_leaves); unknown KeyPackages are not modelled. */
-  private candidates(groupId: Id, proposalsBody: Uint8Array): { index: bigint; leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 } }[] {
+  private candidates(groupId: Id, proposalsBody: Uint8Array): { index: bigint; leaf: MCandidate }[] {
     this.must(groupId);
-    const out: { index: bigint; leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 } }[] = [];
+    const out: { index: bigint; leaf: MCandidate }[] = [];
     for (const [index, row] of arr(decode(proposalsBody)).entries()) {
       const p = arr(row, 5);
       if (u64(at(p, 4)) === 1n) continue;
@@ -474,9 +522,17 @@ export class ModelCore implements CorePort {
     const candidate = this.candidates(groupId, proposalsBody).find((c) => c.index === index);
     if (candidate === undefined) throw coreError('E_DEVICE_LIST_STALE');
     const cached = this.userLists.get(toHex(candidate.leaf.userId));
-    const validated = this.validateHistory(candidate.leaf, requestedUser, history, headList,
-      cached === undefined ? null : { version: cached.version, head: cached.head });
-    return this.ingested(candidate.leaf.userId, validated, headList, now);
+    try {
+      const validated = this.validateHistory(candidate.leaf, requestedUser, history, headList,
+        cached === undefined ? null : { version: cached.version, head: cached.head });
+      return this.ingested(candidate.leaf.userId, validated, headList, now);
+    } catch (e) {
+      // trust.rs device_list_ingest_add (ruling 3): a fetched history that fails the candidate is its verdict, kept by
+      // its leaf identity (no generation bump), so commitBuild leaves the Add out instead of answering stale again.
+      if (e instanceof CoreError && FAILED_LEAF.has(e.code) && same(candidate.leaf.userId, requestedUser))
+        this.applyVerdict({ groupId, dskPub: candidate.leaf.dskPub }, e.code);
+      throw e;
+    }
   }
   deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array,
     now: bigint): { version: bigint; changed: boolean; quarantined: number } {
@@ -489,7 +545,7 @@ export class ModelCore implements CorePort {
     return this.ingested(leaf.userId, validated, headList, now);
   }
   /** trust.rs validate_history_from for the double's lists: every refusal writes nothing. */
-  private validateHistory(leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 }, requestedUser: Id, history: Uint8Array,
+  private validateHistory(leaf: MCandidate, requestedUser: Id, history: Uint8Array,
     headList: Uint8Array, anchorRow: { version: bigint; head: Uint8Array } | null): { version: bigint; list: FakeList } {
     if (!same(leaf.userId, requestedUser)) throw coreError('E_CREDENTIAL');
     if (history.length > 4_194_304) throw coreError('E_DEVICE_LIST_STALE');
@@ -525,6 +581,9 @@ export class ModelCore implements CorePort {
     if (entry === undefined) throw coreError('E_DEVICE_UNLISTED');
     if (!same(entryKey(entry), leaf.dskPub)) throw coreError('E_CREDENTIAL');
     if ((entry.tier ?? 1) !== leaf.tier) throw coreError('E_TIER_MISMATCH');
+    // The own account's key is this device's own credential's; no served list changes it (the stand-in lists carry no
+    // UMK, so the leaf's own key stands for the history's).
+    if (same(leaf.userId, this.me.user) && !same(leaf.umk, this.ownUmk)) throw coreError('E_UMK_CHANGED');
     return { version, list: finalList };
   }
   /** trust.rs ingest_leaf's write unit: the pin, the cached list, and every current leaf of the user judged again. */
@@ -532,12 +591,14 @@ export class ModelCore implements CorePort {
     now: bigint): { version: bigint; changed: boolean; quarantined: number } {
     const user = toHex(userId);
     if (!this.trustPins.has(user)) this.trustPins.set(user, { userId: userId.slice(), umk: fakeDskPub(userId),
-      firstSeen: now, verified: false, changedUmk: null });
-    this.userLists.set(user, { version: validated.version, list: validated.list, head: headList.slice() });
+      firstSeen: now, verified: false, changedUmk: null, blocked: null });
+    const pin = this.trustPins.get(user);
+    this.userLists.set(user, { version: validated.version, list: validated.list, head: headList.slice(),
+      umk: (pin?.changedUmk ?? pin?.umk ?? fakeDskPub(userId)).slice() });
     let touched = false;
     let quarantined = 0;
     for (const leaf of this.leaves.values()) {
-      if (toHex(leaf.userId) !== user || (same(leaf.userId, this.me.user) && same(leaf.deviceId, this.me.device))) continue;
+      if (toHex(leaf.userId) !== user || this.isOwn(leaf)) continue;
       const verdict = this.judge(leaf);
       touched = this.applyVerdict(leaf, verdict) || touched;
       if (verdict !== null && verdict !== 'E_DEVICE_LIST_STALE') quarantined += 1;
@@ -545,11 +606,80 @@ export class ModelCore implements CorePort {
     if (touched) this.generation += 1n;
     return { version: validated.version, changed: false, quarantined };
   }
-  revalidatePending(): number { return 0; }
-  trustState(): TrustRecord[] { return [...this.trustPins.values()].sort((a, b) => toHex(a.userId).localeCompare(toHex(b.userId))); }
+  private isOwn(leaf: { userId: Id; deviceId: Id }): boolean {
+    return same(leaf.userId, this.me.user) && same(leaf.deviceId, this.me.device);
+  }
+  /** The current leaf a held row's sender is, if the double models it. */
+  private leafOf(groupId: Id, userId: Id, deviceId: Id): MLeaf | undefined {
+    return [...this.leaves.values()].find((leaf) => same(leaf.groupId, groupId) && same(leaf.userId, userId) && same(leaf.deviceId, deviceId));
+  }
+  /**
+   * sync.rs revalidate_pending: rows of this leaf that waited unreadable turn readable at the same seq once the exact leaf
+   * validates (trust.rs validate_pending_sender); the generation moves when any does.
+   */
+  revalidatePending(groupId: Id, leafIndex: number, limit: number): number {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 256) throw coreError('E_CORE_INPUT', 'pending limit must be 1..=256');
+    const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);
+    if (leaf === undefined) throw coreError('E_CORE_NOT_FOUND');
+    const g = this.gs.get(toHex(groupId));
+    if (g === undefined || this.judge(leaf) !== null) return 0;
+    let released = 0;
+    for (const [seq, held] of [...g.held].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      if (!same(held.user, leaf.userId) || !same(held.device, leaf.deviceId)) continue;
+      const row = g.rows.get(seq);
+      g.held.delete(seq);
+      if (row === undefined || row.status !== 1) continue;
+      this.insertReadable(g, seq, row.epoch, row.recvTs, held);
+      released += 1;
+    }
+    if (released > 0) this.generation += 1n;
+    return released;
+  }
+  /** trust_state (ABI 8): every pin, the own one always, with the stored verdict of the user's leaves in active groups. */
+  trustState(): TrustRecord[] {
+    const blocks: { userId: Id; code: TrustBlock }[] = [];
+    for (const g of this.gs.values()) if (g.state === 2) blocks.push(...this.memberBlocks(g.groupId));
+    return [...this.trustPins.values()].sort((a, b) => toHex(a.userId).localeCompare(toHex(b.userId))).map((pin) => {
+      const codes = blocks.filter((b) => same(b.userId, pin.userId)).map((b) => b.code);
+      return { ...pin, blocked: codes.includes('E_UMK_CHANGED') ? 'E_UMK_CHANGED' : codes[0] ?? null };
+    });
+  }
   trustGeneration(): bigint { return this.generation; }
-  trustVerify(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
-  safetyNumberFor(): string { throw coreError('E_CORE_STATE', 'not modelled'); }
+  /** trust.rs trust_verify: approves only the comparison key its cached list is under, then releases held messages. */
+  trustVerify(userId: Id, umk: Uint8Array): void {
+    if (userId.length !== 16 || umk.length !== 32) throw coreError('E_CORE_INPUT');
+    const user = toHex(userId);
+    const cached = this.userLists.get(user);
+    if (cached === undefined || !same(cached.umk, umk)) throw coreError('E_DEVICE_LIST_STALE');
+    const pin = this.trustPins.get(user);
+    if (pin === undefined || !same(pin.changedUmk ?? pin.umk, umk)) throw coreError('E_DEVICE_LIST_STALE');
+    const leaves = [...this.leaves.values()].filter((leaf) => same(leaf.userId, userId));
+    const listed = (leaf: MLeaf): boolean => cached.list.entries.some((e) => same(e.deviceId, leaf.deviceId) && e.revokedAt === null &&
+      same(entryKey(e), leaf.dskPub) && (e.tier ?? 1) === leaf.tier);
+    // The verified key must still hold a current leaf that its signed list names.
+    if (!leaves.some((leaf) => same(leaf.umk, umk) && listed(leaf))) throw coreError('E_DEVICE_LIST_STALE');
+    this.trustPins.set(user, { ...pin, umk: umk.slice(), verified: true, changedUmk: null });
+    for (const leaf of leaves) {
+      const key = `${toHex(leaf.groupId)}/${toHex(leaf.dskPub)}`;
+      if ((same(leaf.umk, umk) || listed(leaf)) && this.verdicts.get(key) === 'E_UMK_CHANGED') this.verdicts.delete(key);
+    }
+    for (const leaf of leaves) if (!this.isOwn(leaf)) this.applyVerdict(leaf, this.judge(leaf));
+    this.generation += 1n;
+    for (const leaf of leaves) if (!this.isOwn(leaf)) this.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
+  }
+  /** trust.rs safety_number_for: digits for exactly the comparison key, with a user of a current shared group. */
+  safetyNumberFor(userId: Id, expectedUmk: Uint8Array): string {
+    if (userId.length !== 16 || expectedUmk.length !== 32) throw coreError('E_CORE_INPUT');
+    const user = toHex(userId);
+    const cached = this.userLists.get(user);
+    const pin = this.trustPins.get(user);
+    if (cached === undefined || pin === undefined || !same(pin.changedUmk ?? pin.umk, cached.umk)) throw coreError('E_CORE_NOT_FOUND');
+    if (!same(cached.umk, expectedUmk)) throw coreError('E_DEVICE_LIST_STALE');
+    if (![...this.leaves.values()].some((leaf) => same(leaf.userId, userId))) throw coreError('E_CORE_NOT_FOUND');
+    // A stand-in for safety_number(own UMK, key): 60 digits in groups of five, the same for both sides of a pair.
+    const digits = Array.from({ length: 60 }, (_, i) => String((this.ownUmk[i % 32] ^ cached.umk[(i * 7) % 32]) % 10)).join('');
+    return digits.match(/.{5}/g)?.join(' ') ?? '';
+  }
   search(): SearchHit[] { return []; }
   /** Every group-scoped call except the reads groups/outbox/timeline, in call order. */
   readonly calls: CoreCall[] = [];
@@ -564,7 +694,10 @@ export class ModelCore implements CorePort {
   /** app_roles: community hex → the own role ids (L-CORE-35). */
   private readonly roles = new Map<string, Id[]>();
 
-  constructor(readonly me: Peer) {}
+  constructor(readonly me: Peer) {
+    // F3: the own pin is this device's own credential key, verified from signup on; it never takes a pending change.
+    this.trustPins.set(toHex(me.user), { userId: me.user.slice(), umk: fakeDskPub(me.user), firstSeen: 0n, verified: true, changedUmk: null, blocked: null });
+  }
 
   // The account half is task 15's; the engine never calls it.
   pause(): void {
@@ -921,7 +1054,10 @@ export class ModelCore implements CorePort {
     for (const [ref, p] of queued) {
       const leaf = p.op === 'add' ? this.keyPackageLeaves.get(toHex(p.device)) : undefined;
       if (leaf === undefined) continue;
-      const verdict = this.judge(leaf);
+      const judged = this.judge(leaf);
+      // trust.rs validate_proposed_add: a verdict recorded by device_list_ingest_add answers where the list is unknown.
+      const recorded = [...this.verdicts].find(([key]) => key.endsWith(`/${toHex(leaf.dskPub)}`))?.[1];
+      const verdict = judged === 'E_DEVICE_LIST_STALE' && recorded !== undefined ? recorded : judged;
       if (verdict === 'E_DEVICE_LIST_STALE') throw coreError(verdict, '');
       if (verdict !== null) queued.delete(ref);
     }
@@ -1256,7 +1392,7 @@ export class ModelCore implements CorePort {
   private fresh(groupId: Id, communityId: Id | null, targetId: Id, state: 0 | 1 | 2): MGroup {
     return {
       groupId, communityId, targetId, state, epoch: 0n, joinedEpoch: 0n, joinEpoch: 0n, preJoinEpoch: 0n, nextSeq: 1n, ackedSeq: 0n, ackedEpoch: 0n,
-      proposals: new Map(), pending: null, fromResync: false, wasGone: false, maxEpoch: 0n, rows: new Map(),
+      proposals: new Map(), pending: null, fromResync: false, wasGone: false, maxEpoch: 0n, rows: new Map(), held: new Map(),
       reactions: new Map(), pins: new Map(),
     };
   }
@@ -1400,6 +1536,25 @@ export class ModelCore implements CorePort {
       g.rows.set(seq, bare(1, 'E_SENDER_MISMATCH'));
       return { inserted: true, adopted: false };
     }
+    // sync.rs validate_cached_sender: a sender leaf with a failed verdict leaves its message unreadable, the evidence held
+    // until that exact leaf validates (revalidate_pending, trust_verify). The double holds only definite verdicts: a
+    // leaf whose list is unknown (E_DEVICE_LIST_STALE) is shown, as before ABI 8.
+    const leaf = this.leafOf(g.groupId, v.user, v.device);
+    if (leaf !== undefined) {
+      const judged = this.judge(leaf);
+      const code = this.verdicts.get(`${toHex(g.groupId)}/${toHex(leaf.dskPub)}`) ?? (judged === 'E_DEVICE_LIST_STALE' ? null : judged);
+      if (code !== null) {
+        g.rows.set(seq, bare(1, code));
+        g.held.set(seq, v);
+        return { inserted: true, adopted: false };
+      }
+    }
+    this.insertReadable(g, seq, epoch, recvTs, v);
+    return { inserted: true, adopted: false };
+  }
+
+  /** A readable row of another sender (sync.rs insert_message + refold_insert), as received or released at its seq. */
+  private insertReadable(g: MGroup, seq: bigint, epoch: bigint, recvTs: bigint, v: Held): void {
     g.rows.set(seq, {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: v.user, senderDevice: v.device, senderKind: 0, senderTier: 0,
       msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, editBody: null, editSeq: 0n,
@@ -1408,7 +1563,6 @@ export class ModelCore implements CorePort {
       attachments: v.type === 0 ? v.attachments : [], hasEnvelope: true,
     });
     this.refoldInsert(g, seq, v.type, v.msgId, v.replyTo, v.user, v.device);
-    return { inserted: true, adopted: false };
   }
 
   private ownRow(seq: bigint, epoch: bigint, recvTs: bigint, o: MOut): MRow {

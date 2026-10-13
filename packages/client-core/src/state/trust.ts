@@ -1,6 +1,6 @@
 import { arr, bin, decode, encode, str, u53, u64, type CborValue } from '../cbor';
 import { decodeBoundedArray } from './bounded';
-import { CoreError, type Id, type PendingLeaf, type TrustRecord } from '../core-port';
+import { CoreError, trustBlock, type Id, type PendingLeaf, type TrustRecord } from '../core-port';
 import type { Routes } from '../http/routes';
 
 type ReaderRoutes = Pick<Routes, 'getDeviceList' | 'getDeviceListHistory'>;
@@ -30,11 +30,11 @@ export function decodeTrustState(bytes: Uint8Array): TrustRecord[] {
   try {
     const rows = decodeBoundedArray(bytes, MAX_REPLY_ROWS);
     return rows.map((value) => {
-      const row = arr(value, 5);
+      const row = arr(value, 6);
       const verified = u53(row[3]);
       if (verified !== 0 && verified !== 1) return malformed('verified bit');
       return { userId: bin(row[0], 16), umk: bin(row[1], 32), firstSeen: u64(row[2]), verified: verified === 1,
-        changedUmk: row[4] === null ? null : bin(row[4], 32) };
+        changedUmk: row[4] === null ? null : bin(row[4], 32), blocked: row[5] === null ? null : trustBlock(str(row[5])) };
     });
   } catch (error) { return malformed(error); }
 }
