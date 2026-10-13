@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ChannelGroupState, ChannelSummary } from '@dilla/client-core';
+import type { ChannelGroupState, ChannelSummary, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, SidebarTabs,
   StatusBar, StatusChunk,
@@ -31,6 +31,18 @@ export function focusRailSettings(): void {
 }
 
 const CATEGORY = 2;
+// The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
+const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
+
+/** The composer's reason for a send block: the changed-key copy for a changed key, privacy.leafFailed for any failed leaf. */
+export function blockReason(code: TrustBlock): StringKey {
+  return code === 'E_UMK_CHANGED' ? 'privacy.changed' : 'privacy.leafFailed';
+}
+
+/** A contact whose identity changed: a validated pending key, or a leaf the core holds under a key no list presents. */
+export function isChanged(row: TrustSummary): boolean {
+  return row.changedUmk !== null || row.blocked === 'E_UMK_CHANGED';
+}
 const HEX32 = /^[0-9a-f]{32}$/;
 // Renew an unchanged typing signal after 5 s: above the server's 3 s meter, inside its 10 s hold (L-HTTP-96).
 const TYPING_RENEW_MS = 5_000;
@@ -92,6 +104,9 @@ export function Shell(): React.JSX.Element {
   const searchOpener = useRef<HTMLElement | null>(null);
   const restoreSearchFocus = useRef<HTMLElement | null>(null);
   const trust = useSlice('trust');
+  const sendBlocks = useSlice('sendBlocks');
+  // A send the core refused for a trust reason, until the next published gate says more (W-01).
+  const [refusedSend, setRefusedSend] = useState<{ channelId: string; code: TrustBlock; gate: unknown } | null>(null);
 
   // A DM route names no server: the sidebar keeps the last one a channel route named in this mount, else the first.
   const [lastCommunity, setLastCommunity] = useState<string | null>(null);
@@ -475,7 +490,9 @@ export function Shell(): React.JSX.Element {
         setDraft(d => (d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : d));
         if (m.replyTo !== null) dispatch({ type: 'replySent', msgId: m.replyTo });
       } catch (e) {
-        report(e);
+        const error = errorOf(e);
+        if (TRUST_BLOCKS.has(error.code)) setRefusedSend({ channelId: id, code: error.code as TrustBlock, gate: client.get('sendBlocks') });
+        else report(e);
       } finally {
         sending.current.delete(id);
       }
@@ -556,16 +573,20 @@ export function Shell(): React.JSX.Element {
   }
 
   // A validated Remove of a changed leaf unblocked sending here only; the contact stays changed elsewhere (Flow 05).
-  const removedHere = targetId !== null && (trust ?? []).some(row => row.changedUmk !== null && row.removedIn?.includes(targetId) === true);
+  const removedHere = targetId !== null && (trust ?? []).some(row => isChanged(row) && row.removedIn?.includes(targetId) === true);
   // Flow 05 "changed": a member of this conversation whose identity changed stands as an alert with no dismiss, until the
   // new key is verified or a validated Remove restored sending here. Names come from the worker's trust slice only.
   const audience = new Set(channel !== null ? (members ?? []).map(member => member.userId) : dm?.members ?? []);
-  const changedMembers = targetId === null ? [] : (trust ?? []).filter(row => row.changedUmk !== null && audience.has(row.userId)
+  const changedMembers = targetId === null ? [] : (trust ?? []).filter(row => isChanged(row) && audience.has(row.userId)
     && row.removedIn?.includes(targetId) !== true);
-  // L-CORE-40: the changed leaf blocks sending in this group until its key is verified or a validated Remove; the composer
-  // says so (privacy.changed: "Compare the number before sending") instead of letting a send fail.
+  // L-CORE-40, W-01: the core's send gate of this conversation (sendBlocks) blocks the composer until the key is verified or
+  // a validated Remove; the composer says why instead of letting a send fail. Before the worker first publishes the gate,
+  // a changed member of this conversation blocks it (fail closed). A trust refusal of a send stands until the next gate.
+  const gate = sendBlocks === undefined ? (changedMembers.length > 0 ? 'E_UMK_CHANGED' : undefined) : targetId === null ? undefined : sendBlocks[targetId];
+  const refused = refusedSend !== null && refusedSend.channelId === targetId && refusedSend.gate === sendBlocks ? refusedSend.code : undefined;
+  const block = gate ?? refused;
   const reasonKey: StringKey | null = openError !== null ? 'shell.composer.openFailed'
-    : composerBlock(group) ?? (changedMembers.length > 0 ? 'privacy.changed' : null);
+    : composerBlock(group) ?? (block !== undefined ? blockReason(block) : null);
   const composerLabel = channel !== null ? t('shell.composer.label', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })
@@ -654,15 +675,18 @@ export function Shell(): React.JSX.Element {
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
       ) : null}
       {ownTrust !== null ? (
-        <Banner tone="danger">{t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}</Banner>
+        <Banner tone="danger" action={{ label: t('privacy.ownAction'), onAction: () => navigate({ name: 'settings', section: 'devices', from: null }) }}>
+          {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
+        </Banner>
       ) : null}
       {offline ? (
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
       {removedHere ? <p className="dw-trust-removed" role="status">{t('privacy.removed')}</p> : null}
       {changedHere.map(row => <TrustAlert key={row.userId} kind="changed" name={row.name}
-        labels={{ changed: t('privacy.changed'), unlisted: t('privacy.unlisted'), verify: t('privacy.compare', { name: row.name }) }}
-        onVerify={() => navigate({ name: 'settings', section: 'privacy', from: null })} />)}
+        labels={{ changed: t(row.changedUmk === null ? 'privacy.changedNoKey' : 'privacy.changed'), unlisted: t('privacy.unlisted'),
+          verify: t('privacy.compare', { name: row.name }) }}
+        onVerify={row.changedUmk === null ? undefined : () => navigate({ name: 'settings', section: 'privacy', from: null })} />)}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
           {t('shell.banner.commandError', { code: commandError.code })}

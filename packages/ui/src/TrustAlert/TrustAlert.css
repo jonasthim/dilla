@@ -1,3 +1,0 @@
-.d-trust-alert { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: 1rem; border: 1px solid var(--accent); border-radius: var(--r-sm); background: var(--surface); color: var(--fg); }
-.d-trust-alert button { min-width: 24px; min-height: 24px; padding: .5rem; border: 1px solid var(--accent); border-radius: var(--r-sm); background: var(--surface-hi); color: var(--fg); cursor: pointer; font: inherit; }
-.d-trust-alert :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }

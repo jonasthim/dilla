@@ -15,3 +15,14 @@ it('names a changed contact, has no dismiss button and exposes Compare', async (
   expect(onVerify).toHaveBeenCalledOnce();
   await expectNoAxeViolations(view.container);
 });
+
+// W-09: the most serious trust state reads like the danger banners beside it: the ✕ glyph and the danger tone.
+it('is a danger banner, and stands without an action when there is nothing to compare', async () => {
+  const labels = { changed: 'This contact’s identity changed.', unlisted: 'This device is not on the contact’s list.', verify: 'Compare with Ada' };
+  const view = render(<TrustAlert kind="changed" name="Ada" labels={labels} />);
+  const alert = screen.getByRole('alert');
+  expect(alert).toHaveAttribute('data-tone', 'danger');
+  expect(alert.querySelector('[aria-hidden="true"]')).toHaveTextContent('✕');
+  expect(screen.queryByRole('button')).toBeNull();
+  await expectNoAxeViolations(view.container);
+});

@@ -207,7 +207,7 @@ describe('a recovery root this account did not seal', () => {
 
 // The own account's trust state, which Privacy does not list, heads the section about this account's devices too.
 describe('the own account’s identity', () => {
-  const UNLISTED = 'A device in your conversations claims your account but is not on your device list. Sending is held where it is a member.';
+  const UNLISTED = 'A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices.';
   it('heads the section with a danger banner while the account slice reports it', async () => {
     const { fake, view } = setup();
     expect(screen.queryByText(UNLISTED)).toBeNull();

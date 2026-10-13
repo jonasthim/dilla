@@ -263,6 +263,18 @@ describe('Composer', () => {
     expect(props.onSend).not.toHaveBeenCalled();
   });
 
+  // M-16: nothing can be sent while blocked, so no file can be queued either: attach and a pasted file do nothing.
+  it('disables attach and ignores pasted files while disabled', () => {
+    const onAttach = vi.fn();
+    const onPasteFiles = vi.fn();
+    const { textarea } = setup({ disabled: true, disabledReason: 'paused', attachLabel: 'attach files', onAttach, onPasteFiles });
+    expect(screen.getByRole('button', { name: 'attach files' })).toBeDisabled();
+    const file = new File(['x'], 'x.txt');
+    fireEvent.paste(textarea, { clipboardData: { files: [file] } });
+    expect(onPasteFiles).not.toHaveBeenCalled();
+    expect(onAttach).not.toHaveBeenCalled();
+  });
+
   it('has no serious axe violations, enabled or disabled', async () => {
     const base: ComposerProps = { label: 'message #general', placeholder: 'message #general', maxLength: 4000, value: '', onChange: () => {},
       onSend: () => {}, sendLabel: 'send', counterLabel: n => `${n} left` };

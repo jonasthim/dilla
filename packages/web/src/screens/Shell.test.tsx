@@ -237,32 +237,75 @@ it('stands a changed contact of this conversation as an alert that leads to Priv
   expect(path()).toBe('/settings/privacy');
 });
 
-// Requirement 1 of task 10 (L-CORE-40): a changed UMK blocks sending in each group still containing the changed leaf, so
-// the composer of that conversation says why it is blocked; a changed contact elsewhere and a validated Remove do not.
-it('blocks the composer of a conversation with a changed contact, and says why', async () => {
+// Requirement 1 of task 10 (L-CORE-40), W-01: the core's send gate per conversation (the sendBlocks slice) blocks the
+// composer, and the composer says why: the changed-key copy for E_UMK_CHANGED, privacy.leafFailed for any failed leaf.
+it('blocks the composer from the core\'s send block, and says why', async () => {
   const changed = 'This contact’s identity changed. Compare the number before sending.';
+  const failed = 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.';
   const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
     client.set(`timeline:${GEN}`, timeline());
     client.set('trust', [
-      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32) },
+      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32),
+        blocked: 'E_UMK_CHANGED' },
     ]);
+    client.set('sendBlocks', { [GEN]: 'E_UMK_CHANGED' });
   } });
   expectBlocked();
   const reason = document.querySelector('.d-composer__reason');
   expect(reason).toHaveTextContent(changed);
   expect(composer('general').getAttribute('aria-describedby')?.split(' ')).toContain(reason?.id);
+  expect(screen.getByRole('button', { name: 'attach files' })).toBeDisabled();
   await user.type(composer('general'), 'held back{Enter}');
   expect(fake.callsOf('send')).toEqual([]);
-  // Verified (or a validated Remove here): sending resumes.
-  act(() => fake.set('trust', [
-    { userId: PEER, name: 'bob', shared: true, umk: 'cc'.repeat(32), firstSeen: 1, verified: true, changedUmk: null },
-  ]));
+  for (const code of ['E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_CREDENTIAL'] as const) {
+    act(() => fake.set('sendBlocks', { [GEN]: code }));
+    expectBlocked();
+    expect(document.querySelector('.d-composer__reason')).toHaveTextContent(failed);
+    expect(document.body).not.toHaveTextContent(code);
+  }
+  // The core lifted the block (verified, or a validated Remove here): sending resumes.
+  act(() => fake.set('sendBlocks', {}));
   expect(composer('general')).not.toHaveAttribute('aria-disabled');
-  act(() => fake.set('trust', [
-    { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32),
-      removedIn: [GEN] },
-  ]));
+  expect(screen.getByRole('button', { name: 'attach files' })).toBeEnabled();
+});
+
+it('blocks only the conversation the core names', () => {
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('sendBlocks', { [RAND]: 'E_DEVICE_UNLISTED' });
+  } });
   expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
+// A send the core refuses for a trust reason says what the composer would say, never "That did not work (E_…)".
+it('shows a trust refusal of a send as the composer reason, not a raw code', async () => {
+  const failed = 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.';
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('sendBlocks', {});
+  } });
+  fake.handler = c => c.m === 'send' ? Promise.reject(refusal({ code: 'E_DEVICE_UNLISTED' })) : Promise.resolve(null);
+  await user.type(composer('general'), 'hello{Enter}');
+  await waitFor(() => expect(document.querySelector('.d-composer__reason')).toHaveTextContent(failed));
+  expect(document.body).not.toHaveTextContent('E_DEVICE_UNLISTED');
+  // The next published gate replaces the page's guess.
+  act(() => fake.set('sendBlocks', {}));
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
+// C1: blocked E_UMK_CHANGED with no changedUmk is a leaf under a key no validated list presents: nothing to compare.
+it('stands a changed contact with no key to compare without Compare, and says a Remove clears it', () => {
+  const noKey = 'This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed.';
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: null, blocked: 'E_UMK_CHANGED' }]);
+  } });
+  const alert = screen.getByRole('alert');
+  expect(alert).toHaveTextContent('bob');
+  expect(alert).toHaveTextContent(noKey);
+  expect(alert).toHaveAttribute('data-tone', 'danger');
+  expect(within(alert).queryByRole('button')).toBeNull();
 });
 
 it('leaves the composer open where the changed contact is not a member', () => {
@@ -843,18 +886,22 @@ describe('a recovery root this account did not seal', () => {
 // Privacy lists no own row, so what the core reports about this account's own key stands here, persistent like a
 // changed contact's alert: a different own identity, or a device under this account that the own list does not name.
 describe('the own account’s identity', () => {
-  const CHANGED = 'A device in your conversations presents a different identity for your account. If you did not reset your account, someone else may be using it.';
-  const UNLISTED = 'A device in your conversations claims your account but is not on your device list. Sending is held where it is a member.';
-  it('shows a persistent danger banner while the account slice reports it, and none otherwise', async () => {
-    const { fake, view } = setup(`/c/${A}/${GEN}`, { before: f => f.set('account', account({ ownTrust: 'changed' })) });
-    const alert = screen.getByText(CHANGED).closest('[role="alert"]');
+  const CHANGED = 'A device using your account under a different identity is in some of your conversations. Sending is paused there. Open Devices and remove any device you don’t recognise.';
+  const UNLISTED = 'A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices.';
+  it('shows a persistent danger banner whose action opens Devices, and none otherwise', async () => {
+    const { fake, view, user } = setup(`/c/${A}/${GEN}`, { before: f => f.set('account', account({ ownTrust: 'changed' })) });
+    const alert = screen.getByText(CHANGED).closest('[role="alert"]') as HTMLElement;
     expect(alert).not.toBeNull();
     expect(alert).toHaveAttribute('data-tone', 'danger');
-    expect(within(alert as HTMLElement).queryByRole('button')).toBeNull();
+    expect(within(alert).queryByRole('button', { name: /dismiss/i })).toBeNull();
+    expect(within(alert).queryByRole('button', { name: /compare/i })).toBeNull();
     await expectNoAxeViolations(view.container);
     act(() => fake.set('account', account({ ownTrust: 'unlisted' })));
     expect(screen.queryByText(CHANGED)).toBeNull();
-    expect(screen.getByText(UNLISTED).closest('[role="alert"]')).toHaveAttribute('data-tone', 'danger');
+    const unlisted = screen.getByText(UNLISTED).closest('[role="alert"]') as HTMLElement;
+    expect(unlisted).toHaveAttribute('data-tone', 'danger');
+    await user.click(within(unlisted).getByRole('button', { name: 'Open devices' }));
+    expect(path()).toBe('/settings/devices');
     act(() => fake.set('account', account({ ownTrust: null })));
     expect(screen.queryByText(UNLISTED)).toBeNull();
   });
