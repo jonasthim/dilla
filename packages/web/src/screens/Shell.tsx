@@ -565,7 +565,7 @@ export function Shell(): React.JSX.Element {
     onOpen={id => navigate({ name: 'dm', channelId: id })}
     onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
   const voiceCtx: VoiceContext = {
-    call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
+    call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
   };
 

@@ -2,7 +2,7 @@
 // its stage, the sidebar's voice section and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { CallState, MemberSummary, TrustSummary, VoiceCall } from '@dilla/client-core';
+import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
   ActiveVoice, AudioMeter, Button, CallControls, CallStage, VoiceChannelRow, VoiceDock,
@@ -19,6 +19,8 @@ export interface VoiceContext {
   voice: Readonly<Record<string, VoiceCall>> | undefined;
   members: readonly MemberSummary[];
   trust: readonly TrustSummary[] | undefined;
+  /** The worker's sendBlocks slice (undefined until published): tells a call-group-only block from a channel block. */
+  sendBlocks: SendBlocksState | undefined;
   settings: Readonly<Record<string, string>>;
   self: { id: string; username: string } | null;
   ownDevice: string | null;
@@ -98,15 +100,22 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
 
 /**
  * True while a block holds joining back for this channel (flow 06: "no join button until the cause is gone"). A block by
- * a changed contact clears once that contact is no longer changed (verified); any other block holds until the worker's
- * call slice leaves 'blocked' (review m9).
+ * a changed contact clears once that contact is no longer changed (verified). A block that came only from the call group
+ * (the channel's own sendBlocks entry is clear, no changed identity) offers the join again (integration ruling
+ * 2026-10-13: the left group cannot show it cleared, call_join_check refuses a staged join before anything is posted, and
+ * RV-2 closes a poisoned idle group). Any other block, and any block while sendBlocks is not known yet, holds until the
+ * worker's call slice leaves 'blocked' (review m9).
  */
 function joinHeld(v: VoiceContext, channelId: string): boolean {
   const s = v.slice;
   if (s?.channelId !== channelId || s.phase !== 'blocked') return false;
-  if (s.error?.code !== 'E_UMK_CHANGED' || s.changedUser === null) return true;
-  const row = v.trust?.find(r => r.userId === s.changedUser);
-  return row !== undefined && (row.changedUmk !== null || row.blocked === 'E_UMK_CHANGED');
+  if (s.error?.code === 'E_UMK_CHANGED' && s.changedUser !== null) {
+    const row = v.trust?.find(r => r.userId === s.changedUser);
+    return row !== undefined && (row.changedUmk !== null || row.blocked === 'E_UMK_CHANGED');
+  }
+  const callGroupOnly = s.error?.code !== 'E_UMK_CHANGED' && s.changedUser === null
+    && v.sendBlocks !== undefined && v.sendBlocks[channelId] === undefined;
+  return !callGroupOnly;
 }
 
 /** Moves focus to the stage's first control once per join (flow 06 § Focus rules: join and answer). */

@@ -349,9 +349,43 @@ describe('review round 1', () => {
     expect(lasting()).toHaveAttribute('role', 'status');
   });
 
-  it('m9: no join button while any block applies', () => {
+  it('m9: no join button while the sendBlocks slice is not known yet (a block counts as held)', () => {
     renderVoiceShell({ call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }) });
     expect(main().getByText(t('voice.blockedJoin'))).toBeInTheDocument();
+    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+  });
+
+  // Integration ruling (2026-10-13): a block that came only from the call group (the channel's own sendBlocks entry is
+  // clear, no changedUser) offers the join again. The call group was left and forgotten, so nothing can show the block
+  // cleared; a new join is safe because call_join_check refuses a staged join before anything is posted, and RV-2 closes a
+  // poisoned idle group. Attacker: a member (or the instance) who poisons one call group must not lock this person out of
+  // the channel's voice for good.
+  it('a call-group-only block keeps its notice and offers the join again', async () => {
+    const app = renderVoiceShell({ sendBlocks: {},
+      call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' }, changedUser: null }) });
+    expect(main().getByText(t('voice.blockedJoin'))).toBeInTheDocument();
+    await app.user.click(main().getByRole('button', { name: 'join voice' }));
+    expect(app.client.calls.filter(c => c.m === 'callJoin')).toHaveLength(1);
+  });
+
+  it('a block of the DM text group keeps the call button hidden until the sendBlocks entry clears', async () => {
+    const block = { code: 'E_DEVICE_UNLISTED' as const, own: false };
+    const app = renderVoiceShell({ path: `/dm/${DM}`, sendBlocks: { [DM]: block },
+      call: callState({ phase: 'blocked', channelId: DM, error: { ...UMK, code: 'E_DEVICE_UNLISTED' }, changedUser: null }) });
+    expect(await main().findByText(t('voice.blockedJoin'))).toBeInTheDocument();
+    expect(main().queryByRole('button', { name: 'call' })).toBeNull();
+    act(() => app.client.publish('sendBlocks', {}));
+    expect(await main().findByRole('button', { name: 'call' })).toBeInTheDocument();
+  });
+
+  it('a changed identity keeps the join hidden even with the sendBlocks entry clear', () => {
+    renderVoiceShell({ sendBlocks: {}, call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: null }) });
+    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+  });
+
+  it('a block by a changed contact keeps the join hidden while that contact is changed', () => {
+    renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()],
+      call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: BOB }) });
     expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
   });
 

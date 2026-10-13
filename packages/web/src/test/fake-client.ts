@@ -3,7 +3,7 @@ import { vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { CallKeys, CallState, ChannelSummary, Command, CoreClient, DmSummary, MemberSummary, Ring, SliceName, SliceTypes,
-  TrustSummary, VoiceState } from '@dilla/client-core';
+  SendBlocksState, TrustSummary, VoiceState } from '@dilla/client-core';
 import { CALL_IDLE } from '@dilla/client-core';
 import type { PageCall, PageCallState } from '../call/session.ts';
 import type { UiError } from '../core/errors.ts';
@@ -171,6 +171,8 @@ export interface VoiceHarnessOptions {
   voice?: VoiceState;
   call?: CallState;
   trust?: TrustSummary[];
+  /** The worker's sendBlocks slice; absent: not published yet. */
+  sendBlocks?: SendBlocksState;
   /** callJoin leaves the call slice as it is (the worker's 'in' is published by the test). */
   joinLeavesSlice?: boolean;
   /** The page is hidden (document.visibilityState): ring notifications show only then (flow 06). */
@@ -228,6 +230,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   fake.set('voice', o.voice ?? {});
   fake.set('call', o.call ?? callState());
   fake.set('rings', []);
+  if (o.sendBlocks !== undefined) fake.set('sendBlocks', o.sendBlocks);
 
   // holdStart(): the next start stays pending (after its callJoin) until the returned release runs.
   let startGate: Promise<void> = Promise.resolve();
