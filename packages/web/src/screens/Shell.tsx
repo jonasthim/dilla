@@ -178,7 +178,8 @@ export function Shell(): React.JSX.Element {
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.isComposing || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
-      if (overlay || joinOpen || pickerOpen) return;
+      // M-01: never under another modal (pins, lightbox, any open dialog), and never again while search is open.
+      if (overlay || joinOpen || pickerOpen || searchOpen || document.querySelector('dialog[open]') !== null) return;
       if (event.key.toLowerCase() === 'k') { event.preventDefault(); startSearch('all'); }
       else if (event.ctrlKey && !event.metaKey && event.key === '/' && targetId !== null) {
         event.preventDefault(); startSearch('channel');
@@ -186,7 +187,7 @@ export function Shell(): React.JSX.Element {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overlay, joinOpen, pickerOpen, targetId]);
+  }, [overlay, joinOpen, pickerOpen, searchOpen, targetId]);
   useEffect(() => {
     if (searchOpen) return;
     const opener = restoreSearchFocus.current;

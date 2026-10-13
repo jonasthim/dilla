@@ -14,7 +14,7 @@ test('native edit is searched by prefix and deleted text disappears after a posi
   await peer.edit(first.msg_id, 'café lamp');
   await expect(rowById(page, peer.channelName, first.msg_id)).toContainText('café lamp', { timeout: WAIT });
   await page.keyboard.press('ControlOrMeta+K');
-  const search = page.getByRole('textbox', { name: copy('search.placeholder') });
+  const search = page.getByRole('combobox', { name: copy('search.placeholder') });
   await search.fill('cafe');
   await expect(page.getByRole('option', { name: /café lamp/ })).toBeVisible({ timeout: WAIT });
   await expect(search).toBeFocused();
@@ -24,7 +24,7 @@ test('native edit is searched by prefix and deleted text disappears after a posi
   const later = await peer.send('lamp after delete');
   await expect(rowById(page, peer.channelName, later.msg_id)).toContainText('lamp after delete', { timeout: WAIT });
   await page.keyboard.press('ControlOrMeta+K');
-  await page.getByRole('textbox', { name: copy('search.placeholder') }).fill('lamp');
+  await page.getByRole('combobox', { name: copy('search.placeholder') }).fill('lamp');
   await expect(page.getByRole('option', { name: /lamp after delete/ })).toBeVisible({ timeout: WAIT });
   await expect(page.getByRole('option', { name: /café lamp/ })).toHaveCount(0);
   await expectAccessible(page, 'search after delete');
@@ -58,7 +58,7 @@ test('scopes and keyboard selection stay on the textbox until a target is chosen
   const sent = await peer.send('café compass');
   await expect(rowById(page, peer.channelName, sent.msg_id)).toContainText('café compass', { timeout: WAIT });
   await page.keyboard.press('ControlOrMeta+/');
-  const textbox = page.getByRole('textbox', { name: copy('search.placeholder') });
+  const textbox = page.getByRole('combobox', { name: copy('search.placeholder') });
   await textbox.fill('cafe');
   for (const scope of ['this conversation', 'this community', 'everything']) {
     await page.getByRole('button', { name: scope }).click();

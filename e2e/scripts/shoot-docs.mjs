@@ -803,7 +803,7 @@ async function main(argv) {
 
     await composer(mira, 'watch').focus();
     await mira.keyboard.press('ControlOrMeta+K');
-    await mira.getByRole('textbox', { name: t('search.placeholder'), exact: true }).fill('bridge');
+    await mira.getByRole('combobox', { name: t('search.placeholder'), exact: true }).fill('bridge');
     await mira.getByRole('option').first().waitFor({ timeout: WAIT });
     await shootState(mira, 'search-results');
     await mira.keyboard.press('Escape');

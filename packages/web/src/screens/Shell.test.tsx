@@ -64,7 +64,7 @@ const sendButton = () => screen.getByRole('button', { name: 'send' });
 it('opens scoped search with a modifier and sends the typed query', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}/{/Control}');
-  const input = screen.getByRole('textbox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search your messages' });
   await user.type(input, 'lamp');
   await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
   expect(input).toHaveFocus();
@@ -82,7 +82,7 @@ it('takes a picked community search hit to its channel and focuses the row', asy
     client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'found', seq: '5', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
@@ -95,7 +95,7 @@ it('focuses the destination row when the previous channel has the same sequence'
     client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'target-five', seq: '5', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
@@ -113,7 +113,7 @@ it('accepts the worker request id after invalidation and loads earlier pages for
     return Promise.resolve(null);
   };
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'lamp');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
   act(() => fake.set('search', { requestId: 9, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: RAND }));
@@ -123,11 +123,11 @@ it('accepts the worker request id after invalidation and loads earlier pages for
 it('reports a search hit unavailable if its channel never loads a timeline', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'gone');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'gone');
   act(() => fake.set('search', { requestId: 5, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'gone', rank: '0' }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /gone/ }));
   await waitFor(() => expect(screen.getByText('That message is no longer available')).toBeInTheDocument(), { timeout: 2500 });
-  expect(screen.getByRole('textbox', { name: 'Search your messages' })).toHaveFocus();
+  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
 });
 
 it('takes a keyboard-picked DM hit to its DM route and focuses the row', async () => {
@@ -136,7 +136,7 @@ it('takes a keyboard-picked DM hit to its DM route and focuses the row', async (
     client.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 'dm-found', seq: '8', body: 'lamp' })] }));
   } });
   await user.keyboard('{Control>}k{/Control}');
-  const input = screen.getByRole('textbox', { name: 'Search your messages' });
+  const input = screen.getByRole('combobox', { name: 'Search your messages' });
   await user.type(input, 'lamp');
   act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '8', snippet: 'lamp', rank: '0' }], cursor: null }));
   await user.keyboard('{Enter}');
@@ -154,16 +154,39 @@ it('returns focus to where search was opened when Escape closes it', async () =>
   const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
   await user.click(composer());
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.getByRole('textbox', { name: 'Search your messages' })).toHaveFocus();
+  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
   await user.keyboard('{Escape}');
-  expect(screen.queryByRole('textbox', { name: 'Search your messages' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
   expect(composer()).toHaveFocus();
+});
+
+// W-06: the palette is a modal dialog, so the shell beneath it is inert; M-01: no second palette, none under a modal.
+it('opens search as a modal dialog, once, and never under another open dialog', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await user.click(composer());
+  await user.keyboard('{Control>}k{/Control}');
+  const dialog = screen.getByRole('dialog', { name: 'Search your messages' });
+  expect(dialog.tagName).toBe('DIALOG');
+  expect(dialog).toHaveAttribute('open');
+  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  await user.keyboard('{Control>}k{/Control}');
+  expect(screen.getAllByRole('dialog', { name: 'Search your messages' })).toHaveLength(1);
+  await user.keyboard('{Escape}');
+  expect(input).not.toBeInTheDocument();
+  expect(composer()).toHaveFocus();
+  const other = document.createElement('dialog');
+  other.setAttribute('open', '');
+  document.body.append(other);
+  try {
+    await user.keyboard('{Control>}k{/Control}');
+    expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+  } finally { other.remove(); }
 });
 
 it('opens no search under the Settings dialog', async () => {
   const { user } = setup('/settings/devices');
   await user.keyboard('{Control>}k{/Control}');
-  expect(screen.queryByRole('textbox', { name: 'Search your messages' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
 });
 
 it('says searching while the worker answers, then the scope’s empty text', async () => {
@@ -172,7 +195,7 @@ it('says searching while the worker answers, then the scope’s empty text', asy
   fake.handler = command => command.m === 'search' && command.scope === 'all'
     ? new Promise(resolve => { answer = resolve; }) : Promise.resolve(null);
   await user.keyboard('{Control>}k{/Control}');
-  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'z');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'z');
   act(() => fake.set('search', { requestId: 3, hits: [], cursor: null }));
   expect(screen.getByRole('search')).toHaveTextContent('Searching your messages');
   await act(async () => { answer(null); await Promise.resolve(); });
