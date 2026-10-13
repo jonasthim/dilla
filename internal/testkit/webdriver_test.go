@@ -119,6 +119,44 @@ func TestWebDriverTrustListAndRotationUseSignedHistory(t *testing.T) {
 	}
 }
 
+// After rotate_umk the peer acts as its replacement device: rotate_umk removed the old leaf from the group, so a send
+// from the old device is refused with E_LEAF_NOT_CURRENT. The browser specs (task 10) have the changed contact send
+// after its rotation and read the browser's answer, and the witness pendingUmk is the replacement's public UMK.
+func TestWebDriverRotatedPeerSendsAndReadsFromItsNewDevice(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11ced)
+	bob := startWebDriver(t, h, h.BaseURL(), "bob", 0xb0bb)
+	sa := alice.ok("setup", map[string]any{"community": "rotated sender", "channel": "general"})
+	ra := alice.ok("register", nil)
+	bob.ok("setup", map[string]any{"community": "bob", "channel": "other"})
+	bob.ok("join", map[string]any{
+		"community_id": sa["community_id"], "channel_id": sa["channel_id"],
+		"group_id": ra["group_id"], "invite_code": sa["invite_code"],
+	})
+	alice.ok("sync", nil) // bob's external join moved the epoch
+	alice.ok("send", map[string]any{"body": "before rotation"})
+	if row := bob.waitFor("before rotation"); row["sender_device"] != sa["device_id"] {
+		t.Fatalf("before rotation came from %v, want %v", row["sender_device"], sa["device_id"])
+	}
+	if first := bob.ok("trust_list", map[string]any{"user": sa["user_id"]}); first["changed"] != nil {
+		t.Fatalf("first sight = %v", first)
+	}
+	alice.ok("rotate_umk", nil)
+	alice.ok("send", map[string]any{"body": "after rotation"})
+	row := bob.waitFor("after rotation")
+	if row["sender_user"] != sa["user_id"] || row["sender_device"] == sa["device_id"] {
+		t.Fatalf("after rotation = %v; the old device is %v", row, sa["device_id"])
+	}
+	bob.ok("send", map[string]any{"channel_id": sa["channel_id"], "body": "answer to the new device"})
+	alice.waitFor("answer to the new device")
+	changed := bob.ok("trust_list", map[string]any{"user": sa["user_id"]})
+	own := alice.ok("trust_list", map[string]any{"user": sa["user_id"]})
+	if changed["changed"] == nil || own["pendingUmk"] != changed["changed"] {
+		t.Fatalf("the rotated peer's own witness %v differs from the changed key bob holds %v", own, changed)
+	}
+}
+
 func TestWebDriverVoiceSelfRefusesUnknownCall(t *testing.T) {
 	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
 	t.Cleanup(h.Stop)

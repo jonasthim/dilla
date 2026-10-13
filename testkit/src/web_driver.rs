@@ -1189,9 +1189,9 @@ impl WebDriver {
             return Err(scenario("E_NOT_FOUND"));
         }
         let seed = self.seed.wrapping_add(0x2_0000_0000);
-        let rotated = self.runner.with_member(&name, |first, _| {
-            first.rotated_device(&format!("{name}-rotated"), seed)
-        })?;
+        let rotated = self
+            .runner
+            .with_member(&name, |first, _| first.rotated_device(&name, seed))?;
         let (pending, _established) = HttpDs::establish_with_login(
             &self.ds_url,
             &rotated.device(),
@@ -1222,9 +1222,12 @@ impl WebDriver {
             .runner
             .with_member(&name, |first, _| Ok(first.device_id()))?;
         rotated.remove(&mut ds, &group, old_device)?;
+        // The old leaf has left the group: the replacement is the peer's acting device from now on (its sends, syncs and
+        // trust witness), and the old device is held only so that a second rotation or enrolment stays refused.
+        let (old, old_ds) = self.runner.replace_member(&name, rotated, ds)?;
         self.second = Some(Second {
-            client: rotated,
-            ds,
+            client: old,
+            ds: old_ds,
         });
         Ok(json!({"user": hex::encode(user), "version": next.unsigned.version}))
     }

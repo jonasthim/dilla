@@ -1106,6 +1106,39 @@ impl Runner {
         self.with_client(client, f)
     }
 
+    /// Puts `next` and its own `/v1` session in `client`'s place and hands back the device it replaces. The web-driver's
+    /// `rotate_umk` uses it: the replacement leaf is the peer's acting device from then on. `next` carries `client`'s name,
+    /// which is how a remote scenario finds a client's session.
+    pub fn replace_member(
+        &mut self,
+        client: &str,
+        next: TestClient,
+        session: HttpDs,
+    ) -> Result<(TestClient, HttpDs), TestkitError> {
+        if next.name() != client {
+            return Err(TestkitError::Scenario(format!(
+                "{} cannot stand in for {client}",
+                next.name()
+            )));
+        }
+        let Some(Backend::Remote { clients, .. }) = self.backend.as_mut() else {
+            return Err(TestkitError::Scenario(
+                "a member replacement needs `--ds <url>`: the stub has no /v1 routes".into(),
+            ));
+        };
+        if !clients.contains_key(client) || !self.clients.contains_key(client) {
+            return Err(TestkitError::Scenario(format!("{client} holds no session")));
+        }
+        let old_session = clients
+            .insert(client.to_owned(), session)
+            .expect("checked above");
+        let old = self
+            .clients
+            .insert(client.to_owned(), next)
+            .expect("checked above");
+        Ok((old, old_session))
+    }
+
     /// Runs `f` with `client`'s own `/v1` session: the call routes are no `DeliveryService` call.
     pub fn with_session<T>(
         &mut self,
