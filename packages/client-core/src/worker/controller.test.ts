@@ -718,6 +718,20 @@ const CHANGED_UMK = new Uint8Array(32).fill(0xcc);
 const strangerTrust = (changed: Uint8Array | null): TrustRecord[] =>
   [{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: changed }];
 
+// Task 10 found Privacy listing the browser's own user as a contact ("Compare with web tester"): the core pins the
+// user's own key too, and a person never compares a safety number with themselves.
+it('leaves the own user out of the trust slice', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue([
+    { userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: false, changedUmk: null },
+    ...strangerTrust(null),
+  ]);
+  w.call(980, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(980)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.map((row) => row.userId)).toEqual([toHex(STRANGER)]);
+});
+
 it('marks a contact unlisted from a quarantining ingest or a core leaf verdict, and clears it after a clean ingest', async () => {
   const w = world();
   await toReady(w);

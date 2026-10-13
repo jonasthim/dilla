@@ -2014,7 +2014,9 @@ export class Controller {
       const channelId = toHex(group.targetId);
       if (this.dms.has(channelId) || this.channels.has(channelId)) channelOf.set(toHex(group.groupId), channelId);
     }
-    this.slices.set('trust', this.core.trustState().map((row): TrustSummary => {
+    // The core pins the own key as well; nobody compares a safety number with themselves.
+    const own = this.me === null ? null : toHex(this.me.userId);
+    this.slices.set('trust', this.core.trustState().filter((row) => toHex(row.userId) !== own).map((row): TrustSummary => {
       const userId = toHex(row.userId);
       // An approved key ends the changed state everywhere, so no group is left to call removed.
       if (row.changedUmk === null) this.removedGroups.delete(userId);
