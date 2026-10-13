@@ -20,11 +20,16 @@ const OPERATING = new Set(['Enter', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown
  * Whether a push-to-talk key would type text or operate the page (flow 06 ruling, task-7 review M9): a printable key
  * (a letter, digit, space or punctuation, with or without Shift), a dead or IME key, or a focus or editing key, each
  * without Control, Alt or Meta. Accepted are non-text keys (F1 to F24, Pause, ScrollLock, Insert and the like) and
- * any key held with Control, Alt or Meta.
+ * any key held with Control, Alt or Meta, except a printable key typed with AltGr.
  */
-export function typesOrOperates(e: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean }): boolean {
+export function typesOrOperates(e: {
+  key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; getModifierState?(key: 'AltGraph'): boolean;
+}): boolean {
+  const printable = [...e.key].length === 1;
+  // AltGr types text ('@', '€' and the like) yet reports Control plus Alt on Windows and Alt elsewhere (task 8b ruling).
+  if (printable && e.getModifierState?.('AltGraph') === true) return true;
   if (e.ctrlKey || e.altKey || e.metaKey) return false;
-  return [...e.key].length === 1 || OPERATING.has(e.key);
+  return printable || OPERATING.has(e.key);
 }
 
 export interface VoiceSettingsProps {

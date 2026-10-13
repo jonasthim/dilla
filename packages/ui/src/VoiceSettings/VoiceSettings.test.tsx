@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
-import { VoiceSettings, type VoiceSettingsProps } from './VoiceSettings.tsx';
+import { typesOrOperates, VoiceSettings, type VoiceSettingsProps } from './VoiceSettings.tsx';
 import meta from './VoiceSettings.stories.tsx';
 
 const labels: VoiceSettingsProps['labels'] = {
@@ -90,6 +90,21 @@ describe('VoiceSettings', () => {
     expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'KeyM', ctrl: true, alt: false, meta: false, shift: true });
     fireEvent.keyDown(capture, { key: 'Pause', code: 'Pause' });
     expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'Pause', ctrl: false, alt: false, meta: false, shift: false });
+  });
+
+  it('refuses a text key typed with AltGr, which browsers report as Control plus Alt (task 8b ruling)', () => {
+    const onCaptureKey = vi.fn();
+    render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={onCaptureKey} />);
+    const capture = screen.getByRole('button', { name: 'set key' });
+    fireEvent.keyDown(capture, { key: '@', code: 'Digit2', ctrlKey: true, altKey: true, modifierAltGraph: true });
+    fireEvent.keyDown(capture, { key: '€', code: 'KeyE', altKey: true, modifierAltGraph: true });
+    expect(onCaptureKey).not.toHaveBeenCalled();
+    expect(screen.getByRole('status')).toHaveTextContent('That key types text or moves the focus.');
+    // AltGr on a non-text key is still a plain key held with a modifier.
+    fireEvent.keyDown(capture, { key: 'F8', code: 'F8', ctrlKey: true, altKey: true, modifierAltGraph: true });
+    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'F8', ctrl: true, alt: true, meta: false, shift: false });
+    expect(typesOrOperates({ key: '@', ctrlKey: true, altKey: true, metaKey: false, getModifierState: (k) => k === 'AltGraph' })).toBe(true);
+    expect(typesOrOperates({ key: 'v', ctrlKey: true, altKey: false, metaKey: false, getModifierState: () => false })).toBe(false);
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

@@ -1,0 +1,28 @@
+// Per-person volume (L-TS-54 `voice.volume.<user>`, flow 06 § Tiles): 0..200 % in steps of 10, 100 by default. The
+// remote audio plays through livekit’s webAudioMix, where each remote track has its own GainNode; the session sets it
+// through RemoteParticipant.setVolume. Deafened or paused (RV-3), every gain is 0.
+
+const VOLUME_KEY = /^voice\.volume\.([0-9a-f]{32})$/;
+const VOLUME_VALUE = /^(0|[1-9]0|1[0-9]0|200)$/;
+
+export type Volumes = Record<string, number>;
+
+export function isVolume(v: number): boolean {
+  return Number.isInteger(v) && v >= 0 && v <= 200 && v % 10 === 0;
+}
+
+export function gainOf(userId: string, volumes: Volumes, s: { deafened: boolean; paused: boolean }): number {
+  if (s.deafened || s.paused) return 0;
+  const v = volumes[userId];
+  return (v !== undefined && isVolume(v) ? v : 100) / 100;
+}
+
+/** The volumes the settings slice holds, keyed by user id; malformed entries are skipped. */
+export function volumesFromSettings(settings: Record<string, string>): Volumes {
+  const out: Volumes = {};
+  for (const [key, value] of Object.entries(settings)) {
+    const m = VOLUME_KEY.exec(key);
+    if (m && VOLUME_VALUE.test(value)) out[m[1]] = Number(value);
+  }
+  return out;
+}
