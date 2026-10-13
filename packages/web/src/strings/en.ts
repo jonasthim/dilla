@@ -484,7 +484,7 @@ export const en = {
   'keyboard.deafen': 'Control/⌘+Shift+D',
   'keyboard.muteAction': 'mute or unmute',
   'keyboard.deafenAction': 'deafen or undeafen',
-  // The tags of a voice participant, as the message rows' Tag shows them.
+  'voice.messages': 'messages',
   'voice.tag.web': 'web',
   'voice.tag.bot': 'bot',
 } as const;

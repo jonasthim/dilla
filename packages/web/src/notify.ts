@@ -117,13 +117,16 @@ export interface RingNotifyDeps {
   settings: Readonly<Record<string, string>>;
   /** The DM's kind for its notify mode: 3 a DM, 4 a group DM. */
   kind: 3 | 4;
+  /** The page is visible: the in-app banner covers it, so no notification (flow 06, task-9 ruling). */
+  visible: boolean;
   focus(): void;
   open(channelId: string): void;
 }
 
 /**
- * The desktop notification of an incoming DM ring (flow 06, decision 6), or null when none may show: only with the
- * permission already granted (a ring never asks for it), never for a busy ring (already in a call) or a quiet one (the
+ * The desktop notification of an incoming DM ring (flow 06, decision 6), or null when none may show: only while the page
+ * is hidden (a visible page has the banner), only with the permission already granted (a ring never asks for it), never
+ * for a busy ring (already in a call) or a quiet one (the
  * DM is muted, R1), and never when the DM's notify mode is nothing. One per call (`tag`); the caller closes it when
  * the ring ends. A click focuses the window, opens the DM and closes it.
  *
@@ -133,7 +136,7 @@ export interface RingNotifyDeps {
  */
 export function ringNotification(ring: Ring, deps: RingNotifyDeps): NotificationHandle | null {
   const Ctor = deps.Notification;
-  if (Ctor === undefined || Ctor.permission !== 'granted') return null;
+  if (Ctor === undefined || Ctor.permission !== 'granted' || deps.visible) return null;
   if (ring.busy || ring.quiet || isMuted(deps.settings, ring.channelId)) return null;
   if (effectiveNotifyMode(deps.settings, ring.channelId, deps.kind) === 'nothing') return null;
   try {

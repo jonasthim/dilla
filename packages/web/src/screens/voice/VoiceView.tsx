@@ -31,6 +31,9 @@ function volumeOf(settings: Readonly<Record<string, string>>, userId: string): n
   return v !== undefined && VOLUME.test(v) ? Number(v) : 100;
 }
 
+/** The own tile reads as speaking from this level of the 12-step input meter up, while the microphone is on. */
+const SPEAKING_LEVEL = 3;
+
 function tileLabels(name: string): CallTileProps['labels'] {
   return { state: voiceStateLabels(), volume: t('voice.volume', { name }), volumeValue: en['voice.volumeValue'] };
 }
@@ -43,7 +46,7 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   const own = v.self === null ? [] : [{
     view: {
       deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: userName(v.self.id, v.members, v.trust), state: 'ok' as const,
-      speaking: false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
+      speaking: state !== null && !state.muted && !state.deafened && state.level >= SPEAKING_LEVEL, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
       screen: state?.sharing ?? false, web: true, bot: false,
     },
     own: true, volume: 100, media: null, labels: tileLabels(v.self.username), onVolume: () => undefined,
@@ -78,7 +81,7 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
     const name = slice.changedUser !== null ? userName(slice.changedUser, v.members, v.trust) : null;
     if (slice.phase === 'paused') {
       const changed = slice.changedUser;
-      return { kind: 'paused', text: t('voice.paused', { name: name ?? '' }), focusOnce: true,
+      return { kind: 'paused', text: t('voice.paused', { name: name ?? '' }), focusOnce: v.call.pauseFocusPending,
         action: changed !== null ? { label: t('voice.pausedAction'), onAction: () => v.onCompare(changed) } : null };
     }
     if (slice.phase === 'blocked') {
@@ -93,10 +96,15 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
   return mic !== null ? { kind: 'info', text: t(mic), action: null, focusOnce: false } : null;
 }
 
-/** True while the slice says joining is paused for this channel by a contact whose identity is still changed. */
+/**
+ * True while a block holds joining back for this channel (flow 06: "no join button until the cause is gone"). A block by
+ * a changed contact clears once that contact is no longer changed (verified); any other block holds until the worker's
+ * call slice leaves 'blocked' (review m9).
+ */
 function joinHeld(v: VoiceContext, channelId: string): boolean {
   const s = v.slice;
-  if (s?.channelId !== channelId || s.phase !== 'blocked' || s.changedUser === null) return false;
+  if (s?.channelId !== channelId || s.phase !== 'blocked') return false;
+  if (s.error?.code !== 'E_UMK_CHANGED' || s.changedUser === null) return true;
   const row = v.trust?.find(r => r.userId === s.changedUser);
   return row !== undefined && (row.changedUmk !== null || row.blocked === 'E_UMK_CHANGED');
 }
@@ -134,6 +142,9 @@ function InCallStage({ v, channelId, title, outgoing }: { v: VoiceContext; chann
   const notice = stageNotice(v, channelId);
   const paused = v.slice?.channelId === channelId && v.slice.phase === 'paused';
   const code = v.slice?.channelId === channelId && v.slice.phase === 'in' ? v.slice.code : null;
+  // CallStage focused the pause action in its own effect (children run first): the pause has had its one focus move.
+  const { pauseFocusPending, markPauseFocused } = v.call;
+  useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state="voice-stage" data-call-phase={v.slice?.channelId === channelId ? v.slice.phase : 'joining'}>
       <CallStage title={title} tiles={callTiles(v, channelId)} code={code} notice={notice} outgoing={outgoing}
@@ -187,10 +198,24 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
     const timer = setTimeout(() => setExpired(true), RING_MS);
     return () => clearTimeout(timer);
   }, [ringing]);
-  if (v.call.channelId === channelId) {
-    const others = (v.voice?.[channelId]?.participants ?? []).some(p => p.userId !== v.self?.id);
-    const text = outgoingText(outgoing, others, expired);
-    return <div className="dw-dm-call"><InCallStage v={v} channelId={channelId} title={name} outgoing={text === null ? null : { text }} /></div>;
+  const inThisCall = v.call.channelId === channelId;
+  const others = (v.voice?.[channelId]?.participants ?? []).some(p => p.userId !== v.self?.id);
+  const text = inThisCall ? outgoingText(outgoing, others, expired) : null;
+  // The outgoing ring is spoken through the dock's status region, once per change (flow 06 § States, review I3).
+  const { announce } = v.call;
+  useEffect(() => { if (text !== null) announce(text); }, [text, announce]);
+  // On a phone the stage fills the pane and `messages` swaps it for the log and composer (flow 06 § 360×740, review I7);
+  // the toggle shows only there (app.css).
+  const [view, setView] = useState<'stage' | 'messages'>('stage');
+  if (inThisCall) {
+    return (
+      <div className="dw-dm-call" data-view={view}>
+        <div className="dw-dm-call__bar">
+          <Button size="md" pressed={view === 'messages'} onClick={() => setView(view === 'messages' ? 'stage' : 'messages')}>{t('voice.messages')}</Button>
+        </div>
+        <InCallStage v={v} channelId={channelId} title={name} outgoing={text === null ? null : { text }} />
+      </div>
+    );
   }
   const live = (v.voice?.[channelId]?.participants.length ?? 0) > 0;
   const notice = stageNotice(v, channelId);
@@ -221,13 +246,22 @@ export function outgoingText(outgoing: CallState['outgoing'], othersInCall: bool
   return parts.length > 0 ? parts.join(' ') : null;
 }
 
+/** One stop for the rows: the stop row and its join button are tab stops, every other row and join is not. */
+function place(rows: readonly HTMLButtonElement[], stop: number): void {
+  rows.forEach((row, i) => {
+    row.tabIndex = i === stop ? 0 : -1;
+    const join = row.parentElement?.querySelector<HTMLButtonElement>('.dw-voice-section__join');
+    if (join) join.tabIndex = row.tabIndex;
+  });
+}
+
 /** One voice row of the sidebar with its people, and `voice.join` on focus or hover (flow 06 § States, idle). */
 interface VoiceRowItem { id: string; name: string; readable: boolean; current: boolean; joined: boolean; room: VoiceCall | undefined }
 
 /**
  * The sidebar's voice channels under the `voice.heading.channels` heading: one roving tab stop over the rows, the people
- * of each live voice under its row, and a `join voice` button that shows while the row is hovered or focused. The
- * button is not a tab stop of its own: from the keyboard, the row opens the voice view, whose first control is join.
+ * of each live voice under its row, and a `join voice` button that shows while the row is hovered or focused. The stop
+ * row's join is the next tab stop after it (task-9 ruling: keyboard reachable); arrows move both together.
  */
 export function VoiceSection({ rows, onOpen, onJoin }: { rows: readonly VoiceRowItem[]; onOpen: (id: string) => void; onJoin: (id: string) => void }) {
   const list = useRef<HTMLUListElement>(null);
@@ -246,14 +280,14 @@ export function VoiceSection({ rows, onOpen, onJoin }: { rows: readonly VoiceRow
         : e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1 : null;
       if (to === null) return;
       e.preventDefault();
-      all.forEach((b, i) => { b.tabIndex = i === to ? 0 : -1; });
+      place(all, to);
       all[to].focus();
     };
     const onFocus = (e: FocusEvent) => {
       const target: EventTarget | null = e.target;
       const all = items();
       const i = target instanceof HTMLButtonElement ? all.indexOf(target) : -1;
-      if (i >= 0) all.forEach((b, j) => { b.tabIndex = j === i ? 0 : -1; });
+      if (i >= 0) place(all, i);
     };
     ul.addEventListener('keydown', onKeyDown);
     ul.addEventListener('focusin', onFocus);
@@ -265,7 +299,7 @@ export function VoiceSection({ rows, onOpen, onJoin }: { rows: readonly VoiceRow
     const stop = all.findIndex(b => b.tabIndex === 0);
     const current = all.findIndex(b => b.getAttribute('aria-current') === 'page');
     const keep = stop >= 0 && all.filter(b => b.tabIndex === 0).length === 1 ? stop : current >= 0 ? current : 0;
-    all.forEach((b, i) => { b.tabIndex = i === keep ? 0 : -1; });
+    place(all, keep);
   });
   if (rows.length === 0) return null;
   const labels = rowLabels();
@@ -312,26 +346,27 @@ export function ActiveVoiceList({ rows, onOpen }: { rows: readonly VoiceRowItem[
 export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string; stageShown: boolean }): React.JSX.Element | null {
   const { call } = v;
   const bannerRef = useRef<HTMLDivElement>(null);
-  const focused = useRef<string | null>(null);
   const id = call.channelId;
   const paused = id !== null && v.slice?.channelId === id && v.slice.phase === 'paused';
   const banner = paused && !stageShown ? stageNotice(v, id) : null;
   const bannerText = banner?.text ?? null;
+  const { pauseFocusPending, markPauseFocused } = call;
   useEffect(() => {
-    if (bannerText === null) { focused.current = null; return; }
-    if (focused.current === bannerText) return;
-    focused.current = bannerText;
+    if (bannerText === null || !pauseFocusPending) return;
     bannerRef.current?.querySelector('button')?.focus();
-  }, [bannerText]);
+    markPauseFocused();
+  }, [bannerText, pauseFocusPending, markPauseFocused]);
   if (id === null) return null;
   const phase: VoiceDockProps['phase'] = paused ? 'paused' : call.session === null || call.state?.phase === 'connecting' ? 'connecting'
     : call.state?.phase === 'reconnecting' ? 'reconnecting' : 'connected';
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
       {banner !== null ? (
-        <div ref={bannerRef} className="dw-voice-dock__paused">
-          <p>{banner.text}</p>
-          {banner.action !== null ? <Button size="sm" onClick={() => banner.action?.onAction()}>{banner.action.label}</Button> : null}
+        <div ref={bannerRef} className="dw-voice-dock__paused" role="status">
+          <p id="dw-voice-dock-paused">{banner.text}</p>
+          {banner.action !== null ? (
+            <Button aria-describedby="dw-voice-dock-paused" onClick={() => banner.action?.onAction()}>{banner.action.label}</Button>
+          ) : null}
         </div>
       ) : null}
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
@@ -339,7 +374,10 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'), unmute: t('voice.unmute'),
           deafen: t('voice.deafen'), undeafen: t('voice.undeafen'), leave: t('voice.leave') }}
-        meter={<AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />}
+        meter={<>
+          <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
+          {call.state?.mode === 'ptt' ? <p className="dw-voice-dock__mode">{t('settings.voice.ptt')}</p> : null}
+        </>}
         onMute={call.toggleMute} onDeafen={call.toggleDeafen} onLeave={call.leave} />
     </div>
   );

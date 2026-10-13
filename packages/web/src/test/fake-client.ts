@@ -126,7 +126,7 @@ export function bobChanged(): TrustSummary {
 /** A PageCall double: the toggles change its state, and every call is recorded in order. */
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
-    tiles: [], level: 0, error: null };
+    tiles: [], level: 0, error: null, mode: 'vad' };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
@@ -150,6 +150,7 @@ export class FakeSession implements PageCall {
     this.state = { ...this.state, ...over };
     for (const fn of [...this.fns]) fn();
   }
+  readonly setMode = vi.fn((mode: 'vad' | 'ptt') => { this.log.push(`mode:${mode}`); this.update({ mode }); });
   setMuted(on: boolean): void { this.log.push(`muted:${String(on)}`); this.update({ muted: on }); }
   setDeafened(on: boolean): void { this.log.push(`deafened:${String(on)}`); this.update({ deafened: on, muted: on || this.state.muted }); }
   setCamera(on: boolean): Promise<void> { this.update({ camera: on }); return Promise.resolve(); }
@@ -172,6 +173,8 @@ export interface VoiceHarnessOptions {
   trust?: TrustSummary[];
   /** callJoin leaves the call slice as it is (the worker's 'in' is published by the test). */
   joinLeavesSlice?: boolean;
+  /** The page is hidden (document.visibilityState): ring notifications show only then (flow 06). */
+  hidden?: boolean;
   /** Also render Settings over the shell on a settings route, as App does. */
   withSettings?: boolean;
 }
@@ -200,6 +203,9 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     vi.stubGlobal('Notification', FakeNotification);
   }
   const activation = { hasBeenActive: o.activated ?? true };
+  const visibility = { state: o.hidden === true ? 'hidden' : 'visible' };
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility.state });
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => visibility.state === 'hidden' });
   Object.defineProperty(navigator, 'userActivation', { configurable: true, get: () => activation });
 
   const fake = new FakeClient();
@@ -236,10 +242,12 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
       : { ok: true as const, path: 'insertable-streams' as const })),
     localDecodeList: () => 'vp8',
     browserDeps: bridge => ({ bridge } as unknown as ReturnType<VoiceModule['browserDeps']>),
-    startPageCall: vi.fn<VoiceModule['startPageCall']>(async (deps, target) => {
+    startPageCall: vi.fn<VoiceModule['startPageCall']>(async (deps, target, opts) => {
       await deps.bridge.call({ m: 'callJoin', channelId: target.channelId, vdec: target.vdec });
       await startGate;
       const session = new FakeSession(log, deps.bridge);
+      // As the real session: it starts in the mode it was started with.
+      session.state = { ...session.state, mode: opts.mode };
       sessions.push(session);
       return session;
     }),
@@ -261,6 +269,11 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   return {
     client: fake,
     user, view, log, sessions, sounds, notifications, module, requestPermission, activation, holdStart,
+    /** Hides or shows the page, as the browser does, with its visibilitychange event. */
+    setHidden(hidden: boolean): void {
+      visibility.state = hidden ? 'hidden' : 'visible';
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    },
     get session(): FakeSession { const s = sessions.at(-1); if (s === undefined) throw new Error('no session'); return s; },
   };
 }

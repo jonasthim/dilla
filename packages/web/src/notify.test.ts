@@ -176,7 +176,7 @@ describe('ringNotification (flow 06, R1, R8)', () => {
     return { Ctor: N as unknown as NotificationCtor, made, requestPermission };
   }
   const deps = (Ctor: NotificationCtor | undefined, settings: Record<string, string> = {}) =>
-    ({ Notification: Ctor, settings, kind: 3 as const, focus: vi.fn(), open: vi.fn() });
+    ({ Notification: Ctor, settings, kind: 3 as const, visible: false, focus: vi.fn(), open: vi.fn() });
 
   it('raises one tagged notification for a ring that is neither busy nor quiet, with permission granted', () => {
     const { Ctor, made } = ctor('granted');
@@ -196,6 +196,11 @@ describe('ringNotification (flow 06, R1, R8)', () => {
       expect(ringNotification(r, deps(Ctor, settings))).toBeNull();
       expect(made).toEqual([]);
     }
+  });
+  it('raises nothing while the page is visible (flow 06: the banner covers a visible tab)', () => {
+    const { Ctor, made } = ctor('granted');
+    expect(ringNotification(ring(), { ...deps(Ctor), visible: true })).toBeNull();
+    expect(made).toEqual([]);
   });
   it('raises nothing without permission and never asks for it', () => {
     for (const permission of ['default', 'denied'] as const) {

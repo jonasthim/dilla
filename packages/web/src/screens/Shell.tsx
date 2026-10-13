@@ -239,7 +239,8 @@ export function Shell(): React.JSX.Element {
     ?? dms?.find(d => d.id === id)?.name ?? id.slice(0, 8), [railSlices, dms]);
   // After a leave the person asked for, focus goes to the voice row (or the DM's call button) the call came from.
   const [leftFrom, setLeftFrom] = useState<{ id: string } | null>(null);
-  const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf, onLeft: id => setLeftFrom({ id }) });
+  const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf, onLeft: id => setLeftFrom({ id }),
+    stageShown: id => id === (voiceChannel?.id ?? dm?.id) });
   useLayoutEffect(() => {
     if (leftFrom === null) return;
     const name = whereOf(leftFrom.id);
@@ -790,7 +791,12 @@ export function Shell(): React.JSX.Element {
           settingsLabel={t('shell.rail.settings')} onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
           itemLabel={railLabel} />}
         sidebar={sidebar}
-        header={<>{ringFlow}{header}</>}
+        ring={rings !== undefined && rings.length > 0 ? ringFlow : undefined}
+        header={<>
+          {/* Outlives the dock: "You left {where}.", and a block or removal said while the stage is not on screen. */}
+          <p className="d-sr-only dw-voice-lasting" role="status">{call.lasting}</p>
+          {header}
+        </>}
         composer={composer === null ? null : <>
           {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}
           {typingNames.length > 0 && !searchOpen ? <TypingIndicator names={typingNames}

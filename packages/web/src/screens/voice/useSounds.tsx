@@ -2,7 +2,7 @@
 // this device is in, and the ring while an incoming ring may sound. sounds.ts only plays; every rule of when is here.
 import { useContext, useEffect, useRef } from 'react';
 import type { Ring, VoiceCall } from '@dilla/client-core';
-import { SETTINGS } from '@dilla/client-core';
+import { isMuted, SETTINGS } from '@dilla/client-core';
 import type { Sounds } from '../../call/sounds.ts';
 import { VoiceDepsContext } from './useCall.tsx';
 
@@ -39,7 +39,8 @@ export function useSounds(o: UseSoundsOptions): void {
 
   // The ring.
   const ringing = useRef(false);
-  const wantRing = o.inCall === null && (o.rings ?? []).some(r => !r.busy && !r.quiet)
+  // The DM mute is re-read here: muting a DM while it rings stops the sound at once (review m3).
+  const wantRing = o.inCall === null && (o.rings ?? []).some(r => !r.busy && !r.quiet && !isMuted(o.settings, r.channelId))
     && o.settings[SETTINGS.soundRing] !== 'off' && activated();
   useEffect(() => {
     if (wantRing === ringing.current) return;
@@ -48,14 +49,17 @@ export function useSounds(o: UseSoundsOptions): void {
   });
 
   // Join and leave, by diffing the devices of the call this device is in.
-  const known = useRef<{ call: string | null; devices: Map<string, string> }>({ call: null, devices: new Map() });
+  // The baseline is the first snapshot of the room this device is in (review m1): a room that arrives after the join
+  // (an answered ring, before the DM's loadVoice) holds the people already there, not people joining.
+  const known = useRef<{ call: string | null; devices: Map<string, string> | null }>({ call: null, devices: null });
   const { room, inCall, deafened, selfId } = o;
   const voiceOn = o.settings[SETTINGS.soundVoice] !== 'off';
   useEffect(() => {
-    const devices = new Map((room?.participants ?? []).map(p => [p.deviceId, p.userId]));
+    const devices = room === undefined ? null : new Map(room.participants.map(p => [p.deviceId, p.userId]));
     const before = known.current;
-    known.current = { call: inCall, devices };
-    if (inCall === null || before.call !== inCall) return;
+    const same = before.call === inCall;
+    known.current = { call: inCall, devices: devices ?? (same ? before.devices : null) };
+    if (inCall === null || !same || before.devices === null || devices === null) return;
     const others = (from: Map<string, string>, to: Map<string, string>) =>
       [...to].some(([device, user]) => !from.has(device) && user !== selfId);
     const joined = others(before.devices, devices);

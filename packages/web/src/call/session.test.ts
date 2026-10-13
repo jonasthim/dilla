@@ -477,6 +477,75 @@ describe('the page call session (L-WEB-50)', () => {
     expect(g.localTracks[0].muted).toBe(false);
   });
 
+  // Task-9 review I2: the input mode follows Settings → Voice during a call; push to talk closes the microphone at once.
+  it('setMode("ptt") closes the microphone at once; the key then opens it; setMode("vad") reopens it', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const mic = f.localTracks[0];
+    expect(mic.muted).toBe(false);
+    call.setMode('ptt');
+    expect(mic.muted).toBe(true);
+    expect(call.state.mode).toBe('ptt');
+    call.pushToTalk(true);
+    expect(mic.muted).toBe(false);
+    call.pushToTalk(false);
+    call.setMode('vad');
+    expect(mic.muted).toBe(false);
+    expect(call.state.mode).toBe('vad');
+    // A muted person stays muted across a mode change.
+    call.setMuted(true);
+    call.setMode('ptt');
+    call.setMode('vad');
+    expect(mic.muted).toBe(true);
+  });
+
+  it('with RNNoise built for voice activity, push to talk gates the track; built for push to talk, voice activity holds it open', async () => {
+    const f = fakes();
+    const made: { mode: string; ptt: boolean[] }[] = [];
+    f.deps.createNoiseProcessor = (mode) => { const p = { mode, ptt: [] as boolean[] }; made.push(p); return { setPttActive: (a: boolean) => { p.ptt.push(a); } }; };
+    const call = await start(f, { noise: 'on' });
+    const mic = f.localTracks[0];
+    call.setMode('ptt');
+    expect(mic.muted).toBe(true);
+    call.pushToTalk(true);
+    expect(mic.muted).toBe(false);
+    const g = fakes();
+    const made2: boolean[] = [];
+    g.deps.createNoiseProcessor = () => ({ setPttActive: (a: boolean) => { made2.push(a); } });
+    const ptt = await start(g, { noise: 'on', mode: 'ptt' });
+    ptt.setMode('vad');
+    expect(made2.at(-1)).toBe(true);
+    expect(g.localTracks[0].muted).toBe(false);
+  });
+
+  // Queued from the task-8b review (N2, N6): a pagehide while joinCall is still running.
+  it('a pagehide while joinCall is pending zero-fills every key copy, installs nothing, releases the session and ends E_ABORTED', async () => {
+    const f = fakes();
+    const copies: Uint8Array[] = [];
+    f.deps.copyKey = (buffer) => { const c = new Uint8Array(buffer.slice(0)); copies.push(c); return c; };
+    let resolveJoin: () => void = () => undefined;
+    const released = vi.fn(async () => undefined);
+    f.deps.joinCall = vi.fn(() => new Promise((resolve) => {
+      resolveJoin = () => resolve({ room: f.room, manager: f.manager, release: released });
+    })) as unknown as PageCallDeps['joinCall'];
+    const outcome = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts).catch((e: unknown) => e);
+    await flush();
+    expect(f.deps.joinCall).toHaveBeenCalledTimes(1);
+    // A newer key arrives while joinCall runs, and is held for after the join.
+    const newer = keysFor(2n);
+    const pushed = new Uint8Array(newer.baseKey);
+    f.pushKeys(callId, newer);
+    window.dispatchEvent(new Event('pagehide'));
+    resolveJoin();
+    expect(await outcome).toMatchObject({ code: 'E_ABORTED' });
+    expect(copies.length).toBeGreaterThanOrEqual(2);
+    expect(copies.every(zero)).toBe(true);
+    expect(zero(pushed)).toBe(true);
+    expect(f.manager.installEpoch).not.toHaveBeenCalled();
+    expect(released).toHaveBeenCalled();
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'pagehide' }]);
+  });
+
   it('refreshes ICE 300 s before the credential expiry the username carries', async () => {
     const f = fakes({ iceUsername: '1700003600:dev:1700000000', now: 1_700_000_000_000 });
     await start(f);

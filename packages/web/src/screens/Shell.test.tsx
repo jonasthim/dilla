@@ -1085,6 +1085,9 @@ describe('keyboard', () => {
     // web-3: the voice rows are their own roving stop under the voice heading.
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'voice lounge' }));
+    // Its join is the next stop (task-9 ruling: keyboard reachable).
+    await user.tab();
+    expect(document.activeElement).toHaveAccessibleName('join voice');
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');

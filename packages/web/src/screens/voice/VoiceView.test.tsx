@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
-  BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, type VoiceHarnessOptions,
+  A, BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -243,5 +243,146 @@ describe('the session follows the call slice', () => {
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
+  });
+});
+
+// Task-9 review, fix round 1.
+describe('review round 1', () => {
+  const lasting = () => document.querySelector('.dw-voice-lasting');
+  const toLobby = async (app: ReturnType<typeof renderVoiceShell>) => {
+    window.history.pushState(null, '', `/c/${A}/${TEXT}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'call controls' })).toBeNull());
+    void app;
+  };
+
+  it('I1: a block after a pause that already rendered leaves and never unpauses', async () => {
+    const app = await inVoice();
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await waitFor(() => expect(app.session.setPaused).toHaveBeenCalledWith(true));
+    app.client.publish('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('blocked'));
+    expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
+    expect(screen.queryByRole('toolbar', { name: 'call controls' })).toBeNull();
+    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+  });
+
+  it('I1: a removal leaves with "removed", shows voice.removed in the voice view and ends the dock', async () => {
+    const app = await inVoice();
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
+    expect(app.session.setPaused).not.toHaveBeenCalled();
+    expect(await main().findByText(t('voice.removed'))).toBeInTheDocument();
+    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+  });
+
+  it('I2: switching the input mode in a call follows in the session; push to talk binds only once the session is in it', async () => {
+    const app = await inVoice({ settings: { 'voice.pttKey': 'F13' } });
+    expect(app.module.bindPushToTalk).not.toHaveBeenCalled();
+    app.client.publish('settings', { 'voice.pttKey': 'F13', 'voice.mode': 'ptt' });
+    expect(app.session.setMode).toHaveBeenCalledWith('ptt');
+    await waitFor(() => expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' })));
+    expect(app.log.indexOf('mode:ptt')).toBeGreaterThanOrEqual(0);
+    expect(screen.getByRole('toolbar', { name: 'voice controls' }).parentElement).toHaveTextContent(t('settings.voice.ptt'));
+    app.client.publish('settings', { 'voice.pttKey': 'F13' });
+    expect(app.session.setMode).toHaveBeenLastCalledWith('vad');
+    expect(screen.getByRole('toolbar', { name: 'voice controls' }).parentElement).toHaveTextContent(t('settings.voice.vad'));
+  });
+
+  it('I2: a push-to-talk key is never bound while the session is not in push to talk', async () => {
+    const app = await inVoice({ settings: { 'voice.pttKey': 'F13' } });
+    // The session does not take the mode (an ended session ignores it): the key must not bind, or it would suggest a
+    // closed microphone that is open.
+    app.session.setMode.mockImplementation(() => undefined);
+    app.client.publish('settings', { 'voice.pttKey': 'F13', 'voice.mode': 'ptt' });
+    expect(app.session.setMode).toHaveBeenCalledWith('ptt');
+    expect(app.module.bindPushToTalk).not.toHaveBeenCalled();
+  });
+
+  it('I3: the outgoing ring is announced in the dock status, once per change', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: ['bob'], declined: [] } }));
+    const status = () => document.querySelector('.d-voice-dock [role="status"]');
+    await waitFor(() => expect(status()).toHaveTextContent('ringing bob'));
+    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: [], declined: ['bob'] } }));
+    await waitFor(() => expect(status()).toHaveTextContent('bob declined.'));
+  });
+
+  it('I4 and m4: off the stage, the dock pause banner is a status with a described, full-size action that takes focus once', async () => {
+    const app = await inVoice({ trust: [bobChanged()] });
+    await toLobby(app);
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    const banner = await waitFor(() => { const b = document.querySelector('.dw-voice-dock__paused'); expect(b).not.toBeNull(); return b!; });
+    expect(banner).toHaveAttribute('role', 'status');
+    const action = within(banner as HTMLElement).getByRole('button', { name: 'compare safety numbers' });
+    expect(action).toHaveAccessibleDescription(t('voice.paused', { name: 'bob' }));
+    expect(action).not.toHaveAttribute('data-size', 'sm');
+    await waitFor(() => expect(action).toHaveFocus());
+    // Opening the voice view later does not take focus again for the same pause.
+    await app.user.click(screen.getByRole('button', { name: 'voice general' }));
+    await main().findByRole('button', { name: 'compare safety numbers' });
+    expect(screen.getByRole('button', { name: 'voice general' })).toHaveFocus();
+  });
+
+  it('I6: a block off the stage is announced where it outlives the dock, and focus in the dock goes to the voice row', async () => {
+    const app = await inVoice();
+    await toLobby(app);
+    screen.getByRole('toolbar', { name: 'voice controls' }).querySelector('button')!.focus();
+    app.client.publish('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }));
+    await waitFor(() => expect(lasting()).toHaveTextContent(t('voice.blocked')));
+    expect(screen.getByRole('button', { name: 'voice general' })).toHaveFocus();
+  });
+
+  it('I6: a removal off the stage is announced too', async () => {
+    const app = await inVoice();
+    await toLobby(app);
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV, callId: GENV }));
+    await waitFor(() => expect(lasting()).toHaveTextContent(t('voice.removed')));
+  });
+
+  it('"You left {where}." is announced in a status region that outlives the dock', async () => {
+    const app = await inVoice();
+    await app.user.click(main().getByRole('button', { name: 'leave' }));
+    await waitFor(() => expect(lasting()).toHaveTextContent('You left general.'));
+    expect(lasting()).toHaveAttribute('role', 'status');
+  });
+
+  it('m9: no join button while any block applies', () => {
+    renderVoiceShell({ call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }) });
+    expect(main().getByText(t('voice.blockedJoin'))).toBeInTheDocument();
+    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+  });
+
+  it('the voice row’s join is reachable from the keyboard: Tab from the row reaches it', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${TEXT}` });
+    screen.getByRole('button', { name: 'voice general' }).focus();
+    await app.user.tab();
+    expect(document.activeElement).toHaveAccessibleName('join voice');
+    expect(document.activeElement?.closest('.dw-voice-section__item')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
+  });
+
+  it('the own tile shows speaking from the input level', async () => {
+    const app = await inVoice();
+    const own = () => document.querySelector('.d-call-tile[data-own="true"]');
+    expect(own()).toHaveAttribute('data-speaking', 'false');
+    act(() => app.session.update({ level: 8 }));
+    expect(own()).toHaveAttribute('data-speaking', 'true');
+    act(() => app.session.update({ level: 8, muted: true }));
+    expect(own()).toHaveAttribute('data-speaking', 'false');
+  });
+
+  it('I7: in a DM call a "messages" toggle swaps the stage for the log and composer', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await main().findByRole('toolbar', { name: 'call controls' });
+    const box = document.querySelector('.dw-dm-call')!;
+    expect(box).toHaveAttribute('data-view', 'stage');
+    const toggle = main().getByRole('button', { name: 'messages' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await app.user.click(toggle);
+    expect(box).toHaveAttribute('data-view', 'messages');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
   });
 });

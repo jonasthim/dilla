@@ -10,7 +10,8 @@ import { Voice } from './Voice.tsx';
 afterEach(() => { vi.unstubAllGlobals(); });
 
 /** The worker republishes what setSetting stored, as the real one does. */
-function setup(settings: Record<string, string> = {}, media?: { permission: PermissionState; devices: MediaDeviceInfo[] }) {
+function setup(settings: Record<string, string> = {}, media?: { permission: PermissionState | 'throws'; devices: MediaDeviceInfo[];
+  getUserMedia?: () => Promise<MediaStream> }) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('settings', settings);
@@ -23,12 +24,14 @@ function setup(settings: Record<string, string> = {}, media?: { permission: Perm
     return Promise.resolve(null);
   };
   const enumerateDevices = vi.fn(() => Promise.resolve(media?.devices ?? []));
-  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { enumerateDevices } });
+  const getUserMedia = vi.fn(media?.getUserMedia ?? (() => Promise.reject(new Error('no'))));
+  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { enumerateDevices, getUserMedia } });
   Object.defineProperty(navigator, 'permissions', { configurable: true,
-    value: { query: vi.fn(() => Promise.resolve({ state: media?.permission ?? 'prompt' })) } });
+    value: { query: vi.fn(() => (media?.permission === 'throws' ? Promise.reject(new TypeError('microphone is not a permission name'))
+      : Promise.resolve({ state: media?.permission ?? 'prompt' }))) } });
   const user = userEvent.setup();
   const view = render(<CoreProvider client={fake}><Voice /></CoreProvider>);
-  return { fake, user, view, enumerateDevices };
+  return { fake, user, view, enumerateDevices, getUserMedia };
 }
 const settingCalls = (fake: FakeClient) => fake.callsOf('setSetting').map(c => [c.key, c.value]);
 
@@ -75,5 +78,36 @@ describe('Settings → Voice', () => {
   it('has no axe violations', async () => {
     const { view } = setup({ 'voice.mode': 'ptt', 'voice.pttKey': 'F13' });
     await expectNoAxeViolations(view.container);
+  });
+
+  it('m2: where the browser cannot query the microphone permission, labelled devices stand for the grant', async () => {
+    const mic = { deviceId: 'mic-1', kind: 'audioinput', label: 'Desk mic', groupId: 'g' } as MediaDeviceInfo;
+    setup({}, { permission: 'throws', devices: [mic] });
+    expect(await screen.findByRole('option', { name: 'Desk mic' })).toBeInTheDocument();
+  });
+
+  it('shows the microphone level once the permission was granted, and releases the microphone when the section goes', async () => {
+    const stopped = vi.fn();
+    let closed = false;
+    vi.stubGlobal('AudioContext', class {
+      createMediaStreamSource() { return { connect: () => undefined, disconnect: () => undefined }; }
+      createAnalyser() { return { fftSize: 512, getFloatTimeDomainData: (b: Float32Array) => { b.fill(0.25); } }; }
+      close() { closed = true; return Promise.resolve(); }
+    });
+    const stream = { getTracks: () => [{ stop: stopped }] } as unknown as MediaStream;
+    const mic = { deviceId: 'mic-1', kind: 'audioinput', label: 'Desk mic', groupId: 'g' } as MediaDeviceInfo;
+    const { view, getUserMedia } = setup({ 'voice.input': 'mic-1' }, { permission: 'granted', devices: [mic], getUserMedia: () => Promise.resolve(stream) });
+    await waitFor(() => expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '12'), { timeout: 2000 });
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'mic-1' } } });
+    view.unmount();
+    expect(stopped).toHaveBeenCalled();
+    expect(closed).toBe(true);
+  });
+
+  it('never opens the microphone for the meter before the permission was granted', async () => {
+    const { getUserMedia } = setup({}, { permission: 'prompt', devices: [] });
+    await screen.findByRole('meter', { name: 'input level' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(getUserMedia).not.toHaveBeenCalled();
   });
 });

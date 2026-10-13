@@ -39,6 +39,8 @@ export interface PageCallState {
   paused: boolean;
   /** 'failed': a microphone exists but could not be published (E_MIC_PUBLISH); the call goes on listen-only. */
   mic: 'ok' | 'denied' | 'missing' | 'failed';
+  /** The input mode in force (task-9 review I2: it follows Settings → Voice during a call). */
+  mode: 'vad' | 'ptt';
   tiles: PageCallTile[];
   /** The local input level, 0..12. */
   level: number;
@@ -58,6 +60,8 @@ export interface PageCall {
   /** RV-3: driven by the call slice’s phase 'paused'. */
   setPaused(on: boolean): Promise<void>;
   pushToTalk(down: boolean): void;
+  /** Switches the input mode during the call: push to talk closes the microphone at once, until the key is held. */
+  setMode(mode: 'vad' | 'ptt'): void;
   leave(reason: LeaveReason): Promise<void>;
 }
 
@@ -74,6 +78,8 @@ export interface PageCallDeps {
   media: CaptureMedia & Partial<DisplayMedia>;
   /** Defaults to a DillaRnnoiseProcessor in the given mode. */
   createNoiseProcessor?: (mode: 'vad' | 'ptt') => NoiseProcessor;
+  /** The key relay’s copy step (tests observe that every copy is zero-filled); a plain copy by default. */
+  copyKey?: (buffer: ArrayBuffer) => Uint8Array;
   /** Where pagehide is heard; the page’s window by default. */
   win?: Pick<Window, 'addEventListener' | 'removeEventListener'>;
 }
@@ -190,6 +196,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const relay = createKeyRelay({
     onRoster: (m, leaf) => { roster = new Map(m); selfLeaf = leaf; afterRoster(); },
     onInstallError: (code) => installError(code),
+    ...(deps.copyKey !== undefined ? { copy: deps.copyKey } : {}),
   });
   // Subscribed before callJoin is sent: the join key is pushed just before callJoin’s answer.
   const unsubscribe = deps.bridge.onCallKeys(relay.listener);
@@ -299,7 +306,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     let state: PageCallState = {
       phase: 'connecting', muted: false, deafened: false, camera: false, sharing: false, paused: false,
-      mic: 'ok', tiles: [], level: 0, error: null,
+      mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode,
     };
     const listeners = new Set<{ fn: () => void }>();
     const set = (patch: Partial<PageCallState>): void => {
@@ -353,6 +360,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     // ---- the microphone
     const gate = new VoiceGate({ mode: opts.mode === 'ptt' ? 'ptt' : 'open' });
+    // The mode in force, and the mode an RNNoise processor was built in: a processor built for push to talk gates the
+    // audio itself (held open while voice activity is in force); otherwise push to talk mutes the track.
+    let mode: 'vad' | 'ptt' = opts.mode;
+    let processorMode: 'vad' | 'ptt' = opts.mode;
     let micPub: LocalPub | null = null;
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
@@ -361,7 +372,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const track = micPub?.track;
       if (!track) return;
       // With RNNoise, its worklet gates push to talk; without it, the track itself is muted while the key is up.
-      const pttOpen = opts.mode !== 'ptt' || processor !== null || gate.update(0, deps.now());
+      const pttOpen = mode !== 'ptt' || (processor !== null && processorMode === 'ptt') || gate.update(0, deps.now());
       const send = !ended && !state.muted && !state.deafened && !state.paused && pttOpen;
       if (send === micSending) return;
       micSending = send;
@@ -378,7 +389,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
       checkAborted();
       if (micPub?.track?.setProcessor && opts.noise === 'on') {
-        const made = (deps.createNoiseProcessor ?? ((mode) => new DillaRnnoiseProcessor({ mode })))(opts.mode);
+        processorMode = mode;
+        const made = (deps.createNoiseProcessor ?? ((m) => new DillaRnnoiseProcessor({ mode: m })))(processorMode);
         try {
           await micPub.track.setProcessor(made);
           processor = made;
@@ -681,9 +693,19 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         }
       },
       pushToTalk(down) {
-        if (ended || opts.mode !== 'ptt') return;
+        if (ended || mode !== 'ptt') return;
         gate.setPtt(down);
-        processor?.setPttActive(down);
+        if (processorMode === 'ptt') processor?.setPttActive(down);
+        applyMic();
+      },
+      setMode(next) {
+        if (ended || next === mode) return;
+        mode = next;
+        gate.setMode(next === 'ptt' ? 'ptt' : 'open');
+        gate.setPtt(false);
+        // A processor built for push to talk is held open under voice activity and closed again for push to talk.
+        if (processorMode === 'ptt') processor?.setPttActive(next !== 'ptt');
+        set({ mode: next });
         applyMic();
       },
       leave,

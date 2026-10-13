@@ -32,6 +32,10 @@
 @container d-shell (max-width: 47.99rem) {
   .d-app-shell .d-app-shell__grid { grid-template-columns: var(--rail-w) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; grid-template-areas: "banner banner" "rail sidebar" "rail main" "status status"; }
   .d-app-shell .d-app-shell__sidebar { max-height: 35dvh; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
+  /* web-3 (flow 06): the ring is fixed to the top of the shell (its containing block: the shell is a size container) and
+     the grid moves down by its height, so the ring never covers the stage controls. */
+  .d-app-shell .d-app-shell__ring { position: fixed; top: 0; left: 0; right: 0; z-index: 20; }
+  .d-app-shell:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
 }
 /* The settings frame (L-UI-24). Under 45rem of viewport it fills the viewport; under 45rem of its own
    width the navigation stacks above the section. The second is a container query on the frame, so a

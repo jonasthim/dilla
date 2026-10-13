@@ -80,12 +80,13 @@ const ring = (busy: boolean) => (
   </div>
 );
 
-function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paused?: boolean; tab?: 'channels' | 'dms'; composer?: ReactNode }) {
+function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paused?: boolean; tab?: 'channels' | 'dms'; composer?: ReactNode;
+  ring?: ReactNode }) {
   const tab = p.tab ?? 'channels';
   const live = [{ id: 'harbour', name: 'harbour', current: tab === 'channels', joined: p.joined === true, participants: [ADA, BO, HELPER] }];
   return (
-    <div style={{ ['--d-shell-h' as string]: '768px' }}>
-      <AppShell skipLabel={t('shell.skip')}
+    <div style={{ ['--d-shell-h' as string]: 'calc(100dvh - 32px)' }}>
+      <AppShell skipLabel={t('shell.skip')} ring={p.ring}
         rail={<CommunityRail label={t('shell.rail.label')} items={[{ id: 'a', name: 'Midgard' }]} activeId="a" onSelect={noop}
           joinLabel={t('shell.rail.join')} onJoin={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
         sidebar={<div className="dw-sidebar">
@@ -137,7 +138,7 @@ const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgo
 );
 
 export const Connected: Story = { render: () => <Screen joined main={stage({ code: CODE })} /> };
-export const Ringing: Story = { render: () => <Screen joined header={ring(true)} main={stage({ code: CODE })} /> };
+export const Ringing: Story = { render: () => <Screen joined ring={ring(true)} main={stage({ code: CODE })} /> };
 export const Paused: Story = {
   render: () => <Screen joined paused main={stage({ paused: true, notice: { kind: 'paused', text: t('voice.paused', { name: 'bo' }), focusOnce: false,
     action: { label: t('voice.pausedAction'), onAction: noop } } })} />,
@@ -174,9 +175,12 @@ const dmLog = (
 );
 export const DmCallRinging: Story = {
   render: () => <Screen tab="dms" joined header={<ChannelHeader kind="dm" name="bob" />} composer={composer}
-    main={<><div className="dw-dm-call">{stage({ title: 'bob', outgoing: t('call.outgoing.ringing', { names: 'bob' }), code: null })}</div>{dmLog}</>} />,
+    main={<><div className="dw-dm-call" data-view="stage">
+      <div className="dw-dm-call__bar"><Button pressed={false}>{t('voice.messages')}</Button></div>
+      {stage({ title: 'bob', outgoing: t('call.outgoing.ringing', { names: 'bob' }), code: null })}
+    </div><div className="dw-conversation">{dmLog}</div></>} />,
 };
 export const DmIncomingRing: Story = {
-  render: () => <Screen tab="dms" header={<>{ring(false)}<ChannelHeader kind="dm" name="bob" /></>} composer={composer}
+  render: () => <Screen tab="dms" ring={ring(false)} header={<ChannelHeader kind="dm" name="bob" />} composer={composer}
     main={<><div className="dw-call-strip"><Button className="dw-call-strip__start">{t('call.start')}</Button></div>{dmLog}</>} />,
 };

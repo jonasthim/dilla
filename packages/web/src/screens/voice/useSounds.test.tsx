@@ -71,4 +71,15 @@ describe('join and leave sounds (flow 06 § Sounds, R2, R4)', () => {
     app.client.publish('voice', room(BOB_IN, CAROL_IN));
     expect(app.sounds.played).toEqual([]);
   });
+
+  it('m1: the first snapshot of the room after joining is the baseline, not a join', async () => {
+    const app = renderVoiceShell({ voice: {} });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await main().findByRole('toolbar', { name: 'call controls' });
+    app.client.publish('voice', room(BOB_IN, ME_IN));
+    expect(app.sounds.played).toEqual([]);
+    app.client.publish('voice', room(BOB_IN, ME_IN, CAROL_IN));
+    expect(app.sounds.played).toEqual(['join']);
+  });
 });

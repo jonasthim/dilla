@@ -18,7 +18,7 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 
 describe('rings (flow 06, R1–R8)', () => {
   it('an incoming ring shows the banner, plays the ring and raises one notification; state 0 stops all three', async () => {
-    const app = renderVoiceShell({ permission: 'granted', settings: {} });
+    const app = renderVoiceShell({ hidden: true, permission: 'granted', settings: {} });
     app.client.publish('rings', [ring({ busy: false, quiet: false })]);
     expect(await screen.findByRole('alert')).toHaveTextContent('bob is calling');
     expect(app.sounds.ringing).toBe(true);
@@ -36,7 +36,7 @@ describe('rings (flow 06, R1–R8)', () => {
   });
 
   it('a busy ring shows the banner with the busy text but plays nothing and notifies nobody', async () => {
-    const app = await inVoice({ permission: 'granted' });
+    const app = await inVoice({ hidden: true, permission: 'granted' });
     app.client.publish('rings', [ring({ busy: true })]);
     expect(await screen.findByRole('alert')).toHaveTextContent('bob is calling. Answering leaves general.');
     expect(app.sounds.ringing).toBe(false);
@@ -44,7 +44,7 @@ describe('rings (flow 06, R1–R8)', () => {
   });
 
   it('a muted DM rings with the banner only (R1)', async () => {
-    const app = renderVoiceShell({ permission: 'granted' });
+    const app = renderVoiceShell({ hidden: true, permission: 'granted' });
     app.client.publish('rings', [ring({ quiet: true })]);
     expect(await screen.findByRole('alert')).toHaveTextContent('bob is calling');
     expect(app.sounds.ringing).toBe(false);
@@ -53,7 +53,7 @@ describe('rings (flow 06, R1–R8)', () => {
   });
 
   it('sound.ring off: banner and notification, no ring sound', async () => {
-    const app = renderVoiceShell({ permission: 'granted', settings: { 'sound.ring': 'off' } });
+    const app = renderVoiceShell({ hidden: true, permission: 'granted', settings: { 'sound.ring': 'off' } });
     app.client.publish('rings', [ring()]);
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(app.notifications).toHaveLength(1);
@@ -61,7 +61,7 @@ describe('rings (flow 06, R1–R8)', () => {
   });
 
   it('a DM whose notify mode is nothing rings without a notification', async () => {
-    const app = renderVoiceShell({ permission: 'granted', settings: { [`notify.channel.${DM}`]: 'nothing' } });
+    const app = renderVoiceShell({ hidden: true, permission: 'granted', settings: { [`notify.channel.${DM}`]: 'nothing' } });
     app.client.publish('rings', [ring()]);
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(app.notifications).toEqual([]);
@@ -70,7 +70,7 @@ describe('rings (flow 06, R1–R8)', () => {
 
   it('notification permission denied or default: banner and sound only, never a permission prompt from a ring', async () => {
     for (const permission of ['denied', 'default'] as const) {
-      const app = renderVoiceShell({ permission });
+      const app = renderVoiceShell({ hidden: true, permission });
       app.client.publish('rings', [ring()]);
       expect(await screen.findByRole('alert')).toBeInTheDocument();
       expect(app.sounds.ringing).toBe(true);
@@ -82,7 +82,7 @@ describe('rings (flow 06, R1–R8)', () => {
   });
 
   it('no ring sound before the page saw a user activation; the banner still shows', async () => {
-    const app = renderVoiceShell({ permission: 'granted', activated: false });
+    const app = renderVoiceShell({ hidden: true, permission: 'granted', activated: false });
     app.client.publish('rings', [ring()]);
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(app.sounds.ringing).toBe(false);
@@ -126,12 +126,73 @@ describe('rings (flow 06, R1–R8)', () => {
 
   it('clicking the notification focuses the window, opens the DM and closes it', async () => {
     const focus = vi.spyOn(window, 'focus').mockImplementation(() => undefined);
-    const app = renderVoiceShell({ permission: 'granted' });
+    const app = renderVoiceShell({ hidden: true, permission: 'granted' });
     app.client.publish('rings', [ring()]);
     await screen.findByRole('alert');
     app.notifications[0].onclick?.(new Event('click'));
     expect(focus).toHaveBeenCalled();
     await waitFor(() => expect(window.location.pathname).toBe(`/dm/${DM}`));
     expect(app.notifications[0].closed).toBe(true);
+  });
+
+  // Ruling (task 9): flow 06 wins, the desktop notification shows only while the tab is hidden; the banner covers a visible tab.
+  it('a visible tab rings with the banner and the sound, and notifies only once it is hidden; showing it again closes the notification', async () => {
+    const app = renderVoiceShell({ permission: 'granted' });
+    app.client.publish('rings', [ring()]);
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(app.sounds.ringing).toBe(true);
+    expect(app.notifications).toEqual([]);
+    app.setHidden(true);
+    expect(app.notifications).toHaveLength(1);
+    app.setHidden(false);
+    expect(app.notifications[0].closed).toBe(true);
+  });
+
+  it('closes its notifications when the shell goes (m5)', async () => {
+    const app = renderVoiceShell({ hidden: true, permission: 'granted' });
+    app.client.publish('rings', [ring()]);
+    await screen.findByRole('alert');
+    app.view.unmount();
+    expect(app.notifications[0].closed).toBe(true);
+    expect(app.sounds.ringing).toBe(false);
+  });
+
+  it('no ring sound for a busy ring outside a call, nor for a ring while this device is in a call (m5)', async () => {
+    const app = renderVoiceShell();
+    app.client.publish('rings', [ring({ busy: true })]);
+    await screen.findByRole('alert');
+    expect(app.sounds.ringing).toBe(false);
+    app.view.unmount();
+    const inCall = await inVoice();
+    inCall.client.publish('rings', [ring({ busy: false })]);
+    await screen.findByRole('alert');
+    expect(inCall.sounds.ringing).toBe(false);
+  });
+
+  it('muting the DM while it rings stops the ring sound (m3)', async () => {
+    const app = renderVoiceShell();
+    app.client.publish('rings', [ring()]);
+    await screen.findByRole('alert');
+    expect(app.sounds.ringing).toBe(true);
+    app.client.publish('settings', { [`mute.channel.${DM}`]: '1' });
+    expect(app.sounds.ringing).toBe(false);
+  });
+
+  it('a ring that ends while focus is on its buttons hands focus to the main landmark (I5)', async () => {
+    const app = renderVoiceShell();
+    app.client.publish('rings', [ring()]);
+    await screen.findByRole('alert');
+    main().getByRole('button', { name: 'decline' }).focus();
+    await app.user.keyboard('{Enter}');
+    expect(app.client.calls.at(-1)).toMatchObject({ m: 'callDecline' });
+    app.client.publish('rings', []);
+    expect(screen.getByRole('main')).toHaveFocus();
+    // A ring that ends while focus is elsewhere leaves focus alone.
+    app.client.publish('rings', [ring()]);
+    await screen.findByRole('alert');
+    const join = main().getByRole('button', { name: 'join voice' });
+    join.focus();
+    app.client.publish('rings', []);
+    expect(join).toHaveFocus();
   });
 });

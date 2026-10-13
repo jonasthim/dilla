@@ -47,8 +47,17 @@ export interface CallView {
   joining: boolean;
   session: PageCall | null;
   state: PageCallState | null;
-  /** The dock's polite announcement (join, leave, mute, deafen, the end of a pause). */
+  /** The dock's polite announcement (join, mute, deafen, the input mode, the end of a pause, the outgoing ring). */
   announcement: string;
+  /**
+   * What is said after the dock is gone (task-9 rulings, review I6): "You left {where}.", and a block or a removal while
+   * the stage is not on screen. The shell renders it in a status region that outlives the dock.
+   */
+  lasting: string;
+  announce: (text: string) => void;
+  /** True until the current pause banner took focus once, wherever it shows (review m4). */
+  pauseFocusPending: boolean;
+  markPauseFocused: () => void;
   notice: CallNotice | null;
   /** The channel whose call this device left because of a block while in it (voice.blocked rather than blockedJoin). */
   blockedMidCall: string | null;
@@ -73,6 +82,8 @@ export interface UseCallOptions {
   whereOf(channelId: string): string;
   /** Called once a leave the person asked for finished: focus goes back to where the call came from. */
   onLeft(channelId: string): void;
+  /** Whether the call's stage is on screen (its notices then speak for themselves). */
+  stageShown(channelId: string): boolean;
 }
 
 const CODE_M = 'KeyM';
@@ -86,6 +97,8 @@ export function useCall(o: UseCallOptions): CallView {
   const [channelId, setChannelId] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [announcement, setAnnouncement] = useState('');
+  const [lasting, setLasting] = useState('');
+  const [pauseFocusPending, setPauseFocusPending] = useState(false);
   const [notice, setNotice] = useState<CallNotice | null>(null);
   const [blockedMidCall, setBlockedMidCall] = useState<string | null>(null);
   const stageFocus = useRef(false);
@@ -185,10 +198,10 @@ export function useCall(o: UseCallOptions): CallView {
     if (current === null || id === null) return;
     detach();
     void current.leave('user').finally(() => {
-      announce(t('voice.announce.left', { where: live.current.whereOf(id) }));
+      setLasting(t('voice.announce.left', { where: live.current.whereOf(id) }));
       live.current.onLeft(id);
     });
-  }, [announce, detach]);
+  }, [detach]);
 
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
@@ -231,7 +244,8 @@ export function useCall(o: UseCallOptions): CallView {
 
   // The worker's call slice drives the session (RV-3 and the block rule above), on every slice change and again when a
   // session attaches, reading the newest slice the client holds rather than one a render captured (security-scanner
-  // leads, fail-open state drift). The call id of a call is its channel's id (protocol/09 § Voice), so the channel decides
+  // leads, fail-open state drift; defensive: React already renders the newest slice, so no test tells the two reads
+  // apart, review m6). The call id of a call is its channel's id (protocol/09 § Voice), so the channel decides
   // whether a slice is this session's. The worker publishes phase 'in' before callJoin answers (L-TS-56 step 1), so an
   // attached session must always match a slice that says 'in' or 'paused' for its channel. Fail closed:
   // - 'paused' pauses it (once); only 'in' for this channel unpauses it, and no cleanup ever does;
@@ -239,7 +253,13 @@ export function useCall(o: UseCallOptions): CallView {
   // - anything else (idle, failed, joining, leaving, or another channel: the worker is not in this call) tears it down;
   // - a setPaused or leave that throws or rejects tears the session down; nothing of it escapes.
   const teardown = useCallback((s: PageCall, reason: 'blocked' | 'removed') => {
-    if (sessionRef.current === s) detach();
+    const id = channelRef.current;
+    if (sessionRef.current === s) {
+      // Focus inside the dock would fall to the page with it: it goes to the voice row the call came from (review I6).
+      const inDock = document.activeElement?.closest('.dw-voice-dock') != null;
+      detach();
+      if (inDock && id !== null) live.current.onLeft(id);
+    }
     try {
       s.leave(reason).catch(() => undefined);
     } catch {
@@ -263,17 +283,22 @@ export function useCall(o: UseCallOptions): CallView {
     if (phase === 'paused') {
       if (!paused.current) {
         paused.current = true;
+        setPauseFocusPending(true);
         safely(s, () => s.setPaused(true));
       }
     } else if (phase === 'in') {
       if (paused.current) {
         paused.current = false;
+        setPauseFocusPending(false);
         safely(s, () => s.setPaused(false));
         announce(t('voice.resumed'));
       }
     } else if (phase === 'blocked' || phase === 'removed') {
       if (phase === 'blocked') setBlockedMidCall(id);
       else setNotice({ channelId: id, key: 'voice.removed' });
+      // Off the stage, nothing else would say why the call ended (review I6).
+      if (!live.current.stageShown(id)) setLasting(t(phase === 'blocked' ? 'voice.blocked' : 'voice.removed'));
+      setPauseFocusPending(false);
       teardown(s, phase);
     } else {
       teardown(s, 'removed');
@@ -295,15 +320,23 @@ export function useCall(o: UseCallOptions): CallView {
     return () => window.removeEventListener('keydown', onKey);
   }, [session, toggleMute, toggleDeafen]);
 
+  // The input mode follows Settings → Voice during a call (review I2): the session switches first (push to talk closes the
+  // microphone at once), the dock says which mode is in force, and the key binds only to the mode the session applied.
+  const wanted = o.settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad';
+  useEffect(() => {
+    if (session === null || session.state.mode === wanted) return;
+    session.setMode(wanted);
+    announce(t(wanted === 'ptt' ? 'settings.voice.ptt' : 'settings.voice.vad'));
+  }, [session, wanted, announce]);
   // Push to talk (decision 2): only in ptt mode with a key that is one non-text key on its own; a stored key that is
   // not (an older rule saved KeyV) binds nothing, and Settings shows it as unset.
-  const mode = o.settings[SETTINGS.voiceMode];
+  const applied = state?.mode;
   const pttKey = o.settings[SETTINGS.voicePttKey];
   useEffect(() => {
     const mod = module.current;
-    if (session === null || mod === null || mode !== 'ptt' || pttKey === undefined || !isPushToTalkKey(pttKey)) return;
+    if (session === null || mod === null || applied !== 'ptt' || pttKey === undefined || !isPushToTalkKey(pttKey)) return;
     return mod.bindPushToTalk({ code: pttKey, onChange: down => session.pushToTalk(down) });
-  }, [session, mode, pttKey]);
+  }, [session, applied, pttKey]);
 
   // Leaving the shell (sign-out, a lost account) ends the call as the person's own leave.
   useEffect(() => {
@@ -317,7 +350,8 @@ export function useCall(o: UseCallOptions): CallView {
   }, []);
 
   return {
-    channelId, joining, session, state, announcement, notice, blockedMidCall, unsupported,
+    channelId, joining, session, state, announcement, lasting, announce, notice, blockedMidCall, unsupported,
+    pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
     join, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume,
   };

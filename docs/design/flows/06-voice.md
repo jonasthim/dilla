@@ -153,6 +153,8 @@ The sidebar sheet (opened with `☰`) holds the dock above the user panel while 
 
 **DM call on the phone.** The stage is full screen with a `messages` toggle that shows the log and composer in its place; the call strip stays under the header.
 
+Amended 2026-10-13 (task-9 review): the toggle is `voice.messages`, a pressed toggle (pressed while the log shows). The input mode follows Settings → Voice during a call: switching to push to talk closes the microphone at once, and the dock shows `settings.voice.ptt` while it is in force. The ring's desktop notification shows only while the tab is hidden, and closes when the tab shows again (the banner covers a visible tab).
+
 **Players on the phone.** A video takes the full card width at 16:9; audio is the native control bar at the card's width. Nothing scrolls horizontally at 360 CSS px.
 
 ## Keyboard map
@@ -225,6 +227,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.bot.canHear='can hear'` (shown with the bot tag on a bot's sub-row in the voice list, so a bot that can hear is visible before joining; added 2026-10-13, task-7 review I5)
 - `voice.state.notHeard='not heard yet'`, `voice.state.unverified='unverified stream'`, `voice.state.connecting='connecting'`
 - `voice.state.video='camera on'`, `voice.state.screen='sharing screen'`
+- `voice.tag.web='web'`, `voice.tag.bot='bot'` (the participant tags, as the message rows show them; added 2026-10-13, task-9 review m7)
 
 *Announcements:*
 - `voice.announce.joined='You joined {where}.'`, `voice.announce.left='You left {where}.'`
@@ -232,6 +235,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.announce.deafened='Sound off.'`, `voice.announce.undeafened='Sound on.'`
 
 *Stage and call code:*
+- `voice.messages='messages'` (the phone DM call's toggle between the stage and the log with the composer; added 2026-10-13, task-9 review I7)
 - `voice.code='call code'`
 - `voice.codeHelp='The code changes whenever someone joins or leaves. Read it aloud: if every screen shows the same code, everyone is hearing the same set of devices.'`
 - `voice.empty='Nobody is in voice yet.'`, `voice.tiles='people in voice'`, `voice.volume='volume for {name}'`

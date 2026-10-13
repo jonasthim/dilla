@@ -15,26 +15,82 @@ interface Device { id: string; label: string }
 /**
  * The devices to choose from, read only once the microphone permission was granted: before that the browser lists no
  * labels, and asking for the list must not open a permission prompt from Settings. '' (the system default) is always there.
+ * A browser that cannot query the `microphone` permission (Firefox throws) is read by its list: labelled devices are
+ * listed only after a grant (review m2).
  */
-function useDevices(): { inputs: Device[]; outputs: Device[] } {
-  const [lists, setLists] = useState<{ inputs: Device[]; outputs: Device[] }>({ inputs: [], outputs: [] });
+function useDevices(): { inputs: Device[]; outputs: Device[]; granted: boolean } {
+  const [lists, setLists] = useState<{ inputs: Device[]; outputs: Device[]; granted: boolean }>({ inputs: [], outputs: [], granted: false });
   useEffect(() => {
     let live = true;
     const read = async () => {
       const permissions = (navigator as { permissions?: Permissions }).permissions;
       const media = (navigator as { mediaDevices?: MediaDevices }).mediaDevices;
-      if (permissions === undefined || media === undefined) return;
-      const status = await permissions.query({ name: 'microphone' });
-      if (status.state !== 'granted') return;
+      if (media === undefined) return;
+      let state: PermissionState | 'unknown' = 'unknown';
+      try {
+        if (permissions !== undefined) state = (await permissions.query({ name: 'microphone' })).state;
+      } catch {
+        state = 'unknown';
+      }
+      if (state !== 'granted' && state !== 'unknown') return;
       const all = await media.enumerateDevices();
+      if (state === 'unknown' && !all.some(d => d.kind === 'audioinput' && d.label !== '')) return;
       const pick = (kind: MediaDeviceKind) => all.filter(d => d.kind === kind && d.deviceId !== 'default' && DEVICE_ID.test(d.deviceId))
         .map(d => ({ id: d.deviceId, label: d.label !== '' ? d.label : d.deviceId.slice(0, 8) }));
-      if (live) setLists({ inputs: pick('audioinput'), outputs: pick('audiooutput') });
+      if (live) setLists({ inputs: pick('audioinput'), outputs: pick('audiooutput'), granted: true });
     };
     read().catch(() => undefined);
     return () => { live = false; };
   }, []);
   return lists;
+}
+
+const LEVEL_EVERY_MS = 120;
+/** The meter's 12 steps from the input's RMS (0..1); 0.25 RMS, a loud voice close to the microphone, fills it. */
+const levelOf = (rms: number): number => Math.min(12, Math.round(rms * 48));
+
+/**
+ * The input level for the Settings meter (task-9 ruling): once the microphone permission was granted, the chosen input
+ * is opened and read through an AnalyserNode every 120 ms; it is released when the section goes or the input changes.
+ * Nothing is opened before a grant, so Settings never raises a permission prompt.
+ */
+function useInputLevel(granted: boolean, input: string): number {
+  const [level, setLevel] = useState(0);
+  useEffect(() => {
+    const media = (navigator as { mediaDevices?: MediaDevices }).mediaDevices;
+    const Ctx = (globalThis as { AudioContext?: typeof AudioContext }).AudioContext;
+    if (!granted || media === undefined || Ctx === undefined) return;
+    let stopped = false;
+    let stream: MediaStream | null = null;
+    let ctx: AudioContext | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const release = () => {
+      if (timer !== null) clearInterval(timer);
+      for (const track of stream?.getTracks() ?? []) track.stop();
+      void ctx?.close().catch(() => undefined);
+      stream = null;
+      ctx = null;
+    };
+    const open = async () => {
+      const got = await media.getUserMedia({ audio: input === '' ? true : { deviceId: { exact: input } } });
+      stream = got;
+      if (stopped) { release(); return; }
+      ctx = new Ctx();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      ctx.createMediaStreamSource(got).connect(analyser);
+      const buffer = new Float32Array(analyser.fftSize);
+      timer = setInterval(() => {
+        analyser.getFloatTimeDomainData(buffer);
+        let sum = 0;
+        for (const x of buffer) sum += x * x;
+        setLevel(levelOf(Math.sqrt(sum / buffer.length)));
+      }, LEVEL_EVERY_MS);
+    };
+    open().catch(() => undefined);
+    return () => { stopped = true; release(); setLevel(0); };
+  }, [granted, input]);
+  return level;
 }
 
 /**
@@ -45,7 +101,8 @@ function useDevices(): { inputs: Device[]; outputs: Device[] } {
 export function Voice(): React.JSX.Element {
   const client = useCore();
   const settings = useSlice('settings') ?? {};
-  const { inputs, outputs } = useDevices();
+  const { inputs, outputs, granted } = useDevices();
+  const level = useInputLevel(granted, settings[SETTINGS.voiceInput] ?? '');
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<UiError | null>(null);
   const write = (key: string, value: string | null) => {
@@ -66,7 +123,7 @@ export function Voice(): React.JSX.Element {
       {error === null ? null : <Banner tone="danger">{t('settings.error.other', { code: error.code })}</Banner>}
       <VoiceSettings inputs={inputs} outputs={outputs} input={settings[SETTINGS.voiceInput] ?? ''} output={settings[SETTINGS.voiceOutput] ?? ''}
         canSelectOutput={canSelectOutput} mode={settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad'} pttKey={pttKey}
-        capturing={capturing} noise={settings[SETTINGS.voiceNoise] !== 'off'} level={0}
+        capturing={capturing} noise={settings[SETTINGS.voiceNoise] !== 'off'} level={level}
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
