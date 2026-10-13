@@ -1585,9 +1585,12 @@ impl ClientCore {
         // Messages the user's current leaves sent while unverified waited as retained evidence;
         // each is released only if its exact leaf now validates (revalidate_pending checks it).
         // A core with no identity has received nothing. Each (group, leaf index) is listed once.
+        // The approval is saved above, so it is reported as done (R4): a revalidation that fails
+        // here releases nothing and keeps its evidence, which a later revalidation of that leaf
+        // (the next validated list of it) releases.
         if own.is_some() {
             for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
-                self.revalidate_pending(&leaf.group_id, leaf.leaf_index, 256)?;
+                let _ = self.revalidate_pending(&leaf.group_id, leaf.leaf_index, 256);
             }
         }
         Ok(())

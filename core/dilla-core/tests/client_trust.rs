@@ -2387,3 +2387,41 @@ fn fixr_trust_state_reads_an_unloadable_groups_stored_verdicts() {
         Some("E_CREDENTIAL")
     );
 }
+
+/// R4: once the approval is saved, trust_verify answers success. A revalidation of held messages
+/// that fails afterwards (here the store's pending-history index is gone) is left to the next
+/// revalidation; before, the call answered an error although the key was already verified.
+#[test]
+fn fixr_trust_verify_succeeds_once_saved_when_revalidation_fails() {
+    let (_, mut relay, mut alice, bob, v1) = sec_raw_bob();
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+    rotated.join_external(&mut relay);
+    alice.sync(&relay);
+    let v2 = sec_next(&v1, vec![sec_entry(&rotated)], 0xd6);
+    sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
+    let held = rotated.send(&mut relay, "sent while the change is pending");
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, held).reason, "E_UMK_CHANGED");
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute("DROP INDEX app_pending_history_by_leaf_seq", [])
+        .unwrap();
+    let k2 = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    alice
+        .core
+        .trust_verify(&bob.user, &k2)
+        .expect("the saved approval is reported as done");
+    let (umk, verified, changed, _) = fixa_row(&alice, &bob.user).expect("Bob's row");
+    assert_eq!(
+        (umk, verified, changed),
+        (k2, 1, None),
+        "the approval is saved"
+    );
+    assert_eq!(
+        alice.row_at(&GROUP, held).status,
+        1,
+        "the failed revalidation released nothing"
+    );
+}
