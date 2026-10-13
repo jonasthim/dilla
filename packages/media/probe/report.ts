@@ -31,7 +31,8 @@ export interface ProbeEvent { t: number; what: string }
 
 export interface ProbeReport {
   v: 1; label: string; ua: string; startedAt: string;
-  joinMs: { connected: number; firstVerifiedRemote: number | null }; // from the button press
+  // From the button press. `connected` is null when the join failed (the `join failed` event says when).
+  joinMs: { connected: number | null; firstVerifiedRemote: number | null };
   pair: ProbePair | null;
   candidates: { type: string; protocol: string }[]; // gathered, addresses dropped
   samples: ProbeSample[];

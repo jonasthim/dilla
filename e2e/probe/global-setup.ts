@@ -2,7 +2,8 @@
 // ports (8485/8486, LiveKit 7892/7894) and the probe page's Vite server on 5191, proxying that test host as it proxies
 // a real instance in the session. Build the test host first:
 //   /home/thim/.local/go/bin/go -C <wt> build -o <wt>/target/dilla-testhost ./cmd/dilla-testhost
-// It passes its flags itself and imports nothing from e2e/web/support/host.ts.
+// It passes its flags itself and imports nothing from e2e/web/support/host.ts. The test host must be the web-3 build
+// (lane A's call snapshot route, `GET /v1/channels/{id}/call`, which `netprobe arm` reads).
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

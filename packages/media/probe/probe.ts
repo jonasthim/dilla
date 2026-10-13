@@ -176,7 +176,8 @@ async function run(j: StartJson): Promise<void> {
   osc.start();
 
   let session: CallSession | null = null;
-  let connected = 0;
+  // null when the join failed: the `join failed` event carries when it gave up.
+  let connected: number | null = null;
   let firstVerified: number | null = null;
   const samples: ProbeSample[] = [];
   const totals: RtpTotals = new Map();
@@ -188,12 +189,13 @@ async function run(j: StartJson): Promise<void> {
     const caps = decodeCaps([64_000, 2_500_000, 0]);
     session = await joinCall({
       livekitUrl: j.livekitUrl, token: j.token, iceServers: j.iceServers, epoch: epochKeys(j),
-      // Per leaf, not per origin: run3 puts both sides in two windows of one browser on the laptop.
+      // Per leaf, not per origin: pair O puts both sides in two windows of one browser on the laptop.
       lock: { instanceId: `netprobe-leaf-${j.keys.selfLeaf}`, callGroupId: j.groupId },
       roomOptions: { publishDefaults: publishDefaults(caps), adaptiveStream: false },
       initTimeoutMs: 60_000,
     });
-    connected = now();
+    const connectedAt = now();
+    connected = connectedAt;
     joined = true;
     note('connected');
     const room = session.room;
@@ -205,7 +207,7 @@ async function run(j: StartJson): Promise<void> {
     micTrack = (pub.track as LocalAudioTrack | undefined) ?? null;
     note('tone published');
     silenceButton.disabled = false;
-    endAt = connected + RUN_MS;
+    endAt = connectedAt + RUN_MS;
     status(`measuring for ${RUN_MS / 1000} s`);
     let nextSample = now();
     while (now() < endAt) {
@@ -232,7 +234,6 @@ async function run(j: StartJson): Promise<void> {
   } catch (err) {
     failure = (err as Error).message ?? String(err);
     note(`join failed: ${failure}`);
-    if (connected === 0) connected = now();
     const all = await Promise.all(pcs.map((pc) => pc.getStats())).catch(() => []);
     candidates = all.flatMap((r) => candidatesFromStats(r));
   } finally {

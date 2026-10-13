@@ -93,14 +93,34 @@ enum Netprobe {
         /// The instance's base URL, plain http:// (the probe page's dev server proxies a TLS one).
         #[arg(long)]
         instance: String,
-        /// An invite code with two uses left.
+        /// An invite code with two uses left. Without it, the code is read from NETPROBE_INVITE, which
+        /// keeps it out of the shell history and the process list.
         #[arg(long)]
-        invite: String,
+        invite: Option<String>,
         #[arg(long)]
         out: std::path::PathBuf,
         /// The invite's id as `dillad admin invite create` logged it, printed in the cleanup lines.
         #[arg(long)]
         invite_id: Option<String>,
+    },
+    /// Ready one side for the next run: side a registers a fresh call group unless its own is still
+    /// the open one, side b joins the open group. Refuses while a call is live; a no-op when armed.
+    /// Arm side a, then side b, then start both.
+    Arm {
+        #[arg(long)]
+        instance: String,
+        /// The side directory `prepare` wrote (side-a/ or side-b/).
+        #[arg(long)]
+        state: std::path::PathBuf,
+    },
+    /// End the DM's live call (DELETE /v1/calls/{id}), which closes its group. A real instance ends
+    /// a call by itself about 20 s after its room empties; this is for one that does not.
+    End {
+        #[arg(long)]
+        instance: String,
+        /// Either side directory of the pair.
+        #[arg(long)]
+        state: std::path::PathBuf,
     },
     /// Load one side, sync its call group, start or join the DM's call and write the start JSON.
     /// The probe page must press Start within 30 s of this command.
@@ -123,27 +143,72 @@ fn netprobe(verb: Netprobe) -> std::process::ExitCode {
             invite,
             out,
             invite_id,
-        } => match dilla_testkit::netprobe_prepare(&instance, &invite, &out) {
-            Ok(p) => {
-                let id = invite_id.unwrap_or_else(|| "<invite id>".into());
-                println!("account a: {}", p.names.0);
-                println!("account b: {}", p.names.1);
-                println!("call group {} at epoch {}", p.group_id, p.epoch);
-                println!("side a: {}", p.side_a.display());
-                println!("side b: {}", p.side_b.display());
-                println!("cleanup, after the session:");
-                println!("  dillad admin user delete --username={} --yes", p.names.0);
-                println!("  dillad admin user delete --username={} --yes", p.names.1);
-                println!("  dillad admin invite revoke --id={id}");
+        } => {
+            let Some(invite) = invite.or_else(|| std::env::var("NETPROBE_INVITE").ok()) else {
+                eprintln!("netprobe prepare: pass --invite or set NETPROBE_INVITE");
+                return std::process::ExitCode::from(2);
+            };
+            let id = invite_id.unwrap_or_else(|| "<invite id>".into());
+            // Each account is named the moment it exists, with its cleanup line, so a prepare that
+            // fails half-way leaves nothing unnamed.
+            let mut side = 'a';
+            let mut on_account = |name: &str| {
+                println!("account {side}: {name}");
+                println!("  cleanup: dillad admin user delete --username={name} --yes");
+                side = 'b';
+            };
+            match dilla_testkit::netprobe_prepare(&instance, &invite, &out, &mut on_account) {
+                Ok(p) => {
+                    println!("call group {} at epoch {}", p.group_id, p.epoch);
+                    println!("side a: {}", p.side_a.display());
+                    println!("side b: {}", p.side_b.display());
+                    println!("cleanup, after the session:");
+                    println!("  dillad admin user delete --username={} --yes", p.names.0);
+                    println!("  dillad admin user delete --username={} --yes", p.names.1);
+                    println!("  dillad admin invite revoke --id={id}");
+                    println!(
+                        "  rm -r {} {} (and every start JSON)",
+                        p.side_a.display(),
+                        p.side_b.display()
+                    );
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("netprobe prepare: {e}");
+                    eprintln!(
+                        "  the accounts printed above exist; revoke the invite if it is spent: dillad admin invite revoke --id={id}"
+                    );
+                    std::process::ExitCode::FAILURE
+                }
+            }
+        }
+        Netprobe::End { instance, state } => match dilla_testkit::netprobe_end(&instance, &state) {
+            Ok(Some(call)) => {
+                println!("call {call} ended; its call group is closed");
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(None) => {
+                println!("no call is live");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("netprobe end: {e}");
+                std::process::ExitCode::FAILURE
+            }
+        },
+        Netprobe::Arm { instance, state } => match dilla_testkit::netprobe_arm(&instance, &state) {
+            Ok(a) => {
                 println!(
-                    "  rm -r {} {} (and every start JSON)",
-                    p.side_a.display(),
-                    p.side_b.display()
+                    "{}: call group {} {} at epoch {}",
+                    state.display(),
+                    a.group_id,
+                    a.action,
+                    a.epoch
                 );
                 std::process::ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("netprobe prepare: {e}");
+                eprintln!("netprobe arm: {e}");
                 std::process::ExitCode::FAILURE
             }
         },

@@ -1,18 +1,24 @@
 //! `dilla-testkit netprobe`: the real-network voice probe (L-PROBE-1).
 //!
-//! Two verbs, because a call group does not wait: a device whose leaf is in a live call's group but
-//! which stays out of the room past `admissionJoinWindow` (30 s) loses its leaf to the room sweep,
-//! and a room nobody joins is reaped after 300 s, which ends the call and closes its group. So
-//! `prepare` builds the accounts and the call group once, on the supervisor's machine, and `start`
-//! runs on each side's own machine right before its probe page presses Start.
+//! Three verbs, because a call group does not wait: a device whose leaf is in a live call's group
+//! but which stays out of the room past `admissionJoinWindow` (30 s) loses its leaf to the room
+//! sweep; a room nobody joins is reaped after 300 s; an ended call closes its group; and the
+//! instance closes an open call group no live call names 600 s after it was created (L-HTTP-105).
+//! So the accounts and their DM are made once per pair, and the call group once per run, on
+//! demand, on each side's own machine: no secret crosses machines after the pair's first copy.
 //!
 //! - `prepare` signs up two throwaway native accounts through an invite (`netprobe-a-<6 hex>` and
-//!   `netprobe-b-<6 hex>`, one random suffix per run: a deleted handle stays reserved), opens a 1:1
-//!   DM from A to B, registers the DM's call group as A and joins it by external commit as B, so
-//!   both leaves are in one epoch. No call is started. Each side's device state (identity seed,
+//!   `netprobe-b-<6 hex>`, one random suffix per pair: a deleted handle stays reserved), opens a
+//!   1:1 DM from A to B, registers the DM's call group as A and joins it by external commit as B,
+//!   so both leaves are in one epoch. No call is started. Each side's device state (identity seed,
 //!   ids, MLS store) is written to `<out>/side-a/` and `<out>/side-b/`.
+//! - `arm` readies one side for the next run against `GET /v1/channels/{dm}/call` (L-HTTP-100):
+//!   side a registers a fresh call group unless its own is still the open one, side b joins the
+//!   open group by external commit unless it already holds it. Re-running it is a no-op, and it
+//!   refuses while a call is live. Each run arms side a, then side b, then starts both.
 //! - `start` loads one side, signs in with a fresh challenge-response session, syncs the call
-//!   group, starts (or joins) the DM's call and writes the start JSON the probe page loads.
+//!   group (side a merges side b's external commit here), starts (or joins) the DM's call and
+//!   writes the start JSON the probe page loads.
 //!
 //! Public routes only: nothing here calls `/debug/*` or a test host's control listener, so the
 //! probe runs against a real instance as it runs against `dilla-testhost`. The testkit speaks
@@ -35,15 +41,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::ds::remote::{CallStarted, instance_document};
-use crate::{DeliveryService, DsError, Frame, HttpDs, TestClient, TestkitError};
+use crate::{DeliveryService, DsError, HttpDs, TestClient, TestkitError};
 
 /// The side's MLS store inside its state directory: a SQLite copy of the in-memory store
 /// `prepare` built, which `start` opens in place.
 const MLS_FILE: &str = "mls.sqlite";
 /// The side's identity and ids inside its state directory.
 const SIDE_FILE: &str = "side.json";
-/// What every refusal of a stale state directory tells the operator.
+/// What a refusal of an unusable state directory tells the operator.
 const PREPARE_AGAIN: &str = "run prepare again";
+/// What a refusal of a closed or replaced call group tells the operator.
+const ARM_AGAIN: &str = "run arm again (side a, then side b)";
 
 fn scenario(msg: impl Into<String>) -> TestkitError {
     TestkitError::Scenario(msg.into())
@@ -212,8 +220,8 @@ pub(crate) fn start_json(livekit_url: &str, started: &CallStarted, keys: &MediaK
 
 /// The calls route's answer, judged against the state's call group. A closed group is refused
 /// `E_LEAF_NOT_CURRENT`; a channel whose only call group is closed has none (`E_NOT_FOUND`); and a
-/// call opened on another, newer group means this one is closed too. None of them can be repaired
-/// from this state: the leaves have to be built again.
+/// call opened on another, newer group means this one is closed too. Each needs a fresh call group:
+/// `arm` on side a, then on side b.
 pub(crate) fn check_started(
     group: &[u8; 16],
     result: Result<CallStarted, DsError>,
@@ -221,18 +229,411 @@ pub(crate) fn check_started(
     match result {
         Ok(s) if &s.group_id == group => Ok(s),
         Ok(s) => Err(scenario(format!(
-            "the call opened on call group {}, not this state's {}: its group is closed; {PREPARE_AGAIN}",
+            "the call opened on call group {}, not this state's {}: its group is closed; {ARM_AGAIN}",
             hex::encode(s.group_id),
             hex::encode(group)
         ))),
         Err(e) if matches!(e.code(), "E_LEAF_NOT_CURRENT" | "E_NOT_FOUND") => {
             Err(scenario(format!(
-                "the call group {} is closed or this device's leaf left it ({e}); {PREPARE_AGAIN}",
+                "the call group {} is closed or this device's leaf left it ({e}); {ARM_AGAIN}",
                 hex::encode(group)
             )))
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// `start` hands out keys only for an epoch that holds both sides.
+pub(crate) fn check_roster(members: usize) -> Result<(), TestkitError> {
+    if members < 2 {
+        return Err(scenario(format!(
+            "the call group holds {members} leaf: arm the other side, then run start again"
+        )));
+    }
+    Ok(())
+}
+
+/// Which side of a pair a state directory is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Side {
+    /// Registers the run's call group.
+    A,
+    /// Joins it by external commit.
+    B,
+}
+
+/// What `GET /v1/channels/{id}/call` (L-HTTP-100) answers, as far as `arm` reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ChannelCall {
+    /// The live call's group, else the channel's newest open call group, else none.
+    pub(crate) group_id: Option<[u8; 16]>,
+    pub(crate) call_id: Option<[u8; 16]>,
+    pub(crate) participants: usize,
+}
+
+/// `[group_id(bstr16|null), call_id(bstr16|null), participants([[user_id, device_id, flags]])]`.
+pub(crate) fn decode_channel_call(body: &[u8]) -> Result<ChannelCall, TestkitError> {
+    dilla_core::cbor::decode_strict(body, |d| {
+        d.array(3)?;
+        let group_id = d.opt_bytes_exact::<16>()?;
+        let call_id = d.opt_bytes_exact::<16>()?;
+        // A Go nil slice is encoded as null.
+        let n = if d.try_null()? { 0 } else { d.array_len()? };
+        for _ in 0..n {
+            d.array(3)?;
+            d.bytes_exact::<16>()?;
+            d.bytes_exact::<16>()?;
+            d.uint()?;
+        }
+        Ok(ChannelCall {
+            group_id,
+            call_id,
+            participants: n,
+        })
+    })
+    .map_err(|e| scenario(format!("GET /v1/channels/{{id}}/call: {e:?}")))
+}
+
+/// What `arm` does to a side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArmAction {
+    /// The side already holds the open group: nothing to do.
+    Keep,
+    /// Side a registers a fresh call group.
+    Register,
+    /// Side b joins this open group by external commit.
+    Join([u8; 16]),
+}
+
+/// The arm decision. `stored` is the group `side.json` names, `held` whether the side's MLS store
+/// holds it, `served` what the instance answers now. While a call is live, a new group would not
+/// be the one `start` lands in (the live call's group wins), so arm waits for it to end.
+pub(crate) fn arm_action(
+    side: Side,
+    stored: Option<[u8; 16]>,
+    held: bool,
+    served: &ChannelCall,
+) -> Result<ArmAction, TestkitError> {
+    if let Some(call) = served.call_id {
+        return Err(scenario(format!(
+            "the previous call {} is still live ({} in its room); wait for it to end (about 20 s \
+             after the last page leaves), then run arm again",
+            hex::encode(call),
+            served.participants
+        )));
+    }
+    let current = held && stored.is_some() && stored == served.group_id;
+    match (side, served.group_id) {
+        _ if current => Ok(ArmAction::Keep),
+        (Side::A, _) => Ok(ArmAction::Register),
+        (Side::B, Some(open)) => Ok(ArmAction::Join(open)),
+        (Side::B, None) => Err(scenario(
+            "the DM has no open call group: arm side a first, then side b",
+        )),
+    }
+}
+
+/// A side's own session: the gateway client and the bearer token for the routes `HttpDs` lacks.
+struct Session {
+    base: String,
+    token: String,
+    ds: HttpDs,
+}
+
+impl Session {
+    fn open(base: &str, client: &TestClient) -> Result<Self, TestkitError> {
+        let est = HttpDs::establish_scoped(base, &client.device(), &client.credential_blob())?;
+        let token = est.token.clone();
+        let mut ds = HttpDs::with_session(base, client.device_id(), est.token)?;
+        ds.set_session_expires(est.expires);
+        Ok(Self {
+            base: base.to_owned(),
+            token,
+            ds,
+        })
+    }
+
+    fn agent() -> ureq::Agent {
+        ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .timeout_global(Some(std::time::Duration::from_secs(60)))
+                .build(),
+        )
+    }
+
+    /// `DELETE /v1/calls/{call_id}` → `204`: ends the call for everyone and closes its group, as a
+    /// current leaf may. Written here, not in `ds/remote.rs` (lane A's).
+    fn end_call(&self, call: &[u8; 16]) -> Result<(), TestkitError> {
+        let url = format!("{}/v1/calls/{}", self.base, hex::encode(call));
+        let mut resp = Self::agent()
+            .delete(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| scenario(format!("DELETE {url}: {e}")))?;
+        let status = resp.status().as_u16();
+        if status != 204 {
+            let body = resp.body_mut().read_to_vec().unwrap_or_default();
+            return Err(scenario(format!(
+                "DELETE /v1/calls/{{id}} answered {status}: {}",
+                String::from_utf8_lossy(&body)
+            )));
+        }
+        Ok(())
+    }
+
+    /// `POST /v1/groups [group_id, binding, group_info, ratchet_tree]` → `[group_id, next_seq]`
+    /// (invariant 1: the group id is the creator's choice). Answers the registered id.
+    fn register_group(
+        &self,
+        id: &[u8; 16],
+        binding: &[u8],
+        group_info: &[u8],
+        ratchet_tree: &[u8],
+    ) -> Result<[u8; 16], TestkitError> {
+        let mut e = dilla_core::cbor::Encoder::new();
+        e.array(4)
+            .bytes(id)
+            .bytes(binding)
+            .bytes(group_info)
+            .bytes(ratchet_tree);
+        let body = e.into_vec();
+        let url = format!("{}/v1/groups", self.base);
+        let mut resp = Self::agent()
+            .post(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Content-Type", "application/cbor")
+            .send(&body[..])
+            .map_err(|e| scenario(format!("POST {url}: {e}")))?;
+        let status = resp.status().as_u16();
+        let out = resp
+            .body_mut()
+            .read_to_vec()
+            .map_err(|e| scenario(format!("POST {url}: {e}")))?;
+        if status != 201 && status != 200 {
+            return Err(scenario(format!(
+                "POST /v1/groups answered {status}: {}",
+                String::from_utf8_lossy(&out)
+            )));
+        }
+        dilla_core::cbor::decode_strict(&out, |d| {
+            d.array(2)?;
+            let g = d.bytes_exact::<16>()?;
+            d.uint()?;
+            Ok(g)
+        })
+        .map_err(|e| scenario(format!("POST /v1/groups: {e:?}")))
+    }
+
+    /// `GET /v1/channels/{dm}/call` (L-HTTP-100). Written here, not in `ds/remote.rs` (lane A's).
+    fn channel_call(&self, dm: &[u8; 16]) -> Result<ChannelCall, TestkitError> {
+        let url = format!("{}/v1/channels/{}/call", self.base, hex::encode(dm));
+        let mut resp = Self::agent()
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Accept", "application/cbor")
+            .call()
+            .map_err(|e| scenario(format!("GET {url}: {e}")))?;
+        let status = resp.status().as_u16();
+        let body = resp
+            .body_mut()
+            .read_to_vec()
+            .map_err(|e| scenario(format!("GET {url}: {e}")))?;
+        if status != 200 {
+            return Err(scenario(format!(
+                "GET /v1/channels/{{dm}}/call answered {status}: does this instance run the web-3 \
+                 build (L-HTTP-100)?"
+            )));
+        }
+        decode_channel_call(&body)
+    }
+}
+
+/// The DM's call-group binding, with the instance as external sender (protocol/01), as a remote
+/// scenario builds it.
+fn call_binding(
+    base: &str,
+    dm: [u8; 16],
+) -> Result<(DillaBinding, openmls::extensions::ExternalSendersExtension), TestkitError> {
+    let doc = instance_document(base)?;
+    let instance_id = InstanceId::from_bytes(doc.instance_id);
+    let binding = DillaBinding {
+        v: 1,
+        instance_id,
+        community_id: None,
+        target_id: dm,
+        kind: GroupKind::Call,
+        policy_version: 1,
+        e2ee_version: 1,
+        media_version: GroupKind::Call.media_version(),
+    };
+    // protocol/01: every call group carries the instance as its external sender, so the instance
+    // can propose the leaf removals the room sweep and a leave make.
+    let senders = external_senders(doc.external_sender_pub.to_vec().into(), &instance_id);
+    Ok((binding, senders))
+}
+
+/// Registers a call group under a fresh random group id, as the browser core does
+/// (`call_group_create`): `prepare`'s first call group took the DM id itself (`HttpDs` registers
+/// under the binding's target), and a group id is registered once. The registration is
+/// `Session::register_group`'s own `POST /v1/groups`, so `ds/remote.rs` stays untouched. The group
+/// lives in the client's store only (not in `TestClient`'s own map); `replace_store` persists it.
+/// Answers the group id and its epoch (0).
+fn register_call_group(
+    client: &TestClient,
+    session: &Session,
+    binding: DillaBinding,
+    senders: openmls::extensions::ExternalSendersExtension,
+) -> Result<(Vec<u8>, u64), TestkitError> {
+    use tls_codec::Serialize as _;
+    let id = RustCrypto::default()
+        .random_array::<16>()
+        .map_err(|e| scenario(format!("random group id: {e:?}")))?;
+    let group = DillaGroup::create(
+        client.provider(),
+        client.signer(),
+        client.credential(),
+        GroupId::from_slice(&id),
+        binding.clone(),
+        Some(senders),
+    )?;
+    let ser = |e: tls_codec::Error| scenario(format!("{e:?}"));
+    let group_info = group
+        .export_group_info(client.provider(), client.signer())?
+        .tls_serialize_detached()
+        .map_err(ser)?;
+    let ratchet_tree = group
+        .export_ratchet_tree()
+        .tls_serialize_detached()
+        .map_err(ser)?;
+    let registered = session.register_group(&id, &binding.encode(), &group_info, &ratchet_tree)?;
+    if registered != id {
+        return Err(scenario(format!(
+            "registered group {} but the instance answered {}",
+            hex::encode(id),
+            hex::encode(registered)
+        )));
+    }
+    Ok((id.to_vec(), group.epoch()))
+}
+
+/// What `arm` did.
+pub struct Armed {
+    pub action: &'static str,
+    pub group_id: String,
+    pub epoch: u64,
+}
+
+/// Whether the side's store holds a call group for its DM (the DM id is the group's local MLS id).
+/// `arm` writes the store and `side.json`'s `groupId` together, so that group is the stored one.
+fn holds(dir: &Path, state: &SideState) -> bool {
+    if state.group_id.is_empty() {
+        return false;
+    }
+    load_side(dir).is_ok()
+}
+
+/// The side's client, rebuilt from its seed around the user id the instance minted, with a fresh
+/// in-memory store.
+fn client_of(state: &SideState) -> Result<TestClient, TestkitError> {
+    let user = UserId::from_bytes(hex16(&state.user_id, "side.json userId")?);
+    let client = TestClient::new(
+        &state.username,
+        user,
+        Tier::Native,
+        Kind::User,
+        state.seed()?,
+    )?;
+    if client.device_id().to_hex() != state.device_id {
+        return Err(scenario(format!(
+            "side.json names device {} but its seed yields {}; {PREPARE_AGAIN}",
+            state.device_id,
+            client.device_id().to_hex()
+        )));
+    }
+    Ok(client)
+}
+
+/// `dilla-testkit netprobe end --instance <url> --state <dir>/side-<x>`: ends the DM's live call
+/// (`DELETE /v1/calls/{id}`, as a current leaf), which closes its group. A real instance ends a
+/// call by itself about 20 s after its room empties; this is for a call that does not end (a page
+/// that crashed and left a ghost participant) and for a test host, which has no LiveKit webhooks.
+/// Answers the call it ended, or `None` when no call was live.
+pub fn end(instance: &str, dir: &Path) -> Result<Option<String>, TestkitError> {
+    let base = instance.trim_end_matches('/');
+    let state = SideState::read(dir)?;
+    let client = client_of(&state)?;
+    let dm = hex16(&state.dm, "side.json dm")?;
+    let session = Session::open(base, &client)?;
+    match session.channel_call(&dm)?.call_id {
+        None => Ok(None),
+        Some(call) => {
+            session.end_call(&call)?;
+            Ok(Some(hex::encode(call)))
+        }
+    }
+}
+
+/// `dilla-testkit netprobe arm --instance <url> --state <dir>/side-<x>`.
+pub fn arm(instance: &str, dir: &Path) -> Result<Armed, TestkitError> {
+    let base = instance.trim_end_matches('/');
+    let mut state = SideState::read(dir)?;
+    let side = match state.side.as_str() {
+        "a" => Side::A,
+        "b" => Side::B,
+        other => {
+            return Err(scenario(format!(
+                "side.json names side {other:?}; {PREPARE_AGAIN}"
+            )));
+        }
+    };
+    // A fresh client from the seed: its in-memory store replaces the side's store when the group
+    // is rebuilt, so the stale group (whose local MLS id is also the DM id) is gone with it.
+    let mut client = client_of(&state)?;
+    let dm = hex16(&state.dm, "side.json dm")?;
+    let stored = if state.group_id.is_empty() {
+        None
+    } else {
+        Some(hex16(&state.group_id, "side.json groupId")?)
+    };
+    let held = holds(dir, &state);
+    let mut session = Session::open(base, &client)?;
+    let served = session.channel_call(&dm)?;
+    let action = arm_action(side, stored, held, &served)?;
+    let (group, epoch) = match action {
+        ArmAction::Keep => {
+            let loaded = load_side(dir)?;
+            return Ok(Armed {
+                action: "kept",
+                group_id: state.group_id,
+                epoch: loaded.group.epoch(),
+            });
+        }
+        ArmAction::Register => {
+            let (binding, senders) = call_binding(base, dm)?;
+            register_call_group(&client, &session, binding, senders)?
+        }
+        ArmAction::Join(open) => {
+            let (binding, _) = call_binding(base, dm)?;
+            client.join_external(&mut session.ds, &open, &binding)?;
+            let epoch = client
+                .epoch_of(&open)
+                .ok_or_else(|| scenario("the side holds no state for the group it just joined"))?;
+            (open.to_vec(), epoch)
+        }
+    };
+    replace_store(&client, dir)?;
+    state.group_id = hex::encode(&group);
+    state.write(dir)?;
+    Ok(Armed {
+        action: if action == ArmAction::Register {
+            "registered"
+        } else {
+            "joined"
+        },
+        group_id: state.group_id,
+        epoch,
+    })
 }
 
 /// A side as `start` uses it: its ids, its client (for the device keys and the credential), and
@@ -275,16 +676,24 @@ pub(crate) fn load_side(dir: &Path) -> Result<LoadedSide, TestkitError> {
     let provider = DillaProvider::new(Arc::new(Mutex::new(conn)));
     provider.storage().migrate()?;
     let dm = hex16(&state.dm, "side.json dm")?;
-    let group = DillaGroup::load(&provider, &GroupId::from_slice(&dm))?.ok_or_else(|| {
+    if state.group_id.is_empty() {
+        return Err(scenario(format!(
+            "side.json names no call group; {ARM_AGAIN}"
+        )));
+    }
+    // The instance registers a group under its MLS group id, so the stored id is the local one too.
+    let id = hex16(&state.group_id, "side.json groupId")?;
+    let group = DillaGroup::load(&provider, &GroupId::from_slice(&id))?.ok_or_else(|| {
         scenario(format!(
-            "{} holds no call group for DM {}; {PREPARE_AGAIN}",
+            "{} holds no call group {} for DM {}; {ARM_AGAIN}",
             path.display(),
+            state.group_id,
             state.dm
         ))
     })?;
     if group.binding().kind != GroupKind::Call || group.binding().target_id != dm {
         return Err(scenario(format!(
-            "{} holds another group under DM {}; {PREPARE_AGAIN}",
+            "{} holds another group under DM {}; {ARM_AGAIN}",
             path.display(),
             state.dm
         )));
@@ -324,6 +733,17 @@ fn save_store(client: &TestClient, path: &Path) -> Result<(), TestkitError> {
     Ok(())
 }
 
+/// Replaces the side's MLS store with the client's: written beside it, then renamed over it.
+fn replace_store(client: &TestClient, dir: &Path) -> Result<(), TestkitError> {
+    let next = dir.join(format!("{MLS_FILE}.next"));
+    if next.exists() {
+        std::fs::remove_file(&next).map_err(|e| scenario(format!("{}: {e}", next.display())))?;
+    }
+    save_store(client, &next)?;
+    let path = dir.join(MLS_FILE);
+    std::fs::rename(&next, &path).map_err(|e| scenario(format!("{}: {e}", path.display())))
+}
+
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -333,7 +753,12 @@ fn now_unix() -> u64 {
 
 /// Signs `name` up through `invite` with a device drawn from a fresh seed, and publishes the
 /// user's signed device list (invariant 4 refuses any leaf whose DSK no list names).
-fn enrol(base: &str, invite: &str, name: &str) -> Result<(TestClient, HttpDs, u64), TestkitError> {
+fn enrol(
+    base: &str,
+    invite: &str,
+    name: &str,
+    on_account: &mut dyn FnMut(&str),
+) -> Result<(TestClient, HttpDs, u64), TestkitError> {
     let seed = random_seed()?;
     let draft = TestClient::new(
         name,
@@ -354,6 +779,8 @@ fn enrol(base: &str, invite: &str, name: &str) -> Result<(TestClient, HttpDs, u6
             other => break other?,
         }
     };
+    // The account exists from here on, whatever fails next.
+    on_account(name);
     // The instance mints the user id and the MLS credential must name it; the seed fixes the
     // device and every key, so the client is rebuilt around the minted id unchanged otherwise.
     let client = TestClient::new(
@@ -386,8 +813,15 @@ pub struct Prepared {
     pub epoch: u64,
 }
 
-/// `dilla-testkit netprobe prepare --instance <url> --invite <code> --out <dir>`.
-pub fn prepare(instance: &str, invite: &str, out: &Path) -> Result<Prepared, TestkitError> {
+/// `dilla-testkit netprobe prepare --instance <url> --invite <code> --out <dir>`. `on_account` is
+/// called with each account's name the moment its signup succeeds, before anything else can fail,
+/// so a prepare that fails half-way still names every account it made for the cleanup.
+pub fn prepare(
+    instance: &str,
+    invite: &str,
+    out: &Path,
+    on_account: &mut dyn FnMut(&str),
+) -> Result<Prepared, TestkitError> {
     let base = instance.trim_end_matches('/');
     let side_a = out.join("side-a");
     let side_b = out.join("side-b");
@@ -400,25 +834,11 @@ pub fn prepare(instance: &str, invite: &str, out: &Path) -> Result<Prepared, Tes
         }
     }
     let (name_a, name_b) = probe_names(random_suffix()?);
-    let (mut a, mut ds_a, seed_a) = enrol(base, invite, &name_a)?;
-    let (mut b, mut ds_b, seed_b) = enrol(base, invite, &name_b)?;
+    let (mut a, mut ds_a, seed_a) = enrol(base, invite, &name_a, on_account)?;
+    let (mut b, mut ds_b, seed_b) = enrol(base, invite, &name_b, on_account)?;
 
     let (dm, _) = ds_a.post_dm(&[*b.user_id().as_bytes()])?;
-    let doc = instance_document(base)?;
-    let instance_id = InstanceId::from_bytes(doc.instance_id);
-    let binding = DillaBinding {
-        v: 1,
-        instance_id,
-        community_id: None,
-        target_id: dm,
-        kind: GroupKind::Call,
-        policy_version: 1,
-        e2ee_version: 1,
-        media_version: GroupKind::Call.media_version(),
-    };
-    // protocol/01: every call group carries the instance as its external sender, so the instance
-    // can propose the leaf removals the room sweep and a leave make.
-    let senders = external_senders(doc.external_sender_pub.to_vec().into(), &instance_id);
+    let (binding, senders) = call_binding(base, dm)?;
     let group = a.create_group_with(&mut ds_a, binding.clone(), Some(senders))?;
     b.join_external(&mut ds_b, &group, &binding)?;
     // A processes B's external commit, so both sides hold the same epoch.
@@ -467,17 +887,14 @@ fn deserialize_protocol(bytes: &[u8]) -> Result<ProtocolMessage, TestkitError> {
         .map_err(|e| scenario(format!("{e:?}")))
 }
 
-/// Applies what the gateway delivers for the call group: commits are merged, proposals queued.
-/// Nothing is committed: the probe never moves the epoch itself.
+/// Applies the call group's handshakes, read from the group's own log from its start rather than
+/// from the gateway (a fresh connection's catch-up need not reach back to a commit made before it
+/// opened): commits are merged, proposals queued. Nothing is committed: the probe never moves the
+/// epoch itself. A group is at most a few handshakes old here (one external join per run), far
+/// inside one page.
 fn sync_group(side: &mut LoadedSide, ds: &mut HttpDs) -> Result<(), TestkitError> {
     let group_id = hex16(&side.state.group_id, "side.json groupId")?;
-    for frame in ds.drain()? {
-        let Frame::MlsHandshake { group_id: g, item } = frame else {
-            continue;
-        };
-        if g.as_slice() != group_id {
-            continue;
-        }
+    for item in ds.handshakes(&group_id, 0)? {
         let message = deserialize_protocol(&item.blob)?;
         if message.epoch().as_u64() < side.group.epoch() {
             continue;
@@ -504,6 +921,9 @@ pub fn start(instance: &str, state: &Path, out: &Path) -> Result<Value, TestkitE
     let dm = hex16(&side.state.dm, "side.json dm")?;
     let mut ds = HttpDs::connect(base, &side.client.device(), &side.client.credential_blob())?;
     sync_group(&mut side, &mut ds)?;
+    // Both leaves in one epoch before any key leaves this machine: a side a started before side b
+    // armed would hand its page the one-leaf epoch's key.
+    check_roster(side.group.member_count())?;
     let started = check_started(&group, ds.start_call(&dm, ""))?;
     let m = side.group.media_epoch(&side.provider)?;
     let keys = MediaKeys {
@@ -649,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn netprobe_start_refuses_a_closed_call_group_and_says_run_prepare_again() {
+    fn netprobe_start_refuses_a_closed_call_group_and_says_run_arm_again() {
         let mine = [9; 16];
         let closed = DsError::Remote {
             status: 409,
@@ -657,20 +1077,112 @@ mod tests {
             detail: "the call group is closed".into(),
         };
         let e = check_started(&mine, Err(closed)).unwrap_err().to_string();
-        assert!(e.contains("run prepare again"), "{e}");
+        assert!(e.contains("run arm again"), "{e}");
         let gone = DsError::NotFound;
         let e = check_started(&mine, Err(gone)).unwrap_err().to_string();
-        assert!(e.contains("run prepare again"), "{e}");
+        assert!(e.contains("run arm again"), "{e}");
         // The channel's newest open call group is another one: this state's group was closed.
         let e = check_started(&mine, Ok(started([8; 16])))
             .unwrap_err()
             .to_string();
-        assert!(e.contains("run prepare again"), "{e}");
+        assert!(e.contains("run arm again"), "{e}");
         // Anything else is reported as it is, without the hint.
         let other = DsError::RateLimited { retry_after_ms: 5 };
         let e = check_started(&mine, Err(other)).unwrap_err().to_string();
-        assert!(!e.contains("run prepare again"), "{e}");
+        assert!(!e.contains("run arm again"), "{e}");
         assert!(check_started(&mine, Ok(started(mine))).is_ok());
+    }
+
+    #[test]
+    fn netprobe_start_refuses_a_call_group_the_other_side_has_not_joined() {
+        let e = check_roster(1).unwrap_err().to_string();
+        assert!(e.contains("arm the other side"), "{e}");
+        assert!(check_roster(2).is_ok());
+    }
+
+    fn served(group: Option<[u8; 16]>, call: Option<[u8; 16]>) -> ChannelCall {
+        ChannelCall {
+            group_id: group,
+            call_id: call,
+            participants: 0,
+        }
+    }
+
+    #[test]
+    fn netprobe_arm_refuses_while_a_call_is_live() {
+        for side in [Side::A, Side::B] {
+            let e = arm_action(
+                side,
+                Some([1; 16]),
+                true,
+                &served(Some([1; 16]), Some([7; 16])),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains("still live"), "{e}");
+        }
+    }
+
+    #[test]
+    fn netprobe_arm_keeps_a_current_group_and_rebuilds_a_stale_one() {
+        let g = [1; 16];
+        let other = [2; 16];
+        // Side a: the stored group is the open one and the store holds it.
+        assert_eq!(
+            arm_action(Side::A, Some(g), true, &served(Some(g), None)).unwrap(),
+            ArmAction::Keep
+        );
+        // Side a: closed (none open), replaced, or lost locally: a fresh group.
+        for (stored, held, open) in [
+            (Some(g), true, None),
+            (Some(g), true, Some(other)),
+            (Some(g), false, Some(g)),
+            (None, false, None),
+        ] {
+            assert_eq!(
+                arm_action(Side::A, stored, held, &served(open, None)).unwrap(),
+                ArmAction::Register,
+                "{stored:?} {held} {open:?}"
+            );
+        }
+        // Side b joins whatever side a opened, unless it already holds it.
+        assert_eq!(
+            arm_action(Side::B, Some(g), true, &served(Some(g), None)).unwrap(),
+            ArmAction::Keep
+        );
+        assert_eq!(
+            arm_action(Side::B, Some(g), true, &served(Some(other), None)).unwrap(),
+            ArmAction::Join(other)
+        );
+        assert_eq!(
+            arm_action(Side::B, Some(g), false, &served(Some(g), None)).unwrap(),
+            ArmAction::Join(g)
+        );
+        let e = arm_action(Side::B, Some(g), true, &served(None, None))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("arm side a first"), "{e}");
+    }
+
+    #[test]
+    fn netprobe_channel_call_decodes_l_http_100() {
+        use dilla_core::cbor::Encoder;
+        let mut e = Encoder::new();
+        e.array(3).bytes(&[1; 16]).bytes(&[2; 16]).array(1);
+        e.array(3).bytes(&[3; 16]).bytes(&[4; 16]).uint(1);
+        let v = decode_channel_call(&e.into_vec()).unwrap();
+        assert_eq!(v.group_id, Some([1; 16]));
+        assert_eq!(v.call_id, Some([2; 16]));
+        assert_eq!(v.participants, 1);
+        let mut e = Encoder::new();
+        e.array(3).null().null().array(0);
+        let v = decode_channel_call(&e.into_vec()).unwrap();
+        assert_eq!((v.group_id, v.call_id, v.participants), (None, None, 0));
+        // A Go nil slice arrives as null.
+        let mut e = Encoder::new();
+        e.array(3).bytes(&[1; 16]).null().null();
+        assert_eq!(decode_channel_call(&e.into_vec()).unwrap().participants, 0);
+        assert!(decode_channel_call(&[0x80]).is_err());
     }
 
     #[test]
@@ -705,6 +1217,6 @@ mod tests {
         drop(store);
         let e = load_side(&side).err().unwrap().to_string();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(e.contains("run prepare again"), "{e}");
+        assert!(e.contains("run arm again"), "{e}");
     }
 }

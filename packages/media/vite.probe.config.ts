@@ -3,13 +3,17 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 
-// L-PROBE-1: the network probe page (`npm run probe -w @dilla/media`, http://127.0.0.1:5191). 127.0.0.1 is a
-// potentially trustworthy origin, so isSecureContext is true and the encoded-transform APIs exist.
+// L-PROBE-1: the network probe page (`npm run probe -w @dilla/media`, http://localhost:5191; the server binds the IPv4
+// loopback only). localhost is a potentially trustworthy origin, so isSecureContext is true and the encoded-transform
+// APIs exist.
 //
 // DILLA_PROBE_INSTANCE=https://<instance host> also proxies the instance's /v1, /gateway and /rtc through this server:
-// dilla-testkit speaks plain http:// only, so on the session's machines `netprobe prepare` and `netprobe start` take
-// `--instance http://127.0.0.1:5191`, and the page's LiveKit signalling (ws://127.0.0.1:5191/rtc) reaches the
+// dilla-testkit speaks plain http:// only, so on the session's machines `netprobe prepare`, `arm` and `start` take
+// `--instance http://localhost:5191`, and the page's LiveKit signalling (ws://localhost:5191/rtc) reaches the
 // instance the same way. Media never passes through here: ICE runs between the browser and the SFU's node_ip.
+//
+// The probe's state directories and start JSONs live under target/netprobe/ inside the workspace root the dev server
+// may serve through /@fs; they are denied explicitly (defence in depth: Vite already limits CORS to local origins).
 const here = dirname(fileURLToPath(import.meta.url));
 
 function instanceProxy(): Record<string, ProxyOptions> | undefined {
@@ -37,7 +41,11 @@ export default defineConfig({
     entries: ['index.html', '../src/worker/*.ts'],
     include: ['livekit-client', 'events'],
   },
-  server: { host: '127.0.0.1', port: 5191, strictPort: true, proxy: instanceProxy() },
+  server: {
+    host: '127.0.0.1', port: 5191, strictPort: true, proxy: instanceProxy(),
+    // Vite's defaults (a set deny list replaces them), plus the probe's device state and start JSONs.
+    fs: { deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/target/netprobe/**'] },
+  },
   preview: { host: '127.0.0.1', port: 5191, strictPort: true, proxy: instanceProxy() },
   worker: { format: 'es' },
   build: { target: 'es2022', outDir: resolve(here, '../../target/netprobe/page'), emptyOutDir: true },
