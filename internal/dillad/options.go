@@ -74,6 +74,10 @@ type Options struct {
 	// Web is the built browser client dillad serves at its own origin, verified against its
 	// dilla-manifest.json by web.New; nil means web.Embedded().
 	Web fs.FS
+	// LiveKitURL replaces the signalling URL the call routes hand a client ("wss://" plus the
+	// instance's host); "" keeps it. `dillad serve` never sets it: the test host passes its own
+	// ws:// listener, which a browser on loopback can reach (web-3 task 3).
+	LiveKitURL string
 
 	// closeRepo records that New opened the repository itself, so Shutdown
 	// closes it. A caller that supplied its own keeps ownership of it: closing

@@ -126,6 +126,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.LiveKitURL != "" {
+		calls.LiveKitURL = o.LiveKitURL
+	}
 	// The generation goes into every 201 from POST /v1/devices/{device_id}/sessions
 	// and into the X-Dilla-Generation header below; one source, so they agree.
 	sessions := auth.NewSessions(o.Repo, o.Clock, o.Config.Auth.Session, instance.InstanceID, instance.Generation)
@@ -211,6 +214,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.SFU != nil {
 		callSFU = o.SFU
 	}
+	// The call events (dilla-media task 12) are built over the call routes further down; the delivery
+	// service's call evictor and the gateway's voice_self store reach them through this variable,
+	// which is assigned before delivery.Start and before any connection can reach the gateway.
+	var events *api.CallEvents
 	gw := gateway.New(gateway.Options{
 		Store:             o.Repo,
 		Clock:             o.Clock,
@@ -219,6 +226,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Auth:              sessions,
 		TypingAudience:    api.TypingAudience(o.Repo),
 		VoiceSelfAudience: api.VoiceSelfAudience(o.Repo, callSFU),
+		// The self-mute and self-deafen bits a device in a live room sent, for the voice snapshot
+		// (GET /v1/channels/{id}/call, web-3 task 3).
+		VoiceSelfStored: func(call, device id.ID, bits uint64) {
+			if events != nil {
+				events.SetSelf(call, device, bits)
+			}
+		},
 		Outstanding: func(ctx context.Context, groupID id.ID) uint64 {
 			rows, err := delivery.Outstanding(ctx, groupID)
 			if err != nil {
@@ -253,10 +267,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			callRoutes.CutDevice(ctx, device)
 		}
 	}
-	// The call events (dilla-media task 12) are built over the call routes further down; the delivery
-	// service's call evictor reaches them through this variable, which is assigned before
-	// delivery.Start and so before any commit can run the evictor.
-	var events *api.CallEvents
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,

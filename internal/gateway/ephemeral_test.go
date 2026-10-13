@@ -287,8 +287,16 @@ func TestVoiceSelfCombinesLiveRoomAndSelfBits(t *testing.T) {
 				}
 				return channel, []id.ID{b.userID}, 0, nil
 			}
+			// web-3 task 3: the admitted bits are handed to the store the voice snapshot reads.
+			var stored [][3]any
+			h.gw.opts.VoiceSelfStored = func(gotCall, dev id.ID, bits uint64) {
+				stored = append(stored, [3]any{gotCall, dev, bits})
+			}
 			before := len(b.ring.since(0))
 			h.gw.handle(context.Background(), a, ephemeralInbound(t, OpVoiceSelf, call, tc.bits))
+			if len(stored) != 1 || stored[0] != [3]any{call, a.deviceID, tc.bits} {
+				t.Fatalf("stored self flags = %v, want one (%s, %s, %d)", stored, call, a.deviceID, tc.bits)
+			}
 			frame := h.waitFrame(t, b.deviceID)
 			if frame.Op != OpVoiceState || frame.CID != 0 || len(frame.Payload) != 4 {
 				t.Fatalf("voice frame = %+v", frame)

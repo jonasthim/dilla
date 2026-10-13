@@ -290,6 +290,7 @@ func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
+	h.registerReads(mux)
 }
 
 // callResponse is `[call_id, group_id, livekit_url, token, ice_servers, caps]`.

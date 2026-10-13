@@ -41,6 +41,29 @@ func TestWithoutTheNewFlagsTheHostKeepsThePlaceholderAndTheHarnessSeams(t *testi
 	}
 }
 
+// web-3 task 3: a host that serves a web client and runs an SFU hands the browser its own public
+// listener as the LiveKit URL (ws://, since the test host has no TLS); either flag alone keeps the
+// instance's default.
+func TestASFUHostWithAWebRootNamesItsListenerAsTheLiveKitURL(t *testing.T) {
+	dir := t.TempDir()
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-listen", "127.0.0.1:8481", "-sfu", "-web-root", dir}, "ws://127.0.0.1:8481"},
+		{[]string{"-listen", "127.0.0.1:8481", "-sfu"}, ""},
+		{[]string{"-listen", "127.0.0.1:8481", "-web-root", dir}, ""},
+	} {
+		o, err := parseFlags(c.args)
+		if err != nil {
+			t.Fatalf("parseFlags %v: %v", c.args, err)
+		}
+		if got := o.hostOptions("/data", "/core.wasm", "").LiveKitURL; got != c.want {
+			t.Errorf("%v: LiveKitURL = %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
 func TestARelativeWebRootIsResolvedAgainstTheWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "dist"), 0o700); err != nil {

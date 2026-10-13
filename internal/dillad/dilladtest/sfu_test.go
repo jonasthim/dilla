@@ -45,7 +45,8 @@ func freePorts(t *testing.T) (tcp, udp int) {
 	return tcp, udp
 }
 
-func sfuHost(t *testing.T, withSFU bool) *Host {
+// corePath is the committed wasi core the hosts here run.
+func corePath(t *testing.T) string {
 	t.Helper()
 	core, err := filepath.Abs(filepath.Join("..", "..", "mlswasi", "testdata", "dilla_core_wasi.wasm"))
 	if err != nil {
@@ -56,6 +57,12 @@ func sfuHost(t *testing.T, withSFU bool) *Host {
 			"  cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked\n"+
 			"and copy it there: %v", core, err)
 	}
+	return core
+}
+
+func sfuHost(t *testing.T, withSFU bool) *Host {
+	t.Helper()
+	core := corePath(t)
 	tcp, udp := freePorts(t)
 	h, err := NewHost(context.Background(), HostOptions{
 		DataDir: t.TempDir(), CorePath: core, SFU: withSFU, SFUPort: tcp, SFUUDPPort: udp,
@@ -202,6 +209,49 @@ func TestTheDebugSFURoutesAreControlOnly(t *testing.T) {
 // TestAnInstanceWithoutAnSFUAnswersNotImplemented) mints a real LiveKit token for a current leaf.
 func TestAHostWithAnSFUMintsCallTokens(t *testing.T) {
 	h := sfuHost(t, true)
+	out, device, group := openCallOn(t, h)
+	token, ok := out[3].(string)
+	if !ok {
+		t.Fatalf("the call response's token is %#v", out[3])
+	}
+	v, err := auth.ParseAPIToken(token)
+	if err != nil {
+		t.Fatalf("the call token is not a LiveKit JWT: %v", err)
+	}
+	if v.Identity() != device.String() || v.APIKey() != h.cfg.LiveKit.APIKey {
+		t.Fatalf("token identity %q key %q, want %s and %q", v.Identity(), v.APIKey(), device, h.cfg.LiveKit.APIKey)
+	}
+	if b, _ := out[1].([]byte); id.ID(b) != group {
+		t.Fatalf("group_id = %x, want %s", out[1], group)
+	}
+	// Without an override the call response names the instance's own wss:// origin.
+	if out[2] != "wss://dilla.test" {
+		t.Fatalf("livekit_url = %#v, want wss://dilla.test", out[2])
+	}
+}
+
+// web-3 task 3: HostOptions.LiveKitURL replaces the call response's livekit_url, so a browser on
+// 127.0.0.1 reaches the host's /rtc over ws:// instead of the instance domain's wss:// URL.
+func TestLiveKitURLOverride(t *testing.T) {
+	tcp, udp := freePorts(t)
+	h, err := NewHost(context.Background(), HostOptions{
+		DataDir: t.TempDir(), CorePath: corePath(t), SFU: true, SFUPort: tcp, SFUUDPPort: udp,
+		LiveKitURL: "ws://127.0.0.1:8481",
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close(context.Background()) })
+	out, _, _ := openCallOn(t, h)
+	if out[2] != "ws://127.0.0.1:8481" {
+		t.Fatalf("livekit_url = %#v, want the override ws://127.0.0.1:8481", out[2])
+	}
+}
+
+// openCallOn seeds a caller with one device, a voice channel, its call group with the device a leaf
+// of its current epoch, and opens the call: the 201 body, the device and the group.
+func openCallOn(t *testing.T, h *Host) ([]any, id.ID, id.ID) {
+	t.Helper()
 	ctx := t.Context()
 
 	key := func() string {
@@ -268,21 +318,7 @@ func TestAHostWithAnSFUMintsCallTokens(t *testing.T) {
 		t.Fatalf("ReplaceMembers: %v", err)
 	}
 
-	out := call(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", []any{})
-	token, ok := out[3].(string)
-	if !ok {
-		t.Fatalf("the call response's token is %#v", out[3])
-	}
-	v, err := auth.ParseAPIToken(token)
-	if err != nil {
-		t.Fatalf("the call token is not a LiveKit JWT: %v", err)
-	}
-	if v.Identity() != device.String() || v.APIKey() != h.cfg.LiveKit.APIKey {
-		t.Fatalf("token identity %q key %q, want %s and %q", v.Identity(), v.APIKey(), device, h.cfg.LiveKit.APIKey)
-	}
-	if idOf(out[1]) != group.GroupID {
-		t.Fatalf("group_id = %x, want %s", out[1], group.GroupID)
-	}
+	return call(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", []any{}), device, group.GroupID
 }
 
 // A room POST /debug/sfu/token opened survives the call routes' room sweep, which deletes every room

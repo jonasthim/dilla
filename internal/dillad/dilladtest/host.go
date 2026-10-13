@@ -95,6 +95,10 @@ type HostOptions struct {
 	// os.DirFS(WebRoot)); "" keeps the placeholder. A directory its manifest does not describe
 	// fails NewHost and Restore with dillad's "dillad: web client: " error.
 	WebRoot string
+	// LiveKitURL is the signalling URL the call routes hand a client instead of the instance
+	// domain's wss:// URL (dillad.Options.LiveKitURL); "" keeps that. dilla-testhost passes
+	// ws://<listen> when it serves a web root beside an SFU, so a browser on loopback reaches /rtc.
+	LiveKitURL string
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -344,6 +348,7 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		Wasm:        h.wasm,
 		Log:         obs.NewLogger(h.cfg.Log, out),
 		ScrapeToken: h.o.ScrapeToken,
+		LiveKitURL:  h.o.LiveKitURL,
 	}
 	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)

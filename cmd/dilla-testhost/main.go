@@ -87,12 +87,18 @@ type sfuOptions struct {
 }
 
 func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostOptions {
-	return dilladtest.HostOptions{
+	ho := dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: o.logLevel,
 		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
 		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1,
 		ScrapeToken: scrapeToken, WebRoot: o.webRoot, ProductionACL: o.productionACL,
 	}
+	// A browser test (a web root) that calls (an SFU) reaches LiveKit through this host's own /rtc
+	// proxy over plain ws://: the instance domain's wss:// URL resolves to nothing on loopback.
+	if o.sfu.enabled && o.webRoot != "" {
+		ho.LiveKitURL = "ws://" + o.public
+	}
+	return ho
 }
 
 func run(o options) error {

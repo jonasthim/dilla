@@ -40,6 +40,10 @@ type Options struct {
 	CommitAck         func(ctx context.Context, groupID, deviceID id.ID, round uint64)
 	TypingAudience    func(context.Context, id.ID, id.ID) ([]id.ID, error)
 	VoiceSelfAudience func(context.Context, id.ID, id.ID) (id.ID, []id.ID, uint64, error)
+	// VoiceSelfStored receives the self-mute and self-deafen bits (client bits 0 and 1) of a
+	// voice_self that passed VoiceSelfAudience, keyed by (call, device), for the voice snapshot
+	// (web-3 task 3); nil stores nothing.
+	VoiceSelfStored func(call, device id.ID, bits uint64)
 
 	// Advertised is what `hello` offers and what `identify` is validated against. Empty means
 	// {1} for all three, the only versions this wave ships.
