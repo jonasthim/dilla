@@ -2463,3 +2463,47 @@ fn fixr_send_block_own_names_an_own_account_block() {
     );
     assert!(!alice.core.send_block_own(&GROUP).unwrap());
 }
+
+/// Task-10 concern 1, the other old-key paths: while Bob's key change is pending, his old-key
+/// device keeps sending and committing in the text group, and its list is refreshed. None of it
+/// (sync of its message, processing its commit, the list refresh, the send gate) ends the pending
+/// change or rebinds the cached list away from the changed key; the changed key stays verifiable.
+#[test]
+fn sec_old_key_traffic_and_refresh_never_end_a_pending_change() {
+    let (_, mut relay, mut alice, mut bob, v1) = sec_raw_bob();
+    let old_key = UmkSigner::from_bytes(&[0xb2; 32]).public();
+    let new_key = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xf2);
+    let join = rotated.join_external(&mut relay);
+    bob.apply_commit(&relay, join);
+    alice.sync(&relay);
+    let v2 = sec_next(
+        &v1,
+        vec![v1.unsigned.entries[0].clone(), sec_entry(&rotated)],
+        0xf2,
+    );
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
+    assert_eq!(changed, 1);
+    let pending = Some((old_key, 0, Some(new_key)));
+    assert_eq!(sec_state_of(&alice, &bob.user), pending);
+
+    bob.send(&mut relay, "still the old device");
+    alice.sync(&relay);
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "a message");
+    let update = bob.self_update(&mut relay);
+    rotated.apply_commit(&relay, update);
+    alice.sync(&relay);
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "a commit");
+    assert_eq!(sec_send(&mut alice), "E_UMK_CHANGED");
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "the send gate");
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, bob.device, &[&v2]);
+    assert_eq!(changed, 0);
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "the list refresh");
+    assert_eq!(sec_send(&mut alice), "E_UMK_CHANGED");
+
+    alice
+        .core
+        .trust_verify(&bob.user, &new_key)
+        .expect("the changed key stays verifiable");
+    assert_eq!(sec_state_of(&alice, &bob.user), Some((new_key, 1, None)));
+}

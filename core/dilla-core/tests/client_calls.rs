@@ -4,6 +4,7 @@
 mod client_support;
 use client_support::*;
 use dilla_core::cbor::decode_strict;
+use dilla_core::identity::UmkSigner;
 
 /// A plain text message request (`client_support::request` with type 0, no reply, no attachment).
 fn request(body: &str) -> Vec<u8> {
@@ -388,4 +389,80 @@ fn the_media_epoch_bytes_are_gated_before_any_key_derivation() {
         before + 1,
         "the counter sees a derivation once the gate passes"
     );
+}
+
+/// (pinned UMK, verified, pending changed UMK) of `user` in Alice's `trust_state`.
+fn pin_of(alice: &Core, user: &[u8; 16]) -> Option<([u8; 32], u64, Option<[u8; 32]>)> {
+    let state = alice.core.trust_state().expect("trust state answers");
+    decode_strict(&state, |d| {
+        let n = d.array_len()?;
+        let mut found = None;
+        for _ in 0..n {
+            d.array(6)?;
+            let candidate = d.bytes_exact::<16>()?;
+            let umk = d.bytes_exact::<32>()?;
+            d.uint()?;
+            let verified = d.uint()?;
+            let changed = d.opt_bytes_exact::<32>()?;
+            d.skip()?;
+            if candidate == *user {
+                found = Some((umk, verified, changed));
+            }
+        }
+        Ok(found)
+    })
+    .unwrap()
+}
+
+/// RV-3 (task-10 concern 1): Bob's identity changes while his old-key device is still in the
+/// call group. The rotated device keeps Bob's SSK (a new UMK cross-signs it), so the one list that
+/// names the new device also names the old one and verifies through either leaf. Refreshing that
+/// same list through the old-key leaf is no "later list back under the pinned key": it must not
+/// end the pending change, or the new-key leaf turns `E_CREDENTIAL` (blocked for good) and the
+/// person loses the compare-and-verify path. Media stays paused until the new key is verified.
+#[test]
+fn an_old_key_refresh_of_the_same_list_keeps_a_pending_change_in_a_call() {
+    let (mut call, mut alice, bob, v1) = call_raw_bob();
+    let old_key = UmkSigner::from_bytes(&[0xb2; 32]).public();
+    let new_key = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    // Same SSK (seed 0xf2) as Bob's first device, new UMK (seed 0xd5).
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xf2);
+    rotated.join_external_call(&mut call);
+    alice.sync(&call);
+    let v2 = sec_next(
+        &v1,
+        vec![v1.unsigned.entries[0].clone(), sec_entry(&rotated)],
+        0xf2,
+    );
+    let (_, changed, _) = call_ingest(&mut alice, &call, &bob.user, rotated.device, &[&v1, &v2]);
+    assert_eq!(changed, 1);
+    assert_eq!(pin_of(&alice, &bob.user), Some((old_key, 0, Some(new_key))));
+    assert_eq!(code(alice.core.call_media_epoch(&CALL)), "E_UMK_CHANGED");
+
+    // The worker refreshes the old-key leaf's list: the instance serves the cached head again.
+    call_ingest(&mut alice, &call, &bob.user, bob.device, &[&v2]);
+    assert_eq!(
+        pin_of(&alice, &bob.user),
+        Some((old_key, 0, Some(new_key))),
+        "an old-key observation of the list that raised the change must not end it"
+    );
+    assert_eq!(
+        code(alice.core.call_media_epoch(&CALL)),
+        "E_UMK_CHANGED",
+        "media stays paused on the changed key, not failed as an unknown one"
+    );
+    // The same refresh in the other order (new-key leaf again) changes nothing either.
+    call_ingest(&mut alice, &call, &bob.user, rotated.device, &[&v2]);
+    assert_eq!(pin_of(&alice, &bob.user), Some((old_key, 0, Some(new_key))));
+
+    // The compare-and-verify path is still there, for the new key only.
+    assert_eq!(
+        code(alice.core.trust_verify(&bob.user, &old_key)),
+        "E_DEVICE_LIST_STALE"
+    );
+    alice
+        .core
+        .trust_verify(&bob.user, &new_key)
+        .expect("verify the changed key");
+    assert_eq!(pin_of(&alice, &bob.user), Some((new_key, 1, None)));
 }

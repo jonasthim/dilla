@@ -267,7 +267,8 @@ fn own_user_key(c: &rusqlite::Connection) -> Result<Option<OwnUserKey>, StorageE
 }
 
 /// The pin after a validated signed list under `key`. First sight pins it unverified; the pinned
-/// key keeps the pin (and ends a pending change: its newest list is the pinned key's again); any
+/// key keeps the pin (and ends a pending change: its newest list is the pinned key's again; the
+/// caller never passes the pinned key's view of the list already cached, see `ingest_leaf`); any
 /// other key becomes the one pending change and withdraws an earlier verification.
 fn next_pin(prior: Option<Pin>, key: &[u8; 32], now: i64) -> Pin {
     match prior {
@@ -1502,6 +1503,15 @@ impl ClientCore {
         let (changed, quarantined) = self.write(|_, u| {
             u.with_conn(|c| {
                 let prior = read_pin(c, requested_user)?;
+                // While a change is pending, the cached list is the changed key's. The same list
+                // seen again through a leaf of the pinned key (one SSK cross-signed by both keys
+                // names both devices) is no later list back under the pinned key: it ends nothing
+                // and rebinds no cached key, so the changed key stays pending and verifiable.
+                if prior.is_some_and(|p| p.changed.is_some() && p.umk == validated.umk_pub)
+                    && cached.as_ref().is_some_and(|(version, ..)| validated.version <= *version as u64)
+                {
+                    return Ok((false, 0));
+                }
                 let pin = next_pin(prior, &validated.umk_pub, now);
                 write_pin(c, requested_user, &pin)?;
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice()])?;
