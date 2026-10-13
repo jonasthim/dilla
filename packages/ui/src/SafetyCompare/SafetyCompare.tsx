@@ -50,8 +50,8 @@ export function SafetyCompare({ open, contactName, state, approvedUmk, groups, c
       <p className="d-safety-compare__identity">{contactName} · {labels.states?.[state] ?? state}</p>
       {state === 'first-seen' && <p>{labels.firstSeen.replace('{name}', contactName)}</p>}
       <p id={instructionsId} ref={instructionsRef}>{labels.instructions}</p>
-      {approvedUmk && <code className="d-safety-compare__key">{approvedUmk}</code>}
-      <div className="d-safety-compare__groups">{groups.map((group, index) => <code key={index}>{group}</code>)}</div>
+      {approvedUmk && <code className="d-safety-compare__key" data-public-umk>{approvedUmk}</code>}
+      <div className="d-safety-compare__groups">{groups.map((group, index) => <code key={index} data-safety-group>{group}</code>)}</div>
       <button type="button" className="d-safety-compare__button" onClick={onCopy}>{labels.copy}</button>
       <label className="d-safety-compare__confirm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmedFor(event.target.checked ? comparison : null)} />{labels.confirm}</label>
     </div>

@@ -217,6 +217,47 @@ it('says only in the unblocked conversation that a validated Remove restored sen
   expect(screen.queryByText(removed)).toBeNull();
 });
 
+// Flow 05 "changed": the alert stands in the conversation the changed contact is in, cannot be dismissed, and its action
+// leads to Privacy's comparison. Task 10's browser run found it only inside Settings.
+it('stands a changed contact of this conversation as an alert that leads to Privacy', async () => {
+  const changed = 'This contact’s identity changed. Compare the number before sending.';
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [
+      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32) },
+      { userId: STRANGER, name: 'eve', shared: true, umk: 'ee'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'dd'.repeat(32) },
+    ]);
+  } });
+  const alert = screen.getByRole('alert');
+  expect(alert).toHaveTextContent(changed);
+  expect(alert).toHaveTextContent('bob');
+  expect(screen.queryByText('eve')).toBeNull();
+  expect(within(alert).queryByRole('button', { name: /dismiss/i })).toBeNull();
+  await user.click(within(alert).getByRole('button', { name: 'Compare with bob' }));
+  expect(path()).toBe('/settings/privacy');
+});
+
+// Settings' Privacy section carries the same alert and action; the conversation's copy under the modal would repeat the
+// announcement and give a second, unreachable "Compare with" button.
+it('leaves the changed alert to Privacy while Settings covers the conversation', () => {
+  setup('/settings/privacy', { state: { settingsFrom: `/c/${A}/${GEN}` }, before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: 'cc'.repeat(32) }]);
+  } });
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Compare with bob' })).toBeNull();
+});
+
+it('stands no changed alert where a validated Remove restored sending', () => {
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: 'cc'.repeat(32), removedIn: [GEN] }]);
+  } });
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
 // A blocked composer stays focusable: aria-disabled on the textarea, the native attribute on the button only (L-UI-13).
 function expectBlocked(name = 'general') {
   expect(composer(name)).toHaveAttribute('aria-disabled', 'true');

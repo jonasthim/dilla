@@ -9,6 +9,14 @@ const key = 'ab'.repeat(32);
 const labels = { title: 'Compare safety numbers', copy: 'Copy number', verify: 'All 12 blocks match', close: 'Close', instructions: 'Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself.', confirm: 'Yes, all 12 blocks match', firstSeen: 'This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify.' };
 
 describe('SafetyCompare', () => {
+  // L-E2E-23: the browser e2e compares the displayed key byte for byte with the native witness and reads each block.
+  it('marks the exact public key and each of the 12 blocks for the e2e witness', () => {
+    const view = render(<SafetyCompare open contactName="Ada" state="changed" approvedUmk={key} groups={groups} canVerify labels={labels} onCopy={vi.fn()} onVerify={vi.fn()} onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: labels.title });
+    expect([...dialog.querySelectorAll('[data-public-umk]')].map(el => el.textContent)).toEqual([key]);
+    expect([...dialog.querySelectorAll('[data-safety-group]')].map(el => el.textContent)).toEqual(groups);
+    view.unmount();
+  });
   it('shows the person, state, exact key and 12 groups; Copy cannot approve', async () => {
     const user = userEvent.setup();
     const onVerify = vi.fn();

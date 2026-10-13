@@ -15,7 +15,7 @@ import { Conversation, focusComposer, focusLog, useConversationUi } from './conv
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
-import { TypingIndicator } from '@dilla/ui';
+import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, mentionCandidates, mentionMembers, mergeMembers,
   nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
@@ -575,6 +575,12 @@ export function Shell(): React.JSX.Element {
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
   // A validated Remove of a changed leaf unblocked sending here only; the contact stays changed elsewhere (Flow 05).
   const removedHere = targetId !== null && (trust ?? []).some(row => row.changedUmk !== null && row.removedIn?.includes(targetId) === true);
+  // Flow 05 "changed": a member of this conversation whose identity changed stands as an alert with no dismiss, until the
+  // new key is verified or a validated Remove restored sending here. Names come from the worker's trust slice only.
+  const audience = new Set(channel !== null ? (members ?? []).map(member => member.userId) : dm?.members ?? []);
+  // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
+  const changedHere = targetId === null || overlay ? [] : (trust ?? []).filter(row => row.changedUmk !== null && audience.has(row.userId)
+    && row.removedIn?.includes(targetId) !== true);
 
   const searchHits: SearchHitView[] = (search?.hits ?? []).map(hit => {
     const location = hit.communityId === null ? dms?.find(row => row.id === hit.channelId)?.name
@@ -636,7 +642,7 @@ export function Shell(): React.JSX.Element {
   const offline = connection?.status === 'offline';
   // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
   const rootMismatch = account?.rootMismatch === true;
-  const banner = offline || commandError !== null || rootMismatch || removedHere ? (
+  const banner = offline || commandError !== null || rootMismatch || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -645,6 +651,9 @@ export function Shell(): React.JSX.Element {
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
       {removedHere ? <p className="dw-trust-removed" role="status">{t('privacy.removed')}</p> : null}
+      {changedHere.map(row => <TrustAlert key={row.userId} kind="changed" name={row.name}
+        labels={{ changed: t('privacy.changed'), unlisted: t('privacy.unlisted'), verify: t('privacy.compare', { name: row.name }) }}
+        onVerify={() => navigate({ name: 'settings', section: 'privacy', from: null })} />)}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
           {t('shell.banner.commandError', { code: commandError.code })}
