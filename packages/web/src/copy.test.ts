@@ -172,6 +172,8 @@ describe('the flows quote en.ts', () => {
     const listed = new Set([
       ...flow05.split('\n').filter(line => /^\| [a-z]+\./.test(line)).map(line => line.split('|')[1].trim()),
       ...FLOW_FILES.flatMap(file => copyRows(readFileSync(join(FLOWS, file), 'utf8')).rows.map(([key]) => key)),
+      // Flow 06 (web-3) lists its copy as `key='value'` pairs; strings.test.ts compares each with en.ts byte for byte.
+      ...[...(readFileSync(join(FLOWS, '06-voice.md'), 'utf8').split('## Copy')[1] ?? '').matchAll(/`([a-z][\w.]*)='/g)].map(m => m[1]),
     ]);
     const screens = /^(privacy|search|tabs|diagnostics|typing|keyboard)\./;
     const reused = ['boot.otherTab.status', 'dialog.close', 'settings.nav.privacy', 'settings.nav.keyboard', 'settings.nav.diagnostics'];

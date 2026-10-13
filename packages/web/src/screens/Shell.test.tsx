@@ -460,9 +460,11 @@ describe('selection', () => {
     expect(text).toContain('Midgard');
     expect(text).not.toContain('more');
     const at = (s: string) => text.indexOf(s);
-    expect(at('lounge')).toBeLessThan(at('general'));
     expect(at('general')).toBeLessThan(at('random'));
     expect(at('random')).toBeLessThan(at('lobby'));
+    // web-3: a voice channel sits under the voice heading after the text rows (flow 06).
+    expect(at('lobby')).toBeLessThan(at('lounge'));
+    expect(within(list).getByRole('heading', { name: 'voice' })).toBeInTheDocument();
     expect(within(list).getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
   it('switches channels and servers, closing what it leaves', async () => {
@@ -480,14 +482,23 @@ describe('selection', () => {
     expect(opens(fake).at(-1)).toEqual({ m: 'closeChannel', channelId: RAND });
   });
   it('shows an unsupported channel without opening it', () => {
-    const { fake } = setup(`/c/${A}/${VOICE}`);
+    const { fake } = setup(`/c/${A}/${READ}`);
     expect(screen.getByRole('heading', { name: 'This channel does not open here yet' })).toBeInTheDocument();
-    expect(screen.getByText('Voice channels arrive in a later version of the web client.')).toBeInTheDocument();
+    expect(screen.getByText('Channels this server can read arrive in a later version of the web client.')).toBeInTheDocument();
     expect(screen.queryByRole('log')).toBeNull();
-    expect(composer('lounge')).toHaveAttribute('aria-disabled', 'true');
+    expect(composer('lobby')).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByRole('button', { name: 'send' })).toBeDisabled();
     expect(screen.getByText('this channel does not open here yet')).toBeInTheDocument();
     expect(fake.callsOf('openChannel')).toEqual([]);
+  });
+  it('shows a voice channel as its voice view, with no timeline and no composer (web-3)', () => {
+    const { fake } = setup(`/c/${A}/${VOICE}`);
+    expect(within(screen.getByRole('main')).getByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getByText('Nobody is in voice yet.')).toBeInTheDocument();
+    expect(screen.queryByRole('log')).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(fake.callsOf('openChannel')).toEqual([]);
+    expect(fake.callsOf('loadVoice')).toEqual([{ m: 'loadVoice', communityId: A, channelId: null }]);
   });
   it('marks a readable channel in its header', () => {
     setup(`/c/${A}/${READ}`);
@@ -1071,6 +1082,9 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
     await user.tab();
     expect(screen.getByRole('tabpanel', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
+    // web-3: the voice rows are their own roving stop under the voice heading.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'voice lounge' }));
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');

@@ -45,6 +45,32 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
   .dw-search { padding: var(--row-gap); }
   .dw-search .d-search-palette { width: 100%; min-width: 0; }
 }
+/* web-3 (flow 06): the sidebar holds the channel list and, while in voice, the dock under it (above the status bar). */
+.dw-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.dw-sidebar > .d-channel-list { flex: 1 1 auto; min-height: 0; }
+.dw-voice-dock { flex: 0 0 auto; background: var(--bg-2); border-right: 1px solid var(--hairline); }
+.dw-voice-dock__paused { display: grid; gap: var(--row-gap); margin: 0.5rem 0.5rem 0; padding: 0.5rem 0.625rem; border-left: 0.1875rem solid var(--warn); color: var(--fg); font-size: var(--text-sm); }
+.dw-voice-dock__paused p { margin: 0; }
+.dw-voice-dock__paused .d-btn { justify-self: start; }
+/* The voice channels under their heading, with join voice while a row is hovered or holds focus. */
+.dw-voice-section { margin: -0.5rem calc(-1 * var(--row-pad-x)) -0.75rem; padding: 0.5rem 0.5rem 0.25rem; }
+.dw-voice-section__heading { margin: 0 0 0.25rem; padding: 0 8px; }
+.dw-voice-section__list { list-style: none; margin: 0; padding: 0; }
+.dw-voice-section__item { position: relative; }
+.dw-voice-section__join { position: absolute; top: 0.25rem; right: 0.25rem; min-height: 24px; opacity: 0; pointer-events: none; }
+.dw-voice-section__item:hover .dw-voice-section__join, .dw-voice-section__item:focus-within .dw-voice-section__join { opacity: 1; pointer-events: auto; }
+/* The voice view fills the main pane; a DM's call stage sits above the log at 40 % of it, the log and composer below. */
+.dw-voice-stage { height: 100%; min-height: 0; overflow-y: auto; }
+.d-app-shell__content:has(> .dw-dm-call, > .dw-call-strip) { display: flex; flex-direction: column; }
+.d-app-shell__content:has(> .dw-dm-call, > .dw-call-strip) > .dw-conversation { flex: 1 1 auto; min-height: 0; height: auto; }
+.dw-dm-call { flex: 0 0 auto; max-height: 40%; min-height: 0; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
+.dw-dm-call .dw-voice-stage { height: auto; }
+.dw-call-strip { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--group-gap); padding: 0.375rem var(--row-pad-x); border-bottom: 1px solid var(--hairline); }
+.dw-call-strip__notice { margin: 0 auto 0 0; flex: 1 1 18rem; min-width: 0; padding-left: 0.5rem; border-left: 0.1875rem solid var(--warn); color: var(--fg); font-size: var(--text-sm); }
+.dw-call-strip__notice:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+@container d-shell (max-width: 47.99rem) {
+  .dw-voice-section__join, .dw-call-strip .d-btn { min-height: 2.75rem; }
+}
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;
 }

@@ -40,6 +40,9 @@ describe('parseRoute', () => {
     ['/settings/devices', '', { settingsFrom: 7 }, { name: 'settings', section: 'devices', from: null }],
     ['/settings/privacy', '', null, { name: 'settings', section: 'privacy', from: null }],
     ['/settings/keyboard', '', null, { name: 'settings', section: 'keyboard', from: null }],
+    ['/settings/voice', '', null, { name: 'settings', section: 'voice', from: null }],
+    ['/settings/privacy', '', { settingsFrom: null, compareUser: 'ab'.repeat(16) }, { name: 'settings', section: 'privacy', from: null, compare: 'ab'.repeat(16) }],
+    ['/settings/privacy', '', { settingsFrom: null, compareUser: 'not-hex' }, { name: 'settings', section: 'privacy', from: null }],
     ['/settings/diagnostics', '', null, { name: 'settings', section: 'diagnostics', from: null }],
     ['/settings/', '', null, { name: 'root' }],
   ];

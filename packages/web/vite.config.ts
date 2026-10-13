@@ -66,13 +66,8 @@ export default defineConfig({
   },
   build: {
     target: 'es2022', outDir: 'dist', emptyOutDir: true, sourcemap: false, assetsInlineLimit: 0,
-    rollupOptions: {
-      // call/load.ts is a second input until the shell imports it (task 9), so every build already carries the
-      // lazy call chunks and scripts/check-entry-chunk.mjs gates them. The page never loads this entry.
-      // Its export is kept, or Rollup would drop the dynamic import with it.
-      input: { index: resolve(here, 'index.html'), call: resolve(here, 'src/call/load.ts') },
-      preserveEntrySignatures: 'exports-only',
-    },
+    // The shell imports call/load.ts (task 9), whose dynamic import is the only way to the call chunks; there is one input.
+    rollupOptions: { input: { index: resolve(here, 'index.html') } },
   },
   worker: { format: 'es', plugins: () => [oneCoreWasm(), stripRnnoiseInlineWasm()] },
   server: {

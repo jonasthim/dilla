@@ -1,8 +1,8 @@
 // The shell's pure rules: which channels are listed and in what order, which one opens by default,
 // what web-1 cannot open, who wrote a row, why the composer is blocked and how a row's time reads.
 import { isMuted, splitMentions } from '@dilla/client-core';
-import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, MentionMember, TimelineItem } from '@dilla/client-core';
-import type { BodyPart } from '@dilla/ui';
+import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, MentionMember, TimelineItem, VoiceParticipant } from '@dilla/client-core';
+import type { BodyPart, VoiceParticipantView, VoiceStateLabels } from '@dilla/ui';
 import { baseRoute, type Route } from '../router.ts';
 import { formatDay, formatTime, t, type StringKey } from '../strings/index.ts';
 
@@ -29,6 +29,11 @@ export function orderChannels(channels: readonly ChannelSummary[]): ChannelSumma
 /** True for what web-1 cannot open: a voice or other non-text channel, a readable channel, or a group the worker marked so. */
 export function isUnsupported(ch: Pick<ChannelSummary, 'kind' | 'mode' | 'group'>): boolean {
   return ch.group === 'unsupported' || ch.kind !== 0 || ch.mode !== 0;
+}
+
+/** A voice channel (kind 1) the voice view shows (web-3); a readable one stays unsupported. */
+export function isVoice(ch: Pick<ChannelSummary, 'kind' | 'mode'>): boolean {
+  return ch.kind === 1 && ch.mode === 0;
 }
 
 /** The first listed text channel the server cannot read, else the first listed channel, else null. */
@@ -229,4 +234,59 @@ export function formatSize(bytes: number): string {
   const mb = bytes >= 1_048_576;
   const value = bytes / (mb ? 1_048_576 : 1024);
   return t(mb ? 'shell.attachment.mb' : 'shell.attachment.kb', { n: value < 10 ? value.toFixed(1) : Math.round(value) });
+}
+
+// web-3 (flow 06): voice_state flags (protocol/02 § Gateway frames): bit 0 in_call, 1 self_mute, 2 self_deaf, 3 video, 4 screen.
+const FLAG_MUTE = 1 << 1;
+const FLAG_DEAF = 1 << 2;
+const FLAG_VIDEO = 1 << 3;
+const FLAG_SCREEN = 1 << 4;
+
+/** A voice participant as the rows and tiles show it; `state` is the tile's stream state ('ok' outside the call). */
+export function participantView(p: VoiceParticipant, state: VoiceParticipantView['state'] = 'ok', speaking = false): VoiceParticipantView {
+  return {
+    deviceId: p.deviceId, userId: p.userId, name: p.name, state, speaking,
+    muted: (p.flags & FLAG_MUTE) !== 0, deafened: (p.flags & FLAG_DEAF) !== 0,
+    video: (p.flags & FLAG_VIDEO) !== 0, screen: (p.flags & FLAG_SCREEN) !== 0, web: p.web, bot: p.bot,
+  };
+}
+
+/** The participant state words (L-UI-60) from the flow-06 copy. */
+export function voiceStateLabels(): VoiceStateLabels {
+  return {
+    speaking: t('voice.state.speaking'), muted: t('voice.state.muted'), deafened: t('voice.state.deafened'),
+    notHeard: t('voice.state.notHeard'), unverified: t('voice.state.unverified'), connecting: t('voice.state.connecting'),
+    video: t('voice.state.video'), screen: t('voice.state.screen'), web: t('voice.tag.web'), bot: t('voice.tag.bot'),
+  };
+}
+
+/**
+ * The name of a user for the voice copy ({name} of voice.paused and voice.blockedChanged): the member's display name, else
+ * the username, else the trust row's name, else the first 8 hex characters of the id.
+ */
+export function userName(userId: string, members: readonly MemberSummary[], trust: readonly { userId: string; name: string }[] | undefined): string {
+  const member = members.find(m => m.userId === userId);
+  if (member !== undefined && (member.display !== '' || member.username !== '')) return member.display || member.username;
+  const row = trust?.find(r => r.userId === userId);
+  if (row !== undefined && row.name !== '') return row.name;
+  return userId.slice(0, 8);
+}
+
+/** The flow-06 notice for a refused or failed start, by code only; null when the call slice already says why (or nothing is said). */
+export function joinFailureKey(code: string): StringKey | null {
+  switch (code) {
+    case 'E_CALL_FULL': return 'voice.full';
+    case 'E_CALL_SHARERS_FULL': return 'voice.sharersFull';
+    case 'E_CALL_IN_OTHER_TAB': return 'voice.otherTab';
+    // The page is gone (pagehide during the start): nobody reads it.
+    case 'E_ABORTED': return null;
+    // A trust refusal sets the call phase blocked, whose notice says why (flow 06).
+    case 'E_UMK_CHANGED': case 'E_CREDENTIAL': case 'E_DEVICE_UNLISTED': case 'E_TIER_MISMATCH': case 'E_BINDING': return null;
+    default: return 'voice.failed';
+  }
+}
+
+/** The notice for the page call's microphone outcome (listen-only), or null when the microphone is on. */
+export function micNoticeKey(mic: 'ok' | 'denied' | 'missing' | 'failed'): StringKey | null {
+  return mic === 'denied' ? 'voice.micDenied' : mic === 'missing' ? 'voice.micMissing' : mic === 'failed' ? 'voice.micFailed' : null;
 }

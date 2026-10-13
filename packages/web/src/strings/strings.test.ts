@@ -1,4 +1,9 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+// @ts-expect-error the copy lint is a plain .mjs script without types
+import { FORBIDDEN } from '../../../../scripts/check-ui-copy.mjs';
 import { en } from './en.ts';
 import { t, formatTime, formatDay } from './index.ts';
 
@@ -56,7 +61,8 @@ describe('the copy rules', () => {
     expect(en['settings.error.other']).toBe('That did not work ({code}). Try again.');
     // BACKUPS-RECOVERY-04 adds devices.rootMismatch.
     expect(en['devices.rootMismatch']).toBe('The recovery data stored for this account on {instance} is not this account’s. The recovery key will not work until the operator resets it.');
-    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(66);
+    // Flow 06 (web-3) adds 19: settings.nav.voice, settings.voice.* (15), settings.notify.sounds and settings.sound.voice / .ring.
+    expect(Object.keys(en).filter(k => /^(settings|devices|notify|appearance)\./.test(k))).toHaveLength(85);
     expect(Object.keys(en)).not.toContain('devices.error.other');
     expect(Object.keys(en)).not.toContain('devices.cap');
   });
@@ -94,6 +100,25 @@ describe('the copy rules', () => {
     expect(en['shell.pins.by']).toBe('pinned by {name}');
   });
 
+});
+
+describe('flow 06 (L-COPY-05)', () => {
+  const doc = readFileSync(fileURLToPath(new URL('../../../../docs/design/flows/06-voice.md', import.meta.url)), 'utf8');
+  const copy = doc.slice(doc.indexOf('## Copy'));
+  const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
+  it('strings: every flow-06 copy key equals en.ts byte for byte', () => {
+    expect(pairs.length).toBeGreaterThanOrEqual(98);
+    const table = en as Readonly<Record<string, string>>;
+    for (const [key, value] of pairs) expect(table[key], key).toBe(value);
+    for (const [key, value] of pairs) {
+      for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
+    }
+  });
+  it('fills each placeholder the flow names and keeps chrome lower case', () => {
+    expect(en['voice.paused'].match(/\{name\}/g)).toHaveLength(2);
+    for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',
+      'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+  });
 });
 
 describe('dates', () => {
