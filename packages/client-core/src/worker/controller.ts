@@ -15,8 +15,7 @@ import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustBlock,
-  type TrustRecord,
+  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
