@@ -175,6 +175,12 @@ export class Peer {
   revoke(deviceId: string): Promise<{ version: number }> { return this.driver.revoke(deviceId); }
   trustList(userId: string): Promise<{ version: number; pin: string | null; verified: boolean; changed: string | null; pendingUmk: string | null }> { return this.driver.trustList(userId); }
   rotateUmk(userId?: string): Promise<{ user: string; version: number }> { return this.driver.rotateUmk(userId); }
+  /** Joins another peer's server and its first channel's group (the browser sees this peer arrive in that channel). */
+  join(other: PeerSetup, groupId: string): Promise<{ group_id: string; epoch: number }> {
+    return this.driver.join({ community_id: other.community_id, channel_id: other.channel_id, group_id: groupId, invite_code: other.invite_code });
+  }
+  /** The acting device proposes its own removal from the group; another member (the browser) commits it. */
+  leave(channelId?: string): Promise<{ group_id: string }> { return this.driver.leave(channelId); }
   typing(channelId: string, on: boolean): Promise<void> { return this.driver.typing(channelId, on); }
   searchSeed(channelId: string, body: string): Promise<{ seq: number }> { return this.driver.searchSeed(channelId, body); }
 
@@ -480,7 +486,7 @@ async function expectComposerSettled(page: Page, channel: string): Promise<void>
     if (await box.isEnabled()) return 'ready';
     const reason = await box.evaluate((el) => (el.getAttribute('aria-describedby') ?? '').split(/\s+/)
       .map((id) => (id === '' ? '' : document.getElementById(id)?.textContent ?? '')).join(' ').trim());
-    return reason === copy('privacy.changed') ? 'blocked by a changed identity' : 'waiting';
+    return reason === copy('privacy.changed') || reason === copy('privacy.leafFailed') ? 'blocked by a trust verdict' : 'waiting';
   }, { timeout: WAIT }).not.toBe('waiting');
 }
 

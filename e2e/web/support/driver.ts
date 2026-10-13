@@ -94,6 +94,10 @@ export class WebDriver {
   async rotateUmk(userId?: string): Promise<{ user: string; version: number }> {
     return this.strip(await this.request<{ user: string; version: number; id: number; ok: boolean }>('rotate_umk', userId === undefined ? {} : { user: userId }));
   }
+  /** `leave`: the acting device proposes its own removal from the group (a member Remove another member commits). */
+  async leave(channelId?: string): Promise<{ group_id: string }> {
+    return this.strip(await this.request<{ group_id: string; id: number; ok: boolean }>('leave', channelId === undefined ? {} : { channel_id: channelId }));
+  }
   async typing(channelId: string, on: boolean): Promise<void> {
     await this.request('typing', { channel: channelId, on });
   }

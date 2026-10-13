@@ -83,6 +83,8 @@ pub struct WebDriver {
     registered_all: bool,
     dms: BTreeMap<[u8; 16], Vec<u8>>,
     second: Option<Second>,
+    /// The community of each channel this driver joined (`join`): a rotation in a joined group binds that channel.
+    joined: BTreeMap<[u8; 16], [u8; 16]>,
 }
 
 impl WebDriver {
@@ -103,6 +105,7 @@ impl WebDriver {
             registered_all: false,
             dms: BTreeMap::new(),
             second: None,
+            joined: BTreeMap::new(),
         }
     }
 
@@ -460,6 +463,11 @@ impl WebDriver {
                     return Err(scenario("flags must be 0..=3"));
                 }
             }
+            "leave" => {
+                if req.get("channel_id").is_some() {
+                    Self::hex16(req, "channel_id")?;
+                }
+            }
             "register" | "update" | "enrol" | "dms" => {}
             _ => return Err(scenario(format!("unknown op {op}"))),
         }
@@ -481,6 +489,7 @@ impl WebDriver {
                 | "attach"
                 | "fetch_attachment"
                 | "blob_status"
+                | "leave"
         ) && self.group.is_none()
         {
             return Err(scenario("no group yet: register or join first"));
@@ -514,6 +523,7 @@ impl WebDriver {
             "voice_self" => self.voice_self(req).map_err(new_verb_error),
             "trust_list" => self.trust_list(req).map_err(new_verb_error),
             "rotate_umk" => self.rotate_umk(req).map_err(new_verb_error),
+            "leave" => self.leave(req).map_err(new_verb_error),
             _ => unreachable!(),
         }
     }
@@ -926,6 +936,7 @@ impl WebDriver {
         })?;
         self.group = Some(group.to_vec());
         self.groups.insert(channel, group.to_vec());
+        self.joined.insert(channel, community);
         Ok(json!({"group_id": hex::encode(group), "epoch": epoch}))
     }
 
@@ -1217,7 +1228,19 @@ impl WebDriver {
         ds.set_session_expires(enrolled.expires);
         let mut rotated = rotated;
         rotated.publish_key_packages(&mut ds, 8)?;
-        let binding = self.binding(self.peer().channel, Some(self.peer().community))?;
+        // The group's own channel and community: a joined group binds the other peer's channel, not this peer's.
+        let (channel, community) = self
+            .groups
+            .iter()
+            .find(|(_, g)| **g == group)
+            .map(|(c, _)| {
+                (
+                    *c,
+                    self.joined.get(c).copied().unwrap_or(self.peer().community),
+                )
+            })
+            .unwrap_or((self.peer().channel, self.peer().community));
+        let binding = self.binding(channel, Some(community))?;
         rotated.join_external(&mut ds, &group, &binding)?;
         let old_device = self
             .runner
@@ -1231,6 +1254,16 @@ impl WebDriver {
             ds: old_ds,
         });
         Ok(json!({"user": hex::encode(user), "version": next.unsigned.version}))
+    }
+
+    /// `leave`: the acting device proposes its own removal from the group (protocol/01 "Leaving"), the member Remove a
+    /// browser test needs for the validated-Remove recovery of a changed contact. Another member commits it.
+    fn leave(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let name = self.peer().name.clone();
+        let group = self.group_of(req)?;
+        self.runner
+            .with_member(&name, |client, ds| client.leave(ds, &group))?;
+        Ok(json!({"group_id": hex::encode(group)}))
     }
 
     fn attachment_material(seed: u64, counter: u64) -> ([u8; 32], [u8; 12]) {
@@ -1662,12 +1695,16 @@ mod tests {
             ),
             ("voice_self", json!({"call": "ab".repeat(16), "flags": 4})),
             ("rotate_umk", json!({"user": "AB".repeat(16)})),
+            ("leave", json!({"channel_id": "ab".repeat(17)})),
+            ("leave", json!({"channel_id": 7})),
         ] {
             assert!(WebDriver::validate(op, &input).is_err(), "{op}: {input}");
         }
         assert!(
             WebDriver::validate("typing", &json!({"channel": "ab".repeat(16), "on": true})).is_ok()
         );
+        assert!(WebDriver::validate("leave", &json!({})).is_ok());
+        assert!(WebDriver::validate("leave", &json!({"channel_id": "ab".repeat(16)})).is_ok());
         assert!(
             WebDriver::validate(
                 "search_seed",

@@ -57,3 +57,29 @@ test('takeover notices contain exactly three public routing fields', async ({ pa
     for (const names of keys) expect(names).toEqual(['instance', 'nonce', 't']);
   } finally { await other.page.close(); }
 });
+
+// C1 hand-back: the paused tab takes dilla back with its own Use this tab (A -> B -> A), and works again.
+test('hand-over works both ways: A to B, then back to A', async ({ page, context, peer, instanceName }) => {
+  const setup = await peer.setup({});
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  await peer.waitForDevices(2, setup.channel_id);
+  const other = { page: await context.newPage() };
+  try {
+    await other.page.goto('/');
+    await other.page.getByRole('button', { name: copy('tabs.use') }).click({ timeout: WAIT });
+    await expect(other.page.getByRole('textbox', { name: /message/i })).toBeVisible({ timeout: WAIT });
+    await expect(page.getByRole('heading', { name: copy('tabs.paused') })).toBeVisible({ timeout: WAIT });
+    await expect(page.getByText(copy('tabs.pausedDetail'))).toBeVisible();
+    // A takes it back from its paused view.
+    await page.getByRole('button', { name: copy('tabs.use') }).click();
+    await expect(page.getByRole('heading', { name: copy('tabs.paused') })).toHaveCount(0, { timeout: WAIT });
+    await openChannel(page, peer.communityName, peer.channelName);
+    await expect(other.page.getByRole('heading', { name: copy('tabs.paused') })).toBeVisible({ timeout: WAIT });
+    await expect(other.page.getByRole('textbox', { name: /message/i })).toHaveCount(0);
+    await sendText(page, peer.channelName, 'first tab leads again');
+    await peer.waitFor('first tab leads again');
+  } finally { await other.page.close(); }
+});
