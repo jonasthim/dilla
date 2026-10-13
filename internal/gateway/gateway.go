@@ -705,5 +705,5 @@ var opNames = map[Op]string{
 	OpMLSWelcome: "mls.welcome", OpMessageDeleted: "message.deleted",
 	OpMessagePlain: "message.plain", OpInteraction: "interaction",
 	OpPresence: "presence", OpTyping: "typing", OpVoiceState: "voice_state",
-	OpTypingSet: "typing_set", OpVoiceSelf: "voice_self",
+	OpTypingSet: "typing_set", OpVoiceSelf: "voice_self", OpCallRing: "call_ring",
 }

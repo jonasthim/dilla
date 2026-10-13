@@ -28,6 +28,10 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'typing_set channel id has 17 bytes': 'E_FRAME_SHAPE',
   'voice_self flags 4': 'E_FRAME_SHAPE',
   'typing_set has group_id': 'E_FRAME_SHAPE',
+  // The instance answers both E_FRAME_TYPE (op 53 is S->C); this client decodes op 53 and refuses
+  // the shape: the 5-element spec and the state <= 2 check (L-GW-33).
+  'call_ring state 3': 'E_FRAME_SHAPE',
+  'call_ring with 4 elements': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -42,9 +46,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 27 cases and 15 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(27);
-    expect(vectors.rejects).toHaveLength(15);
+  it('holds the 30 cases and 17 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(30);
+    expect(vectors.rejects).toHaveLength(17);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 
@@ -92,7 +96,7 @@ describe('frame shape', () => {
   it('pins the opcode numbers', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
       error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-      typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52 });
+      typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53 });
   });
 });
 
@@ -110,4 +114,16 @@ it('encodes ungrouped client signals', () => {
   expect(decodeFrame(encodeFrame(Op.typingSet, 0, null, [channel, 1]))).toMatchObject({ op: 51, n: 0n, groupId: null });
   expect(decodeFrame(encodeFrame(Op.voiceSelf, 0, null, [channel, 3]))).toMatchObject({ op: 52, n: 0n, groupId: null });
   expect(() => decodeFrame(encodeFrame(Op.voiceSelf, 0, null, [channel, 4]))).toThrow('E_FRAME_SHAPE');
+});
+// Attacker: a hostile or buggy instance sending a ring the client cannot interpret; the decoder
+// refuses it as E_FRAME_SHAPE so the gateway drops it without acting on it (L-GW-33).
+it('accepts call_ring states 0..2 and refuses state 3, a short id and a missing element', () => {
+  const [call, channel, user] = [fid(5), fid(6), fid(7)];
+  for (const state of [0, 1, 2]) {
+    expect(decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, state, 1758659030]))).toMatchObject({ op: 53, n: 0n, groupId: null });
+  }
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 3, 1758659030]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel.slice(1), user, 1, 1758659030]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1, 'soon']))).toThrow('E_FRAME_SHAPE');
 });

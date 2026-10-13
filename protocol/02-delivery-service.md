@@ -314,6 +314,7 @@ dense on every device of its audience; `group_id` is null.
 | 50 | `voice_state` | S→C | `[user_id(bstr 16), device_id(bstr 16), call_id(bstr 16), flags(uint)]` |
 | 51 | `typing_set` | C→S | `[channel_id(bstr 16), typing(uint 0\|1)]` |
 | 52 | `voice_self` | C→S | `[call_id(bstr 16), flags(uint 0..3)]` |
+| 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
 
 All ephemeral frames have `n=0` and `group_id=null`; a client may put a `cid` only in the
 frame header, never in the payload. The server accepts `typing_set` only from a member currently
@@ -343,6 +344,39 @@ or group DM, its participants. `call_id` is the call's id. `flags` is a bit set:
 `flags` 0 means the device has left the call; when a call ends, every device still in it is sent
 one. Every other bit is reserved and 0. The SFU's reports can arrive late or not at all, so
 `voice_state` is advisory: it never decides who may join or publish.
+
+A client that shows who is in voice reads the snapshot first (`GET /v1/channels/{id}/call` or
+`GET /v1/communities/{id}/calls`, `09` § Voice) and then applies, in arrival order, the
+`voice_state` frames it received while the read was in flight. A frame for a device the snapshot
+does not list adds it; a frame with `flags` 0 removes it. Ops 50 and 52 are otherwise unchanged.
+
+`call_ring` is how a DM or group-DM call rings the other participants (`09` § Voice, "Ringing").
+The instance alone sends it; it is never persisted or replayed, and `group_id` is null and `n` 0.
+`state` is:
+
+| state | meaning | `user_id` |
+|---|---|---|
+| 1 | ringing | the caller |
+| 0 | ring over: answered by one of the recipient's devices, declined by the recipient, the call ended, or 30 seconds passed | the caller |
+| 2 | declined: sent to every device of the caller | the participant who declined |
+
+`expires_ts` is the unix second at which the ring ends: `now + 30` when the ring starts, repeated
+unchanged in that ring's state 0 and state 2 frames. A start that **opens** a call (`201`) on a DM
+or group DM rings every other participant who has no device in the call, sending state 1 to each
+of that user's online devices; a `200` start of a live call rings no one, and there is at most one
+ring per (call, user). A user's ring stops (state 0 to every device of that user) at the first of:
+a device of that user is admitted to the call's room, the call ends, 30 seconds pass on the
+instance clock, or the user declines (`POST /v1/calls/{call_id}/decline`). A caller whose device
+leaves an otherwise empty room ends the call, which stops every ring.
+
+The instance rings a given (caller user, recipient user) pair at most once per 15 seconds and at
+most 20 times per rolling hour, across all channels. A start beyond the bound still opens the call
+but sends that recipient no `call_ring`. The bound is keyed by the pair only, never by the
+recipient alone, so no third party can spend a recipient's budget and silence honest callers.
+
+A client's decoder refuses a malformed `call_ring`, or one whose `state` is above 2, as
+`E_FRAME_SHAPE` and drops it without disconnecting. Sent by a client, any op 53 is `E_FRAME_TYPE`
+at the instance, as every S→C opcode is.
 
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of

@@ -179,6 +179,7 @@ chrome.
 Every sound is under 300 ms, dry, and mono-era: a click for mute/unmute/deafen, a two-tone tick
 for join/leave, one short ping for mentions, a low buzz for errors. Sounds are user-toggleable per
 event in Settings → Notifications and are off in the `browser` tier until the user turns them on.
+Amended 2026-10-13 (founder, web-3 round 2): in the web client the join, leave and ring sounds are on by default and each can be turned off in Settings → Notifications → sounds; there is no sound for one's own join, leave, mute or deafen, no ringback tone, and no ring sound or notification for a muted DM.
 
 ## Motion
 
@@ -203,6 +204,7 @@ wins over both.
 
 - Full keyboard operation: every action in the chrome reachable by Tab and the documented keybinds
   (⌘K palette, `/` search, `?` keys, ⌘1–9 channel jumps, M mute, D deafen, Esc closes).
+- Amended 2026-10-13 (founder, web-3 decision 1): mute is Ctrl/⌘+Shift+M and deafen is Ctrl/⌘+Shift+D; there are no single-key shortcuts (WCAG 2.1.4).
 - Visible focus everywhere: a 2px accent outline offset by 2px (`--focus-ring`), applied with
   `outline`, never `box-shadow` — `box-shadow` is reserved for component state, so a state cue can
   never swallow the ring. Nothing in the component library sets `outline: none`.

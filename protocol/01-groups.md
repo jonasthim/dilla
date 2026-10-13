@@ -186,6 +186,16 @@ the send block for that group alone; it does not verify the changed key or relea
   code — and keeps its proposal);
   and the DS issues its own `Remove` of a leaf regardless of the member's own `Remove` of it
   (`02-delivery-service.md`, invariant 6).
+- **Calls.** A client neither joins a `call` group nor derives its media keys (`05` § Key
+  schedule) while any leaf of it other than its own holds a failed or changed verdict, or a verdict
+  still pending a signed device list; it refreshes those lists once, against the staged join, and
+  posts its external commit only after the whole tree passes. For the call group of a DM or group
+  DM it also refuses while that DM's `text` group is send-blocked. During a call, a leaf whose
+  verdict becomes failed makes the client derive no further key and leave the call (its own
+  `Remove` proposal, as above); a leaf whose verdict becomes changed (a member's identity changed
+  and is not yet verified) makes the client pause instead: it derives, sends and installs no key
+  for that call and stays a member, until the change is verified or that leaf leaves the group.
+  The call goes on for the other members either way.
 
 ## Cadence
 
@@ -193,7 +203,8 @@ the send block for that group alone; it does not verify the changed key or relea
   proposal at most every `24h × max(1, ceil(leaves / 64))` and only if it has sent at least one
   application message since its last `Update`. In `call` groups a device rotates its leaf at least
   every 60 minutes, by an empty commit with an UpdatePath or an `Update` proposal another member
-  commits; this is a client obligation the DS does not check. The DS never commits: it elects one
+  commits; this is a client obligation the DS does not check. The web client rotates its call leaf
+  every 60 minutes after it joined, and again 60 minutes after each of its own commits. The DS never commits: it elects one
   committer per round for its own proposals (02, invariant 7).
 - **Inactivity:** a device that has not connected for **90 days** is removed from every group by a
   DS `Remove` proposal (founder decision 2026-09-23). It rejoins by external commit.

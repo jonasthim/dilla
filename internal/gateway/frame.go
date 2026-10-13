@@ -55,6 +55,8 @@ const (
 	OpVoiceState Op = 50
 	OpTypingSet  Op = 51
 	OpVoiceSelf  Op = 52
+	// OpCallRing is the DM-call ring (web-3, L-GW-33): S->C only, never persisted or replayed.
+	OpCallRing Op = 53
 )
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
@@ -130,6 +132,9 @@ var opSpecs = map[Op]opSpec{
 	OpVoiceState: {elements: 4},
 	OpTypingSet:  {elements: 2, fromClient: true},
 	OpVoiceSelf:  {elements: 2, fromClient: true},
+	// [call_id, channel_id, user_id, state(0..2), expires_ts]. A client never sends it, so Decode
+	// refuses a client op 53 of any shape with E_FRAME_TYPE at the opcode check.
+	OpCallRing: {elements: 5},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error

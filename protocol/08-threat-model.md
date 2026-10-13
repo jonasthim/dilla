@@ -38,6 +38,18 @@ For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–
   accepted by a device still holding the old credential; that device must enrol again.
 - Verifiable reports: franking (`04-envelope-and-franking.md`).
 - Cryptographic device revocation: signed device lists (`03-identity.md`).
+- Call media keys follow the group's validation: a device derives no `base_key` for a `call`
+  group while any other leaf of it holds a failed, changed or pending verdict, or, for a DM's or
+  group DM's call, while that DM's `text` group is send-blocked (`01-groups.md`, "Calls").
+- The browser key path: in a browser call, each epoch's `base_key` leaves the core worker only as
+  a transferred `ArrayBuffer` posted to the page that owns the call, which hands it, transferred
+  again, to that call's media worker and zero-fills its own copy after the hand-off. It is never in
+  a state slice, a command result, a log, storage, a URL or a `BroadcastChannel`.
+- Attachment players: an audio or video attachment of a listed type plays only on an explicit
+  play, from a `blob:` URL the page mints from the decrypted bytes and revokes when the player
+  goes away. Its bytes are sender-supplied and are decoded by the browser's media pipeline in the
+  page: the same exposure as a decrypted image, which the page's image decoder parses. No player
+  autoplays, and no decrypted attachment is kept in any store.
 
 Against adversary 4: forward secrecy and post-compromise security as above; recovery keys are never
 on devices except during signup or recovery.
