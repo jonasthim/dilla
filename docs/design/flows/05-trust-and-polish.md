@@ -23,7 +23,7 @@ First sight means first seen **here**, on this device. An instance may withhold 
 
 Search has channel, community and all scopes. Loading retains the textbox and selected scope. An empty current request shows `search.noResults`; an older response cannot replace a newer one. A result opens its channel, then focuses the target row only after the timeline publishes that row. If the target is missing, deleted or quarantined, announce `search.unavailable`, focus a persistent channel heading or palette textbox, and only then remove the overlay. Search hits never expose quarantined text.
 
-Appearance, Keyboard and Diagnostics settings are device-local. Diagnostics displays connection, generation, instance domain, own-device count and the last 20 stable codes. `diagnostics.copy` copies codes only, with no details, tokens or message bodies. Typing is deduplicated by user: one user maps to `typing.one`, multiple users to `typing.many`, even when one user has multiple devices. The other tab has `other-tab` (the `tabs.use` action), waiting, busy, failed, paused and ready phases. Busy keeps the waiting surface while accepted work drains; ready appears only after the old lock releases and this tab acquires it. Failed or paused does not claim release. No follower conversation or message view is rendered.
+Appearance, Keyboard and Diagnostics settings are device-local. Diagnostics displays connection, generation, the instance name (as the status bar shows it), own-device count and the last 20 stable codes with their times; with none it says `diagnostics.empty`. `diagnostics.copy` copies codes only, with no details, tokens or message bodies. Typing is deduplicated by user: one user maps to `typing.one`, multiple users to `typing.many`, even when one user has multiple devices. The other tab has `other-tab` (the `tabs.use` action), waiting, busy, failed, paused and ready phases. Busy keeps the waiting surface while accepted work drains; ready appears only after the old lock releases and this tab acquires it. Failed or paused does not claim release. No follower conversation or message view is rendered.
 
 ## 1280×800
 
@@ -169,7 +169,8 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | diagnostics.connection | connection | diagnostics field |
 | diagnostics.generation | generation | diagnostics field |
 | diagnostics.instance | instance | diagnostics field |
-| diagnostics.devices | {n} devices | diagnostics own-device count |
+| diagnostics.devices | devices | diagnostics field (own-device count is its value) |
+| diagnostics.empty | No errors recorded | diagnostics, no stored code |
 | tabs.use | Use this tab | follower action |
 | tabs.wait | Moving to this tab… | waiting status |
 | tabs.failed | Close the other tab, then try again. | failure status |

@@ -46,6 +46,7 @@ export function Settings(): React.JSX.Element {
   const client = useCore();
   const records = useSlice('trust') ?? [];
   const diagnostics = useSlice('diagnostics');
+  const account = useSlice('account');
   const [comparison, setComparison] = useState<{ record: TrustSummary; umk: string; number: string | null; error: CompareError | null } | null>(null);
   // After an approval the compared row changes under the dialog, so focus goes to the Privacy heading (W-11, P7).
   const focusHeading = useRef(false);
@@ -94,7 +95,7 @@ export function Settings(): React.JSX.Element {
       {section === 'devices' ? <Devices /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
           : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
-            writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />}
+            instanceName={account?.instance?.name ?? null} writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />}
       <SafetyCompare open={comparison !== null} contactName={comparison?.record.name ?? ''}
         state={comparison === null ? 'first-seen' : compareState(comparison.record)}
         approvedUmk={comparison?.umk ?? null} groups={comparison?.number?.split(' ') ?? []}
