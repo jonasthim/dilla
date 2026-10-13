@@ -3,6 +3,8 @@ import { CoreError } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC, throughOf, type PageInfo } from './engine';
 import { catchSync, coreCalls, device, openRegistered, readyInfo, type Device } from './testing/harness';
+import { fakeDskPub } from '../testing/fake-list';
+import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import {
   CHANNEL_2, COMMUNITY, CHANNEL, FOURTH, ME, ManualClock, ModelDs, PEER, THIRD, at, deferred, httpError, idOf, settle, type RouteName,
 } from './testing/model';
@@ -97,6 +99,42 @@ it('hands the Add check the signed list of the candidate head, as the core decod
   expect(await d.engine.commitNow(g, 0)).toBe(true);
   const served = await d.engine.deps.routes.getDeviceList(THIRD.user);
   expect(heads).toEqual([served!.blob]);
+});
+
+describe('a failed Add candidate (security F2, controller ruling 3)', () => {
+  const FORGED = idOf(0xd0, 23);
+  /** ME's core caches PEER's list v1 (naming only PEER.device), as a trust refresh would. */
+  async function cachedPeerList(d: Device, g: Uint8Array): Promise<void> {
+    ds.publishList(PEER.user, [{ device: PEER.device }]);
+    d.core.addPendingLeaf(g, 1, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+    const { head, history } = await readDeviceListHistory(d.engine.deps.routes, PEER.user, 0n);
+    d.core.deviceListIngest(g, 1, PEER.user, history, signedHeadList(head), 1n);
+  }
+
+  it('is left out and the commit is still posted', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    await cachedPeerList(d, g);
+    d.core.addKeyPackage(PEER.user, FORGED, fakeDskPub(FORGED), 1);
+    ds.propose(g, 'add', FORGED);
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(count('postCommit')).toBe(1);
+    expect(ds.welcomesFor(FORGED)).toEqual([]);
+    expect(d.core.groupRow(g)?.epoch).toBe(1n);
+  });
+
+  it('a candidate whose history is unknown still refuses, aborts and posts nothing', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    d.core.addKeyPackage(THIRD.user, THIRD.device, fakeDskPub(THIRD.device), 1);
+    ds.propose(g, 'add', THIRD.device);
+    expect(await d.engine.commitNow(g, 0)).toBe(false);
+    expect(count('postCommit')).toBe(0);
+    // Once the list is served, the next attempt fetches it and commits the Add.
+    ds.publishList(THIRD.user, [{ device: THIRD.device }]);
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(ds.welcomesFor(THIRD.device)).toHaveLength(1);
+  });
 });
 
 describe('catch-up on every ready (rule 2)', () => {

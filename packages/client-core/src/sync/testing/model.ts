@@ -1754,7 +1754,8 @@ export class ModelDs {
     const key = toHex(user);
     const version = BigInt((this.lists.get(key)?.length ?? 0) + 1);
     const blob = fakeListBlob(user, entries.map((entry) => ({ deviceId: entry.device, revokedAt: entry.revokedAt ?? null })), this.clockS);
-    this.storeList(key, version, blob, new Uint8Array(64), new Uint8Array(32));
+    // The ModelCore's stand-in signature and hash markers, so a published list is one the double's ingest accepts.
+    this.storeList(key, version, blob, new Uint8Array(64).fill(Number(version & 255n)), new Uint8Array(32).fill(Number((version - 1n) & 255n)));
     return version;
   }
   addDm(channelId: Id, participants: readonly Peer[]): void {

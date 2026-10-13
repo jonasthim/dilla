@@ -6,7 +6,7 @@ import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
 import { openChannelFlow, resyncGroup, welcomeFrame, welcomeStep } from './channel';
-import { SyncError } from './errors';
+import { FAILED_LEAF, SyncError } from './errors';
 import { SerialQueues } from './group-queue';
 import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
@@ -309,7 +309,14 @@ export class SyncEngine implements SyncInternals {
       for (const candidate of this.deps.core.proposedAdds(g, proposals)) {
         const { head, history } = await readDeviceListHistory(this.deps.routes, candidate.userId, candidate.cachedVersion);
         if (this.isStopped) return false;
-        this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, signedHeadList(head), BigInt(Math.floor(this.deps.now() / 1000)));
+        try {
+          this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, signedHeadList(head), BigInt(Math.floor(this.deps.now() / 1000)));
+        } catch (e) {
+          // Controller ruling 3: a candidate whose leaf fails is left out of this commit by the core (commit_build), never
+          // a refusal that stalls this device's commits. A stale or unreadable history still refuses: the next attempt
+          // fetches it again.
+          if (!(e instanceof CoreError) || !FAILED_LEAF.has(e.code)) throw e;
+        }
         this.deps.onTrustChanged();
       }
       const body = this.deps.core.commitBuild(g, proposals); built = true;
