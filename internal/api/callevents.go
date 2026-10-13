@@ -125,11 +125,19 @@ type VoiceParticipant struct {
 
 // SetSelf stores the self-mute and self-deafen bits (voice_self's client bits 0 and 1) dev reported
 // in call, after the gateway admitted the frame (VoiceSelfAudience: the device is in the call's live
-// room). Other bits are ignored.
+// room), while the call events hold the device in a room of the call. A voice_self that arrives
+// before the device's participant_joined is not stored (the snapshot then shows it without self
+// bits until its next voice_self); its voice_state frame still carries them. Other bits are ignored.
 func (c *CallEvents) SetSelf(call, dev id.ID, bits uint64) {
 	k := announceKey{call: call, dev: dev}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// A leave processed between the gateway's SFU check and this store must not be undone: a device
+	// the call events do not hold in a room of the call keeps no self flags (task-3 review M3).
+	if !c.inCallLocked(call, dev) {
+		delete(c.self, k)
+		return
+	}
 	if c.self == nil {
 		c.self = map[announceKey]uint64{}
 	}
@@ -138,6 +146,17 @@ func (c *CallEvents) SetSelf(call, dev id.ID, bits uint64) {
 		return
 	}
 	c.self[k] = bits & 3
+}
+
+// inCallLocked reports whether dev is in a room of call as the call events saw it. c.mu is held.
+func (c *CallEvents) inCallLocked(call, dev id.ID) bool {
+	prefix := call.String() + "-"
+	for name, r := range c.rooms {
+		if strings.HasPrefix(name, prefix) && r.devices[dev] != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // selfLocked is dev's stored self bits in call as voice_state bits 1 and 2. c.mu is held.

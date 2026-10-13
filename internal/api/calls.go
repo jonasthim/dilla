@@ -522,8 +522,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.startStage("respond")
-	// L-GW-33: only a start that opens the call rings; a 200 start of a live call never does.
-	if status == http.StatusCreated {
+	// L-GW-33: only a start that opens the call rings; a 200 start of a live call never does, and
+	// neither does a start that read the call not live but lost the race to open it (its row names
+	// another start's room; task-3 review M2).
+	if status == http.StatusCreated && row.LivekitRoom == room {
 		h.ring(r.Context(), ch, row, s.UserID)
 	}
 	if err := server.EncodeBody(w, status, callResponse{

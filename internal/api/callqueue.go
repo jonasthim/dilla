@@ -379,6 +379,9 @@ func (h *Calls) endQueued(ctx context.Context, row store.VoiceSessionRow, reason
 		return err
 	}
 	if ended {
+		// L-GW-33: the call ended, so every ring of it stops now (state 0), and a restart of the same
+		// DM — the same call id — rings afresh (task-3 review I1).
+		h.ringer.End(row.CallID)
 		h.log.InfoContext(ctx, "call ended", "call_id", row.CallID.String(), "reason", reason)
 		h.requestTeardown(ctx, row, reason)
 	}

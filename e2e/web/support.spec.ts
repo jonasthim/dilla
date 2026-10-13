@@ -10,7 +10,7 @@ const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 // L-HTTP-10, exactly, with HOST = 127.0.0.1:8453.
 const CSP =
   "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; " +
-  "connect-src 'self' ws://127.0.0.1:8453 wss://127.0.0.1:8453; worker-src 'self'; media-src 'none'; " +
+  "connect-src 'self' ws://127.0.0.1:8453 wss://127.0.0.1:8453; worker-src 'self'; media-src blob:; " +
   "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 // The invite landing's own policy (internal/api/invites.go:107), set on every answer of GET /i/{code}.
 const LANDING_CSP = "default-src 'none'; style-src 'unsafe-inline'";
@@ -28,7 +28,7 @@ test('the test host serves the client root same-origin, with its headers, to a p
   expect(headers['x-content-type-options']).toBe('nosniff');
   expect(headers['referrer-policy']).toBe('no-referrer');
   expect(headers['x-frame-options']).toBe('DENY');
-  expect(headers['permissions-policy']).toBe('camera=(), microphone=(), display-capture=(), geolocation=()');
+  expect(headers['permissions-policy']).toBe('camera=(self), microphone=(self), display-capture=(self), geolocation=()');
   expect(headers['cross-origin-opener-policy']).toBeUndefined();
   expect(headers['cross-origin-embedder-policy']).toBeUndefined();
   expect(headers['access-control-allow-origin']).toBeUndefined();

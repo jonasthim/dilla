@@ -7,12 +7,12 @@ import {
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
 
-const CSP = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://${HOST} wss://${HOST}; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+const CSP = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://${HOST} wss://${HOST}; worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 const COMMON = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
   'x-frame-options': 'DENY',
-  'permissions-policy': 'camera=(), microphone=(), display-capture=(), geolocation=()',
+  'permissions-policy': 'camera=(self), microphone=(self), display-capture=(self), geolocation=()',
 };
 const NEVER = ['cross-origin-opener-policy', 'cross-origin-embedder-policy', 'access-control-allow-origin', 'strict-transport-security'];
 const IMMUTABLE = 'public, max-age=31536000, immutable';

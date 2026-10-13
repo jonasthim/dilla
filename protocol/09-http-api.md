@@ -721,7 +721,12 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   start beyond the bound still opens the call (`201`) but sends that recipient no `call_ring`, and
   the instance logs one `INFO` line per suppressed pair per hour. The bound is keyed by the pair
   only, never by the recipient alone, so no third party can spend a recipient's budget and silence
-  honest callers. The state lives in memory, at most 65 536 pairs with the oldest evicted first.
+  honest callers. The state lives in memory, at most 65 536 pairs: a pair whose hour has passed is
+  dropped first, one caller user holds at most 1 024 live pairs (a new recipient beyond that is not
+  rung, for that caller only), and only a table full of live pairs evicts the oldest live pair. One
+  caller user has at most 8 calls ringing at once; a further start by that caller opens the call
+  but rings nobody. Every end of a call stops its rings, and of two starts that race to open the
+  same call only the one whose write opened it rings.
   Rings reach only a device with an open gateway session; nothing is pushed to a closed client.
 - **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
   **current epoch**: added at or before it and not removed. Any other device — a removed one, one
@@ -998,8 +1003,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   live call stays `DELETE /v1/calls/{call_id}` by a current leaf. A closed group answers as above
   (`403 E_LEAF_NOT_CURRENT` at a start), `GET /v1/channels/{id}/call` no longer names it, and the
   next joiner registers a fresh call group. A start that read the group open and writes its call
-  after the close is ended at once and answers `503 E_UNAVAILABLE` with `retry_after_ms`; the client
-  retries with a fresh `GET /v1/channels/{id}/call`. So a call group that a member poisoned with a
+  after the close is ended at once and answers `503 E_UNAVAILABLE` with `retry_after_ms`; a start whose
+  call was written just before the close can instead answer `201` and see the call end at once. Either
+  way the client retries with a fresh `GET /v1/channels/{id}/call`. So a call group that a member poisoned with a
   device no list names, and that no call keeps live, refuses honest joiners for at most 10 minutes.
 - **Leaving.** A device leaves a call by posting its self-Remove proposal to the call group (`01`
   § Joining) and only then disconnecting from the SFU. The instance learns of the leave from the

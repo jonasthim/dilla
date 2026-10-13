@@ -32,9 +32,20 @@ const (
 	ringPairGap     = 15 * time.Second
 	ringPairPerHour = 20
 	ringPairWindow  = time.Hour
-	// maxRingPairs bounds the pair state; beyond it the pair rung least recently is evicted.
+	// maxRingPairs bounds the pair state. A pair whose window has passed is dropped first; only a
+	// table full of live pairs evicts the oldest live one (the residual: filling it takes at least
+	// maxRingPairs / maxLivePairsPerCaller = 64 callers at their full share).
 	maxRingPairs = 65536
-	// maxRingingCalls bounds the calls with a ring outstanding; a start beyond it rings nobody.
+	// maxLivePairsPerCaller is one caller's share of the pair table (task-3 review M1): a caller
+	// holding this many live pairs rings no new recipient until one of its pairs' windows passes,
+	// so no single caller can push a still-limited pair out of the table.
+	maxLivePairsPerCaller = 1024
+	// maxRingingCallsPerCaller is how many calls one caller may have ringing at once (RV-4's "8
+	// concurrent rings per client", task-3 review I2): a start beyond it rings nobody, for that
+	// caller only.
+	maxRingingCallsPerCaller = 8
+	// maxRingingCalls is the memory bound on calls with a ring outstanding; with the per-caller cap,
+	// reaching it takes at least 512 callers.
 	maxRingingCalls = 4096
 )
 
@@ -47,11 +58,16 @@ type Ringer struct {
 	// maxUsers is livekit.max_voice_participants: a start with more recipients rings nobody. 0 sets
 	// no bound.
 	maxUsers int
+	// base is the clock reading the pair rule measures from: offsets from it use the monotonic
+	// reading when the clock has one (review M5), so a wall-clock step neither frees nor holds a pair.
+	base time.Time
 
-	mu    sync.Mutex
-	calls map[id.ID]*ringCall
-	pairs map[ringPair]*pairState
-	order *list.List // of *pairState, the pair rung least recently first
+	mu       sync.Mutex
+	calls    map[id.ID]*ringCall
+	byCaller map[id.ID]map[id.ID]int // caller → its ringing calls → how many of their rings are its
+	pairs    map[ringPair]*pairState
+	perPair  map[id.ID]int // caller → how many pairs it holds in the table
+	order    *list.List    // of *pairState, the pair rung least recently first
 }
 
 // ringCall is one call's outstanding rings.
@@ -72,12 +88,13 @@ type ring struct {
 // alone, so no third party can spend a recipient's budget and silence honest callers.
 type ringPair struct{ caller, recipient id.ID }
 
-// pairState is one pair's rings within the rolling window (unix nanoseconds, oldest first) and when
-// a suppressed ring of the pair was last logged.
+// pairState is one pair's rings within the rolling window (offsets from Ringer.base, oldest first)
+// and when a suppressed ring of the pair was last logged.
 type pairState struct {
 	key    ringPair
-	rings  []int64
-	logged int64
+	rings  []time.Duration
+	logged time.Duration
+	seen   bool // logged holds a value
 	elem   *list.Element
 }
 
@@ -86,8 +103,9 @@ func NewRinger(gw VoiceGateway, clk clock.Clock, log *slog.Logger) *Ringer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Ringer{gw: gw, clk: clk, log: log, calls: map[id.ID]*ringCall{},
-		pairs: map[ringPair]*pairState{}, order: list.New()}
+	return &Ringer{gw: gw, clk: clk, log: log, base: clk.Now(), calls: map[id.ID]*ringCall{},
+		byCaller: map[id.ID]map[id.ID]int{}, pairs: map[ringPair]*pairState{}, perPair: map[id.ID]int{},
+		order: list.New()}
 }
 
 // WithMaxUsers sets the per-call recipient bound (livekit.max_voice_participants) and returns r.
@@ -100,6 +118,10 @@ func (r *Ringer) WithMaxUsers(n int) *Ringer {
 // each of them gets state 1 on every online device, unless that user is already being rung for the
 // call (at most one ring per (call, user)) or the pair rate rule holds the ring back. Any other kind
 // of channel rings nobody.
+//
+// Attacker (review I2): one caller starting call after call to fill the ringing-call table and
+// silence everyone else's rings. A caller holds at most maxRingingCallsPerCaller ringing calls; its
+// next start rings nobody while every other caller still rings.
 func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.ID) {
 	if r == nil || (ch.Kind != ChannelDM && ch.Kind != ChannelGroupDM) {
 		return
@@ -119,7 +141,14 @@ func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.
 		return
 	}
 	var started, suppressed []id.ID
+	capped := false
 	r.mu.Lock()
+	mine := r.byCaller[caller]
+	if mine[call] == 0 && len(mine) >= maxRingingCallsPerCaller {
+		r.mu.Unlock()
+		r.log.Warn("this caller has too many calls ringing; this call rings nobody", "caller", caller.String(), "call_id", call.String())
+		return
+	}
 	rc := r.calls[call]
 	if rc == nil {
 		if len(r.calls) >= maxRingingCalls {
@@ -129,11 +158,13 @@ func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.
 		}
 		rc = &ringCall{channel: ch.ID, users: map[id.ID]*ring{}}
 	}
+	at := now.Sub(r.base)
 	for _, u := range users {
 		if rc.users[u] != nil {
 			continue
 		}
-		allowed, logIt := r.allowLocked(caller, u, now)
+		allowed, logIt, full := r.allowLocked(caller, u, at)
+		capped = capped || full
 		if !allowed {
 			if logIt {
 				suppressed = append(suppressed, u)
@@ -142,6 +173,10 @@ func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.
 		}
 		rg := &ring{caller: caller, expires: expires, timer: r.clk.NewTimer(RingSeconds * time.Second), stop: make(chan struct{})}
 		rc.users[u] = rg
+		if r.byCaller[caller] == nil {
+			r.byCaller[caller] = map[id.ID]int{}
+		}
+		r.byCaller[caller][call]++
 		started = append(started, u)
 		go r.expire(call, u, rg)
 	}
@@ -152,45 +187,78 @@ func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.
 	for _, u := range suppressed {
 		r.log.Info("a ring was held back by the pair rate rule", "caller", caller.String(), "recipient", u.String())
 	}
+	if capped {
+		r.log.Warn("this caller holds its full share of ring pairs; new recipients are not rung", "caller", caller.String())
+	}
 	for _, u := range started {
 		r.deliver(u, call, ch.ID, caller, 1, expires)
 	}
 }
 
-// allowLocked applies the pair rate rule to one ring of recipient by caller at now and, when it is
-// allowed, records it. logIt is true for a held-back ring whose pair was not logged within the
-// window (one INFO per suppressed pair per hour). r.mu is held.
-func (r *Ringer) allowLocked(caller, recipient id.ID, now time.Time) (allowed, logIt bool) {
+// allowLocked applies the pair rate rule to one ring of recipient by caller at offset at and, when
+// it is allowed, records it. logIt is true for a held-back ring whose pair was not logged within
+// the window (one INFO per suppressed pair per hour); full reports a new pair refused because the
+// caller holds its whole share of the table. r.mu is held.
+//
+// Attacker (review M1): ringing fresh users until the table evicts a pair that is still limited.
+// Pairs whose window has passed go first; a caller holds at most maxLivePairsPerCaller pairs; and
+// only a table full of live pairs (64 callers at their full share) evicts the oldest live pair.
+func (r *Ringer) allowLocked(caller, recipient id.ID, at time.Duration) (allowed, logIt, full bool) {
+	r.expirePairsLocked(at)
 	k := ringPair{caller: caller, recipient: recipient}
-	at := now.UnixNano()
 	ps := r.pairs[k]
 	if ps == nil {
-		for len(r.pairs) >= maxRingPairs {
-			old, ok := r.order.Remove(r.order.Front()).(*pairState)
-			if !ok {
-				break // the list holds only *pairState
+		if r.perPair[caller] >= maxLivePairsPerCaller {
+			return false, false, true
+		}
+		if len(r.pairs) >= maxRingPairs {
+			if old, ok := r.order.Front().Value.(*pairState); ok {
+				r.log.Warn("the ring pair table is full of live pairs; the oldest is evicted",
+					"caller", old.key.caller.String(), "recipient", old.key.recipient.String())
+				r.dropPairLocked(old)
 			}
-			delete(r.pairs, old.key)
 		}
 		ps = &pairState{key: k}
 		ps.elem = r.order.PushBack(ps)
 		r.pairs[k] = ps
+		r.perPair[caller]++
 	}
 	keep := 0
-	for keep < len(ps.rings) && at-ps.rings[keep] >= int64(ringPairWindow) {
+	for keep < len(ps.rings) && at-ps.rings[keep] >= ringPairWindow {
 		keep++
 	}
 	ps.rings = ps.rings[keep:]
-	if n := len(ps.rings); n >= ringPairPerHour || (n > 0 && at-ps.rings[n-1] < int64(ringPairGap)) {
-		if ps.logged == 0 || at-ps.logged >= int64(ringPairWindow) {
-			ps.logged = at
+	if n := len(ps.rings); n >= ringPairPerHour || (n > 0 && at-ps.rings[n-1] < ringPairGap) {
+		if !ps.seen || at-ps.logged >= ringPairWindow {
+			ps.logged, ps.seen = at, true
 			logIt = true
 		}
-		return false, logIt
+		return false, logIt, false
 	}
 	ps.rings = append(ps.rings, at)
 	r.order.MoveToBack(ps.elem)
-	return true, false
+	return true, false, false
+}
+
+// expirePairsLocked drops every pair whose newest ring is a whole window old. The order list is by
+// newest ring, so they are all at its front. r.mu is held.
+func (r *Ringer) expirePairsLocked(at time.Duration) {
+	for e := r.order.Front(); e != nil; e = r.order.Front() {
+		ps, ok := e.Value.(*pairState)
+		if !ok || (len(ps.rings) > 0 && at-ps.rings[len(ps.rings)-1] < ringPairWindow) {
+			return
+		}
+		r.dropPairLocked(ps)
+	}
+}
+
+// dropPairLocked removes ps from the table. r.mu is held.
+func (r *Ringer) dropPairLocked(ps *pairState) {
+	r.order.Remove(ps.elem)
+	delete(r.pairs, ps.key)
+	if r.perPair[ps.key.caller]--; r.perPair[ps.key.caller] <= 0 {
+		delete(r.perPair, ps.key.caller)
+	}
 }
 
 // expire ends user's ring when its timer fires, unless the ring was answered, declined or ended
@@ -238,6 +306,14 @@ func (r *Ringer) dropLocked(call id.ID, rc *ringCall, user id.ID) {
 		case <-rg.stop:
 		default:
 			close(rg.stop)
+		}
+		if mine := r.byCaller[rg.caller]; mine != nil {
+			if mine[call]--; mine[call] <= 0 {
+				delete(mine, call)
+			}
+			if len(mine) == 0 {
+				delete(r.byCaller, rg.caller)
+			}
 		}
 	}
 	delete(rc.users, user)

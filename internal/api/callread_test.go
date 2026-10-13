@@ -255,3 +255,17 @@ func TestSelfFlagsClearOnLeave(t *testing.T) {
 		t.Fatalf("participants of the restarted call = %+v, want flags 1 (the ended call's self flags cleared)", snap.Participants)
 	}
 }
+
+// Review M3: a voice_self the gateway admitted just before the device's leave was processed must not
+// come back as a stale mute when the device rejoins: the store keeps self flags only for a device
+// the call events hold in the call's room.
+func TestSelfFlagsAfterALeaveAreNotStored(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	f.send(t, webhook.EventParticipantJoined, f.dev.String(), nil)
+	f.send(t, webhook.EventParticipantLeft, f.dev.String(), nil)
+	f.events.SetSelf(f.callID, f.dev, 1) // admitted by the SFU check before the leave landed
+	f.send(t, webhook.EventParticipantJoined, f.dev.String(), nil)
+	if _, _, snap := getChannelCall(t, f.e, f.ch, f.tok); len(snap.Participants) != 1 || snap.Participants[0].Flags != api.VoiceInCall {
+		t.Fatalf("participants after a rejoin = %+v, want flags 1 (no stale self-mute)", snap.Participants)
+	}
+}
