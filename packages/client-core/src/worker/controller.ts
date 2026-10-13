@@ -355,6 +355,8 @@ export class Controller {
   private readonly notMember = new Set<string>();
   private readonly resyncing = new Set<string>();
   private readonly lookedUp = new Set<string>();
+  /** The member-list read running per community (lookUpUsers), and whether another is owed after it. */
+  private readonly memberReads = new Map<string, { again: boolean }>();
   private readonly open = new Map<string, OpenChannel>();
   private readonly opening = new Map<string, { run: Promise<null>; entry: OpenChannel | null }>();
   /** One attachment tray per channel hex (L-TS-35); its descriptors live in worker memory only. */
@@ -439,8 +441,11 @@ export class Controller {
         deps.setTimeout(() => { if (this.sync === sync && sync !== null) void this.barrier.track(sync.activate(g)).catch(() => undefined); }, 0);
       },
       track: (job) => { void this.barrier.track(job).catch(() => undefined); },
-      participant: (user, device, flags) => {
+      participant: (user, device, flags, channel) => {
         const own = this.me !== null && toHex(this.me.deviceId) === device;
+        // Web-3 task 10, concern 4: a participant no loaded member list has is looked up in the channel's community.
+        const community = this.channels.get(channel)?.communityId ?? null;
+        if (community !== null) this.lookUpUsers(community, [user]);
         return { userId: user, deviceId: device, name: this.nameOf(user), flags, own, web: own, bot: this.isBot(user) };
       },
       voiceChannels: (community) => [...this.channels].filter(([, k]) => k.communityId === community && k.row.kind === 1).map(([id]) => id),
@@ -1354,6 +1359,8 @@ export class Controller {
     // Product P1: the trust slice names each contact and says whether a group is shared from these member lists; a list
     // that lands after it (every reload: the first ready refreshes trust before the communities load) republishes it.
     this.publishTrust();
+    // Web-3 task 10, concern 4: a voice participant the lists lacked is named now.
+    this.calls.membersChanged();
     // Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once.
     const core = this.core;
     const me = this.me;
@@ -1982,18 +1989,38 @@ export class Controller {
 
   /** A sender who is not in the loaded member list re-runs listMembers once per unknown user (L-TS-09). */
   private lookUpMembers(communityId: string, items: readonly TimelineItem[]): void {
-    const known = new Set((this.slices.get(`members:${communityId}`) ?? []).map((m) => m.userId));
+    this.lookUpUsers(communityId, items.map((item) => item.senderUser).filter((u): u is string => u !== null));
+  }
+
+  /** Users the community's loaded member list lacks re-run listMembers, once per unknown user (L-TS-09): a timeline's
+   *  senders, and a voice call's participants (web-3 task 10, concern 4). A list not loaded yet is left to its load. */
+  private lookUpUsers(communityId: string, users: readonly string[]): void {
+    const loaded = this.slices.get(`members:${communityId}`);
+    if (loaded === undefined) return;
+    const known = new Set(loaded.map((m) => m.userId));
     let unknown = false;
-    for (const item of items) {
-      const user = item.senderUser;
-      if (user === null || known.has(user) || this.lookedUp.has(user)) continue;
+    for (const user of users) {
+      if (known.has(user) || this.lookedUp.has(user)) continue;
       this.lookedUp.add(user);
       unknown = true;
     }
     if (!unknown) return;
+    // One read per community at a time: users found unknown while it runs are covered by one more read after it (a flood
+    // of voice_state frames for new users costs two reads, not one each).
+    const running = this.memberReads.get(communityId);
+    if (running !== undefined) { running.again = true; return; }
+    const read = { again: false };
+    this.memberReads.set(communityId, read);
     void this.barrier.track((async () => {
-      const rows = await this.routes.listMembers(fromHex(communityId));
-      if (this.listed(communityId)) this.publishMembers(communityId, rows);
+      try {
+        do {
+          read.again = false;
+          const rows = await this.routes.listMembers(fromHex(communityId));
+          if (this.listed(communityId)) this.publishMembers(communityId, rows);
+        } while (read.again);
+      } finally {
+        this.memberReads.delete(communityId);
+      }
     })().catch(() => undefined));
   }
 

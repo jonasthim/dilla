@@ -12,8 +12,9 @@ export type VoiceRoutes = Pick<Routes, 'getChannelCall' | 'getCommunityCalls'>;
 export interface VoiceDeps {
   routes: VoiceRoutes;
   publish(state: VoiceState): void;
-  /** The slice row of one device: its name, and the own, web and bot marks from the worker's badge sources. */
-  participant(userHex: string, deviceHex: string, flags: number): VoiceParticipant;
+  /** The slice row of one device in a channel's call: its name, and the own, web and bot marks from the worker's badge
+   *  sources. */
+  participant(userHex: string, deviceHex: string, flags: number, channelHex: string): VoiceParticipant;
   /** The voice channels of a community this worker knows (hex), so a community read can drop calls that ended. */
   voiceChannels(communityHex: string): string[];
   /** Whether a channel or DM is known here: a frame for a call no snapshot named lands in the channel of its id. */
@@ -88,6 +89,25 @@ export class VoiceBook {
     return new Set((this.state[channelHex]?.participants ?? []).map((p) => p.userId));
   }
 
+  /** The member lists changed (web-3 task 10, concern 4): every row is built again, so a participant the lists lacked
+   *  when the row was made is named now; published only when a row changed. */
+  renamed(): void {
+    let changed = false;
+    const next: VoiceState = {};
+    for (const [channel, call] of Object.entries(this.state)) {
+      const participants = call.participants.map((p) => {
+        const row = this.deps.participant(p.userId, p.deviceId, p.flags, channel);
+        if (row.name === p.name) return p;
+        changed = true;
+        return row;
+      });
+      next[channel] = { ...call, participants };
+    }
+    if (!changed) return;
+    this.state = next;
+    this.deps.publish(this.state);
+  }
+
   clear(): void {
     this.reads.clear();
     this.state = {};
@@ -108,7 +128,7 @@ export class VoiceBook {
     if (callId === null || participants.length === 0) this.drop(channel, false);
     else {
       this.state = { ...this.state, [channel]: { callId, participants: sorted(participants.slice(0, VOICE_MAX).map((p) =>
-        this.deps.participant(toHex(p.userId), toHex(p.deviceId), p.flags))) } };
+        this.deps.participant(toHex(p.userId), toHex(p.deviceId), p.flags, channel))) } };
     }
     if (publish) this.deps.publish(this.state);
   }
@@ -138,7 +158,7 @@ export class VoiceBook {
     const rest = before.filter((p) => p.deviceId !== device);
     // Review M5: a device beyond the bound is not added (one already listed is still updated or removed).
     if (f.flags !== 0 && rest.length === before.length && rest.length >= VOICE_MAX) return false;
-    const next = f.flags === 0 ? rest : sorted([...rest, this.deps.participant(user, device, f.flags)]);
+    const next = f.flags === 0 ? rest : sorted([...rest, this.deps.participant(user, device, f.flags, channel)]);
     if (next.length === 0) { const had = channel in this.state; this.drop(channel, false); return had; }
     this.state = { ...this.state, [channel]: { callId: this.state[channel]?.callId ?? callHex, participants: next } };
     return true;

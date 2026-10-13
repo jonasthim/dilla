@@ -24,6 +24,9 @@ import type { FromWorker } from '../worker/protocol';
 export const VOICE = idOf(0xc5, 1);
 export const DM = idOf(0xd5, 1);
 const NAMES = new Map<string, string>([[toHex(ME.user), 'Me'], [toHex(PEER.user), 'bob'], [toHex(THIRD.user), 'carol'], [toHex(FOURTH.user), 'dave']]);
+/** Members who joined the server after a page loaded its list: the instance lists them from then on. */
+const LATE: Peer[] = [];
+
 /** The route labels the call tests read; the engine's own catch-up reads (messages, handshakes, cursors) are not listed. */
 const LABELS: Record<string, string> = {
   getChannelCall: 'GET channel call', getCommunityCalls: 'GET community calls', postGroup: 'POST group', getGroupInfo: 'GET group info',
@@ -88,7 +91,7 @@ export async function harness(opts: HarnessOptions = {}) {
     getLimits: () => Promise.resolve({ maxCiphertextBytes: 131_072, keypackagesPerDevice: 32, keypackageRefillThreshold: 0, heartbeatMs: 30_000, maxFrameBytes: 131_584 }),
     listCommunities: () => Promise.resolve([{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }]),
     listChannels: () => Promise.resolve(opts.voiceChannel === true ? channelRows : []),
-    listMembers: () => Promise.resolve([ME, PEER, THIRD, FOURTH].map((p) => ({ userId: p.user, username: NAMES.get(toHex(p.user)) ?? '',
+    listMembers: () => Promise.resolve([ME, PEER, THIRD, FOURTH, ...LATE].map((p) => ({ userId: p.user, username: NAMES.get(toHex(p.user)) ?? '',
       display: NAMES.get(toHex(p.user)) ?? '', kind: 0 as const, nick: '', roleIds: [] }))),
     postTicket: () => Promise.resolve({ ticket: 'ticket', expires: 1_700_000_030n }),
     postKeyPackages: () => Promise.resolve(0),
@@ -237,6 +240,24 @@ export const CALL_KEYS = (p: Posted): CallKeys => (p.message as { keys: CallKeys
 export type { CallJoinResult };
 
 describe('voice presence (L-GW-32, L-TS-56 step 7)', () => {
+  // Web-3 task 10, concern 4: a participant the loaded member list lacks is looked up (the list is read again once per
+  // unknown user) and the voice slice then names them, never leaving the id's first 8 characters on the tile.
+  it('a participant who joined the server after the member list loaded is named once the list is read again', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    const late: Peer = { user: idOf(0xe8, 1), device: idOf(0xd8, 1) };
+    LATE.push(late);
+    NAMES.set(toHex(late.user), 'erin');
+    try {
+      w.gateway.push(voiceFrame(late, VOICE, 1));
+      const nameOf = () => w.slice('voice')[w.voice]?.participants.find((p) => p.userId === toHex(late.user))?.name;
+      for (let i = 0; i < 40 && nameOf() !== 'erin'; i++) await settle();
+      expect(nameOf()).toBe('erin');
+    } finally {
+      LATE.length = 0;
+      NAMES.delete(toHex(late.user));
+    }
+  });
+
   it('loadVoice applies frames received during the snapshot read after it, in order', async () => {
     const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
     // A live call in the lounge with X (bob's device) in it.

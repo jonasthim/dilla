@@ -38,7 +38,7 @@ export interface CallDeps {
   instance(): { policyVersion: bigint; externalSenderPub: Uint8Array } | null;
   settings(): Record<string, string>;
   nameOf(userHex: string): string;
-  participant(userHex: string, deviceHex: string, flags: number): VoiceParticipant;
+  participant(userHex: string, deviceHex: string, flags: number, channelHex: string): VoiceParticipant;
   voiceChannels(communityHex: string): string[];
   /** A known channel (any kind) or DM. */
   known(channelHex: string): boolean;
@@ -90,7 +90,7 @@ export class CallController {
     this.book = new VoiceBook({
       routes: deps.routes,
       publish: (value) => { deps.publish('voice', value); },
-      participant: (user, device, flags) => deps.participant(user, device, flags),
+      participant: (user, device, flags, channel) => deps.participant(user, device, flags, channel),
       voiceChannels: (community) => deps.voiceChannels(community),
       known: (channel) => deps.known(channel),
     });
@@ -107,6 +107,9 @@ export class CallController {
   }
 
   /** The three slices' initial values (L-TS-51), published when the worker is ready. */
+  /** The member lists changed: the voice slice's names are read again (web-3 task 10, concern 4). */
+  membersChanged(): void { this.book.renamed(); }
+
   publishInitial(): void {
     this.deps.publish('call', this.state);
     this.deps.publish('voice', this.book.current());
