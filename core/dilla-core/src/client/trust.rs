@@ -566,6 +566,22 @@ fn member_blocks(
 }
 
 /// The stored verdict as the refusal `send_prepare` and `send_encrypt` answer with.
+/// The stored verdict rows of a group whose MLS state cannot be read, each with its user (none
+/// for a row stored without one): the fail-closed answer for an unloadable group.
+fn stored_blocks(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+) -> Result<Vec<MemberBlock>, StorageError> {
+    let mut stmt = c.prepare_cached("SELECT user_id,code FROM app_quarantine WHERE group_id=?1")?;
+    let rows = stmt.query_map([group_id.as_slice()], |r| {
+        let user: Vec<u8> = r.get(0)?;
+        let code: String = r.get(1)?;
+        let user = <[u8; 16]>::try_from(user.as_slice()).ok();
+        Ok((user.filter(|u| *u != [0; 16]), block_code(&code)))
+    })?;
+    rows.collect::<Result<_, _>>().map_err(Into::into)
+}
+
 fn block_code(code: &str) -> &'static str {
     [E_UMK_CHANGED, E_DEVICE_UNLISTED, E_TIER_MISMATCH]
         .into_iter()
@@ -958,8 +974,9 @@ impl ClientCore {
         group_id: &[u8; 16],
     ) -> Result<Option<&'static str>, ClientError> {
         let cached = self.groups.get(group_id);
+        // A group state that does not load answers from the stored rows too (fail closed).
         let loaded = if cached.is_none() {
-            DillaGroup::load(&self.provider, &GroupId::from_slice(group_id))?
+            DillaGroup::load(&self.provider, &GroupId::from_slice(group_id)).unwrap_or(None)
         } else {
             None
         };
@@ -1102,6 +1119,16 @@ impl ClientCore {
     /// Calls `f` with each active group (state 2), from the cache or loaded from the store; at
     /// most 4,096 groups, ids bounded before any group state is loaded.
     fn each_active_group(&self, f: &mut GroupVisitor<'_>) -> Result<(), ClientError> {
+        self.each_active_group_or(f, None)
+    }
+
+    /// `each_active_group`, except that with `unloadable` given, a group whose MLS state does not
+    /// load is listed there instead of failing the walk.
+    fn each_active_group_or(
+        &self,
+        f: &mut GroupVisitor<'_>,
+        mut unloadable: Option<&mut Vec<[u8; 16]>>,
+    ) -> Result<(), ClientError> {
         let ids: Vec<[u8; 16]> = self.read(|c| {
             let mut stmt = c.prepare(
                 "SELECT group_id FROM app_groups WHERE state=2 ORDER BY group_id LIMIT 4097",
@@ -1115,15 +1142,21 @@ impl ClientCore {
         }
         for id in ids {
             let cached = self.groups.get(&id);
-            let loaded = if cached.is_none() {
-                DillaGroup::load(&self.provider, &GroupId::from_slice(&id))?
-            } else {
-                None
+            let loaded = match cached {
+                Some(_) => Ok(None),
+                None => DillaGroup::load(&self.provider, &GroupId::from_slice(&id)),
             };
-            let group = cached
-                .or(loaded.as_ref())
-                .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
-            f(&id, group)?;
+            match (
+                cached.or(loaded.as_ref().ok().and_then(Option::as_ref)),
+                unloadable.as_mut(),
+            ) {
+                (Some(group), _) => f(&id, group)?,
+                (None, Some(skipped)) => skipped.push(id),
+                (None, None) => {
+                    loaded?;
+                    return Err(failure(E_CORE_NOT_FOUND));
+                }
+            }
         }
         Ok(())
     }
@@ -1425,11 +1458,20 @@ impl ClientCore {
         }
         // The stored verdict of each user's leaves still in an active group; a changed-key block
         // wins. Read from the store, so a reload never shows a blocked contact as clean.
+        // A group whose MLS state does not load answers from its stored rows, as send_block_code
+        // does (fail closed), so one bad group never fails the whole state.
         let mut blocks: Vec<MemberBlock> = Vec::new();
-        self.each_active_group(&mut |id, group| {
-            blocks.extend(self.read(|c| member_blocks(c, group, id))?);
-            Ok(())
-        })?;
+        let mut unloadable = Vec::new();
+        self.each_active_group_or(
+            &mut |id, group| {
+                blocks.extend(self.read(|c| member_blocks(c, group, id))?);
+                Ok(())
+            },
+            Some(&mut unloadable),
+        )?;
+        for id in &unloadable {
+            blocks.extend(self.read(|c| stored_blocks(c, id))?);
+        }
         let mut e = Encoder::new();
         e.array(rows.len());
         for (user, umk, first, verified, changed) in rows {

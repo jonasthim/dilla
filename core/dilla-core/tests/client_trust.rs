@@ -2346,3 +2346,44 @@ fn fixa_a_fetched_and_failed_add_of_a_never_cached_user_does_not_stall_commits()
     alice.core.commit_confirm(&GROUP).expect("commit_confirm");
     assert_eq!(sec_send(&mut alice), "OK");
 }
+
+/// The bytes a group id leaves inside the openmls tables' `group_id` key (client_migrate.rs).
+fn fixr_stored_id(id: &[u8; 16]) -> Vec<u8> {
+    id.iter().flat_map(|b| [0x18, *b]).collect()
+}
+
+/// R3: one active group whose MLS state does not load no longer fails trust_state as a whole
+/// (the page then kept its last slice, which could read verified). That group answers from its
+/// stored verdict rows, as send_block_code does, so a blocked contact stays blocked (fail closed).
+#[test]
+fn fixr_trust_state_reads_an_unloadable_groups_stored_verdicts() {
+    let (_, mut relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    let umk = sec_cached_umk(&alice, &bob.user);
+    alice.core.trust_verify(&bob.user, &umk).expect("verified");
+    let mut forged = RawPeer::new_with_keys(0xb2, 0xd3, 0xd5, 0xd6);
+    forged.join_external(&mut relay);
+    alice.sync(&relay);
+    assert_eq!(sec_send(&mut alice), "E_CREDENTIAL");
+    let alice = alice.reopen();
+    let changed = alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE openmls_group_data SET group_data = x'00' \
+             WHERE data_type = 'group_state' AND instr(group_id, ?1) > 0",
+            [fixr_stored_id(&GROUP)],
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "GROUP's group_state row");
+    assert_eq!(
+        fixa_row(&alice, &bob.user),
+        Some((umk, 1, None, Some("E_CREDENTIAL".to_owned()))),
+        "trust_state answers, and the stored verdict of the unloadable group still blocks Bob"
+    );
+    assert_eq!(
+        alice.core.send_block_code(&GROUP).unwrap(),
+        Some("E_CREDENTIAL")
+    );
+}
