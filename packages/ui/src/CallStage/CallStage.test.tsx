@@ -18,7 +18,7 @@ function tile(name: string, media: MediaStream | null): CallTileProps {
   return {
     view: { deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
       video: media !== null, screen: false, web: true, bot: false },
-    own: false, volume: 100, media, labels: { state: stateLabels, volume: `volume for ${name}` }, onVolume: () => {},
+    own: false, volume: 100, media, labels: { state: stateLabels, volume: `volume for ${name}`, volumeValue: '{n} %' }, onVolume: () => {},
   };
 }
 const labels: CallStageProps['labels'] = {
@@ -35,7 +35,7 @@ afterEach(() => { delete document.documentElement.dataset.theme; });
 describe('CallStage', () => {
   it('CallStage with the pause notice (RV-3) shows its action, focuses it once, and renders no media element', async () => {
     const onAction = vi.fn();
-    const notice = { text: pausedText, action: { label: 'compare safety numbers', onAction }, focusOnce: true };
+    const notice = { kind: 'paused' as const, text: pausedText, action: { label: 'compare safety numbers', onAction }, focusOnce: true };
     const { container, rerender } = render(<CallStage {...base} notice={notice} />);
     expect(container.querySelector('video, audio')).toBeNull();
     const action = screen.getByRole('button', { name: 'compare safety numbers' });
@@ -77,8 +77,24 @@ describe('CallStage', () => {
     expect(screen.getByText('Nobody is in voice yet.')).toBeInTheDocument();
     expect(screen.getByText('ringing ada')).toBeInTheDocument();
     expect(document.querySelector('details')).toBeNull();
-    rerender(<CallStage {...base} notice={{ text: 'This voice is full.', action: null, focusOnce: true }} />);
+    rerender(<CallStage {...base} notice={{ kind: 'info', text: 'This voice is full.', action: null, focusOnce: true }} />);
     expect(screen.getByRole('status')).toHaveFocus();
+  });
+
+  it('hides media for the pause and blocked notices only; a transient notice keeps the video (ruling)', () => {
+    const { container, rerender } = render(<CallStage {...base} notice={{ kind: 'info', text: 'This voice is full.', action: null, focusOnce: false }} />);
+    expect(container.querySelectorAll('video')).toHaveLength(2);
+    rerender(<CallStage {...base} notice={{ kind: 'blocked', text: 'A device in this voice failed the identity check, so you left.', action: null, focusOnce: false }} />);
+    expect(container.querySelector('video, audio')).toBeNull();
+    rerender(<CallStage {...base} notice={{ kind: 'paused', text: pausedText, action: null, focusOnce: false }} />);
+    expect(container.querySelector('video, audio')).toBeNull();
+  });
+
+  it('never says nobody is in voice while a notice explains the stage (M1)', () => {
+    const { rerender } = render(<CallStage {...base} tiles={[]} notice={{ kind: 'blocked', text: 'A device in this voice failed the identity check. Joining is paused until it is removed.', action: null, focusOnce: false }} />);
+    expect(screen.queryByText('Nobody is in voice yet.')).toBeNull();
+    rerender(<CallStage {...base} tiles={[]} notice={null} />);
+    expect(screen.getByText('Nobody is in voice yet.')).toBeInTheDocument();
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

@@ -19,6 +19,7 @@ const labels: CallTileProps['labels'] = {
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
   },
   volume: 'volume for ada',
+  volumeValue: '{n} %',
 };
 const rest = { own: false, volume: 100, media: null, labels, onVolume: () => {} };
 
@@ -70,6 +71,11 @@ describe('CallTile', () => {
     expect(onVolume).toHaveBeenCalledWith(150);
     rerender(<CallTile view={view} {...rest} own />);
     expect(screen.queryByRole('slider')).toBeNull();
+  });
+
+  it('speaks the volume through the localised value label (M6)', () => {
+    render(<CallTile view={view} {...rest} volume={120} labels={{ ...labels, volumeValue: '{n} procent' }} />);
+    expect(screen.getByRole('slider', { name: 'volume for ada' })).toHaveAttribute('aria-valuetext', '120 procent');
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

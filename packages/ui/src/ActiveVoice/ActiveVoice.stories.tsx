@@ -14,7 +14,7 @@ const meta = {
   args: {
     channels: [{ id: 'v1', name: 'harbour', current: false, joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })] }],
     labels: {
-      heading: 'active voice', open: 'voice {name}', count: '{n} in voice',
+      heading: 'active voice', open: 'voice {name}', count: '{n} in voice', canHear: 'can hear',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
         connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',

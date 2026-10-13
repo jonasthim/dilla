@@ -11,7 +11,7 @@ const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePa
   video: false, screen: false, web: true, bot: false, ...more,
 });
 const labels: ActiveVoiceProps['labels'] = {
-  heading: 'active voice', open: 'voice {name}', count: '{n} in voice',
+  heading: 'active voice', open: 'voice {name}', count: '{n} in voice', canHear: 'can hear',
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',

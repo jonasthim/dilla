@@ -12,7 +12,9 @@ const meta = {
       input: 'input device', output: 'output device', systemDefault: 'system default',
       outputUnsupported: 'This browser plays voice on the system default device.', mode: 'input mode', vad: 'voice activity', ptt: 'push to talk',
       pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
-      pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.', noise: 'noise suppression', level: 'input level',
+      pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
+      pttRefused: 'That key types text or moves the focus. Use a key such as F8, or hold Control, Alt or ⌘ with it.',
+      noise: 'noise suppression', level: 'input level',
     },
     onInput: () => {}, onOutput: () => {}, onMode: () => {}, onCaptureKey: () => {}, onNoise: () => {},
   },
@@ -27,5 +29,14 @@ export const VoiceActivity: Story = {};
 export const PushToTalkNoKey: Story = { args: { mode: 'ptt' } };
 export const PushToTalkKey: Story = { args: { mode: 'ptt', pttKey: 'F8', input: 'mic-2' } };
 export const CapturingKey: Story = { args: { mode: 'ptt', capturing: true } };
+/** A plain letter is refused while capturing: the prompt says why and the capture goes on (M9). */
+export const CapturingRefused: Story = {
+  args: { mode: 'ptt', capturing: true },
+  play: ({ canvasElement }) => {
+    const button = canvasElement.querySelector('.d-voice-settings__capture');
+    if (!button) throw new Error('CapturingRefused: no capture button');
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', bubbles: true, cancelable: true }));
+  },
+};
 /** Firefox: the output follows the system default. */
 export const OutputUnsupported: Story = { args: { canSelectOutput: false, noise: false } };

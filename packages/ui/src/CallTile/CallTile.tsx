@@ -24,8 +24,11 @@ export interface CallTileProps {
   volume: number;
   /** The camera or screen stream to show, or null. Never attached while the stream is unverified. */
   media: MediaStream | null;
-  /** `volume` is the filled `voice.volume` ('volume for {name}'). */
-  labels: { state: VoiceStateLabels; volume: string };
+  /**
+   * `volume` is the filled `voice.volume` ('volume for {name}'); `volumeValue` is `voice.volumeValue` ('{n} %'), the
+   * spoken value of the range, with `{n}` filled here.
+   */
+  labels: { state: VoiceStateLabels; volume: string; volumeValue: string };
   onVolume(volume: number): void;
 }
 
@@ -87,7 +90,7 @@ export function CallTile({ view, own, volume, media, labels, onVolume }: CallTil
       {own ? null : (
         <label className="d-call-tile__volume">
           <span className="d-call-tile__volume-label">{labels.volume}</span>
-          <input type="range" min={0} max={200} step={10} value={volume} aria-valuetext={`${String(volume)} %`}
+          <input type="range" min={0} max={200} step={10} value={volume} aria-valuetext={labels.volumeValue.replaceAll('{n}', String(volume))}
             onChange={e => onVolume(Number(e.target.value))} />
         </label>
       )}

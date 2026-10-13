@@ -61,6 +61,15 @@ describe('VoiceDock', () => {
     expect(screen.getByText('reconnecting')).toBeInTheDocument();
   });
 
+  it('mute and deafen are pressed toggles that carry their shortcuts (M4, M5)', () => {
+    render(<VoiceDock {...dock} muted />);
+    const mute = screen.getByRole('button', { name: 'unmute' });
+    expect(mute).toHaveAttribute('aria-pressed', 'true');
+    expect(mute).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(screen.getByRole('button', { name: 'deafen' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'deafen' })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+D Meta+Shift+D');
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceDock {...(meta.args as VoiceDockProps)} /></div>);

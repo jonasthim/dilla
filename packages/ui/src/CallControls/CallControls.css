@@ -1,8 +1,7 @@
 /* A voice toolbar (the dock and the call controls). Each control is at least 40 × 40 CSS px on a desktop and
-   44 × 44 on a phone (flow 06); the word names it, and an on toggle adds a frame and an underline bar. */
+   44 × 44 on a phone (flow 06). A toggle's on state is the Button primitive's pressed style (one pressed style). */
 .d-voice-toolbar { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .d-voice-toolbar .d-voice-toolbar__control { height: auto; min-height: 2.5rem; min-width: 2.5rem; padding: 0 0.75rem; justify-content: center; }
-.d-voice-toolbar .d-voice-toolbar__control[data-on="true"] { color: var(--fg); border-color: var(--warn); box-shadow: inset 0 -3px 0 0 var(--warn); }
 @media (max-width: 47.99rem) {
   .d-voice-toolbar .d-voice-toolbar__control { min-height: 2.75rem; min-width: 2.75rem; }
 }

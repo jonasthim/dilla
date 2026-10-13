@@ -12,7 +12,7 @@ const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePa
   video: false, screen: false, web: true, bot: false, ...more,
 });
 const labels: VoiceChannelRowProps['labels'] = {
-  open: 'voice {name}', count: '{n} in voice',
+  open: 'voice {name}', count: '{n} in voice', canHear: 'can hear',
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
@@ -24,6 +24,13 @@ const base: VoiceChannelRowProps = {
 
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
+/** The text a screen reader reads: aria-hidden glyphs left out, white space collapsed. */
+function spoken(el: Element): string {
+  const copy = el.cloneNode(true) as Element;
+  copy.querySelectorAll('[aria-hidden="true"]').forEach(n => n.remove());
+  return (copy.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
 describe('VoiceChannelRow', () => {
   it('is one button named for the voice, with the count, and the people as text below it', async () => {
     const onOpen = vi.fn();
@@ -32,7 +39,7 @@ describe('VoiceChannelRow', () => {
     expect(row).toHaveAccessibleDescription('2 in voice');
     expect(screen.getAllByRole('button')).toEqual([row]);
     const people = screen.getByRole('list');
-    expect(within(people).getAllByRole('listitem').map(li => li.textContent)).toEqual(['ada speaking', 'bo muted']);
+    expect(within(people).getAllByRole('listitem').map(spoken)).toEqual(['ada speaking', 'bo muted']);
     await userEvent.click(row);
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
@@ -64,6 +71,27 @@ describe('VoiceChannelRow', () => {
     expect(screen.getByRole('button', { name: 'voice workshop' })).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     expect(onSelect).toHaveBeenCalledWith('v2');
+  });
+
+  it('keeps the readable-by-this-server glyph of a voice channel, also inside ChannelList (I4)', () => {
+    const { rerender } = render(<VoiceChannelRow {...base} readable />);
+    expect(screen.getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
+    rerender(<ChannelList label="channels" title="harbour club" activeId={null} onSelect={() => {}} emptyLabel="none"
+      channels={[{ id: 'v1', name: 'harbour', kind: 'voice', readable: true }]} voice={{ labels, rooms: {} }} />);
+    expect(screen.getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
+  });
+
+  it('shows a bot in voice with the bot tag and can hear before anyone joins (I5)', () => {
+    render(<VoiceChannelRow {...base} participants={[person('relay', { bot: true, web: false })]} />);
+    const row = screen.getByRole('listitem');
+    expect(spoken(row)).toBe('relay bot can hear');
+  });
+
+  it('a state is a glyph plus a word in the sub-rows; the glyph is hidden from speech (M7)', () => {
+    render(<VoiceChannelRow {...base} participants={[person('bo', { muted: true, screen: true })]} />);
+    const row = screen.getByRole('listitem');
+    expect(row.querySelectorAll('[aria-hidden="true"]')).toHaveLength(2);
+    expect(spoken(row)).toBe('bo muted sharing screen');
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

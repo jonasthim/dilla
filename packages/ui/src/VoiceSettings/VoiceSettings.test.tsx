@@ -9,7 +9,9 @@ const labels: VoiceSettingsProps['labels'] = {
   input: 'input device', output: 'output device', systemDefault: 'system default',
   outputUnsupported: 'This browser plays voice on the system default device.', mode: 'input mode', vad: 'voice activity', ptt: 'push to talk',
   pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
-  pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.', noise: 'noise suppression', level: 'input level',
+  pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
+  pttRefused: 'That key types text or moves the focus. Use a key such as F8, or hold Control, Alt or ⌘ with it.',
+  noise: 'noise suppression', level: 'input level',
 };
 const base: VoiceSettingsProps = {
   inputs: [{ id: 'mic-1', label: 'USB microphone' }, { id: 'mic-2', label: 'Headset' }], outputs: [{ id: 'out-1', label: 'Speakers' }],
@@ -56,7 +58,7 @@ describe('VoiceSettings', () => {
     expect(screen.getByText('F8')).toBeInTheDocument();
   });
 
-  it('captures the push-to-talk key: any key but Escape is saved without typing, Escape cancels', async () => {
+  it('captures the push-to-talk key: a non-text key is saved without typing, Escape cancels', async () => {
     const onCaptureKey = vi.fn();
     const { rerender } = render(<VoiceSettings {...base} mode="ptt" onCaptureKey={onCaptureKey} />);
     await userEvent.click(screen.getByRole('button', { name: 'set key' }));
@@ -67,9 +69,27 @@ describe('VoiceSettings', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Press the key to use. Escape cancels.');
     const typed = fireEvent.keyDown(capture, { key: 'F8', code: 'F8' });
     expect(typed).toBe(false);
-    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'F8' });
+    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'F8', ctrl: false, alt: false, meta: false, shift: false });
     fireEvent.keyDown(capture, { key: 'Escape', code: 'Escape' });
     expect(onCaptureKey).toHaveBeenLastCalledWith('cancel');
+  });
+
+  it('refuses a key that types text or moves focus without Control, Alt or Meta, and says why (M9)', () => {
+    const onCaptureKey = vi.fn();
+    render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={onCaptureKey} />);
+    const capture = screen.getByRole('button', { name: 'set key' });
+    for (const [key, code] of [['a', 'KeyA'], ['A', 'KeyA'], [' ', 'Space'], ['7', 'Digit7'], [',', 'Comma'], ['Enter', 'Enter'], ['ArrowDown', 'ArrowDown'], ['Dead', 'Quote']]) {
+      const typed = fireEvent.keyDown(capture, { key, code, shiftKey: key === 'A' });
+      expect(typed).toBe(false);
+    }
+    expect(onCaptureKey).not.toHaveBeenCalled();
+    expect(screen.getByRole('status')).toHaveTextContent('That key types text or moves the focus.');
+    fireEvent.keyDown(capture, { key: 'Control', code: 'ControlLeft', ctrlKey: true });
+    expect(onCaptureKey).not.toHaveBeenCalled();
+    fireEvent.keyDown(capture, { key: 'm', code: 'KeyM', ctrlKey: true, shiftKey: true });
+    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'KeyM', ctrl: true, alt: false, meta: false, shift: true });
+    fireEvent.keyDown(capture, { key: 'Pause', code: 'Pause' });
+    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'Pause', ctrl: false, alt: false, meta: false, shift: false });
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
+import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const STATE: CallTileProps['labels']['state'] = {
@@ -22,7 +23,7 @@ function tile(name: string, more: Partial<VoiceParticipantView> = {}, own = fals
   return {
     view: { deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
       video: false, screen: false, web: true, bot: false, ...more },
-    own, volume: 100, media: null, labels: { state: STATE, volume: `volume for ${name}` }, onVolume: noop,
+    own, volume: 100, media: null, labels: { state: STATE, volume: `volume for ${name}`, volumeValue: '{n} %' }, onVolume: noop,
   };
 }
 const TILES = [tile('ada', { speaking: true }), tile('bo', { muted: true }), tile('you', {}, true)];
@@ -61,6 +62,8 @@ const meta = {
   title: 'Voice/CallStage', component: CallStage,
   args: { title: 'voice harbour', tiles: TILES, code: '284719306451873920465128390715', notice: null, controls: controls(), outgoing: null, labels: LABELS },
   decorators: [Story => <div style={{ maxWidth: 960 }}><Story /></div>],
+  // Every control on the stage (code summary, volume ranges, notice action, call controls) is 40/44 px, flow 06.
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallStage'); },
 } satisfies Meta<typeof CallStage>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -79,12 +82,13 @@ export const CodeOpen: Story = {
     const summary = canvasElement.querySelector('summary');
     if (!summary) throw new Error('CodeOpen: no call code disclosure');
     summary.click();
+    expectVoiceTargets(canvasElement, 'CallStage');
   },
 };
 /** RV-3: paused on this device. The banner and its action, no media in any tile, camera and share aria-disabled. */
 export const Paused: Story = {
   args: {
-    notice: { text: PAUSED, action: { label: 'compare safety numbers', onAction: noop }, focusOnce: true },
+    notice: { kind: 'paused', text: PAUSED, action: { label: 'compare safety numbers', onAction: noop }, focusOnce: true },
     controls: controls({ canCamera: false, canShare: false }),
   },
   render: args => <WithCamera {...args} />,
@@ -92,7 +96,22 @@ export const Paused: Story = {
 /** Blocked at join: the notice takes focus once; there is no join until the cause is gone. */
 export const BlockedJoin: Story = {
   args: { tiles: [], code: null, controls: null,
-    notice: { text: 'A device in this voice failed the identity check. Joining is paused until it is removed.', action: null, focusOnce: true } },
+    notice: { kind: 'blocked', text: 'A device in this voice failed the identity check. Joining is paused until it is removed.', action: null, focusOnce: true } },
+};
+/** Blocked at join because exactly one contact's identity changed (`voice.blockedChanged`, `{name}` from `call.changedUser`). */
+export const BlockedChanged: Story = {
+  args: { tiles: [], code: null, controls: null,
+    notice: { kind: 'blocked', text: 'ada’s identity changed. Compare safety numbers in Privacy before joining.', action: null, focusOnce: true } },
+};
+/** Blocked mid-call (`voice.blocked`): this device left; the notice stays where the stage was. */
+export const BlockedMidCall: Story = {
+  args: { tiles: [], code: null, controls: null,
+    notice: { kind: 'blocked', text: 'A device in this voice failed the identity check, so you left. Joining stays paused until it is removed.', action: null, focusOnce: true } },
+};
+/** A transient notice (`voice.micDenied`): listen-only, the tiles and their video stay. */
+export const MicDenied: Story = {
+  args: { notice: { kind: 'info', text: 'The microphone is blocked. You can listen; allow the microphone in the browser to talk.', action: null, focusOnce: false } },
+  render: args => <WithCamera {...args} />,
 };
 export const Unverified: Story = { args: { tiles: [tile('ada', { state: 'unverified' }), tile('bo', { state: 'not-heard' }), tile('you', {}, true)] } };
 /** A DM call ringing others: the strip text under the heading, no ringback tone. */

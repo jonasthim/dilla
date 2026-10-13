@@ -160,16 +160,20 @@ The sidebar sheet (opened with `☰`) holds the dock above the user panel while 
 |---|---|---|
 | anywhere, while in voice | Control/⌘+Shift+M | toggles mute; focus stays; `voice.announce.muted` / `voice.announce.unmuted` |
 | anywhere, while in voice | Control/⌘+Shift+D | toggles deafen; focus stays; `voice.announce.deafened` / `voice.announce.undeafened` |
-| anywhere, page focused, push to talk on | hold the push-to-talk key | microphone open while held; `preventDefault`, so nothing is typed |
+| anywhere, page focused, push to talk on, focus not in an editable field | hold the push-to-talk key | microphone open while held; `preventDefault`, so nothing is typed; in a text field, `contenteditable` or `select` the key does nothing to the microphone and keeps its usual effect |
 | dock or stage toolbar | Left/Right arrows | previous/next control (roving focus); Home/End first/last |
 | into a toolbar | Tab | the toolbar's last-focused control, then out on the next Tab |
 | `voice.code` disclosure | Enter/Space | opens or closes; Escape closes and returns focus to it |
 | unsupported dialog | Escape | closes; focus returns to the join button |
-| push-to-talk capture prompt (`settings.voice.pttPrompt`) | any key but Escape | that key is saved; Escape cancels |
+| push-to-talk capture prompt (`settings.voice.pttPrompt`) | a non-text key (F1–F24, Pause, ScrollLock, Insert and the like), or any key held with Control, Alt or ⌘ | that key and its modifiers are saved; a key that types text or moves focus without Control, Alt or ⌘ is refused with `settings.voice.pttRefused` and the capture goes on; Escape cancels; Tab leaves and cancels |
 | ring banner | Tab from the main landmark's start | `call.ring.answer`, then `call.ring.decline`, before any other control of the main landmark |
 | attachment player | Enter/Space on `media.play`, then the browser's native controls | the native player |
 
-There is no single-key shortcut (decision 1, WCAG 2.1.4): mute and deafen need Control/⌘ and Shift. The push-to-talk key has no default and acts only while dilla is the active tab (decision 2). These shortcuts do not interrupt IME composition. The settings rows show `keyboard.mute` and `keyboard.deafen`.
+There is no single-key shortcut (decision 1, WCAG 2.1.4): mute and deafen need Control/⌘ and Shift. The push-to-talk key has no default and acts only while dilla is the active tab (decision 2). These shortcuts do not interrupt IME composition. The settings rows show `keyboard.mute` and `keyboard.deafen`, each followed by `keyboard.muteAction` / `keyboard.deafenAction`, as `keyboard.searchAll` is followed by its action. The dock's and the stage's mute and deafen buttons carry `aria-keyshortcuts` (`Control+Shift+M Meta+Shift+M`, `Control+Shift+D Meta+Shift+D`).
+
+Amended 2026-10-13 (controller rulings on the task-7 review, M4 and M9):
+- **Shortcut spelling (M4).** The mute and deafen shortcuts follow the web-2c convention of the existing Control/⌘+K entry: the same spelling (`Control/⌘+Shift+M`, `Control/⌘+Shift+D`) and the same mac mapping (Control or ⌘ works on every platform). `keyboard.mute` and `keyboard.deafen` below are aligned to it.
+- **Push-to-talk key (M9).** The capture refuses a key that types text or moves focus without Control, Alt or ⌘: letters, digits, space, punctuation (with or without Shift), dead and IME keys, Enter, Backspace, Delete, the arrows, Home, End, PageUp and PageDown. Accepted are non-text keys (F1–F24, Pause, ScrollLock, Insert and the like) and any key held with Control, Alt or ⌘. Push to talk never acts while focus is in an editable field (a text input, `textarea`, `select` or `contenteditable`), so the key is never swallowed while someone types.
 
 ## Focus rules
 
@@ -215,6 +219,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 
 *Participant states:*
 - `voice.state.speaking='speaking'`, `voice.state.muted='muted'`, `voice.state.deafened='deafened'`
+- `voice.bot.canHear='can hear'` (shown with the bot tag on a bot's sub-row in the voice list, so a bot that can hear is visible before joining; added 2026-10-13, task-7 review I5)
 - `voice.state.notHeard='not heard yet'`, `voice.state.unverified='unverified stream'`, `voice.state.connecting='connecting'`
 - `voice.state.video='camera on'`, `voice.state.screen='sharing screen'`
 
@@ -227,6 +232,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.code='call code'`
 - `voice.codeHelp='The code changes whenever someone joins or leaves. Read it aloud: if every screen shows the same code, everyone is hearing the same set of devices.'`
 - `voice.empty='Nobody is in voice yet.'`, `voice.tiles='people in voice'`, `voice.volume='volume for {name}'`
+- `voice.volumeValue='{n} %'` (the volume range's spoken value, `aria-valuetext`; added 2026-10-13, task-7 review M6)
 
 *Refusals and notices:*
 - `voice.blocked='A device in this voice failed the identity check, so you left. Joining stays paused until it is removed.'`
@@ -265,8 +271,10 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `settings.voice.mode='input mode'`, `settings.voice.vad='voice activity'`, `settings.voice.ptt='push to talk'`
 - `settings.voice.pttKey='push-to-talk key'`, `settings.voice.pttNone='no key set'`, `settings.voice.pttSet='set key'`
 - `settings.voice.pttPrompt='Press the key to use. Escape cancels. It works only while dilla is the active tab.'`
+- `settings.voice.pttRefused='That key types text or moves the focus. Use a key such as F8, or hold Control, Alt or ⌘ with it.'` (added 2026-10-13, task-7 review M9)
 - `settings.voice.noise='noise suppression'`, `settings.voice.level='input level'`
 - `settings.notify.sounds='sounds'`, `settings.sound.voice='join and leave sounds'`, `settings.sound.ring='ring for calls'`
 
 *Keyboard:*
-- `keyboard.mute='Control+Shift+M — mute or unmute'`, `keyboard.deafen='Control+Shift+D — deafen or undeafen'`
+- `keyboard.mute='Control/⌘+Shift+M'`, `keyboard.deafen='Control/⌘+Shift+D'` (aligned 2026-10-13 to `keyboard.searchAll='Control/⌘+K'`, task-7 review M4)
+- `keyboard.muteAction='mute or unmute'`, `keyboard.deafenAction='deafen or undeafen'`

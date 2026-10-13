@@ -22,4 +22,6 @@
 .d-call-tile__state[data-state="unverified"] { color: var(--warn); }
 .d-call-tile__tag { padding: 0 0.25rem; font-size: var(--text-xs); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); text-transform: lowercase; }
 .d-call-tile__volume { display: grid; gap: 0.125rem; width: 100%; max-width: 14rem; font-size: var(--text-xs); color: var(--fg-2); }
-.d-call-tile__volume input { width: 100%; min-height: 1.5rem; margin: 0; accent-color: var(--accent); }
+/* The range is a voice control: its hit box is 40 px high on a desktop and 44 px on a phone (flow 06). */
+.d-call-tile__volume input { width: 100%; min-height: 2.5rem; margin: 0; accent-color: var(--accent); }
+@media (max-width: 47.99rem) { .d-call-tile__volume input { min-height: 2.75rem; } }

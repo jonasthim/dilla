@@ -3,6 +3,7 @@ import { waitFor } from 'storybook/test';
 import { AttachmentCard, type AttachmentCardProps } from './AttachmentCard.tsx';
 import { useDrawnImage } from '../internal/drawn-image.ts';
 import { useToneUrl } from '../MediaPlayer/MediaPlayer.stories.tsx';
+import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 
 // Every string is L-COPY-03's, quoted (en.ts gains them in task 9).
 const meta = {
@@ -76,10 +77,13 @@ const AUDIO = { kind: 'audio', name: 'harbour-voice.ogg', size: '210 KB', w: nul
 const VIDEO = { kind: 'video', name: 'harbour-walk.webm', size: '12.4 MB', w: null, h: null, openLabel: 'open harbour-walk.webm', onOpen: undefined,
   saveLabel: 'save harbour-walk.webm', onSave: () => {} } as const;
 
-export const AudioIdle: Story = { args: { ...AUDIO, player: player('idle') } };
-export const AudioLoading: Story = { args: { ...AUDIO, player: player('loading') } };
-export const AudioReady: Story = { args: { ...AUDIO, player: player('ready') }, render: args => <WithTone {...args} /> };
-export const VideoIdle: Story = { args: { ...VIDEO, player: player('idle') } };
-export const VideoReady: Story = { args: { ...VIDEO, player: player('ready') }, render: args => <WithTone {...args} /> };
+// The player's and the card's buttons are 40/44 px voice-and-player controls (flow 06).
+const targets: Story['play'] = ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'AttachmentCard'); };
+
+export const AudioIdle: Story = { args: { ...AUDIO, player: player('idle') }, play: targets };
+export const AudioLoading: Story = { args: { ...AUDIO, player: player('loading') }, play: targets };
+export const AudioReady: Story = { args: { ...AUDIO, player: player('ready') }, render: args => <WithTone {...args} />, play: targets };
+export const VideoIdle: Story = { args: { ...VIDEO, player: player('idle') }, play: targets };
+export const VideoReady: Story = { args: { ...VIDEO, player: player('ready') }, render: args => <WithTone {...args} />, play: targets };
 /** The browser cannot decode it (or it is not what it claims): the error text and save, nothing plays. */
-export const VideoError: Story = { args: { ...VIDEO, player: player('error') } };
+export const VideoError: Story = { args: { ...VIDEO, player: player('error') }, play: targets };

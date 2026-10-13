@@ -53,6 +53,7 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
           return (
             <li key={c.id}>
               <VoiceChannelRow name={c.name} current={c.id === activeId} joined={room?.joined ?? false} participants={room?.participants ?? []}
+                readable={c.readable}
                 labels={voice.labels} onOpen={() => onSelect(c.id)} />
             </li>
           );

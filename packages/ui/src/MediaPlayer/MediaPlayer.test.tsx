@@ -68,6 +68,40 @@ describe('MediaPlayer', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps focus in the player after the explicit play: the loading text, then the native player (I1)', async () => {
+    const p = { kind: 'video' as const, labels: mediaLabels, onPlay: () => {}, onSave: () => {}, onError: () => {} };
+    const { rerender } = render(<><MediaPlayer {...p} src={null} name="clip.webm" state="idle" /><MediaPlayer {...p} src={null} name="other.webm" state="idle" /></>);
+    await userEvent.keyboard('{Tab}{Enter}');
+    rerender(<><MediaPlayer {...p} src={null} name="clip.webm" state="loading" /><MediaPlayer {...p} src="blob:o" name="other.webm" state="ready" /></>);
+    expect(screen.getByText('loading')).toHaveFocus();
+    // jsdom treats no media element as focusable (a browser does, through its controls), so the call is what is checked.
+    const focus = vi.spyOn(HTMLMediaElement.prototype, 'focus');
+    rerender(<><MediaPlayer {...p} src="blob:x" name="clip.webm" state="ready" /><MediaPlayer {...p} src="blob:o" name="other.webm" state="ready" /></>);
+    expect(focus.mock.contexts).toEqual([screen.getByLabelText('clip.webm')]);
+    focus.mockRestore();
+  });
+
+  it('an error after play focuses save; a player whose play was not pressed never takes focus (I1)', async () => {
+    const p = { kind: 'audio' as const, name: 'voice.ogg', labels: mediaLabels, onPlay: () => {}, onSave: () => {}, onError: () => {} };
+    const { rerender } = render(<MediaPlayer {...p} src={null} state="idle" />);
+    await userEvent.keyboard('{Tab}{Enter}');
+    rerender(<MediaPlayer {...p} src={null} state="error" saveName="save voice.ogg" />);
+    expect(screen.getByRole('button', { name: 'save voice.ogg' })).toHaveFocus();
+
+    const other = render(<><input aria-label="message" /><MediaPlayer {...p} name="other.ogg" src={null} state="idle" /></>);
+    const field = other.getByRole('textbox', { name: 'message' });
+    field.focus();
+    other.rerender(<><input aria-label="message" /><MediaPlayer {...p} name="other.ogg" src={null} state="loading" /></>);
+    other.rerender(<><input aria-label="message" /><MediaPlayer {...p} name="other.ogg" src="blob:y" state="ready" /></>);
+    expect(field).toHaveFocus();
+  });
+
+  it('the error save shows media.save and is named for the file (I2)', () => {
+    render(<MediaPlayer kind="video" src={null} name="clip.webm" state="error" saveName="save clip.webm" labels={mediaLabels} onPlay={() => {}} onSave={() => {}} onError={() => {}} />);
+    const save = screen.getByRole('button', { name: 'save clip.webm' });
+    expect(save).toHaveTextContent(/^save$/);
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><MediaPlayer {...(meta.args as MediaPlayerProps)} /></div>);

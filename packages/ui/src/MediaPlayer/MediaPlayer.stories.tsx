@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { MediaPlayer, type MediaPlayerProps } from './MediaPlayer.tsx';
+import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 
 /**
  * A one-second 440 Hz tone, written as a WAV file at story time and shown through a page-minted blob: URL that is
@@ -39,9 +40,10 @@ const meta = {
   args: {
     kind: 'audio', src: null, name: 'harbour-voice.ogg', state: 'idle',
     labels: { play: 'play {name}', loading: 'loading', error: 'This browser cannot play this file.', save: 'save' },
-    onPlay: () => {}, onSave: () => {}, onError: () => {},
+    onPlay: () => {}, onSave: () => {}, onError: () => {}, saveName: 'save harbour-voice.ogg',
   },
   decorators: [Story => <div style={{ maxWidth: 720 }}><Story /></div>],
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'MediaPlayer'); },
 } satisfies Meta<typeof MediaPlayer>;
 export default meta;
 type Story = StoryObj<typeof meta>;

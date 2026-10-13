@@ -88,7 +88,8 @@ describe('AttachmentCard', () => {
     expect(container.querySelector('audio')).toBeNull();
     expect(container.querySelector('.d-media-player')).not.toBeNull();
     expect(screen.getByText('voice.ogg')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'save voice.ogg' })).toBeInTheDocument();
+    // I2: the media card's save shows media.save and is named for the file, in every player state.
+    expect(screen.getByRole('button', { name: 'save voice.ogg' })).toHaveTextContent(/^save$/);
 
     rerender(<AttachmentCard {...BASE} kind="video" name="clip.webm" size="2.1 MB" thumbUrl={null} w={null} h={null}
       openLabel="open clip.webm" saveLabel="save clip.webm" player={player('ready', 'blob:http://127.0.0.1/clip')} />);
@@ -116,7 +117,9 @@ describe('AttachmentCard', () => {
     render(<AttachmentCard {...BASE} kind="video" name="clip.webm" size="2.1 MB" thumbUrl={null} w={null} h={null}
       openLabel="open clip.webm" saveLabel="save clip.webm" player={player('error')} />);
     expect(screen.getByText('This browser cannot play this file.')).toBeInTheDocument();
-    expect(screen.getAllByRole('button')).toEqual([screen.getByRole('button', { name: 'save' })]);
+    const save = screen.getByRole('button', { name: 'save clip.webm' });
+    expect(save).toHaveTextContent(/^save$/);
+    expect(screen.getAllByRole('button')).toEqual([save]);
   });
 
   it('an audio or video card too large for a browser keeps the file body, with no player', () => {

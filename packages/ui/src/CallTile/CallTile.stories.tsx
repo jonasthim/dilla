@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallTile, type CallTileProps } from './CallTile.tsx';
+import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const LABELS: CallTileProps['labels'] = {
@@ -9,6 +10,7 @@ const LABELS: CallTileProps['labels'] = {
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
   },
   volume: 'volume for ada',
+  volumeValue: '{n} %',
 };
 const VIEW: CallTileProps['view'] = {
   deviceId: 'd1', userId: 'u1', name: 'ada', state: 'ok', speaking: false, muted: false, deafened: false,
@@ -44,6 +46,8 @@ const meta = {
   title: 'Voice/CallTile', component: CallTile,
   args: { view: VIEW, own: false, volume: 100, media: null, labels: LABELS, onVolume: () => {} },
   decorators: [Story => <div style={{ width: 280 }}><Story /></div>],
+  // The volume range is a voice control: 40 px high, 44 px on a phone (flow 06).
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallTile'); },
 } satisfies Meta<typeof CallTile>;
 export default meta;
 type Story = StoryObj<typeof meta>;

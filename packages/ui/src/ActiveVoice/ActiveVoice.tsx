@@ -7,8 +7,8 @@ import './ActiveVoice.css';
 export interface ActiveVoiceProps {
   /** The community's live voice channels, in channel order. */
   channels: readonly { id: string; name: string; current: boolean; joined: boolean; participants: readonly VoiceParticipantView[] }[];
-  /** `heading` is `voice.heading.active`; `open` and `count` are the voice row's (`voice.open`, `voice.count`). */
-  labels: { heading: string; state: VoiceStateLabels; open: string; count: string };
+  /** `heading` is `voice.heading.active`; `open`, `count` and `canHear` are the voice row's (`voice.open`, `voice.count`, `voice.bot.canHear`). */
+  labels: { heading: string; state: VoiceStateLabels; open: string; count: string; canHear: string };
   onOpen(id: string): void;
 }
 
@@ -28,7 +28,7 @@ export function ActiveVoice({ channels, labels, onOpen }: ActiveVoiceProps) {
         {channels.map(c => (
           <li key={c.id}>
             <VoiceChannelRow name={c.name} current={c.current} joined={c.joined} participants={c.participants}
-              labels={{ open: labels.open, count: labels.count, state: labels.state }} onOpen={() => onOpen(c.id)} />
+              labels={{ open: labels.open, count: labels.count, canHear: labels.canHear, state: labels.state }} onOpen={() => onOpen(c.id)} />
           </li>
         ))}
       </ul>

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { VoiceToolbar, type ToolbarControl } from '../CallControls/CallControls.tsx';
+import { VOICE_SHORTCUTS, VoiceToolbar, type ToolbarControl } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
 
 export interface VoiceDockProps {
@@ -43,8 +43,8 @@ export function VoiceDock({ phase, where, muted, deafened, announcement, labels,
     paused: labels.paused.replaceAll('{where}', where),
   }[phase];
   const controls: ToolbarControl[] = [
-    { id: 'mute', label: muted ? labels.unmute : labels.mute, on: muted, onAction: onMute },
-    { id: 'deafen', label: deafened ? labels.undeafen : labels.deafen, on: deafened, onAction: onDeafen },
+    { id: 'mute', label: labels.mute, onLabel: labels.unmute, on: muted, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
+    { id: 'deafen', label: labels.deafen, onLabel: labels.undeafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
     { id: 'leave', label: labels.leave, danger: true, onAction: onLeave },
   ];
   return (

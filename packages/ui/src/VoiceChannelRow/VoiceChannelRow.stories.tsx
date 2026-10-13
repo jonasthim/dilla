@@ -13,7 +13,7 @@ const meta = {
   args: {
     name: 'harbour', current: false, joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })],
     labels: {
-      open: 'voice {name}', count: '{n} in voice',
+      open: 'voice {name}', count: '{n} in voice', canHear: 'can hear',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
         connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
@@ -41,3 +41,7 @@ export const EveryState: Story = {
       person('dee', { state: 'connecting' }), person('eli', { state: 'not-heard' }), person('fay', { state: 'unverified' })],
   },
 };
+/** A bot in voice: the bot tag and `can hear`, visible before anyone joins (brief, trust facts). */
+export const BotCanHear: Story = { args: { participants: [person('ada', { speaking: true }), person('relay', { bot: true, web: false })] } };
+/** A voice channel readable by this server keeps its readable glyph. */
+export const Readable: Story = { args: { readable: true } };

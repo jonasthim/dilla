@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { VoiceDock } from './VoiceDock.tsx';
 import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
+import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const meta = {
@@ -16,13 +17,7 @@ const meta = {
   // The dock's width is the sidebar's (240 px).
   decorators: [Story => <div style={{ width: 240 }}><Story /></div>],
   // Each control is at least 40 × 40 CSS px (44 × 44 under 48rem of viewport), flow 06.
-  play: ({ canvasElement }) => {
-    const min = window.innerWidth < 768 ? 44 : 40;
-    for (const b of Array.from(canvasElement.querySelectorAll('button'))) {
-      const r = b.getBoundingClientRect();
-      if (r.width < min || r.height < min) throw new Error(`VoiceDock: "${b.textContent ?? ''}" is ${String(r.width)} × ${String(r.height)}, under ${String(min)} px`);
-    }
-  },
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'VoiceDock'); },
 } satisfies Meta<typeof VoiceDock>;
 export default meta;
 type Story = StoryObj<typeof meta>;

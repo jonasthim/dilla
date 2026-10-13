@@ -57,6 +57,18 @@ describe('CallControls', () => {
     expect(onMute).not.toHaveBeenCalled();
   });
 
+  it('mute, deafen, camera and share are Button toggles with aria-pressed; mute and deafen carry their shortcuts (M4, M5)', () => {
+    const { rerender } = render(<CallControls {...base} />);
+    const mute = screen.getByRole('button', { name: 'mute' });
+    expect(mute).toHaveAttribute('aria-pressed', 'false');
+    expect(mute).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(screen.getByRole('button', { name: 'deafen' })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+D Meta+Shift+D');
+    expect(screen.getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(screen.getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-pressed');
+    rerender(<CallControls {...base} muted deafened camera sharing />);
+    for (const name of ['unmute', 'undeafen', 'stop camera', 'stop sharing']) expect(screen.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><CallControls {...(meta.args as CallControlsProps)} /></div>);

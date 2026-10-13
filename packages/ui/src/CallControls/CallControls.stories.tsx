@@ -1,9 +1,25 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallControls } from './CallControls.tsx';
 
+/**
+ * Flow 06 and task 7 step 3: every voice or player control (button, disclosure summary, volume range) is at least
+ * 40 × 40 CSS px, and 44 × 44 under 48rem of viewport. A range is measured by its hit box's height only.
+ */
+export function expectVoiceTargets(root: HTMLElement, story: string): void {
+  const min = window.innerWidth < 768 ? 44 : 40;
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]'))) {
+    const r = el.getBoundingClientRect();
+    const range = el instanceof HTMLInputElement;
+    if (r.height < min || (!range && r.width < min)) {
+      throw new Error(`${story}: "${el.getAttribute('aria-label') ?? el.textContent ?? ''}" is ${String(r.width)} × ${String(r.height)}, under ${String(min)} px`);
+    }
+  }
+}
+
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const meta = {
   title: 'Voice/CallControls', component: CallControls,
+  excludeStories: ['expectVoiceTargets'],
   args: {
     muted: false, deafened: false, camera: false, sharing: false, canCamera: true, canShare: true, busy: false,
     labels: {
@@ -13,13 +29,7 @@ const meta = {
     onMute: () => {}, onDeafen: () => {}, onCamera: () => {}, onShare: () => {}, onLeave: () => {},
   },
   // Each control is at least 40 × 40 CSS px (44 × 44 under 48rem of viewport), flow 06.
-  play: ({ canvasElement }) => {
-    const min = window.innerWidth < 768 ? 44 : 40;
-    for (const b of Array.from(canvasElement.querySelectorAll('button'))) {
-      const r = b.getBoundingClientRect();
-      if (r.width < min || r.height < min) throw new Error(`CallControls: "${b.textContent ?? ''}" is ${String(r.width)} × ${String(r.height)}, under ${String(min)} px`);
-    }
-  },
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallControls'); },
 } satisfies Meta<typeof CallControls>;
 export default meta;
 type Story = StoryObj<typeof meta>;

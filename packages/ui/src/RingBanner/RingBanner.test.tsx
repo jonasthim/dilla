@@ -45,6 +45,18 @@ describe('RingBanner', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('a ring never interrupts typing: the focused field keeps focus and its text (M3)', async () => {
+    const { rerender } = render(<><input aria-label="message" /><RingBanner rings={[]} labels={ringLabels} onAnswer={() => {}} onDecline={() => {}} /></>);
+    const field = screen.getByRole('textbox', { name: 'message' });
+    await userEvent.click(field);
+    await userEvent.keyboard('hello ');
+    rerender(<><input aria-label="message" /><RingBanner rings={[{ callId: 'c', text: 'bob is calling', busy: false }]} labels={ringLabels} onAnswer={() => {}} onDecline={() => {}} /></>);
+    expect(screen.getByRole('alert')).toHaveTextContent('bob is calling');
+    expect(field).toHaveFocus();
+    await userEvent.keyboard('there');
+    expect(field).toHaveValue('hello there');
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><RingBanner {...(meta.args as RingBannerProps)} /></div>);

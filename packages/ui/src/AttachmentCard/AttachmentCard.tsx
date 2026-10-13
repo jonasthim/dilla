@@ -44,8 +44,9 @@ function cardBox(w: number | null, h: number | null): CSSProperties {
  * text is the file's shown name, or a neutral box of the image's proportions while there is none (never a broken
  * image). A file card shows a glyph, the name and the size, and a save button only when `onSave` is given. A card
  * too large for a browser has no button. `stateText` follows the card (opening, could not open, too large).
- * An audio or video card with a `player` shows the name and size, the inline MediaPlayer and the save button; in
- * the player's error state the player's own save stands in for the card's.
+ * An audio or video card with a `player` shows the name and size, the inline MediaPlayer and the save button, which
+ * shows `media.save` and is named `saveLabel` (flow 06, label in name); in the player's error state the player's
+ * own save, with the same text and name, stands in for the card's.
  */
 export function AttachmentCard({
   kind, name, size, thumbUrl, w, h, openLabel, onOpen, saveLabel, onSave, state, stateText, tabbable, player,
@@ -80,10 +81,10 @@ export function AttachmentCard({
           <span className="d-attachment-card__size">{size}</span>
         </p>
         <MediaPlayer kind={kind} src={player.src} name={name} state={player.state} labels={player.labels} tabbable={tabbable}
-          onPlay={player.onPlay} onError={player.onError} onSave={() => onSave?.()} />
+          saveName={saveLabel} onPlay={player.onPlay} onError={player.onError} onSave={() => onSave?.()} />
         {player.state !== 'error' && onSave ? (
-          <Button variant="default" size="md" className="d-attachment-card__save" aria-label={saveLabel} tabIndex={tabIndex}
-            onClick={() => onSave()}>{saveLabel}</Button>
+          <Button variant="default" size="md" className="d-attachment-card__save d-attachment-card__media-save" aria-label={saveLabel}
+            tabIndex={tabIndex} onClick={() => onSave()}>{player.labels.save}</Button>
         ) : null}
       </div>
     );

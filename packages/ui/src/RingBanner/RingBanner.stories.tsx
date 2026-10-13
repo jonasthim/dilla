@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { RingBanner } from './RingBanner.tsx';
+import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 
 // Every string is L-COPY-05's, quoted and filled (en.ts gains them in task 9).
 const meta = {
@@ -10,6 +11,7 @@ const meta = {
     onAnswer: () => {}, onDecline: () => {},
   },
   decorators: [Story => <div style={{ maxWidth: 960 }}><Story /></div>],
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'RingBanner'); },
 } satisfies Meta<typeof RingBanner>;
 export default meta;
 type Story = StoryObj<typeof meta>;

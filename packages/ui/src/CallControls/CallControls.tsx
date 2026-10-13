@@ -34,9 +34,21 @@ export function useToolbarFocus(count: number) {
   return { ref, onKeyDown, onFocus, tabIndex: (i: number) => (i === current ? 0 : -1) };
 }
 
-/** One control of a voice toolbar: a toggle's label names what it does next; an inert control is aria-disabled. */
+/**
+ * The mute and deafen shortcuts as `aria-keyshortcuts` (flow 06, decision 1): Control or ⌘ with Shift, the web-2c
+ * convention of Control/⌘+K, where either modifier works on every platform.
+ */
+export const VOICE_SHORTCUTS = { mute: 'Control+Shift+M Meta+Shift+M', deafen: 'Control+Shift+D Meta+Shift+D' } as const;
+
+/**
+ * One control of a voice toolbar. A toggle (`on` given) is the Button primitive's toggle: `aria-pressed`, the `[x]`
+ * mark and the pressed style, with `onLabel` shown while on (mute / unmute). An inert control is aria-disabled.
+ */
 export interface ToolbarControl {
-  id: string; label: string; on?: boolean; inert?: boolean; danger?: boolean; onAction(): void;
+  id: string; label: string; on?: boolean; onLabel?: string; inert?: boolean; danger?: boolean;
+  /** `aria-keyshortcuts`, e.g. VOICE_SHORTCUTS.mute. */
+  keys?: string;
+  onAction(): void;
 }
 
 /** A voice toolbar: the controls as one roving tab stop, named by `label`. */
@@ -47,7 +59,8 @@ export function VoiceToolbar({ label, controls, className }: { label: string; co
       className={['d-voice-toolbar', className].filter(Boolean).join(' ')} onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
       {controls.map((c, i) => (
         <Button key={c.id} variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
-          data-on={c.on === true ? 'true' : undefined} aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
+          pressed={c.on} pressedLabel={c.onLabel} aria-keyshortcuts={c.keys}
+          aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
           onClick={() => { if (c.inert !== true) c.onAction(); }}>
           {c.label}
         </Button>
@@ -73,17 +86,18 @@ export interface CallControlsProps {
 
 /**
  * The call stage's controls (`role="toolbar"`, `voice.controls.region`): mute, deafen, camera, share screen and
- * leave. A toggle's label says what it does next (mute / unmute), and its on state also shows as a frame and an
- * underline bar, never by colour alone. Busy (joining) makes every control aria-disabled; it stays focusable.
+ * leave. The toggles are the Button primitive's: `aria-pressed`, the label of what it does next (mute / unmute) and
+ * the `[x]` mark, never colour alone. Mute and deafen carry their shortcuts. Busy (joining) makes every control
+ * aria-disabled; it stays focusable.
  */
 export function CallControls({
   muted, deafened, camera, sharing, canCamera, canShare, busy, labels, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
   const controls: ToolbarControl[] = [
-    { id: 'mute', label: muted ? labels.unmute : labels.mute, on: muted, inert: busy, onAction: onMute },
-    { id: 'deafen', label: deafened ? labels.undeafen : labels.deafen, on: deafened, inert: busy, onAction: onDeafen },
-    { id: 'camera', label: camera ? labels.cameraOff : labels.cameraOn, on: camera, inert: busy || !canCamera, onAction: onCamera },
-    { id: 'share', label: sharing ? labels.shareOff : labels.shareOn, on: sharing, inert: busy || !canShare, onAction: onShare },
+    { id: 'mute', label: labels.mute, onLabel: labels.unmute, on: muted, inert: busy, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
+    { id: 'deafen', label: labels.deafen, onLabel: labels.undeafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
+    { id: 'camera', label: labels.cameraOn, onLabel: labels.cameraOff, on: camera, inert: busy || !canCamera, onAction: onCamera },
+    { id: 'share', label: labels.shareOn, onLabel: labels.shareOff, on: sharing, inert: busy || !canShare, onAction: onShare },
     { id: 'leave', label: labels.leave, inert: busy, danger: true, onAction: onLeave },
   ];
   return <VoiceToolbar label={labels.region} controls={controls} className="d-call-controls" />;
