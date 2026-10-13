@@ -1190,6 +1190,22 @@ it('keeps the old lock and gives no release notice when pause fails', async () =
   expect(w.calls.indexOf('gateway.stop')).toBeLessThan(w.calls.lastIndexOf('gateway.start'));
 });
 
+it('a resign whose rollback fails too gives up the lock, so the asking tab leads (M1)', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pause.mockImplementationOnce(() => { throw new CoreError('E_STORE_BUSY', ''); });
+  w.core.resume.mockImplementationOnce(() => Promise.reject(new CoreError('E_STORE_BUSY', '')));
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+  expect(w.ret(92)).toMatchObject({ ok: false });
+  expect(w.account()).toMatchObject({ phase: 'paused-error', error: { code: 'E_STORE_BUSY' } });
+  await tabB.granted;
+  // And this tab waits behind it, as a released one does.
+  tabB.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+});
+
 it('a resign rolled back after a failed pause gives the fresh engine its expected groups before the socket starts (M2)', async () => {
   const w = world();
   await toReady(w);

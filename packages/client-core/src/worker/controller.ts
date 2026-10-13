@@ -2219,7 +2219,15 @@ export class Controller {
         this.updateExpected();
         this.gateway?.start();
         this.barrier.reopen();
-      } catch { this.setAccount({ phase: 'paused-error', error: errorOf(e) }); }
+      } catch {
+        this.setAccount({ phase: 'paused-error', error: errorOf(e) });
+        // M1: a store this worker can neither pause nor resume is no lead to keep. The lock goes to the tab that asked,
+        // and this worker waits behind it as a released one does (it boots from the store again when it leads).
+        await this.leadership?.release();
+        this.leadership = null;
+        this.awaitLeadership(this.requireInstance());
+        this.setAccount({ error: errorOf(e) });
+      }
       throw e;
     }
     await this.leadership?.release();
