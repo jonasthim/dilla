@@ -2500,7 +2500,10 @@ fn fixr_send_block_own_names_an_own_account_block() {
     let (instance, mut relay, mut alice, mut bob) = alice_and_bob();
     fixa_own_umk(&alice, &mut bob, &relay);
     ingest_core_list(&mut alice, &relay, &bob);
-    assert!(!alice.core.send_block_own(&GROUP).unwrap(), "nothing blocks");
+    assert!(
+        !alice.core.send_block_own(&GROUP).unwrap(),
+        "nothing blocks"
+    );
     let mut forged = RawPeer::new_with_keys(0xb2, 0xd3, 0xd5, 0xd6);
     forged.join_external(&mut relay);
     alice.sync(&relay);
