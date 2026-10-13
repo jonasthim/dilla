@@ -7,7 +7,8 @@ test('new guide images have unique state names and the required real viewport si
   const names = DOC_SHOTS.map(shot => shot.name);
   assert.equal(new Set(names).size, names.length);
   assert.deepEqual(names, [
-    'trust-privacy-desktop', 'trust-privacy-phone', 'trust-changed-desktop', 'trust-changed-phone',
+    'trust-privacy-desktop', 'trust-privacy-phone', 'trust-compare-desktop', 'trust-compare-phone',
+    'trust-conversation-desktop', 'trust-conversation-phone', 'trust-changed-desktop', 'trust-changed-phone',
     'search-results-desktop', 'search-results-phone', 'settings-diagnostics-desktop',
     'settings-diagnostics-phone', 'tabs-handover-desktop', 'tabs-handover-phone',
   ]);

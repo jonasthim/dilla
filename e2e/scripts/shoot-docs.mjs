@@ -45,7 +45,7 @@ const WAIT = 60_000;
 export const DOC_VIEWPORTS = { desktop: { width: 1280, height: 800 }, phone: { width: 360, height: 740 } };
 const DESKTOP = DOC_VIEWPORTS.desktop;
 const PHONE = DOC_VIEWPORTS.phone;
-export const DOC_SHOTS = ['trust-privacy', 'trust-changed', 'search-results', 'settings-diagnostics', 'tabs-handover']
+export const DOC_SHOTS = ['trust-privacy', 'trust-compare', 'trust-conversation', 'trust-changed', 'search-results', 'settings-diagnostics', 'tabs-handover']
   .flatMap((state) => ['desktop', 'phone'].map((viewport) => ({ name: `${state}-${viewport}`, state: `[data-doc-state="${state}"]`, viewport })));
 
 /**
@@ -799,6 +799,12 @@ async function main(argv) {
 
     await openSettings('privacy');
     await shootState(mira, 'trust-privacy');
+    // The comparison itself: the contact, the state, the exact public key and the 12 blocks of five digits.
+    await mira.getByRole('button', { name: t('privacy.compare', { name: watch.display }), exact: true }).click();
+    await mira.locator('[data-safety-group]').nth(11).waitFor({ timeout: WAIT });
+    await shootState(mira, 'trust-compare');
+    await mira.keyboard.press('Escape');
+    await byText(mira, 'dialog', 'privacy.title').waitFor({ state: 'hidden', timeout: WAIT });
     await closeSettings();
 
     await composer(mira, 'watch').focus();
@@ -815,6 +821,9 @@ async function main(argv) {
     await peer.request('rotate_umk');
     await peer.request('send', { body: 'new key, same watch', channel_id: watch.channel_id });
     await mira.getByRole('alert').filter({ hasText: t('privacy.changed') }).waitFor({ timeout: WAIT });
+    // In the conversation: the alert with Compare, and the message field blocked with the same words.
+    await mira.getByText(t('privacy.changed'), { exact: true }).last().waitFor({ timeout: WAIT });
+    await shootState(mira, 'trust-conversation');
     await openSettings('privacy');
     await shootState(mira, 'trust-changed');
     await closeSettings();

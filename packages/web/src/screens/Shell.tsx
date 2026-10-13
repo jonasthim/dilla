@@ -54,6 +54,14 @@ function focusLost(): boolean {
   return document.activeElement === null || document.activeElement === document.body;
 }
 
+/**
+ * The search palette is a modal dialog, so the shell beneath it is inert and cannot take focus: a picked hit closes that
+ * top layer first, then focuses its row (the palette's React state follows when the pick resolves).
+ */
+function leaveSearchLayer(): void {
+  document.querySelector<HTMLDialogElement>('dialog.dw-search[open]')?.close();
+}
+
 /** Focuses the action of an EmptyState in one pane of the shell; false when there is none. */
 function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
   const button = document.querySelector<HTMLElement>(`.d-app-shell__${pane} .d-empty-state button`);
@@ -644,6 +652,7 @@ export function Shell(): React.JSX.Element {
       const focus = () => {
         const row = document.querySelector<HTMLElement>(`.dw-conversation[data-channel-id="${hit.channelId}"] .d-message-row[data-seq="${hit.seq}"]`);
         if (!row) return false;
+        leaveSearchLayer();
         row.focus();
         row.scrollIntoView?.({ block: 'center' });
         resolve();
@@ -655,6 +664,7 @@ export function Shell(): React.JSX.Element {
       const timeout = setTimeout(() => {
         observer.disconnect();
         const heading = document.querySelector<HTMLElement>('.d-channel-header__name');
+        leaveSearchLayer();
         heading?.setAttribute('tabindex', '-1');
         heading?.focus();
         resolve();
@@ -684,10 +694,10 @@ export function Shell(): React.JSX.Element {
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
       {removedHere ? <p className="dw-trust-removed" role="status">{t('privacy.removed')}</p> : null}
-      {changedHere.map(row => <TrustAlert key={row.userId} kind="changed" name={row.name}
+      {changedHere.length > 0 ? <div className="dw-trust-alerts" data-doc-state="trust-conversation">{changedHere.map(row => <TrustAlert key={row.userId} kind="changed" name={row.name}
         labels={{ changed: t(row.changedUmk === null ? 'privacy.changedNoKey' : 'privacy.changed'), unlisted: t('privacy.unlisted'),
           verify: t('privacy.compare', { name: row.name }) }}
-        onVerify={row.changedUmk === null ? undefined : () => navigate({ name: 'settings', section: 'privacy', from: null })} />)}
+        onVerify={row.changedUmk === null ? undefined : () => navigate({ name: 'settings', section: 'privacy', from: null })} />)}</div> : null}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
           {t('shell.banner.commandError', { code: commandError.code })}

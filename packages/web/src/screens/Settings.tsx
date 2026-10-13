@@ -101,7 +101,7 @@ export function Settings(): React.JSX.Element {
         approvedUmk={comparison?.umk ?? null} groups={comparison?.number?.split(' ') ?? []}
         canVerify={comparison !== null && comparison.record.shared && comparison.record.unlisted !== true && comparison.number !== null
           && comparison.error !== 'privacy.keyMoved'}
-        error={comparison?.error ? t(comparison.error) : null}
+        error={comparison?.error ? t(comparison.error) : null} docState="trust-compare"
         labels={{ title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('dialog.close'), loading: t('privacy.loading'),
           instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
           states: { 'first-seen': t('privacy.firstSeenLabel'), changed: t('privacy.changed'), verified: t('privacy.verifiedLabel'),

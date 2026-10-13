@@ -18,12 +18,14 @@ export type SafetyCompareProps = {
   };
   /** Why the number cannot be shown or the comparison could not be approved; Copy-table text, never a code. */
   error?: string | null;
+  /** A `data-doc-state` for the guide's screenshot shooter, on the dialog's content. */
+  docState?: string;
   onCopy(): void;
   onVerify(expectedUmk: string): void;
   onClose(): void;
 };
 
-export function SafetyCompare({ open, contactName, state, approvedUmk, groups, canVerify, labels, error = null, onCopy, onVerify, onClose }: SafetyCompareProps) {
+export function SafetyCompare({ open, contactName, state, approvedUmk, groups, canVerify, labels, error = null, docState, onCopy, onVerify, onClose }: SafetyCompareProps) {
   const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
   const instructionsId = useId();
   const instructionsRef = useRef<HTMLParagraphElement>(null);
@@ -60,7 +62,7 @@ export function SafetyCompare({ open, contactName, state, approvedUmk, groups, c
   const permitted = canVerify && /^[0-9a-f]{64}$/.test(approvedUmk ?? '') && validGroups && confirmed;
   return <Dialog open={open} title={labels.title} closeLabel={labels.close} onClose={onClose}
     footer={<Button variant="accent" aria-disabled={!permitted} onClick={() => { if (permitted && approvedUmk) onVerify(approvedUmk); }}>{labels.verify}</Button>}>
-    <div className="d-safety-compare">
+    <div className="d-safety-compare" data-doc-state={docState}>
       <p className="d-safety-compare__identity">{contactName} · {labels.states?.[state] ?? state}</p>
       {state === 'first-seen' && <p>{labels.firstSeen.replace('{name}', contactName)}</p>}
       <p id={instructionsId} ref={instructionsRef}>{labels.instructions}</p>
