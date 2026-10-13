@@ -33,6 +33,9 @@ export interface SyncDeps {
   beforeSend(groupId: Id, row: OutboxRow): Promise<void>;
   /** Called by discardSend after sendDiscard with the row as the outbox held it. */
   onDiscarded(groupId: Id, row: OutboxRow): void;
+  /** Reads the group's leaves' signed lists again (the controller's trust refresh). drainOne calls it once for a queued row
+   *  that encryption refused by a leaf verdict, and retrySend before a verdict-failed row is tried again. */
+  refreshGroupTrust(groupId: Id): Promise<void>;
 }
 export const SYNC = {
   handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400,
@@ -56,6 +59,7 @@ export class SyncEngine implements SyncInternals {
   readonly epochWait = new Map<string, number>();
   readonly count425 = new Map<string, number>();
   readonly reframedOnce = new Set<string>();
+  readonly trustRetried = new Map<string, 'pending' | 'done'>();
   readonly resyncTried = new Set<string>();
   readonly quiet = new Set<string>();
   readonly unexpectedReported = new Set<string>();
@@ -83,7 +87,7 @@ export class SyncEngine implements SyncInternals {
     this.isStopped = true;
     this.unsubscribe?.(); this.unsubscribe = null;
     for (const id of this.timers) this.deps.clearTimeout(id);
-    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear();
+    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear(); this.trustRetried.clear();
     this.queues.clear();
     for (const wake of this.waiters) wake();
     this.waiters.clear();

@@ -27,6 +27,8 @@ export interface SyncInternals {
   epochWait: Map<string, number>;
   count425: Map<string, number>;
   reframedOnce: Set<string>;
+  /** `${group hex}:${msg hex}` of rows a leaf verdict refused at encryption: their one trust refresh is out, or done. */
+  trustRetried: Map<string, 'pending' | 'done'>;
   resyncTried: Set<string>;
   quiet: Set<string>;
   /** Unexpected groups already reported to onUnexpectedWelcome; cleared when the expected set changes. */

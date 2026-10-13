@@ -3,7 +3,8 @@ import { CoreError, type AttachmentDescriptor, type Id } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC } from './engine';
 import { catchSync, coreCalls, device, openRegistered, readyInfo, type Device } from './testing/harness';
-import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, THIRD, deferred, httpError, settle, textRequest } from './testing/model';
+import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, THIRD, deferred, httpError, idOf, settle, textRequest } from './testing/model';
+import { fakeDskPub } from '../testing/fake-list';
 
 let ds: ModelDs;
 let clock: ManualClock;
@@ -466,5 +467,69 @@ describe('sending with attachments and folds (L-TS-34)', () => {
     await settle();
     expect(posts()).toBe(0);
     expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_PRUNED' }]);
+  });
+});
+
+describe('a queued row refused at encryption by a leaf verdict (client I1, security F8)', () => {
+  const JOINED = idOf(0xd0, 22);
+  /** The row is queued; the verdict of a device that joined before its list was ingested lands before the drain runs. */
+  function queuedThenRefused(code: string): Id {
+    d.core.addPendingLeaf(g, 1, PEER.user, JOINED, fakeDskPub(JOINED), 1);
+    const msgId = d.engine.send(g, 'queued before the verdict');
+    d.core.setLeafVerdict(g, 1, code);
+    return msgId;
+  }
+
+  it('stays queued, refreshes the group trust once and is sent when the refresh clears the verdict', async () => {
+    d.hooks.refreshGroupTrust = () => { d.core.setLeafVerdict(g, 1, null); return Promise.resolve(); };
+    queuedThenRefused('E_DEVICE_UNLISTED');
+    await settle();
+    expect(d.refreshes).toEqual([toHex(g)]);
+    expect(sent()).toEqual(['queued before the verdict']);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('is not failed by a drain that runs while the refresh is still out', async () => {
+    const gate = deferred();
+    d.hooks.refreshGroupTrust = () => gate.promise.then(() => { d.core.setLeafVerdict(g, 1, null); });
+    queuedThenRefused('E_DEVICE_UNLISTED');
+    await settle();
+    d.engine.requestDrain(g);
+    await settle();
+    expect(states()).toEqual([0]);
+    gate.resolve();
+    await settle();
+    expect(sent()).toEqual(['queued before the verdict']);
+  });
+
+  it('fails with the verdict when it is refused again after the one refresh', async () => {
+    const msgId = queuedThenRefused('E_CREDENTIAL');
+    await settle();
+    expect(d.refreshes).toEqual([toHex(g)]);
+    expect(posts()).toBe(0);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_CREDENTIAL' }]);
+  });
+
+  it('a changed key is never retried', async () => {
+    const msgId = queuedThenRefused('E_UMK_CHANGED');
+    await settle();
+    expect(d.refreshes).toEqual([]);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_UMK_CHANGED' }]);
+  });
+
+  it('a retry of a row a verdict failed refreshes the group trust before it is encrypted again', async () => {
+    const msgId = queuedThenRefused('E_DEVICE_UNLISTED');
+    await settle();
+    expect(states()).toEqual([2]);
+    const encrypts = d.core.calls.filter((c) => c.m === 'sendEncrypt').length;
+    d.hooks.refreshGroupTrust = () => {
+      expect(d.core.calls.filter((c) => c.m === 'sendEncrypt').length).toBe(encrypts);
+      d.core.setLeafVerdict(g, 1, null);
+      return Promise.resolve();
+    };
+    d.engine.retry(msgId);
+    await settle();
+    expect(d.refreshes).toEqual([toHex(g), toHex(g)]);
+    expect(sent()).toEqual(['queued before the verdict']);
   });
 });

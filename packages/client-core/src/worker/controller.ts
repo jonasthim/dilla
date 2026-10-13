@@ -34,7 +34,7 @@ import {
   type WorkerError,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
-import { SyncError } from '../sync/errors';
+import { LEAF_VERDICTS, SyncError } from '../sync/errors';
 import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './runtime';
@@ -133,9 +133,6 @@ function sanitizePageError(error: WorkerError): WorkerError {
 function isCode(e: unknown, code: string): boolean {
   return e instanceof Error && e.message === code;
 }
-
-/** The core's verdicts on one leaf against its owner's signed list (L-CORE-40); each leaves that device quarantined. */
-const LEAF_VERDICTS: ReadonlySet<string> = new Set(['E_DEVICE_UNLISTED', 'E_CREDENTIAL', 'E_TIER_MISMATCH']);
 
 function isStatus(e: unknown, status: number): boolean {
   return e instanceof DillaHttpError && e.status === status;
@@ -765,6 +762,7 @@ export class Controller {
       onUnexpectedWelcome: () => { void this.barrier.track(this.reloadDms().catch(() => {})); },
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
+      refreshGroupTrust: (g) => this.refreshGroupTrust(g),
     });
     this.sync = sync;
     sync.start();

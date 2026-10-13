@@ -26,8 +26,10 @@ export interface Device {
   readonly beforeSends: string[];
   /** Every onDiscarded report: the group hex, the msg id hex and the blob id hexes of the row. */
   readonly discarded: { group: string; msgId: string; blobIds: string[] }[];
-  /** What beforeSend answers after recording; a test replaces it. Resolves by default. */
-  readonly hooks: { beforeSend: SyncDeps['beforeSend'] };
+  /** The group hex of every refreshGroupTrust call, in call order. */
+  readonly refreshes: string[];
+  /** What beforeSend and refreshGroupTrust answer after recording; a test replaces them. Both resolve by default. */
+  readonly hooks: { beforeSend: SyncDeps['beforeSend']; refreshGroupTrust: SyncDeps['refreshGroupTrust'] };
 }
 
 /** An engine for me, started, with its gateway attached to ds's fan-out. random() always answers `random`. */
@@ -41,7 +43,8 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
   const unexpected: string[] = [];
   const beforeSends: string[] = [];
   const discarded: Device['discarded'] = [];
-  const hooks: Device['hooks'] = { beforeSend: () => Promise.resolve() };
+  const refreshes: string[] = [];
+  const hooks: Device['hooks'] = { beforeSend: () => Promise.resolve(), refreshGroupTrust: () => Promise.resolve() };
   ds.attach(me.device, (f) => {
     gateway.frame(f);
   });
@@ -61,13 +64,14 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     onMembership: (groupId, status) => { membership.push({ group: toHex(groupId), status }); },
     onJoinAll: (p) => { joinAll.push({ ...p }); },
     onUnexpectedWelcome: (g) => { unexpected.push(toHex(g)); },
+    refreshGroupTrust: (groupId: Id) => { refreshes.push(toHex(groupId)); return hooks.refreshGroupTrust(groupId); },
     beforeSend: (groupId: Id, row: OutboxRow) => { beforeSends.push(toHex(row.msgId)); return hooks.beforeSend(groupId, row); },
     onDiscarded: (groupId: Id, row: OutboxRow) => {
       discarded.push({ group: toHex(groupId), msgId: toHex(row.msgId), blobIds: row.attachments.map((a) => toHex(a.blobId)) });
     },
   });
   engine.start();
-  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, hooks };
+  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, refreshes, hooks };
 }
 
 export function readyInfo(me: Peer, groups: ReadyInfo['groups'] = []): ReadyInfo {
