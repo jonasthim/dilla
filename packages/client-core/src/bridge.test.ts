@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CoreCallError, connectCore } from './bridge';
-import type { AccountState } from './state/types';
+import { CALL_IDLE, type AccountState, type CallState } from './state/types';
 
 class FakeWorker {
   readonly posted: unknown[] = [];
@@ -94,6 +94,24 @@ describe('connectCore', () => {
   });
 });
 
+// I2 (controller ruling, 2026-10-13): CallState names the changed contact in `changedUser` (32-hex user id or null), so
+// the page can fill {name} in voice.paused and voice.blockedChanged even when a refused join left `roster` empty.
+describe('the call slice', () => {
+  it('starts with no changed user', () => {
+    expect(CALL_IDLE).toEqual({ phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [],
+      outgoing: null, changedUser: null });
+  });
+
+  it('reaches the page with changedUser intact', () => {
+    const { bridge, deliver } = createBridgeForTest();
+    const paused: CallState = { ...CALL_IDLE, phase: 'paused', channelId: 'cc'.repeat(16), callId: 'cc'.repeat(16), epoch: '4',
+      error: { code: 'E_UMK_CHANGED', detail: '', status: 0, retryAfterMs: null }, changedUser: 'dd'.repeat(16) };
+    deliver({ t: 'slice', name: 'call', rev: 1, value: paused });
+    expect(bridge.get('call')?.changedUser).toBe('dd'.repeat(16));
+    expect(bridge.get('call')?.error?.code).toBe('E_UMK_CHANGED');
+  });
+});
+
 /** The real connectCore over a fake Worker whose deliver dispatches a message event (L-TS-52). */
 function createBridgeForTest() {
   const worker = new FakeWorker();
@@ -147,6 +165,17 @@ describe('onCallKeys', () => {
     } finally {
       micro.mockRestore();
     }
+  });
+
+  it('accepts the largest u64 epoch and refuses one above it', () => {
+    const { bridge, deliver } = createBridgeForTest();
+    const epochs: string[] = [];
+    bridge.onCallKeys((_, k) => { epochs.push(k.epoch); });
+    deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: { ...keys(new ArrayBuffer(16)), epoch: '18446744073709551615' } });
+    const over = new Uint8Array(16).fill(2).buffer;
+    deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: { ...keys(over), epoch: '18446744073709551616' } });
+    expect(epochs).toEqual(['18446744073709551615']);
+    expect([...new Uint8Array(over)]).toEqual(Array(16).fill(0));
   });
 
   it('refuses malformed ids, epochs and roster rows, and stops calling a removed listener', () => {

@@ -126,4 +126,6 @@ it('accepts call_ring states 0..2 and refuses state 3, a short id and a missing 
   expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel.slice(1), user, 1, 1758659030]))).toThrow('E_FRAME_SHAPE');
   expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1]))).toThrow('E_FRAME_SHAPE');
   expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1, 'soon']))).toThrow('E_FRAME_SHAPE');
+  // L-GW-33: an ephemeral frame has n = 0.
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 1, null, [call, channel, user, 1, 1758659030]))).toThrow('E_FRAME_SHAPE');
 });

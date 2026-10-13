@@ -45,7 +45,7 @@ export function decodeFrame(bytes: Uint8Array): Frame {
   if (op === 51n && (n !== 0n || !isId(payload[0]) || !bit(payload[1]))) shape();
   if (op === 52n && (n !== 0n || !isId(payload[0]) || !flags(payload[1]))) shape();
   // op 53 call_ring (L-GW-33): [call_id, channel_id, user_id, state 0..2, expires_ts].
-  if (op === 53n && (!isId(payload[0]) || !isId(payload[1]) || !isId(payload[2]) || !ringState(payload[3]) || !uint(payload[4]))) shape();
+  if (op === 53n && (n !== 0n || !isId(payload[0]) || !isId(payload[1]) || !isId(payload[2]) || !ringState(payload[3]) || !uint(payload[4]))) shape();
   return { op: Number(op), n, groupId, payload };
 }
 

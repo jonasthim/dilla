@@ -51,7 +51,10 @@ export class FakeClient implements CoreClient {
   }
   pushCallKeys(callId: string, keys: CallKeys): void {
     try {
-      for (const entry of [...this.keyListeners]) entry.listener(callId, keys);
+      for (const entry of [...this.keyListeners]) {
+        try { entry.listener(callId, keys); }
+        catch (err) { queueMicrotask(() => { throw err; }); }
+      }
     } finally {
       new Uint8Array(keys.baseKey).fill(0);
     }

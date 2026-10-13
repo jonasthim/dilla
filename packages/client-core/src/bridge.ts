@@ -32,6 +32,7 @@ export interface CoreClient {
 const HEX_ID = /^[0-9a-f]{32}$/;
 const EPOCH = /^(0|[1-9][0-9]{0,19})$/;
 const KEY_BYTES = 16;
+const U64_MAX = 18446744073709551615n;
 const ROSTER_MAX = 1024;
 
 const leafIndex = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
@@ -41,7 +42,7 @@ function callKeysOf(m: Record<string, unknown>): { callId: string; keys: CallKey
   const { callId, keys } = m;
   if (typeof callId !== 'string' || !HEX_ID.test(callId) || typeof keys !== 'object' || keys === null) return null;
   const { groupId, epoch, baseKey, selfLeaf, roster } = keys as Record<string, unknown>;
-  if (typeof groupId !== 'string' || !HEX_ID.test(groupId) || typeof epoch !== 'string' || !EPOCH.test(epoch)) return null;
+  if (typeof groupId !== 'string' || !HEX_ID.test(groupId) || typeof epoch !== 'string' || !EPOCH.test(epoch) || BigInt(epoch) > U64_MAX) return null;
   if (!(baseKey instanceof ArrayBuffer) || baseKey.byteLength !== KEY_BYTES || !leafIndex(selfLeaf)) return null;
   if (!Array.isArray(roster) || roster.length > ROSTER_MAX) return null;
   for (const row of roster as unknown[]) {

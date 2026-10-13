@@ -14,9 +14,9 @@ The media key never appears in this flow: the browser derives it in the core wor
 | joining | dock shows `voice.dock.connecting`; the stage controls appear but stay `aria-disabled` | `call.phase` joining | none |
 | connected | dock shows `voice.dock.connected`; tiles for everyone; the toolbar is live | `call.phase` in | `voice.announce.joined` |
 | reconnecting | dock shows `voice.dock.reconnecting`; tiles keep their last state | page room reconnecting, `call.phase` in | none |
-| blocked before join | `voice.blockedChanged` (exactly one changed contact in the call roster) or `voice.blockedJoin`; no join button until the cause is gone | `call.phase` blocked, `call.code` E_UMK_CHANGED or another block code | the notice (focus moves to it once) |
+| blocked before join | `voice.blockedChanged` (exactly one changed contact in the call roster) or `voice.blockedJoin`; no join button until the cause is gone | `call.phase` blocked, `call.error.code` E_UMK_CHANGED (with `call.changedUser`) or another block code | the notice (focus moves to it once) |
 | blocked mid-call | `voice.blocked`; the dock and stage go away; the row returns to live, not joined | `call.phase` blocked, own leaf left | the notice (focus moves to it once) |
-| paused mid-call (RV-3) | banner `voice.paused` on the stage and the dock with its `voice.pausedAction` button; dock says `voice.dock.paused`; tiles show no media, only names and state words; camera and share buttons `aria-disabled` | `call.phase` paused, `call.code` E_UMK_CHANGED, still in the group and the room, no keys posted | the banner (`role="status"`; focus moves to its button once); `voice.resumed` when it ends |
+| paused mid-call (RV-3) | banner `voice.paused` on the stage and the dock with its `voice.pausedAction` button; dock says `voice.dock.paused`; tiles show no media, only names and state words; camera and share buttons `aria-disabled` | `call.phase` paused, `call.error.code` E_UMK_CHANGED, `call.changedUser` the changed contact, still in the group and the room, no keys posted | the banner (`role="status"`; focus moves to its button once); `voice.resumed` when it ends |
 | removed | `voice.removed`; the dock goes away | `call.phase` removed | the notice |
 | full | `voice.full` (or `voice.sharersFull` when the camera or share is refused) | `call.error.code` E_CALL_FULL / E_CALL_SHARERS_FULL | the notice |
 | failed | `voice.failed` with the join button available again | `call.phase` failed (also E_DEVICE_LIST_STALE after one refresh, RV-1) | the notice |
@@ -42,6 +42,8 @@ How a block code maps to copy:
 - Mid-call: `E_UMK_CHANGED` → phase `paused` and `voice.paused` with the changed contact's name (the first by `user_id` when several changed); `voice.pausedAction` opens Privacy's comparison for that contact.
 - Any other block → `voice.blocked` mid-call and `voice.blockedJoin` at join.
 - `E_DEVICE_LIST_STALE` (phase `failed`, a list that could not be fetched, ruling RV-1) → `voice.failed` at join; mid-call it shows nothing new (media for the new epoch waits for the refresh).
+
+Amended 2026-10-13 (controller ruling I2, task 1 review): the `{name}` of `voice.paused` and `voice.blockedChanged` comes from `call.changedUser`, the 32-hex user id of the changed contact that the worker sets for phase `paused` and for an `E_UMK_CHANGED` join refusal (the first by `user_id` when several changed), and is null otherwise. The page looks the name up as for any contact. At join, "exactly one changed contact" means the worker named one; `voice.blockedJoin` is shown when `changedUser` is null.
 
 ## 1280×800
 
@@ -77,8 +79,8 @@ The disclosure `voice.code` is closed by default. Opened, it shows the call code
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ @ ada                                                                [call]  │
-│ ringing ada                                                                  │
+│ @ ada                                                                        │
+│ ringing ada                                                          [call]  │
 │ ┌─────────────────────────────────────────────────────────────────────────┐  │
 │ │  ada  connecting          you                         ▸ call code       │  │  40 %
 │ │        [mute] [deafen] [camera] [share screen] [leave]                  │  │
@@ -123,6 +125,28 @@ The stage is full width. The dock lives in the sidebar sheet, above the user pan
 │                                    │
 │ [mute] [deafen] [camera] [leave]   │
 │ [share screen]                     │
+└────────────────────────────────────┘
+```
+
+The sidebar sheet (opened with `☰`) holds the dock above the user panel while this device is in voice:
+
+```text
+┌────────────────────────────────────┐
+│ACTIVE VOICE                        │
+│ ◉ harbour                      2   │
+│   ada  speaking                    │
+│   bo   muted                       │
+│channels                            │
+│ # general                          │
+│voice                               │
+│ ◉ harbour                      2   │
+│                                    │
+│┌──────────────────────────────────┐│
+││in harbour                        ││
+││▮▮▮▮▮▮▯▯▯▯▯▯                      ││
+││[mute]   [deafen]   [leave]       ││
+│└──────────────────────────────────┘│
+│ web · online                       │
 └────────────────────────────────────┘
 ```
 

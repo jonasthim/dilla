@@ -103,7 +103,11 @@ export type CallStatsReport = [candidateType: number, relayProtocol: number | nu
 export type CallPhase = 'idle' | 'joining' | 'in' | 'paused' | 'leaving' | 'blocked' | 'removed' | 'failed';
 export interface CallState { phase: CallPhase; channelId: string | null; callId: string | null; epoch: string | null;
   code: string | null; error: WorkerError | null; roster: { userId: string; deviceId: string; leaf: number }[];
-  outgoing: { ringing: string[]; declined: string[] } | null }   // user names; DM calls this device opened
+  outgoing: { ringing: string[]; declined: string[] } | null;    // user names; DM calls this device opened
+  // Ruling I2 (2026-10-13): the 32-hex user id of the changed contact while the phase is paused (RV-3) or after an
+  // E_UMK_CHANGED join refusal (the first by user_id when several changed); null otherwise. Fills {name} in
+  // voice.paused and voice.blockedChanged, also when a refused join left `roster` empty.
+  changedUser: string | null }
 export interface VoiceParticipant { userId: string; deviceId: string; name: string; flags: number; own: boolean; web: boolean; bot: boolean }
 export interface VoiceCall { callId: string; participants: VoiceParticipant[] }
 export type VoiceState = Record<string, VoiceCall>;   // channel id (hex) → its live call
@@ -114,7 +118,8 @@ export interface Ring { callId: string; channelId: string; callerUser: string; c
   quiet: boolean }              // the DM is muted (mute.channel.<id>): no sound, no notification
 export type RingsState = Ring[];
 /** The initial values of the three web-3 slices (L-TS-51). */
-export const CALL_IDLE: CallState = { phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [], outgoing: null };
+export const CALL_IDLE: CallState = { phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [], outgoing: null,
+  changedUser: null };
 export const VOICE_EMPTY: VoiceState = {};
 export const RINGS_EMPTY: RingsState = [];
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`

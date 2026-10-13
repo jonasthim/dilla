@@ -4281,6 +4281,9 @@ describe('call commands before task 6', () => {
       expect(w.ret(7100 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE', detail: '' } });
     });
     expect(routeCalls(w)).toBe(before);
+    // I2: until task 6 the stub never names a changed user; any call slice it publishes keeps changedUser null.
+    const callSlices = w.posted.filter((p): p is SliceMessage => p.t === 'slice' && p.name === 'call');
+    for (const s of callSlices) expect((s.value as { changedUser: unknown }).changedUser).toBeNull();
   });
 
   it('refuses each malformed call command E_BAD_INPUT before any route call', async () => {
