@@ -34,9 +34,12 @@ export const REQUIRED_JOBS = [
   'go-release',
   // Plan 2 task 18: the multi-arch container image, built on every run and pushed from main.
   'image',
-  // Task 26 (web-1): build the client once and run its browser integration suites.
+  // Task 26 (web-1): build the client once and run its browser integration suites; web-2c splits the suites into one
+  // job per Playwright engine (BROWSER_WEB_JOBS below).
   'web-build',
-  'browser-web',
+  'chromium-web',
+  'firefox-web',
+  'webkit-web',
 ];
 
 /**
@@ -62,12 +65,41 @@ export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
 /**
- * browser-web's budget, max(30, ceil(5 × (C + W + 3.0)) + 10) from the measured core-worker (C) and web (W) suites
- * in minutes (web-1 ruling 41, L-CI-21, L-CI-22). Web-2b measured C = 0.5, W = 2.6 (41). Web-2c task 10 measured
- * C = 0.5 (28.8 s) and W = 6.8, which gives 62 and, split (L-CI-11), browser-web-core 30 and browser-web 59: still
- * above 45, so by L-CI-21 the split waits for a controller ruling and the web-2b budget stays pinned until then.
+ * The browser suites, one job per Playwright engine (controller ruling of 2026-10-13 on the L-CI-21 budget: the 45-min
+ * cap is about one runner, and per-engine jobs also run in parallel). Each budget is max(30, ceil(5 × share) + 10) on
+ * its own share in minutes: Chromium and Firefox each run half of the web suite (W = 6.8 in web-2c task 10, so 3.4)
+ * plus their half of the core-worker suite (C = 0.5, so 0.25): ceil(5 × 3.65) + 10 = 29 → 30. WebKit keeps web-1's
+ * 3.0 allowance (signup and reload only): ceil(15) + 10 = 25 → 30. `core` says whether the job also runs the
+ * core-worker suite of its engine (the core config has no WebKit project).
  */
-export const MIN_BROWSER_WEB_TIMEOUT = 41;
+export const BROWSER_WEB_JOBS = {
+  'chromium-web': { engine: 'chromium', timeout: 30, core: true },
+  'firefox-web': { engine: 'firefox', timeout: 30, core: true },
+  'webkit-web': { engine: 'webkit', timeout: 30, core: false },
+};
+export const MIN_BROWSER_WEB_TIMEOUT = 30;
+
+/** The steps every per-engine browser job must carry: the four downloads, its one engine, its suites, its own artifact. */
+function browserWebSteps({ engine, timeout, core }) {
+  return [
+    `timeout-minutes: ${timeout}`,
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'name: dilla-web-dist',
+    'path: packages/web/dist',
+    'name: dilla-core-harness',
+    'path: packages/client-core/harness-dist',
+    `npx playwright install --with-deps ${engine}`,
+    ...(core ? [`npm run test:e2e:core:${engine} -w @dilla/e2e`] : []),
+    `npm run test:e2e:web:${engine} -w @dilla/e2e`,
+    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
+    'if: failure()',
+    // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per engine.
+    `name: browser-web-results-${engine}`,
+    'path: e2e/test-results',
+  ];
+}
 
 /** L-CI-22: the seven web-2c story families, shot at 1280×800 and at 360×740, each command a whole step of its own. */
 const UI_PREFIXES_2C = 'trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--';
@@ -173,24 +205,8 @@ const REQUIRED_STEPS = {
     'name: dilla-core-harness',
     'path: packages/client-core/harness-dist/',
   ],
-  // Task 26/C18: three engines and the native peer against the downloaded web and core builds.
-  'browser-web': [
-    `timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}`,
-    'name: dilla-core-wasi',
-    'path: internal/mlswasi/testdata',
-    'name: dilla-testkit',
-    'name: dilla-web-dist',
-    'path: packages/web/dist',
-    'name: dilla-core-harness',
-    'path: packages/client-core/harness-dist',
-    'npx playwright install --with-deps chromium firefox webkit',
-    'npm run test:e2e:core -w @dilla/e2e',
-    'npm run test:e2e:web -w @dilla/e2e',
-    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
-    'if: failure()',
-    'name: browser-web-results',
-    'path: e2e/test-results',
-  ],
+  // Task 26/C18: each engine and the native peer against the downloaded web and core builds, one job per engine.
+  ...Object.fromEntries(Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => [job, browserWebSteps(spec)])),
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
   // landing anywhere but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is
@@ -527,7 +543,7 @@ export function checkWorkflow(root) {
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [
-    ['browser-web', ['rust-native', 'rust-wasi', 'web-build']],
+    ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
   ]) {
     if (!(job in jobs)) continue;

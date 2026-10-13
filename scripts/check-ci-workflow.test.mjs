@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
@@ -171,7 +171,7 @@ jobs:
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
-  browser-web:
+  chromium-web:
     runs-on: ubuntu-latest
     timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
     needs: [rust-native, rust-wasi, web-build]
@@ -192,17 +192,84 @@ jobs:
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
-      - run: npx playwright install --with-deps chromium firefox webkit
-      - run: npm run test:e2e:core -w @dilla/e2e
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:core:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: npm run test:e2e:web -w @dilla/e2e
+      - run: npm run test:e2e:web:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: browser-web-results
+          name: browser-web-results-chromium
+          path: e2e/test-results
+          if-no-files-found: error
+
+  firefox-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist
+      - run: npx playwright install --with-deps firefox
+      - run: npm run test:e2e:core:firefox -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npm run test:e2e:web:firefox -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-web-results-firefox
+          path: e2e/test-results
+          if-no-files-found: error
+
+  webkit-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist
+      - run: npx playwright install --with-deps webkit
+      - run: npm run test:e2e:web:webkit -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-web-results-webkit
           path: e2e/test-results
           if-no-files-found: error
 
@@ -901,7 +968,7 @@ const PLACEHOLDER_GUARD_IMAGE =
   '          test -f internal/web/dist/index.html\n' +
   `          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi\n`;
 
-for (const job of ['web-build', 'browser-web']) {
+for (const job of ['web-build', ...Object.keys(BROWSER_WEB_JOBS)]) {
   test(`a workflow without the ${job} job is reported`, () => {
     const problems = checkWorkflow(fixture(GOOD.replace(jobBody(job), '')));
     assert.ok(problems.some((p) => p.includes(`missing job "${job}"`)), problems.join('\n'));
@@ -921,21 +988,23 @@ for (const [job, needle] of [
   ['web-build', 'path: packages/web/dist/'],
   ['web-build', 'name: dilla-core-harness'],
   ['web-build', 'path: packages/client-core/harness-dist/'],
-  ['browser-web', 'timeout-minutes: 41'],
-  ['browser-web', 'name: dilla-core-wasi'],
-  ['browser-web', 'path: internal/mlswasi/testdata'],
-  ['browser-web', 'name: dilla-testkit'],
-  ['browser-web', 'name: dilla-web-dist'],
-  ['browser-web', 'path: packages/web/dist'],
-  ['browser-web', 'name: dilla-core-harness'],
-  ['browser-web', 'path: packages/client-core/harness-dist'],
-  ['browser-web', 'npx playwright install --with-deps chromium firefox webkit'],
-  ['browser-web', 'npm run test:e2e:core -w @dilla/e2e'],
-  ['browser-web', 'npm run test:e2e:web -w @dilla/e2e'],
-  ['browser-web', 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit'],
-  ['browser-web', 'if: failure()'],
-  ['browser-web', 'name: browser-web-results'],
-  ['browser-web', 'path: e2e/test-results'],
+  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, { engine, core }]) => [
+    [job, `timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}`],
+    [job, 'name: dilla-core-wasi'],
+    [job, 'path: internal/mlswasi/testdata'],
+    [job, 'name: dilla-testkit'],
+    [job, 'name: dilla-web-dist'],
+    [job, 'path: packages/web/dist'],
+    [job, 'name: dilla-core-harness'],
+    [job, 'path: packages/client-core/harness-dist'],
+    [job, `npx playwright install --with-deps ${engine}`],
+    ...(core ? [[job, `npm run test:e2e:core:${engine} -w @dilla/e2e`]] : []),
+    [job, `npm run test:e2e:web:${engine} -w @dilla/e2e`],
+    [job, 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit'],
+    [job, 'if: failure()'],
+    [job, `name: browser-web-results-${engine}`],
+    [job, 'path: e2e/test-results'],
+  ]),
   ['go-release', 'name: dilla-web-dist'],
   ['go-release', 'path: internal/web/dist'],
   ['go-release', 'content="placeholder"'],
@@ -957,13 +1026,39 @@ for (const [job, needle] of [
   });
 }
 
-for (const need of ['rust-native', 'rust-wasi', 'web-build']) {
-  test(`a browser-web job without needs: ${need} is reported`, () => {
-    const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
-    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-native, rust-wasi, web-build]\n', `    needs: [${kept}]\n`)));
-    assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes(`needs: ${need}`)), problems.join('\n'));
-  });
+for (const job of Object.keys(BROWSER_WEB_JOBS)) {
+  for (const need of ['rust-native', 'rust-wasi', 'web-build']) {
+    test(`a ${job} job without needs: ${need} is reported`, () => {
+      const body = jobBody(job);
+      const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
+      const cut = body.replace('    needs: [rust-native, rust-wasi, web-build]\n', `    needs: [${kept}]\n`);
+      assert.notEqual(cut, body, 'fixture sanity: needs');
+      const problems = checkWorkflow(fixture(GOOD.replace(body, () => cut)));
+      assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(`needs: ${need}`)), problems.join('\n'));
+    });
+  }
 }
+
+// Ruling of 2026-10-13: browser-web is one job per engine. Dropping an engine's job, folding the engines back into
+// one job, or two engines uploading one artifact name (upload-artifact v4+ refuses a duplicate) is reported.
+test('a workflow missing one engine job is reported, also when another job runs that engine', () => {
+  const firefox = jobBody('firefox-web');
+  const problems = checkWorkflow(fixture(GOOD.replace(firefox, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "firefox-web"')), problems.join('\n'));
+  const merged = jobBody('chromium-web')
+    .replace('npx playwright install --with-deps chromium', 'npx playwright install --with-deps chromium firefox')
+    .replace('npm run test:e2e:web:chromium -w @dilla/e2e', 'npm run test:e2e:web -w @dilla/e2e');
+  const folded = checkWorkflow(fixture(GOOD.replace(firefox, '').replace(jobBody('chromium-web'), () => merged)));
+  assert.ok(folded.some((p) => p.includes('missing job "firefox-web"')), folded.join('\n'));
+  assert.ok(folded.some((p) => p.includes('"chromium-web"') && p.includes('test:e2e:web:chromium')), folded.join('\n'));
+});
+
+test('two engine jobs uploading one artifact name are reported', () => {
+  const body = jobBody('firefox-web');
+  const shared = body.replace('name: browser-web-results-firefox', 'name: browser-web-results-chromium');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => shared)));
+  assert.ok(problems.some((p) => p.includes('"firefox-web"') && p.includes('browser-web-results-firefox')), problems.join('\n'));
+});
 
 test('go-release must point the webdist test at the downloaded client', () => {
   const line = '          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist\n';
@@ -1061,21 +1156,15 @@ test('neither the checker nor the fixture names an earlier screenshot directory 
   }
 });
 
-test('a browser-web job back at the web-1 budget is reported (web-2a)', () => {
-  const body = jobBody('browser-web');
-  const old = body.replace('    timeout-minutes: 41\n', '    timeout-minutes: 30\n');
-  assert.notEqual(old, body, 'fixture sanity: the derived budget');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => old)));
-  assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes('timeout-minutes: 41')), problems.join('\n'));
-});
-
-test('a browser-web job back at the web-2a budget is reported (web-2b)', () => {
-  const body = jobBody('browser-web');
-  const old = body.replace('    timeout-minutes: 41\n', '    timeout-minutes: 36\n');
-  assert.notEqual(old, body, 'fixture sanity: the derived budget');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => old)));
-  assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes('timeout-minutes: 41')), problems.join('\n'));
-});
+for (const [job, { timeout }] of Object.entries(BROWSER_WEB_JOBS)) {
+  test(`a ${job} job off its derived budget is reported (web-2c)`, () => {
+    const body = jobBody(job);
+    const off = body.replace(`    timeout-minutes: ${timeout}\n`, `    timeout-minutes: ${timeout - 5}\n`);
+    assert.notEqual(off, body, 'fixture sanity: the derived budget');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => off)));
+    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(`timeout-minutes: ${timeout}`)), problems.join('\n'));
+  });
+}
 
 // web-2c task 11 (L-CI-22): the seven new story families at both viewports, both upload paths and the budget.
 test('web-2c captures, both paths and timeout are required independently', () => {
