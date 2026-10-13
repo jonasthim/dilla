@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dilla_core::attachment;
 use dilla_core::cbor::{Decoder, Encoder, decode_strict};
 use dilla_core::envelope::{Attachment, EnvelopeType};
-use dilla_core::identity::DeviceList;
-use dilla_core::ids::{CommunityId, InstanceId, MsgId};
+use dilla_core::identity::{DeviceList, Tier};
+use dilla_core::ids::{CommunityId, DeviceId, InstanceId, MsgId};
 use dilla_core::mls::{DillaBinding, GroupKind, external_senders};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -100,6 +100,8 @@ pub struct WebDriver {
     call_groups_made: u64,
     /// The `expires_ts` of the last op 53 state 1 each actor's gateway received, per call (`call_decline`).
     ringing: BTreeMap<(Actor, [u8; 16]), u64>,
+    /// The peer's devices `rotate_umk` replaced: a rejoin of a call group commits the Remove of any leaf of theirs.
+    replaced_devices: Vec<DeviceId>,
 }
 
 impl WebDriver {
@@ -124,6 +126,7 @@ impl WebDriver {
             calls: BTreeMap::new(),
             call_groups_made: 0,
             ringing: BTreeMap::new(),
+            replaced_devices: Vec::new(),
         }
     }
 
@@ -502,6 +505,11 @@ impl WebDriver {
                 Self::actor(req)?;
                 Self::hex16(req, "call")?;
             }
+            "call_check" => {
+                Self::actor(req)?;
+                Self::hex16(req, "channel")?;
+            }
+            "forge_device" => {}
             "register" | "update" | "enrol" | "dms" => {}
             _ => return Err(scenario(format!("unknown op {op}"))),
         }
@@ -563,6 +571,8 @@ impl WebDriver {
             "call_members" => self.call_members(req).map_err(new_verb_error),
             "call_start" => self.call_start(req).map_err(new_verb_error),
             "call_decline" => self.call_decline(req).map_err(new_verb_error),
+            "call_check" => self.call_check(req).map_err(new_verb_error),
+            "forge_device" => self.forge_device().map_err(new_verb_error),
             _ => unreachable!(),
         }
     }
@@ -713,18 +723,34 @@ impl WebDriver {
         &self,
         channel: [u8; 16],
         community: Option<[u8; 16]>,
+        kind: GroupKind,
     ) -> Result<DillaBinding, TestkitError> {
         let doc = instance_document(&self.ds_url)?;
-        Ok(DillaBinding {
+        Ok(Self::binding_of(
+            InstanceId::from_bytes(doc.instance_id),
+            channel,
+            community,
+            kind,
+        ))
+    }
+
+    /// The one binding shape of every group this driver makes or joins: only the kind and the target differ.
+    fn binding_of(
+        instance_id: InstanceId,
+        channel: [u8; 16],
+        community: Option<[u8; 16]>,
+        kind: GroupKind,
+    ) -> DillaBinding {
+        DillaBinding {
             v: 1,
-            instance_id: InstanceId::from_bytes(doc.instance_id),
+            instance_id,
             community_id: community.map(CommunityId::from_bytes),
             target_id: channel,
-            kind: GroupKind::Text,
+            kind,
             policy_version: 1,
             e2ee_version: 1,
-            media_version: GroupKind::Text.media_version(),
-        })
+            media_version: kind.media_version(),
+        }
     }
 
     fn served_list(blob: &[u8], version: u64) -> Result<DeviceList, TestkitError> {
@@ -791,7 +817,11 @@ impl WebDriver {
         ds.set_session_expires(enrolled.expires);
         let mut second = second;
         second.publish_key_packages(&mut ds, 8)?;
-        let binding = self.binding(self.peer().channel, Some(self.peer().community))?;
+        let binding = self.binding(
+            self.peer().channel,
+            Some(self.peer().community),
+            GroupKind::Text,
+        )?;
         second.join_external(&mut ds, &group, &binding)?;
         let epoch = second
             .epoch_of(&group)
@@ -887,7 +917,7 @@ impl WebDriver {
             };
             let group = group_id.to_vec();
             if !self.dms.contains_key(&dm.channel_id) {
-                let binding = self.binding(dm.channel_id, None)?;
+                let binding = self.binding(dm.channel_id, None, GroupKind::Text)?;
                 let joined = self.runner.with_member(&name, |c, ds| {
                     // A group the peer already holds is never joined a second time.
                     if c.epoch_of(&group).is_some() {
@@ -1295,22 +1325,38 @@ impl WebDriver {
                 )
             })
             .unwrap_or((self.peer().channel, self.peer().community));
-        let binding = self.binding(channel, Some(community))?;
+        let binding = self.binding(channel, Some(community), GroupKind::Text)?;
         rotated.join_external(&mut ds, &group, &binding)?;
         let old_device = self
             .runner
             .with_member(&name, |first, _| Ok(first.device_id()))?;
         rotated.remove(&mut ds, &group, old_device)?;
-        // The old leaf has left the group: the replacement is the peer's acting device from now on (its sends, syncs and
-        // trust witness), and the old device is held only so that a second rotation or enrolment stays refused.
+        // The old device leaves every call group it holds as `call_leave` does (its own Remove, `E_REMOVE_PENDING`
+        // being fine, then it forgets the group). Another member's commit takes the old leaf out; in a group the old
+        // device was alone in nobody can, and the replacement's rejoin (`call_join`) commits that Remove itself.
+        let left: Vec<([u8; 16], Vec<u8>)> = self
+            .calls
+            .iter()
+            .filter(|((actor, _), _)| *actor == Actor::Peer)
+            .map(|((_, channel), g)| (*channel, g.clone()))
+            .collect();
+        for (channel, call_group) in left {
+            self.runner.with_member(&name, |c, ds| {
+                c.leave(ds, &call_group)?;
+                c.forget(&call_group)
+            })?;
+            self.calls.remove(&(Actor::Peer, channel));
+        }
+        // The old leaf has left the text group: the replacement is the peer's acting device from now on (its sends,
+        // syncs and trust witness), and the old device is held only so that a second rotation or enrolment stays
+        // refused. `rotate_umk` refuses while a second device exists, so the second actor holds no call group here.
         let (old, old_ds) = self.runner.replace_member(&name, rotated, ds)?;
+        self.replaced_devices.push(old.device_id());
         self.second = Some(Second {
             client: old,
             ds: old_ds,
             replaced: true,
         });
-        // The replaced device's call groups went with its leaf.
-        self.calls.retain(|(actor, _), _| *actor != Actor::Second);
         Ok(json!({"user": hex::encode(user), "version": next.unsigned.version}))
     }
 
@@ -1404,25 +1450,34 @@ impl WebDriver {
         })?;
         let doc = instance_document(&self.ds_url)?;
         let instance_id = InstanceId::from_bytes(doc.instance_id);
-        let binding = DillaBinding {
-            v: 1,
-            instance_id,
-            community_id: info.community_id.map(CommunityId::from_bytes),
-            target_id: channel,
-            kind: GroupKind::Call,
-            policy_version: 1,
-            e2ee_version: 1,
-            media_version: GroupKind::Call.media_version(),
-        };
+        let binding = Self::binding_of(instance_id, channel, info.community_id, GroupKind::Call);
         let group = match call.group_id {
             Some(group) => {
                 let group = group.to_vec();
+                let replaced = if actor == Actor::Peer {
+                    self.replaced_devices.clone()
+                } else {
+                    Vec::new()
+                };
                 self.member_of(actor, |c, ds| {
                     if c.epoch_of(&group).is_some() {
-                        c.resync(ds, &group, &binding)
+                        c.resync(ds, &group, &binding)?;
                     } else {
-                        c.join_external(ds, &group, &binding)
+                        c.join_external(ds, &group, &binding)?;
                     }
+                    // A leaf of a device rotate_umk replaced is still in a group nobody committed its own Remove in
+                    // (its proposal died with the epoch the join moved past): the replacement commits it.
+                    let stale: Vec<DeviceId> = c
+                        .roster(&group)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|e| e.device_id)
+                        .filter(|d| replaced.contains(d))
+                        .collect();
+                    for device in stale {
+                        c.remove(ds, &group, device)?;
+                    }
+                    Ok(())
                 })?;
                 group
             }
@@ -1524,6 +1579,138 @@ impl WebDriver {
         let expires = self.ringing.get(&(actor, call)).copied().unwrap_or(0);
         self.session_of(actor, |_, ds| Ok(ds.decline_call(&call, expires)?))?;
         Ok(json!({}))
+    }
+
+    /// `forge_device` → `{device_id, version}` (task 10's forged-list case): a second device of the peer, enrolled as
+    /// `enrol` enrols one, whose signed-list entry names it with its id and DSK but at tier Native while its MLS
+    /// credential says Browser. The instance checks a joiner's id, key and listing (`checkExternalJoiner`), not its
+    /// tier, so it admits the device's leaf; a validating client fails it (`check_leaf`, `E_TIER_MISMATCH`). The
+    /// device acts as `actor: "second"`.
+    fn forge_device(&mut self) -> Result<Value, TestkitError> {
+        let name = self.peer().name.clone();
+        let password = self
+            .peer()
+            .password
+            .clone()
+            .ok_or_else(|| scenario("forge_device needs setup with a password"))?;
+        if self.second.is_some() {
+            return Err(scenario("the driver already holds a second device"));
+        }
+        let login = HttpDs::password_login(&self.ds_url, &name, &password)?;
+        if login.needs_totp {
+            return Err(scenario("the peer's account asks for a second factor"));
+        }
+        let seed = self.seed.wrapping_add(0x3_0000_0000);
+        let forged = self.runner.with_member(&name, |first, _| {
+            first.second_device(&format!("{name}-forged"), seed)
+        })?;
+        let (pending, established) = HttpDs::establish_with_login(
+            &self.ds_url,
+            &forged.device(),
+            &forged.registration(),
+            &login.assertion,
+        )?;
+        let served = pending.get_device_list(&established.user_id)?;
+        let prev = Self::served_list(&served.blob, served.version)?;
+        let now = Self::now_unix();
+        let next = self.runner.with_member(&name, |first, _| {
+            let mut entries = prev.unsigned.entries.clone();
+            let mut entry = forged.device_entry(now);
+            // The forgery: the list's tier for this device is not the tier its credential carries.
+            entry.tier = match entry.tier {
+                Tier::Browser => Tier::Native,
+                Tier::Native => Tier::Browser,
+            };
+            entries.push(entry);
+            Ok(first.sign_device_list_v(&prev, entries))
+        })?;
+        pending.put_device_list(&established.user_id, &next)?;
+        let enrolled =
+            HttpDs::establish_scoped(&self.ds_url, &forged.device(), &forged.credential_blob())?;
+        if enrolled.scope != 0 {
+            return Err(scenario("E_DEVICE_UNLISTED"));
+        }
+        let mut ds = HttpDs::with_session(&self.ds_url, forged.device_id(), enrolled.token)?;
+        ds.set_session_expires(enrolled.expires);
+        let mut forged = forged;
+        forged.publish_key_packages(&mut ds, 8)?;
+        let device_id = forged.device_id().to_hex();
+        self.second = Some(Second {
+            client: forged,
+            ds,
+            replaced: false,
+        });
+        Ok(json!({"device_id": device_id, "version": next.unsigned.version}))
+    }
+
+    /// `call_check {actor, channel}` → `{code, leaves}`: what a validating client decides about the actor's call
+    /// group. After a sync, every pending leaf of the group gets the signed-list refresh a browser runs
+    /// (`device_list_ingest` over the signed history), and the answer is the group's `send_block_code` (null when
+    /// nothing blocks) with each refreshed leaf's own outcome (`"ok"` or its code).
+    fn call_check(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let actor = Self::actor(req)?;
+        let channel = Self::hex16(req, "channel")?;
+        let group = self.call_group(actor, channel)?;
+        let group16: [u8; 16] = group
+            .as_slice()
+            .try_into()
+            .map_err(|_| scenario("the call group id is not 16 bytes"))?;
+        let doc = instance_document(&self.ds_url)?;
+        let got = self.member_of(actor, |c, ds| c.sync(ds))?;
+        if actor == Actor::Peer {
+            self.hold(&got);
+            self.pending.extend(got);
+        }
+        let pending = self.member_of(actor, |c, _| {
+            let core = c.trust_core(doc.instance_id)?;
+            let pending = core.pending_leaves().map_err(|e| scenario(e.code))?;
+            decode_strict(&pending, |d: &mut Decoder<'_>| {
+                let n = d.array_len()?;
+                let mut out = Vec::new();
+                for _ in 0..n {
+                    d.array(5)?;
+                    let g = d.bytes_exact::<16>()?;
+                    let index = d.uint()?;
+                    let user = d.bytes_exact::<16>()?;
+                    d.uint()?;
+                    d.text()?;
+                    if g == group16 {
+                        out.push((index as u32, user));
+                    }
+                }
+                Ok(out)
+            })
+            .map_err(|_| scenario("E_DEVICE_LIST_STALE"))
+        })?;
+        let mut leaves = Vec::new();
+        for (index, user) in pending {
+            let cached = self.member_of(actor, |c, _| c.cached_trust_head(&user))?;
+            let (history, head) = self.session_of(actor, |_, ds| {
+                Self::signed_history(ds, &user, cached.as_ref())
+            })?;
+            let outcome = self.member_of(actor, |c, _| {
+                let mut core = c.trust_core(doc.instance_id)?;
+                Ok(
+                    match core.device_list_ingest(
+                        &group16,
+                        index,
+                        &user,
+                        &history,
+                        &head,
+                        Self::now_unix(),
+                    ) {
+                        Ok(_) => "ok".to_owned(),
+                        Err(e) => e.code.to_owned(),
+                    },
+                )
+            })?;
+            leaves.push(json!({"leaf": index, "user": hex::encode(user), "outcome": outcome}));
+        }
+        let code = self.member_of(actor, |c, _| {
+            let core = c.trust_core(doc.instance_id)?;
+            core.send_block_code(&group16).map_err(|e| scenario(e.code))
+        })?;
+        Ok(json!({"code": code, "leaves": leaves}))
     }
 
     fn attachment_material(seed: u64, counter: u64) -> ([u8; 32], [u8; 12]) {
@@ -2018,6 +2205,22 @@ mod tests {
             ),
             (
                 json!({"id": 10, "op": "call_decline", "actor": "peer", "call": channel}),
+                "scenario: setup first",
+            ),
+            (
+                json!({"id": 11, "op": "call_check", "actor": "peer"}),
+                "scenario: the request carries no channel",
+            ),
+            (
+                json!({"id": 12, "op": "call_check", "actor": "x", "channel": channel}),
+                "scenario: actor must be peer or second",
+            ),
+            (
+                json!({"id": 13, "op": "call_check", "channel": channel}),
+                "scenario: setup first",
+            ),
+            (
+                json!({"id": 14, "op": "forge_device"}),
                 "scenario: setup first",
             ),
         ];

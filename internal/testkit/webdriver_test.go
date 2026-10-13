@@ -306,6 +306,94 @@ func TestWebDriverCallStartRingsADMPeer(t *testing.T) {
 		t.Fatalf("the second call_start answered %v, want the same call, not created", again)
 	}
 	secondGW.noRing(t)
+	peerGW.noRing(t)
+}
+
+// Task 4 review I1: rotate_umk replaces the peer's acting device. The old device proposes its own Remove in every
+// call group it held, which another member commits (the voice channel, with bob in it); in a group it was alone in
+// (the DM's call group) nobody can, so the replacement's rejoin commits the Remove of the old leaf. Either way the
+// roster ends without the old device.
+func TestWebDriverRotationLeavesTheCallGroups(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	peer := startWebDriver(t, h, h.BaseURL(), "peer", 0xca11d)
+	bob := startWebDriver(t, h, h.BaseURL(), "bob", 0xb0bca11)
+	sp := peer.ok("setup", map[string]any{"community": "rotating voice", "channel": "general", "voice": true})
+	voice := mustID(t, sp["voice_channel_id"])
+	old := sp["device_id"].(string)
+	rp := peer.ok("register", nil)
+	sb := bob.ok("setup", map[string]any{"community": "bob's own", "channel": "elsewhere"})
+	bobDev := sb["device_id"].(string)
+	bob.ok("join", map[string]any{"community_id": sp["community_id"], "channel_id": sp["channel_id"],
+		"group_id": rp["group_id"], "invite_code": sp["invite_code"]})
+	dm := mustID(t, peer.ok("open_dm", map[string]any{"user_id": sb["user_id"]})["channel_id"])
+
+	if j := peer.ok("call_join", map[string]any{"actor": "peer", "channel": voice.String()}); j["leaf"] != float64(0) {
+		t.Fatalf("the peer's call_join answered %v, want leaf 0", j)
+	}
+	if j := bob.ok("call_join", map[string]any{"actor": "peer", "channel": voice.String()}); j["leaf"] != float64(1) {
+		t.Fatalf("bob's call_join answered %v, want leaf 1", j)
+	}
+	waitCallMembers(t, bob, "peer", voice, old, bobDev)
+	if j := peer.ok("call_join", map[string]any{"actor": "peer", "channel": dm.String()}); j["leaf"] != float64(0) {
+		t.Fatalf("the peer's call_join in the DM answered %v, want leaf 0", j)
+	}
+
+	peer.ok("sync", nil) // bob's external join moved the text group's epoch
+	peer.ok("rotate_umk", nil)
+	// The old device's own Remove, committed by bob's call_members.
+	waitCallMembers(t, bob, "peer", voice, bobDev)
+	// Alone in the DM's call group: the replacement's rejoin takes the old leaf out.
+	peer.ok("call_join", map[string]any{"actor": "peer", "channel": dm.String()})
+	deadline := time.Now().Add(driverWait)
+	for {
+		got := peer.ok("call_members", map[string]any{"actor": "peer", "channel": dm.String()})["devices"].([]any)
+		if len(got) == 1 && got[0] != any(old) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after rotate_umk and a rejoin the DM call roster is %v; want the new device only (the old one was %s)", got, old)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// Task 4 fix round N1 (for task 10's forged-list case): forge_device gives the peer a device whose signed-list entry
+// does not match its leaf. The instance admits its call_join; a validating client (the peer's trust core, after the
+// signed-list refresh a browser runs) sees the leaf fail and blocks the call group.
+func TestWebDriverForgedDeviceIsAdmittedButFailsTheSignedListCheck(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	peer := startWebDriver(t, h, h.BaseURL(), "peer", 0xca11e)
+	sp := peer.ok("setup", map[string]any{"community": "forged voice", "channel": "general",
+		"password": "correct horse battery staple", "voice": true})
+	voice := mustID(t, sp["voice_channel_id"])
+	peerDev := sp["device_id"].(string)
+	peer.ok("call_join", map[string]any{"actor": "peer", "channel": voice.String()})
+	if c := peer.ok("call_check", map[string]any{"actor": "peer", "channel": voice.String()}); c["code"] != nil {
+		t.Fatalf("call_check of the peer's own call group answered %v, want no block", c)
+	}
+	forged := peer.ok("forge_device", nil)
+	forgedDev := forged["device_id"].(string)
+	if dev, err := h.Repo().GetDevice(context.Background(), mustID(t, forgedDev)); err != nil || dev.RevokedAt != nil {
+		t.Fatalf("the forged device row = %+v, %v; want a live device of the peer", dev, err)
+	}
+	if j := peer.ok("call_join", map[string]any{"actor": "second", "channel": voice.String()}); j["leaf"] != float64(1) {
+		t.Fatalf("the forged device's call_join answered %v, want leaf 1 (the instance admits it)", j)
+	}
+	waitCallMembers(t, peer, "peer", voice, peerDev, forgedDev)
+	c := peer.ok("call_check", map[string]any{"actor": "peer", "channel": voice.String()})
+	if c["code"] != "E_TIER_MISMATCH" {
+		t.Fatalf("call_check after the forged join answered %v, want the call group blocked with E_TIER_MISMATCH", c)
+	}
+	failed := false
+	for _, l := range c["leaves"].([]any) {
+		leaf := l.(map[string]any)
+		failed = failed || (leaf["leaf"] == float64(1) && leaf["outcome"] == "E_TIER_MISMATCH")
+	}
+	if !failed {
+		t.Fatalf("call_check answered %v; want the forged leaf 1 refreshed to E_TIER_MISMATCH", c)
+	}
 }
 
 // callRing is one op 53 payload: [call_id, channel_id, user_id, state, expires_ts] (L-GW-33).

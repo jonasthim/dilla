@@ -510,7 +510,10 @@ impl DsStub {
         if binding.instance_id != self.cfg.instance_id {
             return Err(DsError::BindingInvalid);
         }
-        let group_id = binding.target_id.to_vec();
+        // As the instance keeps it: the GroupInfo's own id. Bytes that are no GroupInfo (a unit test's placeholder)
+        // fall back to the target, which is every testkit group's id unless its creator chose another.
+        let group_id =
+            super::group_id_of(&req.group_info).unwrap_or_else(|| binding.target_id.to_vec());
         if self.groups.contains_key(&group_id) {
             return Err(DsError::GroupExists);
         }

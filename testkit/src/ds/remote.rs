@@ -21,6 +21,7 @@ use super::{
     CommitRequest, CommitResult, DeliveryService, Device, DsError, ErrorExtras, Frame, GroupId,
     GroupInfoResp, HandshakeItem, HealRequest, KeyPackageResp, MessageItem, ProposalItem,
     RegisterRequest, RegisterResult, ResyncRequest, TreeResp, UploadResult, WelcomeItem,
+    group_id_of,
 };
 
 /// The gateway subprotocol `internal/gateway.Handler` negotiates.
@@ -854,19 +855,6 @@ fn decode_channel(bytes: &[u8]) -> Result<ChannelInfo, CborError> {
             text_group_id,
         })
     })
-}
-
-/// The group id inside a serialized GroupInfo message, or None when the bytes are not one.
-fn group_id_of(group_info: &[u8]) -> Option<Vec<u8>> {
-    use openmls::prelude::{MlsMessageBodyIn, MlsMessageIn};
-    use tls_codec::Deserialize as _;
-    match MlsMessageIn::tls_deserialize_exact(group_info)
-        .ok()?
-        .extract()
-    {
-        MlsMessageBodyIn::GroupInfo(info) => Some(info.group_id().as_slice().to_vec()),
-        _ => None,
-    }
 }
 
 /// L-HTTP-100's `[group_id|null, call_id|null, [[user_id, device_id, flags]]]`.

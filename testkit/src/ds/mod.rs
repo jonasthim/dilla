@@ -113,6 +113,20 @@ pub struct ProposalItem {
 /// `&[u8]` — which is what every `DsStub` inherent method already took (deviation B16).
 pub type GroupId = [u8];
 pub type RegisterRequest = RegisterGroup;
+
+/// The group id inside a serialized GroupInfo message, or None when the bytes are not one. The instance stores a
+/// group under this id (row 1 refuses any other), so both delivery services here derive it the same way.
+pub(crate) fn group_id_of(group_info: &[u8]) -> Option<Vec<u8>> {
+    use openmls::prelude::{MlsMessageBodyIn, MlsMessageIn};
+    use tls_codec::Deserialize as _;
+    match MlsMessageIn::tls_deserialize_exact(group_info)
+        .ok()?
+        .extract()
+    {
+        MlsMessageBodyIn::GroupInfo(info) => Some(info.group_id().as_slice().to_vec()),
+        _ => None,
+    }
+}
 pub type RegisterResult = GroupRegistered;
 pub type GroupInfoResp = GroupInfoResponse;
 pub type TreeResp = TreeResponse;

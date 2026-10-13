@@ -38,6 +38,7 @@ export type PeerActor = 'peer' | 'second';
 export interface PeerCallJoined { group: string; leaf: number }
 export interface PeerCallMembers { group: string; devices: string[] }
 export interface PeerCallStarted { call: string; created: boolean }
+export interface PeerCallCheck { code: string | null; leaves: { leaf: number; user: string; outcome: string }[] }
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
 export class WebDriver {
@@ -159,6 +160,14 @@ export class WebDriver {
   /** L-E2E-30 `call_decline`: declines with the expires_ts of the last op 53 state 1 the actor's gateway received (0 without one). */
   async callDecline(callId: string, actor: PeerActor = 'peer'): Promise<void> {
     await this.request('call_decline', { actor, call: callId });
+  }
+  /** `forge_device`: a second device of the peer whose signed-list entry carries the wrong tier; the instance admits its leaf, a validating client fails it (E_TIER_MISMATCH). It acts as actor 'second'. */
+  async forgeDevice(): Promise<{ device_id: string; version: number }> {
+    return this.strip(await this.request<{ device_id: string; version: number; id: number; ok: boolean }>('forge_device', {}));
+  }
+  /** `call_check`: the signed-list refresh a browser runs for the call group's pending leaves, then its send-block code (null when clear). */
+  async callCheck(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallCheck> {
+    return this.strip(await this.request<PeerCallCheck & { id: number; ok: boolean }>('call_check', { actor, channel: channelId }));
   }
   async close(): Promise<void> {
     this.child.stdin.end();
