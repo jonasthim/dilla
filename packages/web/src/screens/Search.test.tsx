@@ -19,6 +19,14 @@ it('keeps focus and drops a stale hit before navigation', async () => {
   expect(onPick).not.toHaveBeenCalled();
 });
 
+it('names its close button for the search, not for Settings', async () => {
+  const onClose = vi.fn();
+  render(<Search open query="" scope="all" requestId={0} currentRequestId={0} hits={[]} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={onClose} />);
+  expect(screen.queryByRole('button', { name: 'Close settings' })).toBeNull();
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Close' }));
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
 it('announces a missing row and focuses a surviving textbox', async () => {
   const user = userEvent.setup();
   const hit = { id: 'aa'.repeat(16) + ':1', channelId: 'aa'.repeat(16), communityId: null, seq: '1', snippet: 'gone', location: 'general' };
