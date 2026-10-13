@@ -1,9 +1,11 @@
 import type { CSSProperties } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { MediaPlayer, type MediaPlayerProps } from '../MediaPlayer/MediaPlayer.tsx';
 import './AttachmentCard.css';
 
 export interface AttachmentCardProps {
-  kind: 'image' | 'file';
+  /** AttachmentSummary.kind (L-TS-58). 'audio' and 'video' render a MediaPlayer when `player` is given. */
+  kind: 'image' | 'audio' | 'video' | 'file';
   name: string;
   size: string;
   thumbUrl: string | null;
@@ -17,6 +19,8 @@ export interface AttachmentCardProps {
   state: 'idle' | 'loading' | 'failed' | 'too-large';
   stateText?: string;
   tabbable: boolean;
+  /** The inline player of an audio or video card (L-UI-71); without it, or when too large, the card is a file card. */
+  player?: Pick<MediaPlayerProps, 'src' | 'state' | 'labels' | 'onPlay' | 'onError'>;
 }
 
 /** The longest side of an image card, in CSS px. */
@@ -40,9 +44,11 @@ function cardBox(w: number | null, h: number | null): CSSProperties {
  * text is the file's shown name, or a neutral box of the image's proportions while there is none (never a broken
  * image). A file card shows a glyph, the name and the size, and a save button only when `onSave` is given. A card
  * too large for a browser has no button. `stateText` follows the card (opening, could not open, too large).
+ * An audio or video card with a `player` shows the name and size, the inline MediaPlayer and the save button; in
+ * the player's error state the player's own save stands in for the card's.
  */
 export function AttachmentCard({
-  kind, name, size, thumbUrl, w, h, openLabel, onOpen, saveLabel, onSave, state, stateText, tabbable,
+  kind, name, size, thumbUrl, w, h, openLabel, onOpen, saveLabel, onSave, state, stateText, tabbable, player,
 }: AttachmentCardProps) {
   const tabIndex = tabbable ? 0 : -1;
   const tooLarge = state === 'too-large';
@@ -65,6 +71,21 @@ export function AttachmentCard({
         aria-busy={state === 'loading' || undefined} style={cardBox(w, h)} onClick={() => onOpen?.()}>
         {thumbUrl !== null ? <img className="d-attachment-card__thumb" alt={name} src={thumbUrl} data-thumb="ready" /> : box}
       </button>
+    );
+  } else if ((kind === 'audio' || kind === 'video') && player !== undefined && !tooLarge) {
+    content = (
+      <div className="d-attachment-card__media">
+        <p className="d-attachment-card__meta">
+          <span className="d-attachment-card__name">{name}</span>
+          <span className="d-attachment-card__size">{size}</span>
+        </p>
+        <MediaPlayer kind={kind} src={player.src} name={name} state={player.state} labels={player.labels} tabbable={tabbable}
+          onPlay={player.onPlay} onError={player.onError} onSave={() => onSave?.()} />
+        {player.state !== 'error' && onSave ? (
+          <Button variant="default" size="md" className="d-attachment-card__save" aria-label={saveLabel} tabIndex={tabIndex}
+            onClick={() => onSave()}>{saveLabel}</Button>
+        ) : null}
+      </div>
     );
   } else {
     content = (

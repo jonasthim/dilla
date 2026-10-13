@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 import { ChannelRow } from '../ChannelRow/ChannelRow.tsx';
+import { VoiceChannelRow, type VoiceChannelRowProps } from '../VoiceChannelRow/VoiceChannelRow.tsx';
+import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 import { useRovingFocus } from '../internal/roving.ts';
 import './ChannelList.css';
 
@@ -16,6 +18,11 @@ export interface ChannelListProps {
   /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
    *  not load, or no server at all, while the tabs stay (WORKER-WEB-02, A11Y-DESIGN-02). */
   content?: ReactNode;
+  /** With it, every voice channel is a VoiceChannelRow: its people (by channel id; absent is nobody) under the row. */
+  voice?: {
+    labels: VoiceChannelRowProps['labels'];
+    rooms: Readonly<Record<string, { joined: boolean; participants: readonly VoiceParticipantView[] }>>;
+  };
 }
 
 /**
@@ -26,9 +33,10 @@ export interface ChannelListProps {
  * is given; a quiet row keeps its bare name. With `tabs`, the tabs sit between
  * the heading and a tab panel named like the list; an optional footer ends the
  * list, outside the roving group. `content`, when given, stands in place of the
- * rows inside the panel.
+ * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
+ * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content }: ChannelListProps) {
+export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice }: ChannelListProps) {
   const activeIndex = channels.findIndex(c => c.id === activeId);
   const roving = useRovingFocus(activeIndex);
   const body = content !== undefined ? content : channels.length === 0 ? (
@@ -40,6 +48,15 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
         const mentions = c.mentions ?? 0;
         const muted = c.muted ?? false;
         const ariaLabel = rowLabel && (unread > 0 || mentions > 0 || muted) ? rowLabel({ name: c.name, unread, mentions, muted }) : undefined;
+        if (c.kind === 'voice' && voice !== undefined) {
+          const room = Object.hasOwn(voice.rooms, c.id) ? voice.rooms[c.id] : undefined;
+          return (
+            <li key={c.id}>
+              <VoiceChannelRow name={c.name} current={c.id === activeId} joined={room?.joined ?? false} participants={room?.participants ?? []}
+                labels={voice.labels} onOpen={() => onSelect(c.id)} />
+            </li>
+          );
+        }
         return (
           <li key={c.id}>
             <ChannelRow name={c.name} kind={c.kind} readable={c.readable} active={c.id === activeId}

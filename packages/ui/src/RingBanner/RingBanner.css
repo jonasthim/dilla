@@ -1,0 +1,17 @@
+.d-ring-banner { background: var(--surface-2); border: 1px solid var(--accent); border-left-width: 3px; border-radius: var(--r-md); }
+.d-ring-banner__list { margin: 0; padding: 0; list-style: none; }
+.d-ring-banner__ring { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 0.75rem; }
+.d-ring-banner__ring + .d-ring-banner__ring { border-top: 1px solid var(--hairline-2); }
+.d-ring-banner__glyph { color: var(--accent); }
+.d-ring-banner__ring[data-ring="busy"] .d-ring-banner__glyph { color: var(--fg-2); }
+.d-ring-banner__text { flex: 1 1 14rem; margin: 0; min-width: 0; font-size: var(--text-base); color: var(--fg); }
+.d-ring-banner__actions { display: flex; gap: 0.5rem; }
+.d-ring-banner__actions .d-btn { height: auto; min-height: 2.5rem; min-width: 2.5rem; padding: 0 1rem; justify-content: center; }
+@media (prefers-reduced-motion: no-preference) {
+  .d-ring-banner__ring[data-ring="incoming"] .d-ring-banner__glyph { animation: d-ring-pulse var(--duration-pulse) ease-in-out infinite; }
+}
+@keyframes d-ring-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (max-width: 47.99rem) {
+  .d-ring-banner__actions { flex: 1 1 100%; justify-content: space-between; }
+  .d-ring-banner__actions .d-btn { min-height: 2.75rem; min-width: 2.75rem; flex: 1 1 0; }
+}

@@ -1,0 +1,16 @@
+/* The voice row matches ChannelRow's metrics; its people are quiet text below it, indented past the glyph. */
+.d-voice-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 1.75rem; padding: var(--row-pad-y) 8px; margin: var(--row-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
+.d-voice-row:hover { background: var(--surface-2); color: var(--fg); }
+.d-voice-row[aria-current="page"] { background: var(--surface-hi); color: var(--fg); box-shadow: inset 3px 0 0 var(--accent); }
+.d-voice-row[data-live="true"] { color: var(--fg); }
+.d-voice-row__glyph { width: 0.75rem; text-align: center; color: var(--fg-3); }
+.d-voice-row[data-live="true"] .d-voice-row__glyph { color: var(--fg-2); }
+.d-voice-row[data-joined="true"] .d-voice-row__glyph { color: var(--accent); }
+.d-voice-row__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-voice-row__count { font-size: var(--text-xs); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.d-voice-row__people { margin: 0 0 0.25rem; padding: 0 0 0 1.75rem; list-style: none; font-size: var(--text-sm); }
+.d-voice-row__person { display: flex; flex-wrap: wrap; gap: 0 0.25rem; min-width: 0; color: var(--fg-2); }
+.d-voice-row__person-name { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.d-voice-row__state { color: var(--fg-2); }
+.d-voice-row__state[data-state="speaking"] { color: var(--accent); }
+.d-voice-row__state[data-state="unverified"] { color: var(--warn); }

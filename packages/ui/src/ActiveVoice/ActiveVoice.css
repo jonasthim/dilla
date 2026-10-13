@@ -1,0 +1,3 @@
+.d-active-voice { padding: 0.5rem 0.5rem 0.25rem; border-bottom: 1px solid var(--hairline); }
+.d-active-voice__heading { margin: 0 0 0.25rem; padding: 0 8px; }
+.d-active-voice__list { margin: 0; padding: 0; list-style: none; }
