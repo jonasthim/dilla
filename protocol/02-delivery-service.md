@@ -518,7 +518,13 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    membership commit deadlocks exactly the device that cannot act. Two guards apply: the resync is
    refused with `E_FORBIDDEN` when the resyncing device is the target of an outstanding non-void
    instance Remove, and the instance re-issues its outstanding proposals for the new epoch
-   immediately afterwards. A resync's new leaf, like a joiner's, must name the uploading device and
+   immediately afterwards. One exception to the first guard (web-3, a voice rejoin): in a **call**
+   group the target's resync is admitted while its user is still eligible for the group under the
+   channel ACL, and its device then passes a joiner's checks (not revoked, its DSK in the newest
+   signed device list). Its own-leaf external commit removes the very leaf the Remove targets, so it
+   satisfies that Remove, which is deleted with the commit and never re-issued onto the new leaf: the
+   outcome of "commit the Remove, then join", reachable while nobody can commit it (a person alone
+   in a call who leaves and comes back). A heal keeps the first guard whole. A resync's new leaf, like a joiner's, must name the uploading device and
    user and carry that device's registered key as its `signature_key`, and the resync must remove
    the leaf the device holds (invariant 4: one device, one leaf) (`422 E_COMMIT_INVALID`,
    `rule = "external_joiner"`). `POST /v1/groups/{id}/resync` from a device that holds **no** leaf in the

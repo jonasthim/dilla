@@ -241,6 +241,63 @@ expect_425 send bob chat the re-issued Remove still holds the group
 	}
 }
 
+// A call group's rejoin supersedes the Remove its leave caused (web-3 task 10, concern 2): bob
+// leaves voice, the instance proposes the Remove of his leaf, and he rejoins before anybody commits
+// it — the own-leaf external commit removes that leaf itself. It is accepted, the Remove is done
+// with in the same transaction (never re-issued onto the leaf the rejoin took), and alice's call
+// is not frozen afterwards: she sends and bob decrypts.
+func TestACallGroupRejoinSupersedesTheRemoveOfItsOwnLeaf(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir()})
+	t.Cleanup(h.Stop)
+	const gid = "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"
+	runScript(t, h, `instance dilla
+client alice
+client bob
+group call kind=call target=`+gid+` community=none creator=alice
+join bob call via=external
+sync alice
+kick alice bob
+resync bob call
+sync alice
+send alice call after the rejoin
+expect_decrypts bob call after the rejoin
+`)
+	g := groupOf(t, gid)
+	row, pending := outstanding(t, h, g)
+	for _, p := range pending {
+		if p.Origin == 0 {
+			t.Fatalf("an instance proposal is outstanding at epoch %d after the rejoin: kind %d, target %v",
+				row.Epoch, p.Kind, p.TargetDevice)
+		}
+	}
+	log := handshakes(t, h, g)
+	if !slices.ContainsFunc(log, func(r store.HandshakeRow) bool { return r.Kind == 2 && r.Epoch == row.Epoch }) {
+		t.Fatalf("the rejoin is not the commit that carried the group to epoch %d: %v", row.Epoch, kindsAndEpochs(log))
+	}
+}
+
+// …and alone in the call: nobody can commit the Remove of the only leaf, so without the rejoin's
+// supersession the person could not come back until the call ended.
+func TestACallGroupRejoinAloneSupersedesTheRemoveOfItsOwnLeaf(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir()})
+	t.Cleanup(h.Stop)
+	const gid = "e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8"
+	runScript(t, h, `instance dilla
+client alice
+group call kind=call target=`+gid+` community=none creator=alice
+kick alice alice
+resync alice call
+send alice call alone again
+`)
+	g := groupOf(t, gid)
+	row, pending := outstanding(t, h, g)
+	for _, p := range pending {
+		if p.Origin == 0 {
+			t.Fatalf("an instance proposal is outstanding at epoch %d after the rejoin", row.Epoch)
+		}
+	}
+}
+
 func kindsAndEpochs(log []store.HandshakeRow) [][3]uint64 {
 	out := make([][3]uint64, 0, len(log))
 	for _, r := range log {

@@ -19,7 +19,8 @@ type ResyncRequest struct {
 //
 // R25 exempts it from invariant 5's freeze, with two guards. First, it is refused when the
 // resyncing device is the target of an outstanding non-void instance Remove — otherwise a device
-// the instance is evicting could re-add itself forever. Second, the instance re-issues its
+// the instance is evicting could re-add itself forever (a call group's eligible rejoin is the one
+// exception: rejoinSupersedes). Second, the instance re-issues its
 // outstanding proposals for the new epoch immediately afterwards, so the freeze that was skipped
 // is not lost.
 //
@@ -69,8 +70,16 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 			return CommitResult{}, errNotFound("group")
 		}
 	}
+	rejoin := false
 	if err := d.guardResyncTarget(ctx, s, groupID, epoch); err != nil {
-		return CommitResult{}, err
+		ok, rerr := d.rejoinSupersedes(ctx, s, groupID, joining)
+		if rerr != nil {
+			return CommitResult{}, rerr
+		}
+		if !ok {
+			return CommitResult{}, err
+		}
+		rejoin = true
 	}
 	out, err := d.commitLocked(ctx, s, groupID, CommitRequest{
 		Epoch:     epoch,
@@ -80,6 +89,7 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 		external:      true,
 		skipFreeze:    !joining,
 		joining:       joining,
+		joinerChecks:  rejoin,
 		handshakeKind: handshakeExternalCommit,
 	})
 	if err != nil {
@@ -130,6 +140,33 @@ func (d *DS) guardResyncTarget(ctx context.Context, s Session, groupID id.ID, ep
 		}
 	}
 	return nil
+}
+
+// rejoinSupersedes is guard 1's one exception (web-3 task 10, concern 2): in a CALL group, the
+// target of an outstanding instance Remove may still resync while its user is admitted to the call
+// (the ACL a join is gated by). Every instance Remove of a call-group leaf ends a membership — a
+// leave, the room sweep's absent device, a cut — and the own-leaf external commit ends that same
+// membership itself (one device, one leaf: checkExternalCommitReplacesOwnLeaf), so the commit
+// satisfies the Remove (clause 1's Remove case, which the transaction deletes) and the device is
+// back on a NEW membership, exactly as "commit the Remove, then join" would leave it. Without it a
+// person alone in voice could not rejoin until the call ended: nobody can commit the Remove of the
+// only leaf. What guard 1 exists for still holds: a device whose user the call no longer admits
+// (a kick, a ban, a lost view_channel or connect) is refused, and the commit is held to a join's
+// checks of the device (not revoked, its DSK in the newest signed device list; joinerChecks), so
+// a device a device-list change is removing cannot re-add itself either. Text and channel groups
+// keep the guard whole; the heal path keeps it whole too.
+func (d *DS) rejoinSupersedes(ctx context.Context, s Session, groupID id.ID, joining bool) (bool, error) {
+	if joining {
+		return false, nil
+	}
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
+	if row.Kind != groupKindCall {
+		return false, nil
+	}
+	return d.opts.ACL.Eligible(ctx, groupID, s.UserID)
 }
 
 // checkExternalCommitScope is the third clause of invariant 4 for external commits: an external
