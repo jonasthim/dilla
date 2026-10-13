@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GroupInfo, OutboxRow, TimelineRow } from '../core-port';
-import { buildTimeline, channelGroupState, type GroupMembership } from './derive';
+import { attachmentKind, buildTimeline, channelGroupState, type GroupMembership } from './derive';
 
 const id = (b: number): Uint8Array => new Uint8Array(16).fill(b);
 const hex = (b: number): string => b.toString(16).padStart(2, '0').repeat(16);
@@ -236,5 +236,28 @@ describe('channelGroupState', () => {
     expect(channelGroupState(channel(), [group(0x50, 2)], known({ notMember: [hex(0x62)] }))).toBe('not-member');
     // Another group's report changes nothing.
     expect(channelGroupState(channel(), [group(0x50, 2)], known({ notMember: [hex(0x63)] }))).toBe('active');
+  });
+});
+
+// L-TS-58: the fixed list of types an inline player is offered for (decision 7, R9); anything else stays a file card.
+describe('attachmentKind', () => {
+  it('maps each listed audio and video type, keeps images, and leaves everything else a file', () => {
+    for (const mime of ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/opus', 'audio/webm', 'audio/wav', 'audio/x-wav', 'audio/flac']) {
+      expect(attachmentKind(mime, 1000), mime).toBe('audio');
+    }
+    for (const mime of ['video/mp4', 'video/webm', 'video/ogg']) expect(attachmentKind(mime, 1000), mime).toBe('video');
+    expect(attachmentKind('image/png', 1000)).toBe('image');
+    expect(attachmentKind('image/svg+xml', 1000)).toBe('file');
+    for (const mime of ['audio/x-unknown', 'video/quicktime', 'application/pdf', 'AUDIO/MPEG', 'audio/mpeg; codecs=mp3', '']) {
+      expect(attachmentKind(mime, 1000), mime).toBe('file');
+    }
+  });
+
+  it('is what the timeline reports, with tooLarge kept as its own flag', () => {
+    const [item] = timeline([row(5, { attachments: [
+      { index: 0, size: 4096, mime: 'audio/ogg', w: null, h: null, hasThumb: false, name: 'note.ogg' },
+      { index: 1, size: 26_214_401, mime: 'video/mp4', w: null, h: null, hasThumb: false, name: 'clip.mp4' },
+    ] })]).items;
+    expect(item?.attachments.map((a) => [a.kind, a.tooLarge])).toEqual([['audio', false], ['video', true]]);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SETTINGS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue } from './settings';
+import { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue } from './settings';
 
 it('accepts only bounded device-local appearance and search choices', () => {
   const choices = [
@@ -83,5 +83,41 @@ describe('isMuted', () => {
     expect(isMuted({ [`mute.channel.${HEX}`]: '0' }, HEX)).toBe(false);
     expect(isMuted({}, HEX)).toBe(false);
     expect(isMuted({ [`mute.channel.${'cd'.repeat(16)}`]: '1' }, HEX)).toBe(false);
+  });
+});
+
+// L-TS-54: the voice and sound keys web-3 adds. Each admits only its own values, so a page cannot turn the
+// settings table into a general store (architect ruling 14).
+describe('voice and sound settings (L-TS-54)', () => {
+  const ID = 'cd'.repeat(16);
+  it('accepts one value and refuses another for every key', () => {
+    const cases: [string, string[], string[]][] = [
+      [SETTINGS.voiceInput, ['default', 'Ab0+/=_-', 'x'.repeat(128)], ['', 'x'.repeat(129), 'a b', 'a.b']],
+      [SETTINGS.voiceOutput, ['f00d', 'x'.repeat(128)], ['', 'x'.repeat(129), 'é']],
+      [SETTINGS.voiceMode, ['vad', 'ptt'], ['', 'VAD', 'push']],
+      [SETTINGS.voicePttKey, ['KeyV', 'F13', 'Space', 'a' + '1'.repeat(31)], ['', '1Key', 'Key V', 'a' + '1'.repeat(32)]],
+      [SETTINGS.voiceNoise, ['on', 'off'], ['1', 'true']],
+      [SETTINGS.voiceVolume(ID), ['0', '10', '100', '110', '200'], ['05', '15', '210', '-10', '100.0', '']],
+      [SETTINGS.soundVoice, ['on', 'off'], ['0', '1']],
+      [SETTINGS.soundRing, ['on', 'off'], ['0', 'quiet']],
+    ];
+    for (const [key, good, bad] of cases) {
+      expect(isSettingKey(key), key).toBe(true);
+      for (const v of good) expect(isSettingValue(key, v), `${key}=${v}`).toBe(true);
+      for (const v of bad) expect(isSettingValue(key, v), `${key}=${v}`).toBe(false);
+    }
+  });
+
+  it('names the keys and refuses near misses', () => {
+    expect([SETTINGS.voiceInput, SETTINGS.voiceOutput, SETTINGS.voiceMode, SETTINGS.voicePttKey, SETTINGS.voiceNoise,
+      SETTINGS.voiceVolume(ID), SETTINGS.soundVoice, SETTINGS.soundRing]).toEqual(['voice.input', 'voice.output', 'voice.mode',
+      'voice.pttKey', 'voice.noise', `voice.volume.${ID}`, 'sound.voice', 'sound.ring']);
+    for (const bad of ['voice', 'voice.volume.', `voice.volume.${ID.toUpperCase()}`, `voice.volume.${ID}0`, 'sound', 'sound.mention', 'voice.ptt']) {
+      expect(isSettingKey(bad), bad).toBe(false);
+    }
+  });
+
+  it('defaults to voice activity, noise suppression on, full volume and both sounds on', () => {
+    expect(VOICE_DEFAULTS).toEqual({ mode: 'vad', pttKey: null, noise: 'on', volume: '100', soundVoice: 'on', soundRing: 'on' });
   });
 });

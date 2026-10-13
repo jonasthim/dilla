@@ -13,11 +13,25 @@ const STORED_STATE = ['ok', 'cannot-read', 'deleted'] as const;
 const REPLY_STATE = ['ok', 'missing', 'deleted'] as const;
 const EXCERPT_MAX = 120;                       // Unicode scalar values (L-CORE-34)
 
+/** The fixed types an inline player is offered for (decision 7, R9); exact, lower-case MIME strings only. */
+const PLAYABLE_AUDIO: readonly string[] = ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/opus', 'audio/webm', 'audio/wav', 'audio/x-wav', 'audio/flac'];
+const PLAYABLE_VIDEO: readonly string[] = ['video/mp4', 'video/webm', 'video/ogg'];
+
+/** L-TS-58: how the page shows an attachment. `size` is part of the contract's signature; it does not change the kind,
+ *  because an attachment over the browser cap keeps its kind and is marked `tooLarge` (a card that cannot be opened). */
+export function attachmentKind(mime: string, size: number): AttachmentSummary['kind'] {
+  void size;
+  if (RENDERABLE_IMAGE.includes(mime)) return 'image';
+  if (PLAYABLE_AUDIO.includes(mime)) return 'audio';
+  if (PLAYABLE_VIDEO.includes(mime)) return 'video';
+  return 'file';
+}
+
 /** What the page may know of an attachment (Q16, ruling 15): never its key, nonce or blob id. */
 function summary(a: { index: number; size: number; mime: string; name: string; w: number | null; h: number | null; thumb: boolean }): AttachmentSummary {
   return {
     index: a.index, size: a.size, mime: a.mime, name: safeName(a.name, ''), w: a.w, h: a.h, thumb: a.thumb,
-    kind: RENDERABLE_IMAGE.includes(a.mime) ? 'image' : 'file', tooLarge: a.size > BROWSER_ATTACHMENT_CAP,
+    kind: attachmentKind(a.mime, a.size), tooLarge: a.size > BROWSER_ATTACHMENT_CAP,
   };
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CoreCallError, connectCore } from './bridge';
 import type { AccountState } from './state/types';
 
@@ -91,5 +91,83 @@ describe('connectCore', () => {
     await expect(pending).rejects.toMatchObject({ code: 'E_DISPOSED', detail: '', status: 0, retryAfterMs: null });
     await expect(client.call({ m: 'start' })).rejects.toMatchObject({ code: 'E_DISPOSED', detail: '', status: 0, retryAfterMs: null });
     expect(worker.posted).toHaveLength(1);
+  });
+});
+
+/** The real connectCore over a fake Worker whose deliver dispatches a message event (L-TS-52). */
+function createBridgeForTest() {
+  const worker = new FakeWorker();
+  const bridge = connectCore(worker as unknown as Worker);
+  return { bridge, deliver: (data: unknown): void => { worker.emit(data); } };
+}
+
+// The call key path (decision 3, L-TS-52). Attacker: anything that later reads the page's memory or a
+// listener that keeps the buffer; the bridge hands the key over synchronously and then zero-fills the
+// transferred buffer, so the only live copy is the one a listener made itself.
+describe('onCallKeys', () => {
+  const keys = (baseKey: ArrayBuffer) => ({ groupId: 'bb'.repeat(16), epoch: '3', baseKey, selfLeaf: 1, roster: [] });
+
+  it('hands the key to every listener synchronously, then zero-fills the transferred buffer', () => {
+    const { bridge, deliver } = createBridgeForTest();
+    const seen: number[][] = [];
+    bridge.onCallKeys((callId, keys) => { expect(callId).toBe('aa'.repeat(16)); seen.push([...new Uint8Array(keys.baseKey)]); });
+    const baseKey = new Uint8Array(16).fill(7).buffer;
+    deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: { groupId: 'bb'.repeat(16), epoch: '3', baseKey, selfLeaf: 1, roster: [] } });
+    expect(seen).toEqual([Array(16).fill(7)]);
+    expect([...new Uint8Array(baseKey)]).toEqual(Array(16).fill(0));
+  });
+
+  it('drops a callKeys message whose key is not 16 bytes', () => {
+    const { bridge, deliver } = createBridgeForTest();
+    const fn = vi.fn(); bridge.onCallKeys(fn);
+    deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: { groupId: 'bb'.repeat(16), epoch: '3', baseKey: new ArrayBuffer(15), selfLeaf: 1, roster: [] } });
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('zero-fills and drops a key nobody listens for, and a throwing listener stops neither the next one nor the fill', () => {
+    const { bridge, deliver } = createBridgeForTest();
+    const unheard = new Uint8Array(16).fill(9).buffer;
+    deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: keys(unheard) });
+    expect([...new Uint8Array(unheard)]).toEqual(Array(16).fill(0));
+
+    const rethrown: unknown[] = [];
+    const micro = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation((cb: () => void) => {
+      try { cb(); } catch (err) { rethrown.push(err); }
+    });
+    try {
+      const boom = new Error('listener failed');
+      bridge.onCallKeys(() => { throw boom; });
+      const second: number[][] = [];
+      bridge.onCallKeys((_, k) => { second.push([...new Uint8Array(k.baseKey)]); });
+      const baseKey = new Uint8Array(16).fill(5).buffer;
+      deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: keys(baseKey) });
+      expect(second).toEqual([Array(16).fill(5)]);
+      expect([...new Uint8Array(baseKey)]).toEqual(Array(16).fill(0));
+      expect(rethrown).toEqual([boom]);
+    } finally {
+      micro.mockRestore();
+    }
+  });
+
+  it('refuses malformed ids, epochs and roster rows, and stops calling a removed listener', () => {
+    const { bridge, deliver } = createBridgeForTest();
+    const fn = vi.fn();
+    const off = bridge.onCallKeys(fn);
+    const good = { groupId: 'bb'.repeat(16), epoch: '3', selfLeaf: 1, roster: [{ leaf: 0, deviceId: 'cc'.repeat(16), userId: 'dd'.repeat(16) }] };
+    for (const [callId, over] of [
+      ['AA'.repeat(16), {}], ['aa'.repeat(15), {}], ['aa'.repeat(16), { groupId: 'b' }], ['aa'.repeat(16), { epoch: '03' }],
+      ['aa'.repeat(16), { epoch: '-1' }], ['aa'.repeat(16), { epoch: 3 }], ['aa'.repeat(16), { selfLeaf: -1 }],
+      ['aa'.repeat(16), { roster: [{ leaf: 0, deviceId: 'x', userId: 'dd'.repeat(16) }] }], ['aa'.repeat(16), { roster: null }],
+    ] as const) {
+      const baseKey = new Uint8Array(16).fill(3).buffer;
+      deliver({ t: 'callKeys', callId, keys: { ...good, ...over, baseKey } });
+      expect([...new Uint8Array(baseKey)]).toEqual(Array(16).fill(0));
+    }
+    expect(fn).not.toHaveBeenCalled();
+    deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: { ...good, baseKey: new Uint8Array(16).fill(1).buffer } });
+    expect(fn).toHaveBeenCalledOnce();
+    off();
+    deliver({ t: 'callKeys', callId: 'aa'.repeat(16), keys: { ...good, baseKey: new Uint8Array(16).fill(1).buffer } });
+    expect(fn).toHaveBeenCalledOnce();
   });
 });

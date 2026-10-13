@@ -1,4 +1,4 @@
-import type { Command, CoreClient, SliceName, SliceTypes } from '@dilla/client-core';
+import type { CallKeys, Command, CoreClient, SliceName, SliceTypes } from '@dilla/client-core';
 import type { UiError } from '../core/errors.ts';
 
 /** What a refused call rejects with: the four fields of the worker's error, as the bridge's CoreCallError carries them. */
@@ -41,6 +41,20 @@ export class FakeClient implements CoreClient {
     this.listeners.set(name, set);
     set.add(listener);
     return () => { set.delete(listener); };
+  }
+  /** L-TS-52, as the real bridge answers it: each listener synchronously, then the key buffer zero-filled. */
+  private readonly keyListeners = new Set<{ listener: (callId: string, keys: CallKeys) => void }>();
+  onCallKeys(listener: (callId: string, keys: CallKeys) => void): () => void {
+    const entry = { listener };
+    this.keyListeners.add(entry);
+    return () => { this.keyListeners.delete(entry); };
+  }
+  pushCallKeys(callId: string, keys: CallKeys): void {
+    try {
+      for (const entry of [...this.keyListeners]) entry.listener(callId, keys);
+    } finally {
+      new Uint8Array(keys.baseKey).fill(0);
+    }
   }
   dispose(): void {}
   set<N extends SliceName>(name: N, value: SliceTypes[N]): void {

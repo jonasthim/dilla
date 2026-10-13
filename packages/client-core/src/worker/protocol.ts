@@ -1,5 +1,5 @@
 // The messages between the page and the core worker (L-TS-09).
-import type { SliceName, WorkerError } from '../state/types';
+import type { CallKeys, CallStatsReport, SliceName, WorkerError } from '../state/types';
 
 export type Command =
   | { m: 'start' }
@@ -48,13 +48,24 @@ export type Command =
     cursor: { token: string } | null }
   | { m: 'typing'; channelId: string; on: boolean }
   | { m: 'voiceSelf'; callId: string; flags: number }
+  // web-3 (L-TS-50). The page never sends callJoin directly: startPageCall (L-WEB-50) sends it after subscribing to
+  // onCallKeys. "Answer" is callJoin with the DM's channel id. vdec: '' or up to three of vp8, h264, vp9, no repeats.
+  | { m: 'callJoin'; channelId: string; vdec: string }                                   // → CallJoinResult (no key bytes)
+  | { m: 'callLeave'; reason: 'user' | 'pagehide' | 'switch' }                          // → null
+  | { m: 'callShare'; on: boolean }                                                      // → null
+  | { m: 'callRefresh' }                                                                 // → { token, iceServers }
+  | { m: 'callStats'; report: CallStatsReport }                                          // → null
+  | { m: 'loadVoice'; communityId: string | null; channelId: string | null }            // exactly one id → null
+  | { m: 'callDecline'; callId: string; ringTs: number }                                 // ringTs: op 53's expires_ts → null
   | { m: 'resign'; nonce: string };
 export type ToWorker = { t: 'call'; id: number; command: Command };
 export type FromWorker =
   | { t: 'ret'; id: number; ok: true; value: unknown }
   | { t: 'ret'; id: number; ok: false; error: WorkerError }
   | { t: 'slice'; name: SliceName; rev: number; value: unknown }
-  | { t: 'released'; instance: string; nonce: string };
+  | { t: 'released'; instance: string; nonce: string }
+  // L-TS-52: posted with [keys.baseKey] transferred, only to the page that owns the call; never a ret, never a slice.
+  | { t: 'callKeys'; callId: string; keys: CallKeys };
 /** Not part of ToWorker. Honoured only by a worker started with { testHooks: true }, which only
  *  packages/client-core/harness/worker.ts does; src/worker/entry.ts (what createCoreWorker() loads) passes false. */
 export type TestHook = { t: 'test'; op: 'gateway-stop' | 'gateway-start' | 'pause-fail-once' };

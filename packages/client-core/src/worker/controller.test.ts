@@ -4248,3 +4248,85 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     ]);
   });
 });
+
+// L-TS-50 and L-TS-53 (web-3 task 1): the seven call commands are in the contract with their shape rules, and answer
+// E_UNAVAILABLE until task 6 implements them. Attacker: the owning page itself (a compromised or buggy page script);
+// a malformed command is refused E_BAD_INPUT before the worker makes any route call on its behalf.
+describe('call commands before task 6', () => {
+  const HEXID = 'ab'.repeat(16);
+  const routeCalls = (w: World): number =>
+    Object.values(w.routes).reduce((n, f) => n + (vi.isMockFunction(f) ? f.mock.calls.length : 0), 0);
+
+  it('accepts each well-formed call command and refuses it E_UNAVAILABLE without a route call', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const before = routeCalls(w);
+    const commands = [
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,h264,vp9' },
+      { m: 'callJoin', channelId: HEXID, vdec: '' },
+      { m: 'callLeave', reason: 'user' }, { m: 'callLeave', reason: 'pagehide' }, { m: 'callLeave', reason: 'switch' },
+      { m: 'callShare', on: true }, { m: 'callShare', on: false },
+      { m: 'callRefresh' },
+      { m: 'callStats', report: [3, null, 40, 0, 0, 1_048_576] },
+      { m: 'callStats', report: [0, 2, 0, 1000, 7, 0] },
+      { m: 'loadVoice', communityId: HEXID, channelId: null },
+      { m: 'loadVoice', communityId: null, channelId: HEXID },
+      { m: 'callDecline', callId: HEXID, ringTs: 1_758_659_030 },
+      { m: 'callDecline', callId: HEXID, ringTs: 0 },
+    ] as const;
+    commands.forEach((command, i) => { w.call(7100 + i, command); });
+    await vi.waitFor(() => { for (let i = 0; i < commands.length; i++) expect(w.ret(7100 + i)).toBeDefined(); });
+    commands.forEach((command, i) => {
+      expect(w.ret(7100 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE', detail: '' } });
+    });
+    expect(routeCalls(w)).toBe(before);
+  });
+
+  it('refuses each malformed call command E_BAD_INPUT before any route call', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const before = routeCalls(w);
+    const bad: Record<string, unknown>[] = [
+      { m: 'callJoin', channelId: 'AB'.repeat(16), vdec: '' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,vp8' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,h264,vp9,vp8' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'VP8' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'av1' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,' },
+      { m: 'callJoin', channelId: HEXID },
+      { m: 'callLeave', reason: 'bye' },
+      { m: 'callLeave' },
+      { m: 'callShare', on: 1 },
+      { m: 'callStats', report: [3, null, 40, 0, 0] },
+      { m: 'callStats', report: [3, null, 1_048_577, 0, 0, 0] },
+      { m: 'callStats', report: [null, 0, 40, 0, 0, 0] },
+      { m: 'callStats', report: [3, null, 40, -1, 0, 0] },
+      { m: 'callStats', report: [3, 1.5, 40, 0, 0, 0] },
+      { m: 'callStats', report: [3, null, 40, 0, 0, 0, 0] },
+      { m: 'callStats', report: 'x' },
+      { m: 'loadVoice', communityId: HEXID, channelId: HEXID },
+      { m: 'loadVoice', communityId: null, channelId: null },
+      { m: 'loadVoice', communityId: 'x', channelId: null },
+      { m: 'callDecline', callId: 'ab', ringTs: 1 },
+      { m: 'callDecline', callId: HEXID, ringTs: -1 },
+      { m: 'callDecline', callId: HEXID, ringTs: 1.5 },
+      { m: 'callDecline', callId: HEXID, ringTs: 2 ** 53 },
+      { m: 'callDecline', callId: HEXID, ringTs: '1' },
+    ];
+    bad.forEach((command, i) => { w.call(7200 + i, command); });
+    bad.forEach((command, i) => {
+      expect(w.ret(7200 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    });
+    expect(routeCalls(w)).toBe(before);
+  });
+
+  it('lets the five call codes through sanitizeWorkerError', async () => {
+    const { sanitizeWorkerError } = await import('./controller');
+    for (const code of ['E_CALL_FULL', 'E_CALL_SHARERS_FULL', 'E_CALL_ACTIVE', 'E_REMOVE_PENDING', 'E_NO_CALL']) {
+      const e = new DillaHttpError({ code, detail: 'secret detail', status: 409, retryAfterMs: null, extra: [] });
+      expect(sanitizeWorkerError(e)).toEqual({ code, detail: '', status: 409, retryAfterMs: null });
+    }
+  });
+});

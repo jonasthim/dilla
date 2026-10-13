@@ -8,7 +8,19 @@ export const SETTINGS = {
   density: 'density',
   reduceMotion: 'reduceMotion',
   searchScope: 'searchScope',
+  // web-3 (L-TS-54): voice devices and input, per-person volume, and the two sound switches.
+  voiceInput: 'voice.input',                                 // a device id the browser gave; absent = system default
+  voiceOutput: 'voice.output',
+  voiceMode: 'voice.mode',                                   // 'vad' (default) | 'ptt'
+  voicePttKey: 'voice.pttKey',                               // a KeyboardEvent.code; absent = no key (decision 2)
+  voiceNoise: 'voice.noise',                                 // 'on' (default) | 'off'
+  voiceVolume: (hex: string) => `voice.volume.${hex}`,       // per user: '0'..'200' in steps of 10; absent = '100'
+  soundVoice: 'sound.voice',                                 // join and leave sounds: 'on' (default) | 'off'
+  soundRing: 'sound.ring',                                   // the ring: 'on' (default) | 'off'
 } as const;
+
+/** What an absent voice or sound key means (decision 8, round 2 R4: sounds are on by default). */
+export const VOICE_DEFAULTS = { mode: 'vad', pttKey: null, noise: 'on', volume: '100', soundVoice: 'on', soundRing: 'on' } as const;
 
 export type NotifyMode = 'all' | 'mentions' | 'nothing';
 
@@ -17,12 +29,22 @@ const NOTIFY_CHANNEL = 'notify.channel.';
 const MUTE_CHANNEL = 'mute.channel.';
 const DEFAULTS: readonly string[] = ['dms-mentions', 'everything', 'nothing'];
 const MODES: readonly string[] = ['all', 'mentions', 'nothing'];
+const VOICE_VOLUME = 'voice.volume.';
+const DEVICE_ID = /^[A-Za-z0-9+/=_-]{1,128}$/;
+const PTT_KEY = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
+const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
+const ON_OFF: readonly string[] = ['on', 'off'];
+const FIXED_KEYS: ReadonlySet<string> = new Set([
+  SETTINGS.notifyDefault, SETTINGS.density, SETTINGS.reduceMotion, SETTINGS.searchScope,
+  SETTINGS.voiceInput, SETTINGS.voiceOutput, SETTINGS.voiceMode, SETTINGS.voicePttKey, SETTINGS.voiceNoise,
+  SETTINGS.soundVoice, SETTINGS.soundRing,
+]);
 
 export function isSettingKey(key: string): boolean {
-  if (key === SETTINGS.notifyDefault) return true;
-  if (key === SETTINGS.density || key === SETTINGS.reduceMotion || key === SETTINGS.searchScope) return true;
+  if (FIXED_KEYS.has(key)) return true;
   if (key.startsWith(NOTIFY_CHANNEL)) return HEX32.test(key.slice(NOTIFY_CHANNEL.length));
   if (key.startsWith(MUTE_CHANNEL)) return HEX32.test(key.slice(MUTE_CHANNEL.length));
+  if (key.startsWith(VOICE_VOLUME)) return HEX32.test(key.slice(VOICE_VOLUME.length));
   return false;
 }
 
@@ -33,6 +55,11 @@ export function isSettingValue(key: string, value: string): boolean {
   if (key === SETTINGS.density) return value === 'regular' || value === 'compact';
   if (key === SETTINGS.reduceMotion) return value === 'system' || value === 'on' || value === 'off';
   if (key === SETTINGS.searchScope) return value === 'channel' || value === 'community' || value === 'all';
+  if (key === SETTINGS.voiceInput || key === SETTINGS.voiceOutput) return DEVICE_ID.test(value);
+  if (key === SETTINGS.voiceMode) return value === 'vad' || value === 'ptt';
+  if (key === SETTINGS.voicePttKey) return PTT_KEY.test(value);
+  if (key === SETTINGS.voiceNoise || key === SETTINGS.soundVoice || key === SETTINGS.soundRing) return ON_OFF.includes(value);
+  if (key.startsWith(VOICE_VOLUME)) return VOLUME.test(value);
   if (key.startsWith(NOTIFY_CHANNEL)) return MODES.includes(value);
   return value === '1';
 }

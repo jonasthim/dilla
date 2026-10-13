@@ -83,7 +83,8 @@ function Card(p: { channelId: string; seq: string | null; summary: AttachmentSum
   };
   const name = safeName(a.name, t('shell.attachment.unnamed'));
   return <div ref={el => { buttonRef.current = el?.querySelector('button') ?? null; }}>
-    <AttachmentCard kind={a.kind} name={name} size={formatSize(a.size)} thumbUrl={thumbUrl} w={a.w} h={a.h}
+    {/* Until the inline players land (web-3 task 9), audio and video show as file cards. */}
+    <AttachmentCard kind={a.kind === 'image' ? 'image' : 'file'} name={name} size={formatSize(a.size)} thumbUrl={thumbUrl} w={a.w} h={a.h}
       openLabel={t('shell.attachment.open', { name })} saveLabel={t('shell.attachment.save', { name })}
       {...(a.kind === 'image' && p.seq !== null && !a.tooLarge ? { onOpen: () => { if (buttonRef.current) p.onOpenImage(a.index, buttonRef.current); } } : {})}
       {...(p.seq !== null && !a.tooLarge ? { onSave: () => { void save(); } } : {})}

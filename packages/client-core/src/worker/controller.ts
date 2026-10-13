@@ -107,7 +107,8 @@ E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_L
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
-E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED`.split(/\s+/));
+E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
 export function sanitizeWorkerError(e: unknown): WorkerError {
@@ -157,6 +158,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
   'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
   'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
+  'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -172,6 +174,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   loadPins: ['channelId'], closePins: ['channelId'], attachFiles: ['channelId'], discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
   verifyContact: ['userId'], safetyNumber: ['userId'], typing: ['channelId'], voiceSelf: ['callId'],
+  callJoin: ['channelId'], callDecline: ['callId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
@@ -189,10 +192,21 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
     'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
+    'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
   ],
 };
 
 const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+
+/** L-TS-50: '' or one to three of vp8, h264 and vp9, comma-separated, none twice. */
+const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
+const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
+const STATS_MAX = 1_048_576;
+const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= STATS_MAX;
+/** L-TS-53: six non-negative integers of at most 1,048,576; relayProtocol (element 1) may be null. */
+const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
+  && r.every((v: unknown, i) => statsField(v) || (i === 1 && v === null));
+const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string' && ID.test(v));
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.
  *  Every refusal here answers only the owning page's own malformed command (deps.post reaches only that page). */
@@ -259,6 +273,15 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'safetyNumber' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
   if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
   if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
+  if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch') return 'invalid leave reason';
+  if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
+  if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
+    || (command.communityId === null) === (command.channelId === null))) return 'loadVoice needs exactly one id';
+  if (m === 'callDecline' && (typeof command.ringTs !== 'number' || !Number.isSafeInteger(command.ringTs) || command.ringTs < 0)) {
+    return 'ringTs is not a non-negative integer';
+  }
   if (m === 'resign' && (typeof command.nonce !== 'string' || !ID.test(command.nonce))) return 'nonce is not 32 lowercase hex';
   if (m === 'search') {
     if (command.scope !== 'all' && command.scope !== 'channel' && command.scope !== 'community') return 'invalid search scope';
@@ -493,6 +516,9 @@ export class Controller {
       case 'search': return this.search(command, searchId ?? this.searchGate.next());
       case 'typing': return this.typing(command.channelId, command.on);
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
+      // web-3 task 1: the call commands are in the contract; task 6 implements them.
+      case 'callJoin': case 'callLeave': case 'callShare': case 'callRefresh': case 'callStats': case 'loadVoice': case 'callDecline':
+        return Promise.reject(new Refusal('E_UNAVAILABLE', 'calls are not implemented yet'));
       case 'resign': return this.resign(command.nonce);
     }
   }
