@@ -843,6 +843,14 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect(t.seen[2].body).toEqual(encode([3, null, 40, 0, 0, 1_048_576]));
   });
 
+  it('endCall is DELETE /v1/calls/{call_id}, idempotent, 204', async () => {
+    const { t, http, routes } = setup();
+    t.replies.push(noContent());
+    await routes.endCall(CALL);
+    expect(`${t.seen[0].method} ${new URL(t.seen[0].url).pathname}`).toBe(`DELETE /v1/calls/${hex(CALL)}`);
+    expect(http.requests[0].idempotent).toBe(true);
+  });
+
   it('a 429 on the stats route is not waited out', async () => {
     const { t, routes } = setup();
     t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 4000));

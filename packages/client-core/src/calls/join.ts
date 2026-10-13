@@ -17,7 +17,22 @@ export interface JoinDeps {
   randomId(): Id;
   /** The worker's trust refresh of the group's leaves (bounded by WAIT_LIST_MS); it never throws. */
   refreshLeaves(groupId: Id): Promise<void>;
+  /** Resolves after `ms` on the worker's clock (the rejoin's wait for its own Remove). */
+  wait(ms: number): Promise<void>;
+  /** True once the join was cancelled (a leave, sign-out or revocation): a wait stops there. */
+  cancelled(): boolean;
 }
+
+/**
+ * A rejoin while this device's own Remove is still outstanding (web-3 task 10, concern 2): the instance refuses the
+ * resync of a Remove's target (403 E_FORBIDDEN, R25's guard 1, kept whole), so the join waits and reads the call again
+ * until another member has committed the Remove (the device then joins afresh) or the call has ended and its group closed
+ * (the device registers a fresh one): REJOIN_STEP_MS apart, for at most REJOIN_WAIT_MS, which outlasts the room's
+ * departure timeout (20 s) and its webhook. A person alone ends the call as they leave (controller.leaveLive), so only a
+ * leave that could not (a page that went away) waits here that long.
+ */
+export const REJOIN_STEP_MS = 1_000;
+export const REJOIN_WAIT_MS = 30_000;
 
 export interface JoinTarget { channelId: Id; communityId: Id | null; vdec: string }
 export interface Joined { groupId: Id; media: CallMediaEpoch; started: CallStarted }
@@ -53,6 +68,7 @@ export async function joinCall(d: JoinDeps, t: JoinTarget): Promise<Joined> {
 
 async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | null }): Promise<Joined> {
   let reread = { exists: true, closed: true };
+  let waited = 0;
   let read: ChannelCall = await d.routes.getChannelCall(t.channelId);
   seen.read = read;
   for (;;) {
@@ -79,7 +95,16 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
       d.core.groupRegistered(groupId, nextSeq);
     } else {
       groupId = read.groupId;
-      await joinExisting(d, t, groupId);
+      try {
+        await joinExisting(d, t, groupId);
+      } catch (e) {
+        if (!(e instanceof JoinRefused && isHttp(e.cause, 403, 'E_FORBIDDEN')) || waited >= REJOIN_WAIT_MS || d.cancelled()) throw e;
+        await d.wait(REJOIN_STEP_MS);
+        waited += REJOIN_STEP_MS;
+        if (d.cancelled()) throw e;
+        read = await d.routes.getChannelCall(t.channelId);
+        continue;
+      }
     }
     const media = await mediaEpoch(d, groupId);
     try {

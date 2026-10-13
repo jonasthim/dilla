@@ -389,6 +389,10 @@ export class Routes {
   async shareCall(callId: Uint8Array): Promise<void> {
     await this.body('POST', callPath(callId, '/share'), 'write', false, { body: encode([]), ok: [204] });
   }
+  /** `DELETE /v1/calls/{call_id}`: ends the call for everyone (its room and call group close); 204 also once it has ended. */
+  async endCall(callId: Uint8Array): Promise<void> {
+    await this.body('DELETE', callPath(callId), 'write', true, { ok: [204] });
+  }
   async unshareCall(callId: Uint8Array): Promise<void> {
     await this.body('DELETE', callPath(callId, '/share'), 'write', true, { ok: [204] });
   }

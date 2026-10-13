@@ -2029,7 +2029,8 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
-  | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall';
+  | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall'
+  | 'endCall';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** fail: throw before acting; lose: act, then throw a network error; before/after: run fn around acting; gate: wait first. */
 export type Injection = { fail: Error } | { lose: true } | { before: () => void } | { after: () => void } | { gate: Promise<void> };
@@ -2667,6 +2668,14 @@ export class ModelDs {
       startCall: (channelId) => this.call(d, 'startCall', null, null, () => this.startCall(d, channelId)),
       shareCall: (callId) => this.call(d, 'shareCall', null, null, () => { this.liveCall(callId); }),
       unshareCall: () => this.call(d, 'unshareCall', null, null, () => undefined),
+      // L-HTTP-102's DELETE: a current leaf of the call's open group ends it for everyone; 204 once it has ended.
+      endCall: (callId) => this.call(d, 'endCall', null, null, () => {
+        const call = [...this.liveCalls.values()].find((c) => same(c.callId, callId));
+        if (call === undefined) return;
+        const g = this.groups.get(toHex(call.groupId));
+        if (g !== undefined && !g.closed && !g.members.has(d)) throw httpError(403, 'E_LEAF_NOT_CURRENT');
+        this.endCall(call.channelId);
+      }),
       postCallStats: (callId) => this.call(d, 'postCallStats', null, null, () => { this.liveCall(callId); }),
       postProposal: (id, body) => this.call(d, 'postProposal', id, null, () => this.postProposal(d, id, body)),
       declineCall: (callId) => this.call(d, 'declineCall', null, null, () => {

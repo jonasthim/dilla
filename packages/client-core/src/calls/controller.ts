@@ -21,7 +21,7 @@ export const CALL_ROTATE_RETRY_MS = 60_000;
 export const WAIT_LIST_MS = 10_000;
 
 export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal'
-  | 'declineCall' | 'postCommit'>;
+  | 'declineCall' | 'postCommit' | 'endCall'>;
 
 /** What the call controller reads from, and publishes through, the worker's composition root. */
 export interface CallDeps {
@@ -66,6 +66,8 @@ interface Live {
   postedEpoch: bigint; leaving: boolean; outgoing: { ringing: string[]; declined: string[] } | null;
   /** The users of the last keyed roster: the candidates of a pause's changedUser (review M4). */
   rosterUsers: string[];
+  /** The devices of the last keyed roster: a leave from a roster of this device alone ends the call (concern 2). */
+  rosterDevices: string[];
   /** The leave in flight (one per call): a second leave awaits it and sends nothing (task 8b review I1). */
   leaveRun: Promise<void> | null;
 }
@@ -162,6 +164,8 @@ export class CallController {
       joined = await joinCall({
         core, routes: this.deps.routes, policyVersion: instance.policyVersion, externalSenderPub: instance.externalSenderPub,
         randomId: () => this.deps.randomId(), refreshLeaves: (g) => this.deps.refreshLeaves(g),
+        wait: (ms) => new Promise<void>((resolve) => { this.deps.setTimeout(resolve, ms); }),
+        cancelled: () => token.cancelled !== null,
       }, { channelId, communityId: target.communityId === null ? null : fromHex(target.communityId), vdec });
     } catch (e) {
       const cause = e instanceof JoinRefused ? e.cause : e;
@@ -189,7 +193,7 @@ export class CallController {
     const others = target.members.filter((u) => u !== own);
     const outgoing = dm && started.created ? { ringing: others.filter((u) => !this.book.usersIn(channel).has(u)), declined: [] } : null;
     this.live = { channel, channelId, dm, members: target.members, groupId, callId: started.callId, vdec, postedEpoch: media.epoch,
-      leaving: false, outgoing, rosterUsers: [], leaveRun: null };
+      leaving: false, outgoing, rosterUsers: [], rosterDevices: [], leaveRun: null };
     // The join epoch's key: a push posted before this command's ret, its buffer transferred (L-TS-52).
     this.postKeys(this.live, media);
     this.setIn(media);
@@ -282,6 +286,7 @@ export class CallController {
     const live = this.live;
     if (live === null) return;
     live.rosterUsers = media.roster.map((r) => toHex(r.userId));
+    live.rosterDevices = media.roster.map((r) => toHex(r.deviceId));
     this.setState({ phase: 'in', channelId: live.channel, callId: toHex(live.callId), epoch: media.epoch.toString(), code: media.code,
       error: null, roster: media.roster.map((r) => ({ userId: toHex(r.userId), deviceId: toHex(r.deviceId), leaf: r.leaf })),
       outgoing: this.outgoingNames(live), changedUser: null });
@@ -317,10 +322,32 @@ export class CallController {
     live.leaving = true;
     this.stopRotation();
     if (!blocked) this.setState({ ...this.state, phase: 'leaving' });
+    // Web-3 task 10, concern 2: nobody can commit the Remove of the only leaf, and the instance refuses this device's
+    // resync while that Remove stands (guard 1), so a person alone in the call ends it as they leave, while still its
+    // leaf: its room and group close, and a rejoin registers a fresh group at once.
+    if (!blocked && await this.alone(live)) {
+      try { await this.deps.routes.endCall(live.callId); } catch { /* the room's departure timeout ends it instead */ }
+    }
     await this.leaveGroup(live.groupId);
     if (this.live === live) this.live = null;
     this.deps.callEnded(toHex(live.callId));
     this.setState(blocked ? { ...this.state, phase: 'blocked' } : { ...CALL_IDLE });
+  }
+
+  /** Whether this device is the call's only one: the last keyed roster holds no other leaf, and the room's snapshot read
+   *  now shows no other device (one joining since the roster was keyed). A read that fails answers no. */
+  private async alone(live: Live): Promise<boolean> {
+    const me = this.deps.me();
+    if (me === null) return false;
+    const own = toHex(me.deviceId);
+    if (live.rosterDevices.length === 0 || live.rosterDevices.some((d) => d !== own)) return false;
+    try {
+      const read = await this.deps.routes.getChannelCall(live.channelId);
+      if (read.groupId !== null && toHex(read.groupId) !== toHex(live.groupId)) return false;
+      return read.participants.every((p) => toHex(p.deviceId) === own);
+    } catch {
+      return false;
+    }
   }
 
   /** The self-Remove (a 409 E_REMOVE_PENDING is fine, any failure leaves the group to the instance) and the forget, on the
