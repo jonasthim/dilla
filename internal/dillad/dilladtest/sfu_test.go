@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/auth"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -245,6 +246,56 @@ func TestLiveKitURLOverride(t *testing.T) {
 	out, _, _ := openCallOn(t, h)
 	if out[2] != "ws://127.0.0.1:8481" {
 		t.Fatalf("livekit_url = %#v, want the override ws://127.0.0.1:8481", out[2])
+	}
+}
+
+// web-3 task 10: the in-process LiveKit posts its webhooks to the host's instance, as dillad's own
+// livekit.webhook_listen does (cmd/dillad/front.go). Without them the instance never learns who is in
+// a room: no voice_state reaches a client, the voice snapshot (L-HTTP-100) stays empty and an answered
+// ring never stops — everything the voice e2e waits on. A participant LiveKit admits to the call's
+// room with the call's own token is listed in GET /v1/channels/{id}/call.
+func TestTheHostSFUPostsItsWebhooksToTheInstance(t *testing.T) {
+	h := sfuHost(t, true)
+	if h.WebhookURL() == "" || !strings.HasPrefix(h.WebhookURL(), "http://127.0.0.1:") {
+		t.Fatalf("the host's LiveKit posts its webhooks to %q, want a loopback http:// URL", h.WebhookURL())
+	}
+	out, device, group := openCallOn(t, h)
+	token, ok := out[3].(string)
+	if !ok {
+		t.Fatalf("the call response's token is %#v", out[3])
+	}
+	g, err := h.Server().Repo().GetGroup(t.Context(), group)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	room, err := lksdk.ConnectToRoomWithToken(h.SFU().URL(), token, &lksdk.RoomCallback{}, lksdk.WithAutoSubscribe(false))
+	if err != nil {
+		t.Fatalf("connect to the call's room: %v", err)
+	}
+	t.Cleanup(room.Disconnect)
+
+	path := "/v1/channels/" + g.TargetID.String() + "/call"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, raw, err := h.AsDevice(t.Context(), device, http.MethodGet, path, nil)
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("GET %s = %d, %v", path, status, err)
+		}
+		var call []any
+		if err := cborx.Unmarshal(raw, &call); err != nil || len(call) != 3 {
+			t.Fatalf("decode %s: %v (%x)", path, err, raw)
+		}
+		if parts, _ := call[2].([]any); len(parts) == 1 {
+			row, _ := parts[0].([]any)
+			if b, _ := row[1].([]byte); len(row) == 3 && id.ID(b) == device {
+				return
+			}
+			t.Fatalf("participants = %#v, want only %s", parts, device)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the call's participants never listed the device LiveKit admitted (the instance got no participant_joined)")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

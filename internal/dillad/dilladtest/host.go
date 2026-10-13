@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,8 +23,10 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -186,6 +189,13 @@ type Host struct {
 	// debugRooms are the rooms the control listener's POST /debug/sfu/token opened, hidden from
 	// the room sweep (harnessSFU).
 	debugRooms debugRooms
+	// webhookURL is where the in-process LiveKit posts its webhooks ("" without an SFU); hook serves
+	// it and hookHandler verifies each event (both stopped with the SFU). current is the instance the
+	// events go to: an atomic, so the receiver's workers never wait on mu while Close holds it.
+	webhookURL  string
+	hook        *http.Server
+	hookHandler http.Handler
+	current     atomic.Pointer[dillad.Server]
 
 	// channels outlives a Restore, as the channels table outlives a restart.
 	channels *ChannelModes
@@ -242,6 +252,7 @@ func NewHost(ctx context.Context, o HostOptions) (*Host, error) {
 		return nil, err
 	}
 	h.server = server
+	h.current.Store(server)
 	return h, nil
 }
 
@@ -384,18 +395,45 @@ func (h *Host) startSFU(ctx context.Context) error {
 		cfg.AdvertiseInternalIP = false
 	}
 	cfg.TestAV1 = h.o.SFUEnableAV1
+	// The webhook receiver, as dillad's livekit.webhook_listen (cmd/dillad/front.go): bound before the
+	// SFU starts, so LiveKit renders its URL; each verified event goes to the instance current then
+	// (a Restore replaces it).
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("dilladtest: listen for the SFU's webhooks: %w", err)
+	}
+	cfg.WebhookURL = "http://" + ln.Addr().String() + sfu.WebhookPath
 	s, err := sfu.Start(ctx, cfg)
 	if err != nil {
+		_ = ln.Close()
 		return fmt.Errorf("dilladtest: start the SFU on 127.0.0.1:%d (udp %d): %w", port, udp, err)
 	}
 	h.sfu = s
+	h.webhookURL = cfg.WebhookURL
+	h.hookHandler = sfu.NewWebhookHandler(cfg.APIKey, secret, func(ctx context.Context, ev *livekit.WebhookEvent) {
+		if srv := h.current.Load(); srv != nil {
+			srv.CallEvents().Handle(ctx, ev)
+		}
+	}, nil)
+	mux := http.NewServeMux()
+	mux.Handle("POST "+sfu.WebhookPath, h.hookHandler)
+	h.hook = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = h.hook.Serve(ln) }()
 	return nil
 }
 
+// stopSFU stops the SFU first, so nothing posts to the receiver as it shuts down and drains.
 func (h *Host) stopSFU(ctx context.Context) {
 	if h.sfu != nil {
 		_ = h.sfu.Stop(ctx)
 		h.sfu = nil
+	}
+	if h.hook != nil {
+		_ = h.hook.Shutdown(ctx)
+		if c, ok := h.hookHandler.(io.Closer); ok {
+			_ = c.Close()
+		}
+		h.hook, h.hookHandler = nil, nil
 	}
 }
 
@@ -589,6 +627,10 @@ func (h *Host) MarkRevoked(ctx context.Context, device id.ID) error {
 	return s.Repo().RevokeDevice(ctx, device, h.clk.Now().Unix())
 }
 
+// WebhookURL is where the in-process LiveKit posts its webhooks: the host's own loopback receiver,
+// which hands each verified event to the current instance's call events. "" without an SFU.
+func (h *Host) WebhookURL() string { return h.webhookURL }
+
 // Server is the instance as it stands: a Restore replaces it.
 func (h *Host) Server() *dillad.Server {
 	h.mu.RLock()
@@ -682,6 +724,7 @@ func (h *Host) Restore(ctx context.Context, name string) error {
 		return fmt.Errorf("dilladtest: start the restored instance: %w", err)
 	}
 	h.server = server
+	h.current.Store(server)
 	return nil
 }
 
