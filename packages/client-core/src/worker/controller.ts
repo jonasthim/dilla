@@ -156,7 +156,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
   'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-  'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
+  'refreshTrust', 'verifyContact', 'safetyNumber', 'ownKey', 'search', 'typing', 'voiceSelf', 'resign',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -188,7 +188,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'joinCommunity', 'selectCommunity', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-    'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
+    'refreshTrust', 'verifyContact', 'safetyNumber', 'ownKey', 'search', 'typing', 'voiceSelf', 'resign',
   ],
 };
 
@@ -486,6 +486,7 @@ export class Controller {
       case 'refreshTrust': return this.refreshTrust();
       case 'verifyContact': return this.verifyContact(command.userId, command.umk);
       case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId));
+      case 'ownKey': return Promise.resolve(this.ownKey());
       case 'search': return this.search(command, searchId ?? this.searchGate.next());
       case 'typing': return this.typing(command.channelId, command.on);
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
@@ -2094,6 +2095,20 @@ export class Controller {
     this.refreshTrustGeneration();
     this.publishTrust();
     return Promise.resolve(null);
+  }
+
+  /**
+   * Ruling M6 (2026-10-13): the own row stays out of the contacts, but the ownChanged banner offers Compare. The page
+   * opens a comparison against the pending own key with this record, then uses safetyNumber and verifyContact with the
+   * own user id as for a contact; approving the key ends the banner. Public keys only; null before the core pins one.
+   */
+  private ownKey(): { userId: string; umk: string; changedUmk: string | null; verified: boolean } | null {
+    const me = this.me;
+    if (me === null) return null;
+    const own = toHex(me.userId);
+    const row = this.requireCore().trustState().find((r) => toHex(r.userId) === own);
+    if (row === undefined) return null;
+    return { userId: own, umk: toHex(row.umk), changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk), verified: row.verified };
   }
 
   private safetyNumber(userId: string): string {

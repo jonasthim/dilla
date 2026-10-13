@@ -820,6 +820,27 @@ it('keeps a changed own key on the account slice, out of the contacts, until the
   expect(w.account()?.ownTrust).toBeNull();
 });
 
+it('ownKey gives the page the own account key to compare, and approving its pending key ends the banner (ruling M6)', async () => {
+  const w = world();
+  await toReady(w);
+  w.call(9803, { m: 'ownKey' });
+  await vi.waitFor(() => expect(w.ret(9803)).toBeDefined());
+  expect(w.ret(9803)).toEqual({ t: 'ret', id: 9803, ok: true, value: null });
+  const ownUmk = new Uint8Array(32).fill(0xaa);
+  w.core.trustState.mockReturnValue([{ userId: USER, umk: ownUmk, firstSeen: 1n, verified: true, changedUmk: CHANGED_UMK }]);
+  w.call(9804, { m: 'ownKey' });
+  await vi.waitFor(() => expect(w.ret(9804)).toBeDefined());
+  expect(w.ret(9804)).toEqual({ t: 'ret', id: 9804, ok: true,
+    value: { userId: toHex(USER), umk: toHex(ownUmk), changedUmk: toHex(CHANGED_UMK), verified: true } });
+  // The own account compares and verifies like a contact, in a group its other device shares.
+  w.state.groups = [textGroup(2)];
+  w.call(9805, { m: 'safetyNumber', userId: toHex(USER) });
+  await vi.waitFor(() => expect(w.ret(9805)).toMatchObject({ ok: true }));
+  w.call(9806, { m: 'verifyContact', userId: toHex(USER), umk: toHex(CHANGED_UMK) });
+  await vi.waitFor(() => expect(w.ret(9806)).toMatchObject({ ok: true }));
+  expect(w.core.trustVerify).toHaveBeenCalledWith(USER, CHANGED_UMK);
+});
+
 it('keeps an own leaf the core refused against the own signed list on the account slice', async () => {
   const w = world();
   await toReady(w);

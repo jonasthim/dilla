@@ -41,6 +41,7 @@ export type Command =
   | { m: 'refreshTrust' } // ready: bounded signed-list refresh
   | { m: 'verifyContact'; userId: string; umk: string }
   | { m: 'safetyNumber'; userId: string }
+  | { m: 'ownKey' } // ready → { userId, umk, changedUmk, verified } | null: the own account's key, to compare like a contact's
   | { m: 'search'; scope: 'channel' | 'community' | 'all'; id: string | null; query: string;
     cursor: { token: string } | null }
   | { m: 'typing'; channelId: string; on: boolean }
