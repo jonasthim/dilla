@@ -30,7 +30,8 @@ import { readDeviceListHistory } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
-  type DeviceSummary, type DmSummary, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem, type WorkerError,
+  type DeviceSummary, type DmSummary, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem, type TrustSummary,
+  type WorkerError,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { SyncError } from '../sync/errors';
@@ -132,6 +133,9 @@ function sanitizePageError(error: WorkerError): WorkerError {
 function isCode(e: unknown, code: string): boolean {
   return e instanceof Error && e.message === code;
 }
+
+/** The core's verdicts on one leaf against its owner's signed list (L-CORE-40); each leaves that device quarantined. */
+const LEAF_VERDICTS: ReadonlySet<string> = new Set(['E_DEVICE_UNLISTED', 'E_CREDENTIAL', 'E_TIER_MISMATCH']);
 
 function isStatus(e: unknown, status: number): boolean {
   return e instanceof DillaHttpError && e.status === status;
@@ -334,6 +338,13 @@ export class Controller {
   private trustRefresh: Promise<null> | null = null;
   private trustRefreshAgain = false;
   private seenTrustGeneration: bigint | null = null;
+  // Ruling (c) of 2026-10-13: Privacy states the core answers only per leaf, kept here and published per contact.
+  // A user whose latest ingest quarantined one of its leaves, or whose leaf the core refused by a leaf verdict.
+  private readonly unlistedUsers = new Set<string>();
+  // user hex -> groups (hex) where pendingLeaves last reported a 'changed' leaf of that user.
+  private changedLeafGroups = new Map<string, Set<string>>();
+  // user hex -> still active groups whose changed leaf has since left the tree (a validated Remove cleared their block).
+  private readonly removedGroups = new Map<string, Set<string>>();
   private readonly fetchedLeaves = new Set<string>();
   private readonly barrier = new CommandBarrier();
   private readonly searchGate = new SearchGate();
@@ -524,6 +535,8 @@ export class Controller {
       throw e;
     }
     this.instance = instance;
+    // A tab that then waits for the lock offers hand-over by this instance (L-WEB-46), so diagnostics names it now.
+    this.publishDiagnostics();
     this.setAccount({ instance: {
       id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
       passwordSignup: instance.authMethods.includes(0),
@@ -1625,6 +1638,7 @@ export class Controller {
     const communities = new Set<string>((this.slices.get('communities') ?? []).map((c) => c.id));
     for (const known of this.channels.values()) communities.add(known.communityId);
     const timelines = [...this.open.keys()];
+    this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
@@ -1887,14 +1901,16 @@ export class Controller {
   private async refreshTrustOnce(): Promise<null> {
     const core = this.requireCore();
     const leaves = core.pendingLeaves();
+    this.noteChangedLeaves(leaves);
+    let keyChanged = false;
     const historyByUser = new Map<string, { head: Uint8Array; history: Uint8Array } | null>();
     for (const leaf of leaves) {
       if (this.phase !== 'ready') break;
       const key = `${toHex(leaf.groupId)}:${leaf.leafIndex}:${toHex(leaf.userId)}:${leaf.cachedVersion}:${leaf.reason}`;
       if (this.fetchedLeaves.has(key)) continue;
       this.fetchedLeaves.add(key);
+      const user = toHex(leaf.userId);
       try {
-        const user = toHex(leaf.userId);
         if (!historyByUser.has(user)) {
           const oldest = leaves.filter((candidate) => toHex(candidate.userId) === user)
             .reduce((version, candidate) => candidate.cachedVersion < version ? candidate.cachedVersion : version, leaf.cachedVersion);
@@ -1904,13 +1920,53 @@ export class Controller {
         const signed = historyByUser.get(user);
         if (signed === null || signed === undefined) continue;
         const { head, history } = signed;
-        core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, head, this.nowS());
+        let verdict: { changed: boolean; quarantined: number };
+        try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, head, this.nowS()); }
+        catch (e) {
+          // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
+          if (e instanceof CoreError && LEAF_VERDICTS.has(e.code)) this.unlistedUsers.add(user);
+          throw e;
+        }
+        // With a changed key the count also holds the leaves it quarantined as changed, so it cannot tell; keep the last.
+        if (verdict.changed) keyChanged = true;
+        else if (verdict.quarantined > 0) this.unlistedUsers.add(user);
+        else this.unlistedUsers.delete(user);
         core.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
         this.refreshTrustGeneration();
       } catch { /* Keep the leaf untrusted; the next ready retries. */ }
     }
+    if (keyChanged) this.noteChangedLeaves(core.pendingLeaves());
     this.publishTrust();
     return null;
+  }
+
+  /**
+   * Remembers where each user's changed leaves are. A group that had one, is still active here and no longer has any
+   * changed leaf of that user lost it to a validated Remove (the core then cleared only that group's send block).
+   */
+  private noteChangedLeaves(leaves: readonly { groupId: Id; userId: Id; reason: string }[]): void {
+    const now = new Map<string, Set<string>>();
+    for (const leaf of leaves) {
+      if (leaf.reason !== 'changed') continue;
+      const user = toHex(leaf.userId);
+      let groups = now.get(user);
+      if (groups === undefined) { groups = new Set(); now.set(user, groups); }
+      groups.add(toHex(leaf.groupId));
+    }
+    const active = new Set(this.requireCore().groups().filter((g) => g.state === 2).map((g) => toHex(g.groupId)));
+    for (const [user, before] of this.changedLeafGroups) {
+      for (const group of before) {
+        if (now.get(user)?.has(group) === true || !active.has(group)) continue;
+        let removed = this.removedGroups.get(user);
+        if (removed === undefined) { removed = new Set(); this.removedGroups.set(user, removed); }
+        removed.add(group);
+      }
+    }
+    for (const [user, removed] of this.removedGroups) {
+      for (const group of removed) if (!active.has(group) || now.get(user)?.has(group) === true) removed.delete(group);
+      if (removed.size === 0) this.removedGroups.delete(user);
+    }
+    this.changedLeafGroups = now;
   }
 
   private sharedUser(userHex: string): boolean {
@@ -1926,10 +1982,21 @@ export class Controller {
 
   private publishTrust(): void {
     if (this.core === null) return;
-    this.slices.set('trust', this.core.trustState().map((row) => {
+    // The page learns the channel a Remove unblocked, never the group id.
+    const channelOf = new Map<string, string>();
+    for (const group of this.core.groups()) {
+      if (group.kind !== 0) continue;
+      const channelId = toHex(group.targetId);
+      if (this.dms.has(channelId) || this.channels.has(channelId)) channelOf.set(toHex(group.groupId), channelId);
+    }
+    this.slices.set('trust', this.core.trustState().map((row): TrustSummary => {
       const userId = toHex(row.userId);
+      // An approved key ends the changed state everywhere, so no group is left to call removed.
+      if (row.changedUmk === null) this.removedGroups.delete(userId);
+      const removedIn = [...new Set([...this.removedGroups.get(userId) ?? []].flatMap((g) => channelOf.get(g) ?? []))].sort();
       return { userId, name: this.nameOf(userId), shared: this.sharedUser(userId), umk: toHex(row.umk),
-        firstSeen: Number(row.firstSeen), verified: row.verified, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk) };
+        firstSeen: Number(row.firstSeen), verified: row.verified, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk),
+        ...(this.unlistedUsers.has(userId) ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}) };
     }));
   }
 

@@ -8,7 +8,7 @@ import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/cryp
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo,
   type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord,
-  type SignedLists, type TimelineRow,
+  type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
@@ -16,7 +16,7 @@ import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
 import type {
   AccountState, BadgeState, ChannelSummary, CommunitySummary, ConnectionState, DeviceSummary, DmSummary, MemberSummary, NoticesState,
-  PinnedItem, TimelineState, TrayItem,
+  PinnedItem, TimelineState, TrayItem, TrustSummary,
 } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { SyncError } from '../sync/errors';
@@ -398,7 +398,7 @@ function world(opts: {
     deviceListIngest: vi.fn((_group: Uint8Array, _leaf: number, _user: Uint8Array, _history: Uint8Array, _head: Uint8Array, _now: bigint) =>
       ({ version: 1n, changed: true, quarantined: 1 })),
     revalidatePending: vi.fn(() => 0),
-    trustState: vi.fn(() => []),
+    trustState: vi.fn((): TrustRecord[] => []),
     trustGeneration: vi.fn(() => 0n),
   };
   const routes = {
@@ -658,6 +658,84 @@ it('publishes channel destinations for community and DM hits and drops unknown g
   await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: true }));
   expect(w.core.search).toHaveBeenLastCalledWith({ kind: 'all', id: null }, 'a',
     { rank: 0n, groupId: ORPHAN_GROUP, seq: 3n }, 50);
+});
+
+// Ruling (c) of 2026-10-13: the unlisted and validated-Remove Privacy states are derived in the worker from what the core
+// already answers (pendingLeaves reasons, deviceListIngest's quarantine count and verdict codes); no group id reaches the page.
+const STRANGER_UMK = new Uint8Array(32).fill(0xbb);
+const CHANGED_UMK = new Uint8Array(32).fill(0xcc);
+const strangerTrust = (changed: Uint8Array | null): TrustRecord[] =>
+  [{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: changed }];
+
+it('marks a contact unlisted from a quarantining ingest or a core leaf verdict, and clears it after a clean ingest', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 1 });
+  w.call(981, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(981)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER), unlisted: true });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 });
+  w.call(982, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(982)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toEqual({ userId: toHex(STRANGER), name: expect.any(String) as string, shared: false,
+    umk: toHex(STRANGER_UMK), firstSeen: 1, verified: false, changedUmk: null });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_UNLISTED', 'leaf not on the list'); });
+  w.call(983, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(983)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+});
+
+it('a failed history read leaves the derived unlisted state as it was', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.routes.getDeviceList.mockRejectedValueOnce(refusal(503, 'E_UNAVAILABLE'));
+  w.call(984, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(984)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).not.toHaveBeenCalled();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+});
+
+it('names the channel whose validated Remove dropped a changed leaf, and only while the key stays changed', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 2n, reason: 'changed' }]);
+  w.call(985, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(985)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ changedUmk: toHex(CHANGED_UMK) });
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('removedIn');
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.call(986, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(986)).toMatchObject({ ok: true }));
+  const removed = w.last<TrustSummary[]>('trust')?.[0];
+  expect(removed).toMatchObject({ changedUmk: toHex(CHANGED_UMK), verified: false, removedIn: [toHex(CHANNEL)] });
+  expect(JSON.stringify(w.last('trust'))).not.toContain(toHex(GROUP));
+  w.core.trustState.mockReturnValue([{ ...strangerTrust(null)[0], umk: CHANGED_UMK, verified: true }]);
+  w.call(987, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(987)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('removedIn');
+});
+
+it('does not call a group removed when this device left it', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 2n, reason: 'changed' }]);
+  w.call(988, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(988)).toMatchObject({ ok: true }));
+  w.state.groups = [textGroup(4)];
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.call(989, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(989)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('removedIn');
 });
 
 it('stops typing on lost membership and refuses typing until viewable and online', async () => {
@@ -3012,6 +3090,17 @@ describe('Controller other-tab grace', () => {
     expect(w.account()?.phase).toBe('loading');
     await vi.advanceTimersByTimeAsync(1);
     expect(w.account()?.phase).toBe('other-tab');
+  });
+
+  // Task 9 (L-WEB-46): the waiting tab's page asks for hand-over by the instance the diagnostics slice names.
+  it('names the instance in diagnostics while another tab holds the lock', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const w = world({ phase: 0 });
+    w.locks.holdElsewhere(LOCK);
+    w.call(1, { m: 'start' });
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(w.account()?.phase).toBe('other-tab');
+    expect(w.last<{ instance: string }>('diagnostics')?.instance).toBe(INSTANCE_HEX);
   });
 
   it('a lock granted after the grace moves on to boot', async () => {
