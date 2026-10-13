@@ -1975,6 +1975,13 @@ export class Controller {
     // Users with a leaf whose signed history the core has never accepted; a successful ingest below caches their list.
     const unknownUsers = new Set(leaves.filter((leaf) => leaf.reason === 'unknown').map((leaf) => toHex(leaf.userId)));
     const historyByUser = new Map<string, { head: Uint8Array; history: Uint8Array } | null>();
+    // Each user's history is read from the oldest version any of their leaves caches; one pass (M5: not once per user).
+    const oldestByUser = new Map<string, bigint>();
+    for (const leaf of leaves) {
+      const user = toHex(leaf.userId);
+      const known = oldestByUser.get(user);
+      if (known === undefined || leaf.cachedVersion < known) oldestByUser.set(user, leaf.cachedVersion);
+    }
     for (const leaf of leaves) {
       if (this.phase !== 'ready') break;
       const key = `${toHex(leaf.groupId)}:${leaf.leafIndex}:${toHex(leaf.userId)}:${leaf.cachedVersion}:${leaf.reason}`;
@@ -1983,8 +1990,7 @@ export class Controller {
       const user = toHex(leaf.userId);
       try {
         if (!historyByUser.has(user)) {
-          const oldest = leaves.filter((candidate) => toHex(candidate.userId) === user)
-            .reduce((version, candidate) => candidate.cachedVersion < version ? candidate.cachedVersion : version, leaf.cachedVersion);
+          const oldest = oldestByUser.get(user) ?? leaf.cachedVersion;
           try { historyByUser.set(user, await readDeviceListHistory(this.routes, leaf.userId, oldest)); this.historyFailedUsers.delete(user); }
           catch { historyByUser.set(user, null); this.historyFailedUsers.add(user); }
         }
