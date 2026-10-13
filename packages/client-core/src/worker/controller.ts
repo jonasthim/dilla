@@ -341,6 +341,10 @@ export class Controller {
   // Ruling (c) of 2026-10-13: Privacy states the core answers only per leaf, kept here and published per contact.
   // A user whose latest ingest quarantined one of its leaves, or whose leaf the core refused by a leaf verdict.
   private readonly unlistedUsers = new Set<string>();
+  // Flow 05 "history pending": users whose last signed-list read failed (kept until a read succeeds, since a failed leaf
+  // is not read again before the next ready), and the published union of those with users whose history is still unknown.
+  private readonly historyFailedUsers = new Set<string>();
+  private pendingUsers = new Set<string>();
   // user hex -> groups (hex) where pendingLeaves last reported a 'changed' leaf of that user.
   private changedLeafGroups = new Map<string, Set<string>>();
   // user hex -> still active groups whose changed leaf has since left the tree (a validated Remove cleared their block).
@@ -1639,6 +1643,7 @@ export class Controller {
     for (const known of this.channels.values()) communities.add(known.communityId);
     const timelines = [...this.open.keys()];
     this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
+    this.historyFailedUsers.clear(); this.pendingUsers = new Set();
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
@@ -1903,6 +1908,11 @@ export class Controller {
     const leaves = core.pendingLeaves();
     this.noteChangedLeaves(leaves);
     let keyChanged = false;
+    // A user the core no longer reports in any active group has no history left to wait for.
+    const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
+    for (const user of this.historyFailedUsers) if (!present.has(user)) this.historyFailedUsers.delete(user);
+    // Users with a leaf whose signed history the core has never accepted; a successful ingest below caches their list.
+    const unknownUsers = new Set(leaves.filter((leaf) => leaf.reason === 'unknown').map((leaf) => toHex(leaf.userId)));
     const historyByUser = new Map<string, { head: Uint8Array; history: Uint8Array } | null>();
     for (const leaf of leaves) {
       if (this.phase !== 'ready') break;
@@ -1914,8 +1924,8 @@ export class Controller {
         if (!historyByUser.has(user)) {
           const oldest = leaves.filter((candidate) => toHex(candidate.userId) === user)
             .reduce((version, candidate) => candidate.cachedVersion < version ? candidate.cachedVersion : version, leaf.cachedVersion);
-          try { historyByUser.set(user, await readDeviceListHistory(this.routes, leaf.userId, oldest)); }
-          catch { historyByUser.set(user, null); }
+          try { historyByUser.set(user, await readDeviceListHistory(this.routes, leaf.userId, oldest)); this.historyFailedUsers.delete(user); }
+          catch { historyByUser.set(user, null); this.historyFailedUsers.add(user); }
         }
         const signed = historyByUser.get(user);
         if (signed === null || signed === undefined) continue;
@@ -1931,11 +1941,13 @@ export class Controller {
         if (verdict.changed) keyChanged = true;
         else if (verdict.quarantined > 0) this.unlistedUsers.add(user);
         else this.unlistedUsers.delete(user);
+        unknownUsers.delete(user);
         core.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
         this.refreshTrustGeneration();
       } catch { /* Keep the leaf untrusted; the next ready retries. */ }
     }
     if (keyChanged) this.noteChangedLeaves(core.pendingLeaves());
+    this.pendingUsers = new Set([...this.historyFailedUsers, ...unknownUsers]);
     this.publishTrust();
     return null;
   }
@@ -1996,7 +2008,8 @@ export class Controller {
       const removedIn = [...new Set([...this.removedGroups.get(userId) ?? []].flatMap((g) => channelOf.get(g) ?? []))].sort();
       return { userId, name: this.nameOf(userId), shared: this.sharedUser(userId), umk: toHex(row.umk),
         firstSeen: Number(row.firstSeen), verified: row.verified, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk),
-        ...(this.unlistedUsers.has(userId) ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}) };
+        // History pending has Flow 05's unlisted announcement and, like unlisted, no Verify.
+        ...(this.unlistedUsers.has(userId) || this.pendingUsers.has(userId) ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}) };
     }));
   }
 

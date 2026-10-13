@@ -689,7 +689,9 @@ it('marks a contact unlisted from a quarantining ingest or a core leaf verdict, 
   expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
 });
 
-it('a failed history read leaves the derived unlisted state as it was', async () => {
+// Flow 05 "history pending": while the list read is not complete the contact shows privacy.unlisted with no Verify,
+// because a comparison then would approve only the cached list.
+it('keeps a contact history-pending while its list read fails or its history stays unknown', async () => {
   const w = world();
   await toReady(w);
   w.core.trustState.mockReturnValue(strangerTrust(null));
@@ -698,7 +700,23 @@ it('a failed history read leaves the derived unlisted state as it was', async ()
   w.call(984, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(984)).toMatchObject({ ok: true }));
   expect(w.core.deviceListIngest).not.toHaveBeenCalled();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER), unlisted: true });
+  // The failed leaf is not read again before the next ready; it stays pending meanwhile.
+  w.call(9841, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9841)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+  // A complete read and a clean ingest end it.
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 });
+  w.call(9842, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9842)).toMatchObject({ ok: true }));
   expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  // A leaf whose history the core still calls unknown (the ingest did not complete) is pending too.
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.core.deviceListIngest.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_LIST_STALE', 'older list'); });
+  w.call(9843, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9843)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
 });
 
 it('names the channel whose validated Remove dropped a changed leaf, and only while the key stays changed', async () => {

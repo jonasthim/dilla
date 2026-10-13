@@ -35,3 +35,14 @@ it('shows a verified contact with the exact public key compared', () => {
   expect(screen.queryByText('First seen here — not verified')).toBeNull();
   expect(screen.getByRole('button', { name: 'Compare with Ada' })).toBeInTheDocument();
 });
+
+// Flow 05 "history pending": the worker marks a contact whose list read has not completed with `unlisted`, so even a
+// verified contact shows the unlisted copy and no comparison until the newer list is read.
+it('shows a history-pending contact as unlisted, without its verified key or a comparison', () => {
+  const records = [{ userId: 'aa'.repeat(16), name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: true, changedUmk: null, unlisted: true as const }];
+  render(<Privacy records={records} onCompare={vi.fn()} />);
+  expect(screen.getByRole('status')).toHaveTextContent('This device is not on the contact’s list.');
+  expect(screen.queryByText('verified')).toBeNull();
+  expect(screen.queryByText('bb'.repeat(32))).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Compare with Ada' })).toBeNull();
+});

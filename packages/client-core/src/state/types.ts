@@ -56,7 +56,8 @@ export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: s
 export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
 /**
  * L-TS-40's trust row. Ruling (c) of 2026-10-13 adds two worker-derived Privacy states, present only while they hold:
- * `unlisted` (one of the contact's leaves failed its signed list) and `removedIn` (channels whose validated Remove of the
+ * `unlisted` (one of the contact's leaves failed its signed list, or Flow 05's "history pending": the list read has not
+ * completed, which shares the unlisted copy and its no-Verify rule) and `removedIn` (channels whose validated Remove of the
  * changed leaf cleared that group's send block while the key stays changed and unverified).
  */
 export interface TrustSummary { userId: string; name: string; shared: boolean; umk: string; firstSeen: number; verified: boolean; changedUmk: string | null;
