@@ -137,8 +137,20 @@ func TestBuiltClientIsServed(t *testing.T) {
 			}
 		}
 	}
-	if wasm != 1 {
-		t.Errorf("the build has %d wasm files, want 1", wasm)
+	// web-3 task 8: one core wasm (the core and media workers share it) and RNNoise's, as check-entry-chunk.mjs.
+	if wasm != 2 {
+		t.Errorf("the build has %d wasm files, want 2 (the core and RNNoise)", wasm)
+	}
+	for _, glob := range []string{"assets/dilla_core_wasm_bg-*.wasm", "assets/rnnoise-*.wasm"} {
+		n := 0
+		for _, f := range m.Files {
+			if ok, _ := path.Match(glob, f.Path); ok {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("the build has %d %s, want 1", n, glob)
+		}
 	}
 	if scripts < 2 {
 		t.Errorf("the build has %d scripts, want the entry and the core worker at least", scripts)

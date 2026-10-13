@@ -45,7 +45,9 @@ export function createSounds(getContext: () => AudioContext | null): Sounds {
 
   const usable = (): AudioContext | null => {
     const ctx = getContext();
-    return ctx && ctx.state !== 'closed' ? ctx : null;
+    // Only a running context plays: a suspended one (no user activation yet) would queue every tone at a frozen
+    // currentTime and fire them all at once on resume, and a closed one cannot play.
+    return ctx?.state === 'running' ? ctx : null;
   };
   const ping = (): void => {
     const ctx = usable();

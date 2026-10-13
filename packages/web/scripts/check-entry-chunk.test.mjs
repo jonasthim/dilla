@@ -61,6 +61,15 @@ describe('checkEntryChunk (L-WEB-51, decision 5)', () => {
     put('index.html', '<!doctype html><html><head></head><body></body></html>\n');
     expect(checkEntryChunk(dir)).toEqual(['index.html: no entry <script type="module" src>']);
   });
+  it('fails an entry or preload src that maps to no file in dist (a changed base would otherwise scan nothing)', () => {
+    cleanDist();
+    put('index.html', INDEX.replace('src="/assets/index-AbC123.js"', 'src="/app/assets/index-AbC123.js"')
+      .replace('href="/assets/vendor-Pre111.js"', 'href="https://cdn.test/assets/vendor-Pre111.js"'));
+    expect(checkEntryChunk(dir)).toEqual([
+      'index.html: entry app/assets/index-AbC123.js is not in dist',
+      'index.html: entry https://cdn.test/assets/vendor-Pre111.js is not in dist',
+    ]);
+  });
   it('fails two core wasm files (a second core download)', () => {
     cleanDist();
     put('assets/dilla_core_wasm_bg-Zzz999.wasm', WASM);

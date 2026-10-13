@@ -24,22 +24,32 @@ function walk(dir, rel = '') {
   return paths;
 }
 
-/** The entry script and the chunks index.html preloads, as dist-relative paths. */
-function entryChunks(dir, html) {
+/**
+ * The entry script and the chunks index.html preloads, as dist-relative paths.
+ * Assumption (pinned): Vite's default `build.modulePreload` lists every chunk the entry imports statically as a
+ * `<link rel="modulepreload">`. With modulePreload off, or a Vite that stops emitting those links, a static
+ * import of livekit would escape this scan; such a change must make this check follow the entry's static imports.
+ */
+function entryChunks(html) {
   const chunks = [];
   for (const m of html.matchAll(/<script\b[^>]*\btype="module"[^>]*\bsrc="\/?([^"]+)"/gi)) chunks.push(m[1]);
   if (chunks.length === 0) return null;
   for (const m of html.matchAll(/<link\b[^>]*\brel="modulepreload"[^>]*\bhref="\/?([^"]+)"/gi)) chunks.push(m[1]);
-  return chunks.filter(path => existsSync(join(dir, path)));
+  return chunks;
 }
 
 /** @returns {string[]} One line per problem, or [] when the build keeps the call code lazy and the core wasm single. */
 export function checkEntryChunk(dir) {
   const problems = [];
   const html = existsSync(join(dir, 'index.html')) ? readFileSync(join(dir, 'index.html'), 'utf8') : '';
-  const entries = entryChunks(dir, html);
+  const entries = entryChunks(html);
   if (entries === null) problems.push('index.html: no entry <script type="module" src>');
   for (const path of entries ?? []) {
+    // A src that maps to no dist file (a changed base, a CDN URL) would otherwise pass having scanned nothing.
+    if (!existsSync(join(dir, path))) {
+      problems.push(`index.html: entry ${path} is not in dist`);
+      continue;
+    }
     const body = readFileSync(join(dir, path), 'utf8').toLowerCase();
     for (const word of FORBIDDEN_IN_ENTRY) if (body.includes(word)) problems.push(`${path}: the entry chunk contains ${word}`);
   }

@@ -91,6 +91,30 @@ describe('sounds (L-WEB-52)', () => {
     s.dispose();
   });
 
+  it('a suspended context schedules nothing, so nothing fires on a later resume', () => {
+    vi.useFakeTimers();
+    const ctx = fakeAudioContext();
+    (ctx as unknown as { state: AudioContextState }).state = 'suspended';
+    const s = createSounds(() => ctx);
+    expect(() => { s.play('join'); s.play('leave'); s.startRing(); vi.advanceTimersByTime(10_000); }).not.toThrow();
+    expect(ctx.oscillators).toHaveLength(0);
+    // The caller resumes the context on a gesture: the dropped sounds stay dropped, the next ping plays.
+    (ctx as unknown as { state: AudioContextState }).state = 'running';
+    expect(ctx.oscillators).toHaveLength(0);
+    vi.advanceTimersByTime(2_000);
+    expect(ctx.oscillators).toHaveLength(2);
+    s.dispose();
+  });
+
+  it('a closed context schedules nothing and does not throw', () => {
+    vi.useFakeTimers();
+    const ctx = fakeAudioContext();
+    (ctx as unknown as { state: AudioContextState }).state = 'closed';
+    const s = createSounds(() => ctx);
+    expect(() => { s.play('join'); s.startRing(); vi.advanceTimersByTime(4_000); s.dispose(); }).not.toThrow();
+    expect(ctx.oscillators).toHaveLength(0);
+  });
+
   it('the ring without a context schedules nothing and does not throw', () => {
     vi.useFakeTimers();
     const s = createSounds(() => null);
