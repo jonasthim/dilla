@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkWorkflow, NON_RACE_STEP, raceGatedTests } from './check-ci-workflow.mjs';
+import { checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
@@ -39,6 +39,15 @@ jobs:
         with:
           name: ui-screens
           path: target/ui-screens/web-2b
+          if-no-files-found: error
+      - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--
+      - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish-- --viewport=360x740
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens-web-2c
+          path: |
+            target/ui-screens/web-2c/desktop/**
+            target/ui-screens/web-2c/phone/**
           if-no-files-found: error
   rust-native:
     runs-on: ubuntu-latest
@@ -164,7 +173,7 @@ jobs:
 
   browser-web:
     runs-on: ubuntu-latest
-    timeout-minutes: 41
+    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -327,6 +336,8 @@ jobs:
           provenance: mode=max
           sbom: true
 `;
+
+const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
 // The race-gated Go tests of the repository (ruling I8), as GOOD's non-race step names them.
 const GATED = [
@@ -1064,4 +1075,22 @@ test('a browser-web job back at the web-2a budget is reported (web-2b)', () => {
   assert.notEqual(old, body, 'fixture sanity: the derived budget');
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => old)));
   assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes('timeout-minutes: 41')), problems.join('\n'));
+});
+
+// web-2c task 11 (L-CI-22): the seven new story families at both viewports, both upload paths and the budget.
+test('web-2c captures, both paths and timeout are required independently', () => {
+  const desktop = 'node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--';
+  const phone = 'node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish-- --viewport=360x740';
+  const required = [
+    ['desktop step', GOOD.replace(`      - run: ${desktop}\n`, '')],
+    ['phone step', GOOD.replace(`      - run: ${phone}\n`, '')],
+    ['desktop path', GOOD.replace('target/ui-screens/web-2c/desktop/**', 'target/ui-screens/web-2b/desktop/**')],
+    ['phone path', GOOD.replace('target/ui-screens/web-2c/phone/**', 'target/ui-screens/web-2b/phone/**')],
+    ['timeout', GOOD.replace(`timeout-minutes: ${BUDGET}`, `timeout-minutes: ${BUDGET - 1}`)],
+  ];
+  for (const [name, workflow] of required) {
+    const problems = checkWorkflow(fixture(workflow));
+    assert.ok(problems.length > 0, `${name}: checker accepted a missing gate`);
+    assert.match(problems.join('\n'), /web-2c|screenshot|browser-web|timeout/i, name);
+  }
 });

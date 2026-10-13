@@ -61,6 +61,21 @@ const FORBIDDEN = [
 export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
+/**
+ * browser-web's budget, max(30, ceil(5 × (C + W + 3.0)) + 10) from the measured core-worker (C) and web (W) suites
+ * in minutes (web-1 ruling 41, L-CI-21, L-CI-22). Web-2b measured C = 0.5, W = 2.6 (41). Web-2c task 10 measured
+ * C = 0.5 (28.8 s) and W = 6.8, which gives 62 and, split (L-CI-11), browser-web-core 30 and browser-web 59: still
+ * above 45, so by L-CI-21 the split waits for a controller ruling and the web-2b budget stays pinned until then.
+ */
+export const MIN_BROWSER_WEB_TIMEOUT = 41;
+
+/** L-CI-22: the seven web-2c story families, shot at 1280×800 and at 360×740, each command a whole step of its own. */
+const UI_PREFIXES_2C = 'trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--';
+export const UI_SHOTS_2C = [
+  `node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop ${UI_PREFIXES_2C}`,
+  `node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone ${UI_PREFIXES_2C} --viewport=360x740`,
+];
+
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
@@ -106,7 +121,11 @@ const REQUIRED_STEPS = {
   // Task 26: exercise the manifest writer beside the other script gates.
   node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer'],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
-  ui: ['node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--', 'name: ui-screens', 'path: target/ui-screens/web-2b'],
+  // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
+  ui: [
+    'node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--', 'name: ui-screens', 'path: target/ui-screens/web-2b',
+    'name: ui-screens-web-2c', 'target/ui-screens/web-2c/desktop/**', 'target/ui-screens/web-2c/phone/**',
+  ],
   vectors: [
     'npm run vectors',
     'git diff --exit-code -- protocol/vectors',
@@ -156,7 +175,7 @@ const REQUIRED_STEPS = {
   ],
   // Task 26/C18: three engines and the native peer against the downloaded web and core builds.
   'browser-web': [
-    'timeout-minutes: 41',
+    `timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}`,
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'name: dilla-testkit',
@@ -415,6 +434,14 @@ export function checkWorkflow(root) {
     }
     for (const step of REQUIRED_STEPS[name] ?? []) {
       if (!jobs[name].includes(step)) problems.push(`ci.yml: job "${name}" is missing: ${step}`);
+    }
+  }
+
+  // The desktop command is a prefix of the phone one, so each must be a whole `- run:` line of the ui job.
+  if ('ui' in jobs) {
+    const runs = jobs.ui.split('\n').map((line) => line.trim());
+    for (const command of UI_SHOTS_2C) {
+      if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-2c screenshot step: ${command}`);
     }
   }
 

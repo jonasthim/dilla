@@ -95,8 +95,9 @@ Each browser you add is a device of your account. When you sign up, the browser 
 encrypted end to end with MLS (RFC 9420) between the members' devices, and the instance stores and forwards
 them encrypted. This browser decrypts them and keeps a copy in that same storage, itself encrypted with a key
 that only this browser can unwrap. The next time you open the instance's address, the browser signs in with
-its device key, without a password. (Nothing here has had an independent security review yet, and this
-version still trusts the instance to check which devices join a channel; see the limits at the end.)
+its device key, without a password. (Nothing here has had an independent security review yet. Each device of
+a contact is checked against that person's signed device list, but the first key this browser sees for a person
+is only "first seen", not verified, until you compare safety numbers; see [section 10](#10-privacy-search-and-settings).)
 
 What follows from that:
 
@@ -113,7 +114,7 @@ What follows from that:
   decline. Safari removes a site's storage after seven days without interaction, and the account goes with
   it.
 - **Another tab.** Only one tab runs dilla at a time. A second tab shows "dilla is open in another tab" and
-  takes over when the first one closes.
+  takes over when the first one closes, or at once with **Use this tab**; see [Two tabs](#two-tabs).
 - **Signed out by the account.** If the account no longer accepts this browser (another browser removed it
   in Settings → Devices), the app says "This browser was signed out". See [Devices](#7-devices).
 
@@ -154,6 +155,8 @@ At phone width the channel list sits above the conversation:
 | Escape | In the message list: back to the message field. In a dialog: closes it |
 | Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the channel list, the channel header, the messages, the message field, the status bar |
 | Arrow keys | Move within the server rail and the channel list, which are one Tab stop each |
+| Ctrl+K (⌘+K on a Mac) | Opens search across everything this browser holds |
+| Ctrl+/ | With a conversation open: opens search in this conversation (Control on a Mac too) |
 
 The sidebar tabs are one more Tab stop. Arrow Left and Arrow Right switch between "channels" and "direct messages".
 Settings uses Arrow Up, Arrow Down, Home and End to move between sections; Escape closes it.
@@ -440,7 +443,110 @@ with the message. When a message with files is deleted, its files are deleted fr
 | Arrow Up | In an empty message field: edits your last message |
 | Enter, Shift+Enter, Escape | While editing: save, new line, cancel |
 
-## 10. Known limits (2026-10-07)
+## 10. Privacy, search and settings
+
+### Contacts and safety numbers
+
+![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/trust-privacy-desktop.png)
+
+Before this browser shows a message, it checks that the device which sent it is on its owner's signed device list.
+The first key it sees for a person is kept as that person's key. **Settings → privacy** lists the people you share
+a conversation with:
+
+- "First seen here — not verified": "This is the first key this device saw for {name}. The server could have shown
+  a different one. Compare numbers to verify." First sight is not verification: an instance can show this browser a
+  different key, or hold back a newer device list, the first time it meets a person, and nothing here can tell.
+- "verified": you compared numbers with this person.
+- "This device is not on the contact’s list.": a device of this person is not on their list, or their list could
+  not be read yet. Its messages are not shown, and there is no **Compare** until the list is read.
+
+To verify someone:
+
+1. Open **Settings → privacy** on your device, and ask the other person to do the same on theirs.
+2. Press **Compare with {name}**. "Compare safety numbers" shows a number of 12 blocks of five digits.
+3. Read the 12 blocks to each other "in person or on a call you started yourself": a voice call that one of you
+   started independently, not a link or a message the instance delivered. **Copy number** only copies it; copying
+   approves nothing.
+4. Only when all 12 blocks match, tick "Yes, all 12 blocks match" and press **All 12 blocks match**.
+
+A number needs a conversation you share: for someone you share none with, Privacy says "Open a conversation with
+this person to compare numbers." and shows no number.
+
+![Settings → Privacy at 360 pixels wide](screenshots/trust-privacy-phone.png)
+
+### When a contact's identity changes
+
+![Privacy with a contact whose identity changed: the alert and Compare with](screenshots/trust-changed-desktop.png)
+
+When a contact's identity key changes, the conversation shows the alert "This contact’s identity changed. Compare
+the number before sending." and the message field is blocked with the same words in every conversation you share
+with that person. Their messages under the new key wait, and nothing you received before is removed. Sending in a
+conversation starts again when you compare the new number (the steps above), or, in that one conversation only, when
+that person's changed device is removed from it ("You can send in this conversation after this member leaves. Their
+changed identity is still unverified elsewhere."). The alert's button opens Settings → privacy; pick **Compare with
+{name}** there. A device that fails the checks blocks sending in the conversations that hold it in the same way.
+
+![The changed contact at 360 pixels wide](screenshots/trust-changed-phone.png)
+
+### Search
+
+![Search results for "bridge" across everything](screenshots/search-results-desktop.png)
+
+Search looks only through the messages this browser holds and has decrypted; nothing is sent to the instance.
+
+1. Press **Ctrl+K** (⌘+K on a Mac) for "everything", or **Ctrl+/** in a conversation for "this conversation".
+2. Type into "Search your messages". The scope buttons are "this conversation", "this community" and "everything".
+3. Arrow Down and Arrow Up move through the results while the cursor stays in the field; Enter or a click opens the
+   message and puts the focus on it. Escape closes search.
+
+"Searching your messages" shows while it searches, "No results in this scope" when nothing matched, and "That
+message is no longer available" when the message was deleted or its conversation is gone. Search has no button on a
+phone yet: it opens with a keyboard only.
+
+![Search at 360 pixels wide](screenshots/search-results-phone.png)
+
+### Appearance
+
+**Settings → appearance** sets the theme: "system", "mesh", "light" or "high contrast". The choice applies at once
+and this browser keeps it.
+
+### Keyboard
+
+**Settings → keyboard** lists the two shortcuts: "Ctrl/⌘+K" opens search, "Control+/" searches this conversation.
+There are no single-key shortcuts.
+
+### Diagnostics
+
+![Settings → Diagnostics](screenshots/settings-diagnostics-desktop.png)
+
+**Settings → diagnostics** shows the connection, the instance's generation, the instance and the number of
+devices. **Copy codes** copies the codes of the last 20 errors, one per line, and nothing else: no message, key or
+name, so you can paste them into a report.
+
+![Diagnostics at 360 pixels wide](screenshots/settings-diagnostics-phone.png)
+
+### Typing
+
+While you type in a conversation, the others in it see "{name} is typing", or "Several people are typing". Only the
+members of that conversation get it, and it stops a few seconds after you stop typing.
+
+### Two tabs
+
+![A second tab: dilla is open in another tab, and Use this tab](screenshots/tabs-handover-desktop.png)
+
+dilla runs in one tab per browser and instance. A second tab says "dilla is open in another tab" and offers **Use
+this tab**:
+
+1. Press **Use this tab**. It says "Moving to this tab…" while the first tab finishes its work.
+2. The first tab shows "This tab is paused", and the app opens in the new one.
+3. If the first tab does not let go, the new one says "Close the other tab, then try again." and its button tries
+   again (it is labelled **Use this tab** too).
+
+The paused tab shows nothing of your conversations.
+
+![The hand-over at 360 pixels wide](screenshots/tabs-handover-phone.png)
+
+## 11. Known limits (2026-10-08)
 
 - No native phone or desktop app. A second browser needs the recovery key and the password (and the code,
   for an account with a second factor). A new browser does not get messages from before it joined. Devices have
@@ -455,11 +561,17 @@ with the message. When a message with files is deleted, its files are deleted fr
   plays no audio or video (such files are saved). Received link previews are not shown.
 - Who may pin, unpin or mention everyone is not checked yet: anyone in a conversation can. The pins list names who
   pinned each message. Only the author can delete a message.
-- No search, typing or presence. Notifications require an open tab and browser permission.
+- No presence. Notifications require an open tab and browser permission.
+- Search opens only from the keyboard (Ctrl/⌘+K, Ctrl+/); a phone or tablet without a keyboard cannot open it yet.
+  Search finds only text this browser holds, never files.
 - Messages from before this browser joined a channel are not shown.
-- No safety numbers and no device verification. The name on a message is the device that encrypted it, as
-  the channel's encryption group authenticates it; nothing in the client checks yet that the device belongs
-  to the person named, so the client trusts the instance's check of new devices.
+- The first key seen for a person is trusted as first seen until you compare numbers, and an instance can hold back
+  a newer device list at that moment. Numbers are compared by reading them aloud only: no QR code, and no number for
+  someone you share no conversation with. Privacy shows no date for a verification.
+- After a reload, Privacy forgets that a changed contact left a conversation (the contact still shows as changed
+  until you compare), and the changed-identity alert opens Privacy rather than the comparison itself.
+- No voice or call screens, no Electron desktop app, no server-readable channels, and no settings shared between
+  your browsers (each keeps its own). A second tab never shows the first tab's conversations.
 - If the page is reloaded while the account is being created, the account is finished but the server the
   invite named is not joined; paste the invite into **Join a server**.
 - Tested with Chromium and Firefox, and with WebKit for sign-up and reload; Safari itself has not been
@@ -470,7 +582,9 @@ with the message. When a message with files is deleted, its files are deleted fr
 The screenshots are real: `e2e/scripts/shoot-docs.mjs` starts a `dilla-testhost` that serves the built
 client, creates the server "Midgard Crew", signs ada, björn and mira up in three Chromium profiles, lets them
 reply, react, edit, pin, mention and share images and files in #general, signs mira into a fourth (recovery
-key, then username and password), and photographs the flows. Every name and
+key, then username and password), and photographs the flows. For section 10 a native test peer (the `dilla-testkit`
+binary) makes the server "Bridge Watch", which mira joins, and later changes its identity key; Privacy, search,
+diagnostics and a second tab are shot at 1280×800 and at 360×740. Every name and
 message is made up, and the accounts are deleted with the test host. The account has no second factor, so
 step 3 of the sign-in has no screenshot, and the two warnings of sections 6 and 7 that need a second
 sign-in at the same moment or foreign recovery data are quoted, not shown. To re-shoot them (not part of CI):
@@ -480,7 +594,8 @@ npm run build -w @dilla/web
 GO=/path/to/go npm run docs:shots -w @dilla/e2e
 ```
 
-It needs `internal/mlswasi/testdata/dilla_core_wasi.wasm` and Playwright's Chromium, uses
+It needs `internal/mlswasi/testdata/dilla_core_wasi.wasm`, `target/release/dilla-testkit` (`cargo build -p
+dilla-testkit --release --locked`, or `DILLA_TESTKIT=/path`) and Playwright's Chromium, uses
 127.0.0.1:8471 and 8472 (`node e2e/scripts/shoot-docs.mjs --port P --control C` picks others) and writes
 `docs/user/screenshots/*.png`.
 

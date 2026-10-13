@@ -65,6 +65,18 @@ jobs:
           name: ui-screens
           path: target/ui-screens/web-2b
           if-no-files-found: error
+      # L-CI-22 (web-2c): every story of the seven web-2c families (trust compare and alert, search palette, typing,
+      # diagnostics, tab hand-over and Screens/TrustAndPolish) in the three themes, at 1280×800 and at an actual
+      # 360×740 browser viewport. Each prefix matches only web-2c stories, so a missing or renamed story fails here.
+      - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--
+      - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish-- --viewport=360x740
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens-web-2c
+          path: |
+            target/ui-screens/web-2c/desktop/**
+            target/ui-screens/web-2c/phone/**
+          if-no-files-found: error
   rust-wasm-node:
     runs-on: ubuntu-latest
     steps:
