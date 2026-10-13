@@ -462,10 +462,26 @@ export async function joinCommunity(page: Page, peer: Peer, setup: PeerSetup): P
   await expect(railItem(page, peer.communityName)).toBeVisible({ timeout: WAIT });
 }
 
+/**
+ * Opens a channel and waits until its composer has settled: ready to send, or blocked because a member's identity
+ * changed. Web-2c requirement 1 keeps that block until the contact is verified, so a changed group never becomes
+ * ready; any other refusal (a group that is not active yet) is still waited out, as before.
+ */
 export async function openChannel(page: Page, community: string, channel: string): Promise<void> {
   await railItem(page, community).click();
   await channelRow(page, channel).click();
-  await expectComposerReady(page, channel);
+  await expectComposerSettled(page, channel);
+}
+
+async function expectComposerSettled(page: Page, channel: string): Promise<void> {
+  const box = composerBox(page, channel);
+  await expect(box).toBeVisible({ timeout: WAIT });
+  await expect.poll(async () => {
+    if (await box.isEnabled()) return 'ready';
+    const reason = await box.evaluate((el) => (el.getAttribute('aria-describedby') ?? '').split(/\s+/)
+      .map((id) => (id === '' ? '' : document.getElementById(id)?.textContent ?? '')).join(' ').trim());
+    return reason === copy('privacy.changed') ? 'blocked by a changed identity' : 'waiting';
+  }, { timeout: WAIT }).not.toBe('waiting');
 }
 
 /** The composer is enabled only while the channel's group is active (task 24; aria-disabled otherwise). */
