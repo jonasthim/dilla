@@ -732,6 +732,31 @@ it('leaves the own user out of the trust slice', async () => {
   expect(w.last<TrustSummary[]>('trust')?.map((row) => row.userId)).toEqual([toHex(STRANGER)]);
 });
 
+// The trust patch (89923a6) answers `changed` only for the ingest that starts a key change; a later ingest of the same
+// user still counts the changed-key leaf as quarantined. Reading that count as "unlisted" left the changed contact
+// without a Verify (trust-polish.spec.ts "Copy alone does not approve" timed out on the disabled approve button).
+it('does not call a contact with a pending key change unlisted from the changed-key quarantine count', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.core.pendingLeaves.mockReturnValue([
+    { groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' },
+    { groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' },
+  ]);
+  w.core.deviceListIngest
+    .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 1 })
+    .mockReturnValueOnce({ version: 2n, changed: false, quarantined: 1 });
+  w.call(978, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(978)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: STRANGER, cachedVersion: 1n, reason: 'changed' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 1 });
+  w.call(979, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(979)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(3);
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+});
+
 it('marks a contact unlisted from a quarantining ingest or a core leaf verdict, and clears it after a clean ingest', async () => {
   const w = world();
   await toReady(w);

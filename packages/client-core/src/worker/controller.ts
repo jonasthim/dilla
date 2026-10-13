@@ -1921,6 +1921,7 @@ export class Controller {
     const leaves = core.pendingLeaves();
     this.noteChangedLeaves(leaves);
     let keyChanged = false;
+    const changingUsers = new Set<string>();
     // A user the core no longer reports in any active group has no history left to wait for.
     const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
     for (const user of this.historyFailedUsers) if (!present.has(user)) this.historyFailedUsers.delete(user);
@@ -1951,7 +1952,10 @@ export class Controller {
           throw e;
         }
         // With a changed key the count also holds the leaves it quarantined as changed, so it cannot tell; keep the last.
-        if (verdict.changed) keyChanged = true;
+        // The core says `changed` only on the ingest that starts the change; while it stays pending (reason 'changed',
+        // or started earlier in this run) the count still includes the changed-key leaves.
+        if (verdict.changed) { keyChanged = true; changingUsers.add(user); }
+        else if (changingUsers.has(user) || leaf.reason === 'changed') { /* cannot tell; keep the last */ }
         else if (verdict.quarantined > 0) this.unlistedUsers.add(user);
         else this.unlistedUsers.delete(user);
         unknownUsers.delete(user);
