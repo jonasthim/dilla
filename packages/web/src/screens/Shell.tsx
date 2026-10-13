@@ -646,10 +646,15 @@ export function Shell(): React.JSX.Element {
   const offline = connection?.status === 'offline';
   // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
   const rootMismatch = account?.rootMismatch === true;
-  const banner = offline || commandError !== null || rootMismatch || removedHere || changedHere.length > 0 ? (
+  // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
+  const ownTrust = account?.ownTrust ?? null;
+  const banner = offline || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
+      ) : null}
+      {ownTrust !== null ? (
+        <Banner tone="danger">{t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}</Banner>
       ) : null}
       {offline ? (
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>

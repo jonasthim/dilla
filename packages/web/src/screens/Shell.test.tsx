@@ -840,6 +840,26 @@ describe('a recovery root this account did not seal', () => {
   });
 });
 
+// Privacy lists no own row, so what the core reports about this account's own key stands here, persistent like a
+// changed contact's alert: a different own identity, or a device under this account that the own list does not name.
+describe('the own account’s identity', () => {
+  const CHANGED = 'A device in your conversations presents a different identity for your account. If you did not reset your account, someone else may be using it.';
+  const UNLISTED = 'A device in your conversations claims your account but is not on your device list. Sending is held where it is a member.';
+  it('shows a persistent danger banner while the account slice reports it, and none otherwise', async () => {
+    const { fake, view } = setup(`/c/${A}/${GEN}`, { before: f => f.set('account', account({ ownTrust: 'changed' })) });
+    const alert = screen.getByText(CHANGED).closest('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert).toHaveAttribute('data-tone', 'danger');
+    expect(within(alert as HTMLElement).queryByRole('button')).toBeNull();
+    await expectNoAxeViolations(view.container);
+    act(() => fake.set('account', account({ ownTrust: 'unlisted' })));
+    expect(screen.queryByText(CHANGED)).toBeNull();
+    expect(screen.getByText(UNLISTED).closest('[role="alert"]')).toHaveAttribute('data-tone', 'danger');
+    act(() => fake.set('account', account({ ownTrust: null })));
+    expect(screen.queryByText(UNLISTED)).toBeNull();
+  });
+});
+
 describe('connection', () => {
   it('shows the offline banner and the status bar facts', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);

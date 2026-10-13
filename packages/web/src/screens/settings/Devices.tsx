@@ -107,6 +107,10 @@ export function Devices(): React.JSX.Element {
       {account?.rootMismatch === true ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? '' })}</Banner>
       ) : null}
+      {/* Privacy lists no own row; the core's word on the own key heads the own devices instead. */}
+      {account?.ownTrust === 'changed' || account?.ownTrust === 'unlisted' ? (
+        <Banner tone="danger">{t(account.ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}</Banner>
+      ) : null}
       {loadError === null ? null : <Banner tone="danger">{t('settings.error.other', { code: loadError.code })}</Banner>}
       <p>{t('devices.body')}</p>
       <ul className="dw-device-list">

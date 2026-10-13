@@ -13,6 +13,10 @@ export interface AccountState {
   /** BACKUPS-RECOVERY-04: the instance holds a root object this account did not seal (E_ROOT_MISMATCH at ready), so
    *  the recovery key cannot open it until the operator resets it; cleared by a later matching check and by a wipe. */
   rootMismatch: boolean;
+  /** The core's trust state for this account's own key, which Privacy does not list as a contact: 'changed' while a
+   *  signed list under another key is pending for this user, 'unlisted' while the core refuses an own leaf against the
+   *  own signed list (a device this person did not add). null otherwise; re-derived at each trust publish. */
+  ownTrust: 'changed' | 'unlisted' | null;
 }
 /** Page-bound errors have a stable code and no detail. */
 export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null; }

@@ -14,4 +14,6 @@ export const privacy = {
   'privacy.unlisted': 'This device is not on the contact’s list.',
   'privacy.noShared': 'Open a conversation with this person to compare numbers.',
   'privacy.removed': 'You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere.',
+  'privacy.ownChanged': 'A device in your conversations presents a different identity for your account. If you did not reset your account, someone else may be using it.',
+  'privacy.ownUnlisted': 'A device in your conversations claims your account but is not on your device list. Sending is held where it is a member.',
 } as const;

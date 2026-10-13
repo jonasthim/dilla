@@ -205,6 +205,18 @@ describe('a recovery root this account did not seal', () => {
   });
 });
 
+// The own account's trust state, which Privacy does not list, heads the section about this account's devices too.
+describe('the own account’s identity', () => {
+  const UNLISTED = 'A device in your conversations claims your account but is not on your device list. Sending is held where it is a member.';
+  it('heads the section with a danger banner while the account slice reports it', async () => {
+    const { fake, view } = setup();
+    expect(screen.queryByText(UNLISTED)).toBeNull();
+    act(() => fake.set('account', account({ ownTrust: 'unlisted' })));
+    expect(screen.getByRole('alert')).toHaveTextContent(UNLISTED);
+    await expectNoAxeViolations(view.container);
+  });
+});
+
 describe('this browser', () => {
   it('signs out and removes itself with the key, and leaves the reload to the App', async () => {
     const { fake, user, view } = setup();

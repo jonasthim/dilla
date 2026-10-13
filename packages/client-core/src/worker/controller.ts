@@ -294,7 +294,7 @@ export class Controller {
   private graceTimer: number | null = null;
   private phase: BootPhase = 'loading';
   private accountState: AccountState = {
-    phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false,
+    phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null,
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
@@ -348,6 +348,9 @@ export class Controller {
   // is not read again before the next ready), and the published union of those with users whose history is still unknown.
   private readonly historyFailedUsers = new Set<string>();
   private pendingUsers = new Set<string>();
+  // Users whose key this page just approved: trust_verify re-judged their leaves, and a count read while their change was
+  // pending told nothing, so they read as pending (never verified) until their leaves are ingested again (lead (s)).
+  private readonly recheckUsers = new Set<string>();
   // user hex -> groups (hex) where pendingLeaves last reported a 'changed' leaf of that user.
   private changedLeafGroups = new Map<string, Set<string>>();
   // user hex -> still active groups whose changed leaf has since left the tree (a validated Remove cleared their block).
@@ -536,7 +539,7 @@ export class Controller {
   }
 
   private async startOnce(): Promise<null> {
-    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false });
+    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null });
     this.setConnection({ status: 'offline', generation: null });
     let instance: Instance;
     try {
@@ -1656,7 +1659,7 @@ export class Controller {
     for (const known of this.channels.values()) communities.add(known.communityId);
     const timelines = [...this.open.keys()];
     this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
-    this.historyFailedUsers.clear(); this.pendingUsers = new Set();
+    this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.recheckUsers.clear();
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
@@ -1676,7 +1679,7 @@ export class Controller {
     this.slices.set('notices', this.noticesState);
     this.setConnection({ status: 'offline', generation: null });
     this.storeCleared = true;
-    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false });
+    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false, ownTrust: null });
   }
 
   // ---- channels and timelines ----
@@ -1925,6 +1928,7 @@ export class Controller {
     // A user the core no longer reports in any active group has no history left to wait for.
     const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
     for (const user of this.historyFailedUsers) if (!present.has(user)) this.historyFailedUsers.delete(user);
+    for (const user of this.recheckUsers) if (!present.has(user)) this.recheckUsers.delete(user);
     // Users with a leaf whose signed history the core has never accepted; a successful ingest below caches their list.
     const unknownUsers = new Set(leaves.filter((leaf) => leaf.reason === 'unknown').map((leaf) => toHex(leaf.userId)));
     const historyByUser = new Map<string, { head: Uint8Array; history: Uint8Array } | null>();
@@ -1948,7 +1952,7 @@ export class Controller {
         try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
         catch (e) {
           // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
-          if (e instanceof CoreError && LEAF_VERDICTS.has(e.code)) this.unlistedUsers.add(user);
+          if (e instanceof CoreError && LEAF_VERDICTS.has(e.code)) { this.unlistedUsers.add(user); this.recheckUsers.delete(user); }
           throw e;
         }
         // With a changed key the count also holds the leaves it quarantined as changed, so it cannot tell; keep the last.
@@ -1958,6 +1962,7 @@ export class Controller {
         else if (changingUsers.has(user) || leaf.reason === 'changed') { /* cannot tell; keep the last */ }
         else if (verdict.quarantined > 0) this.unlistedUsers.add(user);
         else this.unlistedUsers.delete(user);
+        if (!changingUsers.has(user) && leaf.reason !== 'changed') this.recheckUsers.delete(user);
         unknownUsers.delete(user);
         core.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
         this.refreshTrustGeneration();
@@ -2018,9 +2023,16 @@ export class Controller {
       const channelId = toHex(group.targetId);
       if (this.dms.has(channelId) || this.channels.has(channelId)) channelOf.set(toHex(group.groupId), channelId);
     }
-    // The core pins the own key as well; nobody compares a safety number with themselves.
+    // The core pins the own key as well; nobody compares a safety number with themselves, so the own row is no contact.
+    // What the core says about it is not dropped: a changed own key or an own leaf the core refused against the own
+    // signed list (a device this person did not add) stands on the account slice, where the page alerts on it.
     const own = this.me === null ? null : toHex(this.me.userId);
-    this.slices.set('trust', this.core.trustState().filter((row) => toHex(row.userId) !== own).map((row): TrustSummary => {
+    const rows = this.core.trustState();
+    const ownRow = own === null ? undefined : rows.find((row) => toHex(row.userId) === own);
+    const ownTrust: AccountState['ownTrust'] = ownRow !== undefined && ownRow.changedUmk !== null ? 'changed'
+      : own !== null && this.unlistedUsers.has(own) ? 'unlisted' : null;
+    if (!this.storeCleared && this.accountState.ownTrust !== ownTrust) this.setAccount({ ownTrust });
+    this.slices.set('trust', rows.filter((row) => toHex(row.userId) !== own).map((row): TrustSummary => {
       const userId = toHex(row.userId);
       // An approved key ends the changed state everywhere, so no group is left to call removed.
       if (row.changedUmk === null) this.removedGroups.delete(userId);
@@ -2028,13 +2040,19 @@ export class Controller {
       return { userId, name: this.nameOf(userId), shared: this.sharedUser(userId), umk: toHex(row.umk),
         firstSeen: Number(row.firstSeen), verified: row.verified, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk),
         // History pending has Flow 05's unlisted announcement and, like unlisted, no Verify.
-        ...(this.unlistedUsers.has(userId) || this.pendingUsers.has(userId) ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}) };
+        ...(this.unlistedUsers.has(userId) || this.pendingUsers.has(userId) || this.recheckUsers.has(userId) ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}) };
     }));
   }
 
   private verifyContact(userId: string, umk: string): Promise<null> {
     if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
     this.requireCore().trustVerify(fromHex(userId), fromHex(umk));
+    // The approval re-judged this user's leaves in the core; while a change was pending the worker could not read the
+    // quarantine count, so the contact stays pending until its leaves are ingested again, never verified on a stale view.
+    this.recheckUsers.add(userId);
+    for (const key of this.fetchedLeaves) if (key.split(':')[2] === userId) this.fetchedLeaves.delete(key);
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    void this.barrier.track(this.refreshTrust()).catch(() => undefined);
     this.refreshTrustGeneration();
     this.publishTrust();
     return Promise.resolve(null);
