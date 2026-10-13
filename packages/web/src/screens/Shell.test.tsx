@@ -237,6 +237,44 @@ it('stands a changed contact of this conversation as an alert that leads to Priv
   expect(path()).toBe('/settings/privacy');
 });
 
+// Requirement 1 of task 10 (L-CORE-40): a changed UMK blocks sending in each group still containing the changed leaf, so
+// the composer of that conversation says why it is blocked; a changed contact elsewhere and a validated Remove do not.
+it('blocks the composer of a conversation with a changed contact, and says why', async () => {
+  const changed = 'This contact’s identity changed. Compare the number before sending.';
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [
+      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32) },
+    ]);
+  } });
+  expectBlocked();
+  const reason = document.querySelector('.d-composer__reason');
+  expect(reason).toHaveTextContent(changed);
+  expect(composer('general').getAttribute('aria-describedby')?.split(' ')).toContain(reason?.id);
+  await user.type(composer('general'), 'held back{Enter}');
+  expect(fake.callsOf('send')).toEqual([]);
+  // Verified (or a validated Remove here): sending resumes.
+  act(() => fake.set('trust', [
+    { userId: PEER, name: 'bob', shared: true, umk: 'cc'.repeat(32), firstSeen: 1, verified: true, changedUmk: null },
+  ]));
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+  act(() => fake.set('trust', [
+    { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32),
+      removedIn: [GEN] },
+  ]));
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
+it('leaves the composer open where the changed contact is not a member', () => {
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [
+      { userId: STRANGER, name: 'eve', shared: true, umk: 'ee'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'dd'.repeat(32) },
+    ]);
+  } });
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
 // Settings' Privacy section carries the same alert and action; the conversation's copy under the modal would repeat the
 // announcement and give a second, unreachable "Compare with" button.
 it('leaves the changed alert to Privacy while Settings covers the conversation', () => {

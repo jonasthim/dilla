@@ -555,7 +555,17 @@ export function Shell(): React.JSX.Element {
     );
   }
 
-  const reasonKey: StringKey | null = openError !== null ? 'shell.composer.openFailed' : composerBlock(group);
+  // A validated Remove of a changed leaf unblocked sending here only; the contact stays changed elsewhere (Flow 05).
+  const removedHere = targetId !== null && (trust ?? []).some(row => row.changedUmk !== null && row.removedIn?.includes(targetId) === true);
+  // Flow 05 "changed": a member of this conversation whose identity changed stands as an alert with no dismiss, until the
+  // new key is verified or a validated Remove restored sending here. Names come from the worker's trust slice only.
+  const audience = new Set(channel !== null ? (members ?? []).map(member => member.userId) : dm?.members ?? []);
+  const changedMembers = targetId === null ? [] : (trust ?? []).filter(row => row.changedUmk !== null && audience.has(row.userId)
+    && row.removedIn?.includes(targetId) !== true);
+  // L-CORE-40: the changed leaf blocks sending in this group until its key is verified or a validated Remove; the composer
+  // says so (privacy.changed: "Compare the number before sending") instead of letting a send fail.
+  const reasonKey: StringKey | null = openError !== null ? 'shell.composer.openFailed'
+    : composerBlock(group) ?? (changedMembers.length > 0 ? 'privacy.changed' : null);
   const composerLabel = channel !== null ? t('shell.composer.label', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })
@@ -573,14 +583,8 @@ export function Shell(): React.JSX.Element {
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
-  // A validated Remove of a changed leaf unblocked sending here only; the contact stays changed elsewhere (Flow 05).
-  const removedHere = targetId !== null && (trust ?? []).some(row => row.changedUmk !== null && row.removedIn?.includes(targetId) === true);
-  // Flow 05 "changed": a member of this conversation whose identity changed stands as an alert with no dismiss, until the
-  // new key is verified or a validated Remove restored sending here. Names come from the worker's trust slice only.
-  const audience = new Set(channel !== null ? (members ?? []).map(member => member.userId) : dm?.members ?? []);
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
-  const changedHere = targetId === null || overlay ? [] : (trust ?? []).filter(row => row.changedUmk !== null && audience.has(row.userId)
-    && row.removedIn?.includes(targetId) !== true);
+  const changedHere = overlay ? [] : changedMembers;
 
   const searchHits: SearchHitView[] = (search?.hits ?? []).map(hit => {
     const location = hit.communityId === null ? dms?.find(row => row.id === hit.channelId)?.name

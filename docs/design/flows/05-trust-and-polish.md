@@ -7,7 +7,7 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 | state | shown action | worker fact | announcement |
 |---|---|---|---|
 | First seen here — not verified | `privacy.firstSeen` under the state; Compare with {name} | pin exists, verified=0, changedUmk=null | Privacy heading |
-| changed | Compare with {name}; alert cannot dismiss | changedUmk is validated pending key | `privacy.changed` |
+| changed | Compare with {name}; alert cannot dismiss; the composer of each conversation with that contact is blocked with the same text | changedUmk is validated pending key | `privacy.changed` |
 | unlisted | no Verify | leaf is quarantined | `privacy.unlisted` |
 | verified | show the compared key and date | exact current pin verified=1 | Privacy heading |
 | no shared group | no Verify | shared=false | `privacy.noShared` |
@@ -149,7 +149,7 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.firstSeen | This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify. | under first-seen state on Privacy page and in dialog |
 | privacy.firstSeenLabel | First seen here — not verified | first-seen state label on Privacy page and in dialog |
 | privacy.verifiedLabel | verified | verified state label beside the compared key |
-| privacy.changed | This contact’s identity changed. Compare the number before sending. | changed alert |
+| privacy.changed | This contact’s identity changed. Compare the number before sending. | changed alert; reason under the blocked composer of that conversation |
 | privacy.unlisted | This device is not on the contact’s list. | unlisted state |
 | privacy.noShared | Open a conversation with this person to compare numbers. | no shared group |
 | privacy.removed | You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere. | group recovery |

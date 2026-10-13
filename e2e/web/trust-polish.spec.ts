@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test';
-import { copy, expectAccessible, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, sendText, shownName, signUp, WAIT } from './support/app';
+import { composerBox, copy, expectAccessible, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, sendText, shownName, signUp, WAIT } from './support/app';
 import { test } from './support/second';
 
 async function enter(page: Page, peer: Peer, instanceName: string) {
@@ -29,6 +29,8 @@ test('rotation retracts already visible text; an independent trusted group still
     await peer.rotateUmk();
     await peer.send('after rotation');
     await expect(page.getByRole('alert')).toContainText(copy('privacy.changed'), { timeout: WAIT });
+    // Requirement 1: sending is blocked in the changed contact's group, and the composer says why.
+    await expect(composerBox(page, peer.channelName)).toHaveAttribute('aria-disabled', 'true');
     await expect(page.getByText('before rotation')).toHaveCount(0);
     await expect(page.getByText('after rotation')).toHaveCount(0);
     await expect(rowById(page, peer.channelName, original.msg_id)).toHaveAttribute('data-state', 'cannot-read');
@@ -46,6 +48,7 @@ test('Copy alone does not approve; explicit exact-key comparison admits new traf
   const rotated = await peer.rotateUmk();
   await peer.send('pending rotation');
   await expect(page.getByRole('alert')).toContainText(copy('privacy.changed'), { timeout: WAIT });
+  await expect(composerBox(page, peer.channelName)).toHaveAttribute('aria-disabled', 'true');
   await openSettings(page, 'privacy');
   await page.getByRole('button', { name: copy('privacy.compare', { name: shownName(setup) }) }).click();
   const dialog = page.getByRole('dialog', { name: copy('privacy.title') });
