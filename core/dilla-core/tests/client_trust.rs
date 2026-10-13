@@ -2425,3 +2425,69 @@ fn fixr_trust_verify_succeeds_once_saved_when_revalidation_fails() {
         "the failed revalidation released nothing"
     );
 }
+
+/// The own user's cached device list rows, by UMK.
+fn fixr_own_lists(alice: &Core) -> Vec<[u8; 32]> {
+    let db = alice.probe.lock().unwrap();
+    let mut stmt = db
+        .prepare("SELECT umk_pub FROM app_device_lists WHERE user_id=?1")
+        .unwrap();
+    stmt.query_map([alice.user.as_slice()], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// R5: the open-time repair of the own pin also drops an own device list cached under another
+/// UMK (an impostor's, pinned by a store attacked before F3). Otherwise every real own device
+/// failed against the cached impostor key, and ingest anchored on the impostor's head. A cached
+/// own list under the own key is kept.
+#[test]
+fn fixr_the_own_pin_repair_drops_an_impostors_cached_own_list() {
+    let (_, relay, alice, mut bob) = alice_and_bob();
+    let own = fixa_own_umk(&alice, &mut bob, &relay);
+    let insert = |alice: &Core, umk: [u8; 32]| {
+        alice
+            .probe
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT OR REPLACE INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) \
+                 VALUES(?1,7,x'00',?2,?3)",
+                rusqlite::params![
+                    alice.user.as_slice(),
+                    umk.as_slice(),
+                    [0xe4u8; 32].as_slice()
+                ],
+            )
+            .unwrap();
+    };
+    insert(&alice, [0xe2; 32]);
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE app_trust_pins SET umk_pub=?2,verified=0 WHERE user_id=?1",
+            rusqlite::params![alice.user.as_slice(), [0xe2u8; 32].as_slice()],
+        )
+        .unwrap();
+    let alice = alice.reopen();
+    assert_eq!(fixa_row(&alice, &alice.user), Some((own, 1, None, None)));
+    assert_eq!(
+        fixr_own_lists(&alice),
+        Vec::<[u8; 32]>::new(),
+        "the impostor's own list is dropped"
+    );
+    // Also when the pin itself was already right.
+    insert(&alice, [0xe2; 32]);
+    let alice = alice.reopen();
+    assert_eq!(fixr_own_lists(&alice), Vec::<[u8; 32]>::new());
+    insert(&alice, own);
+    let alice = alice.reopen();
+    assert_eq!(
+        fixr_own_lists(&alice),
+        vec![own],
+        "a list under the own key stays"
+    );
+}

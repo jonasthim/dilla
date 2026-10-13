@@ -222,12 +222,19 @@ pub(super) fn pin_own(
         verified: true,
         changed: None,
     };
+    // R5: an own list cached under another key (an impostor's, cached by a store that pinned it
+    // before the own key was pinned from the credential) would fail every real own device and
+    // anchor ingest on the impostor's head. It goes; the own list is fetched and validated again.
+    let dropped = c.execute(
+        "DELETE FROM app_device_lists WHERE user_id=?1 AND umk_pub<>?2",
+        params![user.as_slice(), umk.as_slice()],
+    )?;
     if prior != Some(pin) {
         write_pin(c, user, &pin)?;
-        // The first pin changes nothing displayed; a repaired one does.
-        if prior.is_some() {
-            bump_generation(c)?;
-        }
+    }
+    // The first pin changes nothing displayed; a repaired one does.
+    if (prior.is_some() && prior != Some(pin)) || dropped > 0 {
+        bump_generation(c)?;
     }
     Ok(())
 }
