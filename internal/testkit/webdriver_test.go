@@ -224,6 +224,12 @@ func TestWebDriverCallVerbs(t *testing.T) {
 		t.Fatalf("call_members answered group %v, want %v", m["group"], j1["group"])
 	}
 	waitCallMembers(t, peer, "peer", voice, peerDev)
+	// web-3 task 10: call_read answers GET /v1/channels/{id}/call (L-HTTP-100) as the actor sees it: the group, no
+	// call yet, and nobody in the room.
+	if r := peer.ok("call_read", map[string]any{"actor": "peer", "channel": voice.String()}); r["group"] != j1["group"] ||
+		r["call"] != nil || len(r["participants"].([]any)) != 0 {
+		t.Fatalf("call_read answered %v, want group %v, call null and no participants", r, j1["group"])
+	}
 
 	// 2. The second actor reads the same group from the route and joins it by external commit: leaf 1.
 	j2 := peer.ok("call_join", map[string]any{"actor": "second", "channel": voice.String()})

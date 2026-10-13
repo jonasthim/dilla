@@ -497,7 +497,7 @@ impl WebDriver {
                     Self::hex16(req, "channel_id")?;
                 }
             }
-            "call_join" | "call_leave" | "call_members" | "call_start" => {
+            "call_join" | "call_leave" | "call_members" | "call_start" | "call_read" => {
                 Self::actor(req)?;
                 Self::hex16(req, "channel")?;
             }
@@ -570,6 +570,7 @@ impl WebDriver {
             "call_leave" => self.call_leave(req).map_err(new_verb_error),
             "call_members" => self.call_members(req).map_err(new_verb_error),
             "call_start" => self.call_start(req).map_err(new_verb_error),
+            "call_read" => self.call_read(req).map_err(new_verb_error),
             "call_decline" => self.call_decline(req).map_err(new_verb_error),
             "call_check" => self.call_check(req).map_err(new_verb_error),
             "forge_device" => self.forge_device().map_err(new_verb_error),
@@ -1558,6 +1559,27 @@ impl WebDriver {
         Ok(json!({"group": hex::encode(group), "devices": devices}))
     }
 
+    /// `call_read {actor, channel}` → `{group, call, participants}`: `GET /v1/channels/{id}/call` (L-HTTP-100) as the
+    /// actor reads it — the channel's open call group and live call (each null without one) and who is in its room,
+    /// each `{user, device, flags}`. Web-3 task 10's negative checks read who reached the room from here.
+    fn call_read(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let actor = Self::actor(req)?;
+        let channel = Self::hex16(req, "channel")?;
+        let call = self.session_of(actor, |_, ds| Ok(ds.get_channel_call(&channel)?))?;
+        let participants: Vec<Value> = call
+            .participants
+            .iter()
+            .map(|(user, device, flags)| {
+                json!({"user": hex::encode(user), "device": hex::encode(device), "flags": flags})
+            })
+            .collect();
+        Ok(json!({
+            "group": call.group_id.map(hex::encode),
+            "call": call.call_id.map(hex::encode),
+            "participants": participants,
+        }))
+    }
+
     /// `call_start {actor, channel}` → `{call, created}`: `POST /v1/channels/{id}/calls`. A start that opens a DM's
     /// call (`201`) rings its other participants; the peer never connects to the SFU.
     fn call_start(&mut self, req: &Value) -> Result<Value, TestkitError> {
@@ -2221,6 +2243,18 @@ mod tests {
             ),
             (
                 json!({"id": 14, "op": "forge_device"}),
+                "scenario: setup first",
+            ),
+            (
+                json!({"id": 15, "op": "call_read", "actor": "third", "channel": channel}),
+                "scenario: actor must be peer or second",
+            ),
+            (
+                json!({"id": 16, "op": "call_read", "channel": "AB".repeat(16)}),
+                "scenario: channel is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 17, "op": "call_read", "channel": channel}),
                 "scenario: setup first",
             ),
         ];

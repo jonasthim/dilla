@@ -38,6 +38,7 @@ export type PeerActor = 'peer' | 'second';
 export interface PeerCallJoined { group: string; leaf: number }
 export interface PeerCallMembers { group: string; devices: string[] }
 export interface PeerCallStarted { call: string; created: boolean }
+export interface PeerCallRead { group: string | null; call: string | null; participants: { user: string; device: string; flags: number }[] }
 export interface PeerCallCheck { code: string | null; leaves: { leaf: number; user: string; outcome: string }[] }
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
@@ -152,6 +153,11 @@ export class WebDriver {
   /** L-E2E-30 `call_members`: the actor's call-group roster after a sync that commits any outstanding Remove, sorted. */
   async callMembers(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallMembers> {
     return this.strip(await this.request<PeerCallMembers & { id: number; ok: boolean }>('call_members', { actor, channel: channelId }));
+  }
+  /** `call_read`: `GET /v1/channels/{id}/call` (L-HTTP-100) as the actor reads it: the open call group, the live call,
+   *  and who is in its room. */
+  async callRead(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallRead> {
+    return this.strip(await this.request<PeerCallRead & { id: number; ok: boolean }>('call_read', { actor, channel: channelId }));
   }
   /** L-E2E-30 `call_start`: `POST /v1/channels/{id}/calls`; `created` is a 201, which rings a DM's other participants. */
   async callStart(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallStarted> {
