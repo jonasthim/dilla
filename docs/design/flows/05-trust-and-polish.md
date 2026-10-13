@@ -8,6 +8,9 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 |---|---|---|---|
 | First seen here — not verified | `privacy.firstSeen` under the state; Compare with {name} | pin exists, verified=0, changedUmk=null | Privacy heading |
 | changed | Compare with {name}; alert cannot dismiss; the composer of each conversation with that contact is blocked with the same text | changedUmk is validated pending key | `privacy.changed` |
+| changed, no key to compare | alert cannot dismiss, no Compare; a validated Remove of the changed device ends it per conversation | blocked=E_UMK_CHANGED, changedUmk=null | `privacy.changedNoKey` |
+| failed device in a conversation | composer blocked with the reason; no Verify | sendBlocks[channel] is E_DEVICE_UNLISTED, E_TIER_MISMATCH or E_CREDENTIAL | `privacy.leafFailed` |
+| own account: other identity or unlisted device | danger banner in the shell and Devices, no dismiss; its action opens Devices (no compare) | account.ownTrust is changed or unlisted | `privacy.ownChanged` / `privacy.ownUnlisted` |
 | unlisted | no Verify | leaf is quarantined | `privacy.unlisted` |
 | verified | show the compared key and date | exact current pin verified=1 | Privacy heading |
 | no shared group | no Verify | shared=false | `privacy.noShared` |
@@ -17,7 +20,7 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 | search empty | keep textbox and scope | current hits=[] | `search.noResults` |
 | search stale | keep destination heading before closing palette | target absent/deleted/quarantined | `search.unavailable` |
 | other tab waiting | no conversation view | no matching release/lock yet | `tabs.wait` |
-| other tab failed or paused | retry or surviving heading | lock still owned or local pause failed | `tabs.failed` or `tabs.paused` |
+| other tab failed or paused | retry, or the paused heading with `tabs.pausedDetail` and Use this tab | lock still owned or local pause failed | `tabs.failed` or `tabs.paused` |
 
 First sight means first seen **here**, on this device. An instance may withhold newer signed lists, including on first sight; the first pin is not evidence that the list is current. An unknown history leaves the affected leaf pending and its message body unavailable. A validated Remove restores sending only in the group whose current tree no longer contains that leaf. The changed contact key stays unverified in other shared groups. A remote member can provoke repeated changed-key refusals, so a group-local Remove gives the honest sender a way to recover without approving that key.
 
@@ -102,8 +105,8 @@ Use Mesh's mono/terminal hierarchy, `--bg`, `--surface`, `--fg`, `--fg-2`, `--ed
 
 | starting focus | action | destination |
 |---|---|---|
-| shell | Ctrl/⌘+K | search textbox, scope preserved |
-| conversation | Ctrl+/ | search textbox, channel scope |
+| shell | Control/⌘+K | search textbox, scope preserved |
+| conversation | Control+/ | search textbox, channel scope |
 | compare opener | Enter/Space | dialog heading, then first control |
 | inside compare | Tab/Shift+Tab | next/previous control inside dialog; wraps |
 | compare Copy | Enter/Space | Copy button; checkbox stays unchecked |
@@ -124,6 +127,8 @@ There is no unmodified global shortcut. These shortcuts do not interrupt IME com
 | validated Remove clears this group's send block | surviving composer in this group if present, else conversation heading; other groups keep their changed-key block | `privacy.removed` |
 | search hit disappears | channel heading or persistent palette textbox before unmount | `search.unavailable` |
 | tab waits, becomes ready, pauses or fails | heading of the new state or Retry control | `tabs.wait` / ready state / `tabs.paused` / `tabs.failed` |
+| paused tab leads again (hand-back, or the other tab closed) | the shell's usual focus | none |
+| compare approved | Privacy heading | no extra text |
 | typing one to many | current conversation; do not steal focus | `typing.one` / `typing.many` |
 
 The compare dialog traps focus and returns it to a surviving opener on close. Activating Compare in a changed alert first focuses the dialog heading; subsequent Tab reaches the first control. If an alert is replaced, focus moves to the surviving Compare control. A tab transition focuses the new state's persistent heading or Retry control, never a removed conversation control.
@@ -153,6 +158,16 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.unlisted | This device is not on the contact’s list. | unlisted state |
 | privacy.noShared | Open a conversation with this person to compare numbers. | no shared group |
 | privacy.removed | You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere. | group recovery |
+| privacy.changedNoKey | This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed. | changed alert without Compare (no pending key) |
+| privacy.leafFailed | A device in this conversation failed the identity check. Sending is paused here until it’s removed. | reason under the blocked composer (failed device) |
+| privacy.ownChanged | A device using your account under a different identity is in some of your conversations. Sending is paused there. Open Devices and remove any device you don’t recognise. | shell and Devices danger banner, persistent |
+| privacy.ownUnlisted | A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices. | shell and Devices danger banner, persistent |
+| privacy.ownAction | Open devices | own-account banner action |
+| privacy.loading | Working out the number… | compare dialog status while the number loads |
+| privacy.loadFailed | The number could not be worked out. Close this and try again. | compare dialog alert |
+| privacy.keyMoved | The key changed while you compared. Close this and compare the new number. | compare dialog alert |
+| privacy.verifyFailed | This could not be marked as verified. Close this and compare again. | compare dialog alert |
+| dialog.close | Close | compare dialog close; search palette close |
 | search.open | search | shell action |
 | search.placeholder | Search your messages | palette textbox |
 | search.empty | No messages found | global empty state |
@@ -162,7 +177,8 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | search.scope.channel | this conversation | scope option |
 | search.scope.community | this community | scope option |
 | search.scope.all | everything | scope option |
-| keyboard.searchAll | Ctrl/⌘+K | Keyboard settings, opens search |
+| keyboard.title | Keyboard | Keyboard settings heading |
+| keyboard.searchAll | Control/⌘+K | Keyboard settings, opens search |
 | keyboard.searchChannel | Control+/ | Keyboard settings, searches this conversation |
 | diagnostics.title | Diagnostics | heading |
 | diagnostics.copy | Copy codes | diagnostics action |
@@ -175,5 +191,7 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | tabs.wait | Moving to this tab… | waiting status |
 | tabs.failed | Close the other tab, then try again. | failure status |
 | tabs.paused | This tab is paused | paused heading |
+| tabs.pausedDetail | dilla moved to another tab. This tab takes over when that one closes, or you can use it here now. | paused detail, above Use this tab |
+| boot.otherTab.status | dilla is open in another tab | other-tab heading |
 | typing.one | {name} is typing | conversation status |
 | typing.many | Several people are typing | conversation status |

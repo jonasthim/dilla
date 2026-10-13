@@ -29,7 +29,7 @@ const nav = () => screen.getByRole('navigation', { name: 'settings sections' });
 describe('Settings', () => {
   it('focuses every selected section heading', async () => {
     const { user } = setup('/settings/devices', null);
-    for (const [section, heading] of [['notifications', 'Notifications'], ['appearance', 'Appearance'], ['privacy', 'Privacy'], ['keyboard', 'keyboard'], ['diagnostics', 'Diagnostics'], ['devices', 'Devices']]) {
+    for (const [section, heading] of [['notifications', 'Notifications'], ['appearance', 'Appearance'], ['privacy', 'Privacy'], ['keyboard', 'Keyboard'], ['diagnostics', 'Diagnostics'], ['devices', 'Devices']]) {
       await user.click(within(nav()).getByRole('button', { name: section }));
       expect(screen.getByRole('heading', { name: heading, level: 2 })).toHaveFocus();
     }

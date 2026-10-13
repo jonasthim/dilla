@@ -165,6 +165,20 @@ describe('the flows quote en.ts', () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const [key, value] of rows) expect(en[key as keyof typeof en], key).toBe(value);
   });
+  // W-02: the other direction. A visible string of the web-2c screens that no flow names can drift unreviewed, so every
+  // en.ts key of those screens (and the web-1 keys they reuse) must be a row of a flow's Copy table.
+  it('every en.ts key of the trust, search, tab, diagnostics, typing and keyboard screens is in a flow Copy table', () => {
+    const flow05 = readFileSync(join(FLOWS, '05-trust-and-polish.md'), 'utf8').split('## Copy\n')[1]?.split('\n## ')[0] ?? '';
+    const listed = new Set([
+      ...flow05.split('\n').filter(line => /^\| [a-z]+\./.test(line)).map(line => line.split('|')[1].trim()),
+      ...FLOW_FILES.flatMap(file => copyRows(readFileSync(join(FLOWS, file), 'utf8')).rows.map(([key]) => key)),
+    ]);
+    const screens = /^(privacy|search|tabs|diagnostics|typing|keyboard)\./;
+    const reused = ['boot.otherTab.status', 'dialog.close', 'settings.nav.privacy', 'settings.nav.keyboard', 'settings.nav.diagnostics'];
+    const keys = [...Object.keys(en).filter(key => screens.test(key)), ...reused];
+    expect(keys.length).toBeGreaterThan(30);
+    expect(keys.filter(key => !listed.has(key))).toEqual([]);
+  });
   it('reads every row of a copy table and nothing else', () => {
     const doc = [
       '| key | text | where |', '|---|---|---|', '| `a.b` | `One` | x |', '| `c.d` | `Two’s` |', '',
