@@ -406,7 +406,7 @@ export class ModelCore implements CorePort {
       const rowVersion = u64(row[0]);
       const anchor = index === 0 && leaf.version > 0n;
       if (anchor) {
-        if (rowVersion !== leaf.version || leaf.head === null || !same(encode(row), leaf.head)) throw coreError('E_DEVICE_LIST_STALE');
+        if (rowVersion !== leaf.version || leaf.head === null || !same(bin(row[1]), leaf.head)) throw coreError('E_DEVICE_LIST_STALE');
       } else if (rowVersion !== version + 1n) throw coreError('E_DEVICE_LIST_STALE');
       const list = readFakeList(bin(row[1]));
       if (list === null) throw coreError('E_DEVICE_LIST_STALE');
@@ -420,7 +420,8 @@ export class ModelCore implements CorePort {
       final = row;
       finalList = list;
     }
-    if (final === null || finalList === null || !same(encode(final), headList)) throw coreError('E_DEVICE_LIST_STALE');
+    // Like trust.rs, head_list is the signed list itself (the native peer's head.blob), never the served row around it.
+    if (final === null || finalList === null || !same(bin(final[1]), headList)) throw coreError('E_DEVICE_LIST_STALE');
     const entry = finalList.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
     if (entry === undefined) throw coreError('E_DEVICE_UNLISTED');
     if (!same(entryKey(entry), leaf.dskPub)) throw coreError('E_CREDENTIAL');

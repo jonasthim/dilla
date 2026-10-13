@@ -39,6 +39,14 @@ export function decodeTrustState(bytes: Uint8Array): TrustRecord[] {
   } catch (error) { return malformed(error); }
 }
 
+/**
+ * The core's `head_list`: the signed DeviceList inside the reader's candidate head row [version, list, ssk_signature,
+ * prev_hash]. The core decodes and caches exactly these bytes (trust.rs `bounded_list`), as the native peer passes them.
+ */
+export function signedHeadList(head: Uint8Array): Uint8Array {
+  try { return bin(arr(decode(head), 4)[1]); } catch { return stale(); }
+}
+
 /** The server supplies bytes; the Rust core authenticates all signatures and leaf evidence. */
 export async function readDeviceListHistory(routes: ReaderRoutes, userId: Id, cachedVersion: bigint): Promise<{ head: Uint8Array; history: Uint8Array }> {
   if (!(userId instanceof Uint8Array) || userId.length !== 16 || cachedVersion < 0n) stale();

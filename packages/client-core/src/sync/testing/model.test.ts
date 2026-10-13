@@ -17,9 +17,9 @@ it('matches client_trust gap and cross-user refusals without a pin', () => {
   const group = idOf(0xa0, 1);
   const model = new ModelCore(ME);
   model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
-  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1), signed(3)]), encode(signed(3)), 10n))
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1), signed(3)]), signed(3)[1], 10n))
     .toThrow('E_DEVICE_LIST_STALE');
-  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1, ME.user)]), encode(signed(1, ME.user)), 10n))
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1, ME.user)]), signed(1, ME.user)[1], 10n))
     .toThrow('E_CREDENTIAL');
   expect(model.trustState()).toEqual([]);
 });
@@ -32,7 +32,7 @@ it('pins a leaf first listed in the final signed history head', () => {
   model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
   const first = [1, fakeListBlob(PEER.user, [], 1n), bytes(64, 1), bytes(32, 0)];
   const second = signed(2);
-  expect(model.deviceListIngest(group, 0, PEER.user, encode([first, second]), encode(second), 10n))
+  expect(model.deviceListIngest(group, 0, PEER.user, encode([first, second]), second[1], 10n))
     .toEqual({ version: 2n, changed: false, quarantined: 0 });
   expect(model.trustState()).toMatchObject([{ userId: PEER.user, firstSeen: 10n, verified: false }]);
 });
@@ -42,7 +42,7 @@ it('refuses a substituted modeled leaf key without a pin', () => {
   const group = idOf(0xa0, 2);
   const model = new ModelCore(ME);
   model.addPendingLeaf(group, 0, PEER.user, PEER.device, bytes(32, 0x98), 1);
-  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), encode(signed(1)), 10n))
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), signed(1)[1], 10n))
     .toThrow('E_CREDENTIAL');
   expect(model.trustState()).toEqual([]);
 });
@@ -51,7 +51,7 @@ it('refuses a leaf whose tier differs from the modeled list entry', () => {
   const group = idOf(0xa0, 3);
   const model = new ModelCore(ME);
   model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 0);
-  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), encode(signed(1)), 10n))
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([signed(1)]), signed(1)[1], 10n))
     .toThrow('E_TIER_MISMATCH');
   expect(model.trustState()).toEqual([]);
 });
@@ -68,7 +68,7 @@ it('refuses a modeled list with the wrong fixture signature', () => {
   model.addPendingLeaf(group, 0, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
   const wrong = signed(1);
   wrong[2] = bytes(64, 0);
-  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([wrong]), encode(wrong), 10n))
+  expect(() => model.deviceListIngest(group, 0, PEER.user, encode([wrong]), wrong[1], 10n))
     .toThrow('E_CREDENTIAL');
   expect(model.trustState()).toEqual([]);
 });

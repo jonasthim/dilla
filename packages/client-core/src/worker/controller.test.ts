@@ -616,6 +616,20 @@ it('reads one signed history per user and ingests it for each pending leaf', asy
   expect(w.core.deviceListIngest.mock.calls[0][3]).toEqual(w.core.deviceListIngest.mock.calls[1][3]);
 });
 
+// The core decodes head_list as the signed DeviceList itself (core/dilla-core/src/client/trust.rs bounded_list, a
+// six-element array) and stores it as the cached anchor; the native peer hands it head.blob (testkit web_driver.rs
+// signed_history). The served four-element row [version, blob, ssk_signature, prev_hash] is refused as E_DEVICE_LIST_STALE,
+// which left every contact's leaf pending and every message unreadable in a real browser (task 10).
+it('hands the core the signed list of the candidate head, never the served row around it', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.call(992, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  expect(w.core.deviceListIngest.mock.calls[0][4]).toEqual(new Uint8Array([9]));
+});
+
 it('clears an old search slice when a newer core search refuses', async () => {
   const w = world();
   await toReady(w);
@@ -790,6 +804,27 @@ it('ignores incoming typing frames after an open channel loses membership', asyn
   expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
   w.gateway.emit(frame);
   expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
+});
+
+// expires_ts is on the instance's clock (L-HTTP-96: now + 10 s there). Read against this browser's clock, a lagging
+// instance made every indicator expire on arrival (task 10: the test host's clock lags, so no browser ever showed one).
+it('reads a typing expiry on the instance clock and holds it at most the relay window here', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.routes.postTicket.mockImplementationOnce(() => Promise.resolve({ ticket: 'ticket', expires: NOW_S - 600n + 30n }));
+  expect(await w.gatewayDeps.value!.mintTicket()).toBe('ticket');
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S - 600n + 10n],
+  } });
+  expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`))
+    .toMatchObject([{ userId: toHex(STRANGER), expiresAt: 1_700_000_010_000 }]);
+  // Already over on the instance clock: dropped.
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, new Uint8Array(16).fill(0x6b), OTHER_DEVICE, 1n, NOW_S - 600n],
+  } });
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toMatchObject([{ userId: toHex(STRANGER) }]);
 });
 
 it('clears incoming typing on membership loss without local typing', async () => {

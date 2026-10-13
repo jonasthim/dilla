@@ -86,6 +86,19 @@ it('validates an authenticated Add candidate before posting its commit', async (
   expect(count('postCommit')).toBe(1);
 });
 
+it('hands the Add check the signed list of the candidate head, as the core decodes it', async () => {
+  const d = device(ds, clock, ME);
+  const g = await openRegistered(ds, d);
+  ds.publishList(THIRD.user, [{ device: THIRD.device }]);
+  ds.propose(g, 'add', THIRD.device);
+  d.core.proposedAdds = () => [{ index: 0n, userId: THIRD.user, cachedVersion: 0n }];
+  const heads: Uint8Array[] = [];
+  d.core.deviceListIngestAdd = (...args: unknown[]) => { heads.push(args[5] as Uint8Array); return { version: 1n, changed: false, quarantined: 0 }; };
+  expect(await d.engine.commitNow(g, 0)).toBe(true);
+  const served = await d.engine.deps.routes.getDeviceList(THIRD.user);
+  expect(heads).toEqual([served!.blob]);
+});
+
 describe('catch-up on every ready (rule 2)', () => {
   it('reports a persisted trust quarantine even if groupApply then refuses the batch', async () => {
     const d = device(ds, clock, ME);

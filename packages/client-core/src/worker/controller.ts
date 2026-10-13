@@ -26,7 +26,7 @@ import { Routes, type ChannelRow, type Instance, type Limits, type MemberRow } f
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { isSettingKey, isSettingValue } from '../state/settings';
-import { readDeviceListHistory } from '../state/trust';
+import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -860,8 +860,11 @@ export class Controller {
       || typeof on !== 'bigint' || typeof expires !== 'bigint' || this.me === null || toHex(user) === toHex(this.me.userId)) return;
     const channelId = toHex(channel);
     if (!this.open.has(channelId) || this.groupState(channelId) !== 'active' || this.connectionState.status !== 'online') return;
-    const expiry = Number(expires) * 1000;
-    if (!Number.isSafeInteger(expiry) || expiry <= this.deps.now() || expiry > this.deps.now() + 10_000) return;
+    // expires_ts is on the instance's clock (L-HTTP-96: its now + 10 s), read against that clock as of this connection's
+    // ticket; the row then lives on this browser's clock for what remains, never longer than the 10 s relay window.
+    const remaining = expires - this.serverNowS();
+    if (remaining <= 0n) return;
+    const expiry = this.deps.now() + Number(remaining < 10n ? remaining : 10n) * 1000;
     const rows = this.incomingTyping.get(channelId) ?? new Map<string, number>();
     const userId = toHex(user);
     if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
@@ -1931,7 +1934,7 @@ export class Controller {
         if (signed === null || signed === undefined) continue;
         const { head, history } = signed;
         let verdict: { changed: boolean; quarantined: number };
-        try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, head, this.nowS()); }
+        try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
         catch (e) {
           // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
           if (e instanceof CoreError && LEAF_VERDICTS.has(e.code)) this.unlistedUsers.add(user);

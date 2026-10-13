@@ -11,7 +11,7 @@ import { SerialQueues } from './group-queue';
 import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
 import { discardSend, drainOne, retrySend, sendMessage, sendRequest } from './send';
-import { readDeviceListHistory } from '../state/trust';
+import { readDeviceListHistory, signedHeadList } from '../state/trust';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'
@@ -309,7 +309,7 @@ export class SyncEngine implements SyncInternals {
       for (const candidate of this.deps.core.proposedAdds(g, proposals)) {
         const { head, history } = await readDeviceListHistory(this.deps.routes, candidate.userId, candidate.cachedVersion);
         if (this.isStopped) return false;
-        this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, head, BigInt(Math.floor(this.deps.now() / 1000)));
+        this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, signedHeadList(head), BigInt(Math.floor(this.deps.now() / 1000)));
         this.deps.onTrustChanged();
       }
       const body = this.deps.core.commitBuild(g, proposals); built = true;

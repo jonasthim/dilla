@@ -378,6 +378,16 @@ describe('Gateway input checks', () => {
     expect(h.gw.status).toBe('ready');
     expect(s.closedWith).toBeNull();
   });
+
+  // L-HTTP-96's S→C op 49 is the only way a peer's typing reaches the worker (task 10: no browser ever showed one).
+  it('emits the relayed typing frame, op 49, once ready', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const typing = encodeFrame(Op.typing, 0, null, [GROUP, USER, DEVICE, 1, 1_700_000_010]);
+    s.receive(typing);
+    expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame] : []))).toEqual([decodeFrame(typing)]);
+    expect(s.closedWith).toBeNull();
+  });
 });
 
 describe('Gateway reconnect', () => {

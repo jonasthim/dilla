@@ -218,7 +218,8 @@ export class Gateway {
     }
     if (this.phase === 'ready') {
       if (frame.op === Op.heartbeatAck) this.cancel('ackTimer');
-      else if (frame.op >= Op.handshake && frame.op <= Op.messageDeleted) this.emit({ type: 'frame', frame });
+      // The group frames, and the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49).
+      else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.typing) this.emit({ type: 'frame', frame });
       else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);
     }
   }
