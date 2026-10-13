@@ -55,6 +55,6 @@ export const Diagnostics: Story = { render: () => frame(<section data-doc-state=
 </section>) };
 
 export const Handover: Story = { render: () => frame(<section data-doc-state="tabs-handover">
-  <TabHandover phase="waiting" labels={{ use: t('tabs.use'), wait: t('tabs.wait'), failed: t('tabs.failed'), paused: t('tabs.paused') }}
+  <TabHandover phase="waiting" labels={{ otherTab: t('boot.otherTab.status'), use: t('tabs.use'), wait: t('tabs.wait'), failed: t('tabs.failed'), paused: t('tabs.paused') }}
     onUse={noop} onRetry={noop} />
 </section>) };

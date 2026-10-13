@@ -107,10 +107,10 @@ describe('App', () => {
     const fake = new FakeClient();
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     act(() => fake.set('account', account({ phase: 'other-tab' })));
-    // Web-2c requirement 5: the other-tab phase is L-UI-58's TabHandover, whose only status region names the tabs.use
-    // action; its labels hold no slot for web-2b's boot.otherTab.status, which OtherTab keeps as screen-reader text.
-    expect(screen.getByRole('status')).toHaveTextContent('Use this tab');
-    expect(screen.getByText('dilla is open in another tab')).toBeInTheDocument();
+    // Web-2c requirement 5 and the other-tab ruling: TabHandover's status region explains the state with web-2b's
+    // boot.otherTab.status, shown as its heading; the tabs.use action stays the button.
+    expect(screen.getByRole('status')).toHaveTextContent('dilla is open in another tab');
+    expect(screen.getByRole('button', { name: 'Use this tab' })).toBeInTheDocument();
   });
   it('shows a failed start', async () => {
     const fake = new FakeClient();

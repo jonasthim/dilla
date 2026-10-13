@@ -8,8 +8,11 @@ it('offers the action only in other-tab and retry in failure', async () => {
   const user = userEvent.setup();
   const onUse = vi.fn();
   const onRetry = vi.fn();
-  const labels = { use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' };
+  const labels = { otherTab: 'dilla is open in another tab', use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' };
   const view = render(<TabHandover phase="other-tab" labels={labels} onUse={onUse} onRetry={onRetry} />);
+  // The status names the state, not only the action: the heading is the explanation, the button stays the action.
+  expect(screen.getByRole('status')).toHaveTextContent(labels.otherTab);
+  expect(screen.getByRole('heading', { name: labels.otherTab })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: labels.use }));
   expect(onUse).toHaveBeenCalledOnce();
   view.rerender(<TabHandover phase="waiting" labels={labels} onUse={onUse} onRetry={onRetry} />);
@@ -23,7 +26,7 @@ it('offers the action only in other-tab and retry in failure', async () => {
 });
 
 it('announces the paused copy without offering an action', () => {
-  render(<TabHandover phase="paused" labels={{ use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' }} onUse={vi.fn()} onRetry={vi.fn()} />);
+  render(<TabHandover phase="paused" labels={{ otherTab: 'dilla is open in another tab', use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' }} onUse={vi.fn()} onRetry={vi.fn()} />);
   expect(screen.getByRole('status')).toHaveTextContent('This tab is paused');
   expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
   expect(screen.queryByRole('button')).toBeNull();
