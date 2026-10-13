@@ -31,7 +31,7 @@ export function retrySend(s: SyncInternals, msgId: Id): void {
   // this ready is tried once more, and a commit-quiet group commits once more.
   s.resyncTried.delete(toHex(g)); s.quiet.delete(toHex(g));
   s.deps.onOutboxChanged(g);
-  // A row a leaf verdict failed is encrypted again only after the group's leaves were read again (I1); that refresh is
+  // A row a leaf verdict failed is sealed again only after the group's leaves were read again (I1); that refresh is
   // its one, so a second refusal fails it.
   if (failed !== undefined && LEAF_VERDICTS.has(failed.error)) { refreshTrustThenDrain(s, g, key); return; }
   s.requestDrain(g);
@@ -127,7 +127,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       }
       return;
     }
-    // I1: encryption refused before it changed the row (state 0). A device that joined before the list naming it was
+    // I1: send_encrypt refused before it changed the row (state 0). A device that joined before the list naming it was
     // ingested fails against the cached list until a refresh ingests the newer one: the row stays queued for one refresh.
     // A second refusal fails it; a changed key (E_UMK_CHANGED) is never retried.
     if (e instanceof CoreError && LEAF_VERDICTS.has(e.code) && !s.trustRetried.has(reframeKey)) {

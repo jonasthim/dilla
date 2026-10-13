@@ -34,7 +34,7 @@ export interface SyncDeps {
   /** Called by discardSend after sendDiscard with the row as the outbox held it. */
   onDiscarded(groupId: Id, row: OutboxRow): void;
   /** Reads the group's leaves' signed lists again (the controller's trust refresh). drainOne calls it once for a queued row
-   *  that encryption refused by a leaf verdict, and retrySend before a verdict-failed row is tried again. */
+   *  that send_encrypt refused by a leaf verdict, and retrySend before a verdict-failed row is tried again. */
   refreshGroupTrust(groupId: Id): Promise<void>;
 }
 export const SYNC = {

@@ -470,7 +470,7 @@ describe('sending with attachments and folds (L-TS-34)', () => {
   });
 });
 
-describe('a queued row refused at encryption by a leaf verdict (client I1, security F8)', () => {
+describe('a queued row refused at send_encrypt by a leaf verdict (client I1, security F8)', () => {
   const JOINED = idOf(0xd0, 22);
   /** The row is queued; the verdict of a device that joined before its list was ingested lands before the drain runs. */
   function queuedThenRefused(code: string): Id {
@@ -517,7 +517,7 @@ describe('a queued row refused at encryption by a leaf verdict (client I1, secur
     expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 2, error: 'E_UMK_CHANGED' }]);
   });
 
-  it('a retry of a row a verdict failed refreshes the group trust before it is encrypted again', async () => {
+  it('a retry of a row a verdict failed refreshes the group trust before it is sealed again', async () => {
     const msgId = queuedThenRefused('E_DEVICE_UNLISTED');
     await settle();
     expect(states()).toEqual([2]);

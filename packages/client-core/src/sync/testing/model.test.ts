@@ -354,7 +354,7 @@ describe('ModelCore follows L-CORE-07..09', () => {
     expect(core.group(G)?.state).toBe(3);
     core.groupJoinExternal(expectedFor(G), infoAt(G, 2n), treeAt(G, 2n));
     core.groupDiscard(G); // the server refused the external commit
-    // CORE-ENGINE-03: as groups.rs writes it, epoch 0 (the old MLS group was already replaced); the floor stays.
+    // CORE-ENGINE-03: as groups.rs writes it, epoch 0 (the old group was already replaced); the floor stays.
     expect(core.group(G)).toMatchObject({ state: 3, epoch: 0n });
     expect(core.floor(G)).toBe(2n);
     core.groupJoinExternal(expectedFor(G), infoAt(G, 2n), treeAt(G, 2n));

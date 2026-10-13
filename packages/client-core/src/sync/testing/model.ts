@@ -378,7 +378,7 @@ type HsOutcome = 'ok' | 'skip' | 'changed' | 'stop' | 'gone';
 interface MCandidate { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; umk: Uint8Array }
 /** A current leaf of a group, with the signed-list version and head its last ingest cached. */
 interface MLeaf extends MCandidate { groupId: Id; leafIndex: number; version: bigint; head: Uint8Array | null }
-/** The MLS-authenticated evidence of a message held unreadable by its sender leaf's verdict (app_pending_history). */
+/** The group-authenticated evidence of a message held unreadable by its sender leaf's verdict (app_pending_history). */
 type Held = NonNullable<ReturnType<typeof readApp>>;
 
 export class ModelCore implements CorePort {
@@ -1129,7 +1129,7 @@ export class ModelCore implements CorePort {
     if (type !== 0 && attachments.length > 0) throw coreError('E_CORE_INPUT', 'only a message carries attachments');
     const g = this.must(groupId);
     if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
-    // messages.rs send_prepare: a changed-key or failed leaf still in the group blocks queuing (and again at encryption).
+    // messages.rs send_prepare: a changed-key or failed leaf still in the group blocks queuing (and again at send_encrypt).
     const block = this.sendBlock(groupId);
     if (block !== null) throw coreError(block, '');
     const target = replyTo === null ? null : this.resolve(g, replyTo);
@@ -1172,7 +1172,7 @@ export class ModelCore implements CorePort {
     // The core frames no application message while a proposal or a commit is pending (L-CORE-09).
     if (g.proposals.size > 0) throw coreError('E_CORE_STATE', 'proposals are pending');
     if (g.pending !== null) throw coreError('E_CORE_STATE', 'a commit is pending');
-    // messages.rs send_encrypt: the gate holds again at encryption, for a row queued before the verdict arrived.
+    // messages.rs send_encrypt: the gate holds again there, for a row queued before the verdict arrived.
     const block = this.sendBlock(o.groupId);
     if (block !== null) throw coreError(block, '');
     o.state = 1;
