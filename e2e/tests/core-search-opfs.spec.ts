@@ -39,7 +39,7 @@ test('an encrypted v3 OPFS store reopens at v4 and searches with FTS5 absent', a
   test.skip(!['chromium', 'firefox-persistent'].includes(info.project.name), 'persistent OPFS required');
   test.setTimeout(process.env.CI === 'true' ? 300_000 : 120_000);
   await openSpike(page, `v3-no-fts-${Date.now().toString(36)}`);
-  expect((await command(page, 'open')).abi).toBe(7);
+  expect((await command(page, 'open')).abi).toBe(8);
   await command(page, 'signup');
   await command(page, 'group');
   expect(await command(page, 'seed-v3')).toMatchObject({ schema: 3, closed: true, markers: [], inventory: [
@@ -48,7 +48,7 @@ test('an encrypted v3 OPFS store reopens at v4 and searches with FTS5 absent', a
     'app_meta', 'app_outbox', 'app_outbox_by_group', 'app_pins', 'app_proposals', 'app_purges',
     'app_reactions', 'app_read_state', 'app_roles', 'app_settings',
   ] });
-  expect(await command(page, 'open')).toMatchObject({ abi: 7, phase: 2 });
+  expect(await command(page, 'open')).toMatchObject({ abi: 8, phase: 2 });
   const result = await command(page, 'search-fallback');
   expect(result).toMatchObject({ schema: 4, searchFts5: 0, hits: 1 });
   expect(String(result.snippet)).toContain('hello from the facade');

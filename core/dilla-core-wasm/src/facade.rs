@@ -664,16 +664,29 @@ impl CoreHandle {
     pub fn trust_generation(&self) -> Result<u64, JsError> {
         self.with_core(|c| c.trust_generation())
     }
+    /// The leaf verdict that blocks sending in this group (the code `send_prepare` and
+    /// `send_encrypt` refuse with), or undefined.
+    pub fn send_block_code(&self, group_id: &[u8]) -> Result<Option<String>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.send_block_code(&group_id))
+            .map(|code| code.map(str::to_owned))
+    }
     /// Approve the exact pending validated contact key.
     pub fn trust_verify(&self, user_id: &[u8], expected_umk: &[u8]) -> Result<(), JsError> {
         let user_id = js_fixed_arg::<16>("user_id", user_id)?;
         let expected_umk = js_fixed_arg::<32>("expected_umk", expected_umk)?;
         self.with_core(|c| c.trust_verify(&user_id, &expected_umk))
     }
-    /// Pairwise twelve-group decimal comparison number.
-    pub fn safety_number_for(&self, user_id: &[u8]) -> Result<String, JsError> {
+    /// Pairwise twelve-group decimal comparison number for exactly the key `trust_verify` will be
+    /// given (`E_DEVICE_LIST_STALE` when it is not the current comparison key).
+    pub fn safety_number_for(
+        &self,
+        user_id: &[u8],
+        expected_umk: &[u8],
+    ) -> Result<String, JsError> {
         let user_id = js_fixed_arg::<16>("user_id", user_id)?;
-        self.with_core(|c| c.safety_number_for(&user_id))
+        let expected_umk = js_fixed_arg::<32>("expected_umk", expected_umk)?;
+        self.with_core(|c| c.safety_number_for(&user_id, &expected_umk))
     }
     /// Bounded search of displayable local folded text.
     pub fn search(

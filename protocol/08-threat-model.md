@@ -31,7 +31,11 @@ For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–
   instance's external-sender key, committed by members, and visible to every member as tree
   changes; the instance cannot silently add a leaf that members do not see.
 - Sender authenticity for envelopes: MLS `PrivateMessage` signatures under the sender's DSK, with
-  the credential chain to a pinned UMK.
+  the credential chain to a pinned UMK. The own account's UMK is never trusted on first use: each
+  device pins it, verified, from its own credential, so a leaf the instance joins under the own
+  user id with another UMK fails validation and blocks sending in its group
+  (`03-identity.md`, rule 2). A real change of the own UMK on another device is therefore not
+  accepted by a device still holding the old credential; that device must enrol again.
 - Verifiable reports: franking (`04-envelope-and-franking.md`).
 - Cryptographic device revocation: signed device lists (`03-identity.md`).
 

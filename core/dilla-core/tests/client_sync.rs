@@ -1106,21 +1106,24 @@ fn read_marker(core: &Core, group: &[u8; 16]) -> Option<(i64, i64)> {
 fn activity_excludes_the_own_users_rows_from_this_device_and_from_another_device() {
     let instance = Instance::generate();
     let mut relay = Relay::new(GROUP);
-    let mut a = ready_core(0xa1, "alice");
+    let (mut a, recovery_key) = ready_core_with_key(0xa1, "alice");
     a.create_and_register(&mut relay, &instance);
     let alice = "a1".repeat(16);
-    // Alice's other browser joins first and sends at its epoch, before Bob's peer joins.
-    let mut twin = RawPeer::new(0xa1, 0x5e);
+    // Alice's other browser (enrolled under her own key) joins first and sends at its epoch,
+    // before Bob's peer joins.
+    let mut twin = enrolled_core(&a, &recovery_key, NOW + 1);
     twin.join_external(&mut relay);
     a.sync(&relay);
-    ingest_list_body(
-        &mut a,
-        &relay,
-        twin.user,
-        twin.device,
-        &twin.device_list_body(),
+    let first_body = a.core.device_list_body().expect("first PUT");
+    let twin_body = twin.core.device_list_body().expect("enrolled PUT");
+    let user = a.user;
+    ingest_enrolled_pair_bodies(&mut a, &relay, user, twin.device, &first_body, &twin_body);
+    let (_, twin_named) = twin.send(
+        &mut relay,
+        &GROUP,
+        &format!("from my other browser <@{alice}>"),
+        NOW + 1,
     );
-    let twin_named = twin.send(&mut relay, &format!("from my other browser <@{alice}>"));
     let mut peer = RawPeer::new(0xe5, 0xe6);
     peer.join_external(&mut relay);
     a.sync(&relay);
@@ -1144,7 +1147,7 @@ fn activity_excludes_the_own_users_rows_from_this_device_and_from_another_device
         .expect("the other device's row");
     assert_eq!(
         twin_row,
-        (vec![0xa1; 16], vec![0x5e; 16], 0, 0),
+        (vec![0xa1; 16], twin.device.to_vec(), 0, 0),
         "a readable type-0 row of the own user from another device"
     );
     let plain = peer.send(&mut relay, "plain");

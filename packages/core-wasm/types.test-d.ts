@@ -64,8 +64,9 @@ interface ExpectedCoreHandle {
   revalidate_pending(group_id: Uint8Array, leaf_index: number, limit: number): number;
   trust_state(): Uint8Array;
   trust_generation(): bigint;
+  send_block_code(group_id: Uint8Array): string | undefined;
   trust_verify(user_id: Uint8Array, expected_umk: Uint8Array): void;
-  safety_number_for(user_id: Uint8Array): string;
+  safety_number_for(user_id: Uint8Array, expected_umk: Uint8Array): string;
   search(scope_kind: number, scope_id: Uint8Array | null | undefined, query: string, before: Uint8Array | null | undefined, limit: number): Uint8Array;
   setting_put(k: string, v: string): void;
   setting_delete(k: string): void;
@@ -153,6 +154,7 @@ expectTrue<Equals<H['device_list_ingest'], E['device_list_ingest']>>();
 expectTrue<Equals<H['revalidate_pending'], E['revalidate_pending']>>();
 expectTrue<Equals<H['trust_state'], E['trust_state']>>();
 expectTrue<Equals<H['trust_generation'], E['trust_generation']>>();
+expectTrue<Equals<H['send_block_code'], E['send_block_code']>>();
 expectTrue<Equals<H['trust_verify'], E['trust_verify']>>();
 expectTrue<Equals<H['safety_number_for'], E['safety_number_for']>>();
 expectTrue<Equals<H['search'], E['search']>>();

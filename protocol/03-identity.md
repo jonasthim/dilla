@@ -117,7 +117,11 @@ accepted only if:
 2. `umk_pub` equals the pinned UMK for `user_id` on this instance (trust-on-first-use with a
    loud, undismissable alert on change), or no pin exists yet; a key that is neither the pinned
    UMK nor one a validated signed list presented (for example a key whose list the instance
-   never serves) fails this rule as `E_CREDENTIAL`;
+   never serves) fails this rule as `E_CREDENTIAL`. The own account is never trusted on first
+   use: a device pins its own user's UMK, verified, from its own credential (at signup, at
+   enrolment and whenever it opens its store). A leaf of the own user under any other UMK fails
+   this rule as `E_UMK_CHANGED`, and a signed list under another UMK for the own user is refused
+   (`E_UMK_CHANGED`) and changes no pin. The device's own leaf is not judged;
 3. `dsk_pub` for `device_id` appears, unrevoked, in the newest **signed device list** the verifier
    has seen for this user (below);
 4. `dilla_binding` checks of `01-groups.md` pass for the group;
@@ -129,6 +133,9 @@ Failing 1 or 4 refuses the leaf (`E_CREDENTIAL`); failing 2 is `E_UMK_CHANGED`; 
 substituted list history is `E_DEVICE_LIST_STALE` and leaves the leaf pending. A proposed `Add`
 whose leaf fails is left out of this device's commit (never committed, and never a refusal that
 stalls the device's commits); one whose history is still unknown is refused until it is fetched.
+A fetched history that fails the candidate leaf (rules 1 to 3 or 5, also for a user this device
+has never cached) is that leaf's verdict, kept by its leaf identity, so the `Add` is then left
+out rather than refused again; an incomplete or substituted history still only refuses.
 A bad leaf already merged by a remote commit stays in MLS but is quarantined, and it blocks sends
 in each group still containing it, as a changed UMK does, until a validated `Remove` eliminates
 it from that group (fail closed for confidentiality: a member must not encrypt to a leaf it could
@@ -147,6 +154,12 @@ verification approves it. A later list back under the pinned UMK ends the pendin
 leaf's send block is never released by a later list: only exact-key verification of that leaf's
 UMK, or a `Remove` of that leaf from that group (whoever commits it), releases it. The block is
 checked again when a queued message is encrypted.
+A message whose sender leaf is pending or failed (unlisted, a changed UMK, or a UMK no validated
+list presented) is not shown, and its MLS-authenticated plaintext is kept on the device. It
+becomes readable only when that exact leaf, still the sender's current leaf, later validates: a
+newer signed list names it, or exact-key verification approves its UMK (the messages a changed
+key sent while the change was pending wait for that approval). It is never shown under a key
+the user did not approve, and deleting it discards what was kept.
 
 The instance binds a new leaf to a device too, before any client sees it: a leaf's
 `signature_key` must be the `dsk_pub` its device registered (`POST /v1/accounts`,
@@ -195,7 +208,10 @@ after verification unless retained ciphertext is freshly authenticated against t
 A verifier first reads the unpaged signed candidate head, then fetches ascending history after
 its cached signed version (`GET /v1/users/{user_id}/device-list?after=n`, `09`), or from version 1
 on first sight. It validates every consecutive signature and hash link, and requires the final
-signed bytes and hash to equal the candidate head. It re-reads the unpaged head after paging;
+signed bytes and hash to equal the candidate head. The final list must verify under the leaf's
+`ssk_pub` also when the history is only the cached head: a leaf under another key whose device a
+cached list names, served that unchanged head, fails rule 2 (`E_CREDENTIAL`) and changes no cached
+list or pin. It re-reads the unpaged head after paging;
 a changed head allows one bounded retry. An unchanged exact cached head needs no history fetch.
 The history is at most 1024 versions and 4 MiB. Only version 1 may carry a zero `prev_hash`.
 An instance can withhold newer history even on first sight: trust on first use cannot detect this

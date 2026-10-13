@@ -1142,12 +1142,13 @@ impl WebDriver {
                 let n = d.array_len()?;
                 let mut found = None;
                 for _ in 0..n {
-                    d.array(5)?;
+                    d.array(6)?;
                     let candidate = d.bytes_exact::<16>()?;
                     let pin = d.bytes_exact::<32>()?;
                     d.uint()?;
                     let verified = d.uint()? == 1;
                     let changed = d.opt_bytes_exact::<32>()?;
+                    d.skip()?;
                     if candidate == user {
                         found = Some((pin, verified, changed));
                     }

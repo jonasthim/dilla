@@ -26,6 +26,26 @@ fn pending(bytes: &[u8]) -> Vec<Pending> {
     .expect("pending leaves CBOR")
 }
 
+/// trust_state rows other than the own account's pin (seeded verified from the own credential).
+fn contact_rows(core: &Core) -> usize {
+    let state = core.core.trust_state().expect("state");
+    decode_strict(&state, |d| {
+        let n = d.array_len()?;
+        let mut contacts = 0;
+        for _ in 0..n {
+            d.array(6)?;
+            if d.bytes_exact::<16>()? != core.user {
+                contacts += 1;
+            }
+            for _ in 0..5 {
+                d.skip()?;
+            }
+        }
+        Ok(contacts)
+    })
+    .expect("trust state CBOR")
+}
+
 #[test]
 fn pending_leaves_are_core_owned_and_bounded() {
     let (_, relay, alice, bob) = alice_and_bob();
@@ -68,7 +88,7 @@ fn malformed_history_cannot_pin_a_real_current_leaf() {
         .device_list_ingest(&GROUP, leaf, &bob.user, &[0x80], &[0x80], NOW)
         .expect_err("empty history");
     assert!(["E_DEVICE_LIST_STALE", "E_CREDENTIAL"].contains(&err.code));
-    assert_eq!(alice.core.trust_state().expect("state"), [0x80]);
+    assert_eq!(contact_rows(&alice), 0, "only the own pin");
 }
 
 #[test]
@@ -87,14 +107,14 @@ fn another_users_requested_id_never_creates_a_pin() {
         )
         .expect_err("wrong user");
     assert_eq!(err.code, "E_CREDENTIAL");
-    assert_eq!(alice.core.trust_state().expect("state"), [0x80]);
+    assert_eq!(contact_rows(&alice), 0, "only the own pin");
 }
 
 #[test]
 fn missing_shared_contact_has_no_safety_number() {
     let (_, _, alice, _) = alice_and_bob();
     assert_eq!(
-        code(alice.core.safety_number_for(&[0xee; 16])),
+        code(alice.core.safety_number_for(&[0xee; 16], &[0xee; 32])),
         "E_CORE_NOT_FOUND"
     );
 }
@@ -149,7 +169,10 @@ fn exact_signed_history_pins_real_leaf_and_formats_pairwise_number() {
     })
     .expect("verdict");
     assert_eq!((version, changed, quarantined), (1, 0, 0));
-    let number = alice.core.safety_number_for(&bob.user).expect("number");
+    let number = alice
+        .core
+        .safety_number_for(&bob.user, &sec_cached_umk(&alice, &bob.user))
+        .expect("number");
     assert_eq!(number.split(' ').count(), 12);
     assert!(
         number
@@ -175,16 +198,7 @@ fn trust_state_refuses_conflicting_security_registry_keys_for_one_user() {
             )
             .is_err()
     );
-    let state = alice.core.trust_state().expect("state");
-    let users = decode_strict(&state, |d| {
-        let n = d.array_len()?;
-        for _ in 0..n {
-            d.skip()?;
-        }
-        Ok(n)
-    })
-    .unwrap();
-    assert_eq!(users, 1);
+    assert_eq!(contact_rows(&alice), 1);
     assert_ne!(sec_state_of(&alice, &bob.user).unwrap().0, [0xe2; 32]);
 }
 
@@ -212,7 +226,7 @@ fn wrong_head_bytes_and_missing_group_do_not_pin() {
         ),
         "E_CORE_NOT_FOUND"
     );
-    assert_eq!(alice.core.trust_state().expect("state"), [0x80]);
+    assert_eq!(contact_rows(&alice), 0, "only the own pin");
 }
 
 #[test]
@@ -946,7 +960,10 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
     let (instance, mut relay, mut alice, bob) = alice_and_bob();
     let (old_history, old_blob) = list_wire(&bob);
     ingest_core_list(&mut alice, &relay, &bob);
-    let old_number = alice.core.safety_number_for(&bob.user).unwrap();
+    let old_number = alice
+        .core
+        .safety_number_for(&bob.user, &sec_cached_umk(&alice, &bob.user))
+        .unwrap();
     instance.propose_remove(&mut relay, bob.device);
     alice.commit(&mut relay);
     let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
@@ -1026,7 +1043,7 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
         "E_UMK_CHANGED",
         "a signed changed leaf still in this group blocks sending"
     );
-    let pending_number = alice.core.safety_number_for(&bob.user).unwrap();
+    let pending_number = alice.core.safety_number_for(&bob.user, &expected).unwrap();
     assert_ne!(
         pending_number, old_number,
         "comparison must show the candidate key"
@@ -1040,7 +1057,7 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
         "an older pending pin cannot be stored beside the current one"
     );
     assert_eq!(
-        alice.core.safety_number_for(&bob.user).unwrap(),
+        alice.core.safety_number_for(&bob.user, &expected).unwrap(),
         pending_number,
         "an older pending pin cannot replace the current signed candidate"
     );
@@ -1076,12 +1093,13 @@ fn real_rejoin_with_rotated_umk_requires_exact_current_leaf_at_verify() {
         let n = d.array_len()?;
         let mut found = None;
         for _ in 0..n {
-            d.array(5)?;
+            d.array(6)?;
             let user = d.bytes_exact::<16>()?;
             let umk = d.bytes_exact::<32>()?;
             d.uint()?;
             let verified = d.uint()?;
             let changed = d.opt_bytes_exact::<32>()?;
+            d.skip()?;
             if user == bob.user {
                 found = Some((umk, verified, changed));
             }
@@ -1325,12 +1343,13 @@ fn sec_state_of(alice: &Core, user: &[u8; 16]) -> Option<SecState> {
         let n = d.array_len()?;
         let mut found = None;
         for _ in 0..n {
-            d.array(5)?;
+            d.array(6)?;
             let candidate = d.bytes_exact::<16>()?;
             let umk = d.bytes_exact::<32>()?;
             d.uint()?;
             let verified = d.uint()?;
             let changed = d.opt_bytes_exact::<32>()?;
+            d.skip()?;
             if candidate == *user {
                 found = Some((umk, verified, changed));
             }
@@ -1877,5 +1896,453 @@ fn sec_a_failed_add_queued_by_sync_is_left_out_of_this_devices_commit() {
         members, 3,
         "Alice, Bob and Xavier only: the failed leaf was not committed"
     );
+    assert_eq!(sec_send(&mut alice), "OK");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fix wave A (whole-branch security review, 2026-10-13).
+
+fn fixa_try_ingest(
+    alice: &mut Core,
+    relay: &Relay,
+    user: &[u8; 16],
+    via: [u8; 16],
+    lists: &[&DeviceList],
+) -> Result<(u64, u64, u64), &'static str> {
+    let head = lists.last().unwrap().encode();
+    alice
+        .core
+        .device_list_ingest(
+            &relay.group_id,
+            relay.leaf_of(via),
+            user,
+            &sec_history(lists),
+            &head,
+            NOW + 3,
+        )
+        .map(|answer| {
+            decode_strict(&answer, |d| {
+                d.array(3)?;
+                Ok((d.uint()?, d.uint()?, d.uint()?))
+            })
+            .unwrap()
+        })
+        .map_err(|e| e.code)
+}
+
+fn fixa_cached(alice: &Core, user: &[u8; 16]) -> ([u8; 32], [u8; 32], Vec<u8>) {
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT umk_pub,ssk_pub,list FROM app_device_lists WHERE user_id=?1",
+            [user.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+
+/// F1: a history that holds only the cached anchor must still be signed by the ingested leaf's
+/// SSK. Bob rotates his UMK and keeps a device key his pinned list names; the instance serves the
+/// unchanged head only. The ingest is refused, the cache stays bound to the key that signed it,
+/// and the honest K2 list, its verification and later ingests all keep working.
+#[test]
+fn fixa_an_anchor_only_history_is_checked_against_the_leafs_ssk() {
+    let (_, mut relay, mut alice, bob, v1) = sec_raw_bob();
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+    rotated.join_external(&mut relay);
+    alice.sync(&relay);
+    let v2 = sec_next(
+        &v1,
+        vec![v1.unsigned.entries[0].clone(), sec_entry(&rotated)],
+        0xf2,
+    );
+    sec_ingest(&mut alice, &relay, &bob.user, bob.device, &[&v1, &v2]);
+    let k1 = UmkSigner::from_bytes(&[0xb2; 32]).public();
+    let k2 = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    assert_eq!(
+        fixa_try_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v2]),
+        Err("E_CREDENTIAL"),
+        "no list signed under the K2 leaf's SSK was presented"
+    );
+    let (umk, ssk, list) = fixa_cached(&alice, &bob.user);
+    assert_eq!(umk, k1, "the cache stays bound to the key that signed it");
+    assert!(DeviceList::decode(&list).unwrap().verify(&ssk).is_ok());
+    assert_eq!(sec_state_of(&alice, &bob.user).map(|s| s.2), Some(None));
+    // The honest K2 list chaining to v2 still ingests and becomes the pending change.
+    let v3 = sec_next(&v2, vec![sec_entry(&rotated)], 0xd6);
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v2, &v3]);
+    assert_eq!(changed, 1);
+    // The pinned key's leaf cannot end the change with a head its key never signed.
+    assert_eq!(
+        fixa_try_ingest(&mut alice, &relay, &bob.user, bob.device, &[&v3]),
+        Err("E_CREDENTIAL")
+    );
+    assert_eq!(
+        sec_state_of(&alice, &bob.user).map(|s| s.2),
+        Some(Some(k2)),
+        "the pending change is not ended by an unsigned anchor"
+    );
+    alice
+        .core
+        .trust_verify(&bob.user, &k2)
+        .expect("the changed key can be verified");
+    let v4 = sec_next(&v3, vec![sec_entry(&rotated)], 0xd6);
+    sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v3, &v4]);
+    sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v4]);
+    let state = sec_state_of(&alice, &bob.user).unwrap();
+    assert_eq!((state.0, state.1, state.2), (k2, 1, None));
+}
+
+/// A trust_state row: (umk, verified, changed, blocked).
+type FixaRow = ([u8; 32], u64, Option<[u8; 32]>, Option<String>);
+
+fn fixa_row(alice: &Core, user: &[u8; 16]) -> Option<FixaRow> {
+    let state = alice.core.trust_state().expect("trust state answers");
+    decode_strict(&state, |d| {
+        let n = d.array_len()?;
+        let mut found = None;
+        for _ in 0..n {
+            d.array(6)?;
+            let candidate = d.bytes_exact::<16>()?;
+            let umk = d.bytes_exact::<32>()?;
+            d.uint()?;
+            let verified = d.uint()?;
+            let changed = d.opt_bytes_exact::<32>()?;
+            let blocked = if d.try_null()? {
+                None
+            } else {
+                Some(d.text()?.to_owned())
+            };
+            if candidate == *user {
+                found = Some((umk, verified, changed, blocked));
+            }
+        }
+        Ok(found)
+    })
+    .unwrap()
+}
+
+/// F4: a verified contact with a stored failed verdict on a leaf still in a group is reported as
+/// blocked by the core itself, also after a reload, until that leaf leaves the group.
+#[test]
+fn fixa_trust_state_reports_a_stored_failed_verdict_per_user() {
+    let (instance, mut relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    let umk = sec_cached_umk(&alice, &bob.user);
+    alice.core.trust_verify(&bob.user, &umk).expect("verified");
+    assert_eq!(fixa_row(&alice, &bob.user), Some((umk, 1, None, None)));
+    // The instance joins a leaf claiming Bob's id under another key.
+    let mut forged = RawPeer::new_with_keys(0xb2, 0xd3, 0xd5, 0xd6);
+    forged.join_external(&mut relay);
+    alice.sync(&relay);
+    assert_eq!(sec_send(&mut alice), "E_CREDENTIAL");
+    let expected = Some((umk, 1, None, Some("E_CREDENTIAL".to_owned())));
+    assert_eq!(fixa_row(&alice, &bob.user), expected);
+    let mut alice = alice.reopen();
+    assert_eq!(
+        fixa_row(&alice, &bob.user),
+        expected,
+        "the verdict is read from the store, not from a session's ingests"
+    );
+    instance.propose_remove(&mut relay, forged.device);
+    alice.commit(&mut relay);
+    assert_eq!(
+        fixa_row(&alice, &bob.user),
+        Some((umk, 1, None, None)),
+        "a verdict of a leaf no longer in any group is not reported"
+    );
+}
+
+/// Alice's real UMK, as Bob pins it from her signed list.
+fn fixa_own_umk(alice: &Core, bob: &mut Core, relay: &Relay) -> [u8; 32] {
+    ingest_core_list(bob, relay, alice);
+    sec_cached_umk(bob, &alice.user)
+}
+
+/// F3: the own account's UMK is pinned verified from this device's own credential, at signup and
+/// again at every open (a store whose own pin is missing or names another key is repaired).
+#[test]
+fn fixa_the_own_key_is_pinned_verified_from_the_own_credential() {
+    let (_, relay, alice, mut bob) = alice_and_bob();
+    let own = fixa_own_umk(&alice, &mut bob, &relay);
+    assert_eq!(fixa_row(&alice, &alice.user), Some((own, 1, None, None)));
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE app_trust_pins SET umk_pub=?2,verified=0,changed_umk=?3 WHERE user_id=?1",
+            rusqlite::params![
+                alice.user.as_slice(),
+                [0xe2u8; 32].as_slice(),
+                [0xe3u8; 32].as_slice()
+            ],
+        )
+        .unwrap();
+    let alice = alice.reopen();
+    assert_eq!(fixa_row(&alice, &alice.user), Some((own, 1, None, None)));
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .execute(
+            "DELETE FROM app_trust_pins WHERE user_id=?1",
+            [alice.user.as_slice()],
+        )
+        .unwrap();
+    let alice = alice.reopen();
+    assert_eq!(fixa_row(&alice, &alice.user), Some((own, 1, None, None)));
+}
+
+/// F3: a second browser enrolled by recovery key pins the same own key, verified.
+#[test]
+fn fixa_an_enrolled_device_pins_the_own_key_verified() {
+    let (first, recovery_key) = ready_core_with_key(0xa1, "alice");
+    let second = enrolled_core(&first, &recovery_key, NOW + 1);
+    let own = fixa_row(&first, &first.user).expect("own row").0;
+    assert_eq!(fixa_row(&second, &second.user), Some((own, 1, None, None)));
+}
+
+/// F3: a leaf that claims the own user id under another UMK (an external join the instance
+/// crafts) fails validation before any list is served: it blocks sending in its group like any
+/// failed leaf, trust_state reports it on the own row, and a list the instance serves for it is
+/// refused and changes no pin. A Remove releases the group.
+#[test]
+fn fixa_an_own_user_leaf_under_another_key_fails_and_is_reported() {
+    let (instance, mut relay, mut alice, mut bob) = alice_and_bob();
+    let own = fixa_own_umk(&alice, &mut bob, &relay);
+    let mut impostor = RawPeer::new_with_keys(0xa1, 0xe5, 0xe2, 0xe1);
+    impostor.join_external(&mut relay);
+    alice.sync(&relay);
+    assert_eq!(sec_send(&mut alice), "E_UMK_CHANGED");
+    let reported = Some((own, 1, None, Some("E_UMK_CHANGED".to_owned())));
+    assert_eq!(fixa_row(&alice, &alice.user), reported);
+    let body = impostor.device_list_body();
+    let (version, blob, sig, prev) = decode_strict(&body, |d| {
+        d.array(4)?;
+        Ok((
+            d.uint()?,
+            d.bytes()?.to_vec(),
+            d.bytes_exact::<64>()?,
+            d.bytes_exact::<32>()?,
+        ))
+    })
+    .unwrap();
+    let mut history = Encoder::new();
+    history
+        .array(1)
+        .array(4)
+        .uint(version)
+        .bytes(&blob)
+        .bytes(&sig)
+        .bytes(&prev);
+    assert_eq!(
+        code(alice.core.device_list_ingest(
+            &GROUP,
+            relay.leaf_of(impostor.device),
+            &alice.user,
+            &history.into_vec(),
+            &blob,
+            NOW + 3,
+        )),
+        "E_UMK_CHANGED",
+        "the instance cannot pin another key for the own account"
+    );
+    assert_eq!(fixa_row(&alice, &alice.user), reported);
+    let mut alice = alice.reopen();
+    assert_eq!(sec_send(&mut alice), "E_UMK_CHANGED");
+    instance.propose_remove(&mut relay, impostor.device);
+    alice.commit(&mut relay);
+    assert_eq!(sec_send(&mut alice), "OK");
+    assert_eq!(fixa_row(&alice, &alice.user), Some((own, 1, None, None)));
+}
+
+/// F6: the safety number is bound to the key the page will approve; a number for any other key
+/// (a stale snapshot, or the pinned key while a change is pending) is refused.
+#[test]
+fn fixa_the_safety_number_is_bound_to_the_key_the_page_approves() {
+    let (_, mut relay, mut alice, bob, v1) = sec_raw_bob();
+    let k1 = sec_cached_umk(&alice, &bob.user);
+    let number = alice
+        .core
+        .safety_number_for(&bob.user, &k1)
+        .expect("the pinned key is the comparison key");
+    assert_eq!(number.split(' ').count(), 12);
+    assert_eq!(
+        code(alice.core.safety_number_for(&bob.user, &[0xee; 32])),
+        "E_DEVICE_LIST_STALE"
+    );
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+    rotated.join_external(&mut relay);
+    alice.sync(&relay);
+    let v2 = sec_next(&v1, vec![sec_entry(&rotated)], 0xd6);
+    sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
+    let k2 = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    assert_eq!(
+        code(alice.core.safety_number_for(&bob.user, &k1)),
+        "E_DEVICE_LIST_STALE",
+        "while a change is pending the pinned key is not the one compared"
+    );
+    let changed = alice
+        .core
+        .safety_number_for(&bob.user, &k2)
+        .expect("the pending key");
+    assert_ne!(changed, number);
+}
+
+/// W-01: the page blocks the composer from the core's own per-group send gate, the same verdict
+/// `send_prepare` and `send_encrypt` refuse with.
+#[test]
+fn fixa_the_send_block_code_is_readable_per_group() {
+    let (_, mut relay, mut alice, bob, v1) = sec_raw_bob();
+    assert_eq!(alice.core.send_block_code(&GROUP).unwrap(), None);
+    let mut added = RawPeer::new_with_keys(0xb2, 0xd4, 0xb2, 0xf2);
+    added.join_external(&mut relay);
+    alice.sync(&relay);
+    assert_eq!(
+        alice.core.send_block_code(&GROUP).unwrap(),
+        Some("E_DEVICE_UNLISTED")
+    );
+    assert_eq!(sec_send(&mut alice), "E_DEVICE_UNLISTED");
+    assert_eq!(alice.core.send_block_code(&OTHER_GROUP).unwrap(), None);
+    let v2 = sec_next(
+        &v1,
+        vec![v1.unsigned.entries[0].clone(), sec_entry(&added)],
+        0xf2,
+    );
+    sec_ingest(&mut alice, &relay, &bob.user, added.device, &[&v1, &v2]);
+    assert_eq!(alice.core.send_block_code(&GROUP).unwrap(), None);
+}
+
+/// Product P2: messages a contact's new key sent while the change was pending (and before its
+/// list arrived) wait, unreadable, and become readable when exact-key verification approves that
+/// key. Nothing is released before the approval.
+#[test]
+fn fixa_messages_under_a_changed_key_become_readable_after_verification() {
+    let (_, mut relay, mut alice, bob, v1) = sec_raw_bob();
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+    rotated.join_external(&mut relay);
+    alice.sync(&relay);
+    let early = rotated.send(&mut relay, "sent before my new list");
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, early).status, 1);
+    let v2 = sec_next(&v1, vec![sec_entry(&rotated)], 0xd6);
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
+    assert_eq!(changed, 1);
+    let pending = rotated.send(&mut relay, "sent while the change is pending");
+    alice.sync(&relay);
+    let row = alice.row_at(&GROUP, pending);
+    assert_eq!(
+        (row.status, row.reason.as_str(), row.body.as_str()),
+        (1, "E_UMK_CHANGED", "")
+    );
+    alice
+        .core
+        .revalidate_pending(&GROUP, relay.leaf_of(rotated.device), 256)
+        .expect("revalidate");
+    assert_eq!(
+        alice.row_at(&GROUP, pending).status,
+        1,
+        "an unverified changed key releases nothing"
+    );
+    let k2 = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    alice.core.trust_verify(&bob.user, &k2).expect("approve K2");
+    for (seq, body) in [
+        (early, "sent before my new list"),
+        (pending, "sent while the change is pending"),
+    ] {
+        let row = alice.row_at(&GROUP, seq);
+        assert_eq!((row.status, row.body.as_str()), (0, body));
+        assert_eq!(row.sender_user, Some(bob.user));
+    }
+    let retained: i64 = alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row("SELECT count(*) FROM app_pending_history", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(retained, 0, "released rows drop their retained evidence");
+}
+
+/// A same-key device that sent before the list naming it was ingested: its message waits and is
+/// released by the revalidation that follows the ingest.
+#[test]
+fn fixa_a_listed_devices_earlier_message_is_released_by_revalidation() {
+    let (_, mut relay, mut alice, bob, v1) = sec_raw_bob();
+    let mut added = RawPeer::new_with_keys(0xb2, 0xd4, 0xb2, 0xf2);
+    added.join_external(&mut relay);
+    alice.sync(&relay);
+    let early = added.send(&mut relay, "from my new laptop");
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, early).reason, "E_DEVICE_UNLISTED");
+    let v2 = sec_next(
+        &v1,
+        vec![v1.unsigned.entries[0].clone(), sec_entry(&added)],
+        0xf2,
+    );
+    sec_ingest(&mut alice, &relay, &bob.user, added.device, &[&v1, &v2]);
+    let released = alice
+        .core
+        .revalidate_pending(&GROUP, relay.leaf_of(added.device), 256)
+        .expect("revalidate");
+    assert_eq!(released, 1);
+    assert_eq!(alice.row_at(&GROUP, early).body, "from my new laptop");
+}
+
+/// Ruling 3, never-cached user: a proposed Add whose signed history was fetched and failed is
+/// left out of this device's commit instead of reading as an unfetched history, which refused
+/// every commit (an instance, or a member proposing a device under a fresh fake user, could stall
+/// all members' commits). An Add whose history was never fetched still asks for the fetch.
+#[test]
+fn fixa_a_fetched_and_failed_add_of_a_never_cached_user_does_not_stall_commits() {
+    let (instance, mut relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    let forged = RawPeer::new_with_keys(0xd7, 0xd8, 0xd5, 0xd6);
+    let listed = RawPeer::new_with_keys(0xd7, 0xd9, 0xd5, 0xd6);
+    instance.propose_add(&mut relay, &sec_key_package(&forged));
+    alice.sync(&relay);
+    let proposals = relay.proposals_body();
+    assert_eq!(
+        code(alice.core.commit_build(&GROUP, &proposals)),
+        "E_DEVICE_LIST_STALE",
+        "an unfetched history asks for the fetch"
+    );
+    let v1 = sec_v1_of(&listed, 0xd6);
+    assert_eq!(
+        code(alice.core.device_list_ingest_add(
+            &GROUP,
+            &proposals,
+            0,
+            &forged.user,
+            &sec_history(&[&v1]),
+            &v1.encode(),
+            NOW + 3,
+        )),
+        "E_DEVICE_UNLISTED"
+    );
+    let body = alice
+        .core
+        .commit_build(&GROUP, &proposals)
+        .expect("the failed Add does not stall the commit");
+    let welcomes = decode_strict(&body, |d| {
+        d.array(5)?;
+        d.uint()?;
+        d.bytes()?;
+        d.bytes()?;
+        let n = d.array_len()?;
+        for _ in 0..n {
+            d.array(2)?;
+            d.bytes()?;
+            d.bytes()?;
+        }
+        d.null()?;
+        Ok(n)
+    })
+    .expect("commit_build body");
+    assert_eq!(welcomes, 0, "no Welcome is addressed to the failed device");
+    relay.commit(&body).expect("commit accepted");
+    alice.core.commit_confirm(&GROUP).expect("commit_confirm");
     assert_eq!(sec_send(&mut alice), "OK");
 }

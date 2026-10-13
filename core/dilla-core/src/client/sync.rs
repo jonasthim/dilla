@@ -306,8 +306,10 @@ fn apply_message(
 }
 
 impl ClientCore {
-    /// Drain retained application evidence in pages of at most 256 rows after signed history arrives.
-    /// A row becomes readable only after MLS and the current leaf verdict both pass in one unit.
+    /// Drain retained application evidence in pages of at most 256 rows after signed history arrives
+    /// or a key is verified. Evidence is retained for a pending leaf and for a leaf whose verdict
+    /// failed (unlisted, changed key, wrong key); a row becomes readable only after MLS and the
+    /// current leaf verdict both pass in one unit.
     pub fn revalidate_pending(
         &mut self,
         id: &[u8; 16],
@@ -328,7 +330,7 @@ impl ClientCore {
             let pending: Vec<PendingHistoryRow> = self.read(|c| {
                 let mut stmt = c.prepare("SELECT p.seq,p.envelope,p.sender_leaf,p.sender_credential,m.epoch,m.recv_ts,m.sender_device,m.franking_tag,p.user_id,p.device_id \
                     FROM app_pending_history p INDEXED BY app_pending_history_by_leaf_seq JOIN app_messages m ON m.group_id=p.group_id AND m.seq=p.seq \
-                    WHERE p.group_id=?1 AND p.user_id=?2 AND p.device_id=?3 AND p.sender_leaf=?4 AND p.seq>?5 AND m.status=1 AND m.reason='E_DEVICE_LIST_STALE' ORDER BY p.seq LIMIT ?6")?;
+                    WHERE p.group_id=?1 AND p.user_id=?2 AND p.device_id=?3 AND p.sender_leaf=?4 AND p.seq>?5 AND m.status=1 AND m.reason IN ('E_DEVICE_LIST_STALE','E_UMK_CHANGED','E_CREDENTIAL','E_DEVICE_UNLISTED','E_TIER_MISMATCH') ORDER BY p.seq LIMIT ?6")?;
                 stmt.query_map(params![id.as_slice(),pending_user.as_slice(),pending_device.as_slice(), i64::from(leaf_index), cursor, i64::from(limit)], |r| {
                     Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?,
                         r.get::<_, i64>(4)? as u64, r.get::<_, i64>(5)? as u64, r.get(6)?, r.get(7)?,r.get(8)?,r.get(9)?))
@@ -355,7 +357,7 @@ impl ClientCore {
                         if sender.device_id.as_bytes() != uploader || sender.user_id.as_bytes() != user || sender.device_id.as_bytes() != device { continue; }
                         u.with_conn(|c| {
                             let still_pending: bool = c.query_row(
-                                "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=1 AND reason='E_DEVICE_LIST_STALE'",
+                                "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=1 AND reason IN ('E_DEVICE_LIST_STALE','E_UMK_CHANGED','E_CREDENTIAL','E_DEVICE_UNLISTED','E_TIER_MISMATCH')",
                                 params![id.as_slice(), *seq as i64], |_| Ok(1_i64)).optional()?.is_some();
                             if !still_pending { return Ok(()); }
                             let roles: Vec<[u8; 16]> = {
@@ -795,10 +797,11 @@ impl ClientCore {
                                             Err(e) => {
                                                 if e.code != super::error::E_DEVICE_LIST_STALE {
                                                     u.with_conn(|c| super::trust::audit_sender(c,&group,id,&own.user_id,&own.device_id,r.sender_leaf))?;
-                                                    (STATUS_CANNOT_DECRYPT, e.code, None, None)
-                                                } else {
-                                                    (STATUS_CANNOT_DECRYPT, e.code, None, Some(r))
                                                 }
+                                                // The MLS-authenticated evidence waits, unreadable: it is
+                                                // released only if this exact leaf later validates (a list
+                                                // naming it, or exact-key verification of its key).
+                                                (STATUS_CANNOT_DECRYPT, e.code, None, Some(r))
                                             },
                                         }
                                     }

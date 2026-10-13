@@ -584,6 +584,9 @@ pub fn migrate_app(storage: &DillaStorage) -> Result<u64, StorageError> {
             if found == 1 || found == 2 {
                 super::backfill_v3(u)?;
             }
+            if found <= 4 {
+                u.with_conn(super::trust::seed_own_pin)?;
+            }
             Ok(found)
         })
         .map_err(|e| match e {

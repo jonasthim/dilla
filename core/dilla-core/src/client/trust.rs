@@ -130,6 +130,12 @@ fn validate_history_from(
     if current.encode() != head.encode() || current.hash() != head.hash() {
         return Err(failure(E_DEVICE_LIST_STALE));
     }
+    // The newest list must be signed under this leaf's SSK also when it is the cached anchor (a
+    // history of the unchanged head only), or a leaf under another key would rebind the cached
+    // list to a key that never signed it (protocol/03 rule 2).
+    current
+        .verify(&cred.ssk_pub)
+        .map_err(|_| failure(E_CREDENTIAL))?;
     let entry = current
         .lookup(&cred.device_id)
         .ok_or_else(|| failure(E_DEVICE_UNLISTED))?;
@@ -196,6 +202,61 @@ fn write_pin(c: &rusqlite::Connection, user: &[u8; 16], pin: &Pin) -> Result<(),
         ],
     )?;
     Ok(())
+}
+
+/// The own account's pin: this device's own credential's UMK, verified, with no pending change.
+/// The client holds the ground truth for itself, so the own key is never taken on first use
+/// from what the instance serves. Written at signup, at enrolment and at every open.
+pub(super) fn pin_own(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+    umk: &[u8; 32],
+    now: i64,
+) -> Result<(), StorageError> {
+    let prior = read_pin(c, user)?;
+    let pin = Pin {
+        umk: *umk,
+        first_seen: prior
+            .filter(|p| p.umk == *umk)
+            .map_or(now, |p| p.first_seen),
+        verified: true,
+        changed: None,
+    };
+    if prior != Some(pin) {
+        write_pin(c, user, &pin)?;
+        // The first pin changes nothing displayed; a repaired one does.
+        if prior.is_some() {
+            bump_generation(c)?;
+        }
+    }
+    Ok(())
+}
+
+/// `pin_own` from the stored identity record, when there is one (the open-time repair).
+pub(super) fn seed_own_pin(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let Some((user, umk)) = own_user_key(c)? else {
+        return Ok(());
+    };
+    pin_own(c, &user, &umk, 0)
+}
+
+/// A visitor of each active group (one non-generic body for the three walkers: wasm size).
+type GroupVisitor<'a> = dyn FnMut(&[u8; 16], &DillaGroup) -> Result<(), ClientError> + 'a;
+
+/// This device's user id and its own credential's UMK.
+type OwnUserKey = ([u8; 16], [u8; 32]);
+
+/// This device's user id and own credential UMK, from the stored identity record.
+fn own_user_key(c: &rusqlite::Connection) -> Result<Option<OwnUserKey>, StorageError> {
+    let Some(bytes) = schema::meta_get(c, schema::IDENTITY)? else {
+        return Ok(None);
+    };
+    Ok(super::identity::IdentityRecord::decode(&bytes)
+        .ok()
+        .and_then(|record| {
+            let credential = CredentialIdentity::decode(&record.credential).ok()?;
+            Some((record.user_id, credential.umk_pub))
+        }))
 }
 
 /// The pin after a validated signed list under `key`. First sight pins it unverified; the pinned
@@ -455,12 +516,32 @@ pub(super) fn send_block(
     group: &DillaGroup,
     group_id: &[u8; 16],
 ) -> Result<Option<&'static str>, StorageError> {
+    let mut found = None;
+    for (_, code) in member_blocks(c, group, group_id)? {
+        if code == E_UMK_CHANGED {
+            return Ok(Some(code));
+        }
+        found.get_or_insert(code);
+    }
+    Ok(found)
+}
+
+/// A member leaf's stored verdict, with the leaf's user when its credential decodes.
+type MemberBlock = (Option<[u8; 16]>, &'static str);
+
+/// The stored verdict of each member leaf of `group` that has one, with the leaf's user when its
+/// credential decodes. The one lookup of a live leaf's verdict, for the send gate and trust_state.
+fn member_blocks(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+) -> Result<Vec<MemberBlock>, StorageError> {
     let mut stmt = c.prepare_cached(
         "SELECT code FROM app_quarantine WHERE group_id=?1 AND (signature_key=?2 \
          OR (signature_key=x'' AND device_id=?4 AND user_id IN (?3,zeroblob(16)))) \
          ORDER BY code='E_UMK_CHANGED' DESC LIMIT 1",
     )?;
-    let mut found = None;
+    let mut out = Vec::new();
     for member in group.members() {
         let pair = BasicCredential::try_from(member.credential)
             .ok()
@@ -477,14 +558,11 @@ pub(super) fn send_block(
                 |r| r.get(0),
             )
             .optional()?;
-        let Some(code) = code else { continue };
-        let code = block_code(&code);
-        if code == E_UMK_CHANGED {
-            return Ok(Some(code));
+        if let Some(code) = code {
+            out.push((pair.map(|p| p.0), block_code(&code)));
         }
-        found.get_or_insert(code);
     }
-    Ok(found)
+    Ok(out)
 }
 
 /// The stored verdict as the refusal `send_prepare` and `send_encrypt` answer with.
@@ -626,6 +704,20 @@ fn leaf_verdict(
         return Ok(Err(E_CREDENTIAL));
     }
     let user = leaf.credential.user_id.as_bytes();
+    // The pin is judged first: the own account's pin exists before any of its lists is cached.
+    let pin = read_pin(c, user)?;
+    let key = leaf.credential.umk_pub;
+    match pin.map(|pin| (pin.umk, pin.changed)) {
+        Some((_, Some(pending))) if pending == key => return Ok(Err(E_UMK_CHANGED)),
+        Some((pinned, Some(_))) if pinned == key => return Ok(Err(E_DEVICE_LIST_STALE)),
+        Some((_, Some(_))) => return Ok(Err(E_CREDENTIAL)),
+        // A leaf of the own user under another key than this device's own (F3 ruling).
+        Some((pinned, None)) if pinned != key => {
+            let own = own_user_key(c)?.is_some_and(|(own, _)| own == *user);
+            return Ok(Err(if own { E_UMK_CHANGED } else { E_CREDENTIAL }));
+        }
+        Some((_, None)) | None => {}
+    }
     let cached: Option<(Vec<u8>, [u8; 32], [u8; 32])> = c
         .query_row(
             "SELECT list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
@@ -636,15 +728,6 @@ fn leaf_verdict(
     let Some((bytes, umk, ssk)) = cached else {
         return Ok(Err(E_DEVICE_LIST_STALE));
     };
-    let pin = read_pin(c, user)?;
-    let key = leaf.credential.umk_pub;
-    match pin.map(|pin| (pin.umk, pin.changed)) {
-        Some((_, Some(pending))) if pending == key => return Ok(Err(E_UMK_CHANGED)),
-        Some((pinned, Some(_))) if pinned == key => return Ok(Err(E_DEVICE_LIST_STALE)),
-        Some((_, Some(_))) => return Ok(Err(E_CREDENTIAL)),
-        Some((pinned, None)) if pinned != key => return Ok(Err(E_CREDENTIAL)),
-        Some((_, None)) | None => {}
-    }
     if umk != key || ssk != leaf.credential.ssk_pub {
         return Ok(Err(E_CREDENTIAL));
     }
@@ -789,12 +872,34 @@ fn audit_member(
     )
 }
 
+/// A proposed Add's verdict. A leaf whose signed history was fetched and failed
+/// (`device_list_ingest_add` recorded the verdict) answers that failure rather than looking
+/// unfetched, so it is left out of the commit instead of refusing every commit (ruling 3).
 pub(super) fn validate_proposed_add(
     c: &rusqlite::Connection,
     kp: &KeyPackage,
 ) -> Result<(), ClientError> {
     let leaf = leaf_from_key_package(kp)?;
-    validate_cached_leaf(c, &leaf)
+    match leaf_verdict(c, &leaf)? {
+        Err(E_DEVICE_LIST_STALE) => {
+            let failed: Option<String> = c
+                .query_row(
+                    "SELECT code FROM app_quarantine WHERE user_id=?1 AND device_id=?2 AND signature_key=?3 LIMIT 1",
+                    params![
+                        leaf.credential.user_id.as_bytes().as_slice(),
+                        leaf.credential.device_id.as_bytes().as_slice(),
+                        leaf.dsk_pub.as_slice()
+                    ],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(StorageError::from)?;
+            Err(failure(
+                failed.map_or(E_DEVICE_LIST_STALE, |code| block_code(&code)),
+            ))
+        }
+        verdict => verdict.map_err(failure),
+    }
 }
 
 fn leaf_from_key_package(kp: &KeyPackage) -> Result<LeafEvidence, ClientError> {
@@ -846,8 +951,9 @@ impl ClientCore {
     }
 
     /// The send gate of `send_prepare`: the live tree when the group can be loaded, otherwise
-    /// any verdict row of the group (fail closed).
-    pub(super) fn send_block_code(
+    /// any verdict row of the group (fail closed). Public so the page can pause its composer on
+    /// the same verdict the core refuses a send with.
+    pub fn send_block_code(
         &self,
         group_id: &[u8; 16],
     ) -> Result<Option<&'static str>, ClientError> {
@@ -957,10 +1063,45 @@ impl ClientCore {
             .find(|(i, _)| *i == index)
             .map(|(_, leaf)| leaf)
             .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
-        self.ingest_leaf(leaf, requested_user, history_body, head_list, now, false)
+        let evidence = leaf.clone();
+        let result = self.ingest_leaf(leaf, requested_user, history_body, head_list, now, false);
+        // A fetched history that fails this candidate is its verdict: kept by its leaf identity
+        // so the commit leaves the Add out instead of asking for a fetch again (ruling 3). An
+        // incomplete or substituted history (`E_DEVICE_LIST_STALE`) stays a refusal to retry.
+        if let Err(e) = &result {
+            let verdict = [
+                E_CREDENTIAL,
+                E_DEVICE_UNLISTED,
+                E_TIER_MISMATCH,
+                E_UMK_CHANGED,
+            ]
+            .into_iter()
+            .find(|code| *code == e.code);
+            if let Some(code) =
+                verdict.filter(|_| evidence.credential.user_id.as_bytes() == requested_user)
+            {
+                self.write(|_, u| {
+                    u.with_conn(|c| {
+                        record_quarantine(
+                            c,
+                            &evidence.group_id,
+                            requested_user,
+                            evidence.credential.device_id.as_bytes(),
+                            &evidence.dsk_pub,
+                            code,
+                        )
+                        .map(drop)
+                    })
+                    .map_err(ClientError::from)
+                })?;
+            }
+        }
+        result
     }
 
-    fn current_user_leaves(&self, user: &[u8; 16]) -> Result<Vec<LeafEvidence>, ClientError> {
+    /// Calls `f` with each active group (state 2), from the cache or loaded from the store; at
+    /// most 4,096 groups, ids bounded before any group state is loaded.
+    fn each_active_group(&self, f: &mut GroupVisitor<'_>) -> Result<(), ClientError> {
         let ids: Vec<[u8; 16]> = self.read(|c| {
             let mut stmt = c.prepare(
                 "SELECT group_id FROM app_groups WHERE state=2 ORDER BY group_id LIMIT 4097",
@@ -972,7 +1113,6 @@ impl ClientCore {
         if ids.len() > 4096 {
             return Err(failure(E_CORE_LIMIT));
         }
-        let mut out = Vec::new();
         for id in ids {
             let cached = self.groups.get(&id);
             let loaded = if cached.is_none() {
@@ -983,8 +1123,16 @@ impl ClientCore {
             let group = cached
                 .or(loaded.as_ref())
                 .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
+            f(&id, group)?;
+        }
+        Ok(())
+    }
+
+    fn current_user_leaves(&self, user: &[u8; 16]) -> Result<Vec<LeafEvidence>, ClientError> {
+        let mut out = Vec::new();
+        self.each_active_group(&mut |id, group| {
             for member in group.members() {
-                let Ok(leaf) = extract_leaf(&id, group, [0; 32], member) else {
+                let Ok(leaf) = extract_leaf(id, group, [0; 32], member) else {
                     continue;
                 };
                 if leaf.credential.user_id.as_bytes() == user {
@@ -994,7 +1142,8 @@ impl ClientCore {
                     out.push(leaf);
                 }
             }
-        }
+            Ok(())
+        })?;
         Ok(out)
     }
 
@@ -1033,28 +1182,9 @@ impl ClientCore {
 
     /// Current tree leaves that need a signed-list refresh, without exporting credentials or keys.
     pub fn pending_leaves(&self) -> Result<Vec<u8>, ClientError> {
-        let ids: Vec<[u8; 16]> = self.read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT group_id FROM app_groups WHERE state=2 ORDER BY group_id LIMIT 4097",
-            )?;
-            stmt.query_map([], |r| r.get(0))?
-                .collect::<Result<_, _>>()
-                .map_err(Into::into)
-        })?;
-        if ids.len() > 4096 {
-            return Err(failure(E_CORE_LIMIT));
-        }
         let mut rows = Vec::new();
-        for id in ids {
-            let group = self.groups.get(&id);
-            let loaded = if group.is_none() {
-                DillaGroup::load(&self.provider, &GroupId::from_slice(&id))?
-            } else {
-                None
-            };
-            let group = group
-                .or(loaded.as_ref())
-                .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
+        self.each_active_group(&mut |id, group| {
+            let id = *id;
             let tree_hash = group.tree_hash(&self.provider, self.signer()?)?;
             for member in group.members() {
                 if rows.len() == 4096 {
@@ -1092,7 +1222,8 @@ impl ClientCore {
                     },
                 ));
             }
-        }
+            Ok(())
+        })?;
         let mut e = Encoder::new();
         e.array(rows.len());
         for (group, leaf, user, version, reason) in rows {
@@ -1191,6 +1322,13 @@ impl ClientCore {
             anchor = Some(first_list);
         }
         let validated = validate_history_from(&first, requested_user, &history, &head, anchor)?;
+        // The own account's key is this device's own credential's; no served list changes it.
+        if self
+            .read(own_user_key)?
+            .is_some_and(|(user, umk)| user == *requested_user && umk != validated.umk_pub)
+        {
+            return Err(failure(E_UMK_CHANGED));
+        }
         if current {
             let second = self.current_leaf(&first.group_id, first.leaf_index)?;
             if first.group_id != second.group_id
@@ -1285,15 +1423,32 @@ impl ClientCore {
         if rows.len() > 4096 {
             return Err(failure(E_CORE_LIMIT));
         }
+        // The stored verdict of each user's leaves still in an active group; a changed-key block
+        // wins. Read from the store, so a reload never shows a blocked contact as clean.
+        let mut blocks: Vec<MemberBlock> = Vec::new();
+        self.each_active_group(&mut |id, group| {
+            blocks.extend(self.read(|c| member_blocks(c, group, id))?);
+            Ok(())
+        })?;
         let mut e = Encoder::new();
         e.array(rows.len());
         for (user, umk, first, verified, changed) in rows {
-            e.array(5)
+            e.array(6)
                 .bytes(&user)
                 .bytes(&umk)
                 .uint(first.max(0) as u64)
                 .uint(u64::from(verified == 1))
                 .opt_bytes(changed.as_ref().map(|v| v.as_slice()));
+            let mut blocked = None;
+            for (_, code) in blocks.iter().filter(|(owner, _)| *owner == Some(user)) {
+                if blocked != Some(E_UMK_CHANGED) {
+                    blocked = Some(*code);
+                }
+            }
+            match blocked {
+                Some(code) => e.text(code),
+                None => e.null(),
+            };
         }
         Ok(e.into_vec())
     }
@@ -1384,11 +1539,26 @@ impl ClientCore {
                 bump_generation(c)
             })
             .map_err(ClientError::from)
-        })
+        })?;
+        // Messages the user's current leaves sent while unverified waited as retained evidence;
+        // each is released only if its exact leaf now validates (revalidate_pending checks it).
+        // A core with no identity has received nothing. Each (group, leaf index) is listed once.
+        if own.is_some() {
+            for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
+                self.revalidate_pending(&leaf.group_id, leaf.leaf_index, 256)?;
+            }
+        }
+        Ok(())
     }
 
-    /// Pairwise comparison digits for a contact in a current shared MLS group.
-    pub fn safety_number_for(&self, user_id: &[u8; 16]) -> Result<String, ClientError> {
+    /// Pairwise comparison digits for a contact in a current shared MLS group, for exactly the key
+    /// the caller will approve with `trust_verify`: `expected_umk` must be the comparison key (the
+    /// pending changed key, or the pinned one), else `E_DEVICE_LIST_STALE`.
+    pub fn safety_number_for(
+        &self,
+        user_id: &[u8; 16],
+        expected_umk: &[u8; 32],
+    ) -> Result<String, ClientError> {
         let comparison_key: Option<[u8; 32]> = self.read(|c| {
             c.query_row(
                 "SELECT l.umk_pub FROM app_device_lists l JOIN app_trust_pins p ON p.user_id=l.user_id WHERE l.user_id=?1 AND COALESCE(p.changed_umk,p.umk_pub)=l.umk_pub",
@@ -1399,6 +1569,9 @@ impl ClientCore {
             .map_err(Into::into)
         })?;
         let comparison_key = comparison_key.ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
+        if comparison_key != *expected_umk {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
         let own = self.own()?;
         let own_cred =
             CredentialIdentity::decode(&own.credential).map_err(|_| failure(E_CORE_STORAGE))?;

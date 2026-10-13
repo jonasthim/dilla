@@ -848,6 +848,7 @@ impl ClientCore {
                 schema::meta_put(c, schema::STATE_SEALED, &state)?;
                 schema::meta_put(c, schema::STATE_LIST, &state_list(1))?;
                 schema::meta_put(c, schema::IDENTITY, &identity.encode())?;
+                super::trust::pin_own(c, user_id, &cred.umk_pub, now.min(i64::MAX as u64) as i64)?;
                 schema::meta_del(c, schema::SIGNUP)
             })?;
             Ok(put)
@@ -1246,6 +1247,7 @@ impl ClientCore {
                 schema::meta_put(c, schema::STATE_LIST, &state_list(next.unsigned.version))?;
                 schema::meta_put(c, schema::ROOT_SEALED, root_sealed)?;
                 schema::meta_put(c, schema::IDENTITY, &identity.encode())?;
+                super::trust::pin_own(c, &user_id, &cred.umk_pub, now.min(i64::MAX as u64) as i64)?;
                 schema::meta_del(c, schema::ENROL)
             })?;
             Ok(wire::signed_lists(&put, &state, first.as_deref()))
