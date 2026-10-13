@@ -13,10 +13,10 @@ watchContexts(test);
 /** Bob's own frames per measuring window: 100 Opus frames, about 2 s of his steady tone. */
 const WINDOW = 100;
 
-test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; push to talk sends only while held', async ({ people, browserName }) => {
+test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; push to talk sends only while held', async ({ peerBrowser, browserName }) => {
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
-  const bob = await people.open('bob');
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
   try {
     await peer.setup();
     await onboard(alice, peer, 'alice');
@@ -83,8 +83,8 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       expect(after, deltas).toBeLessThanOrEqual(WINDOW / 10);
     });
   } finally {
-    await people.close(bob);
-    await people.close(alice);
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });

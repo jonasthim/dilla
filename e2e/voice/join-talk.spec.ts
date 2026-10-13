@@ -35,10 +35,10 @@ async function watchTiles(page: Page): Promise<void> {
 }
 const tileHistory = (page: Page) => page.evaluate(() => (window as unknown as { __dwTiles: string[] }).__dwTiles);
 
-test('two browsers join one voice channel, see each other ok and hear each other; no key in a ret or a slice', async ({ people, browserName }) => {
+test('two browsers join one voice channel, see each other ok and hear each other; no key in a ret or a slice', async ({ peerBrowser, browserName }) => {
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
-  const bob = await people.open('bob');
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
   try {
     const s = await peer.setup();
     await onboard(alice, peer, 'alice');
@@ -85,8 +85,8 @@ test('two browsers join one voice channel, see each other ok and hear each other
       expect(kp.findings).toEqual([]);
     }
   } finally {
-    await people.close(bob);
-    await people.close(alice);
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });

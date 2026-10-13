@@ -70,17 +70,24 @@ export const NON_RACE_STEP =
  * its own share in minutes: Chromium and Firefox each run half of the web suite (W = 6.8 in web-2c task 10, so 3.4)
  * plus their half of the core-worker suite (C = 0.5, so 0.25): ceil(5 × 3.65) + 10 = 29 → 30. WebKit keeps web-1's
  * 3.0 allowance (signup and reload only): ceil(15) + 10 = 25 → 30. `core` says whether the job also runs the
- * core-worker suite of its engine (the core config has no WebKit project).
+ * core-worker suite of its engine (the core config has no WebKit project). `voice` says whether it also runs VOICE-E2E
+ * of its engine (web-3 task 10, playwright.voice.config.ts; WebKit is never launched for voice, DEV-29); Firefox's
+ * voice suite needs the PulseAudio null sink first (scripts/ci-audio-server.sh), or every AudioContext stays suspended.
+ * With the voice suite on top (VOICE_MINUTES, its local wall time per engine measured in web-3 task 10 on 2026-10-14:
+ * Chromium 109 s, Firefox 104 s): ceil(5 × (3.65 + 1.9)) + 10 = 38 and ceil(5 × (3.65 + 1.8)) + 10 = 38, each under
+ * the 45-minute cap of one runner, so no split.
  */
+export const VOICE_MINUTES = { chromium: 1.9, firefox: 1.8 };
+const budget = (share) => Math.max(30, Math.ceil(5 * share) + 10);
 export const BROWSER_WEB_JOBS = {
-  'chromium-web': { engine: 'chromium', timeout: 30, core: true },
-  'firefox-web': { engine: 'firefox', timeout: 30, core: true },
-  'webkit-web': { engine: 'webkit', timeout: 30, core: false },
+  'chromium-web': { engine: 'chromium', timeout: budget(3.65 + VOICE_MINUTES.chromium), core: true, voice: true },
+  'firefox-web': { engine: 'firefox', timeout: budget(3.65 + VOICE_MINUTES.firefox), core: true, voice: true },
+  'webkit-web': { engine: 'webkit', timeout: 30, core: false, voice: false },
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 30;
 
 /** The steps every per-engine browser job must carry: the four downloads, its one engine, its suites, its own artifact. */
-function browserWebSteps({ engine, timeout, core }) {
+function browserWebSteps({ engine, timeout, core, voice }) {
   return [
     `timeout-minutes: ${timeout}`,
     'name: dilla-core-wasi',
@@ -93,6 +100,8 @@ function browserWebSteps({ engine, timeout, core }) {
     `npx playwright install --with-deps ${engine}`,
     ...(core ? [`npm run test:e2e:core:${engine} -w @dilla/e2e`] : []),
     `npm run test:e2e:web:${engine} -w @dilla/e2e`,
+    ...(voice && engine === 'firefox' ? ['sh scripts/ci-audio-server.sh'] : []),
+    ...(voice ? [`npm run test:e2e:voice:${engine} -w @dilla/e2e`] : []),
     'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
     'if: failure()',
     // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per engine.
@@ -656,6 +665,16 @@ export function checkWorkflow(root) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs['browser-media'])) {
         problems.push(`ci.yml: job "browser-media" downloads the ${need} artifact but has no "needs: ${need}"`);
       }
+    }
+  }
+
+  // Web-3 task 10: Firefox's voice suite needs the audio server running first, as browser-media's does.
+  for (const [job, { engine, voice }] of Object.entries(BROWSER_WEB_JOBS)) {
+    if (!voice || engine !== 'firefox' || !(job in jobs)) continue;
+    const audioAt = jobs[job].indexOf('sh scripts/ci-audio-server.sh');
+    const voiceAt = jobs[job].indexOf(`npm run test:e2e:voice:${engine} -w @dilla/e2e`);
+    if (audioAt !== -1 && voiceAt !== -1 && audioAt > voiceAt) {
+      problems.push(`ci.yml: ${job} audio server must start before the voice suite`);
     }
   }
 

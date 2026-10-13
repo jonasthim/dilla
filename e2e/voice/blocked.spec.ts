@@ -24,10 +24,10 @@ function notice(page: Page, text: string) {
   return page.locator('.dw-voice-stage, .dw-call-strip').getByText(text, { exact: true });
 }
 
-test('(a) a changed contact in the call group refuses the join before anything is posted; the room never sees the browser', async ({ people }) => {
+test('(a) a changed contact in the call group refuses the join before anything is posted; the room never sees the browser', async ({ peerBrowser }) => {
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
-  const bob = await people.open('bob');
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
   try {
     const s = await peer.setup();
     const call = s.voice_channel_id;
@@ -68,15 +68,15 @@ test('(a) a changed contact in the call group refuses the join before anything i
     expect(room, 'the room after bob joined').not.toContain(a.device);
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked');
   } finally {
-    await people.close(bob);
-    await people.close(alice);
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });
 
-test('(b) a device that fails the signed-list check joins mid-call: alice leaves, her dock goes and so does her leaf', async ({ people }) => {
+test('(b) a device that fails the signed-list check joins mid-call: alice leaves, her dock goes and so does her leaf', async ({ peerBrowser }) => {
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
+  const alice = await peerBrowser.open('alice');
   try {
     const s = await peer.setup({ password: 'peer-password-1234' });
     const call = s.voice_channel_id;
@@ -96,15 +96,15 @@ test('(b) a device that fails the signed-list check joins mid-call: alice leaves
     await peer.waitForCallMembers(call, (d) => !d.includes(a.device), 'drops alice');
     await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).not.toContain(a.device);
   } finally {
-    await people.close(alice);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });
 
-test('(c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3)', async ({ people }) => {
+test('(c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3)', async ({ peerBrowser }) => {
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
-  const bob = await people.open('bob');
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
   try {
     const s = await peer.setup();
     const call = s.voice_channel_id;
@@ -182,15 +182,15 @@ test('(c) a contact whose identity changes mid-call pauses the call for each bro
       await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     });
   } finally {
-    await people.close(bob);
-    await people.close(alice);
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });
 
-test('DM: a blocked DM call leaves the DM composer enabled', async ({ people }) => {
+test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowser }) => {
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
+  const alice = await peerBrowser.open('alice');
   try {
     await peer.setup({ password: 'peer-password-1234' });
     await onboard(alice, peer, 'alice');
@@ -216,7 +216,7 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ people }) 
     await expect(dmComposer(alice.page)).toBeEnabled();
     await expect(dmComposer(alice.page)).not.toHaveAttribute('aria-disabled', 'true');
   } finally {
-    await people.close(alice);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });

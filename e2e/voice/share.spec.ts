@@ -8,11 +8,11 @@ import { VoicePeer, WAIT, copy, heard, introduce, joinVoice, onboard, self, tile
 
 watchContexts(test);
 
-test('a screen share and a camera reach the other browser verified, and stop', async ({ people, browserName }) => {
+test('a screen share and a camera reach the other browser verified, and stop', async ({ peerBrowser, browserName }) => {
   test.skip(browserName !== 'chromium', 'DEV-63 / NV-10: screen and camera capture are proven on Chromium only');
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
-  const bob = await people.open('bob');
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
   try {
     await peer.setup();
     await onboard(alice, peer, 'alice');
@@ -50,8 +50,8 @@ test('a screen share and a camera reach the other browser verified, and stop', a
       await expect(seen).not.toHaveAttribute('data-media', 'true', { timeout: WAIT });
     });
   } finally {
-    await people.close(bob);
-    await people.close(alice);
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });

@@ -41,11 +41,12 @@ function installRecorders(): void {
     ringTimers: Set<number>;
     blobs: { created: string[]; revoked: string[] };
     hidden: boolean;
+    ringChannels: Set<string>;
   };
   const w = window as unknown as { __dw?: Rec; __dwSetHidden?: (h: boolean) => void };
   if (w.__dw !== undefined) return;
   const rec: Rec = { slices: {}, keyPath: { messages: 0, callKeys: 0, findings: [] }, contexts: [], tones: [], ringTimers: new Set(),
-    blobs: { created: [], revoked: [] }, hidden: false };
+    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set() };
   w.__dw = rec;
 
   // The key path (plan task 10, "Key path in a real browser"): no `ret` or `slice` message between the page and a
@@ -77,6 +78,10 @@ function installRecorders(): void {
     rec.keyPath.messages += 1;
     scan(m, `${direction}:${String(m.t)}${typeof m.name === 'string' ? `:${m.name}` : ''}`, new Set(), 0);
     if (m.t === 'slice' && typeof m.name === 'string' && KEPT.has(m.name)) rec.slices[m.name] = m.value;
+    // Every DM a ring was ever listed for, so a ring that came and went between two reads is still seen.
+    if (m.t === 'slice' && m.name === 'rings' && Array.isArray(m.value)) {
+      for (const r of m.value as { channelId?: unknown }[]) if (typeof r.channelId === 'string') rec.ringChannels.add(r.channelId);
+    }
   };
   const NativeWorker = window.Worker;
   const nativePost = NativeWorker.prototype.postMessage;
@@ -117,22 +122,30 @@ function installRecorders(): void {
     };
     return osc;
   };
+  // The ring repeats on a 2 s interval (sounds.ts startRing): that interval is the ring's timer, and a ring has stopped
+  // once it is cleared (a state, not a wait for silence). It is the interval started in the same task right after a
+  // 1000 Hz ping, or (when the first ping found its AudioContext not running yet) the one whose callback pings.
   const start = OscillatorNode.prototype.start;
   let lastTone = { hz: 0, at: -1 };
+  let running: number | null = null;
   OscillatorNode.prototype.start = function (this: OscillatorNode, when?: number) {
     const hz = (this as unknown as { __hz?: number }).__hz ?? this.frequency.value;
     rec.tones.push({ hz, state: this.context.state });
     lastTone = { hz, at: performance.now() };
+    if (hz === 1000 && running !== null) rec.ringTimers.add(running);
     return start.call(this, when);
   };
-  // The ring repeats on a 2 s interval that sounds.ts starts right after its first ping, in the same task: that
-  // interval is the ring's timer, and a ring has stopped once it is cleared (a state, not a wait for silence).
   const setIntervalNative = window.setInterval.bind(window);
   const clearIntervalNative = window.clearInterval.bind(window);
   window.setInterval = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
-    const id = setIntervalNative(fn, ms, ...args);
-    if (ms === 2000 && lastTone.hz === 1000 && performance.now() - lastTone.at < 50) rec.ringTimers.add(id);
-    return id;
+    if (typeof fn !== 'function') return setIntervalNative(fn, ms, ...args);
+    const holder = { id: -1 };
+    holder.id = setIntervalNative((...a: unknown[]) => {
+      running = holder.id;
+      try { (fn as (...x: unknown[]) => void)(...a); } finally { running = null; }
+    }, ms, ...args);
+    if (ms === 2000 && lastTone.hz === 1000 && performance.now() - lastTone.at < 50) rec.ringTimers.add(holder.id);
+    return holder.id;
   }) as typeof window.setInterval;
   window.clearInterval = ((id?: number) => {
     if (id !== undefined) rec.ringTimers.delete(id);
@@ -249,8 +262,9 @@ async function openContext(browser: Browser, o: { baseURL: string | undefined; p
   });
 }
 
-export const test = base.extend<{ people: PeerBrowsers }>({
-  people: async ({ browser, baseURL, permissions, viewport }, use, testInfo) => {
+/** L-E2E-31 `peerBrowser`: the people of a test, each a browser context of their own. */
+export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
+  peerBrowser: async ({ browser, baseURL, permissions, viewport }, use, testInfo) => {
     const guard = newGuard(testInfo.project.name);
     const open: Person[] = [];
     const leaveFailures: string[] = [];

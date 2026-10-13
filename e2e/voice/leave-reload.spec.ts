@@ -18,10 +18,10 @@ async function roster(page: Page): Promise<{ epoch: number; devices: { deviceId:
 }
 const rosterDevices = async (page: Page) => (await roster(page)).devices.map((d) => d.deviceId).sort();
 
-test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and leave returns focus to the voice row', async ({ people }) => {
+test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and leave returns focus to the voice row', async ({ peerBrowser }) => {
   const peer = await VoicePeer.start();
-  const alice = await people.open('alice');
-  const bob = await people.open('bob');
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
   try {
     const s = await peer.setup();
     await onboard(alice, peer, 'alice');
@@ -68,8 +68,8 @@ test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and lea
       await expect(tile(bob.page, 'alice')).toHaveCount(0, { timeout: WAIT });
     });
   } finally {
-    await people.close(bob);
-    await people.close(alice);
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });

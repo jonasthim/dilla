@@ -384,6 +384,10 @@ export async function tones(page: Page): Promise<{ hz: number; state: string }[]
 }
 /** The ring's pings (1000 Hz) this page played. */
 export async function ringPings(page: Page): Promise<number> { return (await tones(page)).filter((t) => t.hz === 1000).length; }
+/** Every DM (channel id) the worker's `rings` slice ever listed a ring for on this page. */
+export async function ringChannelsSeen(page: Page): Promise<string[]> {
+  return page.evaluate(() => [...(window as unknown as { __dw: { ringChannels: Set<string> } }).__dw.ringChannels].sort());
+}
 /** True while the ring's 2 s timer runs (sounds.ts startRing; cleared by stopRing). */
 export async function ringTimerLive(page: Page): Promise<boolean> {
   return page.evaluate(() => (window as unknown as { __dw: Recorded }).__dw.ringTimers.size > 0);

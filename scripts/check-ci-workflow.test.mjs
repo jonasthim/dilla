@@ -173,7 +173,7 @@ jobs:
 
   chromium-web:
     runs-on: ubuntu-latest
-    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    timeout-minutes: ${BROWSER_WEB_JOBS['chromium-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -199,6 +199,9 @@ jobs:
       - run: npm run test:e2e:web:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npm run test:e2e:voice:chromium -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -208,7 +211,7 @@ jobs:
 
   firefox-web:
     runs-on: ubuntu-latest
-    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    timeout-minutes: ${BROWSER_WEB_JOBS['firefox-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -234,6 +237,10 @@ jobs:
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -243,7 +250,7 @@ jobs:
 
   webkit-web:
     runs-on: ubuntu-latest
-    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    timeout-minutes: ${BROWSER_WEB_JOBS['webkit-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -1009,8 +1016,10 @@ for (const [job, needle] of [
   ['web-build', 'path: packages/web/dist/'],
   ['web-build', 'name: dilla-core-harness'],
   ['web-build', 'path: packages/client-core/harness-dist/'],
-  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, { engine, core }]) => [
-    [job, `timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}`],
+  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, { engine, core, voice, timeout }]) => [
+    [job, `timeout-minutes: ${timeout}`],
+    ...(voice ? [[job, `npm run test:e2e:voice:${engine} -w @dilla/e2e`]] : []),
+    ...(voice && engine === 'firefox' ? [[job, 'sh scripts/ci-audio-server.sh']] : []),
     [job, 'name: dilla-core-wasi'],
     [job, 'path: internal/mlswasi/testdata'],
     [job, 'name: dilla-testkit'],
@@ -1072,6 +1081,25 @@ test('a workflow missing one engine job is reported, also when another job runs 
   const folded = checkWorkflow(fixture(GOOD.replace(firefox, '').replace(jobBody('chromium-web'), () => merged)));
   assert.ok(folded.some((p) => p.includes('missing job "firefox-web"')), folded.join('\n'));
   assert.ok(folded.some((p) => p.includes('"chromium-web"') && p.includes('test:e2e:web:chromium')), folded.join('\n'));
+});
+
+// Web-3 task 10: Firefox's voice suite runs after the audio server, as browser-media's does.
+test('firefox-web must start an audio server before the voice suite', () => {
+  const body = jobBody('firefox-web');
+  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
+  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
+  assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server and the voice suite');
+  const late = body.replace(audio, '').replace(voice, voice + audio);
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
+  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
+});
+
+test('the voice budgets are derived from the measured voice minutes and stay under one runner\'s 45 minutes', () => {
+  for (const job of ['chromium-web', 'firefox-web']) {
+    const { timeout } = BROWSER_WEB_JOBS[job];
+    assert.ok(timeout >= MIN_BROWSER_WEB_TIMEOUT && timeout <= 45, `${job}: ${timeout}`);
+  }
+  assert.equal(BROWSER_WEB_JOBS['webkit-web'].voice, false);
 });
 
 test('two engine jobs uploading one artifact name are reported', () => {

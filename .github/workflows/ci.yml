@@ -389,9 +389,10 @@ jobs:
     # C18: the core-worker suite and the web suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
     # Budget (L-CI-21, ruling of 2026-10-13: one job per Playwright project, each on its own share):
-    # max(30, ceil(5 x (0.25 + 3.4)) + 10) = 30, from web-2c task 10's local wall times halved per engine (core-worker
-    # suite 0.5 min, Chromium+Firefox web suite 6.8 min); re-measured 2026-10-13 in fix wave C2 (see the report).
-    timeout-minutes: 30
+    # max(30, ceil(5 x (0.25 + 3.4 + 1.9)) + 10) = 38, from web-2c task 10's local wall times halved per engine (core-worker
+    # suite 0.5 min, Chromium+Firefox web suite 6.8 min; re-measured 2026-10-13 in fix wave C2) and web-3 task 10's
+    # Chromium voice suite (109 s locally, 2026-10-14).
+    timeout-minutes: 38
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/checkout@v7
@@ -432,6 +433,10 @@ jobs:
       - run: npm run test:e2e:web:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      # web-3 task 10: VOICE-E2E, two browsers through the test host's in-process LiveKit (its globalSetup builds the host).
+      - run: npm run test:e2e:voice:chromium -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -445,9 +450,10 @@ jobs:
     # C18: the core-worker suite and the web suite in Firefox, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
     # Budget (L-CI-21, ruling of 2026-10-13: one job per Playwright project, each on its own share):
-    # max(30, ceil(5 x (0.25 + 3.4)) + 10) = 30, from web-2c task 10's local wall times halved per engine (core-worker
-    # suite 0.5 min, Chromium+Firefox web suite 6.8 min); re-measured 2026-10-13 in fix wave C2 (see the report).
-    timeout-minutes: 30
+    # max(30, ceil(5 x (0.25 + 3.4 + 1.8)) + 10) = 38, from web-2c task 10's local wall times halved per engine (core-worker
+    # suite 0.5 min, Chromium+Firefox web suite 6.8 min; re-measured 2026-10-13 in fix wave C2) and web-3 task 10's
+    # Firefox voice suite (104 s locally, 2026-10-14).
+    timeout-minutes: 38
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/checkout@v7
@@ -486,6 +492,11 @@ jobs:
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+      # web-3 task 10: VOICE-E2E. Headless Firefox needs an audio server, or every AudioContext stays suspended.
+      - run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
