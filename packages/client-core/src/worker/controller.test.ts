@@ -1176,6 +1176,18 @@ it('keeps the old lock and gives no release notice when pause fails', async () =
   expect(w.calls.indexOf('gateway.stop')).toBeLessThan(w.calls.lastIndexOf('gateway.start'));
 });
 
+it('a resign rolled back after a failed pause gives the fresh engine its expected groups before the socket starts (M2)', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pause.mockImplementationOnce(() => { throw new CoreError('E_STORE_BUSY', ''); });
+  const builds = w.sync.builds;
+  w.sync.setExpected.mockClear();
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+  expect(w.sync.builds).toBe(builds + 1);
+  expect(w.sync.setExpected).toHaveBeenCalledWith([expect.objectContaining({ groupId: GROUP })]);
+});
+
 /** Tab B's worker: a blocking lock request queued behind the current holder; `release` is B resigning. */
 function otherTab(w: World): { granted: Promise<void>; release: () => void } {
   let release: () => void = () => {};

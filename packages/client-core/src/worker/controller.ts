@@ -2206,7 +2206,9 @@ export class Controller {
     } catch (e) {
       try {
         await this.requireCore().resume();
+        // M2: resume()'s sequence, a fresh engine and its expected groups before the socket.
         this.startEngine();
+        this.updateExpected();
         this.gateway?.start();
         this.barrier.reopen();
       } catch { this.setAccount({ phase: 'paused-error', error: errorOf(e) }); }
