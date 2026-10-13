@@ -427,7 +427,11 @@ export class Controller {
       settings: () => this.core?.settings() ?? {},
       nameOf: (user) => this.nameOf(user),
       refreshLeaves: (g) => this.refreshCallLeaves(g),
-      serial: (g, job) => (this.sync === null ? job() : this.sync.queues.run(`g:${toHex(g)}`, job)),
+      serial: (g, job) => (this.sync === null ? job() : this.sync.runOnGroup(g, job)),
+      callEnded: (call) => {
+        if (this.lastVoiceSelf?.callId === call) this.lastVoiceSelf = null;
+        this.ownInCall.delete(call);
+      },
       onCommitted: (g, result) => { this.onGroupChanged(g, result); },
       afterJoin: (g) => {
         // After the join's answer has been posted: the engine takes up frames it held while the group was staged.
@@ -2024,6 +2028,8 @@ export class Controller {
     else { this.notMember.add(hex); this.resyncing.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });
     this.stopTypingIfUnviewable();
+    // Review M6: a call group's lost membership ends the call here (the engine never resyncs a call group).
+    if (status === 'not-member') this.safely(() => { if (this.calls.isCallGroup(groupId)) this.calls.onMembershipLost(groupId); });
   }
 
   /** Refreshes the row of every known channel or DM bound to the group and the timeline of every such open one. */

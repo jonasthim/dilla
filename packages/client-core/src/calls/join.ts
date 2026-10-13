@@ -25,6 +25,8 @@ export interface Joined { groupId: Id; media: CallMediaEpoch; started: CallStart
 /** A join that ended without a call. `leave` names an active call group this device must leave (a self-Remove and a
  *  forget); `cause` is the error to answer the command with. */
 export class JoinRefused extends Error {
+  /** The users the last call read named in the call (review M4: the only candidates of a changedUser). */
+  users: string[] = [];
   constructor(readonly code: string, readonly phase: 'blocked' | 'failed', readonly cause: unknown, readonly leave: Id | null) {
     super(code);
     this.name = 'JoinRefused';
@@ -40,9 +42,21 @@ function refused(e: unknown, leave: Id | null): JoinRefused {
 }
 
 export async function joinCall(d: JoinDeps, t: JoinTarget): Promise<Joined> {
+  const seen: { read: ChannelCall | null } = { read: null };
+  try {
+    return await joinLoop(d, t, seen);
+  } catch (e) {
+    if (e instanceof JoinRefused) e.users = [...new Set((seen.read?.participants ?? []).map((p) => toHex(p.userId)))];
+    throw e;
+  }
+}
+
+async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | null }): Promise<Joined> {
   let reread = { exists: true, closed: true };
   let read: ChannelCall = await d.routes.getChannelCall(t.channelId);
+  seen.read = read;
   for (;;) {
+    seen.read = read;
     forgetStale(d.core, t.channelId, read.groupId);
     let groupId: Id;
     if (read.groupId === null) {

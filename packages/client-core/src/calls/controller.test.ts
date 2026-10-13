@@ -103,6 +103,9 @@ export async function harness(opts: HarnessOptions = {}) {
   const routes: Record<string, (...a: unknown[]) => Promise<unknown>> = {};
   for (const name of names) {
     routes[name] = async (...args: unknown[]): Promise<unknown> => {
+      // An unlabelled hold (the engine's own reads): waits, unrecorded.
+      const raw = holds.findIndex((x) => x.label === `raw:${name}`);
+      if (raw >= 0) { const [hold] = holds.splice(raw, 1); hold.reached(); await hold.gate; }
       const label = LABELS[name];
       if (label !== undefined) {
         requests.push({ route: label, args });
@@ -134,12 +137,17 @@ export async function harness(opts: HarnessOptions = {}) {
     },
     /** The next request of `label` is answered with `value` instead of the model's answer. */
     reply(label: string, value: unknown): void { replies.push({ label, value }); },
+    /** The next call of a route method by name (labelled or not) waits until release(), unrecorded. */
+    holdRaw(method: string): { release: () => void; reached: Promise<void> } { return server.hold(`raw:${method}`); },
     routes(): string[] { return requests.map((r) => r.route); },
     reset(): void { requests.length = 0; },
   };
 
   const posted: Posted[] = [];
-  const session = { token: (): string => 'token', ensure: (): Promise<boolean> => Promise.resolve(true), establish: (): Promise<boolean> => Promise.resolve(true) };
+  /** Whether a session can be established again (false: a revoked socket ends in the revoked phase). */
+  const sessionState = { ok: true };
+  const session = { token: (): string => 'token', ensure: (): Promise<boolean> => Promise.resolve(true),
+    establish: (): Promise<boolean> => Promise.resolve(sessionState.ok) };
   const parts: Partial<ControllerParts> = {
     routes: () => routes as unknown as Routes,
     session: () => session as unknown as Session,
@@ -202,7 +210,9 @@ export async function harness(opts: HarnessOptions = {}) {
   await clock.advance(0);
 
   return {
-    controller, model, ds, clock, server, call, send, ret, slice, voiceSelfSent,
+    controller, model, ds, clock, server, call, send, ret, slice, voiceSelfSent, sessionState,
+    /** The gateway reports a revoked socket (the worker re-establishes its session, or ends in revoked). */
+    revokeSocket: (): void => { fake.emit({ type: 'revoked' }); },
     callGroup, voice: toHex(VOICE), dm: toHex(DM), dms, gateway: { push: (f: Frame): void => { fake.frame(f); } },
     posted: (): Posted[] => [...posted],
     pushes: (t: FromWorker['t']): Posted[] => posted.filter((p) => p.message.t === t),
@@ -796,6 +806,196 @@ describe('rings (L-TS-56 step 8)', () => {
     w.gateway.push(ring(1));
     await w.call({ m: 'callJoin', channelId: w.dm, vdec: '' });
     expect(w.slice('rings')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Task 6 review, fix round 1 (task-6-review.md I1, M1-M6).
+// ---------------------------------------------------------------------------------------------
+
+const waitRet = async (w: World, id: number): Promise<void> => {
+  for (let i = 0; i < 60 && w.ret(id) === undefined; i++) { await settle(); await w.clock.advance(0); }
+};
+const keyZeroed = (w: World): boolean => {
+  const m = w.model.lastMedia(w.callGroup);
+  return m !== undefined && m.baseKey.byteLength === 16 && new Uint8Array(m.baseKey).every((b) => b === 0);
+};
+
+// I1. Attacker question: none (a race of the person's own commands). The property: after a leave, a sign-out, a forget or
+// a revocation, no key reaches the page, the joined key is zero-filled in the worker, and the device does not stay a leaf
+// of the call group without its self-Remove (except a revoked device, which can send nothing and forgets locally).
+describe('a join cancelled while it runs (review I1)', () => {
+  async function joining(): Promise<{ w: World; join: number; release: () => void }> {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    const held = w.server.hold('POST calls');
+    const join = w.send(JOIN(w));
+    await held.reached;
+    return { w, join, release: held.release };
+  }
+  async function cancelledBy(w: World, join: number, release: () => void, entry: number | null, proposal: boolean): Promise<void> {
+    release();
+    await waitRet(w, join);
+    if (entry !== null) await waitRet(w, entry);
+    await settled(w);
+    expect(w.ret(join)).toMatchObject({ ok: false, error: { code: 'E_NO_CALL' } });
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(keyZeroed(w)).toBe(true);
+    expect(w.server.routes().includes('POST proposal')).toBe(proposal);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.slice('call').phase).toBe('idle');
+    // Nothing is armed for the call it left: an hour later no rotation runs.
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    expect(w.server.routes()).not.toContain('POST commit');
+  }
+
+  it('callLeave while joining answers after the self-Remove, and the join posts no key', async () => {
+    const { w, join, release } = await joining();
+    const leave = w.send({ m: 'callLeave', reason: 'user' });
+    await settled(w);
+    expect(w.ret(leave)).toBeUndefined();                 // it waits for the join's teardown
+    await cancelledBy(w, join, release, leave, true);
+    expect(w.ret(leave)).toMatchObject({ ok: true, value: null });
+    expect(w.server.routes().indexOf('POST proposal')).toBeGreaterThan(w.server.routes().indexOf('POST calls'));
+  });
+
+  it('forgetBrowser while joining sends the self-Remove first', async () => {
+    const { w, join, release } = await joining();
+    const forget = w.send({ m: 'forgetBrowser' });
+    await settled(w);
+    await cancelledBy(w, join, release, forget, true);
+  });
+
+  it('signOutRevoke while joining sends the self-Remove first', async () => {
+    const { w, join, release } = await joining();
+    const out = w.send({ m: 'signOutRevoke', recoveryKey: 'QRST'.repeat(13) });
+    await settled(w);
+    await cancelledBy(w, join, release, out, true);
+  });
+
+  it('a revoked socket while joining forgets the group locally and sends nothing (reset)', async () => {
+    const { w, join, release } = await joining();
+    w.sessionState.ok = false;
+    w.revokeSocket();
+    await settled(w);
+    expect((w.slice('account') as { phase: string }).phase).toBe('revoked');
+    await cancelledBy(w, join, release, null, false);
+  });
+});
+
+describe('the rotation and the leave share the group lane (review M1, M7)', () => {
+  it('a leave waits for a rotation in flight; its self-Remove is built after the rotation committed', async () => {
+    const w = await joined();
+    const held = w.server.hold('POST commit');
+    await w.clock.advance(3_600_000);
+    await held.reached;
+    const leave = w.send({ m: 'callLeave', reason: 'user' });
+    await settled(w);
+    expect(w.server.routes()).not.toContain('POST proposal');
+    held.release();
+    await waitRet(w, leave);
+    expect(w.server.routes().filter((r) => r !== 'GET device list')).toEqual(['POST commit', 'POST proposal']);
+    const calls = w.model.calls.filter((c) => c.g === toHex(w.callGroup)).map((c) => c.m);
+    expect(calls.indexOf('callLeaveProposal')).toBeGreaterThan(calls.indexOf('commitConfirm'));
+  });
+
+  it('a pause that lands while the rotation waits on the lane commits nothing', async () => {
+    const w = await joined();
+    // The engine's catch-up holds the lane: a frame is lost, the next one shows the gap.
+    const held = w.server.holdRaw('getHandshakes');
+    w.ds.dropNext(ME.device, 1);
+    w.ds.peerSend(w.callGroup, PEER, 'a');
+    w.ds.peerSend(w.callGroup, PEER, 'b');
+    await held.reached;
+    await w.clock.advance(3_600_000);                    // the rotation passes its first check and waits for the lane
+    w.model.changeIdentity(PEER.user);
+    await w.call({ m: 'refreshTrust' });
+    expect(w.slice('call').phase).toBe('paused');
+    held.release();
+    await settled(w, 8);
+    expect(w.server.routes()).not.toContain('POST commit');
+    expect(w.model.calls.some((c) => c.m === 'callRotate')).toBe(false);
+  });
+});
+
+describe('review M2-M6', () => {
+  // M2. Attacker question: none; a stale decline (L-HTTP-104 acts only on the matching expires_ts) must not hide the ring
+  // the instance still runs.
+  it('a decline of an older ring keeps the newer ring of the same DM', async () => {
+    const w = await harness({ dm: true });
+    w.gateway.push(ring(1, { expires: 130 }));
+    w.gateway.push(ring(1, { expires: 160 }));
+    await w.call({ m: 'callDecline', callId: w.dm, ringTs: 130 });
+    expect(w.slice('rings')).toEqual([expect.objectContaining({ channelId: w.dm, ringTs: 160 })]);
+    expect(w.server.requests.filter((q) => q.route === 'POST decline').map((q) => q.args[1])).toEqual([130]);
+    await w.call({ m: 'callDecline', callId: w.dm, ringTs: 160 });
+    expect(w.slice('rings')).toEqual([]);
+  });
+
+  it('the last voice_self belongs to its call: after a leave a later join does not re-send it (M3)', async () => {
+    const w = await joined();
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(2);
+    await w.call({ m: 'callLeave', reason: 'user' });
+    w.gateway.push(voiceFrame(ME, VOICE, 0));
+    await w.call(JOIN(w));
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(2);
+  });
+
+  // M4. Attacker question: none; the banner must name a member of this call, never an unrelated contact.
+  it('changedUser after a refused voice join names only a participant of that call, else null', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer', dm: true });
+    // Dave changed his identity somewhere else entirely (a DM text group).
+    w.model.addPendingLeaf(w.dms[0].text, 2, FOURTH.user, FOURTH.device, fakeDskPub(FOURTH.device), 1);
+    const row = w.ds.listRow(FOURTH.user)!;
+    w.model.trustList(FOURTH.user, row.version, row.blob);
+    w.model.changeIdentity(FOURTH.user);
+    // Bob's identity changed too (seen in the DM): his leaf in the lounge's call group now refuses the join.
+    w.model.addPendingLeaf(w.dms[0].text, 1, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+    w.model.changeIdentity(PEER.user);
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_UMK_CHANGED');
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', changedUser: null });
+    // With bob in the live call, the refusal names him.
+    await w.ds.routesFor(PEER.device).startCall(VOICE, '');
+    w.ds.voice(VOICE, PEER, 1);
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_UMK_CHANGED');
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', changedUser: toHex(PEER.user) });
+  });
+
+  // M5. Attacker: the instance, the only source of voice_state, floods a call with devices.
+  it('a call lists at most 1,024 devices, and a read flooded past 1,024 frames keeps the live state', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    const many = (n: number): Peer[] => Array.from({ length: n }, (_, i) => ({ user: idOf(0xe7, i + 1), device: idOf(0xd7, i + 1) }));
+    for (const p of many(1025)) w.gateway.push(voiceFrame(p, VOICE, 1));
+    expect(w.slice('voice')[w.voice]?.participants).toHaveLength(1024);
+    const v = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    // The snapshot (taken before the flood) names bob only; no frame ever named him.
+    const held = v.server.hold('GET channel call');
+    v.server.reply('GET channel call', { groupId: v.callGroup, callId: VOICE, participants: [{ userId: PEER.user, deviceId: PEER.device, flags: 1 }] });
+    const id = v.send({ m: 'loadVoice', communityId: null, channelId: v.voice });
+    await held.reached;
+    for (const p of many(1100)) v.gateway.push(voiceFrame(p, VOICE, 1));
+    held.release();
+    await waitRet(v, id);
+    const rows = v.slice('voice')[v.voice]?.participants ?? [];
+    expect(rows).toHaveLength(1024);
+    expect(rows.some((p) => p.deviceId === toHex(PEER.device))).toBe(false);
+  });
+
+  // M6. Attacker question: can the instance turn a lost call-group state into a commit? No: a call group is never
+  // re-joined by the engine's text resync; the call ends here as removed and the group is forgotten.
+  it('a call group whose state is lost is never resynced by the engine; the call is removed', async () => {
+    const w = await joined();
+    w.ds.garbageCommit(w.callGroup);
+    await settled(w, 8);
+    expect(w.server.routes()).not.toContain('GET group info');
+    expect(w.server.routes()).not.toContain('POST resync');
+    expect((w.slice('call') as CallState | undefined)?.phase).toBe('removed');
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.pushes('callKeys')).toHaveLength(0);
   });
 });
 

@@ -72,8 +72,9 @@ export class Rings {
     this.deps.publish(this.rings);
   }
 
-  removeCall(callHex: string): void {
-    for (const r of this.rings.filter((x) => x.callId === callHex)) this.remove(r.channelId);
+  /** The ring a decline answers: its call and its expires_ts both match (a later ring of the same DM stays). */
+  removeCall(callHex: string, ringTs: number): void {
+    for (const r of this.rings.filter((x) => x.callId === callHex && x.ringTs === ringTs)) this.remove(r.channelId);
   }
 
   clear(): void {

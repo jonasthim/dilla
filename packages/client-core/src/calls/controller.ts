@@ -53,6 +53,8 @@ export interface CallDeps {
   onCommitted(groupId: Id, result: ApplyResult): void;
   /** After a join's answer: the engine takes the group up (held frames, catch-up). */
   afterJoin(groupId: Id): void;
+  /** A call of this id begins or ends here: what the worker kept for it (the last voice_self) goes (review M3). */
+  callEnded(callHex: string): void;
   track(job: Promise<unknown>): void;
 }
 
@@ -62,7 +64,12 @@ export class CallRefusal extends CoreError {}
 interface Live {
   channel: string; channelId: Id; dm: boolean; members: string[]; groupId: Id; callId: Id; vdec: string;
   postedEpoch: bigint; leaving: boolean; outgoing: { ringing: string[]; declined: string[] } | null;
+  /** The users of the last keyed roster: the candidates of a pause's changedUser (review M4). */
+  rosterUsers: string[];
 }
+/** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
+ *  'reset' (forgotten locally, nothing sent); `done` settles once the join has torn down or finished. */
+interface JoinToken { cancelled: 'leave' | 'reset' | null; done: Promise<void> }
 
 const IN_A_CALL: readonly CallPhase[] = ['joining', 'in', 'paused', 'leaving'];
 
@@ -71,6 +78,7 @@ export class CallController {
   private readonly rings: Rings;
   private state: CallState = CALL_IDLE;
   private live: Live | null = null;
+  private joining: JoinToken | null = null;
   private rotateTimer: number | null = null;
 
   constructor(private readonly deps: CallDeps) {
@@ -121,7 +129,23 @@ export class CallController {
       }
     }
     this.setState({ ...CALL_IDLE, phase: 'joining', channelId: channel });
+    // Review M3: a voice_self kept from an earlier call of this channel is not re-sent into this one.
+    this.deps.callEnded(channel);
     const channelId = fromHex(channel);
+    let finish = (): void => {};
+    const token: JoinToken = { cancelled: null, done: new Promise<void>((resolve) => { finish = resolve; }) };
+    this.joining = token;
+    try {
+      return await this.joinOnce(token, core, instance, target, channel, channelId, vdec);
+    } finally {
+      if (this.joining === token) this.joining = null;
+      finish();
+    }
+  }
+
+  private async joinOnce(token: JoinToken, core: CorePort, instance: { policyVersion: bigint; externalSenderPub: Uint8Array },
+    target: { communityId: string | null; members: string[] }, channel: string, channelId: Id, vdec: string): Promise<CallJoinResult> {
+    const dm = target.communityId === null;
     let joined;
     try {
       joined = await joinCall({
@@ -130,19 +154,29 @@ export class CallController {
       }, { channelId, communityId: target.communityId === null ? null : fromHex(target.communityId), vdec });
     } catch (e) {
       const cause = e instanceof JoinRefused ? e.cause : e;
-      if (e instanceof JoinRefused && e.leave !== null) await this.leaveGroup(e.leave);
+      if (e instanceof JoinRefused && e.leave !== null) await this.teardown(token, e.leave);
+      if (token.cancelled !== null) throw this.cancelled(token);
       const phase = e instanceof JoinRefused ? e.phase : 'failed';
       const code = this.deps.errorOf(cause).code;
+      // Ruling I2 and review M4: a refused join names a changed contact only among this call's own participants.
+      const candidates = dm ? target.members : e instanceof JoinRefused ? e.users : [];
       this.setState({ ...CALL_IDLE, phase, channelId: channel, error: this.deps.errorOf(cause),
-        changedUser: code === 'E_UMK_CHANGED' ? this.changedUser([], target.members) : null });
+        changedUser: code === 'E_UMK_CHANGED' ? this.changedUser([], candidates) : null });
       throw cause;
     }
     const { groupId, media, started } = joined;
+    // Review I1: a leave, sign-out, forget or revocation during the join: the key is zero-filled here and never posted,
+    // the group is left (or, revoked, forgotten locally) and nothing is armed for it.
+    if (token.cancelled !== null) {
+      new Uint8Array(media.baseKey).fill(0);
+      await this.teardown(token, groupId);
+      throw this.cancelled(token);
+    }
     const own = toHex(this.deps.me()?.userId ?? new Uint8Array(16));
     const others = target.members.filter((u) => u !== own);
     const outgoing = dm && started.created ? { ringing: others.filter((u) => !this.book.usersIn(channel).has(u)), declined: [] } : null;
     this.live = { channel, channelId, dm, members: target.members, groupId, callId: started.callId, vdec, postedEpoch: media.epoch,
-      leaving: false, outgoing };
+      leaving: false, outgoing, rosterUsers: [] };
     // The join epoch's key: a push posted before this command's ret, its buffer transferred (L-TS-52).
     this.postKeys(this.live, media);
     this.setIn(media);
@@ -159,15 +193,29 @@ export class CallController {
   onGroupChanged(groupId: Id, result: ApplyResult): void {
     const live = this.live;
     if (live === null || toHex(live.groupId) !== toHex(groupId)) return;
-    if (result.state === 4) {
-      if (live.leaving) return;
-      // Step 3: the own leaf is gone (another member committed its Remove).
-      this.stopRotation();
-      this.live = null;
-      this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel });
+    if (live.leaving) return;
+    if (result.state === 4 || result.state === 3) {
+      // Step 3: the own leaf is gone (another member committed its Remove), or (review M6) the group's state is lost: a
+      // call group is never resynced, so the call ends here as removed.
+      this.lost(live);
       return;
     }
     if (result.epochChanged) this.rekey(true);
+  }
+
+  /** The engine lost this device's membership of a call group (a refused read, a lost state): the call is removed. */
+  onMembershipLost(groupId: Id): void {
+    const live = this.live;
+    if (live === null || live.leaving || toHex(live.groupId) !== toHex(groupId)) return;
+    this.lost(live);
+  }
+
+  private lost(live: Live): void {
+    this.stopRotation();
+    this.live = null;
+    try { this.deps.core()?.callGroupForget(live.groupId); } catch { /* forgotten already */ }
+    this.deps.callEnded(toHex(live.callId));
+    this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel });
   }
 
   /** After every trust refresh: a pause may end (the changed contact verified), a pending leaf may now validate, and a
@@ -190,7 +238,7 @@ export class CallController {
       if (code === 'E_UMK_CHANGED') {
         const text = live.dm ? this.textGroup(live.channel) : null;
         this.setState({ ...this.state, phase: 'paused', error: this.deps.errorOf(e),
-          changedUser: this.changedUser(text === null ? [live.groupId] : [live.groupId, text], live.members) });
+          changedUser: this.changedUser(text === null ? [live.groupId] : [live.groupId, text], live.dm ? live.members : live.rosterUsers) });
         return;
       }
       // Any other gate refusal (unlisted, credential, tier, binding): blocked, and the device leaves.
@@ -220,6 +268,7 @@ export class CallController {
   private setIn(media: CallMediaEpoch): void {
     const live = this.live;
     if (live === null) return;
+    live.rosterUsers = media.roster.map((r) => toHex(r.userId));
     this.setState({ phase: 'in', channelId: live.channel, callId: toHex(live.callId), epoch: media.epoch.toString(), code: media.code,
       error: null, roster: media.roster.map((r) => ({ userId: toHex(r.userId), deviceId: toHex(r.deviceId), leaf: r.leaf })),
       outgoing: this.outgoingNames(live), changedUser: null });
@@ -228,9 +277,16 @@ export class CallController {
   // ---- step 4: the leave ----
 
   async leave(blocked = false): Promise<null> {
+    // Review I1: a join in flight is cancelled and this answers once it has torn down (its self-Remove sent).
+    const joining = this.joining;
+    if (joining !== null && this.live === null) {
+      joining.cancelled ??= 'leave';
+      await joining.done;
+      return null;
+    }
     const live = this.live;
     if (live === null) {
-      if (this.state.phase !== 'joining' && !blocked) this.setState({ ...CALL_IDLE });
+      if (!blocked) this.setState({ ...CALL_IDLE });
       return null;
     }
     // Never a rotation after this point: call_rotate would cancel the posted self-Remove (task 5, progress note).
@@ -239,17 +295,35 @@ export class CallController {
     if (!blocked) this.setState({ ...this.state, phase: 'leaving' });
     await this.leaveGroup(live.groupId);
     if (this.live === live) this.live = null;
+    this.deps.callEnded(toHex(live.callId));
     this.setState(blocked ? { ...this.state, phase: 'blocked' } : { ...CALL_IDLE });
     return null;
   }
 
-  /** The self-Remove (a 409 E_REMOVE_PENDING is fine, any failure leaves the group to the instance) and the forget. */
+  /** The self-Remove (a 409 E_REMOVE_PENDING is fine, any failure leaves the group to the instance) and the forget, on the
+   *  group's lane (review M1): a rotation in flight commits first, and the Remove is built on the epoch it left. */
   private async leaveGroup(groupId: Id): Promise<void> {
-    const core = this.deps.core();
-    if (core === null) return;
-    try { await this.deps.routes.postProposal(groupId, core.callLeaveProposal(groupId)); }
-    catch { /* E_REMOVE_PENDING, or the instance removes the leaf when the call ends */ }
-    try { core.callGroupForget(groupId); } catch { /* forgotten already */ }
+    await this.deps.serial(groupId, async () => {
+      const core = this.deps.core();
+      if (core === null) return;
+      try { await this.deps.routes.postProposal(groupId, core.callLeaveProposal(groupId)); }
+      catch { /* E_REMOVE_PENDING, or the instance removes the leaf when the call ends */ }
+      try { core.callGroupForget(groupId); } catch { /* forgotten already */ }
+    });
+  }
+
+  /** A cancelled join's group: left with its self-Remove, or (a reset: the session is gone) forgotten locally. */
+  private async teardown(token: JoinToken, groupId: Id): Promise<void> {
+    if (token.cancelled === 'reset') {
+      try { this.deps.core()?.callGroupForget(groupId); } catch { /* forgotten already */ }
+      return;
+    }
+    await this.leaveGroup(groupId);
+  }
+
+  private cancelled(token: JoinToken): CallRefusal {
+    if (token.cancelled === 'leave') this.setState({ ...CALL_IDLE });
+    return new CallRefusal('E_NO_CALL', 'the call was left while it was joining');
   }
 
   // ---- step 5: the rotation ----
@@ -272,6 +346,9 @@ export class CallController {
     if (this.state.phase !== 'in') return;
     await this.deps.serial(live.groupId, async () => {
       if (this.live !== live || live.leaving) return;
+      // Review M1: a pause that landed while this waited for the lane holds the rotation too.
+      if (this.state.phase === 'paused') { this.armRotation(CALL_ROTATE_MS); return; }
+      if (this.state.phase !== 'in') return;
       let body: Uint8Array;
       try { body = core.callRotate(live.groupId); }
       catch { this.armRotation(CALL_ROTATE_RETRY_MS); return; }
@@ -332,7 +409,8 @@ export class CallController {
 
   /** callDecline: the ring goes here whatever the instance answers (a 404 is expected after the ring ended). */
   async decline(callId: string, ringTs: number): Promise<null> {
-    this.rings.removeCall(callId);
+    // Review M2: only the ring this decline answers (L-HTTP-104 acts on the matching expires_ts alone).
+    this.rings.removeCall(callId, ringTs);
     try { await this.deps.routes.declineCall(fromHex(callId), ringTs); }
     catch (e) { if (!(e instanceof DillaHttpError)) throw e; }
     return null;
@@ -382,6 +460,8 @@ export class CallController {
 
   /** Everything this account's calls left in the worker goes with the account (wipe, release); nothing is sent. */
   reset(): void {
+    // Review I1: a join in flight is cancelled; its group is forgotten locally and nothing is sent or posted.
+    if (this.joining !== null) this.joining.cancelled = 'reset';
     this.stopRotation();
     this.live = null;
     this.state = CALL_IDLE;
@@ -423,7 +503,8 @@ export class CallController {
   }
 
   /** Ruling I2: the changed contact, the first by user id: a changed leaf of the groups in question, else a contact among
-   *  the candidates (the DM's participants) whose key changed. */
+   *  the candidates (this call's own participants: the DM's members, the call's roster or snapshot) whose key changed;
+   *  null when none is known (review M4: never a contact of another conversation). */
   private changedUser(groups: readonly Id[], candidates: readonly string[]): string | null {
     const core = this.deps.core();
     const me = this.deps.me();
@@ -435,7 +516,7 @@ export class CallController {
         .map((l) => toHex(l.userId)).filter((u) => u !== own).sort();
       if (leaves.length > 0) return leaves[0] ?? null;
       const rows = core.trustState().filter((r) => r.changedUmk !== null || r.blocked === 'E_UMK_CHANGED').map((r) => toHex(r.userId))
-        .filter((u) => u !== own && (candidates.length === 0 || candidates.includes(u))).sort();
+        .filter((u) => u !== own && candidates.includes(u)).sort();
       return rows[0] ?? null;
     } catch {
       return null;

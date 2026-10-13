@@ -144,7 +144,7 @@ export class SyncEngine implements SyncInternals {
         for (const g of this.deps.core.groups()) {
           if (g.state === 2) { this.requestCatchUp(g.groupId); this.requestDrain(g.groupId); }
           else if (g.state === 3 && !this.resyncTried.has(toHex(g.groupId))) {
-            this.queues.coalesce(key(g.groupId), 'resync', async () => { await resyncGroup(this, g.groupId, false); });
+            this.queues.coalesce(key(g.groupId), 'resync', async () => { await this.resync(g.groupId); });
           }
         }
         if (!this.isStopped) this.joinAll.request();
@@ -262,7 +262,7 @@ export class SyncEngine implements SyncInternals {
       if (e instanceof CoreError) this.reportCurrent(g);
       if ((this.membershipLost(g, e) || (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED'))
         && !this.resyncTried.has(toHex(g))) {
-        await resyncGroup(this, g, false);
+        await this.resync(g);
       }
       return false;
     }
@@ -292,7 +292,7 @@ export class SyncEngine implements SyncInternals {
       if (id !== undefined) { this.cancelTimer(id); this.epochWait.delete(hex); this.requestDrain(g); }
       else if (!this.echoWait.has(hex) && this.deps.core.outbox(g).some((x) => x.state === 0)) this.requestDrain(g);
     }
-    if (r.state === 3 && !this.resyncTried.has(hex)) await resyncGroup(this, g, false);
+    if (r.state === 3 && !this.resyncTried.has(hex)) await this.resync(g);
     if (source !== 'commit' && r.state === 2) {
       if (r.proposalsPending > 0) this.armVolunteer(g); else this.disarmVolunteer(g);
     }
@@ -345,7 +345,7 @@ export class SyncEngine implements SyncInternals {
           await this.catchUpNow(g, 'commit');
           if (e.status === 422) this.quiet.add(toHex(g));
         } else if (((e.status === 403 && e.code === 'E_LEAF_NOT_CURRENT') || this.membershipLost(g, e)) && !this.resyncTried.has(toHex(g))) {
-          await resyncGroup(this, g, false);
+          await this.resync(g);
         }
       }
       this.requestDrain(g);
@@ -374,6 +374,21 @@ export class SyncEngine implements SyncInternals {
     for (const { frame } of ordered) await this.frameJob(frame);
     this.requestCatchUp(g); this.requestDrain(g);
   }
+  /**
+   * The engine's resync of a group whose state is lost. A call group (kind 1) is never re-joined here: its join is the
+   * call controller's alone (the gated join, L-TS-56 step 1), so a lost call group is reported as not-member and the call
+   * ends as removed (task 6 review M6).
+   */
+  private async resync(g: Id): Promise<boolean> {
+    if (this.row(g)?.kind === 1) {
+      this.resyncTried.add(toHex(g));
+      this.deps.onMembership(g, 'not-member');
+      return false;
+    }
+    return resyncGroup(this, g, false);
+  }
+  /** Runs a job on the group's lane, serialised with every apply, catch-up and commit of that group (review M7). */
+  runOnGroup<T>(g: Id, job: () => Promise<T>): Promise<T> { return this.queues.run(key(g), job); }
   async pollWelcomes(): Promise<void> { await this.queues.run('w', () => welcomeStep(this)).catch(() => undefined); }
   openChannel(ch: { communityId: Id | null; channelId: Id; textGroupId: Id | null }): Promise<{ groupId: Id; state: 0 | 1 | 2 | 3 | 4 }> {
     if (this.isStopped) return Promise.reject(new SyncError('E_SYNC_STOPPED'));

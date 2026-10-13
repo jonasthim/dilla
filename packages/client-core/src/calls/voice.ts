@@ -20,7 +20,13 @@ export interface VoiceDeps {
   known(channelHex: string): boolean;
 }
 
-interface Read { channels: Set<string> | 'community'; community: string | null; frames: VoiceStateFrame[] }
+/** Review M5: the instance alone sends voice_state, so the book holds at most this many devices per call (the snapshot
+ *  decoder's bound, L-TS-55) and keeps at most this many frames per read in flight. */
+export const VOICE_MAX = 1024;
+
+/** A read in flight; `overflow` once more frames arrived during it than it keeps: its snapshot is then older than what the
+ *  frames already showed, so the live state stands and the snapshot is not placed. */
+interface Read { channels: Set<string> | 'community'; community: string | null; frames: VoiceStateFrame[]; overflow: boolean }
 
 export class VoiceBook {
   private state: VoiceState = {};
@@ -33,10 +39,11 @@ export class VoiceBook {
   /** One channel's call (L-HTTP-100). */
   async loadChannel(channelId: Id): Promise<void> {
     const channel = toHex(channelId);
-    const read: Read = { channels: new Set([channel]), community: null, frames: [] };
+    const read: Read = { channels: new Set([channel]), community: null, frames: [], overflow: false };
     this.reads.add(read);
     try {
       const snap = await this.deps.routes.getChannelCall(channelId);
+      if (read.overflow) return;
       this.place(channel, snap.callId === null ? null : toHex(snap.callId), snap.participants);
       this.replay(read);
     } finally {
@@ -47,10 +54,11 @@ export class VoiceBook {
   /** Every live call of a community's voice channels (L-HTTP-101); a known voice channel it does not list has none. */
   async loadCommunity(communityId: Id): Promise<void> {
     const community = toHex(communityId);
-    const read: Read = { channels: 'community', community, frames: [] };
+    const read: Read = { channels: 'community', community, frames: [], overflow: false };
     this.reads.add(read);
     try {
       const calls = await this.deps.routes.getCommunityCalls(communityId);
+      if (read.overflow) return;
       const listed = new Set<string>();
       for (const call of calls) {
         const channel = toHex(call.channelId);
@@ -68,7 +76,10 @@ export class VoiceBook {
 
   /** A voice_state frame: applied now, and kept for every read in flight, which applies it again after its snapshot. */
   frame(f: VoiceStateFrame): void {
-    for (const read of this.reads) read.frames.push(f);
+    for (const read of this.reads) {
+      if (read.frames.length >= VOICE_MAX) read.overflow = true;
+      else read.frames.push(f);
+    }
     if (this.apply(f)) this.deps.publish(this.state);
   }
 
@@ -96,7 +107,7 @@ export class VoiceBook {
   private place(channel: string, callId: string | null, participants: readonly CallParticipant[], publish = true): void {
     if (callId === null || participants.length === 0) this.drop(channel, false);
     else {
-      this.state = { ...this.state, [channel]: { callId, participants: sorted(participants.map((p) =>
+      this.state = { ...this.state, [channel]: { callId, participants: sorted(participants.slice(0, VOICE_MAX).map((p) =>
         this.deps.participant(toHex(p.userId), toHex(p.deviceId), p.flags))) } };
     }
     if (publish) this.deps.publish(this.state);
@@ -125,6 +136,8 @@ export class VoiceBook {
     const device = toHex(f.deviceId);
     const before = this.state[channel]?.participants ?? [];
     const rest = before.filter((p) => p.deviceId !== device);
+    // Review M5: a device beyond the bound is not added (one already listed is still updated or removed).
+    if (f.flags !== 0 && rest.length === before.length && rest.length >= VOICE_MAX) return false;
     const next = f.flags === 0 ? rest : sorted([...rest, this.deps.participant(user, device, f.flags)]);
     if (next.length === 0) { const had = channel in this.state; this.drop(channel, false); return had; }
     this.state = { ...this.state, [channel]: { callId: this.state[channel]?.callId ?? callHex, participants: next } };

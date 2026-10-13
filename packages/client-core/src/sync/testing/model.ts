@@ -770,6 +770,10 @@ export class ModelCore implements CorePort {
     this.gs.set(toHex(groupId), g);
   }
   lastBaseKeyHex(groupId: Id): string { return this.baseKeys.get(toHex(groupId)) ?? ''; }
+  /** The last epoch this group's call_media_epoch handed to the worker: a test reads whether its key buffer was
+   *  transferred (detached) or zero-filled. */
+  lastMedia(groupId: Id): CallMediaEpoch | undefined { return this.medias.get(toHex(groupId)); }
+  private readonly medias = new Map<string, CallMediaEpoch>();
   lastEpochBytes(groupId: Id): Uint8Array { return this.epochBytes.get(toHex(groupId)) ?? new Uint8Array(0); }
 
   callGroupCreate(groupId: Id, communityId: Id | null, channelId: Id): Uint8Array {
@@ -829,7 +833,9 @@ export class ModelCore implements CorePort {
     this.epochBytes.set(toHex(groupId), bytes);
     key.fill(0);
     // The wasm adapter's own decoder: the key is copied out and these bytes are zero-filled (L-TS-55).
-    return readCallMediaEpoch(bytes);
+    const media = readCallMediaEpoch(bytes);
+    this.medias.set(toHex(groupId), media);
+    return media;
   }
 
   callJoinCheck(groupId: Id): void {
