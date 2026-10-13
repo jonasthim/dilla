@@ -12,7 +12,7 @@ async function enter(page: Page, peer: Peer, instanceName: string) {
   return setup;
 }
 
-test('rotation retracts already visible text; an independent trusted group still works', async ({ page, peer, instanceName }) => {
+test('rotation keeps already visible text; an independent trusted group still works', async ({ page, peer, instanceName }) => {
   const setup = await enter(page, peer, instanceName);
   const original = await peer.send('before rotation');
   await expect(rowById(page, peer.channelName, original.msg_id)).toContainText('before rotation', { timeout: WAIT });
@@ -31,9 +31,9 @@ test('rotation retracts already visible text; an independent trusted group still
     await expect(page.getByRole('alert')).toContainText(copy('privacy.changed'), { timeout: WAIT });
     // Requirement 1: sending is blocked in the changed contact's group, and the composer says why.
     await expect(composerBox(page, peer.channelName)).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByText('before rotation')).toHaveCount(0);
+    await expect(rowById(page, peer.channelName, original.msg_id)).toContainText('before rotation');
     await expect(page.getByText('after rotation')).toHaveCount(0);
-    await expect(rowById(page, peer.channelName, original.msg_id)).toHaveAttribute('data-state', 'cannot-read');
+    await expect(rowById(page, peer.channelName, original.msg_id)).not.toHaveAttribute('data-state', 'cannot-read');
     await openChannel(page, control.communityName, control.channelName);
     await control.send('positive control');
     await expect(page.getByText('positive control')).toBeVisible({ timeout: WAIT });
