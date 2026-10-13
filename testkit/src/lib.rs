@@ -17,6 +17,7 @@ mod client;
 mod ds;
 mod fixtures;
 mod media_driver;
+mod netprobe;
 mod scenario;
 mod web_driver;
 
@@ -34,6 +35,7 @@ pub use fixtures::{
     gen_public_group, gen_registration_groups,
 };
 pub use media_driver::MediaDriver;
+pub use netprobe::{Prepared, prepare as netprobe_prepare, start as netprobe_start};
 pub use scenario::{
     DeviceListMode, ParseError, RunReport, Runner, Scenario, StepResult, Stmt, parse,
 };

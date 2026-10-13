@@ -45,6 +45,12 @@ enum Command {
         #[arg(long, default_value_t = 0x5eed)]
         seed: u64,
     },
+    /// The real-network voice probe (L-PROBE-1): `prepare` once, then `start` on each side's own
+    /// machine right before its probe page presses Start.
+    Netprobe {
+        #[command(subcommand)]
+        verb: Netprobe,
+    },
     /// Generate the committed PublicGroup benchmark fixture.
     GenPublicGroup {
         #[arg(long, default_value_t = 1500)]
@@ -79,9 +85,94 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum Netprobe {
+    /// Sign up two throwaway accounts through an invite, open their DM and its call group, and
+    /// write each side's device state to <out>/side-a/ and <out>/side-b/.
+    Prepare {
+        /// The instance's base URL, plain http:// (the probe page's dev server proxies a TLS one).
+        #[arg(long)]
+        instance: String,
+        /// An invite code with two uses left.
+        #[arg(long)]
+        invite: String,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// The invite's id as `dillad admin invite create` logged it, printed in the cleanup lines.
+        #[arg(long)]
+        invite_id: Option<String>,
+    },
+    /// Load one side, sync its call group, start or join the DM's call and write the start JSON.
+    /// The probe page must press Start within 30 s of this command.
+    Start {
+        #[arg(long)]
+        instance: String,
+        /// The side directory `prepare` wrote (side-a/ or side-b/).
+        #[arg(long)]
+        state: std::path::PathBuf,
+        /// Where the start JSON goes.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+}
+
+fn netprobe(verb: Netprobe) -> std::process::ExitCode {
+    match verb {
+        Netprobe::Prepare {
+            instance,
+            invite,
+            out,
+            invite_id,
+        } => match dilla_testkit::netprobe_prepare(&instance, &invite, &out) {
+            Ok(p) => {
+                let id = invite_id.unwrap_or_else(|| "<invite id>".into());
+                println!("account a: {}", p.names.0);
+                println!("account b: {}", p.names.1);
+                println!("call group {} at epoch {}", p.group_id, p.epoch);
+                println!("side a: {}", p.side_a.display());
+                println!("side b: {}", p.side_b.display());
+                println!("cleanup, after the session:");
+                println!("  dillad admin user delete --username={} --yes", p.names.0);
+                println!("  dillad admin user delete --username={} --yes", p.names.1);
+                println!("  dillad admin invite revoke --id={id}");
+                println!(
+                    "  rm -r {} {} (and every start JSON)",
+                    p.side_a.display(),
+                    p.side_b.display()
+                );
+                std::process::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("netprobe prepare: {e}");
+                std::process::ExitCode::FAILURE
+            }
+        },
+        Netprobe::Start {
+            instance,
+            state,
+            out,
+        } => match dilla_testkit::netprobe_start(&instance, &state, &out) {
+            Ok(v) => {
+                println!(
+                    "{} written (call {}, epoch {}): press Start on the probe page within 30 s",
+                    out.display(),
+                    v["callId"].as_str().unwrap_or(""),
+                    v["keys"]["epoch"].as_str().unwrap_or("")
+                );
+                std::process::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("netprobe start: {e}");
+                std::process::ExitCode::FAILURE
+            }
+        },
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Command::Netprobe { verb } => netprobe(verb),
         Command::MediaDriver { ds, seed } => {
             let mut driver = dilla_testkit::MediaDriver::new(ds, seed);
             let stdin = std::io::stdin();
