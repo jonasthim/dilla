@@ -4252,13 +4252,16 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
 // L-TS-50 and L-TS-53 (web-3 task 1): the seven call commands are in the contract with their shape rules, and answer
 // E_UNAVAILABLE until task 6 implements them. Attacker: the owning page itself (a compromised or buggy page script);
 // a malformed command is refused E_BAD_INPUT before the worker makes any route call on its behalf.
-describe('call commands before task 6', () => {
+describe('call commands in the worker (task 6)', () => {
   const HEXID = 'ab'.repeat(16);
   const routeCalls = (w: World): number =>
     Object.values(w.routes).reduce((n, f) => n + (vi.isMockFunction(f) ? f.mock.calls.length : 0), 0);
 
-  it('accepts each well-formed call command and refuses it E_UNAVAILABLE without a route call', async () => {
+  it('answers each well-formed call command with no call and no known channel, and names no changed user', async () => {
     const w = world();
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the typed parameters give the double its call signature
+    const declineCall = vi.fn((_call: Uint8Array, _ts: number) => Promise.resolve());
+    Object.assign(w.routes, { declineCall });
     await toReady(w);
     await settle();
     const before = routeCalls(w);
@@ -4277,15 +4280,39 @@ describe('call commands before task 6', () => {
     ] as const;
     commands.forEach((command, i) => { w.call(7100 + i, command); });
     await vi.waitFor(() => { for (let i = 0; i < commands.length; i++) expect(w.ret(7100 + i)).toBeDefined(); });
+    const expected: Record<string, string | null> = {
+      callJoin: 'E_BAD_INPUT', loadVoice: 'E_BAD_INPUT', callShare: 'E_NO_CALL', callRefresh: 'E_NO_CALL', callStats: 'E_NO_CALL',
+      callLeave: null, callDecline: null,
+    };
     commands.forEach((command, i) => {
-      // Task 6a: loadVoice is implemented; an unknown channel or community is refused before any route call.
-      const code = command.m === 'loadVoice' ? 'E_BAD_INPUT' : 'E_UNAVAILABLE';
-      expect(w.ret(7100 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code, detail: '' } });
+      const code = expected[command.m];
+      expect(w.ret(7100 + i), JSON.stringify(command)).toMatchObject(code === null ? { ok: true, value: null } : { ok: false, error: { code, detail: '' } });
     });
-    expect(routeCalls(w)).toBe(before);
-    // I2: until task 6 the stub never names a changed user; any call slice it publishes keeps changedUser null.
+    // Only the two declines reach the instance (L-HTTP-104: the ring timestamp as the body).
+    expect(routeCalls(w)).toBe(before + 2);
+    expect(declineCall.mock.calls.map((c) => [toHex(c[0]), c[1]])).toEqual([[HEXID, 1_758_659_030], [HEXID, 0]]);
+    // I2: no call refused for a changed contact here, so every call slice keeps changedUser null; the worker does post them.
     const callSlices = w.posted.filter((p): p is SliceMessage => p.t === 'slice' && p.name === 'call');
+    expect(callSlices.length).toBeGreaterThan(0);
     for (const s of callSlices) expect((s.value as { changedUser: unknown }).changedUser).toBeNull();
+  });
+
+  // Ruling I2 made to bite: a DM call refused for a changed contact names that contact in call.changedUser.
+  it('a DM call refused E_UMK_CHANGED names the changed contact, before any route call', async () => {
+    const w = world();
+    w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+    w.state.groups = [{ groupId: DM_GROUP, kind: 0, communityId: null, targetId: DM_CHANNEL, state: 2, epoch: 1n, nextSeq: 1n,
+      proposalsPending: 0, pendingCommit: false }];
+    await toReady(w);
+    await settle();
+    w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(DM_GROUP) ? 'E_UMK_CHANGED' : null));
+    w.core.pendingLeaves.mockReturnValue([{ groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'changed' }]);
+    const before = routeCalls(w);
+    w.call(7200, { m: 'callJoin', channelId: toHex(DM_CHANNEL), vdec: '' });
+    await vi.waitFor(() => { expect(w.ret(7200)).toBeDefined(); });
+    expect(w.ret(7200)).toMatchObject({ ok: false, error: { code: 'E_UMK_CHANGED' } });
+    expect(routeCalls(w)).toBe(before);
+    expect(w.last<{ phase: string; changedUser: string | null }>('call')).toMatchObject({ phase: 'blocked', changedUser: toHex(STRANGER) });
   });
 
   it('refuses each malformed call command E_BAD_INPUT before any route call', async () => {

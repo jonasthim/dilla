@@ -9,7 +9,8 @@ import type { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import type { CallKeys, CallJoinResult, CallState, RingsState, SendBlocksState, VoiceState, DmSummary } from '../state/types';
 import type { CborValue } from '../cbor';
-import type { Id } from '../core-port';
+import { CoreError, type Id } from '../core-port';
+import { fakeDskPub } from '../testing/fake-list';
 import type { Frame } from '../gateway/frames';
 import type { Gateway } from '../gateway/gateway';
 import { fromHex, toHex } from '../hex';
@@ -51,7 +52,7 @@ export async function harness(opts: HarnessOptions = {}) {
   for (const p of [ME, PEER, THIRD, FOURTH]) ds.own(p.user, p.device);
   for (const p of [ME, PEER, THIRD, FOURTH]) ds.publishList(p.user, [{ device: p.device }]);
   const seed = (p: Peer): void => { const row = ds.listRow(p.user); if (row !== undefined) model.trustList(p.user, row.version, row.blob); };
-  for (const p of [PEER, THIRD]) seed(p);
+  seed(PEER);   // carol's list is not cached: her leaves are pending until a refresh reads it
   ds.addVoiceChannel(COMMUNITY, VOICE);
   let callGroup: Id = new Uint8Array(16);
   if (opts.callGroupBy === 'peer') {
@@ -74,9 +75,10 @@ export async function harness(opts: HarnessOptions = {}) {
   // The gateway: ModelDs fans out to it; a test pushes frames of its own.
   const fake = new FakeGateway();
   ds.attach(ME.device, (f) => { fake.frame(f); });
+  const voiceSelfSent: { callId: string; flags: number }[] = [];
   const gatewayPart = {
     status: 'ready', start: (): void => {}, stop: (): void => {}, subscribe: fake.subscribe, commitAck: fake.commitAck,
-    sendTyping: (): void => {}, sendVoiceSelf: (): void => {},
+    sendTyping: (): void => {}, sendVoiceSelf: (call: Uint8Array, flags: number): void => { voiceSelfSent.push({ callId: toHex(call), flags }); },
   };
 
   // The routes: ModelDs for the delivery service and the calls, stubs for the account half, every call recorded by label.
@@ -96,7 +98,8 @@ export async function harness(opts: HarnessOptions = {}) {
   const requests: { route: string; args: unknown[] }[] = [];
   const answers: Answer[] = [];
   const holds: Hold[] = [];
-  const names = new Set([...Object.keys(base), ...Object.keys(stubs)]);
+  const replies: { label: string; value: unknown }[] = [];
+  const names =new Set([...Object.keys(base), ...Object.keys(stubs)]);
   const routes: Record<string, (...a: unknown[]) => Promise<unknown>> = {};
   for (const name of names) {
     routes[name] = async (...args: unknown[]): Promise<unknown> => {
@@ -107,6 +110,8 @@ export async function harness(opts: HarnessOptions = {}) {
         if (h >= 0) { const [hold] = holds.splice(h, 1); hold.reached(); await hold.gate; }
         const a = answers.findIndex((x) => x.label === label);
         if (a >= 0) { const [answer] = answers.splice(a, 1); throw answer.error; }
+        const r = replies.findIndex((x) => x.label === label);
+        if (r >= 0) { const [value] = replies.splice(r, 1); return value.value; }
       }
       return (stubs[name] ?? base[name])(...args);
     };
@@ -127,6 +132,8 @@ export async function harness(opts: HarnessOptions = {}) {
       holds.push({ label, gate, reached });
       return { release, reached: reachedP };
     },
+    /** The next request of `label` is answered with `value` instead of the model's answer. */
+    reply(label: string, value: unknown): void { replies.push({ label, value }); },
     routes(): string[] { return requests.map((r) => r.route); },
     reset(): void { requests.length = 0; },
   };
@@ -189,12 +196,13 @@ export async function harness(opts: HarnessOptions = {}) {
 
   await call({ m: 'start' });
   for (let i = 0; i < 100 && (slice('account') as { phase?: string } | undefined)?.phase !== 'ready'; i++) await settle();
+  fake.emit({ type: 'status', status: 'ready', closeCode: null });
   fake.ready(readyInfo(ME));
   await settle();
   await clock.advance(0);
 
   return {
-    controller, model, ds, clock, server, call, send, ret, slice,
+    controller, model, ds, clock, server, call, send, ret, slice, voiceSelfSent,
     callGroup, voice: toHex(VOICE), dm: toHex(DM), dms, gateway: { push: (f: Frame): void => { fake.frame(f); } },
     posted: (): Posted[] => [...posted],
     pushes: (t: FromWorker['t']): Posted[] => posted.filter((p) => p.message.t === t),
@@ -282,6 +290,512 @@ describe('sendBlocks stays a text-group map (L-TS-57)', () => {
     w.model.blockGroup(w.dms[0].text, 'E_UMK_CHANGED');
     await w.call({ m: 'refreshTrust' });
     expect(w.slice('sendBlocks')).toEqual({ [w.dm]: { code: 'E_UMK_CHANGED', own: false } });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Task 6b: the worker joins, keys, leaves, pauses and rings calls (L-TS-56).
+// ---------------------------------------------------------------------------------------------
+
+const settled = async (w: World, n = 4): Promise<void> => { for (let i = 0; i < n; i++) { await settle(); await w.clock.advance(0); } };
+const JOIN = (w: World): { m: 'callJoin'; channelId: string; vdec: string } => ({ m: 'callJoin', channelId: w.voice, vdec: 'vp8' });
+const codeOf = async (p: Promise<unknown>): Promise<string> => p.then(() => 'ok', (e: { code?: string }) => e.code ?? 'thrown');
+/** A ring frame (op 53) as the gateway hands it over. */
+function ring(state: 0 | 1 | 2, o: { call?: Id; channel?: Id; user?: Peer; expires?: number } = {}): Frame {
+  return { op: 53, n: 0n, groupId: null,
+    payload: [o.call ?? o.channel ?? DM, o.channel ?? DM, (o.user ?? PEER).user, BigInt(state), BigInt(o.expires ?? 1_700_000_030)] as CborValue[] };
+}
+/** In the lounge's call: bob's call group joined, the log and the posts cleared. */
+async function joined(opts: HarnessOptions = {}): Promise<World & { result: CallJoinResult }> {
+  const w = await harness({ voiceChannel: true, callGroupBy: 'peer', ...opts });
+  const result = await w.call(JOIN(w)) as CallJoinResult;
+  await settled(w);
+  w.clearPosted();
+  w.server.reset();
+  return Object.assign(w, { result });
+}
+const keysPosted = (w: World): CallKeys[] => w.pushes('callKeys').map(CALL_KEYS);
+/** The last call-path request; the worker's trust refresh reads lists at its own times beside it. */
+const lastCallRoute = (w: World): string | undefined => w.server.routes().filter((r) => r !== 'GET device list').at(-1);
+
+describe('callJoin (L-TS-56 step 1)', () => {
+  it('joins an existing call group and pushes the join epoch key once, before the ret, never in a slice or a ret', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    const r = await w.call({ m: 'callJoin', channelId: w.voice, vdec: 'vp8' }) as CallJoinResult;
+    const posted = w.posted();                                   // every FromWorker message in order, with its transfer list
+    const k = posted.findIndex((m) => m.message.t === 'callKeys');
+    const ret = posted.findIndex((m) => m.message.t === 'ret' && m.message.ok && (m.message.value as CallJoinResult | null)?.callId === r.callId);
+    expect(k).toBeGreaterThanOrEqual(0); expect(k).toBeLessThan(ret);
+    expect(posted[k].transfer).toEqual([ (posted[k].message as { keys: CallKeys }).keys.baseKey ]);
+    expect(posted.filter((m) => m.message.t === 'callKeys')).toHaveLength(1);
+    expect(JSON.stringify(r)).not.toMatch(/baseKey/);
+    expect(w.server.requests.map((q) => q.route)).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
+    expect(JSON.stringify(w.slices.all())).not.toContain(w.model.lastBaseKeyHex(w.callGroup));
+    expect(w.model.lastEpochBytes(w.callGroup).every((b) => b === 0)).toBe(true);   // the adapter zero-filled the decoded bytes
+    expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: r.epoch, code: expect.stringMatching(/^(\d{5} ){5}\d{5}$/) as string });
+    // The key the page receives is the core's, for the join epoch, with the roster of the tree.
+    const keys = CALL_KEYS(posted[k]);
+    expect(keys).toMatchObject({ groupId: toHex(w.callGroup), epoch: r.epoch, selfLeaf: 1 });
+    expect(keys.roster.map((x) => x.userId)).toEqual([toHex(PEER.user), toHex(ME.user)]);
+    expect(r).toMatchObject({ groupId: toHex(w.callGroup), callId: w.voice, token: expect.any(String) as string });
+  });
+
+  // RV-1 (progress note of task 5): the core cannot stop a worker that posts a staged join without call_join_check, so the
+  // worker must never do so. The double's join accepts anything the gate tolerates; its check refuses.
+  it('never posts a staged join without call_join_check first', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.model.callJoinCheck = (): void => { throw new CoreError('E_CREDENTIAL', ''); };
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CREDENTIAL');
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree']);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', error: { code: 'E_CREDENTIAL' } });
+    expect(w.model.group(w.callGroup)).toBeUndefined();
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+
+  it('registers the call group when none is open and re-reads once on E_GROUP_EXISTS', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    // The first read finds no open group (the peer registered meanwhile): POST group meets theirs.
+    w.server.reply('GET channel call', { groupId: null, callId: null, participants: [] });
+    w.server.answer('POST group', 409, 'E_GROUP_EXISTS');
+    await w.call(JOIN(w));
+    expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'GET channel call', 'GET group info', 'GET group tree', 'POST resync', 'POST calls']);
+    expect(w.slice('call').phase).toBe('in');
+    expect(w.model.groups().filter((g) => g.kind === 1 && g.state === 2).map((g) => toHex(g.groupId))).toEqual([toHex(w.callGroup)]);
+  });
+
+  it('a call it opens in a voice channel with no group registers one and keys its only leaf', async () => {
+    const w = await harness({ voiceChannel: true });
+    w.server.reset();
+    const r = await w.call(JOIN(w)) as CallJoinResult;
+    expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls']);
+    expect(CALL_KEYS(w.pushes('callKeys')[0]).roster).toEqual([{ leaf: 0, deviceId: toHex(ME.device), userId: toHex(ME.user) }]);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', outgoing: null, callId: r.callId });
+  });
+
+  it('after the instance closed an idle call group, the next join registers a fresh one', async () => {
+    const w = await joined();
+    await w.call({ m: 'callLeave', reason: 'user' });
+    w.ds.closeCallGroup(w.callGroup);
+    // An old group row of the channel this device still holds active (it joined, the instance closed it).
+    const stale = idOf(0x9c, 200);
+    w.model.seedGroup(stale, 1, COMMUNITY, VOICE);
+    w.server.reset();
+    await w.call(JOIN(w));
+    const fresh = w.model.groups().filter((g) => g.kind === 1 && g.state === 2);
+    expect(fresh).toHaveLength(1);
+    expect(toHex(fresh[0].groupId)).not.toBe(toHex(w.callGroup));
+    expect(toHex(fresh[0].groupId)).not.toBe(toHex(stale));
+    expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls']);
+    expect(w.slice('call').phase).toBe('in');
+  });
+
+  it('a POST calls answered 503 (the start raced the idle close) re-reads once, then registers afresh; no third attempt', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5);
+    // The close the 503 reports: L-HTTP-100 no longer names the group.
+    const held = w.server.hold('POST calls');
+    const id = w.send(JOIN(w));
+    await held.reached;
+    w.ds.closeCallGroup(w.callGroup);
+    held.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settle();
+    expect(w.ret(id)).toMatchObject({ ok: true });
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync', 'POST calls',
+      'GET channel call', 'POST group', 'POST calls']);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.pushes('callKeys')).toHaveLength(1);
+    // Twice: the second 503 fails the join.
+    const v = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    v.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5);
+    v.server.answer('POST calls', 503, 'E_UNAVAILABLE', 5);
+    v.server.reset();
+    expect(await codeOf(v.call(JOIN(v)))).toBe('E_UNAVAILABLE');
+    expect(v.server.routes().filter((r) => r === 'POST calls')).toHaveLength(2);
+    expect(v.slice('call').phase).toBe('failed');
+    expect(v.pushes('callKeys')).toHaveLength(0);
+  });
+
+  // Attacker: the instance (or a member) adds a forged device to the call group before this device joins. Nothing is
+  // posted for that tree, and no state of the refused join is left behind.
+  it('a block present at join time posts nothing and leaves no call group behind', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    w.server.reset();
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_DEVICE_UNLISTED');
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree']);
+    expect(w.model.group(w.callGroup)).toBeUndefined();
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+
+  // Attacker: the instance adds a device whose user's list this device never read, hoping the pending verdict lets audio
+  // reach it (RV-1). The list is read first; if it cannot be read, nothing is posted.
+  it('a pending leaf is settled by a list refresh before the join commit is posted', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }, { leafIndex: 1, user: THIRD.user, device: THIRD.device }]);
+    w.server.reset();
+    await w.call(JOIN(w));
+    const routes = w.server.routes();
+    const list = w.server.requests.findIndex((q) => q.route === 'GET device list' && toHex(q.args[0] as Id) === toHex(THIRD.user));
+    expect(list).toBeGreaterThanOrEqual(0);
+    expect(list).toBeGreaterThan(routes.indexOf('GET group tree'));
+    expect(list).toBeLessThan(routes.indexOf('POST resync'));
+    expect(w.slice('call').phase).toBe('in');
+
+    const v = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    v.model.setCallTree(v.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }, { leafIndex: 1, user: THIRD.user, device: THIRD.device }]);
+    v.server.reset();
+    v.server.answer('GET device list', 503);
+    v.server.answer('GET device list', 503);   // bob's list too: the refresh reads every leaf of the group
+    expect(await codeOf(v.call(JOIN(v)))).toBe('E_DEVICE_LIST_STALE');
+    expect(v.slice('call')).toMatchObject({ phase: 'failed', error: { code: 'E_DEVICE_LIST_STALE' } });
+    expect(v.server.routes()).not.toContain('POST resync');
+    expect(v.model.group(v.callGroup)).toBeUndefined();
+  });
+
+  // Decision 4: a DM call is refused while the DM's text group is send-blocked; the refusal names the changed contact
+  // (ruling I2), and nothing reaches the instance.
+  it('a DM call refuses while the DM text group is send-blocked', async () => {
+    const w = await harness({ dm: true });
+    const text = w.dms[0].text;
+    w.model.addPendingLeaf(text, 1, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+    w.model.changeIdentity(PEER.user);
+    w.server.reset();
+    expect(await codeOf(w.call({ m: 'callJoin', channelId: w.dm, vdec: '' }))).toBe('E_UMK_CHANGED');
+    expect(w.server.routes()).toEqual([]);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', error: { code: 'E_UMK_CHANGED' }, changedUser: toHex(PEER.user) });
+  });
+
+  it('refuses a second join while in a call, and a channel that is neither a voice channel nor a DM', async () => {
+    const w = await joined();
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CALL_ACTIVE');
+    expect(await codeOf(w.call({ m: 'callJoin', channelId: 'ab'.repeat(16), vdec: '' }))).toBe('E_BAD_INPUT');
+  });
+
+  it('E_CALL_FULL leaves the joined group with a self-Remove and forgets it', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.server.answer('POST calls', 409, 'E_CALL_FULL');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CALL_FULL');
+    expect(lastCallRoute(w)).toBe('POST proposal');
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.slice('call')).toMatchObject({ phase: 'failed', error: { code: 'E_CALL_FULL' } });
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+});
+
+describe('keys after the join (L-TS-56 step 2)', () => {
+  it('pushes callKeys once per changed epoch and leaves no key bytes in the worker after posting', async () => {
+    const w = await joined();
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    const pushes = w.pushes('callKeys');
+    expect(pushes).toHaveLength(1);
+    expect(CALL_KEYS(pushes[0]).epoch).toBe((BigInt(w.result.epoch) + 1n).toString());
+    expect(CALL_KEYS(pushes[0]).baseKey.byteLength).toBe(0);          // detached by the transfer
+    expect(pushes[0].transfer).toEqual([CALL_KEYS(pushes[0]).baseKey]);
+    expect(w.model.lastEpochBytes(w.callGroup).every((b) => b === 0)).toBe(true);
+    expect(w.slice('call').epoch).toBe(CALL_KEYS(pushes[0]).epoch);
+    // A batch that changes no epoch (an application message, skipped in a call group) and a trust refresh post nothing.
+    w.ds.peerSend(w.callGroup, PEER, 'not media');
+    await settled(w);
+    await w.call({ m: 'refreshTrust' });
+    await settled(w);
+    expect(w.pushes('callKeys')).toHaveLength(1);
+  });
+
+  // Attacker: the instance adds a forged leaf mid-call. No key for the new epoch; the device leaves and says why.
+  it('a blocking leaf after the join stops every later key and leaves', async () => {
+    const w = await joined();
+    // The leave's proposal is held in flight, so a later epoch arrives while this device is leaving.
+    const held = w.server.hold('POST proposal');
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await held.reached;
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', error: { code: 'E_DEVICE_UNLISTED' } });
+    expect(lastCallRoute(w)).toBe('POST proposal');
+    // The forged leaf is swept and one more epoch arrives before the leave completes: a blocked device posts no key.
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }]);
+    w.model.removeLeaf(w.callGroup, 2);
+    await w.deliverHandshakes(w.callGroup);
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    held.release();
+    await settled(w);
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(w.slice('call').phase).toBe('blocked');
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+
+  it('an unlisted leaf mid-call still leaves (only an identity change pauses)', async () => {
+    const w = await joined();
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', changedUser: null });
+    expect(lastCallRoute(w)).toBe('POST proposal');
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+
+  // RV-3 (Jonas). Attacker question: can a member trigger the pause against an honest party? Yes: any member whose
+  // identity changes (honestly or not) pauses everyone who has not verified them, but only on their own devices and
+  // without ending the call; no key reaches the changed device either way, which is the property.
+  it('a mid-call identity change pauses without leaving and resumes after verification or when that member leaves', async () => {
+    // A change a trust refresh finds within the current epoch pauses too; verified, the call resumes on the key the page
+    // already holds: no key is posted while paused, nor again for that epoch.
+    {
+      const w = await joined();
+      w.model.changeIdentity(PEER.user);
+      await w.call({ m: 'refreshTrust' });
+      await settled(w);
+      expect(w.slice('call')).toMatchObject({ phase: 'paused', epoch: w.result.epoch, changedUser: toHex(PEER.user) });
+      await w.call({ m: 'verifyContact', userId: toHex(PEER.user), umk: 'c4'.repeat(32) });
+      await settled(w, 8);
+      expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: w.result.epoch, changedUser: null });
+      expect(w.pushes('callKeys')).toHaveLength(0);
+    }
+    for (const resume of ['verify', 'leaves'] as const) {
+      const w = await joined();
+      w.gateway.push(voiceFrame(ME, VOICE, 1));
+      const e = BigInt(w.result.epoch);
+      w.model.changeIdentity(PEER.user);
+      await w.deliverHandshakes(w.callGroup, THIRD);
+      await settled(w);
+      expect(w.pushes('callKeys')).toHaveLength(0);
+      expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_UMK_CHANGED' }, changedUser: toHex(PEER.user) });
+      expect(w.server.routes()).not.toContain('POST proposal');
+      expect(w.model.calls.some((c) => c.m === 'callGroupForget')).toBe(false);
+      expect(w.slice('voice')[w.voice]?.participants.some((p) => p.own)).toBe(true);
+      // While paused: no rotation commit, and no share.
+      await w.clock.advance(3_600_000);
+      await settled(w);
+      expect(w.server.routes()).not.toContain('POST commit');
+      expect(await codeOf(w.call({ m: 'callShare', on: true }))).toBe('E_UNAVAILABLE');
+      expect(await codeOf(w.call({ m: 'callShare', on: false }))).toBe('ok');
+      if (resume === 'verify') {
+        await w.call({ m: 'verifyContact', userId: toHex(PEER.user), umk: 'c4'.repeat(32) });
+        await settled(w, 8);
+        expect(keysPosted(w).map((k) => k.epoch)).toEqual([(e + 1n).toString()]);
+      } else {
+        w.model.removeLeaf(w.callGroup, 0);
+        await w.deliverHandshakes(w.callGroup, THIRD);
+        await settled(w);
+        expect(keysPosted(w).map((k) => k.epoch)).toEqual([(e + 2n).toString()]);
+      }
+      expect(w.slice('call')).toMatchObject({ phase: 'in', error: null, changedUser: null });
+    }
+  });
+
+  it('the own leaf removed by another member sets phase removed', async () => {
+    const w = await joined();
+    w.ds.propose(w.callGroup, 'remove', ME.device);
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.slice('call').phase).toBe('removed');
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+});
+
+describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
+  it('callLeave posts the self-Remove, forgets the group and goes idle', async () => {
+    const w = await joined();
+    expect(await w.call({ m: 'callLeave', reason: 'user' })).toBeNull();
+    expect(w.server.routes()).toEqual(['POST proposal']);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.slice('call')).toEqual(expect.objectContaining({ phase: 'idle', callId: null, epoch: null, code: null, roster: [] }));
+    // A leave already pending at the instance is fine (409 E_REMOVE_PENDING), and a leave with no call is a no-op.
+    expect(await w.call({ m: 'callLeave', reason: 'pagehide' })).toBeNull();
+  });
+
+  it('rotates the leaf after CALL_ROTATE_MS and retries after a conflict at the next tick', async () => {
+    const w = await joined();
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    expect(w.server.routes()).toContain('POST commit');
+    expect(w.model.calls.filter((c) => c.m === 'commitConfirm' && c.g === toHex(w.callGroup))).toHaveLength(1);
+    expect(keysPosted(w)).toHaveLength(1);                                  // the rotation's own new epoch
+    w.server.reset();
+    w.server.answer('POST commit', 409, 'E_COMMIT_CONFLICT');
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    expect(w.model.calls.filter((c) => c.m === 'commitAbort' && c.g === toHex(w.callGroup))).toHaveLength(1);
+    await w.clock.advance(60_000);
+    await settled(w);
+    expect(w.server.routes().filter((r) => r === 'POST commit')).toHaveLength(2);
+  });
+
+  // Progress note of task 5: call_rotate cancels a pending leave, so a worker that has posted its self-Remove must
+  // never rotate (it forgets instead).
+  it('never rotates after callLeave has posted its self-Remove', async () => {
+    const w = await joined();
+    const held = w.server.hold('POST proposal');
+    const id = w.send({ m: 'callLeave', reason: 'user' });
+    await held.reached;
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    expect(w.model.calls.some((c) => c.m === 'callRotate')).toBe(false);
+    held.release();
+    for (let i = 0; i < 20 && w.ret(id) === undefined; i++) await settle();
+    await w.clock.advance(7_200_000);
+    await settled(w);
+    expect(w.model.calls.some((c) => c.m === 'callRotate')).toBe(false);
+    expect(w.server.routes()).not.toContain('POST commit');
+  });
+
+  it('share, refresh and stats map onto their routes; a 429 on stats is swallowed; no call is E_NO_CALL', async () => {
+    const w = await joined();
+    await w.call({ m: 'callShare', on: true });
+    await w.call({ m: 'callShare', on: false });
+    const fresh = await w.call({ m: 'callRefresh' }) as { token: string; iceServers: unknown[] };
+    expect(fresh).toEqual({ token: expect.any(String) as string, iceServers: expect.any(Array) as unknown[] });
+    w.server.answer('POST stats', 429, 'E_RATE_LIMITED', 4000);
+    expect(await w.call({ m: 'callStats', report: [1, null, 40, 0, 0, 10] })).toBeNull();
+    await w.call({ m: 'callStats', report: [1, null, 40, 0, 0, 10] });
+    expect(w.server.routes()).toEqual(['POST share', 'DELETE share', 'POST calls', 'POST stats', 'POST stats']);
+    await w.call({ m: 'callLeave', reason: 'user' });
+    for (const command of [{ m: 'callShare', on: true }, { m: 'callRefresh' }, { m: 'callStats', report: [0, null, 0, 0, 0, 0] }]) {
+      expect(await codeOf(w.call(command))).toBe('E_NO_CALL');
+    }
+  });
+
+  it('resign leaves the call and clears rings before it releases the store', async () => {
+    const w = await joined({ dm: true });
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toHaveLength(1);
+    await w.call({ m: 'resign', nonce: 'ab'.repeat(16) });
+    await settled(w);
+    expect(w.server.routes()).toContain('POST proposal');
+    const posted = w.posted().map((p) => p.message);
+    const released = posted.findIndex((m) => m.t === 'released');
+    expect(released).toBeGreaterThan(0);
+    const before = posted.slice(0, released);
+    const lastCall = before.filter((m): m is Extract<FromWorker, { t: 'slice' }> => m.t === 'slice' && m.name === 'call').at(-1);
+    const lastRings = before.filter((m): m is Extract<FromWorker, { t: 'slice' }> => m.t === 'slice' && m.name === 'rings').at(-1);
+    expect((lastCall?.value as CallState).phase).toBe('idle');
+    expect(lastRings?.value).toEqual([]);
+    const proposal = w.server.routes().indexOf('POST proposal');
+    expect(proposal).toBeGreaterThanOrEqual(0);
+  });
+
+  // Task 3 review (controller ruling): the instance keeps a device's own mute/deafen flags only once it is in the call's
+  // room, so a voice_self sent before the join webhook is lost. The worker re-sends the last one once per join, when it
+  // sees its own voice_state join for that call.
+  it('re-sends the own voice_self once when its own voice_state join arrives, and once more per later join', async () => {
+    const w = await joined();
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }]);
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }, { callId: w.voice, flags: 1 }]);
+    w.gateway.push(voiceFrame(ME, VOICE, 3));
+    w.gateway.push(voiceFrame(PEER, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(2);
+    w.gateway.push(voiceFrame(ME, VOICE, 0));
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(3);
+  });
+});
+
+describe('rings (L-TS-56 step 8)', () => {
+  it('a ring for a DM shows once, busy while in a call, quiet when the DM is muted, and ends on state 0', async () => {
+    const w = await harness({ dm: true });
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toEqual([expect.objectContaining({ callId: w.dm, busy: false, quiet: false })]);
+    expect(w.slice('rings')[0]).toMatchObject({ channelId: w.dm, callerUser: toHex(PEER.user), callerName: 'bob', ringTs: 1_700_000_030 });
+    w.gateway.push(ring(0));
+    expect(w.slice('rings')).toEqual([]);
+    await w.call({ m: 'setSetting', key: `mute.channel.${w.dm}`, value: '1' });
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toEqual([expect.objectContaining({ quiet: true, busy: false })]);
+    w.gateway.push(ring(0));
+    // In a call elsewhere, a ring is busy.
+    const v = await joined({ dm: true });
+    v.gateway.push(ring(1));
+    expect(v.slice('rings')).toEqual([expect.objectContaining({ busy: true })]);
+  });
+
+  // Attacker: a contact whose identity changed calls; the ring must not tempt a join the core would refuse.
+  // (Can the attacker turn this refusal on an honest party? Only the instance could, by poisoning the DM's text group,
+  // which already pauses that DM's composer; it can withhold op 53 anyway.)
+  it('no ring entry at all for a DM whose text or call group is send-blocked', async () => {
+    const w = await harness({ dm: true });
+    const text = w.dms[0].text;
+    w.model.blockGroup(text, 'E_UMK_CHANGED');
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toEqual([]);
+    w.model.unblockGroup(text);
+    const dmCall = idOf(0x9e, 3);
+    w.model.seedGroup(dmCall, 1, null, DM);
+    w.model.blockGroup(dmCall, 'E_DEVICE_UNLISTED');
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toEqual([]);
+    // The control: unblocked, the same ring shows.
+    w.model.unblockGroup(dmCall);
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toHaveLength(1);
+  });
+
+  // Attacker: the instance rings in the name of a channel the person does not share with the caller, or as themself.
+  it('drops a ring whose caller is not another participant of a known DM, and one for an unknown channel', async () => {
+    const w = await harness({ dm: true });
+    w.gateway.push(ring(1, { user: THIRD }));
+    w.gateway.push(ring(1, { user: ME }));
+    w.gateway.push(ring(1, { channel: idOf(0x77, 7) }));
+    expect(w.slice('rings')).toEqual([]);
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toHaveLength(1);
+  });
+
+  it('keeps one ring per channel and at most eight in total', async () => {
+    const w = await harness({ dm: true, extraDms: 9 });
+    w.gateway.push(ring(1, { expires: 100 }));
+    w.gateway.push(ring(1, { expires: 130 }));
+    expect(w.slice('rings')).toEqual([expect.objectContaining({ channelId: w.dm, ringTs: 130 })]);
+    for (const dm of w.dms.slice(1)) w.gateway.push(ring(1, { channel: dm.channel, user: dm.members[0] }));
+    expect(w.slice('rings')).toHaveLength(8);
+    expect(w.slice('rings').map((r) => r.channelId)).not.toContain(toHex(w.dms.at(-1)!.channel));
+  });
+
+  it('callDecline posts the decline with the ring timestamp and drops the ring even when the answer is 404', async () => {
+    const w = await harness({ dm: true });
+    w.gateway.push(ring(1, { expires: 130 }));
+    w.server.reset();
+    w.server.answer('POST decline', 404);
+    expect(await w.call({ m: 'callDecline', callId: w.dm, ringTs: 130 })).toBeNull();
+    expect(w.server.requests).toEqual([{ route: 'POST decline', args: [DM, 130] }]);
+    expect(w.slice('rings')).toEqual([]);
+  });
+
+  it('an outgoing DM call lists who is ringing and appends decliners from state 2', async () => {
+    const w = await harness({ dm: 'group' });
+    await w.call({ m: 'callJoin', channelId: w.dm, vdec: '' });
+    expect(w.slice('call').outgoing).toEqual({ ringing: ['bob', 'carol'], declined: [] });
+    w.gateway.push(voiceFrame(THIRD, DM, 1));
+    expect(w.slice('call').outgoing).toEqual({ ringing: ['bob'], declined: [] });
+    w.gateway.push(ring(2, { user: PEER }));
+    expect(w.slice('call').outgoing).toEqual({ ringing: [], declined: ['bob'] });
+  });
+
+  it('a ring expires locally at expiresAt when no state 0 arrives', async () => {
+    const w = await harness({ dm: true });
+    const receivedAt = w.clock.now();
+    // A lying instance: five minutes. The ring ends 30 s after it arrived.
+    w.gateway.push(ring(1, { expires: Math.floor(receivedAt / 1000) + 300 }));
+    expect(w.slice('rings')[0]?.expiresAt).toBe(receivedAt + 30_000);
+    await w.clock.advance(29_999);
+    expect(w.slice('rings')).toHaveLength(1);
+    await w.clock.advance(1);
+    expect(w.slice('rings')).toEqual([]);
+  });
+
+  it('joining the DM call clears its ring', async () => {
+    const w = await harness({ dm: true });
+    w.gateway.push(ring(1));
+    await w.call({ m: 'callJoin', channelId: w.dm, vdec: '' });
+    expect(w.slice('rings')).toEqual([]);
   });
 });
 

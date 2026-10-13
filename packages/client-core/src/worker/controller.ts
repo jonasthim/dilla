@@ -18,7 +18,7 @@ import {
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op } from '../gateway/frames';
+import { Op, voiceStateOf, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -38,7 +38,7 @@ import { LEAF_VERDICTS, SyncError } from '../sync/errors';
 import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
-import { CallController } from '../calls/controller';
+import { CallController, WAIT_LIST_MS } from '../calls/controller';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -394,6 +394,9 @@ export class Controller {
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
   private readonly calls: CallController;
+  /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
+  private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
+  private readonly ownInCall = new Set<string>();
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -412,7 +415,26 @@ export class Controller {
     this.calls = new CallController({
       core: () => this.core,
       routes: this.routes,
+      post: (message, transfer) => { deps.post(message, transfer); },
       publish: (name, value) => { this.slices.set(name, value); },
+      errorOf: (e) => errorOf(e),
+      now: () => deps.now(),
+      setTimeout: (fn, ms) => deps.setTimeout(fn, ms),
+      clearTimeout: (id) => { deps.clearTimeout(id); },
+      randomId: () => crypto.getRandomValues(new Uint8Array(16)),
+      me: () => this.me,
+      instance: () => this.instance,
+      settings: () => this.core?.settings() ?? {},
+      nameOf: (user) => this.nameOf(user),
+      refreshLeaves: (g) => this.refreshCallLeaves(g),
+      serial: (g, job) => (this.sync === null ? job() : this.sync.queues.run(`g:${toHex(g)}`, job)),
+      onCommitted: (g, result) => { this.onGroupChanged(g, result); },
+      afterJoin: (g) => {
+        // After the join's answer has been posted: the engine takes up frames it held while the group was staged.
+        const sync = this.sync;
+        deps.setTimeout(() => { if (this.sync === sync && sync !== null) void this.barrier.track(sync.activate(g)).catch(() => undefined); }, 0);
+      },
+      track: (job) => { void this.barrier.track(job).catch(() => undefined); },
       participant: (user, device, flags) => {
         const own = this.me !== null && toHex(this.me.deviceId) === device;
         return { userId: user, deviceId: device, name: this.nameOf(user), flags, own, web: own, bot: this.isBot(user) };
@@ -421,11 +443,21 @@ export class Controller {
       known: (channel) => this.channels.has(channel) || this.dms.has(channel),
       callTarget: (channel) => {
         const known = this.channels.get(channel);
-        if (known !== undefined) return known.row.kind === 1 ? { communityId: known.communityId } : undefined;
-        return this.dms.has(channel) ? { communityId: null } : undefined;
+        if (known !== undefined) return known.row.kind === 1 ? { communityId: known.communityId, members: [] } : undefined;
+        const dm = this.dms.get(channel);
+        return dm === undefined ? undefined : { communityId: null, members: dm.members.map(toHex) };
       },
       communityListed: (community) => this.listed(community),
     });
+  }
+
+  /** L-TS-56: the list refresh of a call group's pending leaves is the worker's trust refresh (no second one), bounded by
+   *  WAIT_LIST_MS for the whole batch; it never throws. */
+  private async refreshCallLeaves(groupId: Id): Promise<void> {
+    let timer: number | null = null;
+    const bound = new Promise<void>((resolve) => { timer = this.deps.setTimeout(resolve, WAIT_LIST_MS); });
+    try { await Promise.race([this.refreshGroupTrust(groupId), bound]); }
+    finally { if (timer !== null) this.deps.clearTimeout(timer); }
   }
 
   /** A bot account (member kind 1) in any loaded member list: the bot mark of a voice row. */
@@ -546,9 +578,12 @@ export class Controller {
       case 'typing': return this.typing(command.channelId, command.on);
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
       case 'loadVoice': return this.calls.loadVoice(command.communityId, command.channelId);
-      // web-3 task 1: the call commands are in the contract; task 6b implements them.
-      case 'callJoin': case 'callLeave': case 'callShare': case 'callRefresh': case 'callStats': case 'callDecline':
-        return Promise.reject(new Refusal('E_UNAVAILABLE', 'calls are not implemented yet'));
+      case 'callJoin': return this.calls.join(command.channelId, command.vdec);
+      case 'callLeave': return this.calls.leave();
+      case 'callShare': return this.calls.share(command.on);
+      case 'callRefresh': return this.calls.refresh();
+      case 'callStats': return this.calls.stats(command.report);
+      case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
       case 'resign': return this.resign(command.nonce);
     }
   }
@@ -883,6 +918,7 @@ export class Controller {
     if (this.revoked()) return;
     this.clearReauthTimer();
     this.typingOff();
+    this.calls.reset();
     this.sync?.stop();
     this.gateway?.stop();
     this.setAccount({ phase: 'revoked', recoveryKey: null });
@@ -910,6 +946,7 @@ export class Controller {
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {
       this.incomingTypingFrame(e.frame.payload);
     } else if (e.type === 'frame' && (e.frame.op === Op.voiceState || e.frame.op === Op.callRing)) {
+      if (e.frame.op === Op.voiceState) this.safely(() => { this.ownVoiceState(e.frame); });
       this.safely(() => { this.calls.onFrame(e.frame); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
@@ -1664,6 +1701,7 @@ export class Controller {
   }
 
   private async signOutRevoke(recoveryKey: string): Promise<null> {
+    await this.calls.shutdown();
     const me = this.requireMe();
     const core = this.requireCore();
     const signed = await this.revoke([me.deviceId], recoveryKey);
@@ -1701,6 +1739,8 @@ export class Controller {
   }
 
   private async forgetBrowser(): Promise<null> {
+    // L-TS-56 step 9: a wipe leaves the call first, while the session still works.
+    await this.calls.shutdown();
     const core = this.requireCore();
     const identity = core.identity();
     const deviceId = this.me?.deviceId ?? identity.deviceId;
@@ -1799,6 +1839,7 @@ export class Controller {
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.calls.reset();
+    this.lastVoiceSelf = null; this.ownInCall.clear();
     this.setConnection({ status: 'offline', generation: null });
   }
 
@@ -1971,6 +2012,8 @@ export class Controller {
     this.stopTypingIfUnviewable();
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.safely(() => { this.reportActivity(groupId, result); });
+    // web-3 (L-TS-56 step 2): a call group's new epoch is keyed through the core's gate, or pauses, blocks or removes.
+    this.safely(() => { if (this.calls.isCallGroup(groupId)) this.calls.onGroupChanged(groupId, result); });
     // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
     this.runPurges();
   }
@@ -2043,6 +2086,8 @@ export class Controller {
         this.trustRefreshAgain = false;
         await this.refreshTrustOnce();
       } while (this.trustRefreshAgain && this.phase === 'ready');
+      // web-3 (L-TS-56 step 2): after every trust refresh the call's epoch is read through the gate again.
+      this.safely(() => { this.calls.onTrust(); });
       return null;
     })().finally(() => { this.trustRefresh = null; });
     this.trustRefresh = run;
@@ -2278,7 +2323,23 @@ export class Controller {
   private voiceSelf(callId: string, flags: number): Promise<null> {
     if (this.connectionState.status !== 'online') throw new Refusal('E_NOT_READY', '');
     this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
+    this.lastVoiceSelf = { callId, flags: flags as 0 | 1 | 2 | 3 };
     return Promise.resolve(null);
+  }
+
+  /** Task 3 review (controller ruling): the instance keeps a device's own mute and deafen flags only once the device is in
+   *  the call's room, so one sent before the join webhook is lost. When this device's own voice_state shows it joining a
+   *  call (in_call set, after not being in it), the last voice_self for that call is sent once more: once per join. */
+  private ownVoiceState(frame: Frame): void {
+    let f;
+    try { f = voiceStateOf(frame); } catch { return; }
+    if (this.me === null || toHex(f.deviceId) !== toHex(this.me.deviceId)) return;
+    const call = toHex(f.callId);
+    if ((f.flags & 1) === 0) { this.ownInCall.delete(call); return; }
+    if (this.ownInCall.has(call)) return;
+    this.ownInCall.add(call);
+    const last = this.lastVoiceSelf;
+    if (last !== null && last.callId === call && this.connectionState.status === 'online') this.gateway?.sendVoiceSelf(f.callId, last.flags);
   }
 
   private typingOff(): void {
@@ -2303,6 +2364,8 @@ export class Controller {
   private async resign(nonce: string): Promise<{ released: true }> {
     await this.barrier.close();
     this.clearReauthTimer();
+    // L-TS-56 step 9: the call is left and the rings cleared before the store is released.
+    await this.calls.shutdown();
     try {
       this.typingOff();
       this.gateway?.stop();
