@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV, WASM_CLANG_INSTALL, WASM_CLANG_STEPS } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
@@ -404,35 +404,18 @@ jobs:
           sbom: true
 `;
 
-// The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: clang 23 by job env and an install
-// step ahead of the first wasm build (ruling of 2026-10-13).
+// The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
+// right after checkout, the canonical pinned install step (ruling of 2026-10-13; hardened after the d3429ce lead).
 const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build'];
-const WASM_CLANG_JOB_ENV =
-  '    env:\n' +
-  '      CC_wasm32_unknown_unknown: clang-23\n' +
-  '      AR_wasm32_unknown_unknown: llvm-ar-23\n';
-const WASM_CLANG_STEP =
-  '      - name: clang 23 for the wasm C build\n' +
-  '        run: |\n' +
-  '          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"\n' +
-  `          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')\n` +
-  '          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421\n' +
-  '          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"\n' +
-  '          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list\n' +
-  '          sudo apt-get update\n' +
-  `          ${WASM_CLANG_INSTALL}\n` +
-  `          clang-23 --version | grep -E 'clang version 23\\.'\n` +
-  '          llvm-ar-23 --version\n';
 
 function withWasmClang(text) {
-  const lines = text.split('\n');
   const out = [];
   let job = null;
-  for (const line of lines) {
+  for (const line of text.split('\n')) {
     const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (key) job = key[1];
     if (WASM_JOBS.includes(job) && line === '    steps:') {
-      out.push(WASM_CLANG_JOB_ENV.trimEnd(), line, WASM_CLANG_STEP.trimEnd());
+      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@v7', WASM_CLANG_STEP);
       continue;
     }
     out.push(line);
@@ -1222,63 +1205,160 @@ test('web-2c captures, both paths and timeout are required independently', () =>
   }
 });
 
-// Ruling of 2026-10-13 (web-2c D5 in CI): every wasm32-unknown-unknown build compiles SQLite with clang 23.
+// Ruling of 2026-10-13 (web-2c D5 in CI), hardened after the d3429ce scanner lead: every wasm32-unknown-unknown
+// build compiles SQLite with one exact clang 23 build, and the checker compares whole blocks, not substrings.
 /** GOOD with one job's body passed through `edit`. */
 function editJob(job, edit) {
   const body = jobBody(job);
-  return GOOD.replace(body, edit(body));
+  const edited = edit(body);
+  assert.notEqual(edited, body, `fixture sanity: the edit of ${job} changed nothing`);
+  return GOOD.replace(body, edited);
 }
 
+const STEP_RULE = (job) =>
+  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`;
+const ENV_RULE = (job) =>
+  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`;
+
+const LLVM_PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev', 'llvm-23-linker-tools', 'llvm-23-runtime'];
+
+test('the canonical step pins every llvm-toolchain-23 package at one version and reads each back', () => {
+  assert.ok(WASM_CLANG_STEP.includes(`          v='${WASM_LLVM_VERSION}'`));
+  assert.match(WASM_LLVM_VERSION, /^1:23\.\d+\.\d+~/);
+  const install = WASM_CLANG_STEP.split('\n').find((l) => l.includes('apt-get install'));
+  for (const p of LLVM_PACKAGES) {
+    assert.ok(install.includes(` "${p}=$v"`), `${p} is not installed at the pinned version`);
+  }
+  assert.ok(!/\s(clang-23|llvm-23)(\s|$)/.test(install), 'an unpinned package name in the install line');
+  assert.ok(WASM_CLANG_STEP.includes(`          for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
+  assert.ok(WASM_CLANG_STEP.includes('          apt-cache policy clang-23 llvm-23'));
+});
+
+test('the canonical step checks the fingerprint on the keyring apt is pointed at', () => {
+  const lines = WASM_CLANG_STEP.split('\n').map((l) => l.trim());
+  const dearmor = lines.indexOf('gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"');
+  const check = lines.indexOf(`test "$primaries" = ${WASM_LLVM_KEY_FPR}`);
+  const install = lines.indexOf('sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
+  const same = lines.indexOf('cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
+  const source = lines.findIndex((l) => l.includes('[signed-by=/usr/share/keyrings/apt-llvm.gpg]'));
+  assert.ok(dearmor !== -1 && dearmor < check && check < install && install < same && same < source, lines.join('\n'));
+  assert.ok(lines[check - 1].startsWith('primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg"'));
+  assert.ok(WASM_CLANG_ENV_BLOCK.includes('CC_wasm32_unknown_unknown: /usr/bin/clang-23'));
+  assert.ok(WASM_CLANG_ENV_BLOCK.includes('AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23'));
+});
+
 for (const job of WASM_JOBS) {
-  for (const env of WASM_CLANG_ENV) {
-    test(`a ${job} job without the job-level ${env.split(':')[0]} is reported`, () => {
-      const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(`      ${env}\n`, ''))));
-      assert.ok(problems.includes(`ci.yml: job "${job}" builds for wasm32-unknown-unknown without the job-level env ${env}`), problems.join('\n'));
-    });
-  }
-  for (const step of WASM_CLANG_STEPS) {
-    test(`a ${job} job that lost "${step}" is reported`, () => {
-      const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(step, 'true'))));
-      assert.ok(problems.includes(`ci.yml: job "${job}" builds for wasm32-unknown-unknown and is missing: ${step}`), problems.join('\n'));
-    });
-  }
-  test(`a ${job} job that installs clang 23 after its first wasm build is reported`, () => {
+  test(`a ${job} job without the clang 23 job env is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(`${WASM_CLANG_ENV_BLOCK}\n`, ''))));
+    assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job whose CC is a bare clang-23 that PATH resolves is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(': /usr/bin/clang-23', ': clang-23'))));
+    assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job env with an extra compiler flag is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_CLANG_ENV_BLOCK, `${WASM_CLANG_ENV_BLOCK}\n      CFLAGS_wasm32_unknown_unknown: -O0`))));
+    assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job installing an unpinned clang is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(' "clang-23=$v"', ' clang-23'))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job pinned to another build is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1.2', '23.1.3')))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job checking another key fingerprint is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_KEY_FPR, '0'.repeat(40)))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job that skips the clang 23 step with an if: is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('      - name: clang 23 for the wasm C build\n', '      - name: clang 23 for the wasm C build\n        if: false\n'))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job that installs clang 23 after other steps is reported`, () => {
     const moved = editJob(job, (b) => {
-      const without = b.replace(WASM_CLANG_STEP, '');
-      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_STEP}`;
+      const without = b.replace(`${WASM_CLANG_STEP}\n`, '');
+      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_STEP}\n`;
     });
     const problems = checkWorkflow(fixture(moved));
-    assert.ok(problems.includes(`ci.yml: job "${job}" must install clang 23 before its first wasm build`), problems.join('\n'));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
 }
 
-test('the clang 23 variables set on one step only are reported: they must reach every build of the job', () => {
-  const stepLevel = editJob('web-build', (b) =>
-    b.replace(WASM_CLANG_JOB_ENV, '').replace(
-      '      - run: wasm-pack build',
-      '      - env:\n          CC_wasm32_unknown_unknown: clang-23\n          AR_wasm32_unknown_unknown: llvm-ar-23\n        run: wasm-pack build',
+// The validator differential of the d3429ce lead: the earlier rule matched substrings, so this job passed it while
+// running no install at all, with the required strings in a comment and in an echo.
+test('an evading job that only names the pinned strings in a comment and an echo is reported', () => {
+  const evading = editJob('web-build', (b) =>
+    b.replace(
+      `${WASM_CLANG_STEP}\n`,
+      `      # ${WASM_CLANG_STEP.split('\n').map((l) => l.trim()).join(' ; ')}\n` +
+        `      - run: echo '${WASM_CLANG_STEP.split('\n').filter((l) => l.includes('apt-get install')).join('').trim()}'\n`,
     ),
   );
-  const problems = checkWorkflow(fixture(stepLevel));
-  for (const env of WASM_CLANG_ENV) {
-    assert.ok(problems.includes(`ci.yml: job "web-build" builds for wasm32-unknown-unknown without the job-level env ${env}`), problems.join('\n'));
-  }
+  const problems = checkWorkflow(fixture(evading));
+  assert.ok(problems.includes(STEP_RULE('web-build')), problems.join('\n'));
 });
 
-test('a wasm job added tomorrow without clang 23 is reported', () => {
+for (const [what, edit, expected] of [
+  [
+    'the hyphenated target variable on a step, which cc reads before the underscored one',
+    (b) => b.replace('      - run: wasm-pack build', '      - env:\n          CC_wasm32-unknown-unknown: /usr/bin/gcc\n        run: wasm-pack build'),
+    /names a C toolchain variable outside the canonical clang 23 job env/,
+  ],
+  [
+    'a TARGET_CC in a flow-style step env',
+    (b) => b.replace('      - run: wasm-pack build', '      - env: { TARGET_CC: gcc }\n        run: wasm-pack build'),
+    /names a C toolchain variable outside the canonical clang 23 job env/,
+  ],
+  [
+    'a quoted CC key on a step',
+    (b) => b.replace('      - run: wasm-pack build', '      - env:\n          "CC": gcc\n        run: wasm-pack build'),
+    /names a C toolchain variable outside the canonical clang 23 job env/,
+  ],
+  [
+    'a step that exports the compiler through GITHUB_ENV',
+    (b) => b.replace('      - run: wasm-pack build', '      - run: echo "CC_wasm32_unknown_unknown=/usr/bin/gcc" >> "$GITHUB_ENV"\n      - run: wasm-pack build'),
+    /writes GITHUB_ENV or GITHUB_PATH/,
+  ],
+  [
+    'a step that puts another clang first on PATH',
+    (b) => b.replace('      - run: wasm-pack build', '      - run: echo "$RUNNER_TEMP/fake" >> "$GITHUB_PATH"\n      - run: wasm-pack build'),
+    /writes GITHUB_ENV or GITHUB_PATH/,
+  ],
+]) {
+  test(`web-build with ${what} is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob('web-build', edit)));
+    assert.ok(problems.some((p) => expected.test(p)), problems.join('\n'));
+  });
+}
+
+test('a compiler variable in the workflow-level env is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('env:\n  CARGO_TERM_COLOR: always\n', 'env:\n  CARGO_TERM_COLOR: always\n  CC: gcc\n')));
+  assert.ok(problems.some((p) => /names a C toolchain variable outside the canonical clang 23 job env/.test(p)), problems.join('\n'));
+});
+
+test('a YAML anchor and alias that would reuse an env block is reported', () => {
+  const anchored = GOOD.replace('env:\n  CARGO_TERM_COLOR: always\n', 'env: &shared\n  CARGO_TERM_COLOR: always\n').replace(
+    '  deny:\n    runs-on: ubuntu-latest\n',
+    '  deny:\n    runs-on: ubuntu-latest\n    env: *shared\n',
+  );
+  const problems = checkWorkflow(fixture(anchored));
+  assert.ok(problems.some((p) => p.includes('YAML anchors, aliases and merge keys are not allowed')), problems.join('\n'));
+});
+
+test('a wasm job added tomorrow without the pinned clang 23 is reported', () => {
   const extra =
     '  wasm-extra:\n' +
     '    runs-on: ubuntu-latest\n' +
     '    steps:\n' +
+    '      - uses: actions/checkout@v7\n' +
     '      - run: cargo build -p dilla-core --target wasm32-unknown-unknown --locked\n';
   const problems = checkWorkflow(fixture(GOOD.replace('  deny:\n', `${extra}  deny:\n`)));
-  for (const env of WASM_CLANG_ENV) {
-    assert.ok(problems.includes(`ci.yml: job "wasm-extra" builds for wasm32-unknown-unknown without the job-level env ${env}`), problems.join('\n'));
-  }
-  assert.ok(problems.includes(`ci.yml: job "wasm-extra" builds for wasm32-unknown-unknown and is missing: ${WASM_CLANG_INSTALL}`), problems.join('\n'));
+  assert.ok(problems.includes(ENV_RULE('wasm-extra')), problems.join('\n'));
+  assert.ok(problems.includes(STEP_RULE('wasm-extra')), problems.join('\n'));
 });
 
-test('a job that builds no wasm needs no clang 23', () => {
-  const problems = checkWorkflow(fixture(GOOD));
-  assert.ok(!problems.some((p) => /job "(deny|go|node)" builds for wasm32/.test(p)), problems.join('\n'));
+test('jobs that build no wasm need no clang 23', () => {
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });

@@ -404,39 +404,118 @@ function assertWasmPackUsesTheSizeProfile(text, problems) {
 /**
  * Ruling of 2026-10-13 (Jonas; web-2c D5 in CI): the wasm C build (sqlite-wasm-rs compiles SQLite3MC through
  * cc) uses clang 23, the dev box's major. The runner's own clang made the same tree about 25 KB larger, so the
- * 3,450,000-byte budget measured different bytes in CI than on the box it was set on. Every job that builds for
- * wasm32-unknown-unknown carries the two job-level variables cc reads and an install step, ahead of its first
- * wasm build, that checks the apt.llvm.org key by fingerprint and the installed major.
+ * 3,450,000-byte budget measured different bytes in CI than on the box it was set on.
+ *
+ * The compiler comes from a third-party apt archive and its output ships (web-build's dist is embedded by
+ * go-release and image), so the step is pinned: the archive key is checked by fingerprint on the very keyring
+ * apt is pointed at, every llvm-toolchain-23 package is installed at one exact version and read back with
+ * dpkg-query, and cc gets absolute paths, which a PATH entry added by a later action cannot shadow. A newer
+ * upload to apt.llvm.org removes the pinned build from the archive and fails the step closed; the fix is to
+ * re-pin here and in ci.yml, after checking the new build's size.
+ *
+ * The checker holds the canonical text and compares whole blocks, not substrings: a substring rule passes a
+ * workflow that names the strings in a comment or another step while the job runs something else (the
+ * validator differential of the d3429ce scanner lead). Outside the canonical lines, no workflow line may name
+ * a variable cc reads for the compiler, archiver or flags, no wasm job may write GITHUB_ENV or GITHUB_PATH,
+ * and the workflow may use no YAML anchor, alias or merge key, whose expansion a line-based checker cannot see.
  */
-export const WASM_CLANG_ENV = ['CC_wasm32_unknown_unknown: clang-23', 'AR_wasm32_unknown_unknown: llvm-ar-23'];
-export const WASM_CLANG_INSTALL = 'sudo apt-get install -y --no-install-recommends clang-23 llvm-23';
-export const WASM_CLANG_STEPS = [
-  'test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421',
-  'llvm-toolchain-$(lsb_release -cs)-23 main',
-  WASM_CLANG_INSTALL,
-  "clang-23 --version | grep -E 'clang version 23\\.'",
+export const WASM_LLVM_VERSION = '1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77';
+export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
+const WASM_LLVM_PACKAGES = [
+  'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
+  'llvm-23-linker-tools', 'llvm-23-runtime',
 ];
-const WASM_BUILD = /wasm-pack build|cargo \w+ .*--target wasm32-unknown-unknown/;
+export const WASM_CLANG_ENV_BLOCK = [
+  '    env:',
+  '      CC_wasm32_unknown_unknown: /usr/bin/clang-23',
+  '      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23',
+].join('\n');
+export const WASM_CLANG_STEP = [
+  '      - name: clang 23 for the wasm C build',
+  '        run: |',
+  '          test "$(lsb_release -cs)" = noble',
+  '          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"',
+  '          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"',
+  '          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: \'$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }\')',
+  `          test "$primaries" = ${WASM_LLVM_KEY_FPR}`,
+  '          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg',
+  '          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg',
+  '          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list',
+  '          sudo apt-get update',
+  '          apt-cache policy clang-23 llvm-23',
+  `          v='${WASM_LLVM_VERSION}'`,
+  `          sudo apt-get install -y --no-install-recommends ${WASM_LLVM_PACKAGES.map((p) => `"${p}=$v"`).join(' ')}`,
+  `          for p in ${WASM_LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`,
+  '          /usr/bin/clang-23 --version',
+  '          /usr/bin/llvm-ar-23 --version',
+].join('\n');
 
-function assertWasmJobsUseClang23(jobs, problems) {
-  for (const [name, body] of Object.entries(jobs)) {
+/** A job builds for the browser target when it names it or runs wasm-pack; the cache key alone also counts. */
+const WASM_JOB = /wasm32[-_]unknown[-_]unknown|wasm-pack/;
+/** Every variable cc consults for the compiler, the archiver or their flags, in any target spelling. */
+const CC_VARIABLE =
+  /\b(?:CC|CXX|AR|RANLIB|CFLAGS|CXXFLAGS|CPPFLAGS|ARFLAGS|TARGET_CC|TARGET_CXX|TARGET_AR|TARGET_CFLAGS|TARGET_CXXFLAGS|TARGET_ARFLAGS|HOST_CC|HOST_AR|HOST_CFLAGS|CRATE_CC_NO_DEFAULTS|CC_SHELL_ESCAPED_FLAGS|CC_FORCE_DISABLE)(?:[-_]wasm32[-_]unknown[-_]unknown)?\b/;
+/** A YAML anchor (&name), alias (*name) or merge key (<<:) outside a quoted glob. */
+const YAML_INDIRECTION = /(?:^|[\s:[,{-])[&*][A-Za-z0-9_-]+(?=[\s,\]}]|$)|<<\s*:/;
+
+/** The `- ` items of a job's `steps:` list, each as its exact lines, trailing blank lines dropped. */
+function stepItems(lines) {
+  const items = [];
+  const at = lines.indexOf('    steps:');
+  if (at === -1) return items;
+  for (const line of lines.slice(at + 1)) {
+    if (/^ {6}- /.test(line)) items.push([line]);
+    else if (items.length > 0 && (line === '' || /^ {7,}\S/.test(line))) items.at(-1).push(line);
+    else if (/^ {0,5}\S/.test(line)) break;
+  }
+  return items.map((item) => {
+    while (item.at(-1) === '') item.pop();
+    return item.join('\n');
+  });
+}
+
+function assertWasmJobsUseClang23(text, jobs, problems) {
+  const canonicalEnv = new Set(WASM_CLANG_ENV_BLOCK.split('\n').slice(1));
+  const wasmJobs = Object.entries(jobs).filter(([, body]) => WASM_JOB.test(body));
+  const allowedEnvLines = new Set();
+  for (const [name, body] of wasmJobs) {
     const lines = body.split('\n');
-    const firstBuild = lines.findIndex((l) => WASM_BUILD.test(l));
-    if (firstBuild === -1 && !body.includes('targets: wasm32-unknown-unknown')) continue;
-    for (const env of WASM_CLANG_ENV) {
-      // Six spaces: the job's own env, which reaches every step; a step-level env would cover one step only.
-      if (!lines.includes(`      ${env}`)) {
-        problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown without the job-level env ${env}`);
-      }
+    const envAt = lines.indexOf('    env:');
+    const envLines = envAt === -1 ? [] : lines.slice(envAt, lines.findIndex((l, i) => i > envAt && !/^ {6,}\S/.test(l)));
+    if (lines.filter((l) => /^ {4}env:/.test(l)).length !== 1 || envLines.join('\n') !== WASM_CLANG_ENV_BLOCK) {
+      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`);
+    } else {
+      for (let i = envAt + 1; i < envAt + envLines.length; i++) allowedEnvLines.add(`${name}:${i}`);
     }
-    for (const step of WASM_CLANG_STEPS) {
-      if (!body.includes(step)) problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown and is missing: ${step}`);
+    const steps = stepItems(lines);
+    if (lines.filter((l) => /^ {4}steps:/.test(l)).length !== 1 || steps[0] !== '      - uses: actions/checkout@v7' || steps[1] !== WASM_CLANG_STEP) {
+      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`);
     }
-    const install = lines.findIndex((l) => l.includes(WASM_CLANG_INSTALL));
-    if (install !== -1 && firstBuild !== -1 && install > firstBuild) {
-      problems.push(`ci.yml: job "${name}" must install clang 23 before its first wasm build`);
+    if (steps.filter((s) => s === WASM_CLANG_STEP).length > 1) {
+      problems.push(`ci.yml: job "${name}" carries the clang 23 step more than once`);
+    }
+    if (/GITHUB_ENV|GITHUB_PATH/.test(body)) {
+      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown and writes GITHUB_ENV or GITHUB_PATH, which could replace the pinned compiler`);
     }
   }
+  // Line by line over the whole file: a compiler variable anywhere else (workflow env, a step env, a flow
+  // mapping, a quoted key, the hyphenated target spelling cc reads first) could override the job's.
+  const wasmLineOwner = [];
+  let job = null;
+  let jobLine = 0;
+  text.split('\n').forEach((line, i) => {
+    const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (key) {
+      job = key[1];
+      jobLine = -1;
+    }
+    wasmLineOwner[i] = job === null ? null : `${job}:${jobLine}`;
+    jobLine++;
+    if (YAML_INDIRECTION.test(line)) problems.push(`ci.yml:${i + 1}: YAML anchors, aliases and merge keys are not allowed: the checker could not see what they expand to`);
+    if (!CC_VARIABLE.test(line)) return;
+    if (canonicalEnv.has(line) && allowedEnvLines.has(wasmLineOwner[i])) return;
+    problems.push(`ci.yml:${i + 1}: names a C toolchain variable outside the canonical clang 23 job env`);
+  });
 }
 
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
@@ -502,7 +581,7 @@ export function checkWorkflow(root) {
   assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
   assertEveryUploadFailsOnNoFiles(text, problems);
   assertWasmPackUsesTheSizeProfile(text, problems);
-  assertWasmJobsUseClang23(jobs, problems);
+  assertWasmJobsUseClang23(text, jobs, problems);
 
   // Task 18. The Dockerfile cross-compiles with GOOS/GOARCH from a $BUILDPLATFORM builder, so
   // nothing runs under emulation and setup-qemu-action would only add a slow, useless step.

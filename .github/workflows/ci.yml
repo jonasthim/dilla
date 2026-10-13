@@ -82,21 +82,27 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
-      CC_wasm32_unknown_unknown: clang-23
-      AR_wasm32_unknown_unknown: llvm-ar-23
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@v7
       - name: clang 23 for the wasm C build
         run: |
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
-          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
-          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          test "$(lsb_release -cs)" = noble
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
+          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
+          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
+          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
-          clang-23 --version | grep -E 'clang version 23\.'
-          llvm-ar-23 --version
+          apt-cache policy clang-23 llvm-23
+          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
+          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version
+          /usr/bin/llvm-ar-23 --version
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: wasm32-unknown-unknown
@@ -190,21 +196,27 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
-      CC_wasm32_unknown_unknown: clang-23
-      AR_wasm32_unknown_unknown: llvm-ar-23
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@v7
       - name: clang 23 for the wasm C build
         run: |
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
-          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
-          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          test "$(lsb_release -cs)" = noble
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
+          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
+          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
+          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
-          clang-23 --version | grep -E 'clang version 23\.'
-          llvm-ar-23 --version
+          apt-cache policy clang-23 llvm-23
+          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
+          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version
+          /usr/bin/llvm-ar-23 --version
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: wasm32-unknown-unknown
@@ -235,21 +247,27 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
-      CC_wasm32_unknown_unknown: clang-23
-      AR_wasm32_unknown_unknown: llvm-ar-23
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@v7
       - name: clang 23 for the wasm C build
         run: |
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
-          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
-          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          test "$(lsb_release -cs)" = noble
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
+          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
+          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
+          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
-          clang-23 --version | grep -E 'clang version 23\.'
-          llvm-ar-23 --version
+          apt-cache policy clang-23 llvm-23
+          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
+          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version
+          /usr/bin/llvm-ar-23 --version
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -308,21 +326,27 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
-      CC_wasm32_unknown_unknown: clang-23
-      AR_wasm32_unknown_unknown: llvm-ar-23
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
       - uses: actions/checkout@v7
       - name: clang 23 for the wasm C build
         run: |
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
-          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
-          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
-          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          test "$(lsb_release -cs)" = noble
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
+          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
+          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
+          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
-          clang-23 --version | grep -E 'clang version 23\.'
-          llvm-ar-23 --version
+          apt-cache policy clang-23 llvm-23
+          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
+          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version
+          /usr/bin/llvm-ar-23 --version
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: wasm32-unknown-unknown
