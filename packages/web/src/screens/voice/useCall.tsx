@@ -94,12 +94,13 @@ export function useCall(o: UseCallOptions): CallView {
   const channelRef = useRef<string | null>(null);
   const unsubscribe = useRef<(() => void) | null>(null);
   const starting = useRef(false);
+  const mounted = useRef(true);
   const paused = useRef(false);
   const module = useRef<VoiceModule | null>(null);
   // The join button the unsupported dialog was opened from: focus returns there when it closes (flow 06).
   const opener = useRef<HTMLElement | null>(null);
-  const live = useRef(o);
-  live.current = o;
+  const live = useRef({ ...o, seen: false });
+  live.current = { ...o, seen: live.current.seen };
 
   const announce = useCallback((text: string) => setAnnouncement(text), []);
 
@@ -110,12 +111,14 @@ export function useCall(o: UseCallOptions): CallView {
     sessionRef.current = null;
     channelRef.current = null;
     paused.current = false;
+    live.current.seen = false;
     setSession(null);
     setState(null);
     setChannelId(null);
   }, []);
 
   const attach = useCallback((next: PageCall, id: string) => {
+    live.current.seen = false;
     sessionRef.current = next;
     channelRef.current = id;
     setSession(next);
@@ -164,6 +167,8 @@ export function useCall(o: UseCallOptions): CallView {
           noise: settings[SETTINGS.voiceNoise] === 'off' ? 'off' : 'on',
           volumes: mod.volumesFromSettings(settings),
         });
+        // The shell unmounted while the start was pending: nobody drives this call, so it ends at once.
+        if (!mounted.current) { void next.leave('user'); return; }
         attach(next, id);
       } catch (e) {
         if (sessionRef.current === null) { channelRef.current = null; setChannelId(null); }
@@ -226,28 +231,42 @@ export function useCall(o: UseCallOptions): CallView {
     queueMicrotask(() => { if (target?.isConnected === true) target.focus(); });
   }, []);
 
-  // The worker's call slice drives the session (RV-3 and the block rule above).
-  const phase = o.call?.phase;
-  const sliceChannel = o.call?.channelId ?? null;
+  // The worker's call slice drives the session (RV-3 and the block rule above), on every slice change and again when a
+  // session attaches, so a slice that arrived while the start was pending is applied too (security-scanner lead,
+  // fail-open state drift). The call id of a call is its channel's id (protocol/09 § Voice), so the channel decides
+  // whether a slice is this session's. Fail closed: paused, blocked or removed are applied whenever they are read; a
+  // slice that drops to idle, failed or another channel after this call was live (the worker left it: a hand-over, a
+  // resign, a lost membership) ends the page call too, so media never outlives the worker's call. Only a slice that
+  // says 'in' for this channel unpauses, and no cleanup ever does.
+  const slice = o.call;
   useEffect(() => {
     const s = sessionRef.current;
-    if (s === null || sliceChannel !== channelRef.current) return;
-    if (phase === 'paused') {
+    const id = channelRef.current;
+    if (s === null || id === null || slice === undefined) return;
+    const phase = slice.phase;
+    if (slice.channelId === id && phase === 'paused') {
+      live.current.seen = true;
       if (!paused.current) {
         paused.current = true;
         void s.setPaused(true);
       }
-    } else if (phase === 'blocked' || phase === 'removed') {
-      if (phase === 'blocked') setBlockedMidCall(channelRef.current);
-      if (phase === 'removed') setNotice({ channelId: channelRef.current ?? '', key: 'voice.removed' });
+    } else if (slice.channelId === id && (phase === 'blocked' || phase === 'removed')) {
+      if (phase === 'blocked') setBlockedMidCall(id);
+      if (phase === 'removed') setNotice({ channelId: id, key: 'voice.removed' });
       detach();
       void s.leave(phase);
-    } else if (phase === 'in' && paused.current) {
-      paused.current = false;
-      void s.setPaused(false);
-      announce(t('voice.resumed'));
+    } else if (slice.channelId === id && phase === 'in') {
+      live.current.seen = true;
+      if (paused.current) {
+        paused.current = false;
+        void s.setPaused(false);
+        announce(t('voice.resumed'));
+      }
+    } else if (live.current.seen && (slice.channelId !== id || phase === 'idle' || phase === 'failed')) {
+      detach();
+      void s.leave('removed');
     }
-  }, [phase, sliceChannel, o.call, detach, announce]);
+  }, [slice, session, detach, announce]);
 
   // Control/⌘+Shift+M and Control/⌘+Shift+D while in voice (decision 1); no single-key shortcut, and none during an IME
   // composition. Either modifier works on every platform, as the Control/⌘+K entry does.
@@ -275,10 +294,14 @@ export function useCall(o: UseCallOptions): CallView {
   }, [session, mode, pttKey]);
 
   // Leaving the shell (sign-out, a lost account) ends the call as the person's own leave.
-  useEffect(() => () => {
-    const s = sessionRef.current;
-    unsubscribe.current?.();
-    if (s !== null) void s.leave('user');
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const s = sessionRef.current;
+      unsubscribe.current?.();
+      if (s !== null) void s.leave('user');
+    };
   }, []);
 
   return {

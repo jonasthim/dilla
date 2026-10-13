@@ -156,3 +156,60 @@ describe('voice in the shell', () => {
     expect(screen.getAllByText('muted').length).toBeGreaterThan(0);
   });
 });
+
+// Security-scanner lead (fail-open state drift): the session follows the call slice on every change, whenever it arrives.
+describe('the session follows the call slice', () => {
+  const start = async (o: VoiceHarnessOptions = {}) => {
+    const app = renderVoiceShell(o);
+    const release = app.holdStart();
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
+    return { app, release };
+  };
+  it('a paused slice that arrived while the start was pending pauses the session once it attaches', async () => {
+    const { app, release } = await start();
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.setPaused).toHaveBeenCalledWith(true));
+  });
+  it('a blocked slice that arrived while the start was pending leaves the session once it attaches', async () => {
+    const { app, release } = await start();
+    app.client.publish('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('blocked'));
+    expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
+  });
+  it('an unmount while the start is pending leaves the session when it resolves', async () => {
+    const { app, release } = await start();
+    app.view.unmount();
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
+  });
+  it('an unmount in voice leaves the session and never unpauses it', async () => {
+    const app = await inVoice();
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await waitFor(() => expect(app.session.setPaused).toHaveBeenCalledWith(true));
+    app.view.unmount();
+    expect(app.session.leave).toHaveBeenCalledWith('user');
+    expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
+  });
+  it('a slice that drops to idle, or names another channel, after the call was live leaves the session', async () => {
+    const app = await inVoice();
+    app.client.publish('call', callState({ phase: 'idle' }));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
+    app.view.unmount();
+    const second = await inVoice();
+    second.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
+    await waitFor(() => expect(second.session.leave).toHaveBeenCalledWith('removed'));
+  });
+  it('a pause or block for another channel is not applied to this session', async () => {
+    const app = await inVoice();
+    app.client.publish('call', callState({ phase: 'paused', channelId: MUSIC, callId: MUSIC, error: UMK, changedUser: BOB }));
+    expect(app.session.setPaused).not.toHaveBeenCalled();
+    expect(screen.queryByText(t('voice.paused', { name: 'bob' }))).toBeNull();
+  });
+});

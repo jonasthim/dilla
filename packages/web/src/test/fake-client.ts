@@ -130,13 +130,19 @@ export class FakeSession implements PageCall {
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
-  readonly leave = vi.fn((reason: string) => { this.log.push(`leave:${reason}`); return this.leaveGate.then(() => {
-    this.log.push(`left:${reason}`); this.update({ phase: 'ended' });
-  }); });
+  // As the real session: a person's leave posts callLeave with its reason; a block or removal posts 'user' after stopping.
+  readonly leave = vi.fn((reason: 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed') => {
+    this.log.push(`leave:${reason}`);
+    const posted = reason === 'blocked' || reason === 'removed' ? 'user' : reason;
+    return this.leaveGate.then(() => this.bridge?.call({ m: 'callLeave', reason: posted })).then(() => {
+      this.log.push(`left:${reason}`); this.update({ phase: 'ended' });
+    });
+  });
   leaveGate: Promise<void> = Promise.resolve();
   readonly pushToTalk = vi.fn();
   readonly setVolume = vi.fn();
-  constructor(log: string[]) { this.log = log; }
+  private readonly bridge: Pick<CoreClient, 'call'> | null;
+  constructor(log: string[], bridge: Pick<CoreClient, 'call'> | null = null) { this.log = log; this.bridge = bridge; }
   get muted(): boolean { return this.state.muted; }
   get deafened(): boolean { return this.state.deafened; }
   subscribe(fn: () => void): () => void { this.fns.add(fn); return () => { this.fns.delete(fn); }; }
@@ -211,6 +217,13 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   fake.set('call', o.call ?? callState());
   fake.set('rings', []);
 
+  // holdStart(): the next start stays pending (after its callJoin) until the returned release runs.
+  let startGate: Promise<void> = Promise.resolve();
+  const holdStart = (): (() => void) => {
+    let release: () => void = () => undefined;
+    startGate = new Promise<void>(resolve => { release = resolve; });
+    return release;
+  };
   const sounds: FakeSounds = { played: [], ringing: false, starts: 0 };
   const module: VoiceModule = {
     isVoiceSupported: vi.fn(() => (o.supported === false ? { ok: false as const, reason: 'no-transform-api' as const }
@@ -219,7 +232,8 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     browserDeps: bridge => ({ bridge } as unknown as ReturnType<VoiceModule['browserDeps']>),
     startPageCall: vi.fn<VoiceModule['startPageCall']>(async (deps, target) => {
       await deps.bridge.call({ m: 'callJoin', channelId: target.channelId, vdec: target.vdec });
-      const session = new FakeSession(log);
+      await startGate;
+      const session = new FakeSession(log, deps.bridge);
       sessions.push(session);
       return session;
     }),
@@ -240,7 +254,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   const view = render(createElement('div', { className: 'd-root' }, createElement(CoreProvider, { client: fake, children: tree })));
   return {
     client: fake,
-    user, view, log, sessions, sounds, notifications, module, requestPermission, activation,
+    user, view, log, sessions, sounds, notifications, module, requestPermission, activation, holdStart,
     get session(): FakeSession { const s = sessions.at(-1); if (s === undefined) throw new Error('no session'); return s; },
   };
 }
