@@ -37,7 +37,7 @@ import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import type { Routes } from '../../http/routes';
 import { mentionsMe } from '../../state/mentions';
-import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from '../../testing/fake-list';
+import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from '../../testing/fake-list';
 
 /** The plain message request web-2a sent with a bare body (L-TS-30). */
 export function textRequest(body: string): SendRequest {
@@ -381,32 +381,131 @@ export class ModelCore implements CorePort {
     this.leaves.set(`${toHex(groupId)}/${leafIndex}`, { groupId: groupId.slice(), leafIndex,
       userId: userId.slice(), deviceId: deviceId.slice(), dskPub: dskPub.slice(), tier, version: 0n, head: null });
   }
+  /** app_device_lists: user hex → the newest signed list an ingest accepted (trust.rs ingest_leaf). */
+  private readonly userLists = new Map<string, { version: bigint; list: FakeList; head: Uint8Array }>();
+  /** app_quarantine: `${group hex}/${leaf key hex}` → the stored verdict, keyed by the leaf identity (ruling D1'). */
+  private readonly verdicts = new Map<string, string>();
+  /** meta trust_generation (trust.rs bump_generation). */
+  private generation = 0n;
+  /** The KeyPackages an Add proposal can carry: device hex → its leaf (the credential the core reads from it). */
+  private readonly keyPackageLeaves = new Map<string, { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 }>();
   pendingLeaves(): PendingLeaf[] {
     if (this.leaves.size > 4096) throw coreError('E_CORE_LIMIT');
     return [...this.leaves.values()].map((leaf) => ({ groupId: leaf.groupId, leafIndex: leaf.leafIndex,
-      userId: leaf.userId, cachedVersion: leaf.version, reason: leaf.version === 0n ? 'unknown' : 'ready-refresh' }));
+      userId: leaf.userId, cachedVersion: leaf.version,
+      reason: this.trustPins.get(toHex(leaf.userId))?.changedUmk != null ? 'changed' : leaf.version === 0n ? 'unknown' : 'ready-refresh' }));
   }
-  proposedAdds(): { index: bigint; userId: Id; cachedVersion: bigint }[] { return []; }
-  deviceListIngestAdd(): { version: bigint; changed: boolean; quarantined: number } { throw coreError('E_CORE_STATE', 'not modelled'); }
+  /** Test hook: a KeyPackage of `deviceId` that an Add proposal of the model DS may carry. */
+  addKeyPackage(userId: Id, deviceId: Id, dskPub: Uint8Array, tier: 0 | 1): void {
+    this.keyPackageLeaves.set(toHex(deviceId), { userId: userId.slice(), deviceId: deviceId.slice(), dskPub: dskPub.slice(), tier });
+  }
+  /**
+   * Test hook: the verdict a transition audit (trust.rs audit_member) or a changed-key ingest writes for one current
+   * leaf, through the same apply_verdict rule; `E_UMK_CHANGED` also marks the user's pin changed. null is a valid leaf.
+   */
+  setLeafVerdict(groupId: Id, leafIndex: number, code: string | null): void {
+    const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);
+    if (leaf === undefined) throw coreError('E_CORE_NOT_FOUND');
+    let touched = this.applyVerdict(leaf, code);
+    if (code === 'E_UMK_CHANGED') {
+      const user = toHex(leaf.userId);
+      const pin = this.trustPins.get(user) ?? { userId: leaf.userId, umk: fakeDskPub(leaf.userId), firstSeen: 0n, verified: false, changedUmk: null };
+      if (pin.changedUmk === null) { this.trustPins.set(user, { ...pin, changedUmk: new Uint8Array(32).fill(0xc4) }); touched = true; }
+    }
+    if (touched) this.generation += 1n;
+  }
+  /** trust.rs leaf_verdict against the cached list (the double's leaves all carry their user's pinned key). */
+  private judge(leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 }): string | null {
+    const cached = this.userLists.get(toHex(leaf.userId));
+    if (cached === undefined) return 'E_DEVICE_LIST_STALE';
+    // While a change is pending, a leaf of the pinned key is pending: an unverified list vouches for nobody.
+    if (this.trustPins.get(toHex(leaf.userId))?.changedUmk != null) return 'E_DEVICE_LIST_STALE';
+    const entry = cached.list.entries.find((item) => same(item.deviceId, leaf.deviceId) && item.revokedAt === null);
+    if (entry === undefined) return 'E_DEVICE_UNLISTED';
+    if (!same(entryKey(entry), leaf.dskPub)) return 'E_CREDENTIAL';
+    if ((entry.tier ?? 1) !== leaf.tier) return 'E_TIER_MISMATCH';
+    return this.trustPins.has(toHex(leaf.userId)) ? null : 'E_DEVICE_LIST_STALE';
+  }
+  /** trust.rs apply_verdict: whether a stored verdict changed. A changed-key block is never overwritten or cleared here. */
+  private applyVerdict(leaf: { groupId: Id; dskPub: Uint8Array }, code: string | null): boolean {
+    const key = `${toHex(leaf.groupId)}/${toHex(leaf.dskPub)}`;
+    const stored = this.verdicts.get(key);
+    if (code === null) {
+      if (stored === undefined || stored === 'E_UMK_CHANGED') return false;
+      this.verdicts.delete(key);
+      return true;
+    }
+    if (code === 'E_DEVICE_LIST_STALE' || stored === code || stored === 'E_UMK_CHANGED') return false;
+    this.verdicts.set(key, code);
+    return true;
+  }
+  /** trust.rs send_block over the group's current leaves: a changed-key block wins; a leaf that left does not count. */
+  private sendBlock(groupId: Id): string | null {
+    let found: string | null = null;
+    for (const leaf of this.leaves.values()) {
+      if (!same(leaf.groupId, groupId)) continue;
+      const code = this.verdicts.get(`${toHex(groupId)}/${toHex(leaf.dskPub)}`);
+      if (code === undefined) continue;
+      if (code === 'E_UMK_CHANGED') return code;
+      found ??= ['E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'].includes(code) ? code : 'E_CREDENTIAL';
+    }
+    return found;
+  }
+  /** The Add candidates of a proposals body, by position (trust.rs candidate_leaves); unknown KeyPackages are not modelled. */
+  private candidates(groupId: Id, proposalsBody: Uint8Array): { index: bigint; leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 } }[] {
+    this.must(groupId);
+    const out: { index: bigint; leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 } }[] = [];
+    for (const [index, row] of arr(decode(proposalsBody)).entries()) {
+      const p = arr(row, 5);
+      if (u64(at(p, 4)) === 1n) continue;
+      const v = arr(decode(bin(at(p, 3))), 4);
+      if (str(at(v, 2)) !== 'add') continue;
+      const leaf = this.keyPackageLeaves.get(toHex(bin(at(v, 3), 16)));
+      if (leaf !== undefined) out.push({ index: BigInt(index), leaf });
+    }
+    return out;
+  }
+  proposedAdds(groupId: Id, proposalsBody: Uint8Array): { index: bigint; userId: Id; cachedVersion: bigint }[] {
+    return this.candidates(groupId, proposalsBody).map(({ index, leaf }) =>
+      ({ index, userId: leaf.userId, cachedVersion: this.userLists.get(toHex(leaf.userId))?.version ?? 0n }));
+  }
+  deviceListIngestAdd(groupId: Id, proposalsBody: Uint8Array, index: bigint, requestedUser: Id, history: Uint8Array,
+    headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number } {
+    const candidate = this.candidates(groupId, proposalsBody).find((c) => c.index === index);
+    if (candidate === undefined) throw coreError('E_DEVICE_LIST_STALE');
+    const cached = this.userLists.get(toHex(candidate.leaf.userId));
+    const validated = this.validateHistory(candidate.leaf, requestedUser, history, headList,
+      cached === undefined ? null : { version: cached.version, head: cached.head });
+    return this.ingested(candidate.leaf.userId, validated, headList, now);
+  }
   deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array,
     now: bigint): { version: bigint; changed: boolean; quarantined: number } {
     const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);
     if (leaf === undefined) throw coreError('E_DEVICE_LIST_STALE');
+    const validated = this.validateHistory(leaf, requestedUser, history, headList,
+      leaf.version > 0n && leaf.head !== null ? { version: leaf.version, head: leaf.head } : null);
+    leaf.version = validated.version;
+    leaf.head = headList.slice();
+    return this.ingested(leaf.userId, validated, headList, now);
+  }
+  /** trust.rs validate_history_from for the double's lists: every refusal writes nothing. */
+  private validateHistory(leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1 }, requestedUser: Id, history: Uint8Array,
+    headList: Uint8Array, anchorRow: { version: bigint; head: Uint8Array } | null): { version: bigint; list: FakeList } {
     if (!same(leaf.userId, requestedUser)) throw coreError('E_CREDENTIAL');
     if (history.length > 4_194_304) throw coreError('E_DEVICE_LIST_STALE');
     let rows: CborValue[];
     try { rows = decodeBoundedArray(history, 1024); } catch { throw coreError('E_DEVICE_LIST_STALE'); }
     if (rows.length < 1 || rows.length > 1024) throw coreError('E_DEVICE_LIST_STALE');
-    let version = leaf.version;
+    let version = anchorRow?.version ?? 0n;
     let final: CborValue[] | null = null;
-    let finalList: ReturnType<typeof readFakeList> = null;
+    let finalList: FakeList | null = null;
     for (const [index, value] of rows.entries()) {
       let row: CborValue[];
       try { row = arr(value, 4); } catch { throw coreError('E_DEVICE_LIST_STALE'); }
       const rowVersion = u64(row[0]);
-      const anchor = index === 0 && leaf.version > 0n;
+      const anchor = index === 0 && anchorRow !== null;
       if (anchor) {
-        if (rowVersion !== leaf.version || leaf.head === null || !same(bin(row[1]), leaf.head)) throw coreError('E_DEVICE_LIST_STALE');
+        if (rowVersion !== anchorRow.version || !same(bin(row[1]), anchorRow.head)) throw coreError('E_DEVICE_LIST_STALE');
       } else if (rowVersion !== version + 1n) throw coreError('E_DEVICE_LIST_STALE');
       const list = readFakeList(bin(row[1]));
       if (list === null) throw coreError('E_DEVICE_LIST_STALE');
@@ -426,16 +525,29 @@ export class ModelCore implements CorePort {
     if (entry === undefined) throw coreError('E_DEVICE_UNLISTED');
     if (!same(entryKey(entry), leaf.dskPub)) throw coreError('E_CREDENTIAL');
     if ((entry.tier ?? 1) !== leaf.tier) throw coreError('E_TIER_MISMATCH');
-    leaf.version = version;
-    leaf.head = headList.slice();
-    const user = toHex(leaf.userId);
-    if (!this.trustPins.has(user)) this.trustPins.set(user, { userId: leaf.userId, umk: fakeDskPub(leaf.userId),
+    return { version, list: finalList };
+  }
+  /** trust.rs ingest_leaf's write unit: the pin, the cached list, and every current leaf of the user judged again. */
+  private ingested(userId: Id, validated: { version: bigint; list: FakeList }, headList: Uint8Array,
+    now: bigint): { version: bigint; changed: boolean; quarantined: number } {
+    const user = toHex(userId);
+    if (!this.trustPins.has(user)) this.trustPins.set(user, { userId: userId.slice(), umk: fakeDskPub(userId),
       firstSeen: now, verified: false, changedUmk: null });
-    return { version, changed: false, quarantined: 0 };
+    this.userLists.set(user, { version: validated.version, list: validated.list, head: headList.slice() });
+    let touched = false;
+    let quarantined = 0;
+    for (const leaf of this.leaves.values()) {
+      if (toHex(leaf.userId) !== user || (same(leaf.userId, this.me.user) && same(leaf.deviceId, this.me.device))) continue;
+      const verdict = this.judge(leaf);
+      touched = this.applyVerdict(leaf, verdict) || touched;
+      if (verdict !== null && verdict !== 'E_DEVICE_LIST_STALE') quarantined += 1;
+    }
+    if (touched) this.generation += 1n;
+    return { version: validated.version, changed: false, quarantined };
   }
   revalidatePending(): number { return 0; }
   trustState(): TrustRecord[] { return [...this.trustPins.values()].sort((a, b) => toHex(a.userId).localeCompare(toHex(b.userId))); }
-  trustGeneration(): bigint { return 0n; }
+  trustGeneration(): bigint { return this.generation; }
   trustVerify(): void { throw coreError('E_CORE_STATE', 'not modelled'); }
   safetyNumberFor(): string { throw coreError('E_CORE_STATE', 'not modelled'); }
   search(): SearchHit[] { return []; }
@@ -796,13 +908,25 @@ export class ModelCore implements CorePort {
     const g = this.must(groupId);
     if (g.state !== 2) throw coreError('E_CORE_STATE', `state ${String(g.state)}`);
     if (g.pending !== null) throw coreError('E_CORE_STATE', 'a commit is pending');
+    const queued = new Map(g.proposals);
     for (const row of arr(decode(proposalsBody))) {
       const p = arr(row, 5);
       if (u64(at(p, 4)) === 1n) continue;
       const v = arr(decode(bin(at(p, 3))), 4);
       const ref = toHex(bin(at(v, 1), 16));
-      if (!g.proposals.has(ref)) g.proposals.set(ref, { op: str(at(v, 2)) === 'add' ? 'add' : 'remove', device: bin(at(v, 3), 16) });
+      if (!queued.has(ref)) queued.set(ref, { op: str(at(v, 2)) === 'add' ? 'add' : 'remove', device: bin(at(v, 3), 16) });
     }
+    // sync.rs commit_build (ruling 3, drop_queued_adds): a queued Add whose leaf fails is left out of this commit; one
+    // whose signed history is unknown refuses, writing nothing. A KeyPackage the double does not model is committed.
+    for (const [ref, p] of queued) {
+      const leaf = p.op === 'add' ? this.keyPackageLeaves.get(toHex(p.device)) : undefined;
+      if (leaf === undefined) continue;
+      const verdict = this.judge(leaf);
+      if (verdict === 'E_DEVICE_LIST_STALE') throw coreError(verdict, '');
+      if (verdict !== null) queued.delete(ref);
+    }
+    g.proposals.clear();
+    for (const [ref, p] of queued) g.proposals.set(ref, p);
     const adds = [...g.proposals.values()].filter((p) => p.op === 'add').map((p) => p.device);
     const removes = [...g.proposals.values()].filter((p) => p.op === 'remove').map((p) => p.device);
     g.pending = { epoch: g.epoch + 1n, removesMe: removes.some((d) => same(d, this.me.device)) };
@@ -869,6 +993,9 @@ export class ModelCore implements CorePort {
     if (type !== 0 && attachments.length > 0) throw coreError('E_CORE_INPUT', 'only a message carries attachments');
     const g = this.must(groupId);
     if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
+    // messages.rs send_prepare: a changed-key or failed leaf still in the group blocks queuing (and again at encryption).
+    const block = this.sendBlock(groupId);
+    if (block !== null) throw coreError(block, '');
     const target = replyTo === null ? null : this.resolve(g, replyTo);
     if (type === 0) {
       if (body.trim() === '' && attachments.length === 0) throw coreError('E_CORE_INPUT', 'body is empty');
@@ -909,6 +1036,9 @@ export class ModelCore implements CorePort {
     // The core frames no application message while a proposal or a commit is pending (L-CORE-09).
     if (g.proposals.size > 0) throw coreError('E_CORE_STATE', 'proposals are pending');
     if (g.pending !== null) throw coreError('E_CORE_STATE', 'a commit is pending');
+    // messages.rs send_encrypt: the gate holds again at encryption, for a row queued before the verdict arrived.
+    const block = this.sendBlock(o.groupId);
+    if (block !== null) throw coreError(block, '');
     o.state = 1;
     o.epoch = g.epoch;
     const framed = wire.app(this.me, o.msgId, o.body, { type: o.type, replyTo: o.replyTo, attachments: o.attachments });

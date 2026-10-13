@@ -1061,3 +1061,104 @@ describe('ModelDs answers the message delete as the delivery service does (L-HTT
     expect(ds.deleteAs(idOf(0x9a, 77), ME.device, mine)).toBe(404);
   });
 });
+
+describe('trust send block (trust.rs leaf_verdict/send_block, messages.rs send_prepare/send_encrypt)', () => {
+  const PEER_2 = idOf(0xd0, 22);
+  const listOf = (v: number, devices: Id[], user = PEER.user): [number, Uint8Array, Uint8Array, Uint8Array] =>
+    [v, fakeListBlob(user, devices.map((deviceId) => ({ deviceId, revokedAt: null, dskPub: fakeDskPub(deviceId) })), BigInt(v)),
+      bytes(64, v), bytes(32, v - 1)];
+  const proposals = (...devices: Id[]): Uint8Array =>
+    encode(devices.map((device, n) => [idOf(0x5e, n), 0, null, wire.prop(idOf(0x5e, n), 'add', device), 0]));
+  function trusted(): ModelCore {
+    const core = new ModelCore(ME);
+    registered(core);
+    core.addPendingLeaf(G, 1, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+    core.addPendingLeaf(G, 2, PEER.user, PEER_2, fakeDskPub(PEER_2), 1);
+    return core;
+  }
+
+  it('records a failed verdict for a leaf the ingested list leaves out, bumps the generation and blocks sending', () => {
+    const core = trusted();
+    const queued = core.sendPrepare(G, textRequest('queued before'), 1n);
+    const v1 = listOf(1, [PEER.device]);
+    expect(core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n)).toEqual({ version: 1n, changed: false, quarantined: 1 });
+    expect(core.trustGeneration()).toBe(1n);
+    expect(thrown(() => core.sendPrepare(G, textRequest('after'), 2n))).toMatchObject({ code: 'E_DEVICE_UNLISTED' });
+    expect(thrown(() => core.sendEncrypt(queued))).toMatchObject({ code: 'E_DEVICE_UNLISTED' });
+    // Refused before anything changed: the row is still queued.
+    expect(core.outbox(G).map((row) => row.state)).toEqual([0]);
+  });
+
+  it('a later list naming the device clears its own failed verdict, and sending resumes', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    const v2 = listOf(2, [PEER.device, PEER_2]);
+    expect(core.deviceListIngest(G, 1, PEER.user, encode([v1, v2]), v2[1], 11n)).toEqual({ version: 2n, changed: false, quarantined: 0 });
+    expect(core.trustGeneration()).toBe(2n);
+    const id = core.sendPrepare(G, textRequest('now'), 3n);
+    expect(core.sendEncrypt(id).groupId).toEqual(G);
+  });
+
+  it('a changed-key verdict wins over other failures and no later valid verdict releases it', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    core.setLeafVerdict(G, 1, 'E_UMK_CHANGED');
+    expect(core.trustGeneration()).toBe(2n);
+    expect(thrown(() => core.sendPrepare(G, textRequest('x'), 2n))).toMatchObject({ code: 'E_UMK_CHANGED' });
+    expect(core.pendingLeaves().find((leaf) => leaf.leafIndex === 1)?.reason).toBe('changed');
+    const v2 = listOf(2, [PEER.device, PEER_2]);
+    core.deviceListIngest(G, 2, PEER.user, encode([v1, v2]), v2[1], 11n);
+    expect(thrown(() => core.sendPrepare(G, textRequest('x'), 3n))).toMatchObject({ code: 'E_UMK_CHANGED' });
+  });
+
+  it('a verdict of a leaf in another group blocks only that group', () => {
+    const core = trusted();
+    registered(core, G2, CHANNEL_2);
+    core.setLeafVerdict(G, 2, 'E_CREDENTIAL');
+    expect(thrown(() => core.sendPrepare(G, textRequest('x'), 2n))).toMatchObject({ code: 'E_CREDENTIAL' });
+    expect(core.sendPrepare(G2, textRequest('y'), 2n)).toHaveLength(16);
+  });
+
+  it('answers proposedAdds and refuses a failed Add candidate by its verdict, writing nothing', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    const generation = core.trustGeneration();
+    const FORGED = idOf(0xd0, 23);
+    core.addKeyPackage(PEER.user, FORGED, fakeDskPub(FORGED), 1);
+    const body = proposals(FORGED);
+    expect(core.proposedAdds(G, body)).toEqual([{ index: 0n, userId: PEER.user, cachedVersion: 1n }]);
+    expect(thrown(() => core.deviceListIngestAdd(G, body, 0n, PEER.user, encode([v1]), v1[1], 12n)))
+      .toMatchObject({ code: 'E_DEVICE_UNLISTED' });
+    expect(thrown(() => core.deviceListIngestAdd(G, body, 1n, PEER.user, encode([v1]), v1[1], 12n)))
+      .toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    expect(core.trustGeneration()).toBe(generation);
+  });
+
+  it('commitBuild leaves a failed Add out and refuses one whose signed history is unknown', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    const FORGED = idOf(0xd0, 23);
+    core.addKeyPackage(PEER.user, FORGED, fakeDskPub(FORGED), 1);
+    core.addKeyPackage(THIRD.user, THIRD.device, fakeDskPub(THIRD.device), 1);
+    expect(thrown(() => core.commitBuild(G, proposals(FORGED, THIRD.device)))).toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
+    const built = arr(decode(core.commitBuild(G, proposals(FORGED))), 5);
+    expect(arr(at(arr(decode(bin(at(built, 1))), 5), 3))).toEqual([]);
+    expect(arr(at(built, 3))).toEqual([]);
+  });
+
+  it('a valid Add candidate is ingested and committed', () => {
+    const core = trusted();
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    const v2 = listOf(2, [PEER.device, PEER_2]);
+    core.addKeyPackage(PEER.user, PEER_2, fakeDskPub(PEER_2), 1);
+    const body = proposals(PEER_2);
+    expect(core.deviceListIngestAdd(G, body, 0n, PEER.user, encode([v1, v2]), v2[1], 12n)).toEqual({ version: 2n, changed: false, quarantined: 0 });
+    const built = arr(decode(core.commitBuild(G, body)), 5);
+    expect(arr(at(arr(decode(bin(at(built, 1))), 5), 3))).toEqual([PEER_2]);
+  });
+});
