@@ -601,8 +601,7 @@ export class CallController {
   }
 }
 
-/** The changed contact a core refusal names (calls.rs `refusal`: `E_UMK_CHANGED: <user id hex>`), else null. */
+/** The changed contact a core refusal names (CoreError.changedUser), else null. */
 function reportedUser(cause: unknown): string | null {
-  if (!(cause instanceof CoreError) || cause.code !== 'E_UMK_CHANGED') return null;
-  return /^[0-9a-f]{32}$/.test(cause.detail) ? cause.detail : null;
+  return cause instanceof CoreError ? cause.changedUser : null;
 }

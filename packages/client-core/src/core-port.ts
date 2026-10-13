@@ -2,12 +2,19 @@ import { arr, bin, decode, encode, opt, str, u53, u64, CborError, type CborValue
 import { decodePendingLeaves, decodeTrustState } from './state/trust';
 import { decodeSearchHits, validateSearch } from './state/search';
 
+/** The changed contact a call-gate refusal names (calls.rs `refusal`: `E_UMK_CHANGED: <user id hex>`), decoded once here
+ *  at the core's boundary, never by reading `detail` elsewhere (web-3 task 10, concern 3). */
+const CHANGED_USER = /^E_UMK_CHANGED: ([0-9a-f]{32})$/;
+
 export class CoreError extends Error {
   readonly code: string;
   readonly detail: string;
+  /** The user (hex) an E_UMK_CHANGED refusal of the call gate names as the changed contact; null otherwise. */
+  readonly changedUser: string | null;
   constructor(code: string, detail = '') {
     super(detail === '' ? code : `${code}: ${detail}`);
     this.name = 'CoreError'; this.code = code; this.detail = detail;
+    this.changedUser = CHANGED_USER.exec(this.message)?.[1] ?? null;
   }
   static from(err: unknown): CoreError {
     if (err instanceof CoreError) return err;
