@@ -2,6 +2,9 @@
 // the dilla tab has focus. Its handler calls preventDefault, so the key never types; and it never fires while focus
 // is in an editable field, where the key types as usual (task-7 review ruling). Losing focus or hiding the tab
 // releases a held key, so the microphone never stays open behind another window.
+// Only a non-text key pressed on its own binds (task-8b review I2): a code outside PUSH_TO_TALK_KEYS binds nothing, and a
+// press with Control, Alt, Meta, Shift or AltGr held is ignored.
+import { isPushToTalkKey } from '@dilla/ui';
 
 export interface PushToTalkOptions {
   /** The KeyboardEvent.code of the push-to-talk key (the voice.pttKey setting). */
@@ -28,6 +31,7 @@ export function isEditable(target: EventTarget | null): boolean {
 
 /** Binds the key; returns the unbind, which also releases a held key. */
 export function bindPushToTalk(o: PushToTalkOptions): () => void {
+  if (!isPushToTalkKey(o.code)) return () => undefined;
   const doc = o.doc ?? document;
   const win = o.win ?? window;
   let down = false;
@@ -36,9 +40,11 @@ export function bindPushToTalk(o: PushToTalkOptions): () => void {
     down = false;
     o.onChange(false);
   };
+  const modified = (e: KeyboardEvent): boolean =>
+    e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.getModifierState('AltGraph');
   const editing = (e: KeyboardEvent): boolean => isEditable(e.target) || isEditable(doc.activeElement);
   const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.code !== o.code || editing(e) || !doc.hasFocus()) return;
+    if (e.code !== o.code || modified(e) || editing(e) || !doc.hasFocus()) return;
     e.preventDefault();
     if (e.repeat || down) return;
     down = true;

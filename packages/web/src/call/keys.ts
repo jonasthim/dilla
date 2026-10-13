@@ -45,7 +45,7 @@ export interface KeyRelayOptions {
   copy?: (buffer: ArrayBuffer) => Uint8Array;
 }
 
-/** Copies kept before the join answer names the call: the join key plus any racing epoch change. */
+/** Copies kept before the join answer names the call: the join key plus any racing epoch change (the newest is kept). */
 const MAX_BUFFERED = 4;
 
 const wipe = (copy: KeyCopy | null): void => { copy?.baseKey.fill(0); };
@@ -90,7 +90,6 @@ export function createKeyRelay(opts: KeyRelayOptions = {}): KeyRelay {
   const install = (copy: KeyCopy): void => {
     const target = installer;
     if (target === null || phase !== 'live') { wipe(copy); return; }
-    report(copy);
     let pending: Promise<void>;
     try {
       pending = target.installEpoch(toEpochKeys(copy, minEpoch));
@@ -99,8 +98,9 @@ export function createKeyRelay(opts: KeyRelayOptions = {}): KeyRelay {
       opts.onInstallError?.(codeOf(err));
       return;
     }
+    // The tiles move to an epoch's roster only once the media worker holds its key (review m6).
     pending.then(
-      () => wipe(copy),
+      () => { wipe(copy); if (phase === 'live') report(copy); },
       (err: unknown) => { wipe(copy); opts.onInstallError?.(codeOf(err)); },
     );
   };
@@ -128,16 +128,17 @@ export function createKeyRelay(opts: KeyRelayOptions = {}): KeyRelay {
       source.fill(0);
       return;
     }
-    const copy: KeyCopy = {
-      callId: pushedCallId,
-      groupId: keys.groupId,
-      epoch,
-      baseKey: copyOf(keys.baseKey),
-      selfLeaf: keys.selfLeaf,
-      roster: keys.roster.map((r) => ({ leaf: r.leaf, deviceId: r.deviceId, userId: r.userId })),
-    };
-    // The session is the only consumer of key bytes: the pushed buffer is zero-filled here too, not only by the bridge.
-    source.fill(0);
+    let copy: KeyCopy;
+    try {
+      // Everything that can throw runs before the bytes are copied, so a malformed push leaves no copy (review m3).
+      const roster = keys.roster.map((r) => ({ leaf: r.leaf, deviceId: r.deviceId, userId: r.userId }));
+      copy = { callId: pushedCallId, groupId: keys.groupId, epoch, baseKey: copyOf(keys.baseKey), selfLeaf: keys.selfLeaf, roster };
+    } catch {
+      return;
+    } finally {
+      // The session is the only consumer of key bytes: the pushed buffer is zero-filled here too, not only by the bridge.
+      source.fill(0);
+    }
     if (phase === 'buffering') {
       buffered.push(copy);
       while (buffered.length > MAX_BUFFERED) wipe(buffered.shift() ?? null);
@@ -154,7 +155,10 @@ export function createKeyRelay(opts: KeyRelayOptions = {}): KeyRelay {
       const all = buffered;
       buffered = [];
       const join = all.find((c) => c.callId === id && c.epoch === epoch) ?? null;
-      for (const c of all) if (c !== join) wipe(c);
+      // A newer epoch of the same call that raced the join answer is kept and installed on attach (review m2).
+      let later: KeyCopy | null = null;
+      if (join !== null) for (const c of all) if (c.callId === id && c.epoch > epoch && (later === null || c.epoch > later.epoch)) later = c;
+      for (const c of all) if (c !== join && c !== later) wipe(c);
       if (join === null) {
         phase = 'closed';
         return null;
@@ -162,7 +166,8 @@ export function createKeyRelay(opts: KeyRelayOptions = {}): KeyRelay {
       phase = 'live';
       callId = id;
       minEpoch = epoch;
-      newest = epoch;
+      newest = later?.epoch ?? epoch;
+      held = later;
       report(join);
       return join;
     },

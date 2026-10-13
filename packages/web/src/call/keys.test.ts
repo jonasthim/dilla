@@ -174,16 +174,54 @@ describe('the call key relay (decision 3, L-WEB-50)', () => {
     expect(copies.every(zero)).toBe(true);
   });
 
-  it('reports the roster of each installed epoch (device → user), the join epoch first', () => {
-    const { relay, installer } = harness(async () => undefined);
+  it('reports the join roster at takeJoin and each later roster only once its install resolved (review m6)', async () => {
     const rosters: Array<Array<[string, string]>> = [];
     const r2 = createKeyRelay({ onRoster: (m) => rosters.push([...m.entries()].map(([d, v]) => [d, v.userId])) });
-    void relay;
+    const settles: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+    const installer = { installEpoch: () => new Promise<void>((resolve, reject) => settles.push({ resolve, reject })) };
     r2.listener(CALL, keysFor(1n));
     r2.takeJoin(CALL, 1n)!.baseKey.fill(0);
+    expect(rosters).toEqual([[[DEV(1), USER(1)]]]);
     r2.attach(installer);
-    r2.listener(CALL, keysFor(2n, [{ leaf: 0, deviceId: DEV(1), userId: USER(1) }, { leaf: 1, deviceId: DEV(2), userId: USER(2) }]));
+    const two = [{ leaf: 0, deviceId: DEV(1), userId: USER(1) }, { leaf: 1, deviceId: DEV(2), userId: USER(2) }];
+    r2.listener(CALL, keysFor(2n, two));
+    expect(rosters).toHaveLength(1);
+    settles[0].resolve();
+    await flush();
     expect(rosters).toEqual([[[DEV(1), USER(1)]], [[DEV(1), USER(1)], [DEV(2), USER(2)]]]);
+    r2.listener(CALL, keysFor(3n, [{ leaf: 0, deviceId: DEV(1), userId: USER(1) }]));
+    settles[1].reject(new Error('E_NO_EPOCH: refused'));
+    await flush();
+    expect(rosters).toHaveLength(2);
+  });
+
+  it('takeJoin keeps a newer key of the same call that raced the join answer, and installs it on attach (review m2)', () => {
+    const { relay, installs, installer, copies } = harness();
+    relay.listener(CALL, keysFor(1n));
+    relay.listener(CALL, keysFor(3n));
+    relay.listener(CALL, keysFor(2n));
+    relay.listener(OTHER, keysFor(4n));
+    relay.takeJoin(CALL, 1n)!.baseKey.fill(0);
+    // epoch 2 and the other call's 4 are zero-filled at once; 3 is held.
+    expect(zero(copies[2])).toBe(true);
+    expect(zero(copies[3])).toBe(true);
+    expect(zero(copies[1])).toBe(false);
+    relay.attach(installer);
+    expect(installs.map((k) => [k.epoch, k.minEpoch])).toEqual([[3n, 1n]]);
+    relay.listener(CALL, keysFor(2n));
+    expect(installs).toHaveLength(1);
+  });
+
+  it('a push with a malformed roster leaves no copy unzeroed and does not throw (review m3)', () => {
+    const { relay, copies, installer, installs } = harness();
+    relay.listener(CALL, keysFor(1n));
+    relay.takeJoin(CALL, 1n)!.baseKey.fill(0);
+    relay.attach(installer);
+    const bad = { ...keysFor(2n), roster: null } as unknown as CallKeys;
+    expect(() => relay.listener(CALL, bad)).not.toThrow();
+    expect(zero(bad.baseKey)).toBe(true);
+    expect(installs).toEqual([]);
+    expect(copies.every(zero)).toBe(true);
   });
 
   it('toEpochKeys keeps leaf and device only and carries the given minEpoch', () => {

@@ -13,7 +13,7 @@ const meta = {
       outputUnsupported: 'This browser plays voice on the system default device.', mode: 'input mode', vad: 'voice activity', ptt: 'push to talk',
       pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
       pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
-      pttRefused: 'That key types text or moves the focus. Use a key such as F8, or hold Control, Alt or ⌘ with it.',
+      pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock, Insert or F13 to F24.',
       noise: 'noise suppression', level: 'input level',
     },
     onInput: () => {}, onOutput: () => {}, onMode: () => {}, onCaptureKey: () => {}, onNoise: () => {},
@@ -27,7 +27,7 @@ type Story = StoryObj<typeof meta>;
 export const VoiceActivity: Story = {};
 /** Push to talk with no key yet: there is no default key. */
 export const PushToTalkNoKey: Story = { args: { mode: 'ptt' } };
-export const PushToTalkKey: Story = { args: { mode: 'ptt', pttKey: 'F8', input: 'mic-2' } };
+export const PushToTalkKey: Story = { args: { mode: 'ptt', pttKey: 'F13', input: 'mic-2' } };
 export const CapturingKey: Story = { args: { mode: 'ptt', capturing: true } };
 /** A plain letter is refused while capturing: the prompt says why and the capture goes on (M9). */
 export const CapturingRefused: Story = {

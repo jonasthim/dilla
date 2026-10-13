@@ -22,6 +22,7 @@ The media key never appears in this flow: the browser derives it in the core wor
 | failed | `voice.failed` with the join button available again | `call.phase` failed (also E_DEVICE_LIST_STALE after one refresh, RV-1) | the notice |
 | microphone denied | `voice.micDenied`; joined listen-only | `getUserMedia` NotAllowedError | the notice |
 | microphone missing | `voice.micMissing`; joined listen-only | `getUserMedia` NotFoundError | the notice |
+| microphone failed | `voice.micFailed`; joined listen-only | the page call's `mic` is `failed` (`E_MIC_PUBLISH`: the microphone exists but could not be published; added 2026-10-13, task-8b review m4) | the notice |
 | unsupported browser | dialog `voice.unsupported.title` / `voice.unsupported.body` with `voice.unsupported.close` | a required API (insertable streams or `RTCRtpScriptTransform`, `AudioWorklet`) is missing | dialog title |
 | other tab | `voice.otherTab`; no join | Flow 05's other-tab state | the notice |
 | incoming ring — normal | ring banner `call.ring.incoming` with `call.ring.answer` and `call.ring.decline`; the ring sound plays; a desktop notification `call.ring.notifyTitle` / `call.ring.notifyBody` when the tab is hidden | `rings` holds the ring, `busy` and `quiet` false | `role="alert"` once |
@@ -165,7 +166,7 @@ The sidebar sheet (opened with `☰`) holds the dock above the user panel while 
 | into a toolbar | Tab | the toolbar's last-focused control, then out on the next Tab |
 | `voice.code` disclosure | Enter/Space | opens or closes; Escape closes and returns focus to it |
 | unsupported dialog | Escape | closes; focus returns to the join button |
-| push-to-talk capture prompt (`settings.voice.pttPrompt`) | a non-text key (F1–F24, Pause, ScrollLock, Insert and the like), or any key held with Control, Alt or ⌘ | that key and its modifiers are saved; a key that types text or moves focus without Control, Alt or ⌘ is refused with `settings.voice.pttRefused` and the capture goes on; Escape cancels; Tab leaves and cancels |
+| push-to-talk capture prompt (`settings.voice.pttPrompt`) | one non-text key on its own: F13–F24, Pause, ScrollLock or Insert | that key is saved; any other key, and any key held with Control, Alt, ⌘, Shift or AltGr, is refused with `settings.voice.pttRefused` and the capture goes on; Escape cancels; Tab leaves and cancels |
 | ring banner | Tab from the main landmark's start | `call.ring.answer`, then `call.ring.decline`, before any other control of the main landmark |
 | attachment player | Enter/Space on `media.play`, then the browser's native controls | the native player |
 
@@ -173,7 +174,9 @@ There is no single-key shortcut (decision 1, WCAG 2.1.4): mute and deafen need C
 
 Amended 2026-10-13 (controller rulings on the task-7 review, M4 and M9):
 - **Shortcut spelling (M4).** The mute and deafen shortcuts follow the web-2c convention of the existing Control/⌘+K entry: the same spelling (`Control/⌘+Shift+M`, `Control/⌘+Shift+D`) and the same mac mapping (Control or ⌘ works on every platform). `keyboard.mute` and `keyboard.deafen` below are aligned to it.
-- **Push-to-talk key (M9).** The capture refuses a key that types text or moves focus without Control, Alt or ⌘: letters, digits, space, punctuation (with or without Shift), dead and IME keys, Enter, Backspace, Delete, the arrows, Home, End, PageUp and PageDown. Accepted are non-text keys (F1–F24, Pause, ScrollLock, Insert and the like) and any key held with Control, Alt or ⌘. Push to talk never acts while focus is in an editable field (a text input, `textarea`, `select` or `contenteditable`), so the key is never swallowed while someone types.
+- **Push-to-talk key (M9, superseded 2026-10-13 below).** The capture refuses a key that types text or moves focus without Control, Alt or ⌘: letters, digits, space, punctuation (with or without Shift), dead and IME keys, Enter, Backspace, Delete, the arrows, Home, End, PageUp and PageDown. Accepted are non-text keys (F1–F24, Pause, ScrollLock, Insert and the like) and any key held with Control, Alt or ⌘. Push to talk never acts while focus is in an editable field (a text input, `textarea`, `select` or `contenteditable`), so the key is never swallowed while someone types.
+
+Amended 2026-10-13 (controller ruling on the task-8b review, I2; supersedes the M9 ruling above): **the push-to-talk key is one non-text key pressed on its own**, F13 to F24, Pause, ScrollLock or Insert. `voice.pttKey` stores a `KeyboardEvent.code` alone, so a combination could never be matched: a key that types text (AltGr included), moves focus or has a browser function (F1–F12) is refused with or without Control, Alt or ⌘, and any of these keys held with Control, Alt, ⌘, Shift or AltGr is refused too. Push to talk binds only such a key and ignores a press with a modifier held. `settings.voice.pttRefused` is reworded to match.
 
 ## Focus rules
 
@@ -249,6 +252,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.otherTab='Voice is open in another tab of this browser.'`
 - `voice.micDenied='The microphone is blocked. You can listen; allow the microphone in the browser to talk.'`
 - `voice.micMissing='No microphone found. You can listen.'`
+- `voice.micFailed='The microphone could not be connected. You can listen.'` (added 2026-10-13, task-8b review m4)
 - `voice.unsupported.title='Voice does not work in this browser'`
 - `voice.unsupported.body='This browser lacks a feature dilla needs for voice. Use a current Chromium-based browser or Firefox.'`
 - `voice.unsupported.close='Close'`
@@ -271,7 +275,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `settings.voice.mode='input mode'`, `settings.voice.vad='voice activity'`, `settings.voice.ptt='push to talk'`
 - `settings.voice.pttKey='push-to-talk key'`, `settings.voice.pttNone='no key set'`, `settings.voice.pttSet='set key'`
 - `settings.voice.pttPrompt='Press the key to use. Escape cancels. It works only while dilla is the active tab.'`
-- `settings.voice.pttRefused='That key types text or moves the focus. Use a key such as F8, or hold Control, Alt or ⌘ with it.'` (added 2026-10-13, task-7 review M9)
+- `settings.voice.pttRefused='That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock, Insert or F13 to F24.'` (added 2026-10-13, task-7 review M9; reworded 2026-10-13, task-8b review I2)
 - `settings.voice.noise='noise suppression'`, `settings.voice.level='input level'`
 - `settings.notify.sounds='sounds'`, `settings.sound.voice='join and leave sounds'`, `settings.sound.ring='ring for calls'`
 

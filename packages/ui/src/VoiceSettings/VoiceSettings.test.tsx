@@ -10,7 +10,7 @@ const labels: VoiceSettingsProps['labels'] = {
   outputUnsupported: 'This browser plays voice on the system default device.', mode: 'input mode', vad: 'voice activity', ptt: 'push to talk',
   pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
   pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
-  pttRefused: 'That key types text or moves the focus. Use a key such as F8, or hold Control, Alt or ⌘ with it.',
+  pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock, Insert or F13 to F24.',
   noise: 'noise suppression', level: 'input level',
 };
 const base: VoiceSettingsProps = {
@@ -67,44 +67,52 @@ describe('VoiceSettings', () => {
     const capture = screen.getByRole('button', { name: 'set key' });
     expect(capture).toHaveFocus();
     expect(screen.getByRole('status')).toHaveTextContent('Press the key to use. Escape cancels.');
-    const typed = fireEvent.keyDown(capture, { key: 'F8', code: 'F8' });
+    const typed = fireEvent.keyDown(capture, { key: 'F13', code: 'F13' });
     expect(typed).toBe(false);
-    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'F8', ctrl: false, alt: false, meta: false, shift: false });
+    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'F13', ctrl: false, alt: false, meta: false, shift: false });
     fireEvent.keyDown(capture, { key: 'Escape', code: 'Escape' });
     expect(onCaptureKey).toHaveBeenLastCalledWith('cancel');
   });
 
-  it('refuses a key that types text or moves focus without Control, Alt or Meta, and says why (M9)', () => {
+  it('accepts only a non-text key on its own: F13 to F24, Pause, ScrollLock, Insert (task-8b review I2, supersedes M9)', () => {
     const onCaptureKey = vi.fn();
     render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={onCaptureKey} />);
     const capture = screen.getByRole('button', { name: 'set key' });
-    for (const [key, code] of [['a', 'KeyA'], ['A', 'KeyA'], [' ', 'Space'], ['7', 'Digit7'], [',', 'Comma'], ['Enter', 'Enter'], ['ArrowDown', 'ArrowDown'], ['Dead', 'Quote']]) {
-      const typed = fireEvent.keyDown(capture, { key, code, shiftKey: key === 'A' });
+    const refused: Array<[string, string, Record<string, boolean>]> = [
+      ['a', 'KeyA', {}], ['A', 'KeyA', { shiftKey: true }], [' ', 'Space', {}], ['7', 'Digit7', {}], [',', 'Comma', {}],
+      ['Enter', 'Enter', {}], ['ArrowDown', 'ArrowDown', {}], ['Dead', 'Quote', {}],
+      // A text or operating key stays refused with Control, Alt or Meta held (the setting stores the code alone).
+      ['m', 'KeyM', { ctrlKey: true, shiftKey: true }], ['v', 'KeyV', { metaKey: true }], ['x', 'KeyX', { altKey: true }],
+      // Function keys the browser uses (help, find, reload, caret browsing, fullscreen, devtools) are refused.
+      ['F1', 'F1', {}], ['F5', 'F5', {}], ['F8', 'F8', {}], ['F12', 'F12', {}],
+      // An allowed key held with a modifier is a combination, which the setting cannot store.
+      ['Pause', 'Pause', { ctrlKey: true }], ['F13', 'F13', { shiftKey: true }],
+    ];
+    for (const [key, code, mods] of refused) {
+      const typed = fireEvent.keyDown(capture, { key, code, ...mods });
       expect(typed).toBe(false);
     }
     expect(onCaptureKey).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('That key types text or moves the focus.');
+    expect(screen.getByRole('status')).toHaveTextContent('That key types text, moves the focus or needs another key.');
     fireEvent.keyDown(capture, { key: 'Control', code: 'ControlLeft', ctrlKey: true });
     expect(onCaptureKey).not.toHaveBeenCalled();
-    fireEvent.keyDown(capture, { key: 'm', code: 'KeyM', ctrlKey: true, shiftKey: true });
-    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'KeyM', ctrl: true, alt: false, meta: false, shift: true });
-    fireEvent.keyDown(capture, { key: 'Pause', code: 'Pause' });
-    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'Pause', ctrl: false, alt: false, meta: false, shift: false });
+    for (const code of ['F13', 'F24', 'Pause', 'ScrollLock', 'Insert']) {
+      fireEvent.keyDown(capture, { key: code, code });
+      expect(onCaptureKey).toHaveBeenLastCalledWith({ code, ctrl: false, alt: false, meta: false, shift: false });
+    }
+    expect(onCaptureKey).toHaveBeenCalledTimes(5);
   });
 
-  it('refuses a text key typed with AltGr, which browsers report as Control plus Alt (task 8b ruling)', () => {
+  it('refuses a key typed with AltGr, which browsers report as Control plus Alt (task 8b ruling)', () => {
     const onCaptureKey = vi.fn();
     render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={onCaptureKey} />);
     const capture = screen.getByRole('button', { name: 'set key' });
     fireEvent.keyDown(capture, { key: '@', code: 'Digit2', ctrlKey: true, altKey: true, modifierAltGraph: true });
     fireEvent.keyDown(capture, { key: '€', code: 'KeyE', altKey: true, modifierAltGraph: true });
+    fireEvent.keyDown(capture, { key: 'Insert', code: 'Insert', modifierAltGraph: true });
     expect(onCaptureKey).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('That key types text or moves the focus.');
-    // AltGr on a non-text key is still a plain key held with a modifier.
-    fireEvent.keyDown(capture, { key: 'F8', code: 'F8', ctrlKey: true, altKey: true, modifierAltGraph: true });
-    expect(onCaptureKey).toHaveBeenLastCalledWith({ code: 'F8', ctrl: true, alt: true, meta: false, shift: false });
-    expect(typesOrOperates({ key: '@', ctrlKey: true, altKey: true, metaKey: false, getModifierState: (k) => k === 'AltGraph' })).toBe(true);
-    expect(typesOrOperates({ key: 'v', ctrlKey: true, altKey: false, metaKey: false, getModifierState: () => false })).toBe(false);
+    expect(typesOrOperates({ key: '@', code: 'Digit2', ctrlKey: true, altKey: true, metaKey: false, getModifierState: (k) => k === 'AltGraph' })).toBe(true);
+    expect(typesOrOperates({ key: 'Pause', code: 'Pause', ctrlKey: false, altKey: false, metaKey: false, getModifierState: () => false })).toBe(false);
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

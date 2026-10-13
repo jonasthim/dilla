@@ -535,6 +535,54 @@ describe('the page call session (L-WEB-50)', () => {
     expect(stop).toHaveBeenCalled();
   });
 
+  it('pagehide during startup posts callLeave("pagehide"), releases the room and ends the attempt (review m1)', async () => {
+    const f = fakes();
+    let unblock: () => void = () => undefined;
+    f.room.localParticipant.publishTrack.mockImplementationOnce(() => new Promise((resolve) => {
+      unblock = () => resolve({ source: 'microphone', track: fakeLocalTrack('audio'), trackSid: 'TR_X' });
+    }));
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    const outcome = started.catch((e: unknown) => e);
+    await flush();
+    expect(f.room.localParticipant.publishTrack).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(f.calls).toContainEqual({ m: 'callLeave', reason: 'pagehide' });
+    expect(f.room.disconnect).toHaveBeenCalled();
+    expect(f.manager.dispose).toHaveBeenCalled();
+    f.pushKeys(callId, keysFor(2n));
+    expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n]);
+    unblock();
+    expect(await outcome).toMatchObject({ code: 'E_ABORTED' });
+    expect(f.order).toContain('lock.release');
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toHaveLength(1);
+    expect(f.timers.size).toBe(0);
+    // The listener is gone with the attempt.
+    window.dispatchEvent(new Event('pagehide'));
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toHaveLength(1);
+  });
+
+  it('a failure after joinCall resolved tears the call down and posts callLeave (review m1)', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => { throw new Error('E_WASM: no worklet'); };
+    await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on' })).rejects.toMatchObject({ code: 'E_WASM' });
+    expect(f.order).toEqual(expect.arrayContaining(['manager.dispose', 'room.disconnect', 'worker.terminate', 'lock.release']));
+    expect(f.order.indexOf('lock.release')).toBeLessThan(f.order.lastIndexOf('callLeave'));
+    expect(f.calls.at(-1)).toEqual({ m: 'callLeave', reason: 'user' });
+    f.pushKeys(callId, keysFor(2n));
+    expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n]);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(f.calls.filter((c) => c.m === 'callLeave')).toHaveLength(1);
+  });
+
+  it('a microphone that cannot be published joins listen-only with mic "failed" and E_MIC_PUBLISH (review m4)', async () => {
+    const f = fakes();
+    f.room.localParticipant.publishTrack.mockImplementationOnce(async () => { throw new Error('publish timed out'); });
+    const call = await start(f);
+    expect(call.state.mic).toBe('failed');
+    expect(call.state.error).toBe('E_MIC_PUBLISH');
+    expect(call.state.phase).toBe('connected');
+  });
+
   it('a refused callJoin rejects with its code, posts no callLeave, and leaves no key listener', async () => {
     const f = fakes();
     f.deps.bridge.call = vi.fn(async (cmd: Command) => {

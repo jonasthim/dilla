@@ -12,24 +12,30 @@ export type CaptureKeyAction = 'start' | 'cancel' | CapturedKey;
 
 /** Keys that never stand alone: they wait for the key pressed with them. */
 const MODIFIERS = new Set(['Control', 'Alt', 'AltGraph', 'Meta', 'Shift', 'OS', 'Hyper', 'Super', 'CapsLock', 'NumLock', 'Fn', 'FnLock']);
-/** Keys that move focus, operate a control or edit text: refused without Control, Alt or Meta. */
-const OPERATING = new Set(['Enter', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End',
-  'PageUp', 'PageDown', 'Spacebar', 'Dead', 'Process', 'Unidentified', 'Compose']);
+/**
+ * The keys push to talk may use (task-8b review I2, superseding the task-7 M9 ruling): non-text keys that neither move
+ * focus nor have a browser function, pressed on their own. The voice.pttKey setting stores the KeyboardEvent.code
+ * alone, so a combination with Control, Alt, Meta, Shift or AltGr could never be matched and is refused too.
+ */
+export const PUSH_TO_TALK_KEYS: ReadonlySet<string> = new Set([
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 13}`), 'Pause', 'ScrollLock', 'Insert',
+]);
+
+/** Whether `code` (a KeyboardEvent.code) may be the push-to-talk key. */
+export function isPushToTalkKey(code: string): boolean {
+  return PUSH_TO_TALK_KEYS.has(code);
+}
 
 /**
- * Whether a push-to-talk key would type text or operate the page (flow 06 ruling, task-7 review M9): a printable key
- * (a letter, digit, space or punctuation, with or without Shift), a dead or IME key, or a focus or editing key, each
- * without Control, Alt or Meta. Accepted are non-text keys (F1 to F24, Pause, ScrollLock, Insert and the like) and
- * any key held with Control, Alt or Meta, except a printable key typed with AltGr.
+ * Whether a captured key is refused as the push-to-talk key: anything but one of PUSH_TO_TALK_KEYS on its own. A key
+ * that types text (AltGr included), moves focus or operates the page is refused with or without modifiers.
  */
 export function typesOrOperates(e: {
-  key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; getModifierState?(key: 'AltGraph'): boolean;
+  key: string; code?: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey?: boolean;
+  getModifierState?(key: 'AltGraph'): boolean;
 }): boolean {
-  const printable = [...e.key].length === 1;
-  // AltGr types text ('@', '€' and the like) yet reports Control plus Alt on Windows and Alt elsewhere (task 8b ruling).
-  if (printable && e.getModifierState?.('AltGraph') === true) return true;
-  if (e.ctrlKey || e.altKey || e.metaKey) return false;
-  return printable || OPERATING.has(e.key);
+  if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey === true || e.getModifierState?.('AltGraph') === true) return true;
+  return !isPushToTalkKey(e.code !== undefined && e.code !== '' ? e.code : e.key);
 }
 
 export interface VoiceSettingsProps {
