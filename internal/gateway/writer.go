@@ -56,6 +56,8 @@ type writer struct {
 	clk    clock.Clock
 	queue  chan queued
 	done   chan struct{}
+	// stopOnce closes done exactly once; see stop.
+	stopOnce sync.Once
 	// finished is closed by run's defer, so drain can wait for the outstanding frames.
 	finished chan struct{}
 	// log is where a dropped frame is recorded. It is set once, before run starts, and never
@@ -315,12 +317,11 @@ func (w *writer) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// stop is idempotent and safe from concurrent callers: readLoop's deferred suspend and
+// sweepLiveness's 4009 suspend can stop the same writer at once, and a select-then-close lets
+// both see done open and close it twice.
 func (w *writer) stop() {
-	select {
-	case <-w.done:
-	default:
-		close(w.done)
-	}
+	w.stopOnce.Do(func() { close(w.done) })
 }
 
 // drain lets the writer finish what is already queued, then stops it, bounded by ctx. Shutdown
