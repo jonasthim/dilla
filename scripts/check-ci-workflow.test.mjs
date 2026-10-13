@@ -312,7 +312,7 @@ jobs:
     steps:
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: v2.14.0
 
   go-vuln:
     runs-on: ubuntu-latest
@@ -629,7 +629,7 @@ for (const [job, needle] of [
   ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
   ['go-harness', 'go test -race -shuffle=on -timeout 25m ./internal/testkit/...'],
   ['go-harness', 'name: dilla-testkit'],
-  ['go-lint', 'version: v2.13.2'],
+  ['go-lint', 'version: v2.14.0'],
   ['go-vuln', '-scan package -tags dillapins ./internal/deps'],
   ['go-sqlc', 'sqlc diff'],
   ['go-postgres', 'postgres:18.6-alpine3.24'],

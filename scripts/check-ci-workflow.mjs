@@ -251,7 +251,7 @@ const REQUIRED_STEPS = {
   'go-fts5-arm64': ['runs-on: ubuntu-24.04-arm', 'go test ./internal/store/sqlite/...'],
   // The five W2-W5 gates. Each entry is a string the job carries and no other step of that job
   // already contains, so a silently gutted job is caught.
-  'go-lint': ['golangci/golangci-lint-action@v9', 'version: v2.13.2'],
+  'go-lint': ['golangci/golangci-lint-action@v9', 'version: v2.14.0'],
   'go-vuln': [
     'golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...',
     '-scan package -tags dillapins ./internal/deps',
