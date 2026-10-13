@@ -256,7 +256,7 @@ function invalid(command: Record<string, unknown>): string | null {
     if (command.value !== null && typeof command.value !== 'string') return 'value is not a string or null';
   }
   if (m === 'verifyContact' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
-  if (m === 'safetyNumber' && command.umk !== undefined && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
+  if (m === 'safetyNumber' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
   if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
   if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
   if (m === 'resign' && (typeof command.nonce !== 'string' || !ID.test(command.nonce))) return 'nonce is not 32 lowercase hex';
@@ -2136,17 +2136,10 @@ export class Controller {
     return Promise.resolve(null);
   }
 
-  /** The digits for exactly the key the page compares (ABI 8); without one, the core's comparison key (changed, else pinned). */
-  private safetyNumber(userId: string, umk: string | undefined): string {
+  /** The digits for exactly the key the page compares (ABI 8); the core refuses a key that is not its comparison key. */
+  private safetyNumber(userId: string, umk: string): string {
     if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
-    const core = this.requireCore();
-    let key = umk === undefined ? undefined : fromHex(umk);
-    if (key === undefined) {
-      const row = core.trustState().find((r) => toHex(r.userId) === userId);
-      if (row === undefined) throw new Refusal('E_CORE_NOT_FOUND', '');
-      key = row.changedUmk ?? row.umk;
-    }
-    return core.safetyNumberFor(fromHex(userId), key);
+    return this.requireCore().safetyNumberFor(fromHex(userId), fromHex(umk));
   }
 
   private search(command: Extract<Command, { m: 'search' }>, requestId: number): Promise<null> {

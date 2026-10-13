@@ -43,7 +43,7 @@ export type Command =
   // ready → string: the digits for exactly `umk` (64 lowercase hex), the key the dialog will hand to verifyContact
   // (changedUmk ?? umk); E_DEVICE_LIST_STALE when it is no longer the core's comparison key. Without `umk` (until the page
   // sends it) the worker binds the core's current comparison key.
-  | { m: 'safetyNumber'; userId: string; umk?: string }
+  | { m: 'safetyNumber'; userId: string; umk: string }
   | { m: 'search'; scope: 'channel' | 'community' | 'all'; id: string | null; query: string;
     cursor: { token: string } | null }
   | { m: 'typing'; channelId: string; on: boolean }

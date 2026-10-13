@@ -48,7 +48,57 @@ describe('Settings', () => {
     await user.click(screen.getByRole('button', { name: 'All 12 blocks match' }));
     expect(fake.callsOf('verifyContact')).toEqual([{ m: 'verifyContact', userId, umk: 'cc'.repeat(32) }]);
     expect(screen.getByRole('dialog', { name: 'Compare safety numbers' })).toBeInTheDocument();
-    await waitFor(() => expect(within(screen.getByRole('dialog', { name: 'Compare safety numbers' })).getByRole('alert')).toHaveTextContent('E_CORE_INPUT'));
+    // W-04: ceremony copy, never the code, and no "try again" for something that cannot work.
+    await waitFor(() => expect(within(screen.getByRole('dialog', { name: 'Compare safety numbers' })).getByRole('alert'))
+      .toHaveTextContent('This could not be marked as verified. Close this and compare again.'));
+    expect(screen.getByRole('dialog', { name: 'Compare safety numbers' })).not.toHaveTextContent('E_CORE_INPUT');
+  });
+  it('says the key moved when the core refuses the approval as a changed key', async () => {
+    const userId = 'aa'.repeat(16);
+    const record = { userId, name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32) };
+    const { fake, user } = setup('/settings/privacy', null, client => client.set('trust', [record]));
+    fake.handler = command => command.m === 'safetyNumber' ? Promise.resolve('00001 '.repeat(11) + '00012')
+      : command.m === 'verifyContact' ? Promise.reject(refusal({ code: 'E_UMK_CHANGED' })) : Promise.resolve(null);
+    await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
+    await screen.findByText('cc'.repeat(32));
+    await user.click(screen.getByRole('checkbox', { name: 'Yes, all 12 blocks match' }));
+    await user.click(screen.getByRole('button', { name: 'All 12 blocks match' }));
+    const dialog = screen.getByRole('dialog', { name: 'Compare safety numbers' });
+    await waitFor(() => expect(within(dialog).getByRole('alert')).toHaveTextContent('The key changed while you compared. Close this and compare the new number.'));
+    expect(within(dialog).getByRole('button', { name: 'All 12 blocks match' })).toHaveAttribute('aria-disabled', 'true');
+  });
+  // W-11 (b): a failed number keeps the dialog open and says why; while it loads the dialog says so.
+  it('says the number is loading, and keeps the dialog open when it cannot be worked out', async () => {
+    const record = { userId: 'aa'.repeat(16), name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: null };
+    const { fake, user } = setup('/settings/privacy', null, client => client.set('trust', [record]));
+    let fail!: (e: Error) => void;
+    fake.handler = command => command.m === 'safetyNumber' ? new Promise((_r, reject) => { fail = reject; }) : Promise.resolve(null);
+    await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
+    const dialog = screen.getByRole('dialog', { name: 'Compare safety numbers' });
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Working out the number…');
+    await act(async () => { fail(refusal({ code: 'E_CORE_INPUT' })); await Promise.resolve(); });
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('The number could not be worked out. Close this and try again.');
+    expect(screen.getByRole('dialog', { name: 'Compare safety numbers' })).toBeInTheDocument();
+  });
+  // W-03: the dialog's own close is "Close", not the Settings frame's "Close settings".
+  it('labels the compare dialog close as Close, and focuses Privacy after an approval', async () => {
+    const userId = 'aa'.repeat(16);
+    const record = { userId, name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: null };
+    const { fake, user } = setup('/settings/privacy', null, client => client.set('trust', [record]));
+    fake.handler = command => {
+      if (command.m === 'safetyNumber') return Promise.resolve('00001 '.repeat(11) + '00012');
+      if (command.m === 'verifyContact') { fake.set('trust', [{ ...record, verified: true }]); return Promise.resolve(null); }
+      return Promise.resolve(null);
+    };
+    await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
+    const dialog = screen.getByRole('dialog', { name: 'Compare safety numbers' });
+    expect(within(dialog).getByRole('button', { name: /^Close/ })).toHaveTextContent(/^Close(esc)?$/);
+    expect(within(dialog).queryByRole('button', { name: /Close settings/ })).toBeNull();
+    await within(dialog).findByText('00012');
+    await user.click(screen.getByRole('checkbox', { name: 'Yes, all 12 blocks match' }));
+    await user.click(screen.getByRole('button', { name: 'All 12 blocks match' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Compare safety numbers' })).toBeNull());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Privacy', level: 2 })).toHaveFocus());
   });
   it('opens as a dialog on the section of the path, with its heading focused', async () => {
     const { fake, view } = setup('/settings/devices', `/c/${C}/${CH}`);
@@ -109,7 +159,7 @@ describe('Settings', () => {
     expect(screen.getByText('This is the first key this device saw for Ada. The server could have shown a different one. Compare numbers to verify.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
     expect(screen.getByRole('dialog', { name: 'Compare safety numbers' })).toHaveTextContent('This is the first key this device saw for Ada. The server could have shown a different one. Compare numbers to verify.');
-    expect(fake.callsOf('safetyNumber')).toEqual([{ m: 'safetyNumber', userId }]);
+    expect(fake.callsOf('safetyNumber')).toEqual([{ m: 'safetyNumber', userId, umk }]);
     await expectNoAxeViolations(view.container);
   });
 

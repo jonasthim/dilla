@@ -1020,10 +1020,11 @@ it('passes the compared key to the core\'s safety number, and refuses a malforme
   w.core.safetyNumberFor.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_LIST_STALE', 'not the comparison key'); });
   w.call(9793, { m: 'safetyNumber', userId: toHex(STRANGER), umk: toHex(STRANGER_UMK) });
   await vi.waitFor(() => expect(w.ret(9793)).toMatchObject({ ok: false, error: { code: 'E_DEVICE_LIST_STALE', detail: '' } }));
-  // Until the page sends the key (wave C2), the worker binds the core's own comparison key: the changed one, else the pin.
+  // Wave C2: the page always names the key it compares; a command without one is refused, never bound to the core's key.
+  const calls = w.core.safetyNumberFor.mock.calls.length;
   w.call(9794, { m: 'safetyNumber', userId: toHex(STRANGER) });
-  await vi.waitFor(() => expect(w.ret(9794)).toMatchObject({ ok: true }));
-  expect(w.core.safetyNumberFor).toHaveBeenLastCalledWith(STRANGER, CHANGED_UMK);
+  await vi.waitFor(() => expect(w.ret(9794)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+  expect(w.core.safetyNumberFor.mock.calls.length).toBe(calls);
   w.call(9795, { m: 'safetyNumber', userId: toHex(STRANGER), umk: 'AB' });
   await vi.waitFor(() => expect(w.ret(9795)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
 });

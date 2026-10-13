@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -117,5 +117,30 @@ describe('SafetyCompare', () => {
       await user.keyboard('{Escape}');
       expect(screen.getByRole('heading', { name: 'Privacy' })).toHaveFocus();
     } finally { opener.remove(); }
+  });
+  // W-11 (a): an approval closes the dialog through its prop; focus still lands on the opener, or Privacy once it is gone.
+  it('restores focus when the owner closes it, to Privacy when the opener went', () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'Compare with Ada';
+    document.body.append(opener);
+    opener.focus();
+    const props = { contactName: 'Ada', state: 'changed' as const, approvedUmk: key, groups, canVerify: true, labels, onCopy: vi.fn(), onVerify: vi.fn(), onClose: vi.fn() };
+    try {
+      const view = render(<><h2 data-privacy-heading tabIndex={-1}>Privacy</h2><SafetyCompare {...props} open /></>);
+      opener.remove();
+      view.rerender(<><h2 data-privacy-heading tabIndex={-1}>Privacy</h2><SafetyCompare {...props} open={false} /></>);
+      expect(screen.getByRole('heading', { name: 'Privacy' })).toHaveFocus();
+    } finally { opener.remove(); }
+  });
+  // W-11 (b), W-04: the loading state says so, and a failure is Copy-table text inside the dialog, never a raw code.
+  it('says the number is loading, and shows an error in place', () => {
+    const props = { open: true, contactName: 'Ada', state: 'first-seen' as const, approvedUmk: key, canVerify: true, onCopy: vi.fn(), onVerify: vi.fn(), onClose: vi.fn() };
+    const view = render(<SafetyCompare {...props} groups={[]} labels={{ ...labels, loading: 'Working out the number…' }} />);
+    expect(screen.getByRole('status')).toHaveTextContent('Working out the number…');
+    view.rerender(<SafetyCompare {...props} groups={[]} labels={{ ...labels, loading: 'Working out the number…' }} error="The number could not be worked out." />);
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent('The number could not be worked out.');
+    view.rerender(<SafetyCompare {...props} groups={groups} labels={labels} />);
+    expect(screen.getByRole('group', { name: labels.title })).toBeInTheDocument();
   });
 });

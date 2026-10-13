@@ -1,5 +1,5 @@
 import type { TrustSummary } from '@dilla/client-core';
-import { TrustAlert } from '@dilla/ui';
+import { Button, TrustAlert } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
 
 /**
@@ -12,19 +12,24 @@ export function Privacy({ records, onCompare }: { records: readonly TrustSummary
     <h2 id="privacy-title" tabIndex={-1} data-privacy-heading>{t('privacy.section')}</h2>
     <ul className="dw-trust-list">{records.map(record => {
       const compare = () => onCompare(record);
-      const changed = record.changedUmk !== null;
+      // C1: a changed-key verdict with no pending key is changed too, but there is no key to compare; only a Remove ends it.
+      const changed = record.changedUmk !== null || record.blocked === 'E_UMK_CHANGED';
+      const comparable = record.changedUmk !== null;
       const unlisted = record.unlisted === true;
+      const compareButton = <Button variant="accent" onClick={compare}>{t('privacy.compare', { name: record.name })}</Button>;
       return <li key={record.userId} data-doc-state={changed ? 'trust-changed' : undefined}>
+        {/* The alert is for a contact the person can act on here; otherwise the state is plain text (M-04). */}
         {changed && record.shared ? <TrustAlert kind="changed" name={record.name}
-          labels={{ changed: t('privacy.changed'), unlisted: t('privacy.unlisted'), verify: t('privacy.compare', { name: record.name }) }} onVerify={compare} />
-          : changed ? <p role="alert">{record.name} {t('privacy.changed')}</p>
-          : <strong>{record.name}</strong>}
-        {unlisted ? <p role="status">{t('privacy.unlisted')}</p>
+          labels={{ changed: t(comparable ? 'privacy.changed' : 'privacy.changedNoKey'), unlisted: t('privacy.unlisted'), verify: t('privacy.compare', { name: record.name }) }}
+          onVerify={comparable ? compare : undefined} />
+          : <strong className="dw-trust-name">{record.name}</strong>}
+        {changed && !record.shared ? <p className="dw-trust-state" data-tone="danger">{t(comparable ? 'privacy.changed' : 'privacy.changedNoKey')}</p>
+          : null}
+        {unlisted ? <p className="dw-trust-state" data-tone="warn">{t('privacy.unlisted')}</p>
           : changed ? null
-          : record.verified ? <><p>{t('privacy.verifiedLabel')}</p><code className="dw-trust-key">{record.umk}</code></>
-          : <><p>{t('privacy.firstSeenLabel')}</p><p>{t('privacy.firstSeen', { name: record.name })}</p></>}
-        {!record.shared ? <p>{t('privacy.noShared')}</p> : !changed && !unlisted ?
-          <button type="button" onClick={compare}>{t('privacy.compare', { name: record.name })}</button> : null}
+          : record.verified ? <><p className="d-label dw-trust-state">{t('privacy.verifiedLabel')}</p><code className="dw-trust-key">{record.umk}</code></>
+          : <><p className="d-label dw-trust-state">{t('privacy.firstSeenLabel')}</p><p>{t('privacy.firstSeen', { name: record.name })}</p></>}
+        {!record.shared ? <p>{t('privacy.noShared')}</p> : !changed && !unlisted ? compareButton : null}
       </li>;
     })}</ul>
   </section>;

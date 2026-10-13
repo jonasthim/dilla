@@ -28,6 +28,11 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-trust-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--group-gap); }
 .dw-trust-list > li { min-width: 0; overflow-wrap: anywhere; display: grid; gap: var(--row-gap); }
 .dw-trust-list button { min-height: 24px; min-width: 24px; justify-self: start; }
+.dw-trust-list .d-btn { justify-self: start; }
+.dw-trust-name { color: var(--fg); }
+.dw-trust-state[data-tone] { padding-left: .5rem; border-left: .1875rem solid var(--fg-3); color: var(--fg); }
+.dw-trust-state[data-tone="warn"] { border-left-color: var(--warn); }
+.dw-trust-state[data-tone="danger"] { border-left-color: var(--danger); }
 .dw-search { position: fixed; inset: 0; z-index: 40; overflow: auto; background: var(--bg); padding: var(--group-gap); }
 .dw-search .d-search-palette { max-width: 720px; margin: 0 auto; }
 .dw-search :focus-visible, .dw-trust-list :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
