@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
   BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, type VoiceHarnessOptions,
@@ -211,5 +211,37 @@ describe('the session follows the call slice', () => {
     app.client.publish('call', callState({ phase: 'paused', channelId: MUSIC, callId: MUSIC, error: UMK, changedUser: BOB }));
     expect(app.session.setPaused).not.toHaveBeenCalled();
     expect(screen.queryByText(t('voice.paused', { name: 'bob' }))).toBeNull();
+  });
+  it('a start that resolves after the slice already left the call ends the session at once', async () => {
+    const { app, release } = await start();
+    app.client.publish('call', callState({ phase: 'idle' }));
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
+    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+  });
+  it('the latest slice wins when several arrive between two renders', async () => {
+    const app = await inVoice();
+    act(() => {
+      app.client.set('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+      app.client.set('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    });
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('blocked'));
+    expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
+  });
+  it('a setPaused that fails tears the session down rather than leave media running', async () => {
+    const app = await inVoice();
+    app.session.setPaused.mockImplementation(() => Promise.reject(new Error('E_INTERNAL')));
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
+  });
+  it('a setPaused that throws, or a leave that throws, never escapes and never keeps the session attached', async () => {
+    const app = await inVoice();
+    app.session.setPaused.mockImplementation(() => { throw new Error('E_INTERNAL'); });
+    app.session.leave.mockImplementation(() => { throw new Error('E_INTERNAL'); });
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
   });
 });

@@ -170,6 +170,8 @@ export interface VoiceHarnessOptions {
   voice?: VoiceState;
   call?: CallState;
   trust?: TrustSummary[];
+  /** callJoin leaves the call slice as it is (the worker's 'in' is published by the test). */
+  joinLeavesSlice?: boolean;
   /** Also render Settings over the shell on a settings route, as App does. */
   withSettings?: boolean;
 }
@@ -202,7 +204,11 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
 
   const fake = new FakeClient();
   fake.handler = command => {
-    if (command.m === 'callJoin') log.push(`callJoin:${command.channelId}`);
+    if (command.m === 'callJoin') {
+      log.push(`callJoin:${command.channelId}`);
+      // As the worker: phase 'in' is published before callJoin answers (L-TS-56 step 1), unless a test holds it.
+      if (!o.joinLeavesSlice) fake.set('call', callState({ phase: 'in', channelId: command.channelId, callId: command.channelId }));
+    }
     return Promise.resolve(null);
   };
   fake.set('account', account());
