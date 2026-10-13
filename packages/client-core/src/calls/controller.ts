@@ -166,10 +166,12 @@ export class CallController {
       if (token.cancelled !== null) throw this.cancelled(token);
       const phase = e instanceof JoinRefused ? e.phase : 'failed';
       const code = this.deps.errorOf(cause).code;
-      // Ruling I2 and review M4: a refused join names a changed contact only among this call's own participants.
+      // Ruling I2 and review M4: a refused join names a changed contact only among this call's own participants — the
+      // leaf of the call tree the core's refusal names first (concern 3 of web-3 task 10: a leaf that never entered the
+      // room), else the DM's members or the room's participants.
       const candidates = dm ? target.members : e instanceof JoinRefused ? e.users : [];
       this.setState({ ...CALL_IDLE, phase, channelId: channel, error: this.deps.errorOf(cause),
-        changedUser: code === 'E_UMK_CHANGED' ? this.changedUser([], candidates) : null });
+        changedUser: code === 'E_UMK_CHANGED' ? this.changedUser([], candidates, reportedUser(cause)) : null });
       throw cause;
     }
     const { groupId, media, started } = joined;
@@ -546,8 +548,9 @@ export class CallController {
 
   /** Ruling I2: the changed contact, the first by user id: a changed leaf of the groups in question, else a contact among
    *  the candidates (this call's own participants: the DM's members, the call's roster or snapshot) whose key changed;
-   *  null when none is known (review M4: never a contact of another conversation). */
-  private changedUser(groups: readonly Id[], candidates: readonly string[]): string | null {
+   *  null when none is known (review M4: never a contact of another conversation). `reported` is the leaf of the refused
+   *  join's tree the core named (its refusal's detail), taken first while the trust state shows that contact changed. */
+  private changedUser(groups: readonly Id[], candidates: readonly string[], reported: string | null = null): string | null {
     const core = this.deps.core();
     const me = this.deps.me();
     if (core === null) return null;
@@ -557,11 +560,19 @@ export class CallController {
       const leaves = core.pendingLeaves().filter((l) => l.reason === 'changed' && inGroups.has(toHex(l.groupId)))
         .map((l) => toHex(l.userId)).filter((u) => u !== own).sort();
       if (leaves.length > 0) return leaves[0] ?? null;
-      const rows = core.trustState().filter((r) => r.changedUmk !== null || r.blocked === 'E_UMK_CHANGED').map((r) => toHex(r.userId))
-        .filter((u) => u !== own && candidates.includes(u)).sort();
+      const changed = core.trustState().filter((r) => r.changedUmk !== null || r.blocked === 'E_UMK_CHANGED').map((r) => toHex(r.userId))
+        .filter((u) => u !== own);
+      if (reported !== null && reported !== own && changed.includes(reported)) return reported;
+      const rows = changed.filter((u) => candidates.includes(u)).sort();
       return rows[0] ?? null;
     } catch {
       return null;
     }
   }
+}
+
+/** The changed contact a core refusal names (calls.rs `refusal`: `E_UMK_CHANGED: <user id hex>`), else null. */
+function reportedUser(cause: unknown): string | null {
+  if (!(cause instanceof CoreError) || cause.code !== 'E_UMK_CHANGED') return null;
+  return /^[0-9a-f]{32}$/.test(cause.detail) ? cause.detail : null;
 }

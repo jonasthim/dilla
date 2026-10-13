@@ -297,6 +297,33 @@ fn a_dm_call_group_bound_to_a_made_up_community_is_refused() {
     assert_eq!(code(alice.core.call_media_epoch(&CALL)), "E_BINDING");
 }
 
+/// Web-3 task 10, concern 3: a voice join refused because a contact's identity changed names that
+/// contact, whether or not they ever entered the room: the refusal's detail is the user id (hex) of
+/// the tree's leaf whose pin holds a changed key, so the worker names them (`voice.blockedChanged`)
+/// and offers the join again once that contact is verified.
+#[test]
+fn a_join_refused_for_a_changed_identity_names_the_changed_contact() {
+    let (instance, mut alice) = alice_with_a_blocked_dm_text_group();
+    let mut voice = Relay::new(CALL);
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xd6);
+    rotated.create_as(&mut voice, &instance, &call_binding(Some(COMMUNITY), VOICE));
+    let e = alice
+        .core
+        .call_group_join_external(
+            &CALL,
+            Some(&COMMUNITY),
+            &VOICE,
+            POLICY,
+            &voice.info_body(),
+            &voice.tree_body(),
+        )
+        .expect_err("a changed identity refuses the join");
+    assert_eq!(e.code, "E_UMK_CHANGED");
+    let hex: String = rotated.user.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(e.detail, hex);
+    assert!(alice.group(&CALL).is_none());
+}
+
 /// Attacker (review M2): a contact whose identity changed starts a call in our DM. Joining its call
 /// group is refused in the join's own unit (decision 4), before any external commit exists, also
 /// when the worker would skip `call_join_check`.

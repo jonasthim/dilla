@@ -24,7 +24,6 @@ import type { FromWorker } from '../worker/protocol';
 export const VOICE = idOf(0xc5, 1);
 export const DM = idOf(0xd5, 1);
 const NAMES = new Map<string, string>([[toHex(ME.user), 'Me'], [toHex(PEER.user), 'bob'], [toHex(THIRD.user), 'carol'], [toHex(FOURTH.user), 'dave']]);
-
 /** The route labels the call tests read; the engine's own catch-up reads (messages, handshakes, cursors) are not listed. */
 const LABELS: Record<string, string> = {
   getChannelCall: 'GET channel call', getCommunityCalls: 'GET community calls', postGroup: 'POST group', getGroupInfo: 'GET group info',
@@ -946,7 +945,9 @@ describe('review M2-M6', () => {
   });
 
   // M4. Attacker question: none; the banner must name a member of this call, never an unrelated contact.
-  it('changedUser after a refused voice join names only a participant of that call, else null', async () => {
+  // Web-3 task 10, concern 3: the core reports which leaf of the call tree is the changed contact (the refusal's detail),
+  // so the banner names bob though he holds a leaf of the call group and never entered the room.
+  it('changedUser after a refused voice join names the contact the core reports from the call tree, never an unrelated one', async () => {
     const w = await harness({ voiceChannel: true, callGroupBy: 'peer', dm: true });
     // Dave changed his identity somewhere else entirely (a DM text group).
     w.model.addPendingLeaf(w.dms[0].text, 2, FOURTH.user, FOURTH.device, fakeDskPub(FOURTH.device), 1);
@@ -957,8 +958,8 @@ describe('review M2-M6', () => {
     w.model.addPendingLeaf(w.dms[0].text, 1, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
     w.model.changeIdentity(PEER.user);
     expect(await codeOf(w.call(JOIN(w)))).toBe('E_UMK_CHANGED');
-    expect(w.slice('call')).toMatchObject({ phase: 'blocked', changedUser: null });
-    // With bob in the live call, the refusal names him.
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', changedUser: toHex(PEER.user) });
+    // With bob in the live call too, the refusal still names him.
     await w.ds.routesFor(PEER.device).startCall(VOICE, '');
     w.ds.voice(VOICE, PEER, 1);
     expect(await codeOf(w.call(JOIN(w)))).toBe('E_UMK_CHANGED');

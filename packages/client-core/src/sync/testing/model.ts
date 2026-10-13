@@ -816,10 +816,11 @@ export class ModelCore implements CorePort {
     this.installTree(g);
     const refused = this.callGate(g, true);
     if (refused !== null) {
+      const detail = this.gateDetail(g, refused);
       // The unit of the join rolls back: no row, no verdict rows and no MLS state of the refused join survive.
       this.dropCallLeaves(eg.groupId);
       if (prev !== undefined) this.gs.set(toHex(eg.groupId), prev); else this.gs.delete(toHex(eg.groupId));
-      throw coreError(refused, '');
+      throw coreError(refused, detail);
     }
     return encode([wire.commit(epoch + 1n, this.me.device, [this.me.device], []), wire.info(eg.groupId, epoch + 1n)]);
   }
@@ -829,7 +830,7 @@ export class ModelCore implements CorePort {
     const g = this.callRow(groupId);
     if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
     const refused = this.callGate(g, false);
-    if (refused !== null) throw coreError(refused, '');
+    if (refused !== null) throw coreError(refused, this.gateDetail(g, refused));
     // A stand-in key and code, distinct per group and epoch and never zero.
     const key = Uint8Array.from({ length: 16 }, (_, i) => ((g.groupId[i] ?? 0) ^ Number((g.epoch * 37n + BigInt(i) * 11n) & 0xffn)) | 0x01);
     const digits = Array.from({ length: 30 }, (_, i) => String(((key[i % 16] ?? 0) + i) % 10)).join('');
@@ -851,7 +852,17 @@ export class ModelCore implements CorePort {
     const g = this.callRow(groupId);
     if (g.state !== 1) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
     const refused = this.callGate(g, false);
-    if (refused !== null) throw coreError(refused, '');
+    if (refused !== null) throw coreError(refused, this.gateDetail(g, refused));
+  }
+
+  /** calls.rs `refusal`: an E_UMK_CHANGED names the first user by id among this tree's other leaves whose pin holds a
+   *  changed key (hex), else nothing (web-3 task 10, concern 3). */
+  private gateDetail(g: MGroup, code: string): string {
+    if (code !== 'E_UMK_CHANGED') return '';
+    const own = toHex(this.me.user);
+    const users = [...new Set([...this.leaves.values()].filter((l) => same(l.groupId, g.groupId)).map((l) => toHex(l.userId)))]
+      .filter((u) => u !== own).sort();
+    return users.find((u) => (this.trustPins.get(u)?.changedUmk ?? null) !== null) ?? '';
   }
 
   callLeaveProposal(groupId: Id): Uint8Array {

@@ -100,7 +100,7 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
 
 /**
  * True while a block holds joining back for this channel (flow 06: "no join button until the cause is gone"). A block by
- * a changed contact clears once that contact is no longer changed (verified). A block that came only from the call group
+ * a changed contact clears once that contact is no longer changed (verified); an unnamed one once no contact is. A block that came only from the call group
  * (the channel's own sendBlocks entry is clear, no changed identity) offers the join again (integration ruling
  * 2026-10-13: the left group cannot show it cleared, call_join_check refuses a staged join before anything is posted, and
  * RV-2 closes a poisoned idle group). Any other block, and any block while sendBlocks is not known yet, holds until the
@@ -109,9 +109,17 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
 function joinHeld(v: VoiceContext, channelId: string): boolean {
   const s = v.slice;
   if (s?.channelId !== channelId || s.phase !== 'blocked') return false;
+  const changed = (r: TrustSummary) => r.changedUmk !== null || r.blocked === 'E_UMK_CHANGED';
   if (s.error?.code === 'E_UMK_CHANGED' && s.changedUser !== null) {
     const row = v.trust?.find(r => r.userId === s.changedUser);
-    return row !== undefined && (row.changedUmk !== null || row.blocked === 'E_UMK_CHANGED');
+    return row !== undefined && changed(row);
+  }
+  if (s.error?.code === 'E_UMK_CHANGED') {
+    // Unnamed (web-3 task 10, concern 3): the cause is gone once no contact is changed any more and the channel's own
+    // send block (a DM's text group) is clear; a trust state or sendBlocks not known yet holds (fail closed). The join
+    // itself runs the core's gate again, so offering it never lets a changed tree through.
+    if (v.trust === undefined || v.sendBlocks === undefined) return true;
+    return v.trust.some(changed) || v.sendBlocks[channelId] !== undefined;
   }
   const callGroupOnly = s.error?.code !== 'E_UMK_CHANGED' && s.changedUser === null
     && v.sendBlocks !== undefined && v.sendBlocks[channelId] === undefined;

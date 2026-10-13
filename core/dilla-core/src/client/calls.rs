@@ -7,16 +7,16 @@
 //! the send block of the DM's text group (decision 4). It runs in the core, on the core's own live
 //! tree, so neither the worker nor the instance can skip it, and before any key byte is derived.
 
-use super::error::{E_BINDING, E_DEVICE_LIST_STALE};
+use super::error::{E_BINDING, E_DEVICE_LIST_STALE, E_UMK_CHANGED};
 use super::error::{E_CORE_INPUT, E_CORE_NO_IDENTITY, E_CORE_NOT_FOUND, E_CORE_STATE};
 use super::groups::{
     GroupRow, STATE_ACTIVE, STATE_GONE, STATE_JOINING, group_row, holder, row_kind,
 };
 use super::{ClientCore, ClientError, Own, trust, wire};
 use crate::cbor::Encoder;
-use crate::identity::{DISPLAY_GROUP, group_digits, sas};
+use crate::identity::{CredentialIdentity, DISPLAY_GROUP, group_digits, sas};
 use crate::mls::{DillaGroup, DillaProvider, GroupKind, StorageError, UnitScope};
-use openmls::prelude::GroupId;
+use openmls::prelude::{BasicCredential, GroupId};
 use rusqlite::params;
 
 /// What gate step 3 reads: the DM text group (its id and its MLS state when it loads), none, or
@@ -110,12 +110,55 @@ pub(super) fn join_gate(
     let dm = u.with_conn(|c| dm_text_id(c, group, id))?;
     let loaded = load_text(provider, &dm);
     let text = dm.map(|t| t.map(|t| (t, loaded.as_ref())));
-    u.with_conn(|c| gate_verdict(c, group, id, own, text, true))?
-        .map_err(refused)
+    u.with_conn(|c| {
+        Ok(match gate_verdict(c, group, id, own, text, true)? {
+            Ok(()) => Ok(()),
+            Err(code) => Err(refusal(c, group, own, code)?),
+        })
+    })?
 }
 
 fn refused(code: &'static str) -> ClientError {
     ClientError::new(code, "")
+}
+
+/// The gate's refusal. An `E_UMK_CHANGED` names the contact behind it when the tree shows one
+/// (web-3 task 10, concern 3): its detail is the user id (hex) of the first leaf by user id, this
+/// device's own user aside, whose pin holds a changed key — the contact the person must compare
+/// safety numbers with, whether or not they ever entered the call's room. Empty when no leaf of
+/// this tree is such a contact (a DM's call refused for its text group, decision 4).
+fn refusal(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    own: &Own,
+    code: &'static str,
+) -> Result<ClientError, StorageError> {
+    if code != E_UMK_CHANGED {
+        return Ok(refused(code));
+    }
+    let mut users: Vec<[u8; 16]> = group
+        .members()
+        .into_iter()
+        .filter_map(|m| {
+            BasicCredential::try_from(m.credential)
+                .ok()
+                .and_then(|basic| CredentialIdentity::decode(basic.identity()).ok())
+                .map(|identity| *identity.user_id.as_bytes())
+        })
+        .filter(|u| *u != own.user_id)
+        .collect();
+    users.sort_unstable();
+    users.dedup();
+    let mut stmt = c.prepare_cached(
+        "SELECT 1 FROM app_trust_pins WHERE user_id=?1 AND changed_umk IS NOT NULL",
+    )?;
+    for user in users {
+        if stmt.exists([user.as_slice()])? {
+            let hex: String = user.iter().map(|b| format!("{b:02x}")).collect();
+            return Ok(ClientError::new(code, hex));
+        }
+    }
+    Ok(refused(code))
 }
 
 fn not_call() -> ClientError {
@@ -210,8 +253,12 @@ impl ClientCore {
             load_text(&self.provider, &dm)
         };
         let text = dm.map(|t| t.map(|t| (t, self.groups.get(&t).or(loaded.as_ref()))));
-        self.read(|c| gate_verdict(c, group, id, &own, text, false))?
-            .map_err(refused)
+        self.read(|c| {
+            Ok(match gate_verdict(c, group, id, &own, text, false)? {
+                Ok(()) => Ok(()),
+                Err(code) => Err(refusal(c, group, &own, code)?),
+            })
+        })?
     }
 
     /// CBOR `[epoch, base_key(16), own_leaf, [[leaf, device_id, user_id]], code]` of the active call

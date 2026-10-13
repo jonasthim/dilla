@@ -379,8 +379,26 @@ describe('review round 1', () => {
   });
 
   it('a changed identity keeps the join hidden even with the sendBlocks entry clear', () => {
-    renderVoiceShell({ sendBlocks: {}, call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: null }) });
+    renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()], call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: null }) });
     expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+  });
+
+  // Web-3 task 10, concern 3: the block's cause verified clears it without a reload, named or not.
+  it('a block by a named changed contact names them and offers the join again once they are verified', async () => {
+    const app = renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()],
+      call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: BOB }) });
+    expect(main().getByText(t('voice.blockedChanged', { name: 'bob' }))).toBeInTheDocument();
+    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    act(() => app.client.publish('trust', [{ ...bobChanged(), umk: 'cd'.repeat(32), verified: true, changedUmk: null }]));
+    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+  });
+
+  it('an unnamed changed-identity block offers the join again once no contact is changed any more', async () => {
+    const app = renderVoiceShell({ sendBlocks: {}, trust: [bobChanged()],
+      call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: null }) });
+    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    act(() => app.client.publish('trust', [{ ...bobChanged(), umk: 'cd'.repeat(32), verified: true, changedUmk: null }]));
+    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
   });
 
   it('a block by a changed contact keeps the join hidden while that contact is changed', () => {
