@@ -2146,9 +2146,30 @@ export class Controller {
     }
     await this.leadership?.release();
     this.leadership = null;
+    const instance = this.requireInstance();
     this.setAccount({ phase: 'other-tab' });
-    this.deps.post({ t: 'released', instance: toHex(this.requireInstance().instanceId), nonce });
+    this.deps.post({ t: 'released', instance: toHex(instance.instanceId), nonce });
+    this.awaitLeadership(instance);
     return { released: true };
+  }
+
+  /**
+   * After a release this worker waits for the lock again, queued behind the new leader, as a tab that started while
+   * another one led does: a hand-back (or the leader's tab closing) boots it from the store the other tab wrote. The
+   * paused core, the stopped engine and the socket are dropped, so enterReady builds a fresh gateway and engine.
+   */
+  private awaitLeadership(instance: Instance): void {
+    const core = this.core;
+    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null;
+    this.gateway = null; this.sync = null; this.me = null;
+    try { core?.close(); } catch { /* the paused store holds nothing to release */ }
+    this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
+    // The page's views went with the shell; they open their channels again once this tab leads.
+    this.open.clear(); this.opening.clear(); this.pinsOpen.clear(); this.incomingTyping.clear();
+    this.setConnection({ status: 'offline', generation: null });
+    this.starting = Promise.resolve(null);
+    this.barrier.reopen();
+    void this.lead(instance);
   }
 
   // ---- sending ----

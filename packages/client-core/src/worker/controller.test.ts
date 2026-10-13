@@ -391,7 +391,7 @@ function world(opts: {
       return d;
     }),
     pause: vi.fn((): void => { calls.push('core.pause'); }),
-    close: (): void => {},
+    close: vi.fn((): void => {}),
     pendingLeaves: vi.fn(() => [] as { groupId: Uint8Array; leafIndex: number; userId: Uint8Array; cachedVersion: bigint; reason: string }[]),
     proposedAdds: vi.fn(() => []),
     deviceListIngestAdd: vi.fn(() => ({ version: 1n, changed: false, quarantined: 0 })),
@@ -1089,6 +1089,46 @@ it('keeps the old lock and gives no release notice when pause fails', async () =
   expect(w.locks.isHeld(LOCK)).toBe(true);
   expect(w.core.resume).toHaveBeenCalled();
   expect(w.calls.indexOf('gateway.stop')).toBeLessThan(w.calls.lastIndexOf('gateway.start'));
+});
+
+/** Tab B's worker: a blocking lock request queued behind the current holder; `release` is B resigning. */
+function otherTab(w: World): { granted: Promise<void>; release: () => void } {
+  let release: () => void = () => {};
+  const granted = new Promise<void>((resolve) => {
+    void w.locks.request(LOCK, {}, () => { resolve(); return new Promise<void>((done) => { release = done; }); });
+  });
+  return { granted, release: () => { release(); } };
+}
+
+it('a tab that resigned leads again when the new leader hands back, with a fresh engine (A -> B -> A -> B)', async () => {
+  const w = world();
+  await toReady(w);
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true }));
+  await tabB.granted;
+  expect(w.account()?.phase).toBe('other-tab');
+  expect(w.core.close).toHaveBeenCalledOnce();
+  const builds = w.sync.builds;
+  const starts = w.sync.start.mock.calls.length;
+  const gatewayStarts = w.calls.filter((c) => c === 'gateway.start').length;
+  // "Use this tab" on A: B resigns, and A's page calls start, which only waits for the lock A already asked for.
+  tabB.release();
+  w.call(93, { m: 'start' });
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  expect(w.ret(93)).toMatchObject({ ok: true });
+  expect(w.locks.isHeld(LOCK)).toBe(true);
+  expect(w.sync.builds).toBe(builds + 1);
+  expect(w.sync.start.mock.calls.length).toBe(starts + 1);
+  expect(w.calls.filter((c) => c === 'gateway.start').length).toBe(gatewayStarts + 1);
+  // And back to B once more.
+  const again = otherTab(w);
+  w.call(94, { m: 'resign', nonce: 'bb'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(94)).toMatchObject({ ok: true }));
+  await again.granted;
+  expect(w.account()?.phase).toBe('other-tab');
+  again.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
 });
 
 it('resign waits for a DM reload spawned by an unexpected Welcome', async () => {
