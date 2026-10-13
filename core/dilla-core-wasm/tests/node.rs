@@ -317,6 +317,32 @@ fn the_media_epoch_crosses_as_a_copy_and_its_buffer_is_zeroed() {
     assert_eq!((epoch, key), (7, [0x5b; 16]));
 }
 
+/// Review M6, a source pin: `CoreHandle::call_media_epoch` hands JavaScript the copy
+/// `media_epoch_out` makes from the core's `Zeroizing` buffer. A `Box<[u8]>` return would leave
+/// wasm-bindgen's copy of the key in freed linear memory, and the TypeScript type would not show it.
+#[wasm_bindgen_test]
+fn call_media_epoch_returns_the_copied_and_zeroed_buffer() {
+    let src = include_str!("../src/facade.rs");
+    let start = src
+        .find("pub fn call_media_epoch(")
+        .expect("CoreHandle::call_media_epoch");
+    let body = &src[start..];
+    let body = &body[..body.find("\n    }\n").expect("end of the method")];
+    assert!(
+        body.contains("-> Result<js_sys::Uint8Array, JsError>"),
+        "returns a JavaScript-owned copy, not Box<[u8]>:\n{body}"
+    );
+    assert!(
+        body.contains("Zeroizing::new(self.with_core(|c| c.call_media_epoch(&group_id))?)"),
+        "the core's buffer is Zeroizing:\n{body}"
+    );
+    assert!(
+        body.contains("Ok(media_epoch_out(&mut epoch))"),
+        "the copy is made by media_epoch_out, which zero-fills the buffer:\n{body}"
+    );
+    assert!(!body.contains("into_boxed_slice"), "no boxed copy:\n{body}");
+}
+
 /// The message a `JsError` carries across the boundary: what the media worker matches on.
 fn message(e: JsError) -> String {
     js_sys::Error::from(JsValue::from(e)).message().into()

@@ -15,8 +15,6 @@ mod sync;
 mod trust;
 mod wire;
 
-#[cfg(feature = "test-hooks")]
-pub use calls::test_media_key_derivations;
 pub use error::ClientError;
 pub use identity::{recovery_key_check, session_preimage};
 pub use messages::{mentions_me, mentions_me_with_roles};

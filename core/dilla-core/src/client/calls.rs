@@ -7,7 +7,7 @@
 //! the send block of the DM's text group (decision 4). It runs in the core, on the core's own live
 //! tree, so neither the worker nor the instance can skip it, and before any key byte is derived.
 
-use super::error::E_DEVICE_LIST_STALE;
+use super::error::{E_BINDING, E_DEVICE_LIST_STALE};
 use super::error::{E_CORE_INPUT, E_CORE_NO_IDENTITY, E_CORE_NOT_FOUND, E_CORE_STATE};
 use super::groups::{
     GroupRow, STATE_ACTIVE, STATE_GONE, STATE_JOINING, group_row, holder, row_kind,
@@ -19,32 +19,44 @@ use crate::mls::{DillaGroup, DillaProvider, GroupKind, StorageError, UnitScope};
 use openmls::prelude::GroupId;
 use rusqlite::params;
 
-#[cfg(feature = "test-hooks")]
-thread_local! {
-    static DERIVED: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-}
+/// What gate step 3 reads: the DM text group (its id and its MLS state when it loads), none, or
+/// the refusal of a call group whose community disagrees with the text group held for its target.
+type TextGroup<'a> = Result<Option<([u8; 16], Option<&'a DillaGroup>)>, &'static str>;
 
-/// Test builds only: how many media keys `call_media_epoch` derived on this thread.
-#[cfg(feature = "test-hooks")]
-pub fn test_media_key_derivations() -> u64 {
-    DERIVED.with(core::cell::Cell::get)
-}
-
-/// The DM text group a call group's gate reads in step 3, with its MLS state when it loads.
-type TextGroup<'a> = Option<([u8; 16], Option<&'a DillaGroup>)>;
-
-/// The id of the text group of a DM's call group: held for the same target, when the call group's
-/// binding names no community (a DM or group DM). None for a voice channel's call group.
+/// The DM text group of a call group (review M3). Whether a call belongs to a DM is read from the
+/// text group this device holds for the call's target, not from the call group's own binding,
+/// which its creator chose: a call group whose community differs from that text group's is
+/// refused (`E_BINDING`), so a DM's call bound to a made-up community cannot pass as a voice
+/// channel and skip decision 4. `Ok(Some(id))` for a DM (both bindings without a community);
+/// `Ok(None)` when no text group is held for the target, or for a voice channel whose text group
+/// agrees.
 fn dm_text_id(
     c: &rusqlite::Connection,
     group: &DillaGroup,
     id: &[u8; 16],
-) -> Result<Option<[u8; 16]>, StorageError> {
+) -> Result<Result<Option<[u8; 16]>, &'static str>, StorageError> {
     let binding = group.binding();
-    if binding.community_id.is_some() {
-        return Ok(None);
+    let Some(text_id) = holder(c, &binding.target_id, 0, id)? else {
+        return Ok(Ok(None));
+    };
+    let text_community = group_row(c, &text_id)?.and_then(|r| r.community_id);
+    let call_community = binding.community_id.as_ref().map(|c| c.as_bytes().to_vec());
+    if text_community != call_community {
+        return Ok(Err(E_BINDING));
     }
-    holder(c, &binding.target_id, 0, id)
+    Ok(Ok(call_community.is_none().then_some(text_id)))
+}
+
+/// The text group's MLS state for step 3, loaded only when the cache does not hold it; a state
+/// that does not load answers from its stored verdicts (fail closed).
+fn load_text(
+    provider: &DillaProvider,
+    dm: &Result<Option<[u8; 16]>, &'static str>,
+) -> Option<DillaGroup> {
+    match dm {
+        Ok(Some(t)) => DillaGroup::load(provider, &GroupId::from_slice(t)).unwrap_or(None),
+        _ => None,
+    }
 }
 
 /// The call gate, in the ledger's order; the answer is the refusal code. With `stale_ok` (the join
@@ -67,7 +79,12 @@ fn gate_verdict(
         Err(E_DEVICE_LIST_STALE) if stale_ok => {}
         Err(code) => return Ok(Err(code)),
     }
-    // 3. A DM's call group refuses while the DM's text group is send-blocked (decision 4).
+    // 3. A DM's call group refuses while the DM's text group is send-blocked (decision 4), and a
+    // call group whose community disagrees with the text group held for its target is refused.
+    let text = match text {
+        Ok(text) => text,
+        Err(code) => return Ok(Err(code)),
+    };
     if let Some((text_id, text_group)) = text {
         let block = match text_group {
             Some(g) => trust::send_block(c, g, &text_id)?,
@@ -90,13 +107,9 @@ pub(super) fn join_gate(
     id: &[u8; 16],
     own: &Own,
 ) -> Result<(), ClientError> {
-    let text_id = u.with_conn(|c| dm_text_id(c, group, id))?;
-    // A text group whose state does not load answers from its stored verdicts (fail closed).
-    let loaded = match text_id {
-        Some(t) => DillaGroup::load(provider, &GroupId::from_slice(&t)).unwrap_or(None),
-        None => None,
-    };
-    let text = text_id.map(|t| (t, loaded.as_ref()));
+    let dm = u.with_conn(|c| dm_text_id(c, group, id))?;
+    let loaded = load_text(provider, &dm);
+    let text = dm.map(|t| t.map(|t| (t, loaded.as_ref())));
     u.with_conn(|c| gate_verdict(c, group, id, own, text, true))?
         .map_err(refused)
 }
@@ -189,14 +202,14 @@ impl ClientCore {
     /// The call gate over the core's own live tree (`gate_verdict`, nothing tolerated).
     fn call_gate(&self, group: &DillaGroup, id: &[u8; 16]) -> Result<(), ClientError> {
         let own = self.own()?;
-        let text_id = self.read(|c| dm_text_id(c, group, id))?;
-        let loaded = match text_id {
-            Some(t) if !self.groups.contains_key(&t) => {
-                DillaGroup::load(&self.provider, &GroupId::from_slice(&t)).unwrap_or(None)
-            }
-            _ => None,
+        let dm = self.read(|c| dm_text_id(c, group, id))?;
+        let cached = matches!(dm, Ok(Some(t)) if self.groups.contains_key(&t));
+        let loaded = if cached {
+            None
+        } else {
+            load_text(&self.provider, &dm)
         };
-        let text = text_id.map(|t| (t, self.groups.get(&t).or(loaded.as_ref())));
+        let text = dm.map(|t| t.map(|t| (t, self.groups.get(&t).or(loaded.as_ref()))));
         self.read(|c| gate_verdict(c, group, id, &own, text, false))?
             .map_err(refused)
     }
@@ -212,8 +225,6 @@ impl ClientCore {
         let mut slot = None;
         let group = self.call_group(id, &row, &mut slot)?;
         self.call_gate(group, id)?;
-        #[cfg(feature = "test-hooks")]
-        DERIVED.with(|d| d.set(d.get() + 1));
         let media = group.media_epoch(&self.provider)?;
         let code = group_digits(&sas(&group.epoch_authenticator()?), DISPLAY_GROUP);
         // Sized up front so the buffer holding the key never reallocates and leaves a copy behind.
@@ -278,14 +289,20 @@ impl ClientCore {
 
     /// An empty commit with an UpdatePath (a fresh leaf secret), in `commit_build`'s body shape;
     /// confirmed with `commit_confirm` or dropped with `commit_abort`.
+    ///
+    /// **It cancels a pending leave.** This device's own `Remove` of its own leaf
+    /// (`call_leave_proposal`) is taken out of its queue first, because OpenMLS refuses to commit a
+    /// self-removal. Once the rotation is committed the posted proposal is stale and this device
+    /// stays a member, so a worker that has posted a leave must not rotate (it forgets instead).
     pub fn call_rotate(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
         self.call_row(id)?;
         // An empty `[proposals]` body: the rotation commits only what is already queued.
         self.commit_build_inner(id, &[0x80], true)
     }
 
-    /// Deletes the call group's MLS state and sets its row to gone (state 4); its channel's next
-    /// call group can then be created or joined. A gone row stays gone.
+    /// Deletes the call group's MLS state, its proposals, handshake tail and every per-group trust
+    /// row (stored verdicts, audit rows, held evidence), and sets its row to gone (state 4); its
+    /// channel's next call group can then be created or joined. A gone row stays gone.
     pub fn call_group_forget(&mut self, id: &[u8; 16]) -> Result<(), ClientError> {
         self.own()?;
         let row = self.call_row(id)?;
@@ -302,10 +319,17 @@ impl ClientCore {
                     "DELETE FROM app_proposals WHERE group_id=?1",
                     [id.as_slice()],
                 )?;
-                c.execute(
-                    "DELETE FROM app_handshake_tail WHERE group_id=?1",
-                    [id.as_slice()],
-                )?;
+                for table in [
+                    "app_handshake_tail",
+                    "app_quarantine",
+                    "app_trust_audit",
+                    "app_pending_history",
+                ] {
+                    c.execute(
+                        &format!("DELETE FROM {table} WHERE group_id=?1"),
+                        [id.as_slice()],
+                    )?;
+                }
                 c.execute(
                     "UPDATE app_groups SET state=?2,resync=0,was_gone=0,epoch=0,pending_commit=0 \
                      WHERE group_id=?1",

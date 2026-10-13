@@ -267,20 +267,101 @@ fn a_dm_call_key_refuses_while_the_dm_text_group_is_blocked() {
     assert_eq!(alice.core.send_block_code(&CALL).expect("send gate"), None);
     assert_eq!(code(alice.core.call_media_epoch(&CALL)), "E_UMK_CHANGED");
 
-    // A voice channel's call group (bound to a community) on the same target: the text-group
-    // rule applies to DMs only.
+    // A voice channel's call group (bound to a community, its own target): the text-group rule
+    // applies to DMs only.
     let (instance, mut alice) = alice_with_a_blocked_dm_text_group();
     let mut voice = Relay::new(CALL);
-    alice.call_create_and_register(&mut voice, &instance, Some(&COMMUNITY), &DM);
+    alice.call_create_and_register(&mut voice, &instance, Some(&COMMUNITY), &VOICE);
     assert!(alice.core.call_media_epoch(&CALL).is_ok());
 }
 
+/// Attacker (review M3): whoever creates a DM's call group binds it to a made-up community, hoping
+/// the core then treats it as a voice channel and skips the DM's blocked text group. The core
+/// finds the DM by the text group it holds for the target, whatever the call binding says, and
+/// refuses a call group whose community disagrees with that text group's.
+#[test]
+fn a_dm_call_group_bound_to_a_made_up_community_is_refused() {
+    let (instance, mut alice) = alice_with_a_blocked_dm_text_group();
+    let mut call = Relay::new(CALL);
+    alice.call_create_and_register(&mut call, &instance, Some(&COMMUNITY), &DM);
+    assert_eq!(code(alice.core.call_media_epoch(&CALL)), "E_BINDING");
+
+    // The same disagreement with a text group that is not blocked: still refused.
+    let instance = Instance::generate();
+    let mut text = Relay::new(GROUP);
+    let mut call = Relay::new(CALL);
+    let mut alice = ready_core(0xa1, "alice");
+    alice.create_and_register_in(&mut text, &instance, None, &DM);
+    alice.call_create_and_register(&mut call, &instance, Some(&COMMUNITY), &DM);
+    assert_eq!(code(alice.core.call_media_epoch(&CALL)), "E_BINDING");
+}
+
+/// Attacker (review M2): a contact whose identity changed starts a call in our DM. Joining its call
+/// group is refused in the join's own unit (decision 4), before any external commit exists, also
+/// when the worker would skip `call_join_check`.
+#[test]
+fn joining_a_dm_call_while_the_dm_text_group_is_blocked_is_refused_before_any_commit() {
+    let (instance, mut alice) = alice_with_a_blocked_dm_text_group();
+    let mut call = Relay::new(CALL);
+    let mut bob = RawPeer::new(0xb2, 0xb3);
+    bob.create_as(&mut call, &instance, &call_binding(None, DM));
+    let before = call.handshakes_from(0);
+    let r = alice.core.call_group_join_external(
+        &CALL,
+        None,
+        &DM,
+        POLICY,
+        &call.info_body(),
+        &call.tree_body(),
+    );
+    assert_eq!(code(r), "E_UMK_CHANGED");
+    assert!(alice.group(&CALL).is_none());
+    assert_eq!(call.handshakes_from(0), before);
+}
+
+/// Review M5: forgetting a call group deletes its stored verdict and audit rows with its MLS
+/// state, so the per-call groups RV-2 creates leave no trust rows behind.
+#[test]
+fn forget_deletes_the_call_groups_verdict_rows() {
+    let (mut call, mut alice, _bob, _) = call_raw_bob();
+    let mut forged = RawPeer::new_with_keys(0xb2, 0xd4, 0xb2, 0xf2);
+    forged.join_external_call(&mut call);
+    alice.sync(&call);
+    let rows = |alice: &Core, table: &str| -> i64 {
+        alice
+            .probe
+            .lock()
+            .unwrap()
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE group_id=?1"),
+                [CALL.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        rows(&alice, "app_quarantine"),
+        1,
+        "the forged leaf's verdict"
+    );
+    assert_eq!(rows(&alice, "app_trust_audit"), 1, "its audit row");
+    alice.core.call_group_forget(&CALL).expect("forget");
+    for table in ["app_quarantine", "app_trust_audit", "app_pending_history"] {
+        assert_eq!(
+            rows(&alice, table),
+            0,
+            "{table} rows of the forgotten call group"
+        );
+    }
+}
+
 /// No key byte is derived before the gate passes: with a blocking verdict present the exporter is
-/// never reached.
+/// never reached. The counter is inside `DillaGroup::sframe_base_key` itself (review I1), so it
+/// counts derivations, not the line that calls one.
 #[cfg(feature = "test-hooks")]
 #[test]
 fn the_media_epoch_bytes_are_gated_before_any_key_derivation() {
-    use dilla_core::client::test_media_key_derivations;
+    let test_media_key_derivations = dilla_core::mls::DillaGroup::test_sframe_base_key_calls;
     let (mut call, mut alice, bob, v1) = call_raw_bob();
     let mut forged = RawPeer::new_with_keys(0xb2, 0xd4, 0xb2, 0xf2);
     forged.join_external_call(&mut call);
