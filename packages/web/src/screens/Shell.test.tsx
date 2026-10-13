@@ -336,6 +336,36 @@ it('says the own account is the reason under the composer when only own devices 
   expect(reason()).toHaveTextContent(ownUnlisted);
 });
 
+// R2: a pin, reaction, edit or delete the core refuses for a trust reason says the blocked copy, never the raw code.
+it('shows a trust refusal of a pin as the conversation\'s blocked copy, not a raw code', async () => {
+  const changed = 'This contact’s identity changed. Compare the number before sending.';
+  const failed = 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.';
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', msgId: '11'.repeat(16), seq: '1', body: 'pin me' })] }));
+    client.set('trust', [
+      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32),
+        blocked: 'E_UMK_CHANGED' },
+    ]);
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: false } });
+  } });
+  fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_UMK_CHANGED' })) : Promise.resolve(null);
+  const row = () => screen.getByText('pin me').closest<HTMLElement>('.d-message-row')!;
+  const shown = screen.getAllByText(changed).length;
+  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(1));
+  // The alert and the composer already say it; the refusal adds its own dismissable banner with the same text.
+  await waitFor(() => expect(screen.getAllByText(changed).length).toBe(shown + 1));
+  expect(document.body).not.toHaveTextContent('E_UMK_CHANGED');
+  expect(document.body).not.toHaveTextContent('That did not work');
+  // Any other trust code reads as the failed-device copy.
+  fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_DEVICE_UNLISTED' })) : Promise.resolve(null);
+  act(() => fake.set('sendBlocks', { [GEN]: { code: 'E_DEVICE_UNLISTED', own: false } }));
+  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(2));
+  await waitFor(() => expect(screen.getAllByText(failed).length).toBeGreaterThan(1));
+  expect(document.body).not.toHaveTextContent('E_DEVICE_UNLISTED');
+});
+
 // A send the core refuses for a trust reason says what the composer would say, never "That did not work (E_…)".
 it('shows a trust refusal of a send as the composer reason, not a raw code', async () => {
   const failed = 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.';

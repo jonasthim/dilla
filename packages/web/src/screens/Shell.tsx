@@ -711,7 +711,9 @@ export function Shell(): React.JSX.Element {
         onVerify={row.changedUmk === null ? undefined : () => navigate({ name: 'settings', section: 'privacy', from: null })} />)}</div> : null}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
-          {t('shell.banner.commandError', { code: commandError.code })}
+          {TRUST_BLOCKS.has(commandError.code)
+            ? t(blockReason(gate?.code === commandError.code ? gate : guess(commandError.code as TrustBlock), changedMembers))
+            : t('shell.banner.commandError', { code: commandError.code })}
         </Banner>
       ) : null}
     </>
