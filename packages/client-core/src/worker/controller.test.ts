@@ -10,7 +10,7 @@ import {
   type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord,
   type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
-import { CLIENT_CLOSE, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
+import { CLIENT_CLOSE, GATEWAY, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
@@ -1244,6 +1244,32 @@ it('resign waits for socket reauthentication before pausing the core', async () 
   expect(w.core.pause).not.toHaveBeenCalled();
   gate.resolve(false);
   await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('a socket re-establish timer armed before a resign never starts a socket afterwards (client I4)', async () => {
+  const w = world();
+  await toReady(w);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    w.session.establish.mockImplementationOnce(() => Promise.reject(new Error('E_NETWORK')));
+    w.gateway.emit({ type: 'revoked' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.session.establish).toHaveBeenCalled();
+    const tabB = otherTab(w);
+    w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.ret(92)).toMatchObject({ ok: true });
+    await tabB.granted;
+    // B hands back at once: A leads again with a fresh socket, started once.
+    tabB.release();
+    for (let i = 0; i < 20 && w.account()?.phase !== 'ready'; i++) await vi.advanceTimersByTimeAsync(10);
+    expect(w.account()?.phase).toBe('ready');
+    const starts = w.calls.filter((c) => c === 'gateway.start').length;
+    await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs);
+    expect(w.calls.filter((c) => c === 'gateway.start').length).toBe(starts);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it('resign waits for the member lookup started by an unknown timeline sender', async () => {

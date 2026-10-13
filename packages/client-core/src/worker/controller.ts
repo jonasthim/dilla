@@ -289,6 +289,8 @@ export class Controller {
   private starting: Promise<null> | null = null;
   private resetting: Promise<null> | null = null;
   private graceTimer: number | null = null;
+  /** The socket re-establish retry onRevokedSocket armed after a network failure (I4). */
+  private reauthTimer: number | null = null;
   private phase: BootPhase = 'loading';
   private accountState: AccountState = {
     phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null,
@@ -801,6 +803,7 @@ export class Controller {
   private enterRevoked(): void {
     if (this.wiping || this.storeCleared) return;
     if (this.revoked()) return;
+    this.clearReauthTimer();
     this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
@@ -909,7 +912,14 @@ export class Controller {
       if (isCode(e, 'E_SESSION_SCOPE') && this.core?.identity().phase === 2) { this.enterRevoked(); return; }
       // Not a refusal (a network failure, a 5xx): try the socket again later; a refused ticket comes back here.
       if (this.revoked() || this.wiping) return;
-      this.deps.setTimeout(() => { if (!this.revoked() && !this.wiping) this.gateway?.start(); }, GATEWAY.reconnectCapMs);
+      // I4: the handle is kept and cleared by resign, quiesce and enterRevoked; a timer that fires anyway starts only the
+      // socket of the leadership that armed it.
+      const gateway = this.gateway;
+      this.clearReauthTimer();
+      this.reauthTimer = this.deps.setTimeout(() => {
+        this.reauthTimer = null;
+        if (!this.revoked() && !this.wiping && this.leadership !== null && this.phase === 'ready' && this.gateway === gateway) gateway?.start();
+      }, GATEWAY.reconnectCapMs);
     }
   }
 
@@ -1632,6 +1642,7 @@ export class Controller {
   private quiesce(): void {
     if (this.wiping) return;
     this.wiping = true;
+    this.clearReauthTimer();
     this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
@@ -1669,6 +1680,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.clearReauthTimer();
     const communities = new Set<string>((this.slices.get('communities') ?? []).map((c) => c.id));
     for (const known of this.channels.values()) communities.add(known.communityId);
     const timelines = new Set([...this.open.keys(), ...this.pinsOpen, ...this.incomingTyping.keys(), ...this.typingOn]);
@@ -2149,8 +2161,13 @@ export class Controller {
     }
   }
 
+  private clearReauthTimer(): void {
+    if (this.reauthTimer !== null) { this.deps.clearTimeout(this.reauthTimer); this.reauthTimer = null; }
+  }
+
   private async resign(nonce: string): Promise<{ released: true }> {
     await this.barrier.close();
+    this.clearReauthTimer();
     try {
       this.typingOff();
       this.gateway?.stop();
