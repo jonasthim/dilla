@@ -224,10 +224,20 @@ type Calls struct {
 	leafProposed map[memberKey]time.Time
 	leafRemovals []leafRemoval
 
+	// ringer rings the other participants of a DM or group-DM call a start opens (web-3, L-GW-33);
+	// nil rings nobody.
+	ringer *Ringer
+
 	// startHook, set by a test only, runs at named points of start (startStage); endHook likewise at
 	// named points of endCall.
 	startHook func(stage string)
 	endHook   func(stage string)
+}
+
+// WithRinger sets the DM call ring and returns h.
+func (h *Calls) WithRinger(r *Ringer) *Calls {
+	h.ringer = r
+	return h
 }
 
 // RelayRevoker cuts a device from the TURN relay as of at; *server.RelayRevocations is one. Revoke
@@ -290,6 +300,7 @@ func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
+	mux.HandleFunc("POST /v1/calls/{call_id}/decline", h.decline)
 	h.registerReads(mux)
 }
 
@@ -511,6 +522,10 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.startStage("respond")
+	// L-GW-33: only a start that opens the call rings; a 200 start of a live call never does.
+	if status == http.StatusCreated {
+		h.ring(r.Context(), ch, row, s.UserID)
+	}
 	if err := server.EncodeBody(w, status, callResponse{
 		CallID: callID, GroupID: groupID, LiveKitURL: h.cfg.LiveKitURL, Token: token,
 		ICEServers: ice, Caps: h.caps(),
@@ -651,6 +666,7 @@ func (h *Calls) endCall(ctx context.Context, callID id.ID, room string, reason s
 	if err != nil || !ended {
 		return err
 	}
+	h.ringer.End(callID)
 	h.dropRoom(ctx, row)
 	h.closeRoom(ctx, room)
 	if h.events != nil {

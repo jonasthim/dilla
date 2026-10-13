@@ -64,6 +64,9 @@ type Server struct {
 	// stopCallRetries stops the call route group's grant retry loop (a cut or demotion the SFU did
 	// not take converges on it); Shutdown calls it before it returns, and serve stops the SFU after.
 	stopCallRetries func()
+	// stopIdleClose stops the idle call-group close (web-3, L-HTTP-105), which runs with or without
+	// an SFU; Shutdown calls it before it stops the delivery service the close goes through.
+	stopIdleClose func()
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -510,6 +513,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.SFU != nil {
 		s.stopCallRetries = callRoutes.StartRetries(api.CallRetryInterval)
 	}
+	s.stopIdleClose = callRoutes.StartIdleClose(api.CallRetryInterval)
 	return s, nil
 }
 
@@ -612,6 +616,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 	// is bounded by api's sfuCallTimeout, so a hung SFU cannot hold Shutdown.
 	if s.stopCallRetries != nil {
 		s.stopCallRetries()
+	}
+	if s.stopIdleClose != nil {
+		s.stopIdleClose()
 	}
 	if derr := s.ds.Shutdown(ctx); derr != nil {
 		keep(fmt.Errorf("dillad: stop the delivery service: %w", derr))

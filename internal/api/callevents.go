@@ -378,6 +378,8 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 	flags := VoiceInCall | c.selfLocked(row.CallID, dev)
 	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
+	// A device of a rung user is in the room: that user's ring stops on every device (L-GW-33).
+	c.calls.ringer.Answered(row.CallID, d.UserID)
 	c.announce(ctx, ch, row.CallID, d.UserID, dev, flags)
 }
 

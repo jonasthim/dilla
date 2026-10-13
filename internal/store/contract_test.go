@@ -84,6 +84,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// the walk §4.1 names -- filters exactly those out, so a closed group's
 			// ciphertext would never be swept by either half of retention again.
 			"ListGroupsForRetention",
+			// ListIdleCallGroups is web-3's idle call-group close (L-HTTP-105, RV-2).
+			"ListIdleCallGroups",
 			"ListHandshakes", "ListMembers", "ListOpenGroups", "ListProposals", "ListWelcomes",
 			"NextSeq", "OldestHandshakeSeq", "PruneHandshakes", "PruneWelcomes",
 			"PurgeKeyPackages", "PutEpochTree", "PutForkReport", "PutGroupState",

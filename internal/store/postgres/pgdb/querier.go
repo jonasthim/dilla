@@ -186,6 +186,10 @@ type Querier interface {
 	// moment the group stops being useful.
 	ListGroupsForRetention(ctx context.Context, arg ListGroupsForRetentionParams) ([]MlsGroups, error)
 	ListHandshakes(ctx context.Context, arg ListHandshakesParams) ([]MlsHandshakes, error)
+	// web-3 (L-HTTP-105, RV-2): the idle call-group close. The open call groups (kind 1) that no live
+	// voice session names and that were created at or before the cutoff, oldest first; the caller
+	// closes at most max_rows of them per pass.
+	ListIdleCallGroups(ctx context.Context, arg ListIdleCallGroupsParams) ([]MlsGroups, error)
 	ListInvites(ctx context.Context) ([]Invites, error)
 	ListInvitesByCommunity(ctx context.Context, arg ListInvitesByCommunityParams) ([]Invites, error)
 	ListLiveProposals(ctx context.Context, arg ListLiveProposalsParams) ([]MlsPendingProposals, error)

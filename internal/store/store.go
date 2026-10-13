@@ -232,6 +232,10 @@ type MLS interface {
 	// Adds and Removes in here, rather than scanning ListOpenGroups, which is
 	// O(instance) per change.
 	GroupsForTarget(ctx context.Context, targetID id.ID, kind uint8) ([]GroupRow, error)
+	// ListIdleCallGroups is web-3's idle call-group close (L-HTTP-105, RV-2): the open call groups
+	// (kind 1) no live voice session names, created at or before cutoff, oldest first, at most
+	// limit of them.
+	ListIdleCallGroups(ctx context.Context, cutoff int64, limit int32) ([]GroupRow, error)
 	PutKeyPackages(ctx context.Context, deviceID id.ID, kps []KeyPackageRow) error
 	TakeKeyPackage(ctx context.Context, deviceID id.ID, now int64) (KeyPackageRow, error)
 	CountKeyPackages(ctx context.Context, deviceID id.ID, now int64) (int64, error)

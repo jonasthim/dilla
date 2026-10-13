@@ -1057,6 +1057,18 @@ func (r *Repo) GroupsForTarget(ctx context.Context, targetID id.ID, kind uint8) 
 	return out, nil
 }
 
+func (r *Repo) ListIdleCallGroups(ctx context.Context, cutoff int64, limit int32) ([]store.GroupRow, error) {
+	rows, err := r.r.ListIdleCallGroups(ctx, sqlitedb.ListIdleCallGroupsParams{Created: cutoff, MaxRows: int64(limit)})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.GroupRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mlsGroupRow(row))
+	}
+	return out, nil
+}
+
 func (r *Repo) ListOpenGroups(ctx context.Context, after id.ID, limit int32) ([]store.GroupRow, error) {
 	rows, err := r.r.ListOpenGroups(ctx, sqlitedb.ListOpenGroupsParams{GroupID: after, MaxRows: int64(limit)})
 	if err != nil {

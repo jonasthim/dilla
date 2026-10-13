@@ -87,7 +87,10 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	if p.o.SFU != nil {
 		tokens = p.o.SFU
 	}
-	calls := api.NewCalls(repo, res, tokens, p.calls, clk, log).WithCounters(p.o.Metrics)
+	// The DM call ring (web-3, L-GW-33) delivers op 53 through the gateway; a start that would ring
+	// more users than a call holds rings nobody.
+	ringer := api.NewRinger(p.gw, clk, log).WithMaxUsers(cfg.LiveKit.MaxVoiceParticipants)
+	calls := api.NewCalls(repo, res, tokens, p.calls, clk, log).WithCounters(p.o.Metrics).WithRinger(ringer)
 	// A cut device loses the relay with its call session; a nil *RelayRevocations must not become
 	// a non-nil api.RelayRevoker.
 	if p.o.Relay != nil {
