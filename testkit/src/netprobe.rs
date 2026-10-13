@@ -524,8 +524,9 @@ pub struct Armed {
     pub epoch: u64,
 }
 
-/// Whether the side's store holds a call group for its DM (the DM id is the group's local MLS id).
-/// `arm` writes the store and `side.json`'s `groupId` together, so that group is the stored one.
+/// Whether the side's store holds the call group `side.json`'s `groupId` names (the registered id
+/// is also the group's local MLS id: the DM id for `prepare`'s first group, a random id for every
+/// group `arm` registers). `arm` writes the store and `groupId` together.
 fn holds(dir: &Path, state: &SideState) -> bool {
     if state.group_id.is_empty() {
         return false;
@@ -587,8 +588,8 @@ pub fn arm(instance: &str, dir: &Path) -> Result<Armed, TestkitError> {
             )));
         }
     };
-    // A fresh client from the seed: its in-memory store replaces the side's store when the group
-    // is rebuilt, so the stale group (whose local MLS id is also the DM id) is gone with it.
+    // A fresh client from the seed: its in-memory store replaces the side's whole store when the
+    // group is rebuilt, so the stale group (under whatever local MLS id it had) is gone with it.
     let mut client = client_of(&state)?;
     let dm = hex16(&state.dm, "side.json dm")?;
     let stored = if state.group_id.is_empty() {
