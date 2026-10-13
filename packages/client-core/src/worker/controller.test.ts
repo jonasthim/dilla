@@ -650,6 +650,29 @@ it('a send refused by a leaf verdict waits for one trust refresh and is tried on
   expect(order).toEqual(['send', 'ingest', 'send']);
 });
 
+it('a reaction or an edit refused by a leaf verdict waits for one trust refresh and is tried once more (client I2)', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  const order: string[] = [];
+  w.core.deviceListIngest.mockImplementation(() => { order.push('ingest'); return { version: 2n, changed: false, quarantined: 0 }; });
+  w.sync.sendRequest
+    .mockImplementationOnce(() => { order.push('react'); throw new CoreError('E_DEVICE_UNLISTED', ''); })
+    .mockImplementationOnce(() => { order.push('react'); return new Uint8Array(16).fill(0x77); });
+  const msgId = '66'.repeat(16);
+  w.call(54, { m: 'react', channelId: toHex(CHANNEL), msgId, emoji: '👍', on: true });
+  await vi.waitFor(() => expect(w.ret(54)).toBeDefined());
+  expect(w.ret(54)).toEqual({ t: 'ret', id: 54, ok: true, value: null });
+  expect(order).toEqual(['react', 'ingest', 'react']);
+  w.sync.sendRequest.mockClear();
+  w.sync.sendRequest.mockImplementation(() => { throw new CoreError('E_UMK_CHANGED', ''); });
+  w.call(55, { m: 'editMessage', channelId: toHex(CHANNEL), msgId, text: 'edited' });
+  await vi.waitFor(() => expect(w.ret(55)).toBeDefined());
+  expect(w.ret(55)).toMatchObject({ ok: false, error: { code: 'E_UMK_CHANGED' } });
+  expect(w.sync.sendRequest).toHaveBeenCalledTimes(1);
+});
+
 it('a send still refused after the trust refresh answers the verdict, and a changed key is not retried', async () => {
   const w = world();
   await toReady(w);

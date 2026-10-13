@@ -2222,15 +2222,7 @@ export class Controller {
     let msgId: Id;
     // The core enforces the 4000-byte limit (E_ENVELOPE_LIMIT); the controller does not measure the text.
     try {
-      try { msgId = this.requireSync().sendRequest(groupId, request); }
-      catch (e) {
-        if (!(e instanceof CoreError) || !LEAF_VERDICTS.has(e.code)) throw e;
-        // Controller ruling 2: the core refuses a group holding a failed leaf. A device that joined before the list
-        // naming it was ingested fails against the cached list until a refresh ingests the newer one, so this
-        // group's leaves are read again and the send is tried once more; the core alone decides the second answer.
-        await this.refreshGroupTrust(groupId);
-        msgId = this.requireSync().sendRequest(groupId, request);
-      }
+      msgId = await this.sendWithTrustRetry(groupId, request);
     } catch (e) {
       // The taken references were never sent; each is deleted now, or expires after pending_ttl (L-HTTP-83).
       const channel = fromHex(c.channelId);
@@ -2239,6 +2231,21 @@ export class Controller {
     }
     this.refreshTimeline(c.channelId);
     return { msgId: toHex(msgId) };
+  }
+
+  /**
+   * Queues any envelope type. Controller ruling 2: the core refuses a group holding a failed leaf. A device that joined
+   * before the list naming it was ingested fails against the cached list until a refresh ingests the newer one, so the
+   * group's leaves are read again and the request is tried once more; the core alone decides the second answer. A changed
+   * key (E_UMK_CHANGED) is not retried.
+   */
+  private async sendWithTrustRetry(groupId: Id, request: SendRequest): Promise<Id> {
+    try { return this.requireSync().sendRequest(groupId, request); }
+    catch (e) {
+      if (!(e instanceof CoreError) || !LEAF_VERDICTS.has(e.code)) throw e;
+      await this.refreshGroupTrust(groupId);
+      return this.requireSync().sendRequest(groupId, request);
+    }
   }
 
   /** Forgets which leaves of the group were already fetched and waits for a trust refresh that reads them again. */
@@ -2269,16 +2276,16 @@ export class Controller {
 
   /** Requirement 10: an edit, delete, reaction or pin is queued as its fold type aimed at the message; the page's state
    *  changes only when the core folds it (a pending fold shows as a PendingAction). The core's refusals cross as they are. */
-  private fold(channelId: string, msgId: string, type: 1 | 2 | 3 | 4 | 5 | 6, body: string): Promise<null> {
+  private async fold(channelId: string, msgId: string, type: 1 | 2 | 3 | 4 | 5 | 6, body: string): Promise<null> {
     if (type === 1 || type === 2) {
       this.searchGate.invalidate();
       this.searchCursor = null;
       this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     }
     const groupId = this.activeGroup(channelId);
-    this.requireSync().sendRequest(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
+    await this.sendWithTrustRetry(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
     this.refreshTimeline(channelId);
-    return Promise.resolve(null);
+    return null;
   }
 
   private editMessage(channelId: string, msgId: string, text: string): Promise<null> { return this.fold(channelId, msgId, 1, text); }
