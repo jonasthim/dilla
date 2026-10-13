@@ -82,6 +82,9 @@ export class CallController {
   private live: Live | null = null;
   private joining: JoinToken | null = null;
   private rotateTimer: number | null = null;
+  /** The channel whose blocked phase was seen held by that channel's own send block (its text group): that phase goes idle
+   *  once the block clears (integration card), so the page can offer the join again. */
+  private blockSeen: string | null = null;
 
   constructor(private readonly deps: CallDeps) {
     this.book = new VoiceBook({
@@ -465,6 +468,18 @@ export class CallController {
     this.setState({ ...this.state, outgoing: this.outgoingNames(live) });
   }
 
+  /** After every sendBlocks publish (integration cards, task 9 review m8 and concern 1): a ring whose DM is send-blocked
+   *  now ends, and a blocked phase held by its channel's own send block goes idle once that block cleared. A block only of
+   *  the (left and forgotten) call group cannot be seen to clear here, so it stays; removed stays as it is. */
+  onSendBlocks(): void {
+    // Attacker: a contact whose identity changed while their ring shows; decision 4 extended to rings mid-ring.
+    for (const r of this.rings.list()) if (this.channelBlocked(r.channelId)) this.rings.remove(r.channelId);
+    const s = this.state;
+    if (s.phase !== 'blocked' || s.channelId === null) return;
+    if (this.textBlocked(s.channelId)) { this.blockSeen = s.channelId; return; }
+    if (this.blockSeen === s.channelId && this.live === null && this.joining === null) this.setState({ ...CALL_IDLE });
+  }
+
   // ---- step 9: resign and wipe ----
 
   /** resign: the call is left (its self-Remove posted) and the rings cleared before the store is released. */
@@ -493,6 +508,8 @@ export class CallController {
   // ---- helpers ----
 
   private setState(next: CallState): void {
+    if (next.phase !== 'blocked' || next.channelId === null) this.blockSeen = null;
+    else if (this.textBlocked(next.channelId)) this.blockSeen = next.channelId;
     this.state = next;
     this.deps.publish('call', next);
   }
@@ -505,6 +522,15 @@ export class CallController {
   /** The active text group of a DM (kind 0), never its call group (L-CORE-51). */
   private textGroup(channel: string): Id | null {
     return this.deps.core()?.groups().find((g) => g.kind === 0 && g.state === 2 && toHex(g.targetId) === channel)?.groupId ?? null;
+  }
+
+  /** The channel's own send block: its active text group (a DM's, or a channel's) is send-blocked (the sendBlocks map). */
+  private textBlocked(channel: string): boolean {
+    const core = this.deps.core();
+    const text = core === null ? null : this.textGroup(channel);
+    if (core === null || text === null) return false;
+    // A gate the core cannot read counts as held (fail closed: the phase never idles on an error).
+    try { return core.sendBlockCode(text) !== null; } catch { return true; }
   }
 
   /** A ring's decision 4: the DM's text group, or its call group when this device holds it, is send-blocked. */

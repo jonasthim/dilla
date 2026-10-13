@@ -2261,6 +2261,8 @@ export class Controller {
       if (code !== null) blocks[channelId] = { code, own: this.core.sendBlockOwn(group.groupId) };
     }
     this.slices.set('sendBlocks', blocks);
+    // Integration cards: a ring of a DM blocked now ends; a blocked call whose channel block cleared goes idle.
+    this.safely(() => { this.calls.onSendBlocks(); });
   }
 
   private verifyContact(userId: string, umk: string): Promise<null> {

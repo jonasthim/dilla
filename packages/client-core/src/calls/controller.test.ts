@@ -1147,4 +1147,82 @@ describe("the page's leave after a block or a removal (task 8b review I1)", () =
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// Integration cards (task 9 review m8 and concern 1): the worker acts on every sendBlocks change.
+// ---------------------------------------------------------------------------------------------
+
+describe('a send block that comes or goes (integration cards)', () => {
+  // Attacker (decision 4 extended to rings): a contact whose identity changes while their ring is showing. The ring must
+  // not keep tempting an answer the core would refuse; it goes as soon as the worker sees the DM's block.
+  it('a ring ends when its DM becomes send-blocked mid-ring (m8)', async () => {
+    const w = await harness({ dm: true, extraDms: 1 });
+    const other = w.dms[1];
+    w.gateway.push(ring(1));
+    w.gateway.push(ring(1, { channel: other.channel, user: other.members[0] }));
+    expect(w.slice('rings')).toHaveLength(2);
+    // The control: a trust refresh with no block keeps both rings.
+    await w.call({ m: 'refreshTrust' });
+    expect(w.slice('rings')).toHaveLength(2);
+    w.model.blockGroup(w.dms[0].text, 'E_UMK_CHANGED');
+    await w.call({ m: 'refreshTrust' });
+    expect(w.slice('sendBlocks')).toEqual({ [w.dm]: { code: 'E_UMK_CHANGED', own: false } });
+    expect(w.slice('rings').map((r) => r.channelId)).toEqual([toHex(other.channel)]);
+  });
+
+  it('a DM call blocked by its text group goes idle once that block clears, so a join is offered again', async () => {
+    const w = await harness({ dm: true });
+    const text = w.dms[0].text;
+    w.model.blockGroup(text, 'E_UMK_CHANGED');
+    await w.call({ m: 'refreshTrust' });
+    expect(await codeOf(w.call({ m: 'callJoin', channelId: w.dm, vdec: '' }))).toBe('E_UMK_CHANGED');
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', channelId: w.dm });
+    // Still blocked: a refresh keeps the phase.
+    await w.call({ m: 'refreshTrust' });
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', channelId: w.dm });
+    w.model.unblockGroup(text);
+    await w.call({ m: 'refreshTrust' });
+    expect(w.slice('sendBlocks')).toEqual({});
+    expect(w.slice('call')).toEqual({ phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [],
+      outgoing: null, changedUser: null });
+    expect(await codeOf(w.call({ m: 'callJoin', channelId: w.dm, vdec: '' }))).toBe('ok');
+  });
+
+  it('a DM call blocked mid-call by its text group goes idle after its leave once that block clears', async () => {
+    const w = await harness({ dm: true });
+    const text = w.dms[0].text;
+    await w.call({ m: 'callJoin', channelId: w.dm, vdec: '' });
+    await settled(w);
+    expect(w.slice('call').phase).toBe('in');
+    w.model.blockGroup(text, 'E_DEVICE_UNLISTED');
+    await w.call({ m: 'refreshTrust' });
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', channelId: w.dm });
+    w.model.unblockGroup(text);
+    await w.call({ m: 'refreshTrust' });
+    await settled(w);
+    expect(w.slice('call').phase).toBe('idle');
+  });
+
+  // A block only of the call group (the group is left and forgotten): nothing the worker holds can show it cleared, so
+  // the phase stays blocked and the page keeps join held; a removal stays removed (only a new join leaves either).
+  it('a block of the call group alone stays blocked, and removed stays removed, across a trust refresh', async () => {
+    const w = await joined();
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.slice('call').phase).toBe('blocked');
+    await w.call({ m: 'refreshTrust' });
+    await settled(w);
+    expect(w.slice('call').phase).toBe('blocked');
+    const r = await joined();
+    r.ds.propose(r.callGroup, 'remove', ME.device);
+    await r.deliverHandshakes(r.callGroup);
+    await settled(r);
+    expect(r.slice('call').phase).toBe('removed');
+    await r.call({ m: 'refreshTrust' });
+    await settled(r);
+    expect(r.slice('call').phase).toBe('removed');
+  });
+});
+
 export { fromHex };
