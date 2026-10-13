@@ -32,6 +32,8 @@ export function focusRailSettings(): void {
 
 const CATEGORY = 2;
 const HEX32 = /^[0-9a-f]{32}$/;
+// Renew an unchanged typing signal after 5 s: above the server's 3 s meter, inside its 10 s hold (L-HTTP-96).
+const TYPING_RENEW_MS = 5_000;
 
 type SidebarTab = 'channels' | 'dms';
 
@@ -83,6 +85,13 @@ export function Shell(): React.JSX.Element {
   const [searchScope, setSearchScope] = useState<'channel' | 'community' | 'all'>('all');
   const [searchRequest, setSearchRequest] = useState(0);
   const searchRequestRef = useRef(0);
+  // The page's own count of search commands still unanswered: the palette says it is searching until the newest settles.
+  const searchCalls = useRef(0);
+  const [searchBusy, setSearchBusy] = useState(false);
+  // Where focus was when the palette opened; Escape or close returns it there, a picked hit keeps focus on its row.
+  const searchOpener = useRef<HTMLElement | null>(null);
+  const restoreSearchFocus = useRef<HTMLElement | null>(null);
+  const trust = useSlice('trust');
 
   // A DM route names no server: the sidebar keeps the last one a channel route named in this mount, else the first.
   const [lastCommunity, setLastCommunity] = useState<string | null>(null);
@@ -133,7 +142,10 @@ export function Shell(): React.JSX.Element {
     if (!query.trim() || (scope !== 'all' && id === null)) return;
     searchRequestRef.current = Math.max(searchRequestRef.current, search?.requestId ?? 0);
     setSearchRequest(0);
-    client.call({ m: 'search', scope, id, query, cursor: null }).catch(report);
+    const call = ++searchCalls.current;
+    setSearchBusy(true);
+    client.call({ m: 'search', scope, id, query, cursor: null }).catch(report)
+      .finally(() => { if (searchCalls.current === call) setSearchBusy(false); });
   };
   useEffect(() => {
     if (searchOpen && search?.requestId && search.requestId > searchRequestRef.current) {
@@ -142,6 +154,8 @@ export function Shell(): React.JSX.Element {
     }
   }, [searchOpen, search]);
   const startSearch = (scope: 'channel' | 'all') => {
+    const active = document.activeElement;
+    searchOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
     setSearchScope(scope);
     setSearchQuery('');
     setSearchOpen(true);
@@ -158,6 +172,12 @@ export function Shell(): React.JSX.Element {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [overlay, joinOpen, pickerOpen, targetId]);
+  useEffect(() => {
+    if (searchOpen) return;
+    const opener = restoreSearchFocus.current;
+    restoreSearchFocus.current = null;
+    if (opener?.isConnected) opener.focus();
+  }, [searchOpen]);
   const self = account?.user ?? null;
   const conversationMembers = channel !== null ? members ?? [] : dm !== null ? allMembers.filter(m => dm.members.includes(m.userId)) : [];
   const book = useMemo(() => nameBook(self, channel !== null ? members ?? [] : allMembers), [self, channel, members, allMembers]);
@@ -175,12 +195,23 @@ export function Shell(): React.JSX.Element {
 
   const report = useCallback((e: unknown) => setCommandError(errorOf(e)), []);
   const typingSent = useRef<string | null>(null);
+  const typingAt = useRef(0);
   useEffect(() => {
     const active = draft.channelId === targetId && draft.text.trim() !== '' ? targetId : null;
-    if (typingSent.current === active) return;
+    if (typingSent.current === active) {
+      // The server holds a typing signal for 10 s and meters one per 3 s (L-HTTP-96): a draft still changing renews it.
+      if (active !== null && Date.now() - typingAt.current >= TYPING_RENEW_MS) {
+        typingAt.current = Date.now();
+        client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+      }
+      return;
+    }
     if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
     typingSent.current = active;
-    if (active !== null) client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+    if (active !== null) {
+      typingAt.current = Date.now();
+      client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+    }
   }, [client, draft.channelId, draft.text, targetId, report]);
   useEffect(() => () => {
     if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
@@ -542,6 +573,8 @@ export function Shell(): React.JSX.Element {
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
+  // A validated Remove of a changed leaf unblocked sending here only; the contact stays changed elsewhere (Flow 05).
+  const removedHere = targetId !== null && (trust ?? []).some(row => row.changedUmk !== null && row.removedIn?.includes(targetId) === true);
 
   const searchHits: SearchHitView[] = (search?.hits ?? []).map(hit => {
     const location = hit.communityId === null ? dms?.find(row => row.id === hit.channelId)?.name
@@ -603,7 +636,7 @@ export function Shell(): React.JSX.Element {
   const offline = connection?.status === 'offline';
   // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
   const rootMismatch = account?.rootMismatch === true;
-  const banner = offline || commandError !== null || rootMismatch ? (
+  const banner = offline || commandError !== null || rootMismatch || removedHere ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -611,6 +644,7 @@ export function Shell(): React.JSX.Element {
       {offline ? (
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
+      {removedHere ? <p className="dw-trust-removed" role="status">{t('privacy.removed')}</p> : null}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
           {t('shell.banner.commandError', { code: commandError.code })}
@@ -630,7 +664,12 @@ export function Shell(): React.JSX.Element {
           itemLabel={railLabel} />}
         sidebar={sidebar}
         header={header}
-        composer={composer}
+        composer={composer === null ? null : <>
+          {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}
+          {typingNames.length > 0 && !searchOpen ? <TypingIndicator names={typingNames}
+            labels={{ one: en['typing.one'], many: t('typing.many') }} /> : null}
+          {composer}
+        </>}
         statusBar={
           <StatusBar position="bottom" label={t('shell.status.label')}>
             <StatusChunk label={t('shell.status.node')}>{account?.instance?.name ?? t('shell.status.unknown')}</StatusChunk>
@@ -643,14 +682,13 @@ export function Shell(): React.JSX.Element {
       >
         {main}
       </AppShell>
-      {typingNames.length > 0 && !searchOpen && <TypingIndicator names={typingNames}
-        labels={{ one: en['typing.one'], many: t('typing.many') }} />}
-      <Search open={searchOpen} query={searchQuery} scope={searchScope}
+      <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}
         requestId={search?.requestId ?? 0} currentRequestId={searchRequest}
         hits={searchHits} onQuery={query => { setSearchQuery(query); issueSearch(query, searchScope, searchId); }}
         onScope={scope => { setSearchScope(scope); client.call({ m: 'setSetting', key: 'searchScope', value: scope }).catch(report);
           issueSearch(searchQuery, scope, scope === 'all' ? null : scope === 'community' ? communityId : targetId); }}
-        onPick={pickSearchHit} onClose={() => setSearchOpen(false)} />
+        onPick={async hit => { const opened = await pickSearchHit(hit); if (opened) searchOpener.current = null; return opened; }}
+        onClose={() => { restoreSearchFocus.current = searchOpener.current; searchOpener.current = null; setSearchOpen(false); }} />
       <JoinCommunity open={joinOpen} initialInvite={joinInvite ?? undefined} initialError={joinError ?? undefined}
         onClose={closeJoin} onJoined={onJoined} />
       <DmPicker open={pickerOpen} members={dmCandidates(members, self?.id ?? null)} busy={pickerBusy} error={pickerError}

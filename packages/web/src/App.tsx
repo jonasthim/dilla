@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { BootPhase } from '@dilla/client-core';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
@@ -39,7 +39,10 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const diagnostics = useSlice('diagnostics');
   const settings = useSlice('settings');
   const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused'>('other-tab');
-  const [paused, setPaused] = useState(false);
+  // The old leader's side of hand-over: 'resigning' shows the paused view over the still mounted shell and moves focus
+  // into it before the shell (and its composer) leaves; 'released' follows the worker's release. One resign at a time.
+  const [paused, setPaused] = useState<'no' | 'resigning' | 'released'>('no');
+  const resigning = useRef(false);
   const [startError, setStartError] = useState<UiError | null>(null);
   useEffect(() => { client.call({ m: 'start' }).catch(e => setStartError(errorOf(e))); }, [client]);
   useEffect(() => {
@@ -70,13 +73,16 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       const value = data as Record<string, unknown>;
       if (Object.keys(value).length !== 3 || value.t !== 'takeover' || value.instance !== instance
         || typeof value.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(value.nonce)) return;
-      flushSync(() => setPaused(true));
+      if (resigning.current) return;
+      resigning.current = true;
+      flushSync(() => setPaused('resigning'));
       document.querySelector<HTMLElement>('.dw-other-tab')?.focus();
       void client.call({ m: 'resign', nonce: value.nonce }).then(() => {
         const release = new BroadcastChannel(`dilla-core:${instance}`);
         release.postMessage({ t: 'released', instance, nonce: value.nonce });
         release.close();
-      }).catch(() => { setPaused(false); });
+        setPaused('released');
+      }).catch(() => { resigning.current = false; setPaused('no'); });
     };
     channel.addEventListener('message', onMessage);
     return () => { channel.removeEventListener('message', onMessage); channel.close(); };
@@ -149,14 +155,23 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   };
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
-  if (paused || phase === 'paused-error') return <OtherTab phase="paused" onUse={useThisTab} />;
-  if (phase === 'other-tab') return <OtherTab phase={tabPhase} onUse={useThisTab} onRetry={useThisTab} />;
-  if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
-  if (screen === 'onboarding' || (onboarding && phase === 'ready')) return <Onboarding onFinish={finish} />;
-  // The two lines above narrow `screen` to 'boot' | 'shell' ('cleared' is 'boot'), so this switch is total.
-  switch (screen) {
-    case 'boot': return <Boot fatal={null} />;
-    // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
-    case 'shell': return <><Shell />{route.name === 'settings' ? <Settings /> : null}</>;
+  // The paused view keeps its place after the screens, so it stays mounted (and focused) while the shell goes.
+  const pausedView = paused !== 'no' || phase === 'paused-error'
+    ? <OtherTab phase="paused" overlay={paused === 'resigning' && phase === 'ready'} onUse={useThisTab} /> : null;
+  let body: ReactNode;
+  if (pausedView !== null) body = paused === 'resigning' && phase === 'ready' ? screenBody() : null;
+  else if (phase === 'other-tab') body = <OtherTab phase={tabPhase} onUse={useThisTab} onRetry={useThisTab} />;
+  else body = screenBody();
+  return <>{body}{pausedView}</>;
+
+  function screenBody(): React.JSX.Element {
+    if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
+    if (screen === 'onboarding' || (onboarding && phase === 'ready')) return <Onboarding onFinish={finish} />;
+    // The two lines above narrow `screen` to 'boot' | 'shell' ('cleared' is 'boot'), so this switch is total.
+    switch (screen) {
+      case 'boot': return <Boot fatal={null} />;
+      // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
+      case 'shell': return <><Shell />{route.name === 'settings' ? <Settings /> : null}</>;
+    }
   }
 }

@@ -7,6 +7,8 @@ export interface SearchProps {
   open: boolean; query: string; scope: 'channel' | 'community' | 'all'; requestId: number; currentRequestId: number;
   hits: readonly SearchHitView[]; onQuery: (query: string) => void; onScope: (scope: 'channel' | 'community' | 'all') => void;
   onPick: (hit: SearchHitView) => Promise<boolean>; onClose: () => void;
+  /** The page still waits for the worker's answer to its newest search command. */
+  loading?: boolean;
 }
 
 export function Search(p: SearchProps): React.JSX.Element | null {
@@ -25,7 +27,8 @@ export function Search(p: SearchProps): React.JSX.Element | null {
   return <section ref={root} className="dw-search" data-doc-state={hits.length > 0 ? 'search-results' : undefined}>
     <SearchPalette open query={p.query} scope={p.scope} hits={hits} onQuery={value => { setUnavailable(false); p.onQuery(value); }}
       onScope={p.onScope} onPick={id => { void pick(id); }} onClose={p.onClose}
-      labels={{ search: t('search.placeholder'), empty: current ? t('search.noResults') : t('search.loading'),
+      labels={{ search: t('search.placeholder'), empty: !current || p.loading === true ? t('search.loading')
+        : p.query.trim() === '' ? '' : p.scope === 'all' ? t('search.empty') : t('search.noResults'),
         close: t('settings.close'), scope: { channel: t('search.scope.channel'), community: t('search.scope.community'), all: t('search.scope.all') } }} />
     {unavailable && <p role="status">{t('search.unavailable')}</p>}
   </section>;

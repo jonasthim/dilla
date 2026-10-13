@@ -147,6 +147,8 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.instructions | Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself. | dialog instructions |
 | privacy.confirm | Yes, all 12 blocks match | dialog checkbox |
 | privacy.firstSeen | This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify. | under first-seen state on Privacy page and in dialog |
+| privacy.firstSeenLabel | First seen here — not verified | first-seen state label on Privacy page and in dialog |
+| privacy.verifiedLabel | verified | verified state label beside the compared key |
 | privacy.changed | This contact’s identity changed. Compare the number before sending. | changed alert |
 | privacy.unlisted | This device is not on the contact’s list. | unlisted state |
 | privacy.noShared | Open a conversation with this person to compare numbers. | no shared group |
@@ -160,8 +162,14 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | search.scope.channel | this conversation | scope option |
 | search.scope.community | this community | scope option |
 | search.scope.all | everything | scope option |
+| keyboard.searchAll | Ctrl/⌘+K | Keyboard settings, opens search |
+| keyboard.searchChannel | Control+/ | Keyboard settings, searches this conversation |
 | diagnostics.title | Diagnostics | heading |
 | diagnostics.copy | Copy codes | diagnostics action |
+| diagnostics.connection | connection | diagnostics field |
+| diagnostics.generation | generation | diagnostics field |
+| diagnostics.instance | instance | diagnostics field |
+| diagnostics.devices | {n} devices | diagnostics own-device count |
 | tabs.use | Use this tab | follower action |
 | tabs.wait | Moving to this tab… | waiting status |
 | tabs.failed | Close the other tab, then try again. | failure status |

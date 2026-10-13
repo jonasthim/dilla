@@ -32,6 +32,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-search .d-search-palette { max-width: 720px; margin: 0 auto; }
 .dw-search :focus-visible, .dw-trust-list :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .dw-other-tab { min-height: 100vh; display: grid; place-items: center; padding: var(--group-gap); }
+.dw-other-tab--overlay { position: fixed; inset: 0; z-index: 50; background: var(--bg); }
+.dw-trust-key { overflow-wrap: anywhere; word-break: break-all; }
 @media (max-width: 360px) {
   .dw-search { padding: var(--row-gap); }
   .dw-search .d-search-palette { width: 100%; min-width: 0; }

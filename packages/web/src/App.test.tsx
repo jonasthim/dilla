@@ -56,6 +56,47 @@ describe('App', () => {
     expect(vi.mocked(requestHandover).mock.calls[0][2]).toEqual(expect.any(Function));
     expect(screen.queryByRole('log')).toBeNull();
   });
+  it('focuses the paused view before the shell leaves, resigns once and forwards the exact release', async () => {
+    const channels: FakeChannel[] = [];
+    class FakeChannel {
+      readonly listeners = new Set<(event: { data: unknown }) => void>();
+      readonly posted: unknown[] = [];
+      closed = false;
+      constructor(readonly name: string) { channels.push(this); }
+      postMessage(value: unknown): void { this.posted.push(value); }
+      addEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.add(cb); }
+      removeEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.delete(cb); }
+      close(): void { this.closed = true; }
+    }
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    try {
+      const instance = 'ab'.repeat(16);
+      const nonce = '01'.repeat(16);
+      let finish!: (value: unknown) => void;
+      const fake = new FakeClient();
+      fake.handler = c => c.m === 'resign' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null);
+      fake.set('account', account({ phase: 'ready' }));
+      fake.set('communities', []);
+      fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [] });
+      render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+      const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0)!;
+      const takeover = (n: string) => { for (const cb of [...leader.listeners]) cb({ data: { t: 'takeover', instance, nonce: n } }); };
+      act(() => takeover(nonce));
+      const paused = document.querySelector('.dw-other-tab');
+      expect(document.activeElement).toBe(paused);
+      expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
+      expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument();
+      act(() => takeover('02'.repeat(16)));
+      expect(fake.callsOf('resign')).toEqual([{ m: 'resign', nonce }]);
+      await act(async () => { fake.set('account', account({ phase: 'other-tab' })); finish({ released: true }); await Promise.resolve(); });
+      expect(screen.queryByRole('navigation', { name: 'servers' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Use this tab' })).toBeNull();
+      expect(document.querySelector('.dw-other-tab')).toBe(paused);
+      expect(document.activeElement).toBe(paused);
+      const forwarded = channels.filter(c => c.posted.length > 0);
+      expect(forwarded.map(c => [c.name, c.posted, c.closed])).toEqual([[`dilla-core:${instance}`, [{ t: 'released', instance, nonce }], true]]);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('starts the core once and shows the loading splash', () => {
     const fake = new FakeClient();
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);

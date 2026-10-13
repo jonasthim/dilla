@@ -74,15 +74,18 @@ export function Settings(): React.JSX.Element {
       {section === 'devices' ? <Devices /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
           : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
-            writeText={text => navigator.clipboard.writeText(text)} />}
+            writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />}
       {verifyError !== null && document.querySelector('.d-safety-compare')?.parentElement
         ? createPortal(<p role="alert">{t('shell.banner.commandError', { code: verifyError })}</p>, document.querySelector('.d-safety-compare')!.parentElement!) : null}
       <SafetyCompare open={comparison !== null} contactName={comparison?.record.name ?? ''}
-        state={comparison?.record.changedUmk !== null ? 'changed' : comparison?.record.verified ? 'verified' : 'first-seen'}
+        state={comparison === null ? 'first-seen' : comparison.record.changedUmk !== null ? 'changed'
+          : comparison.record.unlisted === true ? 'unlisted' : comparison.record.verified ? 'verified' : 'first-seen'}
         approvedUmk={comparison?.umk ?? null} groups={comparison?.number?.split(' ') ?? []}
-        canVerify={comparison !== null && comparison.record.shared && comparison.number !== null}
+        canVerify={comparison !== null && comparison.record.shared && comparison.record.unlisted !== true && comparison.number !== null}
         labels={{ title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('settings.close'),
-          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }) }}
+          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
+          states: { 'first-seen': t('privacy.firstSeenLabel'), changed: t('privacy.changed'), verified: t('privacy.verifiedLabel'),
+            unlisted: t('privacy.unlisted') } }}
         onCopy={() => { if (comparison?.number) void navigator.clipboard?.writeText(comparison.number); }}
         onVerify={umk => {
           if (comparison?.umk !== umk || comparison.number === null) return;

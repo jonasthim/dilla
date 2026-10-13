@@ -21,6 +21,7 @@ function FocusSearch({ children }: { children: ReactNode }) {
 const compareLabels = {
   title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('dialog.close'),
   instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: 'Ada' }),
+  states: { 'first-seen': t('privacy.firstSeenLabel'), changed: t('privacy.changed'), verified: t('privacy.verifiedLabel'), unlisted: t('privacy.unlisted') },
 };
 
 export const Privacy: Story = { render: () => frame(<section data-doc-state="trust-privacy">

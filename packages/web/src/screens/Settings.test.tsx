@@ -156,6 +156,29 @@ describe('Settings', () => {
     await user.click(screen.getByRole('button', { name: 'All 12 blocks match' }));
     expect(fake.callsOf('verifyContact')).toEqual([{ m: 'verifyContact', userId, umk: first }]);
   });
+  it('names the compared state in the dialog and never approves while a device is unlisted', async () => {
+    const userId = 'aa'.repeat(16);
+    const record = { userId, name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32), unlisted: true as const };
+    const { fake, user } = setup('/settings/privacy', null, client => client.set('trust', [record]));
+    fake.handler = command => command.m === 'safetyNumber' ? Promise.resolve('00001 '.repeat(11) + '00012') : Promise.resolve(null);
+    expect(screen.getByText('This device is not on the contact’s list.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
+    const dialog = screen.getByRole('dialog', { name: 'Compare safety numbers' });
+    await within(dialog).findByText('cc'.repeat(32));
+    expect(within(dialog).getByText(/^Ada · /)).toHaveTextContent('Ada · This contact’s identity changed. Compare the number before sending.');
+    await user.click(screen.getByRole('checkbox', { name: 'Yes, all 12 blocks match' }));
+    expect(screen.getByRole('button', { name: 'All 12 blocks match' })).toHaveAttribute('aria-disabled', 'true');
+    await user.click(screen.getByRole('button', { name: 'All 12 blocks match' }));
+    expect(fake.callsOf('verifyContact')).toEqual([]);
+  });
+  it('labels a first-seen comparison with Flow 05’s state text', async () => {
+    const record = { userId: 'aa'.repeat(16), name: 'Ada', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: null };
+    const { user } = setup('/settings/privacy', null, client => client.set('trust', [record]));
+    await user.click(screen.getByRole('button', { name: 'Compare with Ada' }));
+    const dialog = screen.getByRole('dialog', { name: 'Compare safety numbers' });
+    expect(within(dialog).getByText(/^Ada · /)).toHaveTextContent('Ada · First seen here — not verified');
+    expect(dialog).not.toHaveTextContent('first-seen');
+  });
   // Pre-flight ruling 1.2: Escape in a dialog nested in the frame closes only that dialog, and does nothing at all
   // while its command runs; Settings stays open on its route either way.
   it('leaves Settings open when Escape closes a dialog inside it, and while a removal runs', async () => {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, DeviceSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
@@ -150,6 +150,73 @@ it('sends typing off when leaving the visible channel', async () => {
   await user.click(screen.getByRole('button', { name: 'random' }));
   await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: false }));
 });
+it('returns focus to where search was opened when Escape closes it', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await user.click(composer());
+  await user.keyboard('{Control>}k{/Control}');
+  expect(screen.getByRole('textbox', { name: 'Search your messages' })).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('textbox', { name: 'Search your messages' })).toBeNull();
+  expect(composer()).toHaveFocus();
+});
+
+it('opens no search under the Settings dialog', async () => {
+  const { user } = setup('/settings/devices');
+  await user.keyboard('{Control>}k{/Control}');
+  expect(screen.queryByRole('textbox', { name: 'Search your messages' })).toBeNull();
+});
+
+it('says searching while the worker answers, then the scope’s empty text', async () => {
+  let answer!: (value: null) => void;
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  fake.handler = command => command.m === 'search' && command.scope === 'all'
+    ? new Promise(resolve => { answer = resolve; }) : Promise.resolve(null);
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('textbox', { name: 'Search your messages' }), 'z');
+  act(() => fake.set('search', { requestId: 3, hits: [], cursor: null }));
+  expect(screen.getByRole('search')).toHaveTextContent('Searching your messages');
+  await act(async () => { answer(null); await Promise.resolve(); });
+  expect(screen.getByRole('search')).toHaveTextContent('No messages found');
+  await user.click(screen.getByRole('button', { name: 'this conversation' }));
+  act(() => fake.set('search', { requestId: 4, hits: [], cursor: null }));
+  await waitFor(() => expect(screen.getByRole('search')).toHaveTextContent('No results in this scope'));
+});
+
+it('renews typing while the draft keeps changing, within the server’s hold', async () => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+  try {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+    await user.type(composer(), 'ab');
+    expect(fake.callsOf('typing')).toEqual([{ m: 'typing', channelId: GEN, on: true }]);
+    clock.mockReturnValue(1_005_000);
+    await user.type(composer(), 'c');
+    expect(fake.callsOf('typing')).toEqual([{ m: 'typing', channelId: GEN, on: true }, { m: 'typing', channelId: GEN, on: true }]);
+  } finally { clock.mockRestore(); }
+});
+
+it('names typing people once each, in one polite status above the composer', () => {
+  const { fake } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: PEER, name: 'bob', expiresAt: NOW + 9 }]));
+  const status = screen.getByText('bob is typing');
+  expect(status).toHaveAttribute('role', 'status');
+  expect(document.querySelector('.d-app-shell__main')).toContainElement(status);
+  act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: BOT, name: 'Helper', expiresAt: NOW + 10 }]));
+  expect(screen.getAllByText(/typing/)).toHaveLength(1);
+  expect(screen.getByText('Several people are typing')).toHaveAttribute('role', 'status');
+});
+
+it('says only in the unblocked conversation that a validated Remove restored sending', async () => {
+  const removed = 'You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere.';
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: 'cc'.repeat(32), removedIn: [GEN] }]);
+  } });
+  expect(screen.getByText(removed)).toHaveAttribute('role', 'status');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  expect(screen.queryByText(removed)).toBeNull();
+});
+
 // A blocked composer stays focusable: aria-disabled on the textarea, the native attribute on the button only (L-UI-13).
 function expectBlocked(name = 'general') {
   expect(composer(name)).toHaveAttribute('aria-disabled', 'true');
