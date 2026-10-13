@@ -119,9 +119,10 @@ accepted only if:
    UMK nor one a validated signed list presented (for example a key whose list the instance
    never serves) fails this rule as `E_CREDENTIAL`. The own account is never trusted on first
    use: a device pins its own user's UMK, verified, from its own credential (at signup, at
-   enrolment and whenever it opens its store). A leaf of the own user under any other UMK fails
-   this rule as `E_UMK_CHANGED`, and a signed list under another UMK for the own user is refused
-   (`E_UMK_CHANGED`) and changes no pin. The device's own leaf is not judged;
+   enrolment and whenever it opens its store), and drops any own signed list it cached under
+   another UMK, so the own list is read and validated again. A leaf of the own user under any
+   other UMK fails this rule as `E_UMK_CHANGED`, and a signed list under another UMK for the own
+   user is refused (`E_UMK_CHANGED`) and changes no pin. The device's own leaf is not judged;
 3. `dsk_pub` for `device_id` appears, unrevoked, in the newest **signed device list** the verifier
    has seen for this user (below);
 4. `dilla_binding` checks of `01-groups.md` pass for the group;
