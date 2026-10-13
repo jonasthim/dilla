@@ -184,13 +184,11 @@ CREATE TABLE IF NOT EXISTS app_device_lists (
   ssk_pub BLOB NOT NULL CHECK(length(ssk_pub)=32)
 );
 CREATE TABLE IF NOT EXISTS app_trust_pins (
-  user_id BLOB NOT NULL CHECK(length(user_id)=16),
-  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
   umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
   first_seen INTEGER NOT NULL,
   verified INTEGER NOT NULL CHECK(verified IN(0,1)),
-  changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32),
-  PRIMARY KEY(user_id,device_id)
+  changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32)
 );
 CREATE TABLE IF NOT EXISTS app_quarantine (
   group_id BLOB NOT NULL, user_id BLOB NOT NULL CHECK(length(user_id)=16),
@@ -336,6 +334,9 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
             c.execute_batch("ALTER TABLE app_messages ADD COLUMN sender_sig_key BLOB")?;
         }
         c.execute_batch("CREATE INDEX IF NOT EXISTS app_messages_legacy_sender ON app_messages(sender_user,group_id,sender_device) WHERE sender_sig_key IS NULL AND status=0")?;
+        // Retraction seeks a leaf's still-displayed rows by its authenticated key, so repeating
+        // a verdict for an already retracted leaf costs nothing per stored message.
+        c.execute_batch("CREATE INDEX IF NOT EXISTS app_messages_live_by_sig ON app_messages(group_id,sender_sig_key,seq) WHERE status=0")?;
         migrate_quarantine_pairs(c)?;
         migrate_trust_artifact_pairs(c)?;
         if found < 4 {
@@ -398,6 +399,53 @@ mod pair_migration_tests {
     }
 
     #[test]
+    fn per_device_pins_collapse_per_user_without_granting_trust() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE app_trust_pins(user_id BLOB,device_id BLOB,umk_pub BLOB,first_seen INTEGER,verified INTEGER,changed_umk BLOB,PRIMARY KEY(user_id,device_id));",
+        )
+        .unwrap();
+        let pin = |user: u8, device: u8, umk: u8, first: i64, verified: i64| {
+            c.execute(
+                "INSERT INTO app_trust_pins VALUES(?1,?2,?3,?4,?5,NULL)",
+                rusqlite::params![
+                    [user; 16].as_slice(),
+                    [device; 16].as_slice(),
+                    [umk; 32].as_slice(),
+                    first,
+                    verified
+                ],
+            )
+            .unwrap();
+        };
+        pin(1, 1, 0x11, 5, 1);
+        pin(1, 2, 0x11, 7, 1);
+        pin(2, 1, 0x21, 3, 1);
+        pin(2, 2, 0x22, 9, 0);
+        pin(3, 1, 0x31, 4, 1);
+        pin(3, 2, 0x31, 4, 0);
+        migrate_trust_pins_per_user(&c).unwrap();
+        type Collapsed = (Vec<u8>, Vec<u8>, i64, i64, Option<Vec<u8>>);
+        let rows: Vec<Collapsed> = c
+            .prepare("SELECT user_id,umk_pub,first_seen,verified,changed_umk FROM app_trust_pins ORDER BY user_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (vec![1; 16], vec![0x11; 32], 5, 1, None),
+                (vec![2; 16], vec![0x21; 32], 3, 0, Some(vec![0x22; 32])),
+                (vec![3; 16], vec![0x31; 32], 4, 0, None),
+            ],
+            "agreeing rows keep their pin; another key stays a pending change; mixed flags are unverified"
+        );
+        assert!(!has_column(&c, "app_trust_pins", "device_id").unwrap());
+    }
+
+    #[test]
     fn ambiguous_legacy_quarantine_does_not_inherit_a_colliding_senders_user() {
         let c = rusqlite::Connection::open_in_memory().unwrap();
         c.execute_batch(
@@ -438,55 +486,60 @@ fn has_column(c: &rusqlite::Connection, table: &str, name: &str) -> Result<bool,
         .any(|column| column == name))
 }
 
-fn migrate_trust_artifact_pairs(c: &rusqlite::Connection) -> Result<(), StorageError> {
+// The UMK pin is a property of the user (protocol/03 rule 2: "the pinned UMK for user_id"), so
+// app_trust_pins holds one row per user, the L-SQL-32 shape. Task 2's interim v4 stored one row
+// per (user, device); per-device flags could disagree, and a new device of a verified contact
+// hid the contact (T2-LAST-02) or was trusted under a pending key. Collapse such a store per user
+// without granting anything: rows that disagree keep the earliest pinned key, unverified, with
+// any other key they name as the pending change.
+fn migrate_trust_pins_per_user(c: &rusqlite::Connection) -> Result<(), StorageError> {
     if !has_column(c, "app_trust_pins", "device_id")? {
-        type LegacyPin = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>);
-        let rows: Vec<LegacyPin> = {
-            let mut stmt = c.prepare(
-                "SELECT user_id,umk_pub,first_seen,verified,changed_umk FROM app_trust_pins",
-            )?;
-            stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })?
-            .collect::<Result<_, _>>()?
-        };
-        c.execute_batch(
-            "CREATE TABLE app_trust_pins_pair (
-          user_id BLOB NOT NULL CHECK(length(user_id)=16),
-          device_id BLOB NOT NULL CHECK(length(device_id)=16),
-          umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
-          first_seen INTEGER NOT NULL, verified INTEGER NOT NULL CHECK(verified IN(0,1)),
-          changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32),
-          PRIMARY KEY(user_id,device_id));",
+        return Ok(());
+    }
+    type PairPin = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>);
+    let rows: Vec<PairPin> = {
+        let mut stmt = c.prepare(
+            "SELECT user_id,umk_pub,first_seen,verified,changed_umk FROM app_trust_pins \
+             ORDER BY user_id,first_seen,umk_pub",
         )?;
-        for (user, umk, first, verified, changed) in rows {
-            let list: Option<Vec<u8>> = c
-                .query_row(
-                    "SELECT list FROM app_device_lists WHERE user_id=?1",
-                    [user.as_slice()],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let devices: Vec<[u8; 16]> = list
-                .and_then(|bytes| crate::identity::DeviceList::decode(&bytes).ok())
-                .filter(|list| list.unsigned.user_id.as_bytes() == &user)
-                .map(|list| {
-                    list.unsigned
-                        .entries
-                        .iter()
-                        .map(|entry| *entry.device_id.as_bytes())
-                        .collect()
-                })
-                .unwrap_or_else(|| vec![[0; 16]]);
-            for device in devices {
-                c.execute("INSERT OR IGNORE INTO app_trust_pins_pair(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![user.as_slice(),device.as_slice(),umk.as_slice(),first,verified,changed.as_ref().map(|key|key.as_slice())])?;
-            }
-        }
-        c.execute_batch(
-            "DROP TABLE app_trust_pins; ALTER TABLE app_trust_pins_pair RENAME TO app_trust_pins;",
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<Result<_, _>>()?
+    };
+    c.execute_batch(
+        "CREATE TABLE app_trust_pins_user (
+          user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+          umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+          first_seen INTEGER NOT NULL,
+          verified INTEGER NOT NULL CHECK(verified IN(0,1)),
+          changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32));",
+    )?;
+    for user_rows in rows.chunk_by(|a, b| a.0 == b.0) {
+        let (user, umk, first_seen, _, changed) = user_rows[0];
+        let consistent = user_rows.iter().all(|r| r.1 == umk && r.4 == changed);
+        let (verified, changed) = if consistent {
+            (i64::from(user_rows.iter().all(|r| r.3 == 1)), changed)
+        } else {
+            let other = user_rows
+                .iter()
+                .find_map(|r| r.4.filter(|k| *k != umk))
+                .or_else(|| user_rows.iter().map(|r| r.1).find(|k| *k != umk));
+            (0, other)
+        };
+        c.execute(
+            "INSERT INTO app_trust_pins_user(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,?5)",
+            rusqlite::params![user.as_slice(), umk.as_slice(), first_seen, verified, changed.as_ref().map(|k| k.as_slice())],
         )?;
     }
+    c.execute_batch(
+        "DROP TABLE app_trust_pins; ALTER TABLE app_trust_pins_user RENAME TO app_trust_pins;",
+    )?;
+    Ok(())
+}
+
+fn migrate_trust_artifact_pairs(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    migrate_trust_pins_per_user(c)?;
     if !has_column(c, "app_pending_history", "user_id")? {
         c.execute_batch("ALTER TABLE app_pending_history ADD COLUMN user_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';
             ALTER TABLE app_pending_history ADD COLUMN device_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';")?;

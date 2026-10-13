@@ -50,6 +50,10 @@ Stated plainly in the product's documentation and onboarding:
 - A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in
   groups still containing it. Exact-key verification or a validated Remove ends that group's
   block; removing it from one group does not approve the key or release another group.
+- A member who commits an Add, or the instance, can put a leaf that fails validation into a group
+  and so block sending there (fail closed: no member encrypts to a leaf it could not validate).
+  A validated Remove of that leaf releases that group only; the committer stays usable elsewhere
+  and the audit names it.
 - Media authenticity is group-level: any member can derive any sender's frame keys
   (`05-media-frames.md`); a colluding operator and member can inject media attributed to another
   participant. A member a Commit removed still holds the superseded epoch's key while receivers

@@ -191,6 +191,7 @@ impl StoreHandle {
             DROP TABLE IF EXISTS app_quarantine;
             DROP TABLE IF EXISTS app_trust_audit;
             DROP INDEX IF EXISTS app_messages_legacy_sender;
+            DROP INDEX IF EXISTS app_messages_live_by_sig;
             DROP INDEX IF EXISTS app_quarantine_device;
             DROP INDEX IF EXISTS app_pending_history_by_leaf_seq;
             DROP TABLE IF EXISTS app_pending_history;

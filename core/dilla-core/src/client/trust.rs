@@ -1,4 +1,17 @@
 //! Authenticated leaf trust and device-list history.
+//!
+//! Each trust table has one writer, so every path reaches the same decision:
+//! - `write_pin` alone writes `app_trust_pins`: one row per user with the pinned UMK, whether it
+//!   was verified, and at most one pending changed key taken from a validated signed list.
+//! - `record_quarantine` alone writes leaf verdicts to `app_quarantine`, keyed by the
+//!   authenticated leaf (group, user, device, signature key). A changed-key send block is never
+//!   replaced by a later verdict about the same leaf; it ends only when the leaf leaves the group
+//!   (a validated Remove) or its exact key is verified.
+//! - `leaf_verdict` is the one judgement of a leaf against the pin and the cached signed list, and
+//!   `apply_verdict` the one way a verdict reaches storage (quarantine row and retraction).
+//! - `send_block` derives the send gate from the live tree: a member leaf with a failed or
+//!   changed-key verdict blocks sending to that group until it leaves the group (controller ruling
+//!   2, fail closed for confidentiality); a leaf that later validates clears its failed verdict.
 
 use super::error::{
     E_CORE_LIMIT, E_CORE_NOT_FOUND, E_CORE_STORAGE, E_CREDENTIAL, E_DEVICE_LIST_STALE,
@@ -12,6 +25,7 @@ use crate::mls::{DillaProcessed, ReceivedApplication};
 use openmls::prelude::{BasicCredential, GroupId, KeyPackage, Member};
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 #[derive(Clone)]
 pub(crate) struct LeafEvidence {
@@ -26,6 +40,7 @@ pub(crate) struct LeafEvidence {
 #[derive(Debug)]
 pub(crate) struct ValidatedLeaf {
     user_id: [u8; 16],
+    #[allow(dead_code)] // L-CORE-44 shape; ingest judges every current leaf of the user instead.
     device_id: [u8; 16],
     umk_pub: [u8; 32],
     ssk_pub: [u8; 32],
@@ -33,7 +48,6 @@ pub(crate) struct ValidatedLeaf {
 }
 
 type CachedList = (i64, Vec<u8>, [u8; 32], [u8; 32]);
-type TrustRow = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>, i64);
 type RetractedRow = (i64, Option<[u8; 16]>, Option<[u8; 16]>);
 
 fn failure(code: &'static str) -> ClientError {
@@ -137,23 +151,94 @@ fn validate_history_from(
     })
 }
 
+// ---------------------------------------------------------------------------------------------
+// The pin: one row per user.
+
+/// A user's pin. `umk` is the key first seen (or last verified); `changed` is a different key a
+/// validated signed list later presented, pending exact-key verification.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Pin {
+    umk: [u8; 32],
+    first_seen: i64,
+    verified: bool,
+    changed: Option<[u8; 32]>,
+}
+
+fn read_pin(c: &rusqlite::Connection, user: &[u8; 16]) -> Result<Option<Pin>, StorageError> {
+    c.query_row(
+        "SELECT umk_pub,first_seen,verified,changed_umk FROM app_trust_pins WHERE user_id=?1",
+        [user.as_slice()],
+        |r| {
+            Ok(Pin {
+                umk: r.get(0)?,
+                first_seen: r.get(1)?,
+                verified: r.get::<_, i64>(2)? == 1,
+                changed: r.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// The only writer of `app_trust_pins`.
+fn write_pin(c: &rusqlite::Connection, user: &[u8; 16], pin: &Pin) -> Result<(), StorageError> {
+    c.execute(
+        "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,?5) \
+         ON CONFLICT(user_id) DO UPDATE SET umk_pub=excluded.umk_pub,first_seen=excluded.first_seen,\
+         verified=excluded.verified,changed_umk=excluded.changed_umk",
+        params![
+            user.as_slice(),
+            pin.umk.as_slice(),
+            pin.first_seen,
+            i64::from(pin.verified),
+            pin.changed.as_ref().map(|k| k.as_slice())
+        ],
+    )?;
+    Ok(())
+}
+
+/// The pin after a validated signed list under `key`. First sight pins it unverified; the pinned
+/// key keeps the pin (and ends a pending change: its newest list is the pinned key's again); any
+/// other key becomes the one pending change and withdraws an earlier verification.
+fn next_pin(prior: Option<Pin>, key: &[u8; 32], now: i64) -> Pin {
+    match prior {
+        None => Pin {
+            umk: *key,
+            first_seen: now,
+            verified: false,
+            changed: None,
+        },
+        Some(pin) if pin.umk == *key => Pin {
+            changed: None,
+            ..pin
+        },
+        Some(pin) => Pin {
+            verified: false,
+            changed: Some(*key),
+            ..pin
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Retraction, bounded by a page.
+
+/// Accepted rows retracted per page, and the number of distinct dependent targets collected
+/// before they are refolded. Neither is sized by the history a sender made this device store.
+const RETRACT_PAGE: i64 = 256;
+const REFOLD_FLUSH: usize = 1024;
+
 /// Neutralize already accepted rows from a quarantined leaf in the caller's write unit.
-#[allow(dead_code)] // L-CORE-45 compatibility helper for callers with only a validated device identity.
+/// L-CORE-45: the legacy pair form, for rows stored before the authenticated key was kept.
 pub(super) fn retract_device(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
     user_id: &[u8; 16],
     device_id: &[u8; 16],
     code: &str,
-) -> Result<(), StorageError> {
-    retract_matching(
-        c,
-        group_id,
-        Some(user_id.as_slice()),
-        Some(device_id.as_slice()),
-        None,
-        code,
-    )
+) -> Result<usize, StorageError> {
+    retract_matching(c, group_id, RetractBy::LegacyPair(user_id, device_id), code)
 }
 
 fn retract_signature(
@@ -161,49 +246,99 @@ fn retract_signature(
     group_id: &[u8; 16],
     signature_key: &[u8],
     code: &str,
-) -> Result<(), StorageError> {
-    retract_matching(c, group_id, None, None, Some(signature_key), code)
+) -> Result<usize, StorageError> {
+    retract_matching(c, group_id, RetractBy::Leaf(signature_key), code)
 }
 
+enum RetractBy<'a> {
+    /// Rows stored without an authenticated leaf key, by their sender pair.
+    LegacyPair(&'a [u8; 16], &'a [u8; 16]),
+    /// Rows authenticated by this leaf signature key.
+    Leaf(&'a [u8]),
+}
+
+/// Walks the matching accepted rows in pages by seq, inside the caller's write unit: each page is
+/// neutralized and unindexed, and the dependent edits, reactions and replies are refolded once per
+/// distinct target. Memory is bounded by a page and the refold set, not by the history.
 #[inline(never)]
 fn retract_matching(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
-    user: Option<&[u8]>,
-    device: Option<&[u8]>,
-    signature_key: Option<&[u8]>,
+    by: RetractBy<'_>,
     code: &str,
-) -> Result<(), StorageError> {
-    let mut stmt = c.prepare("SELECT seq,msg_id,reply_to FROM app_messages WHERE group_id=?1 AND status=0 AND ((sender_user=?2 AND sender_device=?3 AND sender_sig_key IS NULL) OR sender_sig_key=?4)")?;
-    let rows: Vec<RetractedRow> = stmt
-        .query_map(
-            params![group_id.as_slice(), user, device, signature_key],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?
-        .collect::<Result<_, _>>()?;
-    drop(stmt);
-    for (seq, own_id, reply_to) in rows {
-        c.execute("UPDATE app_messages SET status=1,reason=?3,body='',envelope=NULL,edit_body=NULL,mention=0 WHERE group_id=?1 AND seq=?2", params![group_id.as_slice(),seq,code])?;
-        c.execute(
-            "DELETE FROM app_search_rows WHERE group_id=?1 AND seq=?2",
-            params![group_id.as_slice(), seq],
-        )?;
-        for target in [own_id, reply_to].into_iter().flatten() {
-            super::fold::refold(
-                c,
-                group_id,
-                &target,
-                &super::fold::FoldScope::Full,
-                None,
-                None,
+) -> Result<usize, StorageError> {
+    let (sql, a, b): (&str, &[u8], &[u8]) = match by {
+        RetractBy::LegacyPair(user, device) => (
+            "SELECT seq,msg_id,reply_to FROM app_messages WHERE sender_user=?2 AND group_id=?1 \
+             AND sender_device=?3 AND sender_sig_key IS NULL AND status=0 AND seq>?4 ORDER BY seq LIMIT ?5",
+            user.as_slice(),
+            device.as_slice(),
+        ),
+        RetractBy::Leaf(key) => (
+            "SELECT seq,msg_id,reply_to FROM app_messages WHERE group_id=?1 AND sender_sig_key=?2 \
+             AND status=0 AND seq>?4 ORDER BY seq LIMIT ?5",
+            key,
+            &[],
+        ),
+    };
+    let mut retracted = 0usize;
+    let mut targets: BTreeSet<[u8; 16]> = BTreeSet::new();
+    let mut cursor = i64::MIN;
+    loop {
+        let rows: Vec<RetractedRow> = {
+            let mut stmt = c.prepare_cached(sql)?;
+            stmt.query_map(
+                params![group_id.as_slice(), a, b, cursor, RETRACT_PAGE],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?
+            .collect::<Result<_, _>>()?
+        };
+        let Some(last) = rows.last() else { break };
+        cursor = last.0;
+        let full = rows.len() as i64 == RETRACT_PAGE;
+        for (seq, own_id, reply_to) in rows {
+            c.execute("UPDATE app_messages SET status=1,reason=?3,body='',envelope=NULL,edit_body=NULL,mention=0 WHERE group_id=?1 AND seq=?2", params![group_id.as_slice(),seq,code])?;
+            c.execute(
+                "DELETE FROM app_search_rows WHERE group_id=?1 AND seq=?2",
+                params![group_id.as_slice(), seq],
             )?;
-            if let Some(row) = super::fold::resolve(c, group_id, &target)? {
-                super::search::index_fold(c, group_id, row.seq)?;
-            }
+            retracted += 1;
+            targets.extend([own_id, reply_to].into_iter().flatten());
+        }
+        if targets.len() >= REFOLD_FLUSH {
+            refold_targets(c, group_id, &mut targets)?;
+        }
+        if !full {
+            break;
+        }
+    }
+    refold_targets(c, group_id, &mut targets)?;
+    Ok(retracted)
+}
+
+fn refold_targets(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    targets: &mut BTreeSet<[u8; 16]>,
+) -> Result<(), StorageError> {
+    for target in std::mem::take(targets) {
+        super::fold::refold(
+            c,
+            group_id,
+            &target,
+            &super::fold::FoldScope::Full,
+            None,
+            None,
+        )?;
+        if let Some(row) = super::fold::resolve(c, group_id, &target)? {
+            super::search::index_fold(c, group_id, row.seq)?;
         }
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------------
+// Leaf verdicts and the send gate.
 
 /// Persist a failed authenticated-leaf verdict with its historical retraction.
 /// The caller owns the same write unit as the unreadable incoming row.
@@ -220,6 +355,8 @@ pub(super) fn quarantine_device(
     bump_generation(c)
 }
 
+/// The only writer of leaf verdicts. A changed-key send block is kept when a later verdict about
+/// the same leaf arrives (a revocation must not release it); the answer is whether a row changed.
 fn record_quarantine(
     c: &rusqlite::Connection,
     group_id: &[u8; 16],
@@ -227,10 +364,11 @@ fn record_quarantine(
     device_id: &[u8; 16],
     signature_key: &[u8],
     code: &str,
-) -> Result<(), StorageError> {
-    c.execute(
+) -> Result<bool, StorageError> {
+    let changed = c.execute(
         "INSERT INTO app_quarantine(group_id,user_id,device_id,signature_key,code) VALUES(?1,?2,?3,?4,?5) \
-         ON CONFLICT(group_id,user_id,device_id,signature_key) DO UPDATE SET code=excluded.code",
+         ON CONFLICT(group_id,user_id,device_id,signature_key) DO UPDATE SET code=excluded.code \
+         WHERE app_quarantine.code<>excluded.code AND app_quarantine.code<>'E_UMK_CHANGED'",
         params![
             group_id.as_slice(),
             user_id.as_slice(),
@@ -239,7 +377,42 @@ fn record_quarantine(
             code
         ],
     )?;
-    Ok(())
+    Ok(changed > 0)
+}
+
+/// The one way a leaf verdict reaches storage. A pending verdict (`E_DEVICE_LIST_STALE`) writes
+/// nothing and retracts nothing. A valid leaf ends its own earlier failed verdict (a device that
+/// joined before the list naming it was ingested), never a changed-key block. Any other failure
+/// quarantines the leaf by its authenticated key and retracts that key's accepted rows. Answers
+/// whether stored state changed.
+fn apply_verdict(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    user: &[u8; 16],
+    device: &[u8; 16],
+    signature_key: &[u8],
+    verdict: Result<(), &str>,
+) -> Result<bool, StorageError> {
+    let code = match verdict {
+        Ok(()) => {
+            let cleared = c.execute(
+                "DELETE FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 \
+                 AND signature_key=?4 AND code<>'E_UMK_CHANGED'",
+                params![
+                    group_id.as_slice(),
+                    user.as_slice(),
+                    device.as_slice(),
+                    signature_key
+                ],
+            )?;
+            return Ok(cleared > 0);
+        }
+        Err(code) if code == E_DEVICE_LIST_STALE => return Ok(false),
+        Err(code) => code,
+    };
+    let recorded = record_quarantine(c, group_id, user, device, signature_key, code)?;
+    let retracted = retract_signature(c, group_id, signature_key, code)?;
+    Ok(recorded || retracted > 0)
 }
 
 pub(super) fn bump_generation(c: &rusqlite::Connection) -> Result<(), StorageError> {
@@ -269,6 +442,57 @@ pub(super) fn clear_group_block(
         bump_generation(c)?;
     }
     Ok(())
+}
+
+/// The verdict that blocks sending to `group`, if any (controller ruling 2: fail closed for
+/// confidentiality). Every member leaf is looked up by its authenticated signature key, decodable
+/// or not; a changed-key block wins over other failures. A row of a leaf that left the group (any
+/// validated Remove, also one this device committed) does not count, so a Remove releases that
+/// group only. A legacy row without a leaf key matches its user and device (or, if its owner was
+/// ambiguous, its device) so a migrated block is not lost.
+pub(super) fn send_block(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+) -> Result<Option<&'static str>, StorageError> {
+    let mut stmt = c.prepare_cached(
+        "SELECT code FROM app_quarantine WHERE group_id=?1 AND (signature_key=?2 \
+         OR (signature_key=x'' AND device_id=?4 AND user_id IN (?3,zeroblob(16)))) \
+         ORDER BY code='E_UMK_CHANGED' DESC LIMIT 1",
+    )?;
+    let mut found = None;
+    for member in group.members() {
+        let pair = BasicCredential::try_from(member.credential)
+            .ok()
+            .and_then(|basic| CredentialIdentity::decode(basic.identity()).ok())
+            .map(|identity| (*identity.user_id.as_bytes(), *identity.device_id.as_bytes()));
+        let code: Option<String> = stmt
+            .query_row(
+                params![
+                    group_id.as_slice(),
+                    member.signature_key.as_slice(),
+                    pair.map(|p| p.0.to_vec()),
+                    pair.map(|p| p.1.to_vec())
+                ],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(code) = code else { continue };
+        let code = block_code(&code);
+        if code == E_UMK_CHANGED {
+            return Ok(Some(code));
+        }
+        found.get_or_insert(code);
+    }
+    Ok(found)
+}
+
+/// The stored verdict as the refusal `send_prepare` and `send_encrypt` answer with.
+fn block_code(code: &str) -> &'static str {
+    [E_UMK_CHANGED, E_DEVICE_UNLISTED, E_TIER_MISMATCH]
+        .into_iter()
+        .find(|known| *known == code)
+        .unwrap_or(E_CREDENTIAL)
 }
 
 pub(super) fn member_devices(group: &DillaGroup) -> Vec<([u8; 16], [u8; 16], [u8; 32])> {
@@ -325,28 +549,16 @@ fn audit_failed_leaf(
     // A failed Add is charged to the new leaf alone. Quarantining its committer
     // lets an attacker put a bad leaf in an honest member's commit to block that member.
     let added_by = author.filter(|_| previous.is_some_and(|old| !old.contains(fingerprint)));
+    // One row per leaf and verdict: a failed leaf left in the tree does not add a row per epoch.
     c.execute(
         "INSERT INTO app_trust_audit \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) \
+         SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 WHERE NOT EXISTS(SELECT 1 FROM app_trust_audit \
+         WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND signature_key=?6 AND code=?7) \
          ON CONFLICT DO UPDATE SET code=excluded.code,added_by_user=COALESCE(excluded.added_by_user,app_trust_audit.added_by_user),added_by_device=COALESCE(excluded.added_by_device,app_trust_audit.added_by_device)",
         params![group_id.as_slice(),user.as_slice(),device.as_slice(),epoch as i64,
             fingerprint.0 as i64,&fingerprint.1,code,added_by.map(|a|a.0.as_slice()),added_by.map(|a|a.1.as_slice())],
     )?;
     Ok(())
-}
-
-#[inline(never)]
-fn quarantine_failed_leaf(
-    c: &rusqlite::Connection,
-    group_id: &[u8; 16],
-    fingerprint: &LeafFingerprint,
-    user: &[u8; 16],
-    device: &[u8; 16],
-    code: &str,
-) -> Result<(), StorageError> {
-    record_quarantine(c, group_id, user, device, &fingerprint.1, code)?;
-    retract_signature(c, group_id, &fingerprint.1, code)?;
-    bump_generation(c)
 }
 
 fn extract_leaf(
@@ -390,11 +602,29 @@ pub(super) fn validate_cached_sender(
     validate_cached_leaf(c, &leaf)
 }
 
-#[inline(never)]
 fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result<(), ClientError> {
-    leaf.credential
-        .verify_signatures(&leaf.dsk_pub)
-        .map_err(|_| failure(E_CREDENTIAL))?;
+    leaf_verdict(c, leaf)
+        .map_err(ClientError::from)?
+        .map_err(failure)
+}
+
+/// The one judgement of an authenticated leaf against its user's pin and cached signed list.
+/// The outer error is storage; the inner one the verdict code. Rule 2 (the pinned UMK) is
+/// decided before rule 3 (the newest signed list), as `protocol/03-identity.md` orders them:
+/// - a leaf of the pending changed key is `E_UMK_CHANGED` (it blocks the groups holding it);
+/// - while a change is pending, a leaf of the pinned key is pending (`E_DEVICE_LIST_STALE`): a
+///   list signed under an unverified key neither revokes it nor vouches for it;
+/// - any other key is `E_CREDENTIAL` (D1-prime: a leaf not backed by its user's verified signed
+///   list only ever fails itself);
+/// - otherwise the newest signed list decides (`E_DEVICE_UNLISTED`, `E_TIER_MISMATCH`).
+#[inline(never)]
+fn leaf_verdict(
+    c: &rusqlite::Connection,
+    leaf: &LeafEvidence,
+) -> Result<Result<(), &'static str>, StorageError> {
+    if leaf.credential.verify_signatures(&leaf.dsk_pub).is_err() {
+        return Ok(Err(E_CREDENTIAL));
+    }
     let user = leaf.credential.user_id.as_bytes();
     let cached: Option<(Vec<u8>, [u8; 32], [u8; 32])> = c
         .query_row(
@@ -402,36 +632,41 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
             [user.as_slice()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
-        .optional()
-        .map_err(|e| ClientError::from(StorageError::from(e)))?;
-    let (bytes, umk, ssk) = cached.ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
-    if umk != leaf.credential.umk_pub || ssk != leaf.credential.ssk_pub {
-        return Err(failure(E_CREDENTIAL));
+        .optional()?;
+    let Some((bytes, umk, ssk)) = cached else {
+        return Ok(Err(E_DEVICE_LIST_STALE));
+    };
+    let pin = read_pin(c, user)?;
+    let key = leaf.credential.umk_pub;
+    match pin.map(|pin| (pin.umk, pin.changed)) {
+        Some((_, Some(pending))) if pending == key => return Ok(Err(E_UMK_CHANGED)),
+        Some((pinned, Some(_))) if pinned == key => return Ok(Err(E_DEVICE_LIST_STALE)),
+        Some((_, Some(_))) => return Ok(Err(E_CREDENTIAL)),
+        Some((pinned, None)) if pinned != key => return Ok(Err(E_CREDENTIAL)),
+        Some((_, None)) | None => {}
     }
-    let list = DeviceList::decode(&bytes).map_err(|_| failure(E_CREDENTIAL))?;
-    if list.unsigned.user_id != leaf.credential.user_id {
-        return Err(failure(E_CREDENTIAL));
+    if umk != key || ssk != leaf.credential.ssk_pub {
+        return Ok(Err(E_CREDENTIAL));
     }
-    list.verify(&ssk).map_err(|_| failure(E_CREDENTIAL))?;
-    list.check_leaf(
+    let Ok(list) = DeviceList::decode(&bytes) else {
+        return Ok(Err(E_CREDENTIAL));
+    };
+    if list.unsigned.user_id != leaf.credential.user_id || list.verify(&ssk).is_err() {
+        return Ok(Err(E_CREDENTIAL));
+    }
+    if let Err(e) = list.check_leaf(
         &leaf.credential.device_id,
         &leaf.dsk_pub,
         leaf.credential.tier,
-    )
-    .map_err(ClientError::from)?;
-    let pin: Option<([u8; 32], Option<[u8; 32]>)> = c
-        .query_row(
-            "SELECT umk_pub,changed_umk FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",
-            params![user.as_slice(), leaf.credential.device_id.as_bytes()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| ClientError::from(StorageError::from(e)))?;
-    let (pinned, changed) = pin.ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
-    if changed.is_some() || pinned != umk {
-        return Err(failure(E_UMK_CHANGED));
+    ) {
+        return Ok(Err(ClientError::from(e).code));
     }
-    Ok(())
+    // A cached list without its pin (never written apart by ingest) vouches for nobody.
+    Ok(if pin.is_some() {
+        Ok(())
+    } else {
+        Err(E_DEVICE_LIST_STALE)
+    })
 }
 
 /// Rebind locally retained, MLS-authenticated evidence to the current tree before release.
@@ -453,7 +688,7 @@ pub(super) fn validate_pending_sender(
 }
 
 /// Check each current authenticated tree member at an MLS state transition.
-/// Missing history remains pending; a failed leaf is neutralized by its own device identity.
+/// Missing history remains pending; a failed leaf is neutralized by its own leaf identity.
 pub(super) fn audit_tree(
     c: &rusqlite::Connection,
     group: &DillaGroup,
@@ -464,77 +699,94 @@ pub(super) fn audit_tree(
     previous: Option<&[LeafFingerprint]>,
 ) -> Result<(), StorageError> {
     for member in group.members() {
-        let malformed_leaf = (member.index.u32(), member.signature_key.as_slice().to_vec());
-        let leaf = extract_leaf(group_id, group, [0; 32], member);
-        let (user, device, verdict) = match leaf {
-            Ok(leaf) => {
-                let user = *leaf.credential.user_id.as_bytes();
-                let device = *leaf.credential.device_id.as_bytes();
-                let verdict = validate_cached_leaf(c, &leaf);
-                (user, device, verdict)
-            }
-            Err(_) => {
-                // A credential without a decodable identity has no authenticated user/device
-                // pair. Reserve the zero user and derive a stable opaque device key from the
-                // authenticated tree position and signature key. It is never treated as a
-                // verified device-list entry, but its own leaf gets a failed verdict.
-                let mut hash = Sha256::new();
-                hash.update(b"dilla undecodable leaf v1");
-                hash.update(group_id);
-                hash.update(malformed_leaf.0.to_be_bytes());
-                hash.update(&malformed_leaf.1);
-                let digest = hash.finalize();
-                let mut opaque_device = [0u8; 16];
-                opaque_device.copy_from_slice(&digest[..16]);
-                record_quarantine(
-                    c,
-                    group_id,
-                    &[0; 16],
-                    &opaque_device,
-                    &malformed_leaf.1,
-                    E_CREDENTIAL,
-                )?;
-                retract_signature(c, group_id, &malformed_leaf.1, E_CREDENTIAL)?;
-                bump_generation(c)?;
-                audit_failed_leaf(
-                    c,
-                    group_id,
-                    group.epoch(),
-                    &malformed_leaf,
-                    &[0; 16],
-                    &opaque_device,
-                    E_CREDENTIAL,
-                    author,
-                    previous,
-                )?;
-                continue;
-            }
-        };
-        if &user == own_user
-            && &device == own_device
-            && malformed_leaf.0 == group.own_leaf_index().u32()
-        {
-            continue;
-        }
-        if let Err(error) = verdict {
-            if error.code == E_DEVICE_LIST_STALE {
-                continue;
-            }
-            quarantine_failed_leaf(c, group_id, &malformed_leaf, &user, &device, error.code)?;
-            audit_failed_leaf(
-                c,
-                group_id,
-                group.epoch(),
-                &malformed_leaf,
-                &user,
-                &device,
-                error.code,
-                author,
-                previous,
-            )?;
-        }
+        audit_member(
+            c, group, group_id, own_user, own_device, member, author, previous,
+        )?;
     }
     Ok(())
+}
+
+/// A failed application sender is charged to its own leaf: one verdict, not a re-verification
+/// of every member's signed list per refused message.
+pub(super) fn audit_sender(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+    own_user: &[u8; 16],
+    own_device: &[u8; 16],
+    sender_leaf: u32,
+) -> Result<(), StorageError> {
+    match group.member_at(sender_leaf) {
+        Some(member) => audit_member(c, group, group_id, own_user, own_device, member, None, None),
+        None => Ok(()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // The tree transition's evidence, as audit_tree receives it.
+fn audit_member(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+    own_user: &[u8; 16],
+    own_device: &[u8; 16],
+    member: Member,
+    author: Option<(&[u8; 16], &[u8; 16])>,
+    previous: Option<&[LeafFingerprint]>,
+) -> Result<(), StorageError> {
+    let fingerprint = (member.index.u32(), member.signature_key.as_slice().to_vec());
+    let (user, device, code) = match extract_leaf(group_id, group, [0; 32], member) {
+        Ok(leaf) => {
+            let user = *leaf.credential.user_id.as_bytes();
+            let device = *leaf.credential.device_id.as_bytes();
+            if &user == own_user
+                && &device == own_device
+                && fingerprint.0 == group.own_leaf_index().u32()
+            {
+                return Ok(());
+            }
+            match leaf_verdict(c, &leaf)? {
+                Ok(()) => {
+                    if apply_verdict(c, group_id, &user, &device, &fingerprint.1, Ok(()))? {
+                        bump_generation(c)?;
+                    }
+                    return Ok(());
+                }
+                Err(code) => (user, device, code),
+            }
+        }
+        Err(_) => {
+            // A credential without a decodable identity has no authenticated user/device
+            // pair. Reserve the zero user and derive a stable opaque device key from the
+            // authenticated tree position and signature key. It is never treated as a
+            // verified device-list entry, but its own leaf gets a failed verdict.
+            let mut hash = Sha256::new();
+            hash.update(b"dilla undecodable leaf v1");
+            hash.update(group_id);
+            hash.update(fingerprint.0.to_be_bytes());
+            hash.update(&fingerprint.1);
+            let digest = hash.finalize();
+            let mut opaque_device = [0u8; 16];
+            opaque_device.copy_from_slice(&digest[..16]);
+            ([0; 16], opaque_device, E_CREDENTIAL)
+        }
+    };
+    if code == E_DEVICE_LIST_STALE {
+        return Ok(());
+    }
+    if apply_verdict(c, group_id, &user, &device, &fingerprint.1, Err(code))? {
+        bump_generation(c)?;
+    }
+    audit_failed_leaf(
+        c,
+        group_id,
+        group.epoch(),
+        &fingerprint,
+        &user,
+        &device,
+        code,
+        author,
+        previous,
+    )
 }
 
 pub(super) fn validate_proposed_add(
@@ -567,6 +819,17 @@ fn leaf_from_key_package(kp: &KeyPackage) -> Result<LeafEvidence, ClientError> {
     Ok(leaf)
 }
 
+/// This device's own exact leaf identity, which no trust verdict is applied to.
+type OwnLeaf = Option<([u8; 16], [u8; 16], [u8; 32])>;
+
+fn is_own(own: &OwnLeaf, leaf: &LeafEvidence) -> bool {
+    own.is_some_and(|(user, device, dsk)| {
+        leaf.credential.user_id.as_bytes() == &user
+            && leaf.credential.device_id.as_bytes() == &device
+            && leaf.dsk_pub == dsk
+    })
+}
+
 impl ClientCore {
     pub fn trust_generation(&self) -> Result<u64, ClientError> {
         self.read(|c| {
@@ -575,6 +838,40 @@ impl ClientCore {
                 .unwrap_or(0))
         })
     }
+
+    fn own_leaf(&self) -> OwnLeaf {
+        self.own()
+            .ok()
+            .map(|own| (own.user_id, own.device_id, own.dsk_pub))
+    }
+
+    /// The send gate of `send_prepare`: the live tree when the group can be loaded, otherwise
+    /// any verdict row of the group (fail closed).
+    pub(super) fn send_block_code(
+        &self,
+        group_id: &[u8; 16],
+    ) -> Result<Option<&'static str>, ClientError> {
+        let cached = self.groups.get(group_id);
+        let loaded = if cached.is_none() {
+            DillaGroup::load(&self.provider, &GroupId::from_slice(group_id))?
+        } else {
+            None
+        };
+        match cached.or(loaded.as_ref()) {
+            Some(group) => self.read(|c| send_block(c, group, group_id)),
+            None => self.read(|c| {
+                let code: Option<String> = c
+                    .query_row(
+                        "SELECT code FROM app_quarantine WHERE group_id=?1 ORDER BY code='E_UMK_CHANGED' DESC LIMIT 1",
+                        [group_id.as_slice()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(code.map(|code| block_code(&code)))
+            }),
+        }
+    }
+
     fn candidate_leaves(
         &mut self,
         group_id: &[u8; 16],
@@ -778,15 +1075,8 @@ impl ClientCore {
                             |r| r.get(0),
                         )
                         .optional()?;
-                    let changed: Option<Vec<u8>> = c
-                        .query_row(
-                            "SELECT changed_umk FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",
-                            params![user.as_slice(),leaf.credential.device_id.as_bytes()],
-                            |r| r.get(0),
-                        )
-                        .optional()?
-                        .flatten();
-                    Ok((version.unwrap_or(0).max(0) as u64, changed.is_some()))
+                    let changed = read_pin(c, &user)?.is_some_and(|pin| pin.changed.is_some());
+                    Ok((version.unwrap_or(0).max(0) as u64, changed))
                 })?;
                 rows.push((
                     id,
@@ -913,40 +1203,17 @@ impl ClientCore {
                 return Err(failure(E_DEVICE_LIST_STALE));
             }
         }
-        let user_leaves = self.current_user_leaves(requested_user)?;
-        let mut devices = Vec::new();
-        let mut affected = Vec::new();
-        let mut failed = Vec::new();
-        for leaf in user_leaves {
-            let device = *leaf.credential.device_id.as_bytes();
-            let valid = leaf.credential.umk_pub == validated.umk_pub
-                && leaf.credential.ssk_pub == validated.ssk_pub
-                && leaf.credential.verify_signatures(&leaf.dsk_pub).is_ok()
-                && head
-                    .check_leaf(
-                        &leaf.credential.device_id,
-                        &leaf.dsk_pub,
-                        leaf.credential.tier,
-                    )
-                    .is_ok();
-            let identity = (leaf.group_id, device, leaf.dsk_pub);
-            if valid {
-                if !devices.contains(&device) {
-                    devices.push(device);
-                }
-                affected.push(identity);
-            } else {
-                failed.push(identity);
-            }
-        }
-        if !devices.contains(&validated.device_id) {
-            devices.push(validated.device_id);
-        }
         let now = i64::try_from(now).map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        // Every current leaf of this user is judged again, in the same unit, by the same verdict
+        // the transition audit uses, against the pin and list this ingest writes.
+        let user_leaves = self.current_user_leaves(requested_user)?;
+        let own = self.own_leaf();
+        // Rows stored before the authenticated leaf key was kept: candidates for retraction when
+        // the newest list under the pinned key drops their device.
         let revoked_legacy_devices: Vec<[u8; 16]> = cached
             .as_ref()
-            .map(|(_, blob, _, _)| {
-                let previous = DeviceList::decode(blob).expect("cached signed list checked above");
+            .and_then(|(_, blob, _, _)| DeviceList::decode(blob).ok())
+            .map(|previous| {
                 previous
                     .unsigned
                     .entries
@@ -970,78 +1237,62 @@ impl ClientCore {
         if legacy_rows.len() > 4096 {
             return Err(failure(E_CORE_LIMIT));
         }
-        let old_pins: Vec<[u8; 16]> = self.read(|c| {
-            let mut stmt =
-                c.prepare("SELECT device_id FROM app_trust_pins WHERE user_id=?1 LIMIT 4097")?;
-            stmt.query_map([requested_user.as_slice()], |r| r.get(0))?
-                .collect::<Result<_, _>>()
-                .map_err(Into::into)
-        })?;
-        if old_pins.len() > 4096 {
-            return Err(failure(E_CORE_LIMIT));
-        }
-        let (changed,quarantined)=self.write(|_,u| {
+        let (changed, quarantined) = self.write(|_, u| {
             u.with_conn(|c| {
-                let pinned: Option<[u8;32]> = c.query_row("SELECT umk_pub FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",params![requested_user.as_slice(),validated.device_id.as_slice()],|r| r.get(0)).optional()?;
-                let prior_key = cached.as_ref().map(|row| row.2).or(pinned);
-                let changed=prior_key.is_some_and(|p| p!=validated.umk_pub);
+                let prior = read_pin(c, requested_user)?;
+                let pin = next_pin(prior, &validated.umk_pub, now);
+                write_pin(c, requested_user, &pin)?;
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice()])?;
-                for device in old_pins.iter().filter(|device| !devices.contains(device)) {
-                    c.execute("DELETE FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",params![requested_user.as_slice(),device.as_slice()])?;
+                // First sight pins without changing anything displayed; a key change or its end does.
+                let mut touched = prior.is_some() && prior != Some(pin);
+                let mut quarantined = 0u64;
+                for leaf in user_leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
+                    let verdict = leaf_verdict(c, leaf)?;
+                    let device = leaf.credential.device_id.as_bytes();
+                    touched |= apply_verdict(c, &leaf.group_id, requested_user, device, &leaf.dsk_pub, verdict)?;
+                    quarantined += u64::from(verdict.is_err_and(|code| code != E_DEVICE_LIST_STALE));
                 }
-                for (group,device,sig) in &failed {
-                    record_quarantine(c,group,requested_user,device,sig,E_DEVICE_UNLISTED)?;
-                    retract_signature(c,group,sig,E_DEVICE_UNLISTED)?;
-                }
-                for (group,device) in legacy_rows.iter().filter(|(_,device)| revoked_legacy_devices.contains(device)) {
-                    retract_device(c,group,requested_user,device,E_DEVICE_UNLISTED)?;
-                }
-                if !failed.is_empty() { bump_generation(c)?; }
-                if changed {
-                    for device in &devices {
-                        c.execute("INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,0,?5) ON CONFLICT(user_id,device_id) DO UPDATE SET changed_umk=excluded.changed_umk,verified=0",params![validated.user_id.as_slice(),device.as_slice(),prior_key.expect("changed has a prior key").as_slice(),now,validated.umk_pub.as_slice()])?;
+                // Only a list under the pinned key is the user's own word on its devices; a list
+                // under a pending, unverified key revokes nothing that was accepted before.
+                if pin.changed.is_none() && pin.umk == validated.umk_pub {
+                    for (group, device) in legacy_rows.iter().filter(|(_, device)| revoked_legacy_devices.contains(device)) {
+                        touched |= retract_device(c, group, requested_user, device, E_DEVICE_UNLISTED)? > 0;
                     }
-                    for (group,device,sig) in &affected {
-                        record_quarantine(c,group,requested_user,device,sig,E_UMK_CHANGED)?;
-                        retract_signature(c,group,sig,E_UMK_CHANGED)?;
-                    }
+                }
+                if touched {
                     bump_generation(c)?;
-                } else {
-                    for device in &devices {
-                        c.execute("INSERT OR IGNORE INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,0,NULL)",params![validated.user_id.as_slice(),device.as_slice(),validated.umk_pub.as_slice(),now])?;
-                    }
                 }
-                Ok((changed,failed.len() + if changed { affected.len() } else { 0 }))
-            }).map_err(ClientError::from)
+                let newly_changed = pin.changed.is_some() && pin.changed != prior.and_then(|p| p.changed);
+                Ok((newly_changed, quarantined))
+            })
+            .map_err(ClientError::from)
         })?;
         let mut e = Encoder::new();
         e.array(3)
             .uint(validated.version)
             .uint(u64::from(changed))
-            .uint(quarantined as u64);
+            .uint(quarantined);
         Ok(e.into_vec())
     }
 
     /// Bounded public-key-only local trust state.
     pub fn trust_state(&self) -> Result<Vec<u8>, ClientError> {
+        type TrustRow = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>);
         let rows: Vec<TrustRow> = self.read(|c| {
-            let mut stmt=c.prepare("SELECT user_id,MIN(umk_pub),MIN(first_seen),MIN(verified),MAX(changed_umk),CASE WHEN MIN(umk_pub)=MAX(umk_pub) AND MIN(verified)=MAX(verified) AND COUNT(DISTINCT COALESCE(changed_umk,x''))=1 THEN 1 ELSE 0 END FROM app_trust_pins GROUP BY user_id ORDER BY user_id LIMIT 4097")?;
-            stmt.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?.collect::<Result<_,_>>().map_err(Into::into)
+            let mut stmt=c.prepare("SELECT user_id,umk_pub,first_seen,verified,changed_umk FROM app_trust_pins ORDER BY user_id LIMIT 4097")?;
+            stmt.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?.collect::<Result<_,_>>().map_err(Into::into)
         })?;
         if rows.len() > 4096 {
             return Err(failure(E_CORE_LIMIT));
         }
         let mut e = Encoder::new();
         e.array(rows.len());
-        for (user, umk, first, verified, changed, consistent) in rows {
-            if consistent != 1 {
-                return Err(failure(E_DEVICE_LIST_STALE));
-            }
+        for (user, umk, first, verified, changed) in rows {
             e.array(5)
                 .bytes(&user)
                 .bytes(&umk)
                 .uint(first.max(0) as u64)
-                .uint(verified as u64)
+                .uint(u64::from(verified == 1))
                 .opt_bytes(changed.as_ref().map(|v| v.as_slice()));
         }
         Ok(e.into_vec())
@@ -1071,12 +1322,24 @@ impl ClientCore {
         if list.unsigned.user_id.as_bytes() != user_id {
             return Err(failure(E_CREDENTIAL));
         }
-        let mut owned_blocks = Vec::new();
-        for leaf in self.current_user_leaves(user_id)? {
-            let device = *leaf.credential.device_id.as_bytes();
-            if leaf.credential.umk_pub == *expected_umk
-                && leaf.credential.ssk_pub == ssk
-                && leaf.credential.verify_signatures(&leaf.dsk_pub).is_ok()
+        let pin = self
+            .read(|c| read_pin(c, user_id))?
+            .ok_or_else(|| failure(E_DEVICE_LIST_STALE))?;
+        // The key shown for comparison: the pending changed key, or the pinned one.
+        if pin.changed.unwrap_or(pin.umk) != *expected_umk {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        let leaves = self.current_user_leaves(user_id)?;
+        let endorsed: Vec<&LeafEvidence> = leaves
+            .iter()
+            .filter(|leaf| {
+                leaf.credential.umk_pub == *expected_umk
+                    && leaf.credential.verify_signatures(&leaf.dsk_pub).is_ok()
+            })
+            .collect();
+        // The verified key must still hold a current leaf that its signed list names.
+        if !endorsed.iter().any(|leaf| {
+            leaf.credential.ssk_pub == ssk
                 && list
                     .check_leaf(
                         &leaf.credential.device_id,
@@ -1084,40 +1347,44 @@ impl ClientCore {
                         leaf.credential.tier,
                     )
                     .is_ok()
-            {
-                owned_blocks.push((leaf.group_id, device, leaf.dsk_pub));
-            }
-        }
-        if owned_blocks.is_empty() {
+        }) {
             return Err(failure(E_DEVICE_LIST_STALE));
         }
-        self.write(|_,u|u.with_conn(|c| {
-            let pin: Option<([u8;32],Option<[u8;32]>)>=c.query_row("SELECT umk_pub,changed_umk FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",params![user_id.as_slice(),owned_blocks[0].1.as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            let matches = pin.is_some_and(|(pinned,changed)| changed.map_or(pinned==*expected_umk,|pending|pending==*expected_umk));
-            if !matches {return Err(StorageError::Codec("pending validated key differs".into()));}
-            let cached: Option<([u8;32],[u8;32],Vec<u8>)>=c.query_row("SELECT umk_pub,ssk_pub,list FROM app_device_lists WHERE user_id=?1",[user_id.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-            let (umk,ssk,blob)=cached.ok_or_else(||StorageError::Codec("cached validated list missing".into()))?;
-            if umk!=*expected_umk {return Err(StorageError::Codec("cached validated list differs".into()));}
-            let list=DeviceList::decode(&blob).map_err(|_|StorageError::Codec("cached list malformed".into()))?;
-            list.verify(&ssk).map_err(|_|StorageError::Codec("cached list signature invalid".into()))?;
-            if list.unsigned.user_id.as_bytes()!=user_id {return Err(StorageError::Codec("cached list user differs".into()));}
-            let pinned_devices: Vec<[u8;16]> = {
-                let mut stmt=c.prepare("SELECT device_id FROM app_trust_pins WHERE user_id=?1")?;
-                stmt.query_map([user_id.as_slice()],|r|r.get(0))?.collect::<Result<_,_>>()?
-            };
-            for device in &pinned_devices {
-                if owned_blocks.iter().any(|(_, current, _)| current == device) {
-                    c.execute("UPDATE app_trust_pins SET umk_pub=?3,changed_umk=NULL,verified=1 WHERE user_id=?1 AND device_id=?2",params![user_id.as_slice(),device.as_slice(),expected_umk.as_slice()])?;
-                } else {
-                    c.execute("DELETE FROM app_trust_pins WHERE user_id=?1 AND device_id=?2",params![user_id.as_slice(),device.as_slice()])?;
+        // Blocks this verification ends: every leaf of the verified key, current or named by its
+        // list. Blocks of any other key stay until their leaf is removed.
+        let mut released: BTreeSet<[u8; 32]> = endorsed.iter().map(|leaf| leaf.dsk_pub).collect();
+        released.extend(
+            list.unsigned
+                .entries
+                .iter()
+                .filter(|entry| entry.revoked_at.is_none())
+                .map(|entry| entry.dsk_pub),
+        );
+        let own = self.own_leaf();
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                write_pin(
+                    c,
+                    user_id,
+                    &Pin {
+                        umk: *expected_umk,
+                        first_seen: pin.first_seen,
+                        verified: true,
+                        changed: None,
+                    },
+                )?;
+                for key in &released {
+                    c.execute("DELETE FROM app_quarantine WHERE user_id=?1 AND signature_key=?2 AND code='E_UMK_CHANGED'",params![user_id.as_slice(),key.as_slice()])?;
                 }
-            }
-            for (group, device, sig) in &owned_blocks {
-                c.execute("DELETE FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3 AND signature_key=?4 AND code='E_UMK_CHANGED'",params![group.as_slice(),user_id.as_slice(),device.as_slice(),sig.as_slice()])?;
-            }
-            bump_generation(c)?;
-            Ok(())
-        }).map_err(ClientError::from))
+                for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
+                    let verdict = leaf_verdict(c, leaf)?;
+                    let device = leaf.credential.device_id.as_bytes();
+                    apply_verdict(c, &leaf.group_id, user_id, device, &leaf.dsk_pub, verdict)?;
+                }
+                bump_generation(c)
+            })
+            .map_err(ClientError::from)
+        })
     }
 
     /// Pairwise comparison digits for a contact in a current shared MLS group.
@@ -1484,20 +1751,31 @@ mod tests {
         let user = [0x31; 16];
         let other_user = [0x32; 16];
         let device = [0x33; 16];
+        // The UMK pin belongs to the user (protocol/03 rule 2): two users colliding on a device
+        // id keep two independent pins, and one user cannot hold two disagreeing pins.
         for owner in [user, other_user] {
             db.execute(
-                "INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified) VALUES(?1,?2,?3,1,0)",
-                params![owner.as_slice(),device.as_slice(),[0x34u8;32].as_slice()],
-            ).unwrap();
+                "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified) VALUES(?1,?2,1,0)",
+                params![owner.as_slice(), [0x34u8; 32].as_slice()],
+            )
+            .unwrap();
         }
-        let pairs: i64 = db
+        let pins: i64 = db
             .query_row(
-                "SELECT count(*) FROM app_trust_pins WHERE device_id=?1",
-                [device.as_slice()],
+                "SELECT count(*) FROM app_trust_pins WHERE user_id IN (?1,?2)",
+                params![user.as_slice(), other_user.as_slice()],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(pairs, 2);
+        assert_eq!(pins, 2);
+        assert!(
+            db.execute(
+                "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified) VALUES(?1,?2,1,1)",
+                params![user.as_slice(), [0x36u8; 32].as_slice()],
+            )
+            .is_err(),
+            "a second, disagreeing pin for one user is unrepresentable"
+        );
         db.execute(
             "INSERT INTO app_search_rows(group_id,seq,user_id,device_id,body,terms) VALUES(?1,1,?2,?3,'honest comet',' honest comet')",
             params![[0x35u8;16].as_slice(),user.as_slice(),device.as_slice()],
@@ -1586,7 +1864,14 @@ mod tests {
         )
         .unwrap();
         db.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,1,?2,?3,?4)",params![owner.credential.user_id.as_bytes(),owner_list.encode(),owner.credential.umk_pub.as_slice(),owner.credential.ssk_pub.as_slice()]).unwrap();
-        db.execute("INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified) VALUES(?1,?2,?3,1,0)",params![owner.credential.user_id.as_bytes(),owner.credential.device_id.as_bytes(),owner.credential.umk_pub.as_slice()]).unwrap();
+        db.execute(
+            "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified) VALUES(?1,?2,1,0)",
+            params![
+                owner.credential.user_id.as_bytes(),
+                owner.credential.umk_pub.as_slice()
+            ],
+        )
+        .unwrap();
         let malformed_key: [u8; 32] = malformed_signer.public().try_into().unwrap();
         db.execute("INSERT INTO app_messages(group_id,seq,epoch,recv_ts,status,sender_user,sender_device,sender_sig_key,type,body,franking_tag) VALUES(?1,1,0,1,0,?2,?3,?4,0,'malformed historical comet',?5)",params![group_id.as_slice(),[0x66u8;16].as_slice(),[0x67u8;16].as_slice(),malformed_key.as_slice(),[0x68u8;32].as_slice()]).unwrap();
         db.execute("INSERT INTO app_search_rows(group_id,seq,user_id,device_id,body,terms) VALUES(?1,1,?2,?3,'malformed historical comet',' malformed historical comet')",params![group_id.as_slice(),[0x66u8;16].as_slice(),[0x67u8;16].as_slice()]).unwrap();
@@ -1964,8 +2249,8 @@ mod tests {
             .expect("block");
         }
         db.execute(
-            "INSERT INTO app_trust_pins(user_id,device_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,1,0,?4)",
-            rusqlite::params![[0x64u8; 16].as_slice(), device.as_slice(), [0x65u8; 32].as_slice(), [0x66u8; 32].as_slice()],
+            "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,1,0,?3)",
+            rusqlite::params![[0x64u8; 16].as_slice(), [0x65u8; 32].as_slice(), [0x66u8; 32].as_slice()],
         ).expect("changed pin");
         clear_group_block(&db, &first, &[0x64u8; 16], &device, &[]).expect("validated remove");
         let count = |group: &[u8; 16]| -> i64 {

@@ -659,6 +659,7 @@ fn open_creates_app_schema_v4_and_reopens_idempotently() {
             "app_messages_by_reaction",
             "app_messages_by_reply",
             "app_messages_legacy_sender",
+            "app_messages_live_by_sig",
             "app_meta",
             "app_outbox",
             "app_outbox_by_group",

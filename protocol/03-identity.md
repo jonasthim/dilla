@@ -115,7 +115,9 @@ accepted only if:
 
 1. both signatures verify;
 2. `umk_pub` equals the pinned UMK for `user_id` on this instance (trust-on-first-use with a
-   loud, undismissable alert on change), or no pin exists yet;
+   loud, undismissable alert on change), or no pin exists yet; a key that is neither the pinned
+   UMK nor one a validated signed list presented (for example a key whose list the instance
+   never serves) fails this rule as `E_CREDENTIAL`;
 3. `dsk_pub` for `device_id` appears, unrevoked, in the newest **signed device list** the verifier
    has seen for this user (below);
 4. `dilla_binding` checks of `01-groups.md` pass for the group;
@@ -124,12 +126,27 @@ accepted only if:
 
 Failing 1 or 4 refuses the leaf (`E_CREDENTIAL`); failing 2 is `E_UMK_CHANGED`; failing 3 is
 `E_DEVICE_UNLISTED`; failing 5 is `E_TIER_MISMATCH`. An incomplete, rolled-back, gapped or
-substituted list history is `E_DEVICE_LIST_STALE` and leaves the leaf pending. An Add this device
-would commit is refused before making the commit; a bad leaf already merged by a remote commit
-stays in MLS but is quarantined. A changed UMK blocks sends in each group still containing its
+substituted list history is `E_DEVICE_LIST_STALE` and leaves the leaf pending. A proposed `Add`
+whose leaf fails is left out of this device's commit (never committed, and never a refusal that
+stalls the device's commits); one whose history is still unknown is refused until it is fetched.
+A bad leaf already merged by a remote commit stays in MLS but is quarantined, and it blocks sends
+in each group still containing it, as a changed UMK does, until a validated `Remove` eliminates
+it from that group (fail closed for confidentiality: a member must not encrypt to a leaf it could
+not validate). Its committer is not blocked or quarantined; the audit names who added the leaf.
+Receiving is unaffected, and a leaf whose history is merely unknown (first sight) stays pending
+and blocks nothing. A leaf that later validates against a newer signed list ends its own failed
+verdict. A changed UMK blocks sends in each group still containing its
 leaf until exact-key verification or a validated `Remove` eliminates that leaf from that group.
 The Remove does not approve the new key or unblock any other group. A remote member can repeatedly
 rotate a leaf's key to trigger this refusal against an honest sender.
+The pin is one record per user: the pinned UMK, whether it was verified, and at most one pending
+changed UMK. A validated signed list under another UMK makes that UMK the pending change: its
+leaves are `E_UMK_CHANGED`, the pinned UMK's leaves are pending (their new messages wait; nothing
+they sent before is retracted), and the list revokes no device of the pinned UMK until exact-key
+verification approves it. A later list back under the pinned UMK ends the pending change. A
+leaf's send block is never released by a later list: only exact-key verification of that leaf's
+UMK, or a `Remove` of that leaf from that group (whoever commits it), releases it. The block is
+checked again when a queued message is encrypted.
 
 The instance binds a new leaf to a device too, before any client sees it: a leaf's
 `signature_key` must be the `dsk_pub` its device registered (`POST /v1/accounts`,
@@ -169,8 +186,9 @@ signed list in the history must equal the user extracted from the current authen
 The list entry must bind that leaf's `device_id`, DSK and tier. A leaf whose `device_id` is absent
 or has `revoked_at` set in the newest list is `E_DEVICE_UNLISTED` and no message from it is
 rendered. Revocation is therefore cryptographic and does not depend on the instance. A later
-quarantine or UMK change retracts every previously accepted display row attributable to that
-group/device, refolds dependent edits, reactions and replies, removes derived search rows, and
+quarantine (including a pinned UMK's leaf that a verified changed UMK's list does not hold)
+retracts every previously accepted display row attributable to that leaf in that group, refolds
+dependent edits, reactions and replies, removes derived search rows, and
 invalidates older timeline and search slices before display. Old quarantined rows stay neutral
 after verification unless retained ciphertext is freshly authenticated against the validated leaf.
 

@@ -370,11 +370,9 @@ impl ClientCore {
                 format!("group state {}", row.state),
             ));
         }
-        let blocked: bool = self.read(|c| {
-            c.query_row("SELECT EXISTS(SELECT 1 FROM app_quarantine WHERE group_id=?1 AND code='E_UMK_CHANGED')", [id.as_slice()], |r| r.get(0)).map_err(Into::into)
-        })?;
-        if blocked {
-            return Err(ClientError::new(super::error::E_UMK_CHANGED, ""));
+        // A changed-key or failed leaf still in the group blocks queuing (and again at encryption).
+        if let Some(code) = self.send_block_code(id)? {
+            return Err(ClientError::new(code, ""));
         }
         let input = |detail: &'static str| Err(ClientError::new(E_CORE_INPUT, detail));
         let unheld = || ClientError::new(E_CORE_NOT_FOUND, "target is not held");
@@ -488,6 +486,19 @@ impl ClientCore {
             if group.has_pending_commit() {
                 this.keep_group(id, group);
                 return Err(ClientError::new(E_CORE_STATE, "a commit is pending"));
+            }
+            // The gate holds where confidentiality is decided: at encryption to the current
+            // tree, not only when the row was queued before a key change arrived.
+            match this.read(|c| super::trust::send_block(c, &group, &id)) {
+                Ok(None) => {}
+                Ok(Some(code)) => {
+                    this.keep_group(id, group);
+                    return Err(ClientError::new(code, ""));
+                }
+                Err(e) => {
+                    this.keep_group(id, group);
+                    return Err(e);
+                }
             }
             let env = Envelope::decode(&o.envelope)
                 .map_err(|_| ClientError::new(E_CORE_STORAGE, "outbox envelope does not decode"))?;

@@ -425,7 +425,15 @@ impl ClientCore {
                     match group.process_message(ctx.provider, message) {
                         Ok(DillaProcessed::Proposal(proposal)) => {
                             if let openmls::prelude::Proposal::Add(add) = proposal.proposal() {
-                                u.with_conn(|c| Ok(super::trust::validate_proposed_add(c,add.key_package())))??;
+                                // Controller ruling 3: a leaf that fails validation is left out of
+                                // this commit (never committed, never a refusal that stalls this
+                                // device's commits). A leaf whose signed history is not yet known
+                                // still refuses, so the worker fetches it and retries.
+                                match u.with_conn(|c| Ok(super::trust::validate_proposed_add(c,add.key_package())))? {
+                                    Ok(()) => {}
+                                    Err(e) if e.code == super::error::E_DEVICE_LIST_STALE => return Err(e),
+                                    Err(_) => continue,
+                                }
                             }
                             let reference = proposal.proposal_reference_ref().as_slice().to_vec();
                             let exists = u.with_conn(|c| Ok(c.query_row("SELECT 1 FROM app_proposals WHERE group_id=?1 AND ref=?2", params![id.as_slice(), &reference], |r| r.get::<_, i64>(0)).optional()?.is_some()))?;
@@ -775,7 +783,7 @@ impl ClientCore {
                                             Ok(()) => (STATUS_OK, "", Some(r), None),
                                             Err(e) => {
                                                 if e.code != super::error::E_DEVICE_LIST_STALE {
-                                                    u.with_conn(|c| super::trust::audit_tree(c,&group,id,&own.user_id,&own.device_id,None,None))?;
+                                                    u.with_conn(|c| super::trust::audit_sender(c,&group,id,&own.user_id,&own.device_id,r.sender_leaf))?;
                                                     (STATUS_CANNOT_DECRYPT, e.code, None, None)
                                                 } else {
                                                     (STATUS_CANNOT_DECRYPT, e.code, None, Some(r))
