@@ -999,4 +999,69 @@ describe('review M2-M6', () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// Task 6 re-review hardening (note 1 and the two unpinned guards).
+// ---------------------------------------------------------------------------------------------
+
+describe('re-review hardening', () => {
+  // Re-review note 1 (probe P5): a re-join during a blocked leave would race the old leave's self-Remove and forget, which
+  // could overtake the new join. A join is refused while a leave is in flight.
+  it('refuses a callJoin while a leave is in flight, and allows it once the leave is done', async () => {
+    const w = await joined();
+    const held = w.server.hold('POST proposal');
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await held.reached;
+    expect(w.slice('call').phase).toBe('blocked');
+    const before = w.server.routes().filter((r) => r !== 'GET device list');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_CALL_ACTIVE');
+    expect(w.server.routes().filter((r) => r !== 'GET device list')).toEqual(before);
+    held.release();
+    await settled(w);
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.slice('call').phase).toBe('blocked');
+    // Done leaving, a join may run again (the forged leaf keeps refusing it: no key either way).
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_DEVICE_UNLISTED');
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+
+  // The in-lane guard: a rotation that waited for the group lane while a leave was posted never commits (call_rotate would
+  // cancel the posted self-Remove).
+  it('a rotation waiting on the lane when a leave starts commits nothing', async () => {
+    const w = await joined();
+    const held = w.server.holdRaw('getHandshakes');
+    w.ds.dropNext(ME.device, 1);
+    w.ds.peerSend(w.callGroup, PEER, 'a');
+    w.ds.peerSend(w.callGroup, PEER, 'b');
+    await held.reached;
+    await w.clock.advance(3_600_000);                    // the rotation passes its first checks and waits for the lane
+    const leave = w.send({ m: 'callLeave', reason: 'user' });
+    held.release();
+    await waitRet(w, leave);
+    await settled(w);
+    expect(w.model.calls.some((c) => c.m === 'callRotate')).toBe(false);
+    expect(w.server.routes()).not.toContain('POST commit');
+    expect(w.server.routes()).toContain('POST proposal');
+  });
+
+  // Ruling I2 and review M4 on the pause path of a voice channel: the candidates are the keyed roster's users. Carol's leaf
+  // turns up under another key (a stored verdict, no pending key change); dave changed elsewhere and is not in the call.
+  it('a pause in a voice channel names a changed member of the keyed roster', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer', dm: true });
+    const carol = w.ds.listRow(THIRD.user)!;
+    w.model.trustList(THIRD.user, carol.version, carol.blob);
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }, { leafIndex: 2, user: THIRD.user, device: THIRD.device }]);
+    w.model.addPendingLeaf(w.dms[0].text, 2, FOURTH.user, FOURTH.device, fakeDskPub(FOURTH.device), 1);
+    const dave = w.ds.listRow(FOURTH.user)!;
+    w.model.trustList(FOURTH.user, dave.version, dave.blob);
+    w.model.changeIdentity(FOURTH.user);
+    await w.call(JOIN(w));
+    expect(w.slice('call').roster.map((r) => r.userId)).toContain(toHex(THIRD.user));
+    w.model.forceVerdict(w.callGroup, 2, 'E_UMK_CHANGED');
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', changedUser: toHex(THIRD.user) });
+  });
+});
+
 export { fromHex };

@@ -114,6 +114,9 @@ export class CallController {
     const target = this.deps.callTarget(channel);
     if (target === undefined) throw new CallRefusal('E_BAD_INPUT', 'not a voice channel or a DM');
     if (!(['idle', 'blocked', 'removed', 'failed'] as CallPhase[]).includes(this.state.phase)) throw new CallRefusal('E_CALL_ACTIVE', '');
+    // Re-review note 1: a blocked call's leave may still be in flight (its self-Remove and forget); a join now could be
+    // overtaken by it, so it is refused until the leave is done.
+    if (this.live !== null) throw new CallRefusal('E_CALL_ACTIVE', 'a leave is in flight');
     const core = this.deps.core();
     const instance = this.deps.instance();
     if (core === null || instance === null) throw new CallRefusal('E_NOT_READY', '');
@@ -345,10 +348,11 @@ export class CallController {
     if (this.state.phase === 'paused') { this.armRotation(CALL_ROTATE_MS); return; }
     if (this.state.phase !== 'in') return;
     await this.deps.serial(live.groupId, async () => {
+      // A leave that started while this waited for the lane (blocked or not, it sets `leaving` first): never a rotation,
+      // since call_rotate would cancel the posted self-Remove. This is the one in-lane guard against it.
       if (this.live !== live || live.leaving) return;
       // Review M1: a pause that landed while this waited for the lane holds the rotation too.
       if (this.state.phase === 'paused') { this.armRotation(CALL_ROTATE_MS); return; }
-      if (this.state.phase !== 'in') return;
       let body: Uint8Array;
       try { body = core.callRotate(live.groupId); }
       catch { this.armRotation(CALL_ROTATE_RETRY_MS); return; }

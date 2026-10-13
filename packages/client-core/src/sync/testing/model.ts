@@ -754,6 +754,14 @@ export class ModelCore implements CorePort {
     this.leaves.set(`${toHex(groupId)}/${leaf.leafIndex}`, leaf);
     if (this.applyVerdict(leaf, code)) this.generation += 1n;
   }
+  /** Test hook: a current leaf's stored verdict becomes `code` (a forced one: the lists no longer decide it) without its
+   *  user's pin taking a change, as a transition audit that found the leaf under another key stores it. */
+  forceVerdict(groupId: Id, leafIndex: number, code: string): void {
+    const leaf = this.leaves.get(`${toHex(groupId)}/${leafIndex}`);
+    if (leaf === undefined) throw coreError('E_CORE_NOT_FOUND');
+    leaf.forced = code;
+    if (this.applyVerdict(leaf, code)) this.generation += 1n;
+  }
   /** Test hook: clears what blockGroup set on the group. */
   unblockGroup(groupId: Id): void {
     for (const [key, leaf] of [...this.leaves]) {
