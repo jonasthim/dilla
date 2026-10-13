@@ -16,6 +16,7 @@ import { CborError } from '../cbor';
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustBlock,
+  type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
@@ -2105,7 +2106,17 @@ export class Controller {
     // says an own-user leaf is under another key (E_UMK_CHANGED) or an own device is unlisted. That stands on the account
     // slice, where the page alerts on it (ruling M6 revised: no own-key compare; a Remove of the leaf ends it).
     const own = this.me === null ? null : toHex(this.me.userId);
-    const rows = this.core.trustState();
+    let rows: TrustRecord[];
+    try {
+      rows = this.core.trustState();
+    } catch (e) {
+      // R3: a trust state the core cannot read never leaves an earlier verified view standing. Every contact reads as
+      // history pending (not verified, no Verify) until the core answers again; the gate is read as it is.
+      this.recordError(errorOf(e).code);
+      this.slices.set('trust', (this.slices.get('trust') ?? []).map((row) => ({ ...row, verified: false, unlisted: true as const })));
+      this.publishSendBlocks();
+      return;
+    }
     const ownRow = own === null ? undefined : rows.find((row) => toHex(row.userId) === own);
     const ownTrust: AccountState['ownTrust'] = ownRow?.blocked === 'E_UMK_CHANGED' || this.ownRefusedLeaves.size > 0 ? 'changed'
       : (ownRow?.blocked ?? null) !== null || (own !== null && this.unlistedUsers.has(own)) ? 'unlisted' : null;

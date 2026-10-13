@@ -15,7 +15,7 @@ import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
 import type {
-  AccountState, BadgeState, ChannelSummary, CommunitySummary, ConnectionState, DeviceSummary, DmSummary, MemberSummary, NoticesState,
+  AccountState, BadgeState, ChannelSummary, CommunitySummary, ConnectionState, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, NoticesState,
   PinnedItem, TimelineState, TrayItem, TrustSummary,
 } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
@@ -953,6 +953,23 @@ it('never reads a contact with a stored blocked verdict as verified, right after
   expect(row).toMatchObject({ verified: false, blocked: 'E_UMK_CHANGED' });
   // Its Verify is the compare dialog's, not "unlisted": the changed key is not an unlisted device.
   expect(row).not.toHaveProperty('unlisted');
+});
+
+it('never keeps a verified contact when trust_state fails: the last rows read pending until the core answers (R3)', async () => {
+  const w = world();
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
+  await toReady(w);
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: true }));
+  w.core.trustState.mockImplementation(() => { throw new CoreError('E_CORE_STORAGE', 'codec'); });
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER), verified: false, unlisted: true });
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code)).toContain('E_CORE_STORAGE');
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: true });
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
 });
 
 it('marks a contact unlisted from the core\'s failed verdict or a leaf verdict the core refused with, never from the count', async () => {
