@@ -44,9 +44,12 @@ test('the host serves the built client with the headers, types, cache rules and 
   // Hashed assets are immutable, typed by extension, carry their ETag and the same CSP as the page.
   const js = manifest.files.find((f) => f.path.startsWith('assets/') && f.path.endsWith('.js'));
   if (!js) throw new Error('the manifest lists no assets/*.js');
+  // web-3 task 8: one core wasm (the core and media workers share it) and RNNoise's, as check-entry-chunk.mjs and
+  // internal/web/webdist_test.go count them; each is served as application/wasm.
   const wasm = manifest.files.filter((f) => f.path.endsWith('.wasm'));
-  expect(wasm.map((f) => f.path)).toEqual([expect.stringMatching(/^assets\/.+\.wasm$/)]);
-  for (const [file, type] of [[js, 'text/javascript; charset=utf-8'], [wasm[0], 'application/wasm']] as const) {
+  expect(wasm.map((f) => f.path).sort()).toEqual([expect.stringMatching(/^assets\/dilla_core_wasm_bg-[^/]+\.wasm$/),
+    expect.stringMatching(/^assets\/rnnoise-[^/]+\.wasm$/)]);
+  for (const [file, type] of [[js, 'text/javascript; charset=utf-8'], ...wasm.map((w) => [w, 'application/wasm'] as const)] as const) {
     const res = await request.get(`/${file.path}`);
     expect(res.status(), file.path).toBe(200);
     const h = res.headers();
