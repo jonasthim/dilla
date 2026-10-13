@@ -51,6 +51,17 @@ column below uses four scopes:
 | `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]` |
 | `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
 
+For trust validation, the unpaged `GET /v1/users/{user_id}/device-list` supplies a signed
+candidate head. History pages after `N` contain at most 64 ascending versions; a page has no
+authoritative head or `lastVersion`. If the candidate is the exact cached signed head, compare
+its bytes and hash and skip paging; a lower version is rollback. Otherwise fetch from version 1
+on first sight, or after the cached signed version, checking every signature, user, consecutive
+version and `prev_hash`. Reject an empty or short page before the candidate, a gap, an extra
+version, or final signed bytes/hash different from the candidate. Read the unpaged head again
+after paging; if it changed, retry once within 1024 versions and 4 MiB total or leave the leaf
+untrusted. A 403, 404 or malformed body also leaves it untrusted. A server that withholds all
+newer history can freeze first-sight trust; the client cannot prove freshness from these routes.
+
 `POST /v1/accounts` is the sole exception to the device-session proof rule: it creates the device
 and its first session in the same transaction, because the device's key is the one being
 registered and there is no prior key to prove possession of. `POST /v1/devices` is not an

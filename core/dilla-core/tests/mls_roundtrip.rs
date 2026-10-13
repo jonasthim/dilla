@@ -694,7 +694,7 @@ fn a_receiver_accepts_a_member_commit_of_instance_adds_and_removes() {
         .process_message(&bob_p, into_protocol(bundle.commit))
         .expect("the instance's Add and Remove, committed by a member, are accepted")
     {
-        DillaProcessed::StagedCommit(staged) => {
+        DillaProcessed::StagedCommit(staged, _) => {
             bob.merge_staged_commit(&bob_p, *staged).expect("merge")
         }
         other => panic!("expected a staged commit, got {other:?}"),
@@ -1623,7 +1623,7 @@ fn an_application_message_carries_the_epoch_it_was_sent_in() {
         .process_message(&bob_p, into_protocol(update.commit))
         .expect("process the update")
     {
-        DillaProcessed::StagedCommit(staged) => bob
+        DillaProcessed::StagedCommit(staged, _) => bob
             .merge_staged_commit(&bob_p, *staged)
             .expect("merge the update"),
         other => panic!("expected a staged commit, got {other:?}"),
@@ -1843,7 +1843,7 @@ fn a_self_update_that_keeps_the_credential_is_accepted_by_a_member_and_the_ds() 
         .process_message(&g.bob_p, into_protocol(bundle.commit.clone()))
         .expect("an honest self-update is accepted")
     {
-        DillaProcessed::StagedCommit(staged) => {
+        DillaProcessed::StagedCommit(staged, _) => {
             assert!(
                 staged.update_path_leaf_node().is_some(),
                 "a self-update carries an UpdatePath"
@@ -1932,7 +1932,7 @@ fn a_self_update_that_changes_the_credential_is_refused_by_a_member_and_the_ds()
         .process_message(&g.bob_p, into_protocol(honest.commit.clone()))
         .expect("the honest commit is accepted after the refusal")
     {
-        DillaProcessed::StagedCommit(staged) => g
+        DillaProcessed::StagedCommit(staged, _) => g
             .bob
             .merge_staged_commit(&g.bob_p, *staged)
             .expect("merge_staged_commit"),
@@ -2109,7 +2109,7 @@ fn a_resync_that_keeps_the_credential_is_accepted_by_a_member_and_the_ds() {
         .process_message(&g.alice_p, protocol_in(&commit))
         .expect("an honest resync is accepted")
     {
-        DillaProcessed::StagedCommit(staged) => {
+        DillaProcessed::StagedCommit(staged, _) => {
             assert_eq!(
                 staged.remove_proposals().count(),
                 1,
@@ -2310,7 +2310,7 @@ fn a_self_update_that_changes_the_signature_key_is_refused_by_a_member_and_the_d
         .process_message(&g.bob_p, into_protocol(honest.commit.clone()))
         .expect("the honest commit is accepted after the refusal")
     {
-        DillaProcessed::StagedCommit(staged) => g
+        DillaProcessed::StagedCommit(staged, _) => g
             .bob
             .merge_staged_commit(&g.bob_p, *staged)
             .expect("merge_staged_commit"),
@@ -2454,7 +2454,7 @@ fn an_external_commit_that_leaves_its_devices_old_leaf_in_place_is_refused() {
         .process_message(&g.alice_p, protocol_in(&honest))
         .expect("the honest resync is accepted after the refusal")
     {
-        DillaProcessed::StagedCommit(staged) => {
+        DillaProcessed::StagedCommit(staged, _) => {
             assert_eq!(staged.remove_proposals().count(), 1);
         }
         other => panic!("expected a staged commit, got {other:?}"),
@@ -2487,7 +2487,7 @@ fn an_external_commit_that_leaves_its_devices_old_leaf_in_place_is_refused() {
         g.alice
             .process_message(&g.alice_p, protocol_in(&join))
             .expect("a first join is accepted"),
-        DillaProcessed::StagedCommit(_)
+        DillaProcessed::StagedCommit(_, _)
     ));
     assert!(matches!(
         g.ds.process_message(&crypto, protocol_in(&join))

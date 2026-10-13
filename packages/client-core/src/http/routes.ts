@@ -1,5 +1,6 @@
 // One typed function per web-1 route. Core-built bodies pass through unchanged; raw answers return unchanged.
 import { CborError, arr, bin, decode, encode, opt, str, u53, u64, type CborValue } from '../cbor';
+import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
 import { DillaHttpError } from './errors';
@@ -90,7 +91,7 @@ export class Routes {
   constructor(private readonly http: HttpClient) {}
 
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
-    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType'> = {}): Promise<Uint8Array> {
+    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes'> = {}): Promise<Uint8Array> {
     return (await this.http.request({ method, path, bucket, idempotent, ...options })).body;
   }
 
@@ -127,7 +128,7 @@ export class Routes {
   }
   async getDeviceList(userId: Uint8Array): Promise<DeviceListRecord | null> {
     const response = await this.http.request({ method: 'GET', path: `/v1/users/${id('userId', userId)}/device-list`,
-      bucket: 'read', idempotent: true, ok: [200, 404] });
+      bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: 1024 * 1024 });
     if (response.status === 404) return null;
     const a = atLeast(decode(response.body), 2);
     return { version: u64(a[0]), blob: bin(a[1]), raw: response.body };
@@ -267,8 +268,10 @@ export class Routes {
   }
   async getDeviceListHistory(userId: Uint8Array, after: bigint): Promise<DeviceListHistory> {
     const path = `/v1/users/${id('userId', userId)}/device-list?after=${count('after', after)}`;
-    const p = page(await this.body('GET', path, 'read', true));
-    return { raw: p.raw, count: p.count, lastVersion: p.last };
+    const raw = await this.body('GET', path, 'read', true, { maxBodyBytes: 1_048_576 });
+    const rows = decodeBoundedArray(raw, 64);
+    const lastVersion = rows.length ? u64(atLeast(rows[rows.length - 1], 1)[0]) : null;
+    return { raw, count: rows.length, lastVersion };
   }
   async postDm(recipients: Uint8Array[]): Promise<DmOpened> {
     if (recipients.length < 1 || recipients.length > 64) throw new RangeError('E_ROUTE_INPUT: recipients must be 1..64');

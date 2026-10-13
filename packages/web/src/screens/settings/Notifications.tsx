@@ -63,7 +63,7 @@ export function Notifications(): React.JSX.Element {
 
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID}>
-      <h2 id={TITLE_ID}>{t('notify.title')}</h2>
+      <h2 id={TITLE_ID} tabIndex={-1}>{t('notify.title')}</h2>
       {error === null ? null : <Banner tone="danger">{t('settings.error.other', { code: error.code })}</Banner>}
       <p>{t('notify.body')}</p>
       <SettingsRow id="notify-permission" label={t('notify.permission.label')}>

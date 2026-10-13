@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { SETTINGS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue } from './settings';
 
+it('accepts only bounded device-local appearance and search choices', () => {
+  const choices = [
+    [SETTINGS.density, ['regular', 'compact']],
+    [SETTINGS.reduceMotion, ['system', 'on', 'off']],
+    [SETTINGS.searchScope, ['channel', 'community', 'all']],
+  ] as const;
+  for (const [key, values] of choices) {
+    expect(isSettingKey(key)).toBe(true);
+    for (const value of values) expect(isSettingValue(key, value)).toBe(true);
+    expect(isSettingValue(key, 'x'.repeat(129))).toBe(false);
+  }
+  expect(isSettingKey('theme')).toBe(false);
+  expect(isSettingKey('density.extra')).toBe(false);
+  expect(isSettingValue(SETTINGS.searchScope, 'everywhere')).toBe(false);
+});
+
 const HEX = 'ab'.repeat(16);
 
 describe('settings keys (L-TS-25)', () => {

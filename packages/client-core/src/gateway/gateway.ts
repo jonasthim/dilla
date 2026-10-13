@@ -1,6 +1,7 @@
 import { arr, bin, u53, u64, type CborValue } from '../cbor';
 import { DillaHttpError } from '../http/errors';
 import { encodeFrame, decodeFrame, Op, type Frame } from './frames';
+import { toHex } from '../hex';
 
 export type GatewayStatus = 'idle' | 'connecting' | 'ready' | 'waiting';
 
@@ -90,6 +91,7 @@ export class Gateway {
   private handshakeTimer: number | null = null;
   private heartbeatTimer: number | null = null;
   private ackTimer: number | null = null;
+  private readonly lastTyping = new Map<string, number>();
 
   constructor(deps: GatewayDeps) { this.deps = deps; }
   get status(): GatewayStatus { return this.current; }
@@ -216,7 +218,8 @@ export class Gateway {
     }
     if (this.phase === 'ready') {
       if (frame.op === Op.heartbeatAck) this.cancel('ackTimer');
-      else if (frame.op >= Op.handshake && frame.op <= Op.messageDeleted) this.emit({ type: 'frame', frame });
+      // The group frames, and the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49).
+      else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.typing) this.emit({ type: 'frame', frame });
       else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);
     }
   }
@@ -297,6 +300,26 @@ export class Gateway {
     this.teardown(CLIENT_CLOSE.normal, false);
     this.goIdle();
     this.setStatus('idle', null);
+    this.lastTyping.clear();
+  }
+
+  sendTyping(channelId: Uint8Array, on: boolean): void {
+    if (!(channelId instanceof Uint8Array) || channelId.length !== 16 || typeof on !== 'boolean') throw new Error('E_FRAME_SHAPE');
+    if (this.current !== 'ready' || this.socket?.readyState !== 1) return;
+    const key = toHex(channelId);
+    const now = this.deps.now();
+    const last = this.lastTyping.get(key);
+    if (on && last !== undefined && now - last < 3000) return;
+    if (on) this.lastTyping.set(key, now);
+    else this.lastTyping.delete(key);
+    this.send(encodeFrame(Op.typingSet, 0, null, [channelId, on ? 1 : 0]));
+  }
+
+  sendVoiceSelf(callId: Uint8Array, flags: 0 | 1 | 2 | 3): void {
+    if (!(callId instanceof Uint8Array) || callId.length !== 16 || !Number.isInteger(flags) || flags < 0 || flags > 3)
+      throw new Error('E_FRAME_SHAPE');
+    if (this.current === 'ready' && this.socket?.readyState === 1)
+      this.send(encodeFrame(Op.voiceSelf, 0, null, [callId, flags]));
   }
 
   commitAck(groupId: Uint8Array, round: bigint): void {

@@ -2,7 +2,19 @@
 
 use crate::cbor::decode_strict;
 use crate::mls::{DillaStorage, StorageError, TxError};
+#[cfg(any(test, feature = "test-hooks"))]
+use core::sync::atomic::{AtomicBool, Ordering};
 use rusqlite::OptionalExtension;
+
+#[cfg(any(test, feature = "test-hooks"))]
+static FORCE_MISSING_FTS5: AtomicBool = AtomicBool::new(false);
+
+/// Test-build-only simulation of an OPFS SQLite binary without FTS5.
+#[cfg(any(test, feature = "test-hooks"))]
+#[allow(dead_code)] // The browser fixture uses this only through the feature-gated facade.
+pub fn test_force_missing_fts5(on: bool) {
+    FORCE_MISSING_FTS5.store(on, Ordering::SeqCst);
+}
 
 /// Rows of `app_handshake_tail` kept per group; the oldest are deleted in the inserting unit.
 pub const HANDSHAKE_TAIL: usize = 64;
@@ -115,6 +127,7 @@ CREATE TABLE IF NOT EXISTS app_messages (
   reply_to      BLOB,
   edit_body     TEXT,
   edit_seq      INTEGER NOT NULL DEFAULT 0,
+  sender_sig_key BLOB,
   PRIMARY KEY (group_id, seq)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS app_messages_by_msg ON app_messages (group_id, msg_id);
@@ -163,6 +176,129 @@ CREATE INDEX IF NOT EXISTS app_messages_by_pin ON app_messages (group_id, reply_
 CREATE INDEX IF NOT EXISTS app_messages_by_reaction ON app_messages (group_id, reply_to, sender_user, body, seq);
 ";
 
+const APP_SCHEMA_V4: &str = "
+CREATE TABLE IF NOT EXISTS app_device_lists (
+  user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+  version INTEGER NOT NULL, list BLOB NOT NULL,
+  umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+  ssk_pub BLOB NOT NULL CHECK(length(ssk_pub)=32)
+);
+CREATE TABLE IF NOT EXISTS app_trust_pins (
+  user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+  umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+  first_seen INTEGER NOT NULL,
+  verified INTEGER NOT NULL CHECK(verified IN(0,1)),
+  changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32)
+);
+CREATE TABLE IF NOT EXISTS app_quarantine (
+  group_id BLOB NOT NULL, user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  signature_key BLOB NOT NULL DEFAULT x'' CHECK(length(signature_key) IN (0,32)),
+  code TEXT NOT NULL,
+  PRIMARY KEY(group_id,user_id,device_id,signature_key)
+);
+CREATE TABLE IF NOT EXISTS app_pending_history (
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  seq INTEGER NOT NULL,
+  ciphertext BLOB NOT NULL,
+  envelope BLOB NOT NULL,
+  sender_leaf INTEGER NOT NULL,
+  sender_credential BLOB NOT NULL,
+  PRIMARY KEY(group_id,seq)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS app_pending_history_by_leaf_seq ON app_pending_history(group_id,user_id,device_id,sender_leaf,seq);
+CREATE TABLE IF NOT EXISTS app_search_rows (
+  rowid INTEGER PRIMARY KEY,
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  seq INTEGER NOT NULL, body TEXT NOT NULL, terms TEXT NOT NULL,
+  UNIQUE(group_id,seq)
+);
+CREATE INDEX IF NOT EXISTS app_search_rows_recent ON app_search_rows(group_id DESC,seq DESC);
+CREATE INDEX IF NOT EXISTS app_quarantine_device ON app_quarantine(user_id,device_id,group_id);
+CREATE TABLE IF NOT EXISTS app_trust_audit (
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  device_id BLOB NOT NULL CHECK(length(device_id)=16),
+  epoch INTEGER NOT NULL, leaf_index INTEGER NOT NULL,
+  signature_key BLOB NOT NULL, code TEXT NOT NULL,
+  added_by_user BLOB CHECK(added_by_user IS NULL OR length(added_by_user)=16),
+  added_by_device BLOB CHECK(added_by_device IS NULL OR length(added_by_device)=16),
+  PRIMARY KEY(group_id,user_id,device_id,epoch,leaf_index)
+) WITHOUT ROWID;
+";
+
+const APP_FTS5: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS app_search USING fts5(body, content='', tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS app_search_rows_insert AFTER INSERT ON app_search_rows BEGIN
+  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS app_search_rows_delete AFTER DELETE ON app_search_rows BEGIN
+  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS app_search_rows_update AFTER UPDATE OF body ON app_search_rows BEGIN
+  INSERT INTO app_search(app_search,rowid,body) VALUES('delete',old.rowid,old.body);
+  INSERT INTO app_search(rowid,body) VALUES(new.rowid,new.body);
+END;
+";
+
+fn open_fts5(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    // Retire the earlier shared-terms FTS table before opening the specified body index.
+    c.execute_batch(
+        "DROP TRIGGER IF EXISTS app_search_rows_insert_v2;
+        DROP TRIGGER IF EXISTS app_search_rows_delete_v2;
+        DROP TRIGGER IF EXISTS app_search_rows_update_v2;
+        DROP TABLE IF EXISTS app_search_v2",
+    )?;
+    c.execute_batch("SAVEPOINT search_fts5")?;
+    #[cfg(any(test, feature = "test-hooks"))]
+    if FORCE_MISSING_FTS5.load(Ordering::SeqCst) {
+        c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
+        meta_put(c, "search_fts5", &[0])?;
+        meta_put(c, "search_contract_v4", &[1])?;
+        return Ok(());
+    }
+    let result = c.execute_batch(APP_FTS5);
+    match result {
+        Ok(()) => {
+            c.execute_batch(
+                "INSERT INTO app_search(app_search) VALUES('delete-all');
+                INSERT INTO app_search(rowid,body) SELECT rowid,body FROM app_search_rows;
+                RELEASE search_fts5",
+            )?;
+            meta_put(c, "search_fts5", &[1])?;
+            meta_put(c, "search_contract_v4", &[1])?;
+        }
+        Err(e) if e.to_string().contains("no such module: fts5") => {
+            c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
+            meta_put(c, "search_fts5", &[0])?;
+            meta_put(c, "search_contract_v4", &[1])?;
+        }
+        Err(e) => {
+            c.execute_batch("ROLLBACK TO search_fts5; RELEASE search_fts5")?;
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+fn backfill_search_rows(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let mut stmt = c.prepare(
+        "SELECT group_id,seq FROM app_messages WHERE status=0 AND type=0 ORDER BY group_id,seq",
+    )?;
+    let rows: Vec<([u8; 16], i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    for (group, seq) in rows {
+        super::search::index_fold(c, &group, seq as u64)?;
+    }
+    Ok(())
+}
+
 /// L-SQL-20, run on a v1 store only, after `APP_SCHEMA`; the backfill follows in the same unit.
 const MIGRATE_V1_TO_V2: &str = "
 ALTER TABLE app_groups   ADD COLUMN epoch          INTEGER NOT NULL DEFAULT 0;
@@ -191,10 +327,245 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found == 1 || found == 2 {
         c.execute_batch(MIGRATE_V2_TO_V3)?;
     }
-    if found <= 3 {
+    if found <= 4 {
         c.execute_batch(APP_INDEXES_V3)?;
+        c.execute_batch(APP_SCHEMA_V4)?;
+        if !has_column(c, "app_messages", "sender_sig_key")? {
+            c.execute_batch("ALTER TABLE app_messages ADD COLUMN sender_sig_key BLOB")?;
+        }
+        c.execute_batch("CREATE INDEX IF NOT EXISTS app_messages_legacy_sender ON app_messages(sender_user,group_id,sender_device) WHERE sender_sig_key IS NULL AND status=0")?;
+        // Retraction seeks a leaf's still-displayed rows by its authenticated key, so repeating
+        // a verdict for an already retracted leaf costs nothing per stored message.
+        c.execute_batch("CREATE INDEX IF NOT EXISTS app_messages_live_by_sig ON app_messages(group_id,sender_sig_key,seq) WHERE status=0")?;
+        migrate_quarantine_pairs(c)?;
+        migrate_trust_artifact_pairs(c)?;
+        if found < 4 {
+            backfill_search_rows(c)?;
+        }
+        if found < 4 || meta_get(c, "search_contract_v4")?.is_none() {
+            open_fts5(c)?;
+        }
+        meta_put(c, SCHEMA, &[4])?;
     }
     Ok(found)
+}
+
+// Task 2's earlier v4 preview stored one quarantine verdict per bare device id.
+// Preserve an ambiguous old block under an unknown owner so opening the store
+// cannot silently enable sending or assign another user's message as its owner.
+fn migrate_quarantine_pairs(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let has_user = has_column(c, "app_quarantine", "user_id")?;
+    if has_user && has_column(c, "app_quarantine", "signature_key")? {
+        return Ok(());
+    }
+    let old_user = if has_user {
+        "q.user_id"
+    } else {
+        "zeroblob(16)"
+    };
+    c.execute_batch(
+        "ALTER TABLE app_quarantine RENAME TO app_quarantine_old;
+         DROP INDEX IF EXISTS app_quarantine_device;",
+    )?;
+    c.execute_batch(&format!(
+        "
+         CREATE TABLE app_quarantine (
+           group_id BLOB NOT NULL, user_id BLOB NOT NULL CHECK(length(user_id)=16),
+           device_id BLOB NOT NULL CHECK(length(device_id)=16),
+           signature_key BLOB NOT NULL DEFAULT x'' CHECK(length(signature_key) IN (0,32)),
+           code TEXT NOT NULL, PRIMARY KEY(group_id,user_id,device_id,signature_key)
+         );
+         INSERT INTO app_quarantine(group_id,user_id,device_id,signature_key,code)
+         SELECT q.group_id,{old_user},q.device_id,x'',q.code
+           FROM app_quarantine_old q;
+         DROP TABLE app_quarantine_old;
+         CREATE INDEX app_quarantine_device ON app_quarantine(user_id,device_id,group_id);"
+    ))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod pair_migration_tests {
+    use super::*;
+
+    #[test]
+    fn pair_quarantine_upgrade_preserves_a_changed_key_block() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE app_quarantine(group_id BLOB,user_id BLOB,device_id BLOB,code TEXT,PRIMARY KEY(group_id,user_id,device_id)); CREATE INDEX app_quarantine_device ON app_quarantine(user_id,device_id,group_id);").unwrap();
+        c.execute("INSERT INTO app_quarantine(group_id,user_id,device_id,code) VALUES(?1,?2,?3,'E_UMK_CHANGED')", rusqlite::params![[1u8;16].as_slice(),[2u8;16].as_slice(),[3u8;16].as_slice()]).unwrap();
+        migrate_quarantine_pairs(&c).unwrap();
+        let (code,key_len): (String,i64) = c.query_row("SELECT code,length(signature_key) FROM app_quarantine WHERE group_id=?1 AND user_id=?2 AND device_id=?3",rusqlite::params![[1u8;16].as_slice(),[2u8;16].as_slice(),[3u8;16].as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!((code.as_str(), key_len), ("E_UMK_CHANGED", 0));
+    }
+
+    #[test]
+    fn per_device_pins_collapse_per_user_without_granting_trust() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE app_trust_pins(user_id BLOB,device_id BLOB,umk_pub BLOB,first_seen INTEGER,verified INTEGER,changed_umk BLOB,PRIMARY KEY(user_id,device_id));",
+        )
+        .unwrap();
+        let pin = |user: u8, device: u8, umk: u8, first: i64, verified: i64| {
+            c.execute(
+                "INSERT INTO app_trust_pins VALUES(?1,?2,?3,?4,?5,NULL)",
+                rusqlite::params![
+                    [user; 16].as_slice(),
+                    [device; 16].as_slice(),
+                    [umk; 32].as_slice(),
+                    first,
+                    verified
+                ],
+            )
+            .unwrap();
+        };
+        pin(1, 1, 0x11, 5, 1);
+        pin(1, 2, 0x11, 7, 1);
+        pin(2, 1, 0x21, 3, 1);
+        pin(2, 2, 0x22, 9, 0);
+        pin(3, 1, 0x31, 4, 1);
+        pin(3, 2, 0x31, 4, 0);
+        migrate_trust_pins_per_user(&c).unwrap();
+        type Collapsed = (Vec<u8>, Vec<u8>, i64, i64, Option<Vec<u8>>);
+        let rows: Vec<Collapsed> = c
+            .prepare("SELECT user_id,umk_pub,first_seen,verified,changed_umk FROM app_trust_pins ORDER BY user_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (vec![1; 16], vec![0x11; 32], 5, 1, None),
+                (vec![2; 16], vec![0x21; 32], 3, 0, Some(vec![0x22; 32])),
+                (vec![3; 16], vec![0x31; 32], 4, 0, None),
+            ],
+            "agreeing rows keep their pin; another key stays a pending change; mixed flags are unverified"
+        );
+        assert!(!has_column(&c, "app_trust_pins", "device_id").unwrap());
+    }
+
+    #[test]
+    fn ambiguous_legacy_quarantine_does_not_inherit_a_colliding_senders_user() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE app_quarantine(group_id BLOB,device_id BLOB,code TEXT,PRIMARY KEY(group_id,device_id));
+             CREATE TABLE app_messages(group_id BLOB,sender_user BLOB,sender_device BLOB);",
+        )
+        .unwrap();
+        let group = [0x31u8; 16];
+        let honest = [0x32u8; 16];
+        let device = [0x33u8; 16];
+        c.execute(
+            "INSERT INTO app_messages VALUES(?1,?2,?3)",
+            rusqlite::params![group.as_slice(), honest.as_slice(), device.as_slice()],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO app_quarantine VALUES(?1,?2,'E_UMK_CHANGED')",
+            rusqlite::params![group.as_slice(), device.as_slice()],
+        )
+        .unwrap();
+        migrate_quarantine_pairs(&c).unwrap();
+        let migrated: [u8; 16] = c
+            .query_row("SELECT user_id FROM app_quarantine", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            migrated, [0; 16],
+            "the message sender cannot identify the blocked leaf"
+        );
+    }
+}
+
+fn has_column(c: &rusqlite::Connection, table: &str, name: &str) -> Result<bool, StorageError> {
+    let mut stmt = c.prepare(&format!("PRAGMA table_info({table})"))?;
+    Ok(stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == name))
+}
+
+// The UMK pin is a property of the user (protocol/03 rule 2: "the pinned UMK for user_id"), so
+// app_trust_pins holds one row per user, the L-SQL-32 shape. Task 2's interim v4 stored one row
+// per (user, device); per-device flags could disagree, and a new device of a verified contact
+// hid the contact (T2-LAST-02) or was trusted under a pending key. Collapse such a store per user
+// without granting anything: rows that disagree keep the earliest pinned key, unverified, with
+// any other key they name as the pending change.
+fn migrate_trust_pins_per_user(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    if !has_column(c, "app_trust_pins", "device_id")? {
+        return Ok(());
+    }
+    type PairPin = ([u8; 16], [u8; 32], i64, i64, Option<[u8; 32]>);
+    let rows: Vec<PairPin> = {
+        let mut stmt = c.prepare(
+            "SELECT user_id,umk_pub,first_seen,verified,changed_umk FROM app_trust_pins \
+             ORDER BY user_id,first_seen,umk_pub",
+        )?;
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<Result<_, _>>()?
+    };
+    c.execute_batch(
+        "CREATE TABLE app_trust_pins_user (
+          user_id BLOB PRIMARY KEY CHECK(length(user_id)=16),
+          umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+          first_seen INTEGER NOT NULL,
+          verified INTEGER NOT NULL CHECK(verified IN(0,1)),
+          changed_umk BLOB CHECK(changed_umk IS NULL OR length(changed_umk)=32));",
+    )?;
+    for user_rows in rows.chunk_by(|a, b| a.0 == b.0) {
+        let (user, umk, first_seen, _, changed) = user_rows[0];
+        let consistent = user_rows.iter().all(|r| r.1 == umk && r.4 == changed);
+        let (verified, changed) = if consistent {
+            (i64::from(user_rows.iter().all(|r| r.3 == 1)), changed)
+        } else {
+            let other = user_rows
+                .iter()
+                .find_map(|r| r.4.filter(|k| *k != umk))
+                .or_else(|| user_rows.iter().map(|r| r.1).find(|k| *k != umk));
+            (0, other)
+        };
+        c.execute(
+            "INSERT INTO app_trust_pins_user(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,?3,?4,?5)",
+            rusqlite::params![user.as_slice(), umk.as_slice(), first_seen, verified, changed.as_ref().map(|k| k.as_slice())],
+        )?;
+    }
+    c.execute_batch(
+        "DROP TABLE app_trust_pins; ALTER TABLE app_trust_pins_user RENAME TO app_trust_pins;",
+    )?;
+    Ok(())
+}
+
+fn migrate_trust_artifact_pairs(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    migrate_trust_pins_per_user(c)?;
+    if !has_column(c, "app_pending_history", "user_id")? {
+        c.execute_batch("ALTER TABLE app_pending_history ADD COLUMN user_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';
+            ALTER TABLE app_pending_history ADD COLUMN device_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';")?;
+        let rows: Vec<([u8; 16], i64, Vec<u8>)> = {
+            let mut stmt =
+                c.prepare("SELECT group_id,seq,sender_credential FROM app_pending_history")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        for (group, seq, credential) in rows {
+            if let Ok(identity) = crate::identity::CredentialIdentity::decode(&credential) {
+                c.execute("UPDATE app_pending_history SET user_id=?3,device_id=?4 WHERE group_id=?1 AND seq=?2",
+                    rusqlite::params![group.as_slice(),seq,identity.user_id.as_bytes(),identity.device_id.as_bytes()])?;
+            }
+        }
+        c.execute_batch("DROP INDEX IF EXISTS app_pending_history_by_leaf_seq;
+            CREATE INDEX app_pending_history_by_leaf_seq ON app_pending_history(group_id,user_id,device_id,sender_leaf,seq);")?;
+    }
+    if !has_column(c, "app_search_rows", "user_id")? {
+        c.execute_batch("ALTER TABLE app_search_rows ADD COLUMN user_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';
+            ALTER TABLE app_search_rows ADD COLUMN device_id BLOB NOT NULL DEFAULT x'00000000000000000000000000000000';
+            UPDATE app_search_rows SET
+              user_id=COALESCE((SELECT sender_user FROM app_messages m WHERE m.group_id=app_search_rows.group_id AND m.seq=app_search_rows.seq),zeroblob(16)),
+              device_id=COALESCE((SELECT sender_device FROM app_messages m WHERE m.group_id=app_search_rows.group_id AND m.seq=app_search_rows.seq),zeroblob(16));")?;
+    }
+    Ok(())
 }
 
 /// Runs the schema migrations and their backfills in one unit. Returns the value it found: 1 or
@@ -212,6 +583,9 @@ pub fn migrate_app(storage: &DillaStorage) -> Result<u64, StorageError> {
             }
             if found == 1 || found == 2 {
                 super::backfill_v3(u)?;
+            }
+            if found <= 4 {
+                u.with_conn(super::trust::seed_own_pin)?;
             }
             Ok(found)
         })
@@ -236,4 +610,27 @@ pub(crate) fn meta_put(c: &rusqlite::Connection, k: &str, v: &[u8]) -> Result<()
 pub(crate) fn meta_del(c: &rusqlite::Connection, k: &str) -> Result<(), StorageError> {
     c.execute("DELETE FROM app_meta WHERE k = ?1", [k])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod search_upgrade_tests {
+    use super::migrate_conn;
+
+    #[test]
+    fn old_shared_terms_index_is_removed_when_body_index_opens() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("new schema");
+        db.execute_batch("CREATE VIRTUAL TABLE app_search_v2 USING fts5(terms, content='', tokenize='unicode61 remove_diacritics 0');
+            INSERT INTO app_search_v2(rowid,terms) VALUES(1,' old visible text');
+            DELETE FROM app_meta WHERE k='search_contract_v4'").expect("simulate old v4 index");
+        migrate_conn(&db).expect("upgrade index");
+        let old: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='app_search_v2'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("old table");
+        assert_eq!(old, 0);
+    }
 }

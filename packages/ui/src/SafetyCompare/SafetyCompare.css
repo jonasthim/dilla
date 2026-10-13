@@ -1,0 +1,12 @@
+.d-safety-compare { display: grid; gap: .75rem; min-width: 0; overflow-wrap: anywhere; }
+.d-safety-compare p { margin: 0; }
+.d-safety-compare__identity { color: var(--fg); font-weight: var(--weight-label); }
+.d-safety-compare__key { max-width: 100%; overflow-wrap: anywhere; color: var(--fg); }
+.d-safety-compare__groups { display: grid; grid-template-columns: repeat(6, minmax(0, max-content)); gap: .5rem .75rem; color: var(--fg); }
+@media (max-width: 480px) { .d-safety-compare__groups { grid-template-columns: repeat(4, minmax(0, max-content)); } }
+.d-safety-compare__loading { color: var(--fg-2); }
+.d-safety-compare__error { padding-left: .5rem; border-left: .1875rem solid var(--danger); color: var(--fg); }
+.d-safety-compare__actions { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.d-safety-compare__confirm { display: flex; align-items: center; gap: .5rem; color: var(--fg); }
+.d-safety-compare__confirm input { min-width: 24px; min-height: 24px; }
+.d-safety-compare :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }

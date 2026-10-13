@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { CoreError } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC, throughOf, type PageInfo } from './engine';
 import { catchSync, coreCalls, device, openRegistered, readyInfo, type Device } from './testing/harness';
+import { fakeDskPub } from '../testing/fake-list';
+import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import {
   CHANNEL_2, COMMUNITY, CHANNEL, FOURTH, ME, ManualClock, ModelDs, PEER, THIRD, at, deferred, httpError, idOf, settle, type RouteName,
 } from './testing/model';
@@ -69,7 +72,113 @@ describe('constants and the through bound', () => {
   });
 });
 
+it('validates an authenticated Add candidate before posting its commit', async () => {
+  const d = device(ds, clock, ME);
+  const g = await openRegistered(ds, d);
+  ds.publishList(THIRD.user, [{ device: THIRD.device }]);
+  ds.propose(g, 'add', THIRD.device);
+  d.core.proposedAdds = () => [{ index: 0n, userId: THIRD.user, cachedVersion: 0n }];
+  let ingested = 0;
+  d.core.deviceListIngestAdd = () => { ingested += 1; return { version: 1n, changed: false, quarantined: 0 }; };
+  const observedPostCounts: number[] = [];
+  d.engine.deps.onTrustChanged = () => { observedPostCounts.push(count('postCommit')); };
+  expect(await d.engine.commitNow(g, 0)).toBe(true);
+  expect(ingested).toBe(1);
+  expect(observedPostCounts).toEqual([0]);
+  expect(count('postCommit')).toBe(1);
+});
+
+it('hands the Add check the signed list of the candidate head, as the core decodes it', async () => {
+  const d = device(ds, clock, ME);
+  const g = await openRegistered(ds, d);
+  ds.publishList(THIRD.user, [{ device: THIRD.device }]);
+  ds.propose(g, 'add', THIRD.device);
+  d.core.proposedAdds = () => [{ index: 0n, userId: THIRD.user, cachedVersion: 0n }];
+  const heads: Uint8Array[] = [];
+  d.core.deviceListIngestAdd = (...args: unknown[]) => { heads.push(args[5] as Uint8Array); return { version: 1n, changed: false, quarantined: 0 }; };
+  expect(await d.engine.commitNow(g, 0)).toBe(true);
+  const served = await d.engine.deps.routes.getDeviceList(THIRD.user);
+  expect(heads).toEqual([served!.blob]);
+});
+
+describe('a failed Add candidate (security F2, controller ruling 3)', () => {
+  const FORGED = idOf(0xd0, 23);
+  /** ME's core caches PEER's list v1 (naming only PEER.device), as a trust refresh would. */
+  async function cachedPeerList(d: Device, g: Uint8Array): Promise<void> {
+    ds.publishList(PEER.user, [{ device: PEER.device }]);
+    d.core.addPendingLeaf(g, 1, PEER.user, PEER.device, fakeDskPub(PEER.device), 1);
+    const { head, history } = await readDeviceListHistory(d.engine.deps.routes, PEER.user, 0n);
+    d.core.deviceListIngest(g, 1, PEER.user, history, signedHeadList(head), 1n);
+  }
+
+  it('is left out and the commit is still posted', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    await cachedPeerList(d, g);
+    d.core.addKeyPackage(PEER.user, FORGED, fakeDskPub(FORGED), 1);
+    ds.propose(g, 'add', FORGED);
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(count('postCommit')).toBe(1);
+    expect(ds.welcomesFor(FORGED)).toEqual([]);
+    expect(d.core.groupRow(g)?.epoch).toBe(1n);
+  });
+
+  // ABI 8: device_list_ingest_add records the failed verdict, so the commit leaves the Add out even for a user this device
+  // never cached (before, commit_build answered E_DEVICE_LIST_STALE and the device could not commit).
+  it('of a never-cached user whose fetched list leaves it out is left out, and the commit is posted', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.publishList(THIRD.user, []);
+    d.core.addKeyPackage(THIRD.user, THIRD.device, fakeDskPub(THIRD.device), 1);
+    ds.propose(g, 'add', THIRD.device);
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(count('postCommit')).toBe(1);
+    expect(ds.welcomesFor(THIRD.device)).toEqual([]);
+  });
+
+  it('of the own user under another key (E_UMK_CHANGED) is left out without a retry, and the commit is posted', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.publishList(ME.user, [{ device: ME.device }, { device: FORGED }]);
+    d.core.addKeyPackage(ME.user, FORGED, fakeDskPub(FORGED), 1, new Uint8Array(32).fill(0xc4));
+    ds.propose(g, 'add', FORGED);
+    let refusals = 0;
+    const ingest = d.core.deviceListIngestAdd.bind(d.core);
+    d.core.deviceListIngestAdd = (...args: Parameters<typeof ingest>) => {
+      try { return ingest(...args); } catch (e) { if (e instanceof CoreError) refusals += e.code === 'E_UMK_CHANGED' ? 1 : 0; throw e; }
+    };
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(refusals).toBe(1);
+    expect(count('postCommit')).toBe(1);
+    expect(ds.welcomesFor(FORGED)).toEqual([]);
+  });
+
+  it('a candidate whose history is unknown still refuses, aborts and posts nothing', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    d.core.addKeyPackage(THIRD.user, THIRD.device, fakeDskPub(THIRD.device), 1);
+    ds.propose(g, 'add', THIRD.device);
+    expect(await d.engine.commitNow(g, 0)).toBe(false);
+    expect(count('postCommit')).toBe(0);
+    // Once the list is served, the next attempt fetches it and commits the Add.
+    ds.publishList(THIRD.user, [{ device: THIRD.device }]);
+    expect(await d.engine.commitNow(g, 0)).toBe(true);
+    expect(ds.welcomesFor(THIRD.device)).toHaveLength(1);
+  });
+});
+
 describe('catch-up on every ready (rule 2)', () => {
+  it('reports a persisted trust quarantine even if groupApply then refuses the batch', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.detach(ME.device);
+    ds.peerSend(g, PEER, 'bad leaf');
+    const before = d.changes.length;
+    d.core.groupApply = () => { throw new CoreError('E_CREDENTIAL'); };
+    expect(await d.engine.catchUpNow(g, 'catch-up')).toBe(false);
+    expect(d.changes).toHaveLength(before + 1);
+    expect(d.changes.at(-1)?.group).toBe(toHex(g));
+  });
   it('applies a commit before the messages of the epoch it opens when only the message page is full', async () => {
     const d = device(ds, clock, ME);
     const g = await openRegistered(ds, d);

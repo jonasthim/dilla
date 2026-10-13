@@ -52,6 +52,142 @@ type lockedBuffer struct {
 	b  bytes.Buffer
 }
 
+func TestWebDriverTypingRespectsAudience(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11ce9)
+	bob := startWebDriver(t, h, h.BaseURL(), "bob", 0xb0b9)
+	outsider := startWebDriver(t, h, h.BaseURL(), "outsider", 0xc0de9)
+	sa := alice.ok("setup", map[string]any{"community": "private typing", "channel": "general"})
+	ra := alice.ok("register", nil)
+	sb := bob.ok("setup", map[string]any{"community": "bob", "channel": "other"})
+	outsider.ok("setup", map[string]any{"community": "outsider", "channel": "other"})
+	bob.ok("join", map[string]any{
+		"community_id": sa["community_id"], "channel_id": sa["channel_id"],
+		"group_id": ra["group_id"], "invite_code": sa["invite_code"],
+	})
+	channel := mustID(t, sa["channel_id"])
+	aDev, aUser := mustID(t, sa["device_id"]), mustID(t, sa["user_id"])
+	bDev, bUser := mustID(t, sb["device_id"]), mustID(t, sb["user_id"])
+	if got := alice.ok("typing", map[string]any{"channel": channel.String(), "on": true}); got["accepted"] != true {
+		t.Fatalf("typing answer = %v", got)
+	}
+	if !h.Gateway().IsTyping(channel, aUser, aDev) {
+		t.Fatal("production gateway did not record alice typing")
+	}
+	if h.Gateway().IsTyping(channel, bUser, bDev) {
+		t.Fatal("bob was impersonated")
+	}
+	denied := outsider.call("typing", map[string]any{"channel": channel.String(), "on": true})
+	if denied["ok"] != false || !strings.Contains(fmt.Sprint(denied["error"]), "E_NOT_FOUND") {
+		t.Fatalf("outsider typing = %v, want E_NOT_FOUND", denied)
+	}
+	if denied["error"] != "scenario: E_NOT_FOUND" {
+		t.Fatalf("outsider typing code = %v, want scenario: E_NOT_FOUND", denied["error"])
+	}
+	if got := alice.ok("search_seed", map[string]any{"channel": channel.String(), "body": "needle lantern"}); got["seq"] == nil {
+		t.Fatalf("search_seed has no real DS sequence: %v", got)
+	}
+	if row := bob.waitFor("needle lantern"); row["sender_user"] != sa["user_id"] {
+		t.Fatalf("native peer received %v", row)
+	}
+}
+
+func TestWebDriverTrustListAndRotationUseSignedHistory(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11cea)
+	bob := startWebDriver(t, h, h.BaseURL(), "bob", 0xb0ba)
+	sa := alice.ok("setup", map[string]any{"community": "trust history", "channel": "general"})
+	ra := alice.ok("register", nil)
+	bob.ok("setup", map[string]any{"community": "bob", "channel": "other"})
+	bob.ok("join", map[string]any{
+		"community_id": sa["community_id"], "channel_id": sa["channel_id"],
+		"group_id": ra["group_id"], "invite_code": sa["invite_code"],
+	})
+	before := bob.ok("trust_list", map[string]any{"user": sa["user_id"]})
+	if before["version"] != float64(1) || before["pin"] == "" || before["changed"] != nil {
+		t.Fatalf("first signed list = %v", before)
+	}
+	rotated := alice.ok("rotate_umk", map[string]any{"user": sa["user_id"]})
+	if rotated["user"] != sa["user_id"] || rotated["version"] != float64(2) {
+		t.Fatalf("rotation = %v", rotated)
+	}
+	after := bob.ok("trust_list", map[string]any{"user": sa["user_id"]})
+	if after["version"] != float64(2) || after["pin"] != before["pin"] || after["changed"] == nil || after["verified"] != false {
+		t.Fatalf("changed identity = %v; before = %v", after, before)
+	}
+}
+
+// After rotate_umk the peer acts as its replacement device: rotate_umk removed the old leaf from the group, so a send
+// from the old device is refused with E_LEAF_NOT_CURRENT. The browser specs (task 10) have the changed contact send
+// after its rotation and read the browser's answer, and the witness pendingUmk is the replacement's public UMK.
+func TestWebDriverRotatedPeerSendsAndReadsFromItsNewDevice(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11ced)
+	bob := startWebDriver(t, h, h.BaseURL(), "bob", 0xb0bb)
+	sa := alice.ok("setup", map[string]any{"community": "rotated sender", "channel": "general"})
+	ra := alice.ok("register", nil)
+	bob.ok("setup", map[string]any{"community": "bob", "channel": "other"})
+	bob.ok("join", map[string]any{
+		"community_id": sa["community_id"], "channel_id": sa["channel_id"],
+		"group_id": ra["group_id"], "invite_code": sa["invite_code"],
+	})
+	alice.ok("sync", nil) // bob's external join moved the epoch
+	alice.ok("send", map[string]any{"body": "before rotation"})
+	if row := bob.waitFor("before rotation"); row["sender_device"] != sa["device_id"] {
+		t.Fatalf("before rotation came from %v, want %v", row["sender_device"], sa["device_id"])
+	}
+	if first := bob.ok("trust_list", map[string]any{"user": sa["user_id"]}); first["changed"] != nil {
+		t.Fatalf("first sight = %v", first)
+	}
+	alice.ok("rotate_umk", nil)
+	alice.ok("send", map[string]any{"body": "after rotation"})
+	row := bob.waitFor("after rotation")
+	if row["sender_user"] != sa["user_id"] || row["sender_device"] == sa["device_id"] {
+		t.Fatalf("after rotation = %v; the old device is %v", row, sa["device_id"])
+	}
+	bob.ok("send", map[string]any{"channel_id": sa["channel_id"], "body": "answer to the new device"})
+	alice.waitFor("answer to the new device")
+	changed := bob.ok("trust_list", map[string]any{"user": sa["user_id"]})
+	own := alice.ok("trust_list", map[string]any{"user": sa["user_id"]})
+	if changed["changed"] == nil || own["pendingUmk"] != changed["changed"] {
+		t.Fatalf("the rotated peer's own witness %v differs from the changed key bob holds %v", own, changed)
+	}
+}
+
+func TestWebDriverVoiceSelfRefusesUnknownCall(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11ceb)
+	alice.ok("setup", map[string]any{"community": "voice refusal", "channel": "general"})
+	answer := alice.call("voice_self", map[string]any{"call": id.New().String(), "flags": 1})
+	if answer["ok"] != false || !strings.Contains(fmt.Sprint(answer["error"]), "E_NOT_FOUND") {
+		t.Fatalf("voice_self unknown call = %v", answer)
+	}
+}
+
+func TestWebDriverVoiceSelfUsesStoredLiveParticipant(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true, SFU: true})
+	t.Cleanup(h.Stop)
+	alice := startWebDriver(t, h, h.BaseURL(), "alice", 0xa11cec)
+	sa := alice.ok("setup", map[string]any{"community": "voice witness", "channel": "general"})
+	alice.ok("register", nil)
+	call := id.New()
+	channel := mustID(t, sa["channel_id"])
+	device := mustID(t, sa["device_id"])
+	h.InstallVoiceSession(t, call, channel, id.New())
+	denied := alice.call("voice_self", map[string]any{"call": call.String(), "flags": 1})
+	if denied["ok"] != false || !strings.Contains(fmt.Sprint(denied["error"]), "E_NOT_FOUND") {
+		t.Fatalf("voice_self absent participant = %v, want E_NOT_FOUND", denied)
+	}
+	h.AddVoiceParticipant(call, device)
+	if got := alice.ok("voice_self", map[string]any{"call": call.String(), "flags": 1}); got["accepted"] != true {
+		t.Fatalf("voice_self answer = %v", got)
+	}
+}
+
 func (l *lockedBuffer) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

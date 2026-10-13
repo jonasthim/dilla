@@ -8,15 +8,15 @@ import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/cryp
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo,
   type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord,
-  type SignedLists, type TimelineRow,
+  type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord,
 } from '../core-port';
-import { CLIENT_CLOSE, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
+import { CLIENT_CLOSE, GATEWAY, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
 import type {
-  AccountState, BadgeState, ChannelSummary, CommunitySummary, ConnectionState, DeviceSummary, DmSummary, MemberSummary, NoticesState,
-  PinnedItem, TimelineState, TrayItem,
+  AccountState, BadgeState, ChannelSummary, CommunitySummary, ConnectionState, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, NoticesState,
+  PinnedItem, TimelineState, TrayItem, TrustSummary,
 } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { SyncError } from '../sync/errors';
@@ -57,6 +57,7 @@ class FakeLocks implements LockManagerLike {
   readonly requests: { name: string; ifAvailable: boolean }[] = [];
   private readonly held = new Set<string>();
   private readonly waiting = new Map<string, (() => void)[]>();
+  isHeld(name: string): boolean { return this.held.has(name); }
 
   holdElsewhere(name: string): () => void {
     this.held.add(name);
@@ -77,7 +78,11 @@ class FakeLocks implements LockManagerLike {
       });
     }
     this.held.add(name);
-    return callback({ name });
+    try { await callback({ name }); }
+    finally {
+      this.held.delete(name);
+      this.waiting.get(name)?.shift()?.();
+    }
   }
 }
 
@@ -92,6 +97,7 @@ function stubCore(): { core: CorePort; resets: () => number } {
     }),
     signupBegin: (): string => { phase = 1; return 'ABCD'.repeat(13); },
     signupReset: (): void => { phase = 0; resets += 1; },
+    trustGeneration: (): bigint => 0n,
     close: (): void => {},
   };
   return { core: core as unknown as CorePort, resets: () => resets };
@@ -145,7 +151,7 @@ describe('Controller', () => {
     expect(h.connection()).toEqual({ status: 'offline', generation: null });
     release();
     await vi.waitFor(() => expect(h.account()?.phase).toBe('unsupported'));
-    expect(h.account()?.error).toEqual({ code: 'E_UNSUPPORTED', detail: 'no OPFS in this test', status: 0, retryAfterMs: null });
+    expect(h.account()?.error).toEqual({ code: 'E_UNSUPPORTED', detail: '', status: 0, retryAfterMs: null });
     expect(h.locks.requests).toEqual([{ name: LOCK, ifAvailable: true }, { name: LOCK, ifAvailable: false }]);
   });
 
@@ -199,8 +205,8 @@ describe('Controller', () => {
     for (const id of [1, 3, 4, 5, 6]) {
       expect(h.ret(id)).toMatchObject({ t: 'ret', id, ok: false, error: { code: 'E_NOT_READY' } });
     }
-    expect(h.ret(1)).toMatchObject({ error: { detail: 'the phase is loading' } });
-    expect(h.ret(3)).toMatchObject({ error: { detail: 'the phase is needs-signup' } });
+    expect(h.ret(1)).toMatchObject({ error: { code: 'E_NOT_READY', detail: '' } });
+    expect(h.ret(3)).toMatchObject({ error: { code: 'E_NOT_READY', detail: '' } });
   });
 
   it('refuses malformed input before anything runs, and answers nothing to a message that is not a call', async () => {
@@ -215,8 +221,8 @@ describe('Controller', () => {
     h.controller.handle({ t: 'test', op: 'gateway-stop' });
     await vi.waitFor(() => expect(h.ret(5)).toBeDefined());
     for (const id of [1, 2, 3, 4, 5]) expect(h.ret(id)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
-    expect(h.ret(1)).toMatchObject({ error: { detail: 'communityId is not 32 lowercase hex' } });
-    expect(h.ret(3)).toMatchObject({ error: { detail: 'unknown command nope' } });
+    expect(h.ret(1)).toMatchObject({ error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(h.ret(3)).toMatchObject({ error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(h.posted.filter((m) => m.t === 'ret')).toHaveLength(5);
     expect(h.paths).toEqual([]);
   });
@@ -290,6 +296,10 @@ class GatewayDouble {
   stop(): void { this.stops += 1; this.log.push('gateway.stop'); }
   subscribe(listener: (e: GatewayEvent) => void): () => void { this.listeners.push(listener); return () => {}; }
   commitAck(): void {}
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway
+  sendTyping = vi.fn((_channel: Uint8Array, _on: boolean): void => {});
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the arguments make the double match the gateway
+  sendVoiceSelf = vi.fn((_call: Uint8Array, _flags: 0 | 1 | 2 | 3): void => {});
   emit(e: GatewayEvent): void { for (const l of this.listeners) l(e); }
 }
 
@@ -369,13 +379,29 @@ function world(opts: {
       calls.push(`core.purgeDone(${String(seq)})`); state.purges = state.purges.filter((p) => p.seq !== seq);
     }),
     ownRolesSet: vi.fn((_c: Uint8Array, _ids: Uint8Array[]): void => {}),
+    trustVerify: vi.fn((_u: Uint8Array, _k: Uint8Array): void => {}),
+    safetyNumberFor: vi.fn((_u: Uint8Array, _k: Uint8Array): string => Array.from({ length: 12 }, () => '12345').join(' ')),
+    sendBlockCode: vi.fn((_g: Uint8Array): TrustBlock | null => null),
+    sendBlockOwn: vi.fn((_g: Uint8Array): boolean => false),
+    keyPackages: vi.fn((_count: number, _last: boolean): Uint8Array => new Uint8Array([1])),
+    search: vi.fn((_scope: unknown, _query: string, _cursor: unknown, _limit: number) => [] as {
+      groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint }[]),
+    resume: vi.fn((): Promise<void> => Promise.resolve()),
     attachmentGet: vi.fn((_g: Uint8Array, seq: bigint, index: number): AttachmentDescriptor => {
       const d = state.descriptors.get(`${String(seq)}:${String(index)}`);
       if (d === undefined) throw new CoreError('E_CORE_NOT_FOUND', 'no such attachment');
       return d;
     }),
     pause: vi.fn((): void => { calls.push('core.pause'); }),
-    close: (): void => {},
+    close: vi.fn((): void => {}),
+    pendingLeaves: vi.fn(() => [] as { groupId: Uint8Array; leafIndex: number; userId: Uint8Array; cachedVersion: bigint; reason: string }[]),
+    proposedAdds: vi.fn(() => []),
+    deviceListIngestAdd: vi.fn(() => ({ version: 1n, changed: false, quarantined: 0 })),
+    deviceListIngest: vi.fn((_group: Uint8Array, _leaf: number, _user: Uint8Array, _history: Uint8Array, _head: Uint8Array, _now: bigint) =>
+      ({ version: 1n, changed: true, quarantined: 1 })),
+    revalidatePending: vi.fn(() => 0),
+    trustState: vi.fn((): TrustRecord[] => []),
+    trustGeneration: vi.fn(() => 0n),
   };
   const routes = {
     getInstance: vi.fn(() => Promise.resolve(INSTANCE)),
@@ -403,6 +429,7 @@ function world(opts: {
       calls.push(`deleteGroupMessage(${String(seq)})`); return Promise.resolve('deleted');
     }),
     postTicket: vi.fn(() => Promise.resolve({ ticket: 'ticket', expires: 0n })),
+    postKeyPackages: vi.fn((_body: Uint8Array) => Promise.resolve()),
     getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n })),
     listDms: vi.fn(() => { calls.push('listDms'); return Promise.resolve(state.dms); }),
     getChannel: vi.fn((_id: Uint8Array) => Promise.resolve({
@@ -423,7 +450,11 @@ function world(opts: {
       calls.push(`getBackup(${kind})`); return Promise.resolve({ object: kind === 0 ? ROOT : STATE_OBJECT, created: 1n });
     }),
     putBackup: vi.fn((kind: 0 | 1, _object: Uint8Array) => { calls.push(`putBackup(${kind})`); return Promise.resolve({ blobId: new Uint8Array(32), size: 3, created: false }); }),
-    getDeviceList: vi.fn((_user: Uint8Array) => { calls.push('getDeviceList'); return Promise.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW }); }),
+    getDeviceList: vi.fn((_user: Uint8Array) => { calls.push('getDeviceList'); return Promise.resolve({ version: 1n, blob: new Uint8Array([9]),
+      raw: toHex(_user) === toHex(STRANGER) ? encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) : LIST_RAW }); }),
+    getDeviceListHistory: vi.fn((_user: Uint8Array, _after: bigint) => Promise.resolve({
+      raw: encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]), count: 1, lastVersion: 1n,
+    })),
     putDeviceList: vi.fn((_user: Uint8Array, _body: Uint8Array) => { calls.push('putDeviceList'); return Promise.resolve(); }),
     postChallenge: vi.fn((_device: Uint8Array) => Promise.resolve({ nonce: new Uint8Array(32), expires: NOW_S + 60n })),
     postSession: vi.fn((_device: Uint8Array, _body: Uint8Array) => {
@@ -485,8 +516,9 @@ function world(opts: {
     refreshOwnDeviceList: account.refreshOwnDeviceList,
     repairBackupState: account.repairBackupState,
   };
+  const bootCount = { value: 0 };
   const h = harness({
-    boot: (instance) => Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }),
+    boot: (instance) => { bootCount.value += 1; return Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }); },
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.now ? { now: opts.now } : {}),
@@ -501,14 +533,1317 @@ function world(opts: {
     timeline: () => h.last<TimelineState>(`timeline:${toHex(CHANNEL)}`),
     badges: () => h.last<Record<string, BadgeState>>('badges'),
     notices: () => h.last<NoticesState>('notices'),
+    get boots(): number { return bootCount.value; },
   };
 }
 type World = ReturnType<typeof world>;
+
+it('uses admission request ids rather than rank to discard an old search', async () => {
+  const { SearchGate } = await import('./barrier');
+  const gate = new SearchGate();
+  const older = gate.next();
+  const newer = gate.next();
+  const hits: string[] = [];
+  if (gate.current(older)) hits.push('older rank 0');
+  if (gate.current(newer)) hits.push('newer rank 0');
+  expect(hits).toEqual(['newer rank 0']);
+  gate.invalidate();
+  expect(gate.current(newer)).toBe(false);
+});
+
+it('scrubs HTTP details and unexpected exception text before any page reply', async () => {
+  const { sanitizeWorkerError } = await import('./controller');
+  const http = new DillaHttpError({ code: 'E_NOT_FOUND', detail: 'Bearer SECRET-123', status: 404,
+    retryAfterMs: 90_000_000, extra: [] });
+  expect(sanitizeWorkerError(http)).toEqual({ code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null });
+  expect(sanitizeWorkerError(new Error('recovery key SECRET-456'))).toEqual({
+    code: 'E_INTERNAL', detail: '', status: 0, retryAfterMs: null,
+  });
+  const h = harness();
+  h.call(71, { m: 'unknown SECRET-789' });
+  expect(JSON.stringify(h.posted)).not.toContain('SECRET-789');
+  expect(h.ret(71)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+});
+
+it('rejects every extra release-notice field and wrong instance or nonce', async () => {
+  const { isReleaseNotice } = await import('./protocol');
+  const instance = '42'.repeat(16);
+  const nonce = 'aa'.repeat(16);
+  expect(isReleaseNotice({ t: 'released', instance, nonce }, instance, nonce)).toBe(true);
+  expect(isReleaseNotice({ t: 'released', instance, nonce, token: 'SECRET' }, instance, nonce)).toBe(false);
+  expect(isReleaseNotice({ t: 'released', instance, nonce }, '43'.repeat(16), nonce)).toBe(false);
+  expect(isReleaseNotice({ t: 'released', instance, nonce }, instance, 'bb'.repeat(16))).toBe(false);
+});
+
+it('refreshes only core-owned pending leaves and never publishes list bytes', async () => {
+  const w = world();
+  const signedHead = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalled());
+  expect(w.core.pendingLeaves).toHaveBeenCalled();
+  expect(w.routes.getDeviceList).toHaveBeenCalledWith(STRANGER);
+  expect(JSON.stringify(w.posted)).not.toContain(Array.from(signedHead).join(','));
+});
+
+it('runs the trust refresh that a gateway ready arriving before phase ready could not (client I3)', async () => {
+  const w = world();
+  const signedHead = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  const dms = deferred<{ channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[] }[]>();
+  w.routes.listDms.mockImplementationOnce(() => dms.promise);
+  w.call(1, { m: 'start' });
+  await vi.waitFor(() => expect(w.routes.listDms).toHaveBeenCalled());
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.core.pendingLeaves).toHaveBeenCalled());
+  expect(w.core.deviceListIngest).not.toHaveBeenCalled();
+  dms.resolve([]);
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalled());
+});
+
+it('republishes trust when a member slice or the DMs land after it, so a reloaded Privacy has names and Compare (product P1)', async () => {
+  const w = world();
+  w.state.groups = [textGroup(2)];
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  await toReady(w);
+  w.call(70, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(70)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ name: toHex(STRANGER).slice(0, 8), shared: false });
+  // The next member read names the contact; nothing else touches trust.
+  w.routes.listMembers.mockResolvedValue([
+    { userId: USER, username: 'web', display: 'Web', kind: 0, nick: '', roleIds: [] },
+    { userId: STRANGER, username: 'bjorn', display: 'Björn', kind: 0, nick: '', roleIds: [] },
+  ]);
+  w.call(71, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ name: 'Björn', shared: true }));
+  // A DM with a person no community lists: the DM list landing republishes too.
+  const dmPeer = new Uint8Array(16).fill(0x3d);
+  w.core.trustState.mockReturnValue([...strangerTrust(null), { userId: dmPeer, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: null, blocked: null }]);
+  w.state.groups = [textGroup(2), { ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, dmPeer] }];
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.find((t) => t.userId === toHex(dmPeer))).toMatchObject({ shared: true }));
+});
+
+it('a second ready during trust ingestion reads its newly pending leaf before the refresh settles', async () => {
+  const w = world();
+  await toReady(w);
+  const first = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => first.promise);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalledTimes(1));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  first.resolve({ version: 1n, blob: new Uint8Array([9]), raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2));
+  expect(w.core.deviceListIngest.mock.calls.map((args) => args[1])).toEqual([1, 2]);
+});
+
+it('reads one signed history per user and ingests it for each pending leaf', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([
+    { groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+    { groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' },
+  ]);
+  w.call(991, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(991)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+  expect(w.routes.getDeviceList).toHaveBeenCalledTimes(2);
+  expect(w.core.deviceListIngest.mock.calls[0][3]).toEqual(w.core.deviceListIngest.mock.calls[1][3]);
+});
+
+// The core decodes head_list as the signed DeviceList itself (core/dilla-core/src/client/trust.rs bounded_list, a
+// six-element array) and stores it as the cached anchor; the native peer hands it head.blob (testkit web_driver.rs
+// signed_history). The served four-element row [version, blob, ssk_signature, prev_hash] is refused as E_DEVICE_LIST_STALE,
+// which left every contact's leaf pending and every message unreadable in a real browser (task 10).
+it('hands the core the signed list of the candidate head, never the served row around it', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.call(992, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  expect(w.core.deviceListIngest.mock.calls[0][4]).toEqual(new Uint8Array([9]));
+});
+
+// Controller ruling 2 (89923a6): the core refuses sending to a group holding a failed leaf. A device that joined
+// before this device ingested the list naming it fails against the cached list until a trust refresh ingests the newer
+// one, which ends that verdict (trust.rs apply_verdict). Found in core-worker.spec.ts: A's send right after its own
+// second device B joined was refused E_DEVICE_UNLISTED while the refresh the join started was still in flight.
+it('a send refused by a leaf verdict waits for one trust refresh and is tried once more', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  const order: string[] = [];
+  w.core.deviceListIngest.mockImplementation(() => { order.push('ingest'); return { version: 2n, changed: false, quarantined: 0 }; });
+  w.sync.sendRequest
+    .mockImplementationOnce(() => { order.push('send'); throw new CoreError('E_DEVICE_UNLISTED', ''); })
+    .mockImplementationOnce(() => { order.push('send'); return new Uint8Array(16).fill(0x77); });
+  w.call(51, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+  await vi.waitFor(() => expect(w.ret(51)).toBeDefined());
+  expect(w.ret(51)).toEqual({ t: 'ret', id: 51, ok: true, value: { msgId: '77'.repeat(16) } });
+  expect(order).toEqual(['send', 'ingest', 'send']);
+});
+
+it('a reaction or an edit refused by a leaf verdict waits for one trust refresh and is tried once more (client I2)', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  const order: string[] = [];
+  w.core.deviceListIngest.mockImplementation(() => { order.push('ingest'); return { version: 2n, changed: false, quarantined: 0 }; });
+  w.sync.sendRequest
+    .mockImplementationOnce(() => { order.push('react'); throw new CoreError('E_DEVICE_UNLISTED', ''); })
+    .mockImplementationOnce(() => { order.push('react'); return new Uint8Array(16).fill(0x77); });
+  const msgId = '66'.repeat(16);
+  w.call(54, { m: 'react', channelId: toHex(CHANNEL), msgId, emoji: '👍', on: true });
+  await vi.waitFor(() => expect(w.ret(54)).toBeDefined());
+  expect(w.ret(54)).toEqual({ t: 'ret', id: 54, ok: true, value: null });
+  expect(order).toEqual(['react', 'ingest', 'react']);
+  w.sync.sendRequest.mockClear();
+  w.sync.sendRequest.mockImplementation(() => { throw new CoreError('E_UMK_CHANGED', ''); });
+  w.call(55, { m: 'editMessage', channelId: toHex(CHANNEL), msgId, text: 'edited' });
+  await vi.waitFor(() => expect(w.ret(55)).toBeDefined());
+  expect(w.ret(55)).toMatchObject({ ok: false, error: { code: 'E_UMK_CHANGED' } });
+  expect(w.sync.sendRequest).toHaveBeenCalledTimes(1);
+});
+
+it('a send still refused after the trust refresh answers the verdict, and a changed key is not retried', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.sync.sendRequest.mockImplementation(() => { throw new CoreError('E_DEVICE_UNLISTED', ''); });
+  w.call(52, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+  await vi.waitFor(() => expect(w.ret(52)).toBeDefined());
+  expect(w.ret(52)).toMatchObject({ ok: false, error: { code: 'E_DEVICE_UNLISTED' } });
+  expect(w.sync.sendRequest).toHaveBeenCalledTimes(2);
+  w.sync.sendRequest.mockClear();
+  w.sync.sendRequest.mockImplementation(() => { throw new CoreError('E_UMK_CHANGED', ''); });
+  w.call(53, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+  await vi.waitFor(() => expect(w.ret(53)).toBeDefined());
+  expect(w.ret(53)).toMatchObject({ ok: false, error: { code: 'E_UMK_CHANGED' } });
+  expect(w.sync.sendRequest).toHaveBeenCalledTimes(1);
+});
+
+it('clears an old search slice when a newer core search refuses', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.search.mockReturnValueOnce([{ groupId: GROUP, seq: 1n, snippet: 'old', rank: 0n }]);
+  w.call(992, { m: 'search', scope: 'all', id: null, query: 'old', cursor: null });
+  await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true }));
+  expect(w.last<{ hits: unknown[] }>('search')?.hits).toHaveLength(1);
+  w.core.search.mockImplementationOnce(() => { throw new CoreError('E_CORE_INPUT', 'bad query'); });
+  w.call(993, { m: 'search', scope: 'all', id: null, query: 'bad', cursor: null });
+  await vi.waitFor(() => expect(w.ret(993)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } }));
+  expect(w.last<{ hits: unknown[] }>('search')?.hits).toEqual([]);
+});
+
+it('publishes channel destinations for community and DM hits and drops unknown groups', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+  w.state.groups.push({ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL });
+  w.sync.deps!.onUnexpectedWelcome(DM_GROUP);
+  await vi.waitFor(() => expect(w.last<DmSummary[]>('dms')?.[0]?.id).toBe(toHex(DM_CHANNEL)));
+  w.core.search.mockReturnValueOnce([
+    { groupId: GROUP, seq: 1n, snippet: 'community', rank: 0n },
+    { groupId: DM_GROUP, seq: 2n, snippet: 'dm', rank: 0n },
+    { groupId: ORPHAN_GROUP, seq: 3n, snippet: 'orphan', rank: 0n },
+  ]);
+  w.call(994, { m: 'search', scope: 'all', id: null, query: 'a', cursor: null });
+  await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true }));
+  expect(w.last<{ hits: unknown[] }>('search')?.hits).toEqual([
+    { channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), seq: '1', snippet: 'community', rank: '0' },
+    { channelId: toHex(DM_CHANNEL), communityId: null, seq: '2', snippet: 'dm', rank: '0' },
+  ]);
+  const page = w.last<{ hits: unknown[]; cursor: unknown }>('search');
+  expect(JSON.stringify(page)).not.toContain('groupId');
+  expect(page?.cursor).toEqual({ token: '1' });
+  const continuation = { m: 'search', scope: 'all', id: null, query: 'a', cursor: page?.cursor };
+  expect(JSON.stringify(continuation)).not.toContain('groupId');
+  w.call(995, continuation);
+  await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: true }));
+  expect(w.core.search).toHaveBeenLastCalledWith({ kind: 'all', id: null }, 'a',
+    { rank: 0n, groupId: ORPHAN_GROUP, seq: 3n }, 50);
+});
+
+// Ruling (c) of 2026-10-13: the unlisted and validated-Remove Privacy states are derived in the worker from what the core
+// already answers (pendingLeaves reasons, deviceListIngest's quarantine count and verdict codes); no group id reaches the page.
+const STRANGER_UMK = new Uint8Array(32).fill(0xbb);
+const CHANGED_UMK = new Uint8Array(32).fill(0xcc);
+const strangerTrust = (changed: Uint8Array | null): TrustRecord[] =>
+  [{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: changed, blocked: null }];
+
+// Task 10 found Privacy listing the browser's own user as a contact ("Compare with web tester"): the core pins the
+// user's own key too, and a person never compares a safety number with themselves.
+it('leaves the own user out of the trust slice', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue([
+    { userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: false, changedUmk: null, blocked: null },
+    ...strangerTrust(null),
+  ]);
+  w.call(980, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(980)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.map((row) => row.userId)).toEqual([toHex(STRANGER)]);
+  expect(w.account()?.ownTrust).toBeNull();
+});
+
+// Leaving the own row out of the contacts must not hide what the core says about the own account. ABI 8 (F3): the own row
+// is always verified and never changed; its `blocked` reports an own-user leaf under another key (E_UMK_CHANGED) or an
+// unlisted own device. The banner is raised from that, never from changedUmk or the network-filled sets.
+const ownRow = (blocked: TrustBlock | null): TrustRecord =>
+  ({ userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: true, changedUmk: null, blocked });
+
+it('raises ownTrust from the own row\'s blocked verdict: changed for E_UMK_CHANGED, unlisted for any other code', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue([ownRow('E_UMK_CHANGED'), ...strangerTrust(null)]);
+  w.call(9801, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9801)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.map((row) => row.userId)).toEqual([toHex(STRANGER)]);
+  expect(w.account()?.ownTrust).toBe('changed');
+  for (const [blocked, want] of [['E_DEVICE_UNLISTED', 'unlisted'], ['E_CREDENTIAL', 'unlisted'], ['E_TIER_MISMATCH', 'unlisted'], [null, null]] as const) {
+    w.core.trustState.mockReturnValue([ownRow(blocked), ...strangerTrust(null)]);
+    w.core.trustGeneration.mockReturnValue(w.core.trustGeneration() + 1n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.account()?.ownTrust).toBe(want);
+  }
+});
+
+it('reads the own banner straight from the store after a reload, before any list is fetched', async () => {
+  const w = world();
+  w.core.trustState.mockReturnValue([ownRow('E_UMK_CHANGED')]);
+  await toReady(w);
+  await vi.waitFor(() => expect(w.account()?.ownTrust).toBe('changed'));
+  expect(w.routes.getDeviceList).not.toHaveBeenCalled();
+});
+
+// fixA: an own-user history under another UMK throws E_UMK_CHANGED from the ingest. It is an own-trust signal, not an
+// unlisted contact, and it is not fetched again in a loop.
+it('raises ownTrust on an own-user E_UMK_CHANGED ingest without a crash or a retry, and drops it with the leaf', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue([ownRow(null), ...strangerTrust(null)]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
+    raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 4, userId: USER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.core.deviceListIngest.mockImplementation(() => { throw new CoreError('E_UMK_CHANGED', ''); });
+  w.call(9802, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9802)).toMatchObject({ ok: true }));
+  expect(w.account()?.ownTrust).toBe('changed');
+  expect(w.account()?.phase).toBe('ready');
+  w.call(9803, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9803)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  expect(w.account()?.ownTrust).toBe('changed');
+  // A validated Remove takes the leaf out of the group: the core no longer reports it, and nothing else holds the banner.
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.call(9804, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9804)).toMatchObject({ ok: true }));
+  expect(w.account()?.ownTrust).toBeNull();
+});
+
+// Ruling M6 revised: no own-key compare, so the ownKey command (7bf0bfe) is gone.
+it('no longer accepts the ownKey command', async () => {
+  const w = world();
+  await toReady(w);
+  w.call(9805, { m: 'ownKey' });
+  await vi.waitFor(() => expect(w.ret(9805)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+});
+
+it('keeps an own leaf the core refused against the own signed list on the account slice', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue([
+    { userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: false, changedUmk: null, blocked: null },
+  ]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
+    raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_UNLISTED', 'leaf not on the list'); });
+  w.call(9803, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9803)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')).toEqual([]);
+  expect(w.account()?.ownTrust).toBe('unlisted');
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 });
+  w.call(9804, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9804)).toMatchObject({ ok: true }));
+  expect(w.account()?.ownTrust).toBeNull();
+});
+
+// The trust patch (89923a6) answers `changed` only for the ingest that starts a key change; a later ingest of the same
+// user still counts the changed-key leaf as quarantined. Reading that count as "unlisted" left the changed contact
+// without a Verify (trust-polish.spec.ts "Copy alone does not approve" timed out on the disabled approve button).
+it('does not call a contact with a pending key change unlisted from the changed-key quarantine count', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.core.pendingLeaves.mockReturnValue([
+    { groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' },
+    { groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' },
+  ]);
+  w.core.deviceListIngest
+    .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 1 })
+    .mockReturnValueOnce({ version: 2n, changed: false, quarantined: 1 });
+  w.call(978, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(978)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: STRANGER, cachedVersion: 1n, reason: 'changed' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 1 });
+  w.call(979, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(979)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(3);
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+});
+
+// F4 (lead s): the published verified/failed/changed state is the core's trust_state row, read from the store; the
+// quarantine count of an ingest is not read for it. An approval is published from the row trust_verify left behind.
+it('publishes an approved contact from the core\'s row: verified only while none of its leaves is blocked', async () => {
+  const w = world();
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+  await toReady(w);
+  w.state.groups = [{ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.call(9781, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9781)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ shared: true, changedUmk: toHex(CHANGED_UMK), verified: false });
+  // The approval re-judged the leaves in the core: one of them is still off the approved key's list.
+  w.core.trustVerify.mockImplementation(() => {
+    w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: 'E_DEVICE_UNLISTED' }]);
+    w.core.trustGeneration.mockReturnValue(5n);
+  });
+  w.call(9782, { m: 'verifyContact', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });
+  await vi.waitFor(() => expect(w.ret(9782)).toMatchObject({ ok: true }));
+  expect(w.core.trustVerify).toHaveBeenCalledWith(STRANGER, CHANGED_UMK);
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: false, changedUmk: null, unlisted: true, blocked: 'E_DEVICE_UNLISTED' });
+  // Once the core has nothing blocked, the approval stands, with no extra round of fetches.
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
+  w.core.trustGeneration.mockReturnValue(6n);
+  w.sync.deps!.onTrustChanged();
+  const row = w.last<TrustSummary[]>('trust')?.[0];
+  expect(row).toMatchObject({ verified: true, changedUmk: null });
+  expect(row).not.toHaveProperty('unlisted');
+  expect(row).not.toHaveProperty('blocked');
+});
+
+it('never reads a contact with a stored blocked verdict as verified, right after a reload and before any refetch', async () => {
+  const w = world();
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: 'E_CREDENTIAL' }]);
+  await toReady(w);
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: false, unlisted: true, blocked: 'E_CREDENTIAL' }));
+  expect(w.routes.getDeviceList).not.toHaveBeenCalled();
+  // A changed-key block reads as changed even when no validated list presented the key (changedUmk is null).
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: 'E_UMK_CHANGED' }]);
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  const row = w.last<TrustSummary[]>('trust')?.[0];
+  expect(row).toMatchObject({ verified: false, blocked: 'E_UMK_CHANGED' });
+  // Its Verify is the compare dialog's, not "unlisted": the changed key is not an unlisted device.
+  expect(row).not.toHaveProperty('unlisted');
+});
+
+it('never keeps a verified contact when trust_state fails: the last rows read pending until the core answers (R3)', async () => {
+  const w = world();
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
+  await toReady(w);
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: true }));
+  w.core.trustState.mockImplementation(() => { throw new CoreError('E_CORE_STORAGE', 'codec'); });
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER), verified: false, unlisted: true });
+  expect(w.last<DiagnosticsState>('diagnostics')?.errors.map((e) => e.code)).toContain('E_CORE_STORAGE');
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: true });
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+});
+
+it('marks a contact unlisted from the core\'s failed verdict or a leaf verdict the core refused with, never from the count', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  // A count with nothing stored in the core says nothing about this contact.
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 1 });
+  w.call(981, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(981)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  // The core's stored verdict does.
+  w.core.trustState.mockReturnValue([{ ...strangerTrust(null)[0], blocked: 'E_TIER_MISMATCH' }]);
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true, blocked: 'E_TIER_MISMATCH', verified: false });
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toEqual({ userId: toHex(STRANGER), name: expect.any(String) as string, shared: false,
+    umk: toHex(STRANGER_UMK), firstSeen: 1, verified: false, changedUmk: null });
+  // A leaf verdict the ingest threw is stored nowhere in the core: the worker keeps it until a clean ingest.
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_UNLISTED', 'leaf not on the list'); });
+  w.call(983, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(983)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 4, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 });
+  w.call(984, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(984)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+});
+
+// Item 6: trust_verify releases held messages at the same seq and moves the generation; the open timeline is read again.
+it('re-reads an open timeline after a verify so the released held messages show', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  await openGeneral(w);
+  w.state.groups = [textGroup(2)];
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.routes.listMembers.mockResolvedValue([{ userId: STRANGER, username: 's', display: 'S', kind: 0 as const, nick: '', roleIds: [] }]);
+  w.call(9790, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+  await vi.waitFor(() => expect(w.ret(9790)).toMatchObject({ ok: true }));
+  expect(w.timeline()?.items[0]?.body).toBe('');
+  w.core.trustVerify.mockImplementation(() => {
+    w.state.rows = [strangerRow(1)];
+    w.core.trustGeneration.mockReturnValue(9n);
+  });
+  w.call(9791, { m: 'verifyContact', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });
+  await vi.waitFor(() => expect(w.ret(9791)).toMatchObject({ ok: true }));
+  expect(w.timeline()?.items[0]?.body).toBe('from a stranger 1');
+});
+
+// Item 4: the safety number is bound to the key the page compares (ABI 8 safety_number_for(user, expected_umk)).
+it('passes the compared key to the core\'s safety number, and refuses a malformed one', async () => {
+  const w = world();
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+  await toReady(w);
+  w.state.groups = [{ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.call(9792, { m: 'safetyNumber', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });
+  await vi.waitFor(() => expect(w.ret(9792)).toMatchObject({ ok: true }));
+  expect(w.core.safetyNumberFor).toHaveBeenLastCalledWith(STRANGER, CHANGED_UMK);
+  w.core.safetyNumberFor.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_LIST_STALE', 'not the comparison key'); });
+  w.call(9793, { m: 'safetyNumber', userId: toHex(STRANGER), umk: toHex(STRANGER_UMK) });
+  await vi.waitFor(() => expect(w.ret(9793)).toMatchObject({ ok: false, error: { code: 'E_DEVICE_LIST_STALE', detail: '' } }));
+  // Wave C2: the page always names the key it compares; a command without one is refused, never bound to the core's key.
+  const calls = w.core.safetyNumberFor.mock.calls.length;
+  w.call(9794, { m: 'safetyNumber', userId: toHex(STRANGER) });
+  await vi.waitFor(() => expect(w.ret(9794)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+  expect(w.core.safetyNumberFor.mock.calls.length).toBe(calls);
+  w.call(9795, { m: 'safetyNumber', userId: toHex(STRANGER), umk: 'AB' });
+  await vi.waitFor(() => expect(w.ret(9795)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+});
+
+// Item 5: the per-group send block (send_block_code) for the composer, by channel; no group id reaches the page.
+it('publishes the core\'s send block per channel and re-reads it on every trust generation change', async () => {
+  const w = world();
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+  await toReady(w);
+  await openGeneral(w);
+  w.state.groups = [textGroup(2), { ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(GROUP) ? 'E_UMK_CHANGED' : null));
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({ [toHex(CHANNEL)]: { code: 'E_UMK_CHANGED', own: false } });
+  expect(JSON.stringify(w.last('sendBlocks'))).not.toContain(toHex(GROUP));
+  // R1: a block held only by own-user leaves is the own account's, so the composer names Devices, not a contact.
+  w.core.sendBlockOwn.mockImplementation((g: Uint8Array) => toHex(g) === toHex(GROUP));
+  w.core.trustGeneration.mockReturnValue(4n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({ [toHex(CHANNEL)]: { code: 'E_UMK_CHANGED', own: true } });
+  w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(DM_GROUP) ? 'E_DEVICE_UNLISTED' : null));
+  w.core.sendBlockOwn.mockImplementation(() => false);
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({ [toHex(DM_CHANNEL)]: { code: 'E_DEVICE_UNLISTED', own: false } });
+  w.core.sendBlockCode.mockImplementation(() => null);
+  w.core.trustGeneration.mockReturnValue(3n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({});
+});
+
+// Flow 05 "history pending": while the list read is not complete the contact shows privacy.unlisted with no Verify,
+// because a comparison then would approve only the cached list.
+it('keeps a contact history-pending while its list read fails or its history stays unknown', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.routes.getDeviceList.mockRejectedValueOnce(refusal(503, 'E_UNAVAILABLE'));
+  w.call(984, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(984)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).not.toHaveBeenCalled();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER), unlisted: true });
+  // The failed leaf is not read again before the next ready; it stays pending meanwhile.
+  w.call(9841, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9841)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+  // A complete read and a clean ingest end it.
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 });
+  w.call(9842, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9842)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  // A leaf whose history the core still calls unknown (the ingest did not complete) is pending too.
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.core.deviceListIngest.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_LIST_STALE', 'older list'); });
+  w.call(9843, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9843)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+});
+
+it('names the channel whose validated Remove dropped a changed leaf, and only while the key stays changed', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 2n, reason: 'changed' }]);
+  w.call(985, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(985)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ changedUmk: toHex(CHANGED_UMK) });
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('removedIn');
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.call(986, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(986)).toMatchObject({ ok: true }));
+  const removed = w.last<TrustSummary[]>('trust')?.[0];
+  expect(removed).toMatchObject({ changedUmk: toHex(CHANGED_UMK), verified: false, removedIn: [toHex(CHANNEL)] });
+  expect(JSON.stringify(w.last('trust'))).not.toContain(toHex(GROUP));
+  w.core.trustState.mockReturnValue([{ ...strangerTrust(null)[0], umk: CHANGED_UMK, verified: true }]);
+  w.call(987, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(987)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('removedIn');
+});
+
+it('does not call a group removed when this device left it', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 2n, reason: 'changed' }]);
+  w.call(988, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(988)).toMatchObject({ ok: true }));
+  w.state.groups = [textGroup(4)];
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.call(989, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(989)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('removedIn');
+});
+
+it('stops typing on lost membership and refuses typing until viewable and online', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.call(997, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(997)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } }));
+  expect(w.gateway.sendTyping).not.toHaveBeenCalled();
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(994, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true }));
+  w.sync.deps!.onMembership(GROUP, 'not-member');
+  expect(w.gateway.sendTyping).toHaveBeenLastCalledWith(CHANNEL, false);
+  w.call(995, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(995)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } }));
+  expect(w.gateway.sendTyping.mock.calls.filter((args) => args[1] === true)).toHaveLength(1);
+});
+
+it('ignores incoming typing frames after an open channel loses membership', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(998, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(998)).toMatchObject({ ok: true }));
+  const frame: GatewayEvent = { type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S + 5n],
+  } };
+  w.gateway.emit(frame);
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toMatchObject([{ userId: toHex(STRANGER) }]);
+
+  w.sync.deps!.onMembership(GROUP, 'not-member');
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
+  w.gateway.emit(frame);
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
+});
+
+// expires_ts is on the instance's clock (L-HTTP-96: now + 10 s there). Read against this browser's clock, a lagging
+// instance made every indicator expire on arrival (task 10: the test host's clock lags, so no browser ever showed one).
+it('reads a typing expiry on the instance clock and holds it at most the relay window here', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.routes.postTicket.mockImplementationOnce(() => Promise.resolve({ ticket: 'ticket', expires: NOW_S - 600n + 30n }));
+  expect(await w.gatewayDeps.value!.mintTicket()).toBe('ticket');
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S - 600n + 10n],
+  } });
+  expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`))
+    .toMatchObject([{ userId: toHex(STRANGER), expiresAt: 1_700_000_010_000 }]);
+  // Already over on the instance clock: dropped.
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, new Uint8Array(16).fill(0x6b), OTHER_DEVICE, 1n, NOW_S - 600n],
+  } });
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toMatchObject([{ userId: toHex(STRANGER) }]);
+});
+
+// The ticket shows the instance clock once, at the mint. Time passes on both clocks after it, so the instance's now is the
+// mint time plus what elapsed here; a frame whose expires_ts is already behind that estimate is stale and never shown.
+it('advances the instance clock from the ticket by the time elapsed here, and drops a frame already expired on it', async () => {
+  let nowMs = 1_700_000_000_000;
+  const w = world({ now: () => nowMs });
+  await toReady(w);
+  await openGeneral(w);
+  // The instance is ten minutes behind this browser at the mint.
+  w.routes.postTicket.mockImplementationOnce(() => Promise.resolve({ ticket: 'ticket', expires: NOW_S - 600n + 30n }));
+  expect(await w.gatewayDeps.value!.mintTicket()).toBe('ticket');
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  nowMs += 20_000;                                            // 20 s later on both clocks: the instance is at mint + 20
+  // Expired 5 s ago on the instance clock (mint + 15): dropped, never held for a fresh window.
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, new Uint8Array(16).fill(0x6b), OTHER_DEVICE, 1n, NOW_S - 600n + 15n],
+  } });
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`) ?? []).toEqual([]);
+  // Four seconds left on the instance clock (mint + 24): shown for those four seconds here.
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S - 600n + 24n],
+  } });
+  expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`)?.map(row => [row.userId, row.expiresAt]))
+    .toEqual([[toHex(STRANGER), 1_700_000_024_000]]);
+});
+
+it('clears incoming typing on membership loss without local typing', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.gateway.emit({ type: 'frame', frame: {
+    op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S + 5n],
+  } });
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toMatchObject([{ userId: toHex(STRANGER) }]);
+  expect(w.gateway.sendTyping).not.toHaveBeenCalled();
+
+  w.sync.deps!.onMembership(GROUP, 'not-member');
+  expect(w.last<{ userId: string }[]>(`typing:${toHex(CHANNEL)}`)).toEqual([]);
+  expect(w.gateway.sendTyping).not.toHaveBeenCalled();
+});
+
+it('stops typing when the open channel disappears from the refreshed channel list', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(996, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(996)).toMatchObject({ ok: true }));
+  w.routes.listChannels.mockResolvedValueOnce([]);
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.channels()).toEqual([]));
+  expect(w.gateway.sendTyping).toHaveBeenLastCalledWith(CHANNEL, false);
+});
+
+it('rejects a search cursor with no worker-owned pagination state and never calls core search', async () => {
+  const w = world();
+  await toReady(w);
+  w.call(91, { m: 'search', scope: 'all', id: null, query: 'boat',
+    cursor: { token: '1' } });
+  await vi.waitFor(() => expect(w.ret(91)).toBeDefined());
+  expect(w.ret(91)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } });
+  expect(w.core.search).not.toHaveBeenCalled();
+});
+
+it('refuses malformed key approval and sends typing off on channel close', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(94, { m: 'verifyContact', userId: toHex(STRANGER), umk: 'not a public key' });
+  await vi.waitFor(() => expect(w.ret(94)).toBeDefined());
+  expect(w.ret(94)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+  expect(w.core.trustVerify).not.toHaveBeenCalled();
+  w.call(95, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(95)).toBeDefined());
+  expect(w.gateway.sendTyping).toHaveBeenCalledWith(CHANNEL, true);
+  w.call(96, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+  await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true }));
+  expect(w.gateway.sendTyping).toHaveBeenCalledWith(CHANNEL, false);
+});
+
+it('keeps the old lock and gives no release notice when pause fails', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pause.mockImplementation(() => { throw new CoreError('E_STORE_BUSY', 'SECRET busy'); });
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+  expect(w.ret(92)).toMatchObject({ ok: false, error: { code: 'E_STORE_BUSY', detail: '' } });
+  expect(w.posted.some((m) => m.t === 'released')).toBe(false);
+  expect(w.locks.isHeld(LOCK)).toBe(true);
+  expect(w.core.resume).toHaveBeenCalled();
+  expect(w.calls.indexOf('gateway.stop')).toBeLessThan(w.calls.lastIndexOf('gateway.start'));
+});
+
+it('a resign whose rollback fails too gives up the lock, so the asking tab leads (M1)', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pause.mockImplementationOnce(() => { throw new CoreError('E_STORE_BUSY', ''); });
+  w.core.resume.mockImplementationOnce(() => Promise.reject(new CoreError('E_STORE_BUSY', '')));
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+  expect(w.ret(92)).toMatchObject({ ok: false });
+  expect(w.account()).toMatchObject({ phase: 'paused-error', error: { code: 'E_STORE_BUSY' } });
+  await tabB.granted;
+  // And this tab waits behind it, as a released one does.
+  tabB.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+});
+
+it('a resign rolled back after a failed pause gives the fresh engine its expected groups before the socket starts (M2)', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pause.mockImplementationOnce(() => { throw new CoreError('E_STORE_BUSY', ''); });
+  const builds = w.sync.builds;
+  w.sync.setExpected.mockClear();
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+  expect(w.sync.builds).toBe(builds + 1);
+  expect(w.sync.setExpected).toHaveBeenCalledWith([expect.objectContaining({ groupId: GROUP })]);
+});
+
+/** Tab B's worker: a blocking lock request queued behind the current holder; `release` is B resigning. */
+function otherTab(w: World): { granted: Promise<void>; release: () => void } {
+  let release: () => void = () => {};
+  const granted = new Promise<void>((resolve) => {
+    void w.locks.request(LOCK, {}, () => { resolve(); return new Promise<void>((done) => { release = done; }); });
+  });
+  return { granted, release: () => { release(); } };
+}
+
+// Wave C2, found by the browser hand-back (A -> B -> A): the OPFS pool lives in this worker and stays paused after a
+// release, and a fresh open here finds that paused pool and fails ("unable to open database file"). A tab that leads
+// again resumes the store it paused instead, also when its rollback had failed; a resume that fails falls back to boot.
+it('leads again by resuming the store it paused, not by opening it again', async () => {
+  for (const rollbackFails of [false, true]) {
+    const w = world();
+    await toReady(w);
+    if (rollbackFails) {
+      w.core.pause.mockImplementationOnce(() => { throw new CoreError('E_STORE_BUSY', ''); });
+      w.core.resume.mockImplementationOnce(() => Promise.reject(new CoreError('E_STORE_BUSY', '')));
+    }
+    const boots = w.boots;
+    const tabB = otherTab(w);
+    w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+    await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+    await tabB.granted;
+    expect(w.core.close).not.toHaveBeenCalled();
+    const resumes = w.core.resume.mock.calls.length;
+    tabB.release();
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+    expect(w.core.resume.mock.calls.length, `rollback fails: ${String(rollbackFails)}`).toBe(resumes + 1);
+    expect(w.boots).toBe(boots);
+  }
+});
+
+it('falls back to a fresh open when the paused store cannot resume', async () => {
+  const w = world();
+  await toReady(w);
+  const boots = w.boots;
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true }));
+  await tabB.granted;
+  w.core.resume.mockImplementationOnce(() => Promise.reject(new CoreError('E_STORE_RESUME', '')));
+  tabB.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  expect(w.core.close).toHaveBeenCalledOnce();
+  expect(w.boots).toBe(boots + 1);
+});
+
+it('a tab that resigned leads again when the new leader hands back, with a fresh engine (A -> B -> A -> B)', async () => {
+  const w = world();
+  await toReady(w);
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true }));
+  await tabB.granted;
+  expect(w.account()?.phase).toBe('other-tab');
+  // The paused store stays with this worker, to be resumed when it leads again.
+  expect(w.core.close).not.toHaveBeenCalled();
+  const builds = w.sync.builds;
+  const starts = w.sync.start.mock.calls.length;
+  const gatewayStarts = w.calls.filter((c) => c === 'gateway.start').length;
+  // "Use this tab" on A: B resigns, and A's page calls start, which only waits for the lock A already asked for.
+  tabB.release();
+  w.call(93, { m: 'start' });
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  expect(w.ret(93)).toMatchObject({ ok: true });
+  expect(w.locks.isHeld(LOCK)).toBe(true);
+  expect(w.sync.builds).toBe(builds + 1);
+  expect(w.sync.start.mock.calls.length).toBe(starts + 1);
+  expect(w.calls.filter((c) => c === 'gateway.start').length).toBe(gatewayStarts + 1);
+  // And back to B once more.
+  const again = otherTab(w);
+  w.call(94, { m: 'resign', nonce: 'bb'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(94)).toMatchObject({ ok: true }));
+  await again.granted;
+  expect(w.account()?.phase).toBe('other-tab');
+  again.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+});
+
+it('a tab that leads again rebuilds from the store: nothing of the account before carries over (B switched account)', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)).not.toEqual([]);
+  // The old account's state: a live message notice, and a contact the core refused by a leaf verdict.
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockImplementation(() => { throw new CoreError('E_DEVICE_UNLISTED', ''); });
+  w.call(96, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.state.groups = [textGroup(2)];
+  w.state.rows = [{ ...strangerRow(1), recvTs: NOW_S + 61n }];
+  w.state.activity = [act(GROUP, 1, 0)];
+  w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
+  expect(w.notices()?.items).toHaveLength(1);
+  w.state.groups = []; w.state.rows = []; w.state.activity = [];
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true }));
+  await tabB.granted;
+  // Meanwhile tab B signed out and signed in to another account on this instance, in no community.
+  const other = new Uint8Array(16).fill(0x77);
+  w.core.identity = (): IdentityInfo => ({ phase: 2, instanceId: INSTANCE_ID, userId: other, deviceId: OTHER_DEVICE,
+    username: 'other', listPublished: true });
+  w.state.joined = false;
+  tabB.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  expect(w.account()?.user).toEqual({ id: toHex(other), username: 'other' });
+  expect(w.last('communities')).toEqual([]);
+  expect(w.last(`channels:${toHex(COMMUNITY)}`)).toEqual([]);
+  expect(w.last(`members:${toHex(COMMUNITY)}`)).toEqual([]);
+  expect(w.last<TimelineState>(`timeline:${toHex(CHANNEL)}`)?.items).toEqual([]);
+  expect(w.notices()?.items).toEqual([]);
+  // The same person is a contact of the new account too: what the old account's refresh said about them is gone.
+  w.call(97, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER) });
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  // The old account's channel is unknown to this one.
+  w.call(95, { m: 'openChannel', channelId: toHex(CHANNEL) });
+  await vi.waitFor(() => expect(w.ret(95)).toBeDefined());
+  expect(w.ret(95)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+});
+
+it('resign waits for a DM reload spawned by an unexpected Welcome', async () => {
+  const w = world();
+  await toReady(w);
+  const gate = deferred<World['state']['dms']>();
+  w.routes.listDms.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onUnexpectedWelcome(GROUP);
+  await vi.waitFor(() => expect(w.routes.listDms).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve([]);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for socket reauthentication before pausing the core', async () => {
+  const w = world();
+  await toReady(w);
+  const gate = deferred<boolean>();
+  w.session.establish.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'revoked' });
+  await vi.waitFor(() => expect(w.session.establish).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve(false);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('a socket re-establish timer armed before a resign never starts a socket afterwards (client I4)', async () => {
+  const w = world();
+  await toReady(w);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    w.session.establish.mockImplementationOnce(() => Promise.reject(new Error('E_NETWORK')));
+    w.gateway.emit({ type: 'revoked' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.session.establish).toHaveBeenCalled();
+    const tabB = otherTab(w);
+    w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.ret(92)).toMatchObject({ ok: true });
+    await tabB.granted;
+    // B hands back at once: A leads again with a fresh socket, started once.
+    tabB.release();
+    for (let i = 0; i < 20 && w.account()?.phase !== 'ready'; i++) await vi.advanceTimersByTimeAsync(10);
+    expect(w.account()?.phase).toBe('ready');
+    const starts = w.calls.filter((c) => c === 'gateway.start').length;
+    await vi.advanceTimersByTimeAsync(GATEWAY.reconnectCapMs);
+    expect(w.calls.filter((c) => c === 'gateway.start').length).toBe(starts);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('resign waits for the member lookup started by an unknown timeline sender', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  await openGeneral(w);
+  w.state.rows = [strangerRow(1)];
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.listMembers>>>();
+  w.routes.listMembers.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.routes.listMembers).toHaveBeenCalledTimes(3));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve([]);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for the trust refresh spawned by a group change', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for a follow-up trust refresh scheduled while the first one drains', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const pending = (userId: Uint8Array) => [{ groupId: GROUP, leafIndex: 1, userId, cachedVersion: 0n, reason: 'unknown' }];
+  w.core.pendingLeaves.mockReturnValue(pending(STRANGER));
+  const first = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  const second = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalledTimes(1));
+  w.core.pendingLeaves.mockReturnValue(pending(OTHER_DEVICE));
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  first.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalledTimes(2));
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  second.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready backup maintenance', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<void>();
+  w.account.ensureBackups.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.account.ensureBackups).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready keypackage refill', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<void>();
+  w.routes.postKeyPackages.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 1, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.routes.postKeyPackages).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready trust ingestion', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
+  w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve({ version: 1n, blob: new Uint8Array([9]), raw: LIST_RAW });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready own-list maintenance', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<{ version: bigint; listed: boolean }>();
+  w.account.refreshOwnDeviceList.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.account.refreshOwnDeviceList).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve({ version: 1n, listed: true });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for ready backup repair after the own-list refresh', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<boolean>();
+  w.account.repairBackupState.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.account.repairBackupState).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve(false);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for the ready community refresh', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  const gate = deferred<Awaited<ReturnType<typeof w.routes.listCommunities>>>();
+  w.routes.listCommunities.mockImplementationOnce(() => gate.promise);
+  w.gateway.emit({ type: 'ready', info: {
+    deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32, groups: [],
+    heartbeatMs: 30_000, maxFrameBytes: 131_584, backoffMs: 500, backoffJitterMs: 250,
+  } });
+  await vi.waitFor(() => expect(w.routes.listCommunities).toHaveBeenCalledTimes(2));
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve([{ id: COMMUNITY, name: 'friends', owner: USER, policyVersion: 1n }]);
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for an outgoing attachment reference deletion', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  const gate = deferred<void>();
+  w.routes.deleteBlob.mockImplementationOnce(() => gate.promise);
+  const row: OutboxRow = { msgId: MSG, state: 0, error: '', created: NOW_S, body: '', type: 0, replyTo: null,
+    attachments: [{ blobId: B1, size: 1, mime: 'text/plain', name: 'a' }] };
+  w.sync.deps!.onDiscarded(GROUP, row);
+  await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for an asynchronous recorded-message purge', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.state.purges = [purge(5n, [])];
+  const gate = deferred<'deleted' | 'gone'>();
+  w.routes.deleteGroupMessage.mockImplementationOnce(() => gate.promise);
+  w.sync.deps!.onOutboxChanged(GROUP);
+  await vi.waitFor(() => expect(w.routes.deleteGroupMessage).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve('deleted');
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('resign waits for cleanup after a refused send takes attachment references', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  const [trayId] = await attachReady(w, 4, [file('oops.txt', 'text/plain', 4)]);
+  const gate = deferred<void>();
+  w.routes.deleteBlob.mockImplementationOnce(() => gate.promise);
+  w.sync.sendRequest.mockImplementationOnce(() => { throw new CoreError('E_CORE_INPUT', 'refused send'); });
+  w.call(5, { m: 'send', channelId: CH_HEX, text: 'hello', attachments: [trayId] });
+  await vi.waitFor(() => expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_CORE_INPUT', detail: '' } }));
+  await vi.waitFor(() => expect(w.routes.deleteBlob).toHaveBeenCalled());
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await settle();
+  expect(w.core.pause).not.toHaveBeenCalled();
+  gate.resolve();
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+it('publishes only bounded diagnostics and code-only errors', async () => {
+  const w = world();
+  await toReady(w);
+  w.call(93, { m: 'refreshDevices' });
+  await vi.waitFor(() => expect(w.ret(93)).toBeDefined());
+  const diagnostics = w.last<{ devices: number; errors: { code: string; at: number }[] }>('diagnostics');
+  expect(diagnostics?.devices).toBe(2);
+  expect(diagnostics?.errors).toHaveLength(0);
+  expect(JSON.stringify(w.posted)).not.toContain('session-token');
+  expect(JSON.stringify(w.posted)).not.toContain('SECRET busy');
+});
 
 async function toReady(w: World): Promise<void> {
   w.call(1, { m: 'start' });
   await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
 }
+
+it('refreshTrust fetches a pending leaf once and re-renders already open timelines after ingestion', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.core.deviceListIngest.mockImplementation(() => {
+    w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+    w.core.trustGeneration.mockReturnValue(1n);
+    return { version: 1n, changed: true, quarantined: 1 };
+  });
+  const before = w.posted.filter((m) => m.t === 'slice' && m.name === `timeline:${toHex(CHANNEL)}`).length;
+  w.call(882, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(882)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledOnce();
+  expect(w.core.revalidatePending).toHaveBeenCalledWith(GROUP, 1, 256);
+  expect(w.posted.filter((m) => m.t === 'slice' && m.name === `timeline:${toHex(CHANNEL)}`).length).toBeGreaterThan(before);
+});
+
+it('an epoch transition refetches the same leaf and cached version once', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.call(882, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(882)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+
+  w.sync.deps!.onGroupChanged(GROUP, applied(2));
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2));
+  w.sync.deps!.onGroupChanged(GROUP, { ...applied(2), epochChanged: false });
+  await settle();
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+});
+
+it('a changed pending reason refetches the same leaf without an epoch change', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.call(883, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(883)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'changed' }]);
+  w.sync.deps!.onGroupChanged(GROUP, { ...applied(2), epochChanged: false });
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2));
+});
+
+it('a later trust generation invalidates an open timeline from another group', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onGroupChanged(new Uint8Array(16).fill(0xfe), applied(2));
+  expect(w.timeline()?.items[0]?.body).toBe('');
+});
+
+it('candidate list ingestion invalidates a published timeline before commit confirmation', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.timeline()?.items[0]?.body).toBe('');
+});
+
+it('a trust generation change posts each open timeline once, never an empty one first; a timeline that cannot be read is emptied (M4)', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  const name = `timeline:${toHex(CHANNEL)}`;
+  const posts = () => w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === name);
+  const before = posts().length;
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(posts().slice(before).map((m) => (m.value as TimelineState).items.length)).toEqual([1]);
+  const timeline = w.core.timeline;
+  w.core.timeline = () => { throw new CoreError('E_CORE_STORAGE', ''); };
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  w.core.timeline = timeline;
+  expect(w.timeline()?.items).toEqual([]);
+});
+
+it('a trust generation change empties an open timeline it cannot re-read, never leaving the old text (lead on 68194e7)', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  expect(w.timeline()?.items[0]?.body).not.toBe('');
+  // A generation change that leaves this timeline's rows as they were keeps it (an equal slice is not posted again).
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.timeline()?.items).toHaveLength(1);
+  // The channel leaves the community's list while its timeline is still open, then a trust write retracts its rows.
+  w.routes.listChannels.mockResolvedValueOnce([]);
+  w.call(72, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+  await vi.waitFor(() => expect(w.ret(72)).toMatchObject({ ok: true }));
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.timeline()?.items).toEqual([]);
+});
 
 async function toKeys(w: World): Promise<void> {
   w.call(1, { m: 'start' });
@@ -906,7 +2241,7 @@ describe('Controller command edge cases', () => {
     expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: false, error: failed });
     w.call(6, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the channel is not open' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     expect(w.sync.sendRequest).not.toHaveBeenCalled();
   });
 
@@ -941,7 +2276,7 @@ describe('Controller command edge cases', () => {
     await toReady(w);
     w.call(2, { m: 'selectCommunity', communityId: 'e'.repeat(32) });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_BAD_INPUT', detail: 'unknown community', status: 0, retryAfterMs: null } });
+    expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: false, error: { code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null } });
     expect(w.routes.listChannels).toHaveBeenCalledTimes(1);
     expect(w.routes.listMembers).toHaveBeenCalledTimes(1);
   });
@@ -988,11 +2323,11 @@ describe('Controller command edge cases', () => {
     w.session.ensure.mockImplementationOnce(() => Promise.reject(down));
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('error'));
-    expect(w.account()?.error).toEqual({ code: 'E_NETWORK', detail: 'fetch failed', status: 0, retryAfterMs: null });
+    expect(w.account()?.error).toEqual({ code: 'E_NETWORK', detail: '', status: 0, retryAfterMs: null });
     expect(w.gateway.starts).toBe(0);
     w.call(2, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is error' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
   });
 });
 
@@ -1076,10 +2411,10 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(4, { m: 'signInTotp', code: '12345', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
-    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'code is not six digits' } });
+    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: '' });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     w.call(6, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: null }));
     expect(w.enrol.totp).toHaveBeenCalledWith('123456');
@@ -1152,7 +2487,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is signin-login' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     expect(w.enrol.totp).toHaveBeenCalledTimes(1);
   });
 
@@ -1366,8 +2701,8 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(5, { m: 'signInBegin' });
     w.call(6, { m: 'signupBegin' });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is cleared' } });
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'the phase is cleared' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
   });
 
   it('signInCancel resets the enrolment and returns to needs-signup', async () => {
@@ -1391,7 +2726,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(3, LOGIN);
     w.call(4, LOGIN);
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
-    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: 'a sign-in step is running' } });
+    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     release();
     await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needsTotp: false } }));
   });
@@ -1641,7 +2976,7 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     expect(w.badges()).toEqual({ [toHex(CHANNEL)]: { unread: 0, mentions: 0 } });
     w.call(5, { m: 'markRead', channelId: 'e'.repeat(32) });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'unknown channel' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
   });
 
   it('setSetting stores a known key, deletes on null, and refuses everything else', async () => {
@@ -1659,8 +2994,8 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_SETTING_KEY', detail: '', status: 0, retryAfterMs: null } });
-    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'value is not allowed for notify.default' } });
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'value is not a string or null' } });
+    expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.core.settingPut).toHaveBeenCalledTimes(1);
   });
 
@@ -1907,7 +3242,7 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     w.state.ownList = LISTED_BOTH;
     w.call(2, { m: 'revokeDevice', deviceId: toHex(DEVICE), recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'use signOutRevoke for this browser' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.routes.getBackup).not.toHaveBeenCalled();
     const from = w.calls.length;
     w.call(3, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: RECOVERY_KEY });
@@ -1968,9 +3303,9 @@ describe('Controller devices (L-TS-23, Q13)', () => {
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
-    expect(w.ret(3)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
-    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is not a string or null' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(w.ret(3)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.routes.getBackup).not.toHaveBeenCalled();
     expect(w.routes.deleteDevice).not.toHaveBeenCalled();
   });
@@ -2116,7 +3451,7 @@ describe('Controller pre-flight rulings (task 14)', () => {
     });
     w.call(2, { m: 'revokeDevice', deviceId: toHex(OTHER_DEVICE), recoveryKey: null });
     await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
-    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the recovery key is empty' } });
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
     expect(w.routes.deleteDevice).not.toHaveBeenCalled();
   });
 
@@ -2431,6 +3766,17 @@ describe('Controller other-tab grace', () => {
     expect(w.account()?.phase).toBe('other-tab');
   });
 
+  // Task 9 (L-WEB-46): the waiting tab's page asks for hand-over by the instance the diagnostics slice names.
+  it('names the instance in diagnostics while another tab holds the lock', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const w = world({ phase: 0 });
+    w.locks.holdElsewhere(LOCK);
+    w.call(1, { m: 'start' });
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(w.account()?.phase).toBe('other-tab');
+    expect(w.last<{ instance: string }>('diagnostics')?.instance).toBe(INSTANCE_HEX);
+  });
+
   it('a lock granted after the grace moves on to boot', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const w = world({ phase: 0 });
@@ -2502,12 +3848,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(h.ret(14)).toBeDefined());
     const details = Array.from({ length: 14 }, (_, i) => (h.ret(i + 1) as Refused).error);
     expect(details.map((e) => e.code)).toEqual(new Array<string>(14).fill('E_BAD_INPUT'));
-    expect(details.map((e) => e.detail)).toEqual([
-      'msgId is not 32 lowercase hex', 'the message is empty', 'emoji must be 1..=32 bytes', 'emoji must be 1..=32 bytes',
-      'on is not a boolean', 'files is not a non-empty list of files', 'files is not a non-empty list of files',
-      'seq is not a decimal sequence number', 'index is not a non-negative integer', 'replyTo is not 32 lowercase hex',
-      'attachments is not a list of at most 4 tray ids', 'trayId is empty', 'on is not a boolean', 'thumb is not a boolean',
-    ]);
+    expect(details.map((e) => e.detail)).toEqual(new Array<string>(14).fill(''));
     expect(h.paths).toEqual([]);
   });
 
@@ -2569,7 +3910,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(w.sync.sendRequest.mock.calls[0][1]).toMatchObject({ type: 0, body: '' });
     w.call(6, { m: 'send', channelId: CH_HEX, text: ' ', attachments: [] });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: 'the message is empty' } });
+    expect(w.ret(6)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
   });
 
   it('a tray id that is not ready refuses the send and sends nothing', async () => {
@@ -2600,7 +3941,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect((w.ret(4) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_COUNT', status: 0 });
     expect((w.ret(5) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_TOO_LARGE', status: 0 });
-    expect((w.ret(6) as Refused).error).toEqual({ code: 'E_BAD_INPUT', detail: 'unknown channel', status: 0, retryAfterMs: null });
+    expect((w.ret(6) as Refused).error).toEqual({ code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null });
     expect(w.routes.putBlob).not.toHaveBeenCalled();
   });
 
@@ -2656,7 +3997,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(w.routes.deleteGroupMessage).not.toHaveBeenCalled();
   });
 
-  it("a core refusal of a fold crosses with its code and detail; a reply's msg id reaches the core", async () => {
+  it("a core refusal of a fold crosses with its code and empty detail; a reply's msg id reaches the core", async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
@@ -2664,7 +4005,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     w.call(4, { m: 'editMessage', channelId: CH_HEX, msgId: MSG_HEX, text: 'not mine' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false,
-      error: { code: 'E_CORE_INPUT', detail: 'only the author may edit or delete', status: 0, retryAfterMs: null } });
+      error: { code: 'E_CORE_INPUT', detail: '', status: 0, retryAfterMs: null } });
     w.call(5, { m: 'send', channelId: CH_HEX, text: 'answer', replyTo: MSG_HEX });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.sync.sendRequest.mock.calls.at(-1)![1]).toEqual({ type: 0, replyTo: MSG, body: 'answer', attachments: [] });
@@ -2798,7 +4139,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(pinsOf(w)).toEqual([]);
     w.call(6, { m: 'loadPins', channelId: 'e'.repeat(32) });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
-    expect((w.ret(6) as Refused).error).toMatchObject({ code: 'E_BAD_INPUT', detail: 'unknown channel' });
+    expect((w.ret(6) as Refused).error).toMatchObject({ code: 'E_BAD_INPUT', detail: '' });
   });
 
   it('openAttachment returns the decrypted file and its thumbnail as Blobs; a tampered file crosses E_BLOB_HASH', async () => {
@@ -2828,7 +4169,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     const doc = okValue<{ blob: Blob; name: string; mime: string }>(w, 6);
     expect([doc.name, doc.mime, doc.blob.type]).toEqual(['r_s.pdf', 'application/pdf', 'application/octet-stream']);
     expect((w.ret(7) as Refused).error).toMatchObject({ code: 'E_ATTACHMENT_MISSING' });
-    expect((w.ret(8) as Refused).error).toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: 'no such attachment' });
+    expect((w.ret(8) as Refused).error).toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: '' });
     expect(w.routes.getBlob).toHaveBeenCalledTimes(2);
     const tampered = stored.slice(); tampered[0] = (tampered[0] ?? 0) ^ 1;
     w.state.blobs.set(toHex(blobId), tampered);

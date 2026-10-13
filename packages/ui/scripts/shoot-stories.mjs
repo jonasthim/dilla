@@ -15,6 +15,22 @@ import { fileURLToPath } from 'node:url';
 export const THEMES = ['mesh', 'light', 'high-contrast'];
 export const VIEWPORT = { width: 1280, height: 800 };
 
+export function parseViewport(arg) {
+  if (arg === undefined) return VIEWPORT;
+  const match = /^--viewport=([1-9]\d*)x([1-9]\d*)$/.exec(arg);
+  if (!match) throw new Error('invalid viewport');
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)) throw new Error('invalid viewport');
+  return { width, height };
+}
+
+export function splitViewportArg(args) {
+  const first = args.findIndex(arg => arg.startsWith('--viewport='));
+  if (first !== -1 && first !== args.length - 1) throw new Error('viewport must be final');
+  return { prefixes: first === -1 ? args : args.slice(0, -1), viewport: parseViewport(first === -1 ? undefined : args[first]) };
+}
+
 /** The story ids (never docs entries) that start with one of the prefixes, and the prefixes that matched none. */
 export function selectStories(index, prefixes) {
   const ids = Object.values(index.entries)
@@ -105,7 +121,7 @@ function startServer(root, port) {
   });
 }
 
-export async function shoot({ port, outDir, prefixes, root }) {
+export async function shoot({ port, outDir, prefixes, root, viewport = VIEWPORT }) {
   const indexPath = path.join(root, 'index.json');
   if (!fs.existsSync(indexPath)) {
     throw new Error('shoot-stories: ' + root + '/index.json is missing: run build-storybook first');
@@ -119,7 +135,7 @@ export async function shoot({ port, outDir, prefixes, root }) {
   try {
     const { chromium } = await import('playwright');
     browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+    const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
     try {
       fs.mkdirSync(outDir, { recursive: true });
       for (const id of ids) {
@@ -149,7 +165,8 @@ export async function shoot({ port, outDir, prefixes, root }) {
 }
 
 async function main(argv) {
-  const [portArg, outArg, ...prefixes] = argv;
+  const [portArg, outArg, ...rest] = argv;
+  const { prefixes, viewport } = splitViewportArg(rest);
   const port = /^\d+$/.test(portArg ?? '') ? Number(portArg) : NaN;
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || !outArg || prefixes.length === 0) {
     process.stderr.write('usage: shoot-stories.mjs <port> <out-dir> <story-id-prefix>…\n');
@@ -157,7 +174,7 @@ async function main(argv) {
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'storybook-static');
   const outDir = path.resolve(process.cwd(), outArg);
-  const { written, consoleErrors, unmatched } = await shoot({ port, outDir, prefixes, root });
+  const { written, consoleErrors, unmatched } = await shoot({ port, outDir, prefixes, root, viewport });
   for (const p of unmatched) process.stderr.write(`shoot-stories: no story matches "${p}"\n`);
   for (const line of consoleErrors) process.stderr.write(line + '\n');
   process.stdout.write(`shoot-stories: wrote ${written} screenshots to ${outDir}\n`);

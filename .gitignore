@@ -14,6 +14,7 @@ packages/ui/storybook-static/
 !core/dilla-core/tests/fixtures/app_v1.db
 !core/dilla-core/tests/fixtures/app_v1_pending.db
 !core/dilla-core/tests/fixtures/app_v2.db
+!core/dilla-core/tests/fixtures/app_v3.db
 .env
 .env.*
 # editors

@@ -8,13 +8,17 @@ mod groups;
 mod identity;
 mod messages;
 mod schema;
+mod search;
 mod settings;
 mod sync;
+mod trust;
 mod wire;
 
 pub use error::ClientError;
 pub use identity::{recovery_key_check, session_preimage};
 pub use messages::{mentions_me, mentions_me_with_roles};
+#[cfg(feature = "test-hooks")]
+pub use schema::test_force_missing_fts5;
 pub use schema::{HANDSHAKE_TAIL, migrate_app};
 
 use crate::identity::CredentialIdentity;
@@ -199,10 +203,13 @@ impl ClientCore {
                 if found == 1 || found == 2 {
                     backfill_v3(u).map_err(schema_error)?;
                 }
+                if found <= 4 {
+                    u.with_conn(trust::seed_own_pin).map_err(schema_error)?;
+                }
                 Ok(found)
             })
             .map_err(ClientError::from)?;
-        if version > 3 {
+        if version > 4 {
             return Err(ClientError::new(
                 E_CORE_STATE,
                 format!("app schema {version} is newer than this build"),

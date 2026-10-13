@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ChannelGroupState, ChannelSummary } from '@dilla/client-core';
+import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, SidebarTabs,
   StatusBar, StatusChunk,
@@ -9,11 +9,13 @@ import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, readJoinError, useRoute } from '../router.ts';
-import { t, type StringKey } from '../strings/index.ts';
+import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
+import { Search, type SearchHitView } from './Search.tsx';
+import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, mentionCandidates, mentionMembers, mergeMembers,
   nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
@@ -29,13 +31,41 @@ export function focusRailSettings(): void {
 }
 
 const CATEGORY = 2;
+// The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
+const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
+
+/**
+ * The composer's reason for a send block (W-01, R1). A block only own-user leaves hold names the own account and Devices;
+ * a changed key asks for a comparison only when a changed member of the conversation (`changed`) has a key to compare,
+ * else it says there is nothing to compare yet; any other failed leaf is privacy.leafFailed.
+ */
+export function blockReason(block: SendBlock, changed: readonly TrustSummary[]): StringKey {
+  if (block.own) return block.code === 'E_UMK_CHANGED' ? 'privacy.ownChanged' : 'privacy.ownUnlisted';
+  if (block.code !== 'E_UMK_CHANGED') return 'privacy.leafFailed';
+  return changed.some(row => row.changedUmk !== null) ? 'privacy.changed' : 'privacy.changedNoKey';
+}
+
+/** A contact whose identity changed: a validated pending key, or a leaf the core holds under a key no list presents. */
+export function isChanged(row: TrustSummary): boolean {
+  return row.changedUmk !== null || row.blocked === 'E_UMK_CHANGED';
+}
 const HEX32 = /^[0-9a-f]{32}$/;
+// Renew an unchanged typing signal after 5 s: above the server's 3 s meter, inside its 10 s hold (L-HTTP-96).
+const TYPING_RENEW_MS = 5_000;
 
 type SidebarTab = 'channels' | 'dms';
 
 /** True when focus was dropped to the document, as it is when the focused element leaves the DOM. */
 function focusLost(): boolean {
   return document.activeElement === null || document.activeElement === document.body;
+}
+
+/**
+ * The search palette is a modal dialog, so the shell beneath it is inert and cannot take focus: a picked hit closes that
+ * top layer first, then focuses its row (the palette's React state follows when the pick resolves).
+ */
+function leaveSearchLayer(): void {
+  document.querySelector<HTMLDialogElement>('dialog.dw-search[open]')?.close();
 }
 
 /** Focuses the action of an EmptyState in one pane of the shell; false when there is none. */
@@ -75,6 +105,22 @@ export function Shell(): React.JSX.Element {
   const badges = useSlice('badges');
   const settings = useSlice('settings');
   const devices = useSlice('devices');
+  const search = useSlice('search');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState<'channel' | 'community' | 'all'>('all');
+  const [searchRequest, setSearchRequest] = useState(0);
+  const searchRequestRef = useRef(0);
+  // The page's own count of search commands still unanswered: the palette says it is searching until the newest settles.
+  const searchCalls = useRef(0);
+  const [searchBusy, setSearchBusy] = useState(false);
+  // Where focus was when the palette opened; Escape or close returns it there, a picked hit keeps focus on its row.
+  const searchOpener = useRef<HTMLElement | null>(null);
+  const restoreSearchFocus = useRef<HTMLElement | null>(null);
+  const trust = useSlice('trust');
+  const sendBlocks = useSlice('sendBlocks');
+  // A send the core refused for a trust reason, until the next published gate says more (W-01).
+  const [refusedSend, setRefusedSend] = useState<{ channelId: string; code: TrustBlock; gate: unknown } | null>(null);
 
   // A DM route names no server: the sidebar keeps the last one a channel route named in this mount, else the first.
   const [lastCommunity, setLastCommunity] = useState<string | null>(null);
@@ -118,6 +164,50 @@ export function Shell(): React.JSX.Element {
   // The channel or DM on screen, open or not: the composer, the draft and loadEarlier follow it.
   const targetId = channel?.id ?? dm?.id ?? null;
   const timeline = useSlice(`timeline:${openId ?? ''}`);
+  const typing = useSlice(`typing:${openId ?? ''}`) ?? [];
+  const typingNames = [...new Map(typing.map(row => [row.userId, row.name])).values()];
+  const searchId = searchScope === 'channel' ? targetId : searchScope === 'community' ? communityId : null;
+  const issueSearch = (query: string, scope: 'channel' | 'community' | 'all', id: string | null) => {
+    if (!query.trim() || (scope !== 'all' && id === null)) return;
+    searchRequestRef.current = Math.max(searchRequestRef.current, search?.requestId ?? 0);
+    setSearchRequest(0);
+    const call = ++searchCalls.current;
+    setSearchBusy(true);
+    client.call({ m: 'search', scope, id, query, cursor: null }).catch(report)
+      .finally(() => { if (searchCalls.current === call) setSearchBusy(false); });
+  };
+  useEffect(() => {
+    if (searchOpen && search?.requestId && search.requestId > searchRequestRef.current) {
+      searchRequestRef.current = search.requestId;
+      setSearchRequest(search.requestId);
+    }
+  }, [searchOpen, search]);
+  const startSearch = (scope: 'channel' | 'all') => {
+    const active = document.activeElement;
+    searchOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    setSearchScope(scope);
+    setSearchQuery('');
+    setSearchOpen(true);
+  };
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
+      // M-01: never under another modal (pins, lightbox, any open dialog), and never again while search is open.
+      if (overlay || joinOpen || pickerOpen || searchOpen || document.querySelector('dialog[open]') !== null) return;
+      if (event.key.toLowerCase() === 'k') { event.preventDefault(); startSearch('all'); }
+      else if (event.ctrlKey && !event.metaKey && event.key === '/' && targetId !== null) {
+        event.preventDefault(); startSearch('channel');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [overlay, joinOpen, pickerOpen, searchOpen, targetId]);
+  useEffect(() => {
+    if (searchOpen) return;
+    const opener = restoreSearchFocus.current;
+    restoreSearchFocus.current = null;
+    if (opener?.isConnected) opener.focus();
+  }, [searchOpen]);
   const self = account?.user ?? null;
   const conversationMembers = channel !== null ? members ?? [] : dm !== null ? allMembers.filter(m => dm.members.includes(m.userId)) : [];
   const book = useMemo(() => nameBook(self, channel !== null ? members ?? [] : allMembers), [self, channel, members, allMembers]);
@@ -134,6 +224,28 @@ export function Shell(): React.JSX.Element {
     ? selectFailure.error : null;
 
   const report = useCallback((e: unknown) => setCommandError(errorOf(e)), []);
+  const typingSent = useRef<string | null>(null);
+  const typingAt = useRef(0);
+  useEffect(() => {
+    const active = draft.channelId === targetId && draft.text.trim() !== '' ? targetId : null;
+    if (typingSent.current === active) {
+      // The server holds a typing signal for 10 s and meters one per 3 s (L-HTTP-96): a draft still changing renews it.
+      if (active !== null && Date.now() - typingAt.current >= TYPING_RENEW_MS) {
+        typingAt.current = Date.now();
+        client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+      }
+      return;
+    }
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
+    typingSent.current = active;
+    if (active !== null) {
+      typingAt.current = Date.now();
+      client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+    }
+  }, [client, draft.channelId, draft.text, targetId, report]);
+  useEffect(() => () => {
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
+  }, [client, report]);
 
   const selectCommunity = useCallback((id: string) => {
     setSelectFailure(null);
@@ -393,7 +505,9 @@ export function Shell(): React.JSX.Element {
         setDraft(d => (d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : d));
         if (m.replyTo !== null) dispatch({ type: 'replySent', msgId: m.replyTo });
       } catch (e) {
-        report(e);
+        const error = errorOf(e);
+        if (TRUST_BLOCKS.has(error.code)) setRefusedSend({ channelId: id, code: error.code as TrustBlock, gate: client.get('sendBlocks') });
+        else report(e);
       } finally {
         sending.current.delete(id);
       }
@@ -473,7 +587,26 @@ export function Shell(): React.JSX.Element {
     );
   }
 
-  const reasonKey: StringKey | null = openError !== null ? 'shell.composer.openFailed' : composerBlock(group);
+  // A validated Remove of a changed leaf unblocked sending here only; the contact stays changed elsewhere (Flow 05).
+  const removedHere = targetId !== null && (trust ?? []).some(row => isChanged(row) && row.removedIn?.includes(targetId) === true);
+  // Flow 05 "changed": a member of this conversation whose identity changed stands as an alert with no dismiss, until the
+  // new key is verified or a validated Remove restored sending here. Names come from the worker's trust slice only.
+  const audience = new Set(channel !== null ? (members ?? []).map(member => member.userId) : dm?.members ?? []);
+  const changedMembers = targetId === null ? [] : (trust ?? []).filter(row => isChanged(row) && audience.has(row.userId)
+    && row.removedIn?.includes(targetId) !== true);
+  // L-CORE-40, W-01: the core's send gate of this conversation (sendBlocks) blocks the composer until the key is verified or
+  // a validated Remove; the composer says why instead of letting a send fail. Before the worker first publishes the gate,
+  // a changed member of this conversation blocks it (fail closed). A trust refusal of a send stands until the next gate.
+  // A refused send or the fail-closed guess does not say whose leaf holds the block: it is the own account's only when no
+  // changed contact is in the conversation and the worker reports an own key under another identity.
+  const guess = (code: TrustBlock): SendBlock =>
+    ({ code, own: code === 'E_UMK_CHANGED' && changedMembers.length === 0 && account?.ownTrust === 'changed' });
+  const gate = sendBlocks === undefined ? (changedMembers.length > 0 ? guess('E_UMK_CHANGED') : undefined)
+    : targetId === null ? undefined : sendBlocks[targetId];
+  const refused = refusedSend !== null && refusedSend.channelId === targetId && refusedSend.gate === sendBlocks ? guess(refusedSend.code) : undefined;
+  const block = gate ?? refused;
+  const reasonKey: StringKey | null = openError !== null ? 'shell.composer.openFailed'
+    : composerBlock(group) ?? (block !== undefined ? blockReason(block, changedMembers) : null);
   const composerLabel = channel !== null ? t('shell.composer.label', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })
@@ -491,23 +624,96 @@ export function Shell(): React.JSX.Element {
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
+  // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
+  const changedHere = overlay ? [] : changedMembers;
+
+  const searchHits: SearchHitView[] = (search?.hits ?? []).map(hit => {
+    const location = hit.communityId === null ? dms?.find(row => row.id === hit.channelId)?.name
+      : (railSlices.flat() as ChannelSummary[]).find(row => row.id === hit.channelId)?.name;
+    return { ...hit, id: `${hit.channelId}:${hit.seq}`, location: location ?? hit.channelId };
+  });
+  const pickSearchHit = async (hit: SearchHitView): Promise<boolean> => {
+    const known = hit.communityId === null ? dms?.some(row => row.id === hit.channelId)
+      : (railSlices.flat() as ChannelSummary[]).some(row => row.id === hit.channelId && row.communityId === hit.communityId);
+    if (!known) return false;
+    const name = `timeline:${hit.channelId}` as const;
+    const available = () => client.get(name)?.items.some(item => item.seq === hit.seq && item.state === 'ok') === true;
+    navigate(hit.communityId === null ? { name: 'dm', channelId: hit.channelId }
+      : { name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
+    if (client.get(name) === undefined) {
+      await new Promise<void>(resolve => {
+        const timeout = setTimeout(() => { stop(); resolve(); }, 1000);
+        const stop = client.subscribe(name, () => {
+          const current = client.get(name);
+          if (current === undefined) return;
+          stop();
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+    }
+    if (client.get(name) === undefined) return false;
+    while (!available() && client.get(name)?.hasEarlier) {
+      const previous = client.get(name);
+      await client.call({ m: 'loadEarlier', channelId: hit.channelId });
+      if (client.get(name) === previous) break;
+    }
+    if (!available()) return false;
+    await new Promise<void>(resolve => {
+      const focus = () => {
+        const row = document.querySelector<HTMLElement>(`.dw-conversation[data-channel-id="${hit.channelId}"] .d-message-row[data-seq="${hit.seq}"]`);
+        if (!row) return false;
+        leaveSearchLayer();
+        row.focus();
+        row.scrollIntoView?.({ block: 'center' });
+        resolve();
+        return true;
+      };
+      if (focus()) return;
+      const observer = new MutationObserver(() => { if (focus()) { observer.disconnect(); clearTimeout(timeout); } });
+      observer.observe(document.body, { childList: true, subtree: true });
+      const timeout = setTimeout(() => {
+        observer.disconnect();
+        const heading = document.querySelector<HTMLElement>('.d-channel-header__name');
+        leaveSearchLayer();
+        heading?.setAttribute('tabindex', '-1');
+        heading?.focus();
+        resolve();
+      }, 1000);
+    });
+    return true;
+  };
 
   const status = connection?.status ?? 'connecting';
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
   const offline = connection?.status === 'offline';
   // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
   const rootMismatch = account?.rootMismatch === true;
-  const banner = offline || commandError !== null || rootMismatch ? (
+  // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
+  const ownTrust = account?.ownTrust ?? null;
+  const banner = offline || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
       ) : null}
+      {ownTrust !== null ? (
+        <Banner tone="danger" action={{ label: t('privacy.ownAction'), onAction: () => navigate({ name: 'settings', section: 'devices', from: null }) }}>
+          {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
+        </Banner>
+      ) : null}
       {offline ? (
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
+      {removedHere ? <p className="dw-trust-removed" role="status">{t('privacy.removed')}</p> : null}
+      {changedHere.length > 0 ? <div className="dw-trust-alerts" data-doc-state="trust-conversation">{changedHere.map(row => <TrustAlert key={row.userId} kind="changed" name={row.name}
+        labels={{ changed: t(row.changedUmk === null ? 'privacy.changedNoKey' : 'privacy.changed'), unlisted: t('privacy.unlisted'),
+          verify: t('privacy.compare', { name: row.name }) }}
+        onVerify={row.changedUmk === null ? undefined : () => navigate({ name: 'settings', section: 'privacy', from: null })} />)}</div> : null}
       {commandError !== null ? (
         <Banner tone="danger" action={{ label: t('shell.banner.dismiss'), onAction: () => { focusComposer(); setCommandError(null); } }}>
-          {t('shell.banner.commandError', { code: commandError.code })}
+          {TRUST_BLOCKS.has(commandError.code)
+            ? t(blockReason(gate?.code === commandError.code ? gate : guess(commandError.code as TrustBlock), changedMembers))
+            : t('shell.banner.commandError', { code: commandError.code })}
         </Banner>
       ) : null}
     </>
@@ -524,7 +730,12 @@ export function Shell(): React.JSX.Element {
           itemLabel={railLabel} />}
         sidebar={sidebar}
         header={header}
-        composer={composer}
+        composer={composer === null ? null : <>
+          {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}
+          {typingNames.length > 0 && !searchOpen ? <TypingIndicator names={typingNames}
+            labels={{ one: en['typing.one'], many: t('typing.many') }} /> : null}
+          {composer}
+        </>}
         statusBar={
           <StatusBar position="bottom" label={t('shell.status.label')}>
             <StatusChunk label={t('shell.status.node')}>{account?.instance?.name ?? t('shell.status.unknown')}</StatusChunk>
@@ -537,6 +748,13 @@ export function Shell(): React.JSX.Element {
       >
         {main}
       </AppShell>
+      <Search open={searchOpen} query={searchQuery} scope={searchScope} loading={searchBusy}
+        requestId={search?.requestId ?? 0} currentRequestId={searchRequest}
+        hits={searchHits} onQuery={query => { setSearchQuery(query); issueSearch(query, searchScope, searchId); }}
+        onScope={scope => { setSearchScope(scope); client.call({ m: 'setSetting', key: 'searchScope', value: scope }).catch(report);
+          issueSearch(searchQuery, scope, scope === 'all' ? null : scope === 'community' ? communityId : targetId); }}
+        onPick={async hit => { const opened = await pickSearchHit(hit); if (opened) searchOpener.current = null; return opened; }}
+        onClose={() => { restoreSearchFocus.current = searchOpener.current; searchOpener.current = null; setSearchOpen(false); }} />
       <JoinCommunity open={joinOpen} initialInvite={joinInvite ?? undefined} initialError={joinError ?? undefined}
         onClose={closeJoin} onJoined={onJoined} />
       <DmPicker open={pickerOpen} members={dmCandidates(members, self?.id ?? null)} busy={pickerBusy} error={pickerError}

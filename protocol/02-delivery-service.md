@@ -125,6 +125,9 @@ Every endpoint in this document requires a **device session**. A device session 
    nonce is spent either way). Both device creation routes refuse a `dsk_pub` that a live device of
    the same user already holds (`409 E_INVALID_REQUEST`), so a stolen session can register no row
    under a key it does not hold, and no row shares another's listing.
+   A `device_id` is unique across the instance: `POST /v1/accounts`, `POST /v1/devices`, and
+   assertion registration refuse a device id already held by another user with
+   `409 E_INVALID_REQUEST`, even if that row is no longer listed.
 
 Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, an
 unknown device without a registration assertion, an unknown or spent assertion, a user with no
@@ -304,11 +307,26 @@ dense on every device of its audience; `group_id` is null.
 
 ### Ephemeral (48–63) — `n = 0`, never replayed, never persisted
 
-| op | label | payload |
-|---|---|---|
-| 48 | `presence` | `[user_id(bstr 16), status(uint), since_ts(uint), status_msg(tstr)]` |
-| 49 | `typing` | `[user_id(bstr 16), device_id(bstr 16), typing(uint), expires_ts(uint)]` |
-| 50 | `voice_state` | `[user_id(bstr 16), device_id(bstr 16), call_id(bstr 16), flags(uint)]` |
+| op | label | dir | payload |
+|---|---|---|---|
+| 48 | `presence` | S→C | `[user_id(bstr 16), status(uint), since_ts(uint), status_msg(tstr)]` |
+| 49 | `typing` | S→C | `[channel_id(bstr 16), user_id(bstr 16), device_id(bstr 16), typing(uint 0\|1), expires_ts(uint)]` |
+| 50 | `voice_state` | S→C | `[user_id(bstr 16), device_id(bstr 16), call_id(bstr 16), flags(uint)]` |
+| 51 | `typing_set` | C→S | `[channel_id(bstr 16), typing(uint 0\|1)]` |
+| 52 | `voice_self` | C→S | `[call_id(bstr 16), flags(uint 0..3)]` |
+
+All ephemeral frames have `n=0` and `group_id=null`; a client may put a `cid` only in the
+frame header, never in the payload. The server accepts `typing_set` only from a member currently
+allowed to view that channel, with at most one update per `(device,channel)` every 3 seconds and
+at most 64 active typing channels per device. It holds typing for 10 seconds, advertises the
+server expiry as `expires_ts`, and checks the channel's current audience both at dispatch and
+fan-out. It never persists or replays typing. Unknown, hidden or no-longer-viewable channels
+return `E_NOT_FOUND`; malformed ids, element counts and flags return `E_FRAME_SHAPE`; throttling
+returns `E_RATE_LIMITED`. A malicious member's invalid typing is dropped for that sender and
+does not disconnect an honest recipient. `voice_self` requires membership in the live call and
+its channel's current audience; otherwise it returns `E_NOT_FOUND` without revealing existence.
+Its flag bit 0 is self-mute and bit 1 is self-deaf; the server maps them to bits 1 and 2 of
+server-sourced `voice_state`, combined with the room state.
 
 `voice_state` is produced by the instance alone, from what its SFU reports about a call's room
 (`09` § Voice), and goes to every device of every user who may view the call's channel — for a DM
@@ -317,8 +335,8 @@ or group DM, its participants. `call_id` is the call's id. `flags` is a bit set:
 | bit | name | set while |
 |---|---|---|
 | 0 | `in_call` | the device is in the call's room |
-| 1 | `self_mute` | reserved for the device's own mute state; no client→server path carries it in this version, so it is 0 |
-| 2 | `self_deaf` | reserved for the device's own deafen state; 0 in this version |
+| 1 | `self_mute` | the device's own mute state from `voice_self` |
+| 2 | `self_deaf` | the device's own deafen state from `voice_self` |
 | 3 | `video` | the device publishes a camera track |
 | 4 | `screen` | the device publishes a screen-share track |
 

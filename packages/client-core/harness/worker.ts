@@ -4,6 +4,7 @@ import { REAL_PARTS, type ControllerParts } from '../src/worker/controller';
 import type { CorePort } from '../src/core-port';
 import type { SyncDeps } from '../src/sync/engine';
 import { toHex } from '../src/hex';
+import { CoreError } from '../src/core-port';
 import { SPIKE_GROUPS_RUNS, isSpikeRequest, type SpikeEvent } from './spike';
 
 const held: { core: CorePort | null; routeCalls: number } = { core: null, routeCalls: 0 };
@@ -57,6 +58,16 @@ const spikeSync: ControllerParts['sync'] = (deps: SyncDeps) => {
 };
 
 self.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (typeof event.data === 'object' && event.data !== null && 't' in event.data && event.data.t === 'test'
+    && 'op' in event.data && event.data.op === 'pause-fail-once') {
+    event.stopImmediatePropagation();
+    if (held.core !== null) {
+      const core = held.core;
+      const original = core.pause.bind(core);
+      core.pause = () => { core.pause = original; throw new CoreError('E_STORE_BUSY', 'test busy'); };
+    }
+    return;
+  }
   if (!isSpikeRequest(event.data)) return;
   const core = held.core;
   if (core === null) {

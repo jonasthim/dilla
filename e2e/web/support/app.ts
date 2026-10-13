@@ -173,6 +173,16 @@ export class Peer {
   enrol(): Promise<PeerEnrolled> { return this.driver.enrol(); }
   /** L-E2E-10 `revoke` through the driver's wrapper (driver.ts, this task). */
   revoke(deviceId: string): Promise<{ version: number }> { return this.driver.revoke(deviceId); }
+  trustList(userId: string): Promise<{ version: number; pin: string | null; verified: boolean; changed: string | null; pendingUmk: string | null }> { return this.driver.trustList(userId); }
+  rotateUmk(userId?: string): Promise<{ user: string; version: number }> { return this.driver.rotateUmk(userId); }
+  /** Joins another peer's server and its first channel's group (the browser sees this peer arrive in that channel). */
+  join(other: PeerSetup, groupId: string): Promise<{ group_id: string; epoch: number }> {
+    return this.driver.join({ community_id: other.community_id, channel_id: other.channel_id, group_id: groupId, invite_code: other.invite_code });
+  }
+  /** The acting device proposes its own removal from the group; another member (the browser) commits it. */
+  leave(channelId?: string): Promise<{ group_id: string }> { return this.driver.leave(channelId); }
+  typing(channelId: string, on: boolean): Promise<void> { return this.driver.typing(channelId, on); }
+  searchSeed(channelId: string, body: string): Promise<{ seq: number }> { return this.driver.searchSeed(channelId, body); }
 
   async sync(channelId?: string): Promise<SyncAnswer> {
     const answer = await this.driver.sync(channelId);
@@ -458,10 +468,26 @@ export async function joinCommunity(page: Page, peer: Peer, setup: PeerSetup): P
   await expect(railItem(page, peer.communityName)).toBeVisible({ timeout: WAIT });
 }
 
+/**
+ * Opens a channel and waits until its composer has settled: ready to send, or blocked because a member's identity
+ * changed. Web-2c requirement 1 keeps that block until the contact is verified, so a changed group never becomes
+ * ready; any other refusal (a group that is not active yet) is still waited out, as before.
+ */
 export async function openChannel(page: Page, community: string, channel: string): Promise<void> {
   await railItem(page, community).click();
   await channelRow(page, channel).click();
-  await expectComposerReady(page, channel);
+  await expectComposerSettled(page, channel);
+}
+
+async function expectComposerSettled(page: Page, channel: string): Promise<void> {
+  const box = composerBox(page, channel);
+  await expect(box).toBeVisible({ timeout: WAIT });
+  await expect.poll(async () => {
+    if (await box.isEnabled()) return 'ready';
+    const reason = await box.evaluate((el) => (el.getAttribute('aria-describedby') ?? '').split(/\s+/)
+      .map((id) => (id === '' ? '' : document.getElementById(id)?.textContent ?? '')).join(' ').trim());
+    return reason === copy('privacy.changed') || reason === copy('privacy.leafFailed') ? 'blocked by a trust verdict' : 'waiting';
+  }, { timeout: WAIT }).not.toBe('waiting');
 }
 
 /** The composer is enabled only while the channel's group is active (task 24; aria-disabled otherwise). */
@@ -545,7 +571,7 @@ export async function signIn(page: Page, account: Account, instanceName: string,
   await finishSignIn(page, account, instanceName);
 }
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance';
+export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
 /** The rail's settings button, then the section from the settings navigation; resolves with the dialog. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {

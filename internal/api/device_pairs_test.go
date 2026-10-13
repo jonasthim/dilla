@@ -76,6 +76,38 @@ func TestPostDevicesRequiresProofOfPossession(t *testing.T) {
 	noAPIDeviceRow(t, deps, second)
 }
 
+// A browser assertion cannot reuse another user's device id. The global devices primary key
+// protects storage; this route must also report the collision in its public 409 vocabulary.
+func TestAssertionRegistrationRejectsAnotherUsersDeviceID(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, existing, _ := seedAPIDevice(t, deps)
+	owner, listed, _ := seedAPIDevice(t, deps)
+	listerOf(t, deps).list(owner.ID, listed)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration := []any{existing.ID, []byte(pub), uint64(1), uint64(1), []byte{1}}
+	rec := postCBOR(h, "/v1/devices/"+existing.ID.String()+"/sessions",
+		establishBody(t, h, deps, existing.ID, priv, registration, []byte(deps.Assertions.Issue(owner.ID, false))))
+	wantListRefusal(t, rec, http.StatusConflict, "E_INVALID_REQUEST", "device_id already exists")
+	row, err := deps.Repo.GetDevice(t.Context(), existing.ID)
+	if err != nil || row.UserID == owner.ID {
+		t.Fatalf("existing device owner changed: row=%+v err=%v", row, err)
+	}
+}
+
+func TestAssertionRegistrationRejectsCrossUserIDEvenWithTheExistingKey(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, existing, existingKey := seedAPIDevice(t, deps)
+	owner, listed, _ := seedAPIDevice(t, deps)
+	listerOf(t, deps).list(owner.ID, listed)
+	registration := []any{existing.ID, existing.DSKPub, uint64(1), uint64(1), []byte{1}}
+	rec := postCBOR(h, "/v1/devices/"+existing.ID.String()+"/sessions",
+		establishBody(t, h, deps, existing.ID, existingKey, registration, []byte(deps.Assertions.Issue(owner.ID, false))))
+	wantListRefusal(t, rec, http.StatusConflict, "E_INVALID_REQUEST", "device_id already exists")
+}
+
 // A row that copies a listed key under another id — what a stolen session could plant before the
 // fix, still in a database written then — is not the listed device: the owner removes it with the
 // key-less DELETE once it is ten minutes old, an assertion registration at the cap evicts it, and it

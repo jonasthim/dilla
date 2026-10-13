@@ -109,6 +109,31 @@ func (s *recordingSink) close(code CloseCode, _ string) {
 	s.cond.Broadcast()
 }
 
+// readLoop's deferred suspend and sweepLiveness's 4009 suspend can stop the same writer at the
+// same moment (go-harness, run 38384557541: "close of closed channel" in writer.stop). Every
+// concurrent stop must be safe; a check-then-close lets two callers both see done open.
+func TestConcurrentStopsOfOneWriterDoNotPanic(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	for range 200 {
+		sink := newRecordingSink(4, false)
+		w := newWriter(sink, writerLimits{Frames: 4, Bytes: 1 << 20, Deadline: time.Second}, clk)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				w.stop()
+			}()
+		}
+		close(start)
+		wg.Wait()
+		<-w.finished
+		sink.release()
+	}
+}
+
 func TestAnOverflowingWriterClosesFourZeroZeroEight(t *testing.T) {
 	sink := newRecordingSink(64, true)
 	t.Cleanup(sink.release)

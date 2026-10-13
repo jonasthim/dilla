@@ -49,8 +49,10 @@ frames	reconnect	frame
 frames	resume	frame
 frames	resumed	frame
 frames	subscribe	frame
-frames	typing	frame
+frames	typing channel	frame
+frames	typing_set on	frame
 frames	unsubscribe	frame
+frames	voice_self muted	frame
 frames	voice_state	frame
 franking	case 0	tag
 franking	case 1	tag

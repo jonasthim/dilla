@@ -5,6 +5,9 @@ export const SETTINGS = {
   notifyDefault: 'notify.default',                           // 'dms-mentions' (default) | 'everything' | 'nothing'
   notifyChannel: (hex: string) => `notify.channel.${hex}`,   // 'all' | 'mentions' | 'nothing'
   muteChannel: (hex: string) => `mute.channel.${hex}`,       // '1' when muted; absent otherwise
+  density: 'density',
+  reduceMotion: 'reduceMotion',
+  searchScope: 'searchScope',
 } as const;
 
 export type NotifyMode = 'all' | 'mentions' | 'nothing';
@@ -17,6 +20,7 @@ const MODES: readonly string[] = ['all', 'mentions', 'nothing'];
 
 export function isSettingKey(key: string): boolean {
   if (key === SETTINGS.notifyDefault) return true;
+  if (key === SETTINGS.density || key === SETTINGS.reduceMotion || key === SETTINGS.searchScope) return true;
   if (key.startsWith(NOTIFY_CHANNEL)) return HEX32.test(key.slice(NOTIFY_CHANNEL.length));
   if (key.startsWith(MUTE_CHANNEL)) return HEX32.test(key.slice(MUTE_CHANNEL.length));
   return false;
@@ -26,6 +30,9 @@ export function isSettingKey(key: string): boolean {
 export function isSettingValue(key: string, value: string): boolean {
   if (!isSettingKey(key)) return false;
   if (key === SETTINGS.notifyDefault) return DEFAULTS.includes(value);
+  if (key === SETTINGS.density) return value === 'regular' || value === 'compact';
+  if (key === SETTINGS.reduceMotion) return value === 'system' || value === 'on' || value === 'off';
+  if (key === SETTINGS.searchScope) return value === 'channel' || value === 'community' || value === 'all';
   if (key.startsWith(NOTIFY_CHANNEL)) return MODES.includes(value);
   return value === '1';
 }

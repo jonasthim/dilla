@@ -69,7 +69,7 @@ function writeTemp(bytes) {
 }
 
 test('the bounds are the ruled values', () => {
-  assert.equal(WASM_MAX_BYTES, 3_400_000);
+  assert.equal(WASM_MAX_BYTES, 3_450_000);
   assert.equal(WASM_MAX_NAME_SECTION, 4_096);
 });
 
@@ -99,19 +99,19 @@ test('other custom sections and non-custom sections do not count', () => {
 });
 
 test('a module of exactly the budget passes', () => {
-  assert.deepEqual(checkWasm(moduleOfSize(3_400_000)), []);
+  assert.deepEqual(checkWasm(moduleOfSize(3_450_000)), []);
 });
 
 test('a module one byte over the budget is reported', () => {
-  assert.deepEqual(checkWasm(moduleOfSize(3_400_001)), [
-    'wasm is 3400001 bytes, above the 3400000-byte budget (web-1 ruling 23)',
+  assert.deepEqual(checkWasm(moduleOfSize(3_450_001)), [
+    'wasm is 3450001 bytes, above the 3450000-byte budget (web-2c D5)',
   ]);
 });
 
 test('both violations are reported, size first', () => {
-  const problems = checkWasm(moduleOfSize(3_400_001, custom('name', 5000)));
+  const problems = checkWasm(moduleOfSize(3_450_001, custom('name', 5000)));
   assert.equal(problems.length, 2, problems.join('\n'));
-  assert.match(problems[0], /^wasm is 3400001 bytes/);
+  assert.match(problems[0], /^wasm is 3450001 bytes/);
   assert.match(problems[1], /^name section is 5000 bytes/);
 });
 
@@ -165,7 +165,7 @@ test('the CLI prints both numbers and exits 0 within the bounds', () => {
   const file = writeTemp(bytes);
   const r = spawnSync(process.execPath, [SCRIPT, file], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim(), `${file}: ${bytes.length} bytes (budget 3400000), name section 10 bytes (bound 4096)`);
+  assert.equal(r.stdout.trim(), `${file}: ${bytes.length} bytes (budget 3450000), name section 10 bytes (bound 4096)`);
   assert.equal(r.stderr, '');
 });
 
@@ -175,5 +175,5 @@ test('the CLI reports a violation on stderr and exits 1', () => {
   const r = spawnSync(process.execPath, [SCRIPT, file], { encoding: 'utf8' });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /^check-wasm-size: name section is 5000 bytes, above the 4096-byte bound/m);
-  assert.equal(r.stdout.trim(), `${file}: ${bytes.length} bytes (budget 3400000), name section 5000 bytes (bound 4096)`);
+  assert.equal(r.stdout.trim(), `${file}: ${bytes.length} bytes (budget 3450000), name section 5000 bytes (bound 4096)`);
 });

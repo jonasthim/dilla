@@ -11,7 +11,7 @@
 # installed in this builder. CI's rust-wasi job builds it and the image job
 # downloads it into that path first; a context without it fails the COPY below
 # instead of producing an image that cannot start.
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

@@ -34,9 +34,12 @@ export const REQUIRED_JOBS = [
   'go-release',
   // Plan 2 task 18: the multi-arch container image, built on every run and pushed from main.
   'image',
-  // Task 26 (web-1): build the client once and run its browser integration suites.
+  // Task 26 (web-1): build the client once and run its browser integration suites; web-2c splits the suites into one
+  // job per Playwright engine (BROWSER_WEB_JOBS below).
   'web-build',
-  'browser-web',
+  'chromium-web',
+  'firefox-web',
+  'webkit-web',
 ];
 
 /**
@@ -60,6 +63,50 @@ const FORBIDDEN = [
  */
 export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
+
+/**
+ * The browser suites, one job per Playwright engine (controller ruling of 2026-10-13 on the L-CI-21 budget: the 45-min
+ * cap is about one runner, and per-engine jobs also run in parallel). Each budget is max(30, ceil(5 × share) + 10) on
+ * its own share in minutes: Chromium and Firefox each run half of the web suite (W = 6.8 in web-2c task 10, so 3.4)
+ * plus their half of the core-worker suite (C = 0.5, so 0.25): ceil(5 × 3.65) + 10 = 29 → 30. WebKit keeps web-1's
+ * 3.0 allowance (signup and reload only): ceil(15) + 10 = 25 → 30. `core` says whether the job also runs the
+ * core-worker suite of its engine (the core config has no WebKit project).
+ */
+export const BROWSER_WEB_JOBS = {
+  'chromium-web': { engine: 'chromium', timeout: 30, core: true },
+  'firefox-web': { engine: 'firefox', timeout: 30, core: true },
+  'webkit-web': { engine: 'webkit', timeout: 30, core: false },
+};
+export const MIN_BROWSER_WEB_TIMEOUT = 30;
+
+/** The steps every per-engine browser job must carry: the four downloads, its one engine, its suites, its own artifact. */
+function browserWebSteps({ engine, timeout, core }) {
+  return [
+    `timeout-minutes: ${timeout}`,
+    'name: dilla-core-wasi',
+    'path: internal/mlswasi/testdata',
+    'name: dilla-testkit',
+    'name: dilla-web-dist',
+    'path: packages/web/dist',
+    'name: dilla-core-harness',
+    'path: packages/client-core/harness-dist',
+    `npx playwright install --with-deps ${engine}`,
+    ...(core ? [`npm run test:e2e:core:${engine} -w @dilla/e2e`] : []),
+    `npm run test:e2e:web:${engine} -w @dilla/e2e`,
+    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
+    'if: failure()',
+    // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per engine.
+    `name: browser-web-results-${engine}`,
+    'path: e2e/test-results',
+  ];
+}
+
+/** L-CI-22: the seven web-2c story families, shot at 1280×800 and at 360×740, each command a whole step of its own. */
+const UI_PREFIXES_2C = 'trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--';
+export const UI_SHOTS_2C = [
+  `node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop ${UI_PREFIXES_2C}`,
+  `node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone ${UI_PREFIXES_2C} --viewport=360x740`,
+];
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
@@ -106,7 +153,11 @@ const REQUIRED_STEPS = {
   // Task 26: exercise the manifest writer beside the other script gates.
   node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer'],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
-  ui: ['node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--', 'name: ui-screens', 'path: target/ui-screens/web-2b'],
+  // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
+  ui: [
+    'node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--', 'name: ui-screens', 'path: target/ui-screens/web-2b',
+    'name: ui-screens-web-2c', 'target/ui-screens/web-2c/desktop/**', 'target/ui-screens/web-2c/phone/**',
+  ],
   vectors: [
     'npm run vectors',
     'git diff --exit-code -- protocol/vectors',
@@ -154,24 +205,8 @@ const REQUIRED_STEPS = {
     'name: dilla-core-harness',
     'path: packages/client-core/harness-dist/',
   ],
-  // Task 26/C18: three engines and the native peer against the downloaded web and core builds.
-  'browser-web': [
-    'timeout-minutes: 41',
-    'name: dilla-core-wasi',
-    'path: internal/mlswasi/testdata',
-    'name: dilla-testkit',
-    'name: dilla-web-dist',
-    'path: packages/web/dist',
-    'name: dilla-core-harness',
-    'path: packages/client-core/harness-dist',
-    'npx playwright install --with-deps chromium firefox webkit',
-    'npm run test:e2e:core -w @dilla/e2e',
-    'npm run test:e2e:web -w @dilla/e2e',
-    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
-    'if: failure()',
-    'name: browser-web-results',
-    'path: e2e/test-results',
-  ],
+  // Task 26/C18: each engine and the native peer against the downloaded web and core builds, one job per engine.
+  ...Object.fromEntries(Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => [job, browserWebSteps(spec)])),
   deny: ['cargo deny --all-features check advisories bans licenses sources'],
   // Ruling M. The first two lines are the hand-off from `rust-wasi`: without the download, or with it
   // landing anywhere but `internal/mlswasi/testdata`, the wazero tests skip themselves and the job is
@@ -216,7 +251,7 @@ const REQUIRED_STEPS = {
   'go-fts5-arm64': ['runs-on: ubuntu-24.04-arm', 'go test ./internal/store/sqlite/...'],
   // The five W2-W5 gates. Each entry is a string the job carries and no other step of that job
   // already contains, so a silently gutted job is caught.
-  'go-lint': ['golangci/golangci-lint-action@v9', 'version: v2.13.2'],
+  'go-lint': ['golangci/golangci-lint-action@v9', 'version: v2.14.0'],
   'go-vuln': [
     'golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...',
     '-scan package -tags dillapins ./internal/deps',
@@ -366,6 +401,123 @@ function assertWasmPackUsesTheSizeProfile(text, problems) {
   });
 }
 
+/**
+ * Ruling of 2026-10-13 (Jonas; web-2c D5 in CI): the wasm C build (sqlite-wasm-rs compiles SQLite3MC through
+ * cc) uses clang 23, the dev box's major. The runner's own clang made the same tree about 25 KB larger, so the
+ * 3,450,000-byte budget measured different bytes in CI than on the box it was set on.
+ *
+ * The compiler comes from a third-party apt archive and its output ships (web-build's dist is embedded by
+ * go-release and image), so the step is pinned: the archive key is checked by fingerprint on the very keyring
+ * apt is pointed at, every llvm-toolchain-23 package is installed at one exact version and read back with
+ * dpkg-query, and cc gets absolute paths, which a PATH entry added by a later action cannot shadow. A newer
+ * upload to apt.llvm.org removes the pinned build from the archive and fails the step closed; the fix is to
+ * re-pin here and in ci.yml, after checking the new build's size.
+ *
+ * The checker holds the canonical text and compares whole blocks, not substrings: a substring rule passes a
+ * workflow that names the strings in a comment or another step while the job runs something else (the
+ * validator differential of the d3429ce scanner lead). Outside the canonical lines, no workflow line may name
+ * a variable cc reads for the compiler, archiver or flags, no wasm job may write GITHUB_ENV or GITHUB_PATH,
+ * and the workflow may use no YAML anchor, alias or merge key, whose expansion a line-based checker cannot see.
+ */
+export const WASM_LLVM_VERSION = '1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77';
+export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
+const WASM_LLVM_PACKAGES = [
+  'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
+  'llvm-23-linker-tools', 'llvm-23-runtime',
+];
+export const WASM_CLANG_ENV_BLOCK = [
+  '    env:',
+  '      CC_wasm32_unknown_unknown: /usr/bin/clang-23',
+  '      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23',
+].join('\n');
+export const WASM_CLANG_STEP = [
+  '      - name: clang 23 for the wasm C build',
+  '        run: |',
+  '          test "$(lsb_release -cs)" = noble',
+  '          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"',
+  '          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"',
+  '          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: \'$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }\')',
+  `          test "$primaries" = ${WASM_LLVM_KEY_FPR}`,
+  '          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg',
+  '          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg',
+  '          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list',
+  '          sudo apt-get update',
+  '          apt-cache policy clang-23 llvm-23',
+  `          v='${WASM_LLVM_VERSION}'`,
+  `          sudo apt-get install -y --no-install-recommends ${WASM_LLVM_PACKAGES.map((p) => `"${p}=$v"`).join(' ')}`,
+  `          for p in ${WASM_LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`,
+  '          /usr/bin/clang-23 --version',
+  '          /usr/bin/llvm-ar-23 --version',
+].join('\n');
+
+/** A job builds for the browser target when it names it or runs wasm-pack; the cache key alone also counts. */
+const WASM_JOB = /wasm32[-_]unknown[-_]unknown|wasm-pack/;
+/** Every variable cc consults for the compiler, the archiver or their flags, in any target spelling. */
+const CC_VARIABLE =
+  /\b(?:CC|CXX|AR|RANLIB|CFLAGS|CXXFLAGS|CPPFLAGS|ARFLAGS|TARGET_CC|TARGET_CXX|TARGET_AR|TARGET_CFLAGS|TARGET_CXXFLAGS|TARGET_ARFLAGS|HOST_CC|HOST_AR|HOST_CFLAGS|CRATE_CC_NO_DEFAULTS|CC_SHELL_ESCAPED_FLAGS|CC_FORCE_DISABLE)(?:[-_]wasm32[-_]unknown[-_]unknown)?\b/;
+/** A YAML anchor (&name), alias (*name) or merge key (<<:) outside a quoted glob. */
+const YAML_INDIRECTION = /(?:^|[\s:[,{-])[&*][A-Za-z0-9_-]+(?=[\s,\]}]|$)|<<\s*:/;
+
+/** The `- ` items of a job's `steps:` list, each as its exact lines, trailing blank lines dropped. */
+function stepItems(lines) {
+  const items = [];
+  const at = lines.indexOf('    steps:');
+  if (at === -1) return items;
+  for (const line of lines.slice(at + 1)) {
+    if (/^ {6}- /.test(line)) items.push([line]);
+    else if (items.length > 0 && (line === '' || /^ {7,}\S/.test(line))) items.at(-1).push(line);
+    else if (/^ {0,5}\S/.test(line)) break;
+  }
+  return items.map((item) => {
+    while (item.at(-1) === '') item.pop();
+    return item.join('\n');
+  });
+}
+
+function assertWasmJobsUseClang23(text, jobs, problems) {
+  const canonicalEnv = new Set(WASM_CLANG_ENV_BLOCK.split('\n').slice(1));
+  const wasmJobs = Object.entries(jobs).filter(([, body]) => WASM_JOB.test(body));
+  const allowedEnvLines = new Set();
+  for (const [name, body] of wasmJobs) {
+    const lines = body.split('\n');
+    const envAt = lines.indexOf('    env:');
+    const envLines = envAt === -1 ? [] : lines.slice(envAt, lines.findIndex((l, i) => i > envAt && !/^ {6,}\S/.test(l)));
+    if (lines.filter((l) => /^ {4}env:/.test(l)).length !== 1 || envLines.join('\n') !== WASM_CLANG_ENV_BLOCK) {
+      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`);
+    } else {
+      for (let i = envAt + 1; i < envAt + envLines.length; i++) allowedEnvLines.add(`${name}:${i}`);
+    }
+    const steps = stepItems(lines);
+    if (lines.filter((l) => /^ {4}steps:/.test(l)).length !== 1 || steps[0] !== '      - uses: actions/checkout@v7' || steps[1] !== WASM_CLANG_STEP) {
+      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`);
+    }
+    if (steps.filter((s) => s === WASM_CLANG_STEP).length > 1) {
+      problems.push(`ci.yml: job "${name}" carries the clang 23 step more than once`);
+    }
+    if (/GITHUB_ENV|GITHUB_PATH/.test(body)) {
+      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown and writes GITHUB_ENV or GITHUB_PATH, which could replace the pinned compiler`);
+    }
+  }
+  // Line by line over the whole file: a compiler variable anywhere else (workflow env, a step env, a flow
+  // mapping, a quoted key, the hyphenated target spelling cc reads first) could override the job's.
+  const wasmLineOwner = [];
+  let job = null;
+  let jobLine = 0;
+  text.split('\n').forEach((line, i) => {
+    const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (key) {
+      job = key[1];
+      jobLine = -1;
+    }
+    wasmLineOwner[i] = job === null ? null : `${job}:${jobLine}`;
+    jobLine++;
+    if (YAML_INDIRECTION.test(line)) problems.push(`ci.yml:${i + 1}: YAML anchors, aliases and merge keys are not allowed: the checker could not see what they expand to`);
+    if (!CC_VARIABLE.test(line)) return;
+    if (canonicalEnv.has(line) && allowedEnvLines.has(wasmLineOwner[i])) return;
+    problems.push(`ci.yml:${i + 1}: names a C toolchain variable outside the canonical clang 23 job env`);
+  });
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -418,9 +570,18 @@ export function checkWorkflow(root) {
     }
   }
 
+  // The desktop command is a prefix of the phone one, so each must be a whole `- run:` line of the ui job.
+  if ('ui' in jobs) {
+    const runs = jobs.ui.split('\n').map((line) => line.trim());
+    for (const command of UI_SHOTS_2C) {
+      if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-2c screenshot step: ${command}`);
+    }
+  }
+
   assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
   assertEveryUploadFailsOnNoFiles(text, problems);
   assertWasmPackUsesTheSizeProfile(text, problems);
+  assertWasmJobsUseClang23(text, jobs, problems);
 
   // Task 18. The Dockerfile cross-compiles with GOOS/GOARCH from a $BUILDPLATFORM builder, so
   // nothing runs under emulation and setup-qemu-action would only add a slow, useless step.
@@ -500,7 +661,7 @@ export function checkWorkflow(root) {
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [
-    ['browser-web', ['rust-native', 'rust-wasi', 'web-build']],
+    ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
   ]) {
     if (!(job in jobs)) continue;

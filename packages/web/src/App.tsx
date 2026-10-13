@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { BootPhase } from '@dilla/client-core';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
@@ -12,6 +12,9 @@ import { Settings } from './screens/Settings.tsx';
 import { focusRailSettings, Shell } from './screens/Shell.tsx';
 import { visibleChannel } from './screens/shell-model.ts';
 import { SignIn } from './screens/SignIn.tsx';
+import { OtherTab } from './screens/OtherTab.tsx';
+import { requestHandover } from './handover.ts';
+import { flushSync } from 'react-dom';
 
 export type Screen = 'boot' | 'onboarding' | 'signin' | 'shell';
 
@@ -33,8 +36,20 @@ function defaultReload(href: string): void {
 export function App(props: { fatal: UiError | null; reload?: (href: string) => void }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
+  const diagnostics = useSlice('diagnostics');
+  const settings = useSlice('settings');
+  const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused'>('other-tab');
+  // The old leader's side of hand-over: 'resigning' shows the paused view over the still mounted shell and moves focus
+  // into it before the shell (and its composer) leaves; 'released' follows the worker's release. One resign at a time.
+  const [paused, setPaused] = useState<'no' | 'resigning' | 'released'>('no');
+  const resigning = useRef(false);
   const [startError, setStartError] = useState<UiError | null>(null);
   useEffect(() => { client.call({ m: 'start' }).catch(e => setStartError(errorOf(e))); }, [client]);
+  useEffect(() => {
+    document.documentElement.dataset.density = settings?.density === 'compact' ? 'compact' : 'regular';
+    document.documentElement.dataset.reduceMotion = settings?.reduceMotion === 'on' || settings?.reduceMotion === 'off'
+      ? settings.reduceMotion : 'system';
+  }, [settings?.density, settings?.reduceMotion]);
   const persisted = useRef(false);
   useEffect(() => {
     if (account?.phase === 'ready' && !persisted.current) {
@@ -48,6 +63,53 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const reloaded = useRef(false);
   const reload = props.reload;
   const phase = account?.phase;
+  useEffect(() => {
+    const instance = diagnostics?.instance;
+    if (phase !== 'ready' || !instance || !/^[0-9a-f]{32}$/.test(instance) || typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel(`dilla-core:${instance}`);
+    const onMessage = (event: MessageEvent) => {
+      const data: unknown = event.data;
+      if (typeof data !== 'object' || data === null) return;
+      const value = data as Record<string, unknown>;
+      if (Object.keys(value).length !== 3 || value.t !== 'takeover' || value.instance !== instance
+        || typeof value.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(value.nonce)) return;
+      if (resigning.current) return;
+      resigning.current = true;
+      flushSync(() => { setTabPhase('other-tab'); setPaused('resigning'); });
+      document.querySelector<HTMLElement>('.dw-other-tab h2')?.focus();
+      void client.call({ m: 'resign', nonce: value.nonce }).then(() => {
+        const release = new BroadcastChannel(`dilla-core:${instance}`);
+        release.postMessage({ t: 'released', instance, nonce: value.nonce });
+        release.close();
+        setPaused('released');
+      }).catch(() => { resigning.current = false; setPaused('no'); });
+    };
+    channel.addEventListener('message', onMessage);
+    return () => { channel.removeEventListener('message', onMessage); channel.close(); };
+  }, [client, diagnostics?.instance, phase]);
+  // C1 hand-back: after a release the worker waits for the lock again (other-tab); once it leads (the other tab handed
+  // back or closed) it boots from the store, and from then on the page follows the worker's phase again: the shell when
+  // it is ready, the splash or an error otherwise.
+  const leftReady = useRef(false);
+  useEffect(() => {
+    if (paused === 'no') { leftReady.current = false; return; }
+    if (phase === 'ready' && !leftReady.current) return;
+    if (phase === 'other-tab' || phase === 'paused-error' || phase === undefined) { leftReady.current = true; return; }
+    if (paused === 'released' && leftReady.current) {
+      leftReady.current = false;
+      resigning.current = false;
+      setTabPhase('other-tab');
+      setPaused('no');
+    }
+  }, [paused, phase]);
+  const useThisTab = () => {
+    const instance = diagnostics?.instance;
+    if (!instance) { setTabPhase('failed'); return; }
+    setTabPhase('waiting');
+    void requestHandover(instance, name => new BroadcastChannel(name), async () => {
+      await client.call({ m: 'start' });
+    }).catch(() => setTabPhase('failed'));
+  };
   const errorCode = account?.error?.code;
   useEffect(() => {
     if (phase !== 'cleared' || reloaded.current) return;
@@ -108,12 +170,25 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   };
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
-  if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
-  if (screen === 'onboarding' || (onboarding && phase === 'ready')) return <Onboarding onFinish={finish} />;
-  // The two lines above narrow `screen` to 'boot' | 'shell' ('cleared' is 'boot'), so this switch is total.
-  switch (screen) {
-    case 'boot': return <Boot fatal={null} />;
-    // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
-    case 'shell': return <><Shell />{route.name === 'settings' ? <Settings /> : null}</>;
+  // The paused view keeps its place after the screens, so it stays mounted (and focused) while the shell goes.
+  // A paused tab can take dilla back: its hand-over request shows the waiting or failed phase in the same place.
+  const pausedPhase = paused === 'resigning' || (tabPhase !== 'waiting' && tabPhase !== 'failed') ? 'paused' : tabPhase;
+  const pausedView = paused !== 'no' || phase === 'paused-error'
+    ? <OtherTab phase={pausedPhase} overlay={paused === 'resigning' && phase === 'ready'} onUse={useThisTab} /> : null;
+  let body: ReactNode;
+  if (pausedView !== null) body = paused === 'resigning' && phase === 'ready' ? screenBody() : null;
+  else if (phase === 'other-tab') body = <OtherTab phase={tabPhase} onUse={useThisTab} onRetry={useThisTab} />;
+  else body = screenBody();
+  return <>{body}{pausedView}</>;
+
+  function screenBody(): React.JSX.Element {
+    if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
+    if (screen === 'onboarding' || (onboarding && phase === 'ready')) return <Onboarding onFinish={finish} />;
+    // The two lines above narrow `screen` to 'boot' | 'shell' ('cleared' is 'boot'), so this switch is total.
+    switch (screen) {
+      case 'boot': return <Boot fatal={null} />;
+      // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
+      case 'shell': return <><Shell />{route.name === 'settings' ? <Settings /> : null}</>;
+    }
   }
 }

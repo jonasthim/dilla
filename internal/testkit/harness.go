@@ -20,6 +20,7 @@ import (
 	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -51,6 +52,8 @@ type Options struct {
 	// ProductionACL runs the instance with the seams production wires (dilladtest.HostOptions):
 	// the scenario builds community structure and its kicks and revocations go through /v1.
 	ProductionACL bool
+	// SFU starts the harness call service for native voice signal fixtures.
+	SFU bool
 }
 
 type Harness struct {
@@ -92,6 +95,7 @@ func Start(tb testing.TB, o Options) *Harness {
 		Clock:         o.Clock,
 		LogLevel:      o.LogLevel,
 		ProductionACL: o.ProductionACL,
+		SFU:           o.SFU,
 	})
 	if err != nil {
 		tb.Fatalf("dilladtest.NewHost: %v", err)
@@ -151,6 +155,23 @@ func (h *Harness) Repo() store.Repository        { return h.host.Server().Repo()
 func (h *Harness) DS() *ds.DS                    { return h.host.Server().DS() }
 func (h *Harness) Gateway() *gateway.Gateway     { return h.host.Server().Gateway() }
 func (h *Harness) Advance(d time.Duration) error { return h.host.Advance(context.Background(), d) }
+
+// InstallVoiceSession gives a native peer a real stored call and a deterministic live SFU
+// participant. The production audience resolver still checks both before op 52 succeeds.
+func (h *Harness) InstallVoiceSession(tb testing.TB, callID, channelID, deviceID id.ID) {
+	tb.Helper()
+	room := "test-voice-" + callID.String()
+	if err := h.Repo().PutVoiceSession(context.Background(), store.VoiceSessionRow{
+		CallID: callID, ChannelID: channelID, LivekitRoom: room, Started: time.Now().Unix(),
+	}); err != nil {
+		tb.Fatalf("PutVoiceSession: %v", err)
+	}
+	h.host.StubVoiceParticipant(room, deviceID.String())
+}
+
+func (h *Harness) AddVoiceParticipant(callID, deviceID id.ID) {
+	h.host.StubVoiceParticipant("test-voice-"+callID.String(), deviceID.String())
+}
 
 // DebugState is what GET /debug/state reports, read in-process.
 func (h *Harness) DebugState(tb testing.TB) dilladtest.DebugState {

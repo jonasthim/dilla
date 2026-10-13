@@ -3,7 +3,7 @@ import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import { resyncGroup } from './channel';
 import { SYNC } from './engine';
-import { SyncError } from './errors';
+import { LEAF_VERDICTS, SyncError } from './errors';
 import type { SyncInternals } from './internals';
 
 function owner(s: SyncInternals, msgId: Id): Id | undefined {
@@ -20,15 +20,31 @@ export function sendMessage(s: SyncInternals, g: Id, text: string): Id {
   return sendRequest(s, g, { type: 0, replyTo: null, body: text, attachments: [] });
 }
 export function retrySend(s: SyncInternals, msgId: Id): void {
-  s.deps.core.sendRetry(msgId);
   const g = owner(s, msgId);
+  const failed = g === undefined ? undefined : s.deps.core.outbox(g).find((x) => toHex(x.msgId) === toHex(msgId));
+  s.deps.core.sendRetry(msgId);
   s.count425.delete(toHex(msgId));
-  if (g !== undefined) s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`);
   if (g === undefined) return;
+  const key = `${toHex(g)}:${toHex(msgId)}`;
+  s.reframedOnce.delete(key); s.trustRetried.delete(key);
   // A person's retry asks for the group's duties again, as a ready does: a membership refused earlier in
   // this ready is tried once more, and a commit-quiet group commits once more.
   s.resyncTried.delete(toHex(g)); s.quiet.delete(toHex(g));
-  s.deps.onOutboxChanged(g); s.requestDrain(g);
+  s.deps.onOutboxChanged(g);
+  // A row a leaf verdict failed is sealed again only after the group's leaves were read again (I1); that refresh is
+  // its one, so a second refusal fails it.
+  if (failed !== undefined && LEAF_VERDICTS.has(failed.error)) { refreshTrustThenDrain(s, g, key); return; }
+  s.requestDrain(g);
+}
+/** Holds the row (drainOne waits while the refresh is out), refreshes the group's trust once, then drains again. */
+function refreshTrustThenDrain(s: SyncInternals, g: Id, key: string): void {
+  s.trustRetried.set(key, 'pending');
+  const job = s.deps.refreshGroupTrust(g).catch(() => undefined).then(() => {
+    if (s.trustRetried.get(key) === 'pending') s.trustRetried.set(key, 'done');
+    if (!s.stopped()) s.requestDrain(g);
+  });
+  // Not run in the group's lane: the refresh needs none, and catch-up and commits must not wait behind it.
+  if (s.deps.trackJob !== undefined) s.deps.trackJob(job); else void job;
 }
 export function discardSend(s: SyncInternals, msgId: Id): void {
   const g = owner(s, msgId);
@@ -38,7 +54,7 @@ export function discardSend(s: SyncInternals, msgId: Id): void {
   s.deps.core.sendDiscard(msgId);
   // The row's attachment references are the controller's to delete (L-TS-34).
   if (row !== undefined) s.deps.onDiscarded(g, row);
-  s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`);
+  s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`); s.trustRetried.delete(`${toHex(g)}:${toHex(msgId)}`);
   s.deps.onOutboxChanged(g);
 }
 async function afterLostResponse(s: SyncInternals, g: Id, msgId: Id): Promise<void> {
@@ -77,6 +93,8 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   if (row === undefined) return;
   const msgId = row.msgId; const msgHex = toHex(msgId);
   const reframeKey = `${hex}:${msgHex}`;
+  // The row waits for the trust refresh its leaf-verdict refusal started; that refresh drains the group again.
+  if (s.trustRetried.get(reframeKey) === 'pending') return;
   if (row.attachments.length > 0) {
     // Ruling 7 (Q17): every attempt confirms the row's references before its upload, so a sent attachment is never pending.
     try { await s.deps.beforeSend(g, row); }
@@ -109,7 +127,17 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       }
       return;
     }
-    if (e instanceof CoreError) { s.deps.core.sendFail(msgId, e.code); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g); return; }
+    // I1: send_encrypt refused before it changed the row (state 0). A device that joined before the list naming it was
+    // ingested fails against the cached list until a refresh ingests the newer one: the row stays queued for one refresh.
+    // A second refusal fails it; a changed key (E_UMK_CHANGED) is never retried.
+    if (e instanceof CoreError && LEAF_VERDICTS.has(e.code) && !s.trustRetried.has(reframeKey)) {
+      refreshTrustThenDrain(s, g, reframeKey);
+      return;
+    }
+    if (e instanceof CoreError) {
+      s.deps.core.sendFail(msgId, e.code); s.reframedOnce.delete(reframeKey); s.trustRetried.delete(reframeKey);
+      s.deps.onOutboxChanged(g); s.requestDrain(g); return;
+    }
     throw e;
   }
   try {
@@ -121,7 +149,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state !== 2)) s.reframedOnce.delete(reframeKey);
       s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestCatchUp(g); s.requestDrain(g); return;
     }
-    s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestDrain(g);
+    s.reframedOnce.delete(reframeKey); s.trustRetried.delete(reframeKey); s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestDrain(g);
   } catch (e) {
     if (s.stopped()) return;
     const status = e instanceof DillaHttpError ? e.status : 0;

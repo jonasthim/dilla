@@ -3,6 +3,28 @@ import { DillaHttpError } from '../http/errors';
 import { decodeFrame, encodeFrame, Op, type Frame } from './frames';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent } from './gateway';
 
+it('sends bounded client signals and throttles typing per channel', async () => {
+  // Parity authority: internal/gateway/ephemeral_test.go::TestTypingSetThrottlesPerDeviceChannelAndExpires
+  // and TestVoiceSelfRequiresLiveCallAndValidFlags; the Go tests also enforce audience ACLs.
+  const h = harness();
+  const socket = await connected(h);
+  const a = new Uint8Array(16).fill(0xa1);
+  const b = new Uint8Array(16).fill(0xb1);
+  h.gw.sendTyping(a, true);
+  h.gw.sendTyping(a, true);
+  h.gw.sendTyping(b, true);
+  h.clock.advance(3000);
+  h.gw.sendTyping(a, true);
+  h.gw.sendTyping(a, false);
+  h.gw.sendVoiceSelf(b, 3);
+  const frames = socket.sentFrames().filter((f) => f.op >= 49);
+  expect(frames.map((f) => [f.op, f.n, f.groupId, f.payload])).toEqual([
+    [51, 0n, null, [a, 1n]], [51, 0n, null, [b, 1n]],
+    [51, 0n, null, [a, 1n]], [51, 0n, null, [a, 0n]], [52, 0n, null, [b, 3n]],
+  ]);
+  expect(frames.some((f) => f.op === 50)).toBe(false);
+});
+
 const INSTANCE = new Uint8Array(16).fill(0x01);
 const DEVICE = new Uint8Array(16).fill(0x08);
 const USER = new Uint8Array(16).fill(0x09);
@@ -354,6 +376,16 @@ describe('Gateway input checks', () => {
     const got = h.events.flatMap((e) => (e.type === 'frame' ? [e.frame] : []));
     expect(got).toEqual(wanted.map((b) => decodeFrame(b)));
     expect(h.gw.status).toBe('ready');
+    expect(s.closedWith).toBeNull();
+  });
+
+  // L-HTTP-96's S→C op 49 is the only way a peer's typing reaches the worker (task 10: no browser ever showed one).
+  it('emits the relayed typing frame, op 49, once ready', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const typing = encodeFrame(Op.typing, 0, null, [GROUP, USER, DEVICE, 1, 1_700_000_010]);
+    s.receive(typing);
+    expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame] : []))).toEqual([decodeFrame(typing)]);
     expect(s.closedWith).toBeNull();
   });
 });

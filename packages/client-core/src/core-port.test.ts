@@ -39,6 +39,62 @@ function caught(fn: () => unknown): CoreError {
   throw new Error('nothing was thrown');
 }
 
+it('adapts the ABI-8 trust and search exports', () => {
+  const key = new Uint8Array(32).fill(0x4a);
+  const history = encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]);
+  const head = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+  const s = stub({
+    pending_leaves: () => encode([[G, 0, USER, 0, 'unknown']]),
+    device_list_ingest: () => encode([1, 0, 0]),
+    trust_state: () => encode([[USER, key, 10, 0, null, 'E_DEVICE_UNLISTED']]),
+    trust_verify: () => undefined,
+    safety_number_for: () => Array.from({ length: 12 }, () => '12345').join(' '),
+    send_block_code: () => 'E_UMK_CHANGED',
+    search: () => encode([[G, 7, 'boat', 0]]),
+  });
+  expect(s.port.pendingLeaves()).toMatchObject([{ groupId: G, userId: USER, leafIndex: 0, cachedVersion: 0n }]);
+  expect(s.port.deviceListIngest(G, 0, USER, history, head, 12n)).toEqual({ version: 1n, changed: false, quarantined: 0 });
+  expect(s.port.trustState()).toEqual([{ userId: USER, umk: key, firstSeen: 10n, verified: false, changedUmk: null, blocked: 'E_DEVICE_UNLISTED' }]);
+  s.port.trustVerify(USER, key);
+  expect(s.port.safetyNumberFor(USER, key)).toBe(Array.from({ length: 12 }, () => '12345').join(' '));
+  expect(s.port.sendBlockCode(G)).toBe('E_UMK_CHANGED');
+  expect(s.port.search({ kind: 'all', id: null }, 'boat', null, 50)).toEqual([{ groupId: G, seq: 7n, snippet: 'boat', rank: 0n }]);
+  expect(s.calls.map((c) => c.method)).toEqual([
+    'pending_leaves', 'device_list_ingest', 'trust_state', 'trust_verify', 'safety_number_for', 'send_block_code', 'search',
+  ]);
+  expect(s.calls[1]?.args).toEqual([G, 0, USER, history, head, 12n]);
+  // The safety number is bound to the key the page will approve (ABI 8).
+  expect(s.calls[4]?.args).toEqual([USER, key]);
+  expect(s.calls[5]?.args).toEqual([G]);
+});
+
+it('reads an open send gate as null and fails closed on a code it does not know', () => {
+  expect(stub({ send_block_code: () => undefined }).port.sendBlockCode(G)).toBeNull();
+  for (const code of ['E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'] as const)
+    expect(stub({ send_block_code: () => code }).port.sendBlockCode(G)).toBe(code);
+  expect(stub({ send_block_code: () => 'E_NEW' }).port.sendBlockCode(G)).toBe('E_CREDENTIAL');
+  expect(caught(() => stub({ send_block_code: () => 'x' }).port.sendBlockCode(new Uint8Array(15))).code).toBe('E_CORE_INPUT');
+});
+
+it('reads whether a send block is the own account\'s, and checks the group id first (R1)', () => {
+  const s = stub({ send_block_own: () => true });
+  expect(s.port.sendBlockOwn(G)).toBe(true);
+  expect(s.calls.map((c) => [c.method, c.args])).toEqual([['send_block_own', [G]]]);
+  expect(stub({ send_block_own: () => false }).port.sendBlockOwn(G)).toBe(false);
+  expect(caught(() => stub({ send_block_own: () => true }).port.sendBlockOwn(new Uint8Array(15))).code).toBe('E_CORE_INPUT');
+});
+
+it('refuses a safety-number key that is not 32 bytes before calling the core', () => {
+  const s = stub({ safety_number_for: () => 'never' });
+  expect(caught(() => s.port.safetyNumberFor(USER, new Uint8Array(31))).code).toBe('E_CORE_INPUT');
+  expect(s.calls).toEqual([]);
+});
+
+it('refuses a non-bit changed flag in a wasm ingest reply', () => {
+  const s = stub({ device_list_ingest: () => encode([1, 2, 0]) });
+  expect(caught(() => s.port.deviceListIngest(G, 0, USER, encode([]), encode([]), 12n)).code).toBe('E_CORE_WASM');
+});
+
 describe('wrapCore decoding', () => {
   it('reads identity in every phase', () => {
     expect(stub({ identity: () => encode([0, null, null, null, '', 0]) }).port.identity())

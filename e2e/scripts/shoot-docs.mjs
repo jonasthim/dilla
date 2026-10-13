@@ -26,6 +26,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -37,9 +38,29 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const TESTHOST_BIN = path.join(REPO_ROOT, 'target', 'dilla-testhost');
 const WASI_CORE = path.join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
 const WEB_ROOT = path.join(REPO_ROOT, 'packages', 'web', 'dist');
-const DESKTOP = { width: 1280, height: 800 };
-const PHONE = { width: 360, height: 800 };
 const WAIT = 60_000;
+
+// L-DOC-23: the two real browser viewports of the guide's images, and the ten web-2c images, each waiting for the
+// data-doc-state its visible root carries (packages/web/src/screens: Privacy, Search, Diagnostics, OtherTab).
+export const DOC_VIEWPORTS = { desktop: { width: 1280, height: 800 }, phone: { width: 360, height: 740 } };
+const DESKTOP = DOC_VIEWPORTS.desktop;
+const PHONE = DOC_VIEWPORTS.phone;
+export const DOC_SHOTS = ['trust-privacy', 'trust-compare', 'trust-conversation', 'trust-changed', 'search-results', 'settings-diagnostics', 'tabs-handover']
+  .flatMap((state) => ['desktop', 'phone'].map((viewport) => ({ name: `${state}-${viewport}`, state: `[data-doc-state="${state}"]`, viewport })));
+
+/**
+ * Waits for the named state to be visible, captures it, and closes `context` (when the caller hands one over) in
+ * `finally`, so a failed capture never leaves it open. The persistent profiles of main() are not handed over: their
+ * owner closes them.
+ */
+export async function shootNamedState({ context = null, page, state, outFile }) {
+  try {
+    await page.waitForSelector(state, { state: 'visible', timeout: WAIT });
+    await page.screenshot({ path: outFile });
+  } finally {
+    if (context !== null) await context.close();
+  }
+}
 
 const SERVER = 'Midgard Crew';
 const CHANNELS = [
@@ -182,12 +203,45 @@ function startHost(o, dataDir) {
     const timer = setTimeout(() => reject(new Error(`dilla-testhost did not start within ${WAIT} ms:\n${seen}`)), WAIT);
     child.stdout.on('data', (b) => {
       seen += b.toString();
-      if (/DILLA_TESTKIT_INVITE=\S+/.test(seen)) { clearTimeout(timer); resolve(); }
+      const invite = /DILLA_TESTKIT_INVITE=(\S+)/.exec(seen);
+      if (invite) { clearTimeout(timer); resolve(invite[1]); }
     });
     child.stderr.on('data', (b) => { seen += b.toString(); });
     child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`dilla-testhost exited with ${code}:\n${seen}`)); });
   });
   return { child, ready };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The native peer (web-2c): the testkit's web-driver, one JSON line per request (e2e/web/support/driver.ts). It is
+// the one member whose identity key can change, which a browser cannot do; nothing it holds is printed.
+
+function startPeer(publicUrl, controlUrl, invite) {
+  const bin = process.env.DILLA_TESTKIT ?? path.join(REPO_ROOT, 'target', 'release', 'dilla-testkit');
+  if (!existsSync(bin)) throw new Error(`dilla-testkit not found at ${bin}: cargo build -p dilla-testkit --release --locked, or set DILLA_TESTKIT`);
+  const child = spawn(bin, ['web-driver', '--ds', publicUrl, '--seed', String(1 + (randomBytes(3).readUIntBE(0, 3) % 0xff_fffe))], {
+    env: { ...process.env, DILLA_TESTKIT_INVITE: invite, DILLA_TESTKIT_CONTROL: controlUrl }, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const pending = new Map();
+  let next = 1;
+  createInterface({ input: child.stdout }).on('line', (line) => {
+    const answer = JSON.parse(line);
+    const p = pending.get(answer.id);
+    if (!p) return;
+    pending.delete(answer.id);
+    if (answer.ok) p.resolve(answer); else p.reject(new Error(`web-driver: ${answer.error}`));
+  });
+  child.stderr.on('data', (d) => process.stderr.write(d));
+  child.on('exit', (code) => {
+    for (const p of pending.values()) p.reject(new Error(`web-driver exited with ${code}`));
+    pending.clear();
+  });
+  const request = (op, args = {}) => new Promise((resolve, reject) => {
+    const id = next++;
+    pending.set(id, { resolve, reject });
+    child.stdin.write(`${JSON.stringify({ id, op, ...args })}\n`);
+  });
+  return { child, request };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -422,8 +476,9 @@ async function main(argv) {
   const contexts = [];
   const problems = [];
   const written = [];
+  let peer = null;
   try {
-    await host.ready;
+    const instanceInvite = await host.ready;
     const owner = await seedOwner(controlUrl);
     const { community, invite } = await createServer(publicUrl, owner);
     mkdirSync(o.outDir, { recursive: true });
@@ -703,6 +758,85 @@ async function main(argv) {
     await settle(mira);
     await shoot('shell-dm-badge');
 
+    // web-2c (L-DOC-23): Privacy, a contact's changed identity, search, diagnostics and the tab hand-over, each shot
+    // at both viewports once its data-doc-state is visible. The contact whose key changes is the native peer, in a
+    // server of its own that Mira joins.
+    const shootState = async (page, state, owned = null) => {
+      for (const shot of DOC_SHOTS.filter((s) => s.state === `[data-doc-state="${state}"]`)) {
+        await page.setViewportSize(DOC_VIEWPORTS[shot.viewport]);
+        await page.waitForSelector(shot.state, { state: 'visible', timeout: WAIT });
+        await settle(page, { keepFocus: true });
+        const outFile = path.join(o.outDir, `${shot.name}.png`);
+        await shootNamedState({ context: shot.viewport === 'phone' ? owned : null, page, state: shot.state, outFile });
+        written.push(outFile);
+      }
+      if (owned === null) await page.setViewportSize(DESKTOP);
+    };
+    const openSettings = async (section) => {
+      await byText(mira, 'button', 'shell.rail.settings').click();
+      await byText(mira, 'navigation', 'settings.nav.label').getByRole('button', { name: t(`settings.nav.${section}`), exact: true }).click();
+    };
+    const closeSettings = () => byText(mira, 'button', 'settings.close').click();
+
+    peer = startPeer(publicUrl, controlUrl, instanceInvite);
+    const watch = (await peer.request('setup', { community: 'Bridge Watch', channel: 'watch' }));
+    await peer.request('register');
+    await byText(mira, 'button', 'shell.rail.join').click();
+    const join = byText(mira, 'dialog', 'join.title');
+    await join.getByLabel(t('join.invite'), { exact: true }).fill(watch.invite_code);
+    await join.getByRole('button', { name: t('join.submit'), exact: true }).click();
+    await join.waitFor({ state: 'hidden', timeout: WAIT });
+    await byText(mira, 'navigation', 'shell.rail.label').getByRole('button', { name: /^Bridge Watch(, |$)/ }).click();
+    await byText(mira, 'navigation', 'shell.channels.label').getByRole('button', { name: /^watch(, |$)/ }).click();
+    await composer(mira, 'watch').and(mira.locator(':enabled')).waitFor({ timeout: WAIT });
+    for (let i = 0; i < 60; i++) {
+      await peer.request('sync', { channel_id: watch.channel_id });
+      if ((await peer.request('members', { channel_id: watch.channel_id })).devices.length === 2) break;
+      await mira.waitForTimeout(500);
+    }
+    await peer.request('send', { body: 'the bridge is quiet tonight', channel_id: watch.channel_id });
+    await row(mira, 'watch', 'the bridge is quiet tonight').and(mira.locator('[data-state="ok"]')).waitFor({ timeout: WAIT });
+
+    await openSettings('privacy');
+    await shootState(mira, 'trust-privacy');
+    // The comparison itself: the contact, the state, the exact public key and the 12 blocks of five digits.
+    await mira.getByRole('button', { name: t('privacy.compare', { name: watch.display }), exact: true }).click();
+    await mira.locator('[data-safety-group]').nth(11).waitFor({ timeout: WAIT });
+    await shootState(mira, 'trust-compare');
+    await mira.keyboard.press('Escape');
+    await byText(mira, 'dialog', 'privacy.title').waitFor({ state: 'hidden', timeout: WAIT });
+    await closeSettings();
+
+    await composer(mira, 'watch').focus();
+    await mira.keyboard.press('ControlOrMeta+K');
+    await mira.getByRole('combobox', { name: t('search.placeholder'), exact: true }).fill('bridge');
+    await mira.getByRole('option').first().waitFor({ timeout: WAIT });
+    await shootState(mira, 'search-results');
+    await mira.keyboard.press('Escape');
+
+    await openSettings('diagnostics');
+    await shootState(mira, 'settings-diagnostics');
+    await closeSettings();
+
+    await peer.request('rotate_umk');
+    await peer.request('send', { body: 'new key, same watch', channel_id: watch.channel_id });
+    await mira.getByRole('alert').filter({ hasText: t('privacy.changed') }).waitFor({ timeout: WAIT });
+    // In the conversation: the alert with Compare, and the message field blocked with the same words.
+    await mira.getByText(t('privacy.changed'), { exact: true }).last().waitFor({ timeout: WAIT });
+    await shootState(mira, 'trust-conversation');
+    await openSettings('privacy');
+    await shootState(mira, 'trust-changed');
+    await closeSettings();
+
+    // A second tab of Mira's browser waits while this one holds the device; the tab is the shot's own and closes.
+    const tab = await mira.context().newPage();
+    await tab.goto('/');
+    await shootState(tab, 'tabs-handover', { close: () => tab.close() });
+
+    await byText(mira, 'navigation', 'shell.rail.label').getByRole('button', { name: new RegExp(`^${SERVER}(, |$)`) }).click();
+    await mira.getByRole('button', { name: 'general', exact: true }).click();
+    await composer(mira, 'general').waitFor({ timeout: WAIT });
+
     // Mira is removed from the server with her tab open; her next message meets the lost membership.
     const miraId = await memberId(publicUrl, owner, community, PEOPLE.mira.username);
     await api(publicUrl, owner, 'DELETE', `/v1/communities/${community}/members/${miraId}`);
@@ -720,6 +854,7 @@ async function main(argv) {
     await settle(mira);
     await shoot('shell-not-member');
   } finally {
+    if (peer !== null) await stop(peer.child);
     for (const c of contexts) await c.close().catch(() => undefined);
     await stop(host.child);
     rmSync(scratch, { recursive: true, force: true });

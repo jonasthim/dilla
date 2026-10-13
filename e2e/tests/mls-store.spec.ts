@@ -122,3 +122,26 @@ test('an unknown op is refused by the worker without touching the store', async 
   expect(reply).toEqual({ ok: false, error: 'E_SPIKE_OP: unknown op drop-tables' });
   await expect(page.getByTestId('rows')).toHaveText('1', { timeout: WAIT });
 });
+
+// opfs-report. A page unload in the middle of a write leaves the rollback journal next to a database
+// file in which some committed pages are already overwritten. The next open must play that journal
+// back: the store opens, passes the integrity check, and holds the committed rows unchanged. Before
+// the fix the pool VFS answered every RESERVED-lock check with "held by another connection", so
+// SQLite never treated the journal as hot and read the half-written pages ("database disk image is
+// malformed").
+test('a write interrupted by a reload rolls back on the next open', async ({ storePage: page }) => {
+  await bootStore(page, instance('torn'));
+  const torn = await mls(page, 'torn');
+  expect(torn, JSON.stringify(torn)).toMatchObject({ ok: true });
+  // Inside the open transaction every row is already rewritten.
+  expect(JSON.parse((torn as { value: string }).value)).toEqual({ rows: 300, committed: 0, problems: 0 });
+
+  // The worker dies with the transaction open; the journal and the spilled pages stay in OPFS.
+  await page.reload();
+  // 'open' once the store is back; otherwise the banner's error (the failure message keeps the last one).
+  await expect.poll(async () => (await page.getByTestId('append').isEnabled())
+    ? 'open' : (await page.getByTestId('banner').textContent()) || 'waiting', { timeout: WAIT }).toBe('open');
+  const check = await mls(page, 'check');
+  expect(check, JSON.stringify(check)).toMatchObject({ ok: true });
+  expect(JSON.parse((check as { value: string }).value)).toEqual({ rows: 300, committed: 300, problems: 0 });
+});

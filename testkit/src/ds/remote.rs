@@ -463,6 +463,11 @@ enum Inbound {
     /// `heartbeat_ack` (7): the gateway handles one connection's frames in order, so the answer to
     /// a heartbeat proves every frame sent before it has been handled.
     HeartbeatAck,
+    Signal {
+        op: u64,
+        target: [u8; 16],
+        device: [u8; 16],
+    },
     /// Control frames the client has no use for (`resumed`) and the ops outside the delivery
     /// service (32 and above).
     Ignored,
@@ -480,6 +485,9 @@ fn uint_list(d: &mut Decoder<'_>) -> Result<Vec<u64>, CborError> {
 /// Decodes `[op, n, group_id|null, payload]`, the four-element frame of protocol/02 § Gateway
 /// frames, and returns the replay `n` beside it.
 fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(DsError::Protocol("gateway frame exceeds 4 MiB".into()));
+    }
     decode_strict(bytes, |d: &mut Decoder<'_>| {
         d.array(4)?;
         let op = d.uint()?;
@@ -626,6 +634,23 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
                     seq: d.uint()?,
                     deleted_at: d.uint()?,
                 })
+            }
+            49 => {
+                expect(5)?;
+                let target = d.bytes_exact::<16>()?;
+                let _user = d.bytes_exact::<16>()?;
+                let device = d.bytes_exact::<16>()?;
+                let _on = d.uint()?;
+                let _expires = d.uint()?;
+                Inbound::Signal { op, target, device }
+            }
+            50 => {
+                expect(4)?;
+                let _user = d.bytes_exact::<16>()?;
+                let device = d.bytes_exact::<16>()?;
+                let target = d.bytes_exact::<16>()?;
+                let _flags = d.uint()?;
+                Inbound::Signal { op, target, device }
             }
             _ => {
                 for _ in 0..len {
@@ -806,6 +831,23 @@ fn get_with(agent: &ureq::Agent, base: &str, token: &str, path: &str) -> Result<
     Ok(out)
 }
 
+fn get_device_list_bounded(
+    agent: &ureq::Agent,
+    base: &str,
+    token: &str,
+    path: &str,
+) -> Result<Vec<u8>, DsError> {
+    let (status, out) = call_limited(
+        agent,
+        "GET",
+        &format!("{base}{path}"),
+        Some(token),
+        4 * 1024 * 1024 + 4096,
+    )?;
+    check_status(status, &out)?;
+    Ok(out)
+}
+
 fn get_device_list_with(
     agent: &ureq::Agent,
     base: &str,
@@ -813,7 +855,11 @@ fn get_device_list_with(
     user_id: &[u8; 16],
 ) -> Result<ServedDeviceList, DsError> {
     let path = format!("/v1/users/{}/device-list", hex::encode(user_id));
-    decode_strict(&get_with(agent, base, token, &path)?, decode_served_list).map_err(protocol)
+    decode_strict(
+        &get_device_list_bounded(agent, base, token, &path)?,
+        decode_served_list,
+    )
+    .map_err(protocol)
 }
 
 fn list_backups_with(
@@ -926,6 +972,32 @@ pub struct CallStarted {
 }
 
 impl HttpDs {
+    #[cfg(test)]
+    pub(crate) fn for_device_list_test(base: &str) -> Self {
+        Self {
+            base: base.to_owned(),
+            token: "test-token".into(),
+            device: DeviceId::from_bytes([0; 16]),
+            agent: new_agent(),
+            ws: None,
+            pending: Vec::new(),
+            online: false,
+            heartbeat: Duration::from_secs(30),
+            last_beat: Instant::now(),
+            unacked: 0,
+            ack_since: Instant::now(),
+            last_pump: Instant::now(),
+            last_n: 0,
+            delivered: BTreeMap::new(),
+            connected_before: false,
+            reconnects: 0,
+            lost: Vec::new(),
+            accepted: 0,
+            missed_acks: 0,
+            expires: 0,
+        }
+    }
+
     /// Establishes a device session over the real endpoints: a challenge, an Ed25519 signature
     /// over the 81-byte preimage of `protocol/02`'s "Device sessions", then the session itself.
     pub fn connect(base: &str, device: &Device, credential: &[u8]) -> Result<Self, DsError> {
@@ -1038,6 +1110,71 @@ impl HttpDs {
             return Ok(());
         }
         self.pump()
+    }
+
+    fn send_ephemeral(&mut self, op: u64, target: &[u8; 16], flags: u64) -> Result<(), DsError> {
+        if !self.online {
+            return Err(DsError::Transport("no gateway connection".into()));
+        }
+        if self.ws.is_none() {
+            self.open_socket()?;
+        }
+        let frame = encode(|e| {
+            e.array(4).uint(op).uint(0).null();
+            e.array(2).bytes(target).uint(flags);
+        });
+        self.ws
+            .as_mut()
+            .ok_or_else(|| DsError::Transport("no gateway connection".into()))?
+            .send(Message::Binary(frame.into()))
+            .map_err(transport)?;
+        let deadline = Instant::now() + HANDSHAKE_WAIT;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(DsError::Transport("no gateway signal outcome".into()));
+            }
+            let ws = self
+                .ws
+                .as_mut()
+                .ok_or_else(|| DsError::Transport("gateway closed".into()))?;
+            match ws.read() {
+                Ok(Message::Binary(bytes)) => {
+                    let (n, inbound) = decode_frame(&bytes)?;
+                    self.last_n = self.last_n.max(n);
+                    match inbound {
+                        Inbound::Signal {
+                            op: got,
+                            target: seen,
+                            device,
+                        } if got == op - 2
+                            && seen == *target
+                            && device == *self.device.as_bytes() =>
+                        {
+                            return Ok(());
+                        }
+                        Inbound::Frame(Frame::GatewayError { code, .. }) => {
+                            return Err(DsError::from_code(0, &code, "", ErrorExtras::default()));
+                        }
+                        Inbound::Frame(frame) => self.accept(frame),
+                        Inbound::HeartbeatAck => self.acked(),
+                        Inbound::Closing(reason) => return Err(DsError::Transport(reason)),
+                        _ => {}
+                    }
+                }
+                Ok(Message::Close(_)) => return Err(DsError::Transport("gateway closed".into())),
+                Ok(_) => {}
+                Err(e) if is_timeout(&e) => {}
+                Err(e) => return Err(transport(e)),
+            }
+        }
+    }
+
+    pub fn typing_set(&mut self, channel: &[u8; 16], on: bool) -> Result<(), DsError> {
+        self.send_ephemeral(51, channel, u64::from(on))
+    }
+
+    pub fn voice_self(&mut self, call: &[u8; 16], flags: u64) -> Result<(), DsError> {
+        self.send_ephemeral(52, call, flags)
     }
 
     /// The session's hard expiry in the instance's unix seconds; 0 when unknown.
@@ -1198,7 +1335,7 @@ impl HttpDs {
             "/v1/users/{}/device-list?after={after}",
             hex::encode(user_id)
         );
-        let out = get_with(&self.agent, &self.base, &self.token, &path)?;
+        let out = get_device_list_bounded(&self.agent, &self.base, &self.token, &path)?;
         decode_history(&out).map_err(protocol)
     }
 
@@ -1688,7 +1825,10 @@ impl HttpDs {
                         Inbound::Frame(frame) => self.accept(frame),
                         Inbound::Closing(reason) => self.socket_lost(format!("closing: {reason}")),
                         Inbound::HeartbeatAck => self.acked(),
-                        Inbound::Hello { .. } | Inbound::Ready | Inbound::Ignored => {}
+                        Inbound::Hello { .. }
+                        | Inbound::Ready
+                        | Inbound::Ignored
+                        | Inbound::Signal { .. } => {}
                     }
                 }
                 Ok(Message::Close(frame)) => self.socket_lost(format!("close frame: {frame:?}")),
@@ -1749,7 +1889,10 @@ impl HttpDs {
                             self.ws = None;
                             return Err(DsError::Transport(reason));
                         }
-                        Inbound::Hello { .. } | Inbound::Ready | Inbound::Ignored => {}
+                        Inbound::Hello { .. }
+                        | Inbound::Ready
+                        | Inbound::Ignored
+                        | Inbound::Signal { .. } => {}
                     }
                 }
                 Ok(Message::Close(_)) => {

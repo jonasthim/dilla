@@ -11,7 +11,7 @@ export function preferredTheme(matchMedia: (query: string) => { matches: boolean
 
 export function applyTheme(root: HTMLElement, theme: ThemeName): void {
   root.dataset.theme = theme;
-  root.dataset.density = 'regular';
+  if (!root.dataset.density) root.dataset.density = 'regular';
 }
 
 export function followSystemTheme(win: Pick<Window, 'matchMedia' | 'document'>): () => void {

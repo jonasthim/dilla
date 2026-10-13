@@ -4,6 +4,12 @@ use crate::ProtocolError;
 use crate::mls::{MlsError, StorageError, TxError};
 
 pub(crate) const E_CORE_INPUT: &str = "E_CORE_INPUT";
+pub(crate) const E_CORE_LIMIT: &str = "E_CORE_LIMIT";
+pub(crate) const E_CREDENTIAL: &str = "E_CREDENTIAL";
+pub(crate) const E_UMK_CHANGED: &str = "E_UMK_CHANGED";
+pub(crate) const E_DEVICE_UNLISTED: &str = "E_DEVICE_UNLISTED";
+pub(crate) const E_DEVICE_LIST_STALE: &str = "E_DEVICE_LIST_STALE";
+pub(crate) const E_TIER_MISMATCH: &str = "E_TIER_MISMATCH";
 pub(crate) const E_CORE_STATE: &str = "E_CORE_STATE";
 pub(crate) const E_CORE_NO_IDENTITY: &str = "E_CORE_NO_IDENTITY";
 pub(crate) const E_CORE_NOT_FOUND: &str = "E_CORE_NOT_FOUND";

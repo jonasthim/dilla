@@ -108,20 +108,59 @@ Every leaf uses an MLS `basic` credential whose `identity` is the deterministic 
 ```
 
 The leaf's `signature_key` MUST equal the `dsk_pub` covered by `sig_ssk_dev`; the verifier
-reconstructs the signed message from the credential fields and the leaf's signature key. A leaf is
+extracts both the credential identity and DSK from the current authenticated MLS tree leaf,
+reconstructs the signed message from them, and compares an authenticated application sender with
+that same leaf. A worker cannot supply either value for the trust verdict. A leaf is
 accepted only if:
 
 1. both signatures verify;
 2. `umk_pub` equals the pinned UMK for `user_id` on this instance (trust-on-first-use with a
-   loud, undismissable alert on change), or no pin exists yet;
+   loud, undismissable alert on change), or no pin exists yet; a key that is neither the pinned
+   UMK nor one a validated signed list presented (for example a key whose list the instance
+   never serves) fails this rule as `E_CREDENTIAL`. The own account is never trusted on first
+   use: a device pins its own user's UMK, verified, from its own credential (at signup, at
+   enrolment and whenever it opens its store), and drops any own signed list it cached under
+   another UMK, so the own list is read and validated again. A leaf of the own user under any
+   other UMK fails this rule as `E_UMK_CHANGED`, and a signed list under another UMK for the own
+   user is refused (`E_UMK_CHANGED`) and changes no pin. The device's own leaf is not judged;
 3. `dsk_pub` for `device_id` appears, unrevoked, in the newest **signed device list** the verifier
    has seen for this user (below);
 4. `dilla_binding` checks of `01-groups.md` pass for the group;
 5. `tier` in the credential equals the `tier` of that `device_id`'s entry in the newest signed
    device list.
 
-Failing 1, 3 or 4 rejects the leaf (`E_CREDENTIAL`); failing 2 hard-rejects (`E_UMK_CHANGED`);
-failing 5 rejects the leaf (`E_TIER_MISMATCH`).
+Failing 1 or 4 refuses the leaf (`E_CREDENTIAL`); failing 2 is `E_UMK_CHANGED`; failing 3 is
+`E_DEVICE_UNLISTED`; failing 5 is `E_TIER_MISMATCH`. An incomplete, rolled-back, gapped or
+substituted list history is `E_DEVICE_LIST_STALE` and leaves the leaf pending. A proposed `Add`
+whose leaf fails is left out of this device's commit (never committed, and never a refusal that
+stalls the device's commits); one whose history is still unknown is refused until it is fetched.
+A fetched history that fails the candidate leaf (rules 1 to 3 or 5, also for a user this device
+has never cached) is that leaf's verdict, kept by its leaf identity, so the `Add` is then left
+out rather than refused again; an incomplete or substituted history still only refuses.
+A bad leaf already merged by a remote commit stays in MLS but is quarantined, and it blocks sends
+in each group still containing it, as a changed UMK does, until a validated `Remove` eliminates
+it from that group (fail closed for confidentiality: a member must not encrypt to a leaf it could
+not validate). Its committer is not blocked or quarantined; the audit names who added the leaf.
+Receiving is unaffected, and a leaf whose history is merely unknown (first sight) stays pending
+and blocks nothing. A leaf that later validates against a newer signed list ends its own failed
+verdict. A changed UMK blocks sends in each group still containing its
+leaf until exact-key verification or a validated `Remove` eliminates that leaf from that group.
+The Remove does not approve the new key or unblock any other group. A remote member can repeatedly
+rotate a leaf's key to trigger this refusal against an honest sender.
+The pin is one record per user: the pinned UMK, whether it was verified, and at most one pending
+changed UMK. A validated signed list under another UMK makes that UMK the pending change: its
+leaves are `E_UMK_CHANGED`, the pinned UMK's leaves are pending (their new messages wait; nothing
+they sent before is retracted), and the list revokes no device of the pinned UMK until exact-key
+verification approves it. A later list back under the pinned UMK ends the pending change. A
+leaf's send block is never released by a later list: only exact-key verification of that leaf's
+UMK, or a `Remove` of that leaf from that group (whoever commits it), releases it. The block is
+checked again when a queued message is encrypted.
+A message whose sender leaf is pending or failed (unlisted, a changed UMK, or a UMK no validated
+list presented) is not shown, and its MLS-authenticated plaintext is kept on the device. It
+becomes readable only when that exact leaf, still the sender's current leaf, later validates: a
+newer signed list names it, or exact-key verification approves its UMK (the messages a changed
+key sent while the change was pending wait for that approval). It is never shown under a key
+the user did not approve, and deleting it discards what was kept.
 
 The instance binds a new leaf to a device too, before any client sees it: a leaf's
 `signature_key` must be the `dsk_pub` its device registered (`POST /v1/accounts`,
@@ -155,17 +194,29 @@ it cannot forge it. Deterministic CBOR:
 ]
 ```
 
-Rules: a verifier keeps the newest `version` it has validated per user and MUST reject a list
-whose `version` is not greater than that, whose `prev_hash` does not match, or whose signature
-fails. A leaf whose `device_id` is absent or has `revoked_at` set in the newest list is rejected
-(`E_DEVICE_UNLISTED`) and any message from it is not rendered. Revocation is therefore
-cryptographic and does not depend on the instance.
+Rules: a verifier keeps the newest signed `version` it has validated per user and refuses a
+rollback, gap, invalid `prev_hash` or signature. The requested user and the `user_id` of every
+signed list in the history must equal the user extracted from the current authenticated MLS leaf.
+The list entry must bind that leaf's `device_id`, DSK and tier. A leaf whose `device_id` is absent
+or has `revoked_at` set in the newest list is `E_DEVICE_UNLISTED` and no message from it is
+rendered. Revocation is therefore cryptographic and does not depend on the instance. A later
+quarantine (including a pinned UMK's leaf that a verified changed UMK's list does not hold)
+retracts every previously accepted display row attributable to that leaf in that group, refolds
+dependent edits, reactions and replies, removes derived search rows, and
+invalidates older timeline and search slices before display. Old quarantined rows stay neutral
+after verification unless retained ciphertext is freshly authenticated against the validated leaf.
 
-A verifier that holds version *n* and is served a list of version *m* > *n* + 1 fetches the
-versions after *n* (`GET /v1/users/{user_id}/device-list?after=n`, `09`) and walks them one version
-at a time under the rules above; the instance serves them in order and stores only lists that verify
-and chain (`02` § Device sessions item 6). A verifier with no validated version for the user accepts
-the served list on its signature alone (first sight); only version 1 may carry a zero `prev_hash`.
+A verifier first reads the unpaged signed candidate head, then fetches ascending history after
+its cached signed version (`GET /v1/users/{user_id}/device-list?after=n`, `09`), or from version 1
+on first sight. It validates every consecutive signature and hash link, and requires the final
+signed bytes and hash to equal the candidate head. The final list must verify under the leaf's
+`ssk_pub` also when the history is only the cached head: a leaf under another key whose device a
+cached list names, served that unchanged head, fails rule 2 (`E_CREDENTIAL`) and changes no cached
+list or pin. It re-reads the unpaged head after paging;
+a changed head allows one bounded retry. An unchanged exact cached head needs no history fetch.
+The history is at most 1024 versions and 4 MiB. Only version 1 may carry a zero `prev_hash`.
+An instance can withhold newer history even on first sight: trust on first use cannot detect this
+freeze, and the UI must not call first sight verified.
 
 ## Custody by tier
 

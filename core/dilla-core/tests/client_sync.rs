@@ -83,7 +83,7 @@ fn sql_seq(seq: u64) -> i64 {
 
 #[test]
 fn group_apply_advances_over_rows_the_caller_declares_complete() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (_, s1) = b.send(&mut relay, &GROUP, "one", NOW + 1);
     let (_, s2) = b.send(&mut relay, &GROUP, "two", NOW + 2);
     let (_, s3) = b.send(&mut relay, &GROUP, "three", NOW + 3);
@@ -136,7 +136,7 @@ fn group_apply_advances_over_rows_the_caller_declares_complete() {
 
 #[test]
 fn a_message_of_the_next_epoch_is_applied_after_its_commit_whatever_the_array_order() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     b.commit(&mut relay);
     let (_, seq) = b.send(&mut relay, &GROUP, "in the new epoch", NOW + 1);
     let commit = relay.handshakes.last().expect("the commit").clone();
@@ -167,7 +167,7 @@ fn a_message_of_the_next_epoch_is_applied_after_its_commit_whatever_the_array_or
 
 #[test]
 fn the_handshake_tail_keeps_the_newest_64_rows() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     for _ in 0..70 {
         b.commit(&mut relay);
     }
@@ -207,12 +207,13 @@ fn the_handshake_tail_keeps_the_newest_64_rows() {
 
 #[test]
 fn an_instance_add_seen_twice_is_queued_once_and_its_commit_welcomes_the_device() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let mut c = ready_core(0xc3, "carol");
     let kp = c.first_key_package();
     instance.propose_add(&mut relay, &kp);
 
     let seen = a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     assert_eq!(seen.proposals_pending, 1);
     let blocked = a.prepare(&GROUP, "blocked", NOW + 1);
     assert_eq!(
@@ -263,6 +264,7 @@ fn an_instance_add_seen_twice_is_queued_once_and_its_commit_welcomes_the_device(
         .expect("welcomes_apply");
     assert_eq!(decode_outcomes(&joined)[0].outcome, 0);
     assert_eq!(c.group(&GROUP).map(|g| g.epoch), Some(2));
+    ingest_core_list(&mut c, &relay, &a);
 
     let (_, seq) = a.send(&mut relay, &GROUP, "three of us", NOW + 2);
     for member in [&mut b, &mut c] {
@@ -276,7 +278,7 @@ fn an_instance_add_seen_twice_is_queued_once_and_its_commit_welcomes_the_device(
 
 #[test]
 fn the_echo_of_an_own_commit_before_its_confirm_merges_it_and_confirm_is_a_no_op() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let body = a
         .core
         .commit_build(&GROUP, &relay.proposals_body())
@@ -310,12 +312,14 @@ fn the_echo_of_an_own_commit_before_its_confirm_merges_it_and_confirm_is_a_no_op
 
 #[test]
 fn the_loser_of_a_commit_race_aborts_applies_the_winner_and_commits_again() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let mut c = ready_core(0xc3, "carol");
     let kp = c.first_key_package();
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
     b.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
+    ingest_add_candidate(&mut b, &relay, &c);
 
     let mine = a
         .core
@@ -370,7 +374,7 @@ fn the_loser_of_a_commit_race_aborts_applies_the_winner_and_commits_again() {
 
 #[test]
 fn a_commit_that_cannot_be_processed_stops_the_group_in_needs_resync() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let junk_proposal = relay.push_handshake(0, b"not an mls message".to_vec());
     let junk_commit = relay.push_handshake(1, b"not an mls commit either".to_vec());
     b.send(&mut relay, &GROUP, "behind the bad commit", NOW + 1);
@@ -424,7 +428,7 @@ fn a_commit_that_cannot_be_processed_stops_the_group_in_needs_resync() {
 
 #[test]
 fn a_commit_that_removes_this_device_marks_the_group_gone_and_keeps_its_history() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     a.send(&mut relay, &GROUP, "before the removal", NOW + 1);
     b.sync(&relay);
     instance.propose_remove(&mut relay, b.device);
@@ -483,7 +487,7 @@ fn a_commit_that_removes_this_device_marks_the_group_gone_and_keeps_its_history(
 
 #[test]
 fn the_cursor_body_names_the_applied_head_until_it_is_acknowledged() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let head = a.group(&GROUP).expect("row").next_seq - 1;
     assert_eq!(cursor(&a.core), Some((head, 1)));
     a.core.cursor_acked(&GROUP, head, 1).expect("acked");
@@ -519,6 +523,7 @@ fn commit_build_needs_an_active_group_without_a_pending_commit() {
     instance.propose_add(&mut relay, &kp);
 
     // A void proposal is left out.
+    ingest_add_candidate(&mut a, &relay, &c);
     let body = a
         .core
         .commit_build(&GROUP, &voided(&relay.proposals_body()))
@@ -715,6 +720,7 @@ fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_gr
     let kp = c.first_key_package();
     instance.propose_add(&mut relay, &kp);
     a.sync(&relay);
+    ingest_add_candidate(&mut a, &relay, &c);
     a.commit(&mut relay);
     let outcomes = decode_outcomes(
         &c.core
@@ -763,7 +769,7 @@ fn every_writer_keeps_the_persisted_epoch_and_pending_commit_equal_to_the_mls_gr
 /// MLS group is gone (web-1 loaded it and answered epoch 0 or an error).
 #[test]
 fn groups_and_the_cursor_body_read_the_row_without_loading_the_mls_group() {
-    let (_instance, _relay, a, _b) = alice_and_bob();
+    let (_instance, _relay, a, _b) = alice_and_bob_trusted();
     let a = a.reopen();
     let head = a.group(&GROUP).expect("row").next_seq - 1;
     a.probe
@@ -792,7 +798,7 @@ fn groups_and_the_cursor_body_read_the_row_without_loading_the_mls_group() {
 /// Pinned so the change is deliberate.
 #[test]
 fn a_discarded_resync_answers_the_cursor_from_the_row_with_epoch_0() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     a.send(&mut relay, &GROUP, "before the resync", NOW + 1);
     b.sync(&relay);
     b.core
@@ -818,7 +824,7 @@ fn a_discarded_resync_answers_the_cursor_from_the_row_with_epoch_0() {
 
 #[test]
 fn a_deleted_frame_clears_a_stored_row() {
-    let (_instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (_instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
     let (_, s) = b.send(&mut relay, &GROUP, "take this back", NOW + 1);
     a.sync(&relay);
     let stored = a.timeline(&GROUP).pop().expect("row");
@@ -1100,16 +1106,34 @@ fn read_marker(core: &Core, group: &[u8; 16]) -> Option<(i64, i64)> {
 fn activity_excludes_the_own_users_rows_from_this_device_and_from_another_device() {
     let instance = Instance::generate();
     let mut relay = Relay::new(GROUP);
-    let mut a = ready_core(0xa1, "alice");
+    let (mut a, recovery_key) = ready_core_with_key(0xa1, "alice");
     a.create_and_register(&mut relay, &instance);
     let alice = "a1".repeat(16);
-    // Alice's other browser joins first and sends at its epoch, before Bob's peer joins.
-    let mut twin = RawPeer::new(0xa1, 0x5e);
+    // Alice's other browser (enrolled under her own key) joins first and sends at its epoch,
+    // before Bob's peer joins.
+    let mut twin = enrolled_core(&a, &recovery_key, NOW + 1);
     twin.join_external(&mut relay);
-    let twin_named = twin.send(&mut relay, &format!("from my other browser <@{alice}>"));
+    a.sync(&relay);
+    let first_body = a.core.device_list_body().expect("first PUT");
+    let twin_body = twin.core.device_list_body().expect("enrolled PUT");
+    let user = a.user;
+    ingest_enrolled_pair_bodies(&mut a, &relay, user, twin.device, &first_body, &twin_body);
+    let (_, twin_named) = twin.send(
+        &mut relay,
+        &GROUP,
+        &format!("from my other browser <@{alice}>"),
+        NOW + 1,
+    );
     let mut peer = RawPeer::new(0xe5, 0xe6);
     peer.join_external(&mut relay);
     a.sync(&relay);
+    ingest_list_body(
+        &mut a,
+        &relay,
+        peer.user,
+        peer.device,
+        &peer.device_list_body(),
+    );
     let twin_row: (Vec<u8>, Vec<u8>, i64, i64) = a
         .probe
         .lock()
@@ -1123,7 +1147,7 @@ fn activity_excludes_the_own_users_rows_from_this_device_and_from_another_device
         .expect("the other device's row");
     assert_eq!(
         twin_row,
-        (vec![0xa1; 16], vec![0x5e; 16], 0, 0),
+        (vec![0xa1; 16], twin.device.to_vec(), 0, 0),
         "a readable type-0 row of the own user from another device"
     );
     let plain = peer.send(&mut relay, "plain");
@@ -1218,7 +1242,7 @@ fn activity_excludes_the_own_users_rows_from_this_device_and_from_another_device
 
 #[test]
 fn mark_read_and_activity_follow_the_group_states_and_the_phase() {
-    let (instance, mut relay, mut a, mut b) = alice_and_bob();
+    let (instance, mut relay, mut a, mut b) = alice_and_bob_trusted();
 
     // A registering group may be marked (clamped to 0) and is not listed; a discard takes the marker.
     a.core

@@ -101,8 +101,8 @@ func PresencePayload(userID id.ID, status uint64, sinceTS uint64, statusMsg stri
 	return payload(userID, status, sinceTS, statusMsg)
 }
 
-func TypingPayload(userID, deviceID id.ID, typing bool, expiresTS uint64) (cbor.RawMessage, error) {
-	return payload(userID, deviceID, boolUint(typing), expiresTS)
+func TypingPayload(channelID, userID, deviceID id.ID, typing bool, expiresTS uint64) (cbor.RawMessage, error) {
+	return payload(channelID, userID, deviceID, boolUint(typing), expiresTS)
 }
 
 func VoiceStatePayload(userID, deviceID, callID id.ID, flags uint64) (cbor.RawMessage, error) {

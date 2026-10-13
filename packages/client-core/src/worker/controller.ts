@@ -15,9 +15,10 @@ import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SendRequest, type SignedLists, type TimelineRow,
+  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
+import { Op } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -25,15 +26,18 @@ import { Routes, type ChannelRow, type Instance, type Limits, type MemberRow } f
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { isSettingKey, isSettingValue } from '../state/settings';
+import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
-  type DeviceSummary, type DmSummary, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem, type WorkerError,
+  type DeviceSummary, type DmSummary, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem, type TrustSummary,
+  type SendBlocksState, type WorkerError,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
-import { SyncError } from '../sync/errors';
-import { LEADER, acquireLeadership, lockName, type LockManagerLike } from './leader';
+import { LEAF_VERDICTS, SyncError } from '../sync/errors';
+import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
+import { CommandBarrier, SearchGate } from './barrier';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -92,16 +96,37 @@ const ACCOUNT_CODES = new Set([
   'E_SIGNIN_EVICTED',
 ]);
 
-/** The one mapping from a thrown value to what crosses to the page (L-TS-08 WorkerError, ruling 33). */
-function errorOf(e: unknown): WorkerError {
-  if (e instanceof DillaHttpError) return { code: e.code, detail: e.detail, status: e.status, retryAfterMs: e.retryAfterMs };
-  if (e instanceof CoreError || e instanceof SyncError) return { code: e.code, detail: e.detail, status: 0, retryAfterMs: null };
-  if (e instanceof CborError) return { code: e.code, detail: e.message, status: 0, retryAfterMs: null };
-  if (e instanceof Error && ACCOUNT_CODES.has(e.message)) return { code: e.message, detail: '', status: 0, retryAfterMs: null };
-  // The tray's and the download's refusals cross by code alone: their detail may name a file (L-TS-35).
-  if (e instanceof AttachmentError) return { code: e.code, detail: '', status: 0, retryAfterMs: null };
-  if (e instanceof Refusal) return { code: e.code, detail: e.detail, status: 0, retryAfterMs: null };
-  return { code: 'E_INTERNAL', detail: e instanceof Error ? e.message : String(e), status: 0, retryAfterMs: null };
+const ALLOWED_CODES = new Set(`E_ATTACHMENT_COUNT E_ATTACHMENT_FAILED E_ATTACHMENT_INPUT E_ATTACHMENT_MISSING E_ATTACHMENT_TOO_LARGE
+E_BAD_INPUT E_BINDING E_BLOB_HASH E_BLOB_OPEN E_BODY_TOO_LARGE E_CAPACITY E_CBOR_DEPTH E_CBOR_NONCANONICAL
+E_CBOR_RANGE E_CBOR_SHAPE E_CBOR_TRAILING E_CBOR_TRUNCATED E_CBOR_TYPE E_CBOR_UTF8 E_CHANNEL_GONE
+E_COMMITMENT_INVALID E_COMMIT_CONFLICT E_COMMIT_INVALID E_COMMIT_REQUIRED E_CORE_DECODE E_CORE_INPUT
+E_CORE_LIMIT E_CORE_MLS E_CORE_NOT_FOUND E_CORE_NO_IDENTITY E_CORE_RELOAD E_CORE_STATE E_CORE_STORAGE E_CORE_WASM
+E_CREDENTIAL E_DEVICE_LIST_STALE E_DEVICE_UNLISTED E_ENVELOPE_LIMIT E_ENVELOPE_SHAPE E_FORBIDDEN
+E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQUEST E_INVITE_INVALID
+E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
+E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
+E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
+E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
+E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED`.split(/\s+/));
+
+/** The sole mapping of worker-local exceptions into page-bound data. */
+export function sanitizeWorkerError(e: unknown): WorkerError {
+  let code = 'E_INTERNAL';
+  if (e instanceof DillaHttpError || e instanceof CoreError || e instanceof SyncError || e instanceof CborError
+    || e instanceof AttachmentError || e instanceof Refusal) code = e.code;
+  else if (e instanceof Error && ACCOUNT_CODES.has(e.message)) code = e.message;
+  else if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'E_NOT_READY') code = 'E_NOT_READY';
+  if (!ALLOWED_CODES.has(code)) code = 'E_INTERNAL';
+  const status = e instanceof DillaHttpError && Number.isInteger(e.status) && e.status >= 100 && e.status <= 599 ? e.status : 0;
+  const retry = e instanceof DillaHttpError ? e.retryAfterMs : null;
+  return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null };
+}
+const errorOf = sanitizeWorkerError;
+function sanitizePageError(error: WorkerError): WorkerError {
+  return { code: ALLOWED_CODES.has(error.code) ? error.code : 'E_INTERNAL', detail: '',
+    status: Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? error.status : 0,
+    retryAfterMs: typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
+      && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null };
 }
 
 /** An account code thrown as Error(code) by the account modules (enrol.ts, signup.ts, session.ts). */
@@ -131,6 +156,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
   'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
+  'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -138,17 +164,18 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
   selectCommunity: ['communityId'], openChannel: ['channelId'], closeChannel: ['channelId'], loadEarlier: ['channelId'],
   send: ['channelId'], retrySend: ['msgId'], discardSend: ['msgId'],
   revokeDevice: ['deviceId'], markRead: ['channelId'], openDm: ['userId'],
   editMessage: ['channelId', 'msgId'], deleteMessage: ['channelId', 'msgId'], react: ['channelId', 'msgId'], pin: ['channelId', 'msgId'],
   loadPins: ['channelId'], closePins: ['channelId'], attachFiles: ['channelId'], discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
+  verifyContact: ['userId'], safetyNumber: ['userId'], typing: ['channelId'], voiceSelf: ['callId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
-  'loading': [], 'other-tab': [], 'unsupported': [], 'error': [], 'registering': [], 'enrolling': [], 'cleared': [],
+  'loading': [], 'other-tab': [], 'paused-error': [], 'unsupported': [], 'error': [], 'registering': [], 'enrolling': [], 'cleared': [],
   // Pre-flight ruling (d) of task 14: a revoked browser can start over (the splash's "forget this browser").
   'revoked': ['forgetBrowser'],
   'store-lost': ['resetDevice'],
@@ -161,6 +188,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'joinCommunity', 'selectCommunity', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
+    'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
   ],
 };
 
@@ -227,6 +255,19 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof command.key !== 'string') return 'key is not a string';
     if (command.value !== null && typeof command.value !== 'string') return 'value is not a string or null';
   }
+  if (m === 'verifyContact' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
+  if (m === 'safetyNumber' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
+  if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
+  if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'resign' && (typeof command.nonce !== 'string' || !ID.test(command.nonce))) return 'nonce is not 32 lowercase hex';
+  if (m === 'search') {
+    if (command.scope !== 'all' && command.scope !== 'channel' && command.scope !== 'community') return 'invalid search scope';
+    if (command.scope === 'all' ? command.id !== null : typeof command.id !== 'string' || !ID.test(command.id)) return 'invalid search id';
+    if (typeof command.query !== 'string' || UTF8.encode(command.query.trim()).length < 1 || UTF8.encode(command.query.trim()).length > 128) return 'invalid search query';
+    const cursor = command.cursor;
+    if (cursor !== null && (typeof cursor !== 'object' || cursor === undefined || Object.keys(cursor).length !== 1
+      || !('token' in cursor) || typeof cursor.token !== 'string' || !/^[1-9][0-9]*$/.test(cursor.token))) return 'invalid search cursor';
+  }
   return null;
 }
 
@@ -249,12 +290,16 @@ export class Controller {
   private starting: Promise<null> | null = null;
   private resetting: Promise<null> | null = null;
   private graceTimer: number | null = null;
+  /** The socket re-establish retry onRevokedSocket armed after a network failure (I4). */
+  private reauthTimer: number | null = null;
   private phase: BootPhase = 'loading';
   private accountState: AccountState = {
-    phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false,
+    phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null,
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
+  /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
+  private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
   private session: Session | null = null;
   private signup: Signup | null = null;
@@ -278,6 +323,9 @@ export class Controller {
   private noticeFloor: bigint | null = null;
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
+  /** This browser's clock (ms) when that ticket's answer arrived: the instance clock advances from ticketTime by what
+   *  has elapsed here since. */
+  private ticketMintedMs = 0;
   private readonly refusedChannels = new Set<string>();
   private readonly notMember = new Set<string>();
   private readonly resyncing = new Set<string>();
@@ -292,6 +340,33 @@ export class Controller {
   private readonly roles = new Map<string, string[]>();
   private purging: Promise<void> | null = null;
   private purgeAgain = false;
+  private trustRefresh: Promise<null> | null = null;
+  private trustRefreshAgain = false;
+  private seenTrustGeneration: bigint | null = null;
+  // Ruling (c) of 2026-10-13, narrowed by fix wave C1 (F4): the verified/failed/changed state is the core's trust_state
+  // `blocked`, read from the store. The worker keeps only what the core stores no answer for: a user whose leaf ingest the
+  // core refused with a leaf verdict (that refusal writes nothing), until a clean ingest of that user.
+  private readonly unlistedUsers = new Set<string>();
+  // Own-user leaves (`group:leafIndex`) whose list ingest the core refused with E_UMK_CHANGED (an own-user history under
+  // another key): an own-trust signal, held while the core still reports the leaf, so the banner never waits for a store read.
+  private readonly ownRefusedLeaves = new Set<string>();
+  // Flow 05 "history pending": users whose last signed-list read failed (kept until a read succeeds, since a failed leaf
+  // is not read again before the next ready), and the published union of those with users whose history is still unknown.
+  private readonly historyFailedUsers = new Set<string>();
+  private pendingUsers = new Set<string>();
+  // user hex -> groups (hex) where pendingLeaves last reported a 'changed' leaf of that user.
+  private changedLeafGroups = new Map<string, Set<string>>();
+  // user hex -> still active groups whose changed leaf has since left the tree (a validated Remove cleared their block).
+  private readonly removedGroups = new Map<string, Set<string>>();
+  private readonly fetchedLeaves = new Set<string>();
+  private readonly barrier = new CommandBarrier();
+  private readonly searchGate = new SearchGate();
+  private searchCursor: { token: string; scope: Extract<Command, { m: 'search' }>; position: SearchCursor } | null = null;
+  private leadership: Leadership | null = null;
+  private readonly typingOn = new Set<string>();
+  private readonly incomingTyping = new Map<string, Map<string, number>>();
+  private readonly diagnosticsErrors: { code: string; at: number }[] = [];
+  private deviceCount = 0;
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -342,33 +417,41 @@ export class Controller {
     const problem = invalid(data.command);
     if (problem !== null) { this.refuse(id, 'E_BAD_INPUT', problem); return; }
     const command = data.command;
+    if (this.barrier.isClosed()) { this.refuse(id, 'E_NOT_READY', ''); return; }
     if (command.m !== 'start' && !ACCEPTS[this.phase].includes(command.m)) {
       this.refuse(id, 'E_NOT_READY', `the phase is ${this.phase}`);
       return;
     }
-    this.answer(id, this.run(command));
+    const searchId = command.m === 'search' ? this.searchGate.next() : null;
+    if (searchId !== null) this.slices.set('search', { requestId: searchId, hits: [], cursor: null });
+    if (command.m === 'resign') {
+      // Close synchronously, outside the accepted set, so the drain cannot wait for itself.
+      this.answer(id, this.resign(command.nonce));
+    } else this.answer(id, this.barrier.admit(() => this.run(command, searchId)));
   }
 
   // ---- answers ----
 
   private refuse(id: number, code: string, detail: string): void {
-    this.deps.post({ t: 'ret', id, ok: false, error: { code, detail, status: 0, retryAfterMs: null } });
+    const error = sanitizeWorkerError(new Refusal(code, detail));
+    this.recordError(error.code);
+    this.deps.post({ t: 'ret', id, ok: false, error });
   }
 
   private answer(id: number, work: Promise<unknown>): void {
     void work.then(
       (value) => { this.deps.post({ t: 'ret', id, ok: true, value }); },
-      (e: unknown) => { this.deps.post({ t: 'ret', id, ok: false, error: errorOf(e) }); },
+      (e: unknown) => { const error = errorOf(e); this.recordError(error.code); this.deps.post({ t: 'ret', id, ok: false, error }); },
     );
   }
 
   /** Every command answers through its promise, also when it throws before its first await. */
-  private run(command: Command): Promise<unknown> {
-    try { return this.dispatch(command); }
+  private run(command: Command, searchId: number | null = null): Promise<unknown> {
+    try { return this.dispatch(command, searchId); }
     catch (e) { return Promise.reject(e instanceof Error ? e : new Error(String(e))); }
   }
 
-  private dispatch(command: Command): Promise<unknown> {
+  private dispatch(command: Command, searchId: number | null): Promise<unknown> {
     switch (command.m) {
       case 'start': return this.start();
       case 'signupBegin': return this.signupBegin();
@@ -404,12 +487,20 @@ export class Controller {
       case 'attachFiles': return this.attachFiles(command.channelId, command.files);
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
+      case 'refreshTrust': return this.refreshTrust();
+      case 'verifyContact': return this.verifyContact(command.userId, command.umk);
+      case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId, command.umk));
+      case 'search': return this.search(command, searchId ?? this.searchGate.next());
+      case 'typing': return this.typing(command.channelId, command.on);
+      case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
+      case 'resign': return this.resign(command.nonce);
     }
   }
 
   // ---- slices ----
 
   private setAccount(patch: Partial<AccountState>): void {
+    if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
     this.phase = this.accountState.phase;
     this.slices.set('account', this.accountState);
@@ -418,12 +509,30 @@ export class Controller {
   private setConnection(patch: Partial<ConnectionState>): void {
     this.connectionState = { ...this.connectionState, ...patch };
     this.slices.set('connection', this.connectionState);
+    this.publishDiagnostics();
+  }
+
+  private recordError(code: string): void {
+    this.diagnosticsErrors.push({ code, at: this.deps.now() });
+    if (this.diagnosticsErrors.length > 20) this.diagnosticsErrors.shift();
+    this.publishDiagnostics();
+  }
+
+  private publishDiagnostics(): void {
+    this.slices.set('diagnostics', { connection: this.connectionState.status, generation: this.connectionState.generation,
+      instance: this.instance === null ? '' : toHex(this.instance.instanceId), devices: this.deviceCount,
+      errors: [...this.diagnosticsErrors] });
   }
 
   private nowS(): bigint { return BigInt(Math.floor(this.deps.now() / 1000)); }
 
-  /** The instance clock as the last ticket showed it, else this browser's (no socket has connected yet). */
-  private serverNowS(): bigint { return this.ticketTime ?? this.nowS(); }
+  /** The instance clock now: the last ticket's mint time plus the whole seconds elapsed here since, else this browser's
+   *  clock (no socket has connected yet). A snapshot alone would stand still and hold every later frame as fresh. */
+  private serverNowS(): bigint {
+    if (this.ticketTime === null) return this.nowS();
+    const elapsed = Math.max(0, Math.floor((this.deps.now() - this.ticketMintedMs) / 1000));
+    return this.ticketTime + BigInt(elapsed);
+  }
 
   // ---- start, leadership and boot ----
 
@@ -433,7 +542,7 @@ export class Controller {
   }
 
   private async startOnce(): Promise<null> {
-    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false });
+    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null });
     this.setConnection({ status: 'offline', generation: null });
     let instance: Instance;
     try {
@@ -444,6 +553,8 @@ export class Controller {
       throw e;
     }
     this.instance = instance;
+    // A tab that then waits for the lock offers hand-over by this instance (L-WEB-46), so diagnostics names it now.
+    this.publishDiagnostics();
     this.setAccount({ instance: {
       id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
       passwordSignup: instance.authMethods.includes(0),
@@ -454,7 +565,7 @@ export class Controller {
 
   private async lead(instance: Instance): Promise<void> {
     try {
-      await acquireLeadership(this.deps.locks, lockName(toHex(instance.instanceId)), () => {
+      this.leadership = await acquireLeadership(this.deps.locks, lockName(toHex(instance.instanceId)), () => {
         // Pre-flight ruling 4: the blocking request is already queued; other-tab shows only after the grace.
         this.graceTimer = this.deps.setTimeout(() => {
           this.graceTimer = null;
@@ -473,14 +584,17 @@ export class Controller {
   /** deps.boot, then the phase the store's identity calls for (requirement 10). Never throws. */
   private async bootStore(instance: Instance): Promise<void> {
     try {
-      const outcome = await this.deps.boot(instance);
+      const paused = this.pausedCore;
+      this.pausedCore = null;
+      const outcome = paused === null ? await this.deps.boot(instance) : await this.resumePaused(paused, instance);
       if (outcome.kind === 'unsupported') {
-        this.setAccount({ phase: 'unsupported', error: { code: 'E_UNSUPPORTED', detail: outcome.reason, status: 0, retryAfterMs: null } });
+        this.setAccount({ phase: 'unsupported', error: sanitizeWorkerError(new Refusal('E_UNSUPPORTED', outcome.reason)) });
         return;
       }
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
       this.core = core;
+      this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
       const session = this.parts.session({ core, routes: this.routes, now });
       this.session = session;
@@ -514,6 +628,21 @@ export class Controller {
     } catch (e) {
       // After a revocation the error is its consequence (a 401 that reauthenticate turned into revoked).
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
+    }
+  }
+
+  /**
+   * A worker that released the lead keeps its paused store: the OPFS pool lives in this worker and stays paused, and a
+   * fresh open here would find that paused pool and fail ("unable to open database file"). Resuming re-acquires the
+   * pool and rebuilds the core from what the other tab wrote. If that fails, a fresh open is the fallback.
+   */
+  private async resumePaused(core: CorePort, instance: Instance): Promise<BootOutcome> {
+    try {
+      await core.resume();
+      return { kind: 'opened', core, instance };
+    } catch {
+      try { core.close(); } catch { /* nothing left to release */ }
+      return this.deps.boot(instance);
     }
   }
 
@@ -591,6 +720,7 @@ export class Controller {
           // The instance's clock at the mint (a ticket is valid TICKET_TTL_S seconds, protocol/09): the notice
           // floor compares server receive times with server time, never with this browser's clock.
           this.ticketTime = minted.expires - TICKET_TTL_S;
+          this.ticketMintedMs = this.deps.now();
           return minted.ticket;
         },
         WebSocket: this.deps.WebSocket, now, random, setTimeout, clearTimeout,
@@ -630,6 +760,10 @@ export class Controller {
     this.publishDms();
     // The gateway's first ready can arrive before the phase is ready, when a purge run returns at once.
     this.runPurges();
+    // I3: so can its trust refresh, which reads nothing before the phase is ready; this one does. It also republishes
+    // the trust slice now that every member and DM slice has landed.
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    void this.barrier.track(this.refreshTrust()).catch(() => undefined);
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -645,14 +779,17 @@ export class Controller {
       setTimeout: (fn, ms) => this.deps.setTimeout(fn, ms),
       clearTimeout: (handle) => { this.deps.clearTimeout(handle); },
       onGroupChanged: (g, result) => { this.onGroupChanged(g, result); },
+      onTrustChanged: () => { this.safely(() => this.refreshTrustGeneration()); },
+      trackJob: (job) => { void this.barrier.track(job).catch(() => undefined); },
       // Ruling 8: the core records a delete's purge when the type-2 row is confirmed, which the engine reports here.
       onOutboxChanged: (g) => { this.safely(() => { this.touchGroup(g); }); this.runPurges(); },
       onMembership: (g, status) => { this.onMembership(g, status); },
       onJoinAll: () => {},
       // Head ruling 37: a Welcome for a group this device does not expect is a DM another participant opened.
-      onUnexpectedWelcome: () => { void this.reloadDms().catch(() => {}); },
+      onUnexpectedWelcome: () => { void this.barrier.track(this.reloadDms().catch(() => {})); },
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
+      refreshGroupTrust: (g) => this.refreshGroupTrust(g),
     });
     this.sync = sync;
     sync.start();
@@ -687,6 +824,8 @@ export class Controller {
   private enterRevoked(): void {
     if (this.wiping || this.storeCleared) return;
     if (this.revoked()) return;
+    this.clearReauthTimer();
+    this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
     this.setAccount({ phase: 'revoked', recoveryKey: null });
@@ -708,31 +847,37 @@ export class Controller {
         ? { status, generation, reason: 'version' }
         : { status, generation };
       this.slices.set('connection', this.connectionState);
+      this.stopTypingIfUnviewable();
     } else if (e.type === 'ready') {
       this.onReady(e.info);
+    } else if (e.type === 'frame' && e.frame.op === Op.typing) {
+      this.incomingTypingFrame(e.frame.payload);
     } else if (e.type === 'revoked') {
-      void this.onRevokedSocket();
+      void this.barrier.track(this.onRevokedSocket());
     }
   }
 
   private onReady(info: ReadyInfo): void {
+    this.fetchedLeaves.clear();
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
     if (this.phase === 'ready') this.noticeFloor = this.serverNowS();
     const core = this.core;
     const limits = this.limits;
     if (core !== null && limits !== null) {
-      refillKeyPackages(core, this.routes, info.keypackagesRemaining,
-        { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold }).catch(() => undefined);
+      void this.barrier.track(refillKeyPackages(core, this.routes, info.keypackagesRemaining,
+        { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold }).catch(() => undefined));
     }
     // Requirement 13 (Q27: clients refetch on ready), not awaited in the ready path.
     const me = this.me;
     if (core !== null && me !== null) {
-      void this.ensureBackups(core);
-      this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
-        .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined);
+      void this.barrier.track(this.ensureBackups(core));
+      void this.barrier.track(this.parts.refreshOwnDeviceList(core, this.routes, me.userId)
+        .then((own) => (own.listed ? this.repairBackupState(core) : this.enterRevoked()), () => undefined));
     }
-    void this.refreshAfterReady();
+    void this.barrier.track(this.refreshAfterReady());
     this.runPurges();
   }
 
@@ -745,6 +890,34 @@ export class Controller {
     }
     if (this.revoked() || this.storeCleared) return;
     try { await this.reloadDms(); } catch { /* the next ready retries */ }
+  }
+
+  private incomingTypingFrame(payload: readonly unknown[]): void {
+    const [channel, user, , on, expires] = payload;
+    if (!(channel instanceof Uint8Array) || channel.length !== 16 || !(user instanceof Uint8Array) || user.length !== 16
+      || typeof on !== 'bigint' || typeof expires !== 'bigint' || this.me === null || toHex(user) === toHex(this.me.userId)) return;
+    const channelId = toHex(channel);
+    if (!this.open.has(channelId) || this.groupState(channelId) !== 'active' || this.connectionState.status !== 'online') return;
+    // expires_ts is on the instance's clock (L-HTTP-96: its now + 10 s), read against that clock as estimated from this
+    // connection's ticket; the row then lives on this browser's clock for what remains, never longer than the 10 s relay
+    // window.
+    const remaining = expires - this.serverNowS();
+    if (remaining <= 0n) return;
+    const expiry = this.deps.now() + Number(remaining < 10n ? remaining : 10n) * 1000;
+    const rows = this.incomingTyping.get(channelId) ?? new Map<string, number>();
+    const userId = toHex(user);
+    if (on === 1n) rows.set(userId, expiry); else rows.delete(userId);
+    this.incomingTyping.set(channelId, rows);
+    this.publishTyping(channelId);
+    this.deps.setTimeout(() => this.publishTyping(channelId), Math.max(0, expiry - this.deps.now()));
+  }
+
+  private publishTyping(channelId: string): void {
+    const rows = this.incomingTyping.get(channelId);
+    if (rows === undefined) return;
+    const now = this.deps.now();
+    for (const [user, expiry] of rows) if (expiry <= now) rows.delete(user);
+    this.slices.set(`typing:${channelId}`, [...rows].map(([userId, expiresAt]) => ({ userId, name: this.nameOf(userId), expiresAt })));
   }
 
   private async onRevokedSocket(): Promise<void> {
@@ -760,7 +933,14 @@ export class Controller {
       if (isCode(e, 'E_SESSION_SCOPE') && this.core?.identity().phase === 2) { this.enterRevoked(); return; }
       // Not a refusal (a network failure, a 5xx): try the socket again later; a refused ticket comes back here.
       if (this.revoked() || this.wiping) return;
-      this.deps.setTimeout(() => { if (!this.revoked() && !this.wiping) this.gateway?.start(); }, GATEWAY.reconnectCapMs);
+      // I4: the handle is kept and cleared by resign, quiesce and enterRevoked; a timer that fires anyway starts only the
+      // socket of the leadership that armed it.
+      const gateway = this.gateway;
+      this.clearReauthTimer();
+      this.reauthTimer = this.deps.setTimeout(() => {
+        this.reauthTimer = null;
+        if (!this.revoked() && !this.wiping && this.leadership !== null && this.phase === 'ready' && this.gateway === gateway) gateway?.start();
+      }, GATEWAY.reconnectCapMs);
     }
   }
 
@@ -1071,6 +1251,9 @@ export class Controller {
     this.slices.set(`members:${communityId}`, rows.map((m) => ({
       userId: toHex(m.userId), username: m.username, display: m.display, kind: m.kind, roleIds: m.roleIds.map(toHex),
     })));
+    // Product P1: the trust slice names each contact and says whether a group is shared from these member lists; a list
+    // that lands after it (every reload: the first ready refreshes trust before the communities load) republishes it.
+    this.publishTrust();
     // Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once.
     const core = this.core;
     const me = this.me;
@@ -1100,6 +1283,7 @@ export class Controller {
       });
     }
     this.slices.set(`channels:${communityId}`, list);
+    this.stopTypingIfUnviewable();
   }
 
   /** Requirement 18: every known text channel first, then every DM whose group is known (communityId null). */
@@ -1166,6 +1350,8 @@ export class Controller {
     this.dms.clear();
     for (const [id, dm] of next) this.dms.set(id, dm);
     this.publishDms();
+    // Product P1: a DM is a shared group for its members (sharedUser), so the trust slice is republished with it.
+    this.publishTrust();
     this.updateExpected();
     this.publishBadges();
   }
@@ -1193,6 +1379,7 @@ export class Controller {
       list.push({ id, kind: dm.kind, members, name, group: channelGroupState({ id: fromHex(id), kind: 0, mode: 0 }, groups, this.membership(id)) });
     }
     this.slices.set('dms', list);
+    this.stopTypingIfUnviewable();
   }
 
   private async openDm(userId: string): Promise<{ channelId: string }> {
@@ -1311,6 +1498,8 @@ export class Controller {
     devices.sort((a, b) => (a.own !== b.own ? (a.own ? -1 : 1)
       : a.lastSeen !== b.lastSeen ? b.lastSeen - a.lastSeen : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     this.slices.set('devices', devices);
+    this.deviceCount = devices.length;
+    this.publishDiagnostics();
     return null;
   }
 
@@ -1479,6 +1668,8 @@ export class Controller {
   private quiesce(): void {
     if (this.wiping) return;
     this.wiping = true;
+    this.clearReauthTimer();
+    this.typingOff();
     this.sync?.stop();
     this.gateway?.stop();
   }
@@ -1503,29 +1694,52 @@ export class Controller {
       this.setAccount({ phase: 'error', error: errorOf(e) });
       throw e;
     }
+    this.forgetAccount();
+    this.storeCleared = true;
+    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false, ownTrust: null });
+  }
+
+  /**
+   * Drops everything this worker holds about the store's account and empties every slice the page shows from it: the
+   * core and its session parts, the socket and engine, the trust annotations, channels, DMs, timelines, notices, search,
+   * typing and trays. A wipe ends with it; so does a release, after which another tab may sign out, sign in as someone
+   * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
+   */
+  private forgetAccount(): void {
+    this.clearReauthTimer();
     const communities = new Set<string>((this.slices.get('communities') ?? []).map((c) => c.id));
     for (const known of this.channels.values()) communities.add(known.communityId);
-    const timelines = [...this.open.keys()];
-    this.core = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
+    const timelines = new Set([...this.open.keys(), ...this.pinsOpen, ...this.incomingTyping.keys(), ...this.typingOn]);
+    this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
+    this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
+    this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
+    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
+    this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
+    this.searchGate.invalidate(); this.searchCursor = null;
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
     this.slices.set('communities', []);
     for (const communityId of communities) {
       this.slices.set(`channels:${communityId}`, []);
       this.slices.set(`members:${communityId}`, []);
     }
-    for (const channelId of timelines) this.slices.set(`timeline:${channelId}`, { channelId, group: 'none', items: [], hasEarlier: false });
+    for (const channelId of timelines) {
+      this.slices.set(`timeline:${channelId}`, { channelId, group: 'none', items: [], hasEarlier: false });
+      this.slices.set(`typing:${channelId}`, []);
+      if (this.slices.get(`pins:${channelId}`) !== undefined) this.slices.set(`pins:${channelId}`, []);
+    }
     this.slices.set('dms', []);
     this.slices.set('devices', []);
     this.slices.set('badges', {});
     this.slices.set('settings', {});
     this.slices.set('notices', this.noticesState);
+    this.slices.set('trust', []);
+    this.slices.set('sendBlocks', {});
+    this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.setConnection({ status: 'offline', generation: null });
-    this.storeCleared = true;
-    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false });
   }
 
   // ---- channels and timelines ----
@@ -1607,6 +1821,10 @@ export class Controller {
   }
 
   private closeChannel(channelId: string): Promise<null> {
+    const wasOpen = this.open.has(channelId);
+    if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
+    this.incomingTyping.delete(channelId);
+    if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
     this.open.delete(channelId);
     return Promise.resolve(null);
@@ -1633,16 +1851,17 @@ export class Controller {
     return this.open.get(channelId)?.groupId ?? hint ?? channelGroup(fromHex(channelId), groups)?.groupId ?? null;
   }
 
-  private refreshTimeline(channelId: string, hint?: Id): void {
+  /** Answers whether the timeline was read again and set (false: the channel is not known, or nothing is open). */
+  private refreshTimeline(channelId: string, hint?: Id): boolean {
     const target = this.target(channelId);
     const core = this.core;
     const me = this.me;
-    if (target === undefined || core === null || me === null) return;
+    if (target === undefined || core === null || me === null) return false;
     const groups = core.groups();
     const group = this.groupState(channelId, groups);
     if (group === 'unsupported') {
       this.slices.set(`timeline:${channelId}`, { channelId, group, items: [], hasEarlier: false });
-      return;
+      return true;
     }
     const limit = this.open.get(channelId)?.limit ?? TIMELINE_PAGE;
     const groupId = this.timelineGroup(channelId, groups, hint);
@@ -1653,6 +1872,7 @@ export class Controller {
     this.slices.set(`timeline:${channelId}`, timeline);
     // A DM has no community member list to look senders up in.
     if (target.communityId !== null) this.lookUpMembers(target.communityId, timeline.items);
+    return true;
   }
 
   /** A sender who is not in the loaded member list re-runs listMembers once per unknown user (L-TS-09). */
@@ -1666,10 +1886,10 @@ export class Controller {
       unknown = true;
     }
     if (!unknown) return;
-    void (async () => {
+    void this.barrier.track((async () => {
       const rows = await this.routes.listMembers(fromHex(communityId));
       if (this.listed(communityId)) this.publishMembers(communityId, rows);
-    })().catch(() => undefined);
+    })().catch(() => undefined));
   }
 
   // ---- the sync engine's reports ----
@@ -1681,8 +1901,15 @@ export class Controller {
 
   private onGroupChanged(groupId: Id, result: ApplyResult): void {
     const hex = toHex(groupId);
+    if (result.epochChanged) {
+      const prefix = `${hex}:`;
+      for (const key of this.fetchedLeaves) if (key.startsWith(prefix)) this.fetchedLeaves.delete(key);
+      if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    }
     if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
-    this.safely(() => { this.touchGroup(groupId); });
+    this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
+    this.stopTypingIfUnviewable();
+    void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.safely(() => { this.reportActivity(groupId, result); });
     // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
     this.runPurges();
@@ -1693,6 +1920,7 @@ export class Controller {
     if (status === 'resyncing') { this.resyncing.add(hex); this.notMember.delete(hex); }
     else { this.notMember.add(hex); this.resyncing.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });
+    this.stopTypingIfUnviewable();
   }
 
   /** Refreshes the row of every known channel or DM bound to the group and the timeline of every such open one. */
@@ -1725,6 +1953,355 @@ export class Controller {
     for (const channelId of this.pinsOpen) if (bound(channelId, this.target(channelId)?.textGroupId ?? null)) this.publishPins(channelId);
   }
 
+  /** A trust write may retract rows in groups other than the one that reported activity. */
+  private refreshTrustGeneration(): void {
+    const generation = this.requireCore().trustGeneration();
+    if (this.seenTrustGeneration === generation) return;
+    this.seenTrustGeneration = generation;
+    this.searchGate.invalidate();
+    this.searchCursor = null;
+    this.slices.set('search', { requestId: 0, hits: [], cursor: null });
+    // L-CORE-43: no slice of the old generation stays on display. The refreshed timeline replaces it in one set (M4: an
+    // empty one first made a second render, lost the scroll position and could re-announce the log); only a timeline
+    // that is not re-read now (it throws, or returns without a set: a channel no longer listed) is emptied.
+    for (const channelId of this.open.keys()) {
+      let read = false;
+      try { read = this.refreshTimeline(channelId); } catch { /* emptied below */ }
+      if (read) continue;
+      let group: ChannelGroupState = 'none';
+      try { group = this.groupState(channelId); } catch { /* none */ }
+      this.slices.set(`timeline:${channelId}`, { channelId, group, items: [], hasEarlier: false });
+    }
+    this.publishTrust();
+  }
+
+  /** Coalesce concurrent triggers while keeping their whole refresh inside the tracked promise. */
+  private refreshTrust(): Promise<null> {
+    if (this.trustRefresh !== null) return this.trustRefresh;
+    const run = (async (): Promise<null> => {
+      do {
+        this.trustRefreshAgain = false;
+        await this.refreshTrustOnce();
+      } while (this.trustRefreshAgain && this.phase === 'ready');
+      return null;
+    })().finally(() => { this.trustRefresh = null; });
+    this.trustRefresh = run;
+    return run;
+  }
+
+  private async refreshTrustOnce(): Promise<null> {
+    const core = this.requireCore();
+    const leaves = core.pendingLeaves();
+    this.noteChangedLeaves(leaves);
+    let keyChanged = false;
+    // A user the core no longer reports in any active group has no history left to wait for.
+    const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
+    for (const user of this.historyFailedUsers) if (!present.has(user)) this.historyFailedUsers.delete(user);
+    // A refused own leaf the core no longer reports has left the group (a validated Remove).
+    const current = new Set(leaves.map((leaf) => `${toHex(leaf.groupId)}:${leaf.leafIndex}`));
+    for (const leaf of this.ownRefusedLeaves) if (!current.has(leaf)) this.ownRefusedLeaves.delete(leaf);
+    // Users with a leaf whose signed history the core has never accepted; a successful ingest below caches their list.
+    const unknownUsers = new Set(leaves.filter((leaf) => leaf.reason === 'unknown').map((leaf) => toHex(leaf.userId)));
+    const historyByUser = new Map<string, { head: Uint8Array; history: Uint8Array } | null>();
+    // Each user's history is read from the oldest version any of their leaves caches; one pass (M5: not once per user).
+    const oldestByUser = new Map<string, bigint>();
+    for (const leaf of leaves) {
+      const user = toHex(leaf.userId);
+      const known = oldestByUser.get(user);
+      if (known === undefined || leaf.cachedVersion < known) oldestByUser.set(user, leaf.cachedVersion);
+    }
+    for (const leaf of leaves) {
+      if (this.phase !== 'ready') break;
+      const key = `${toHex(leaf.groupId)}:${leaf.leafIndex}:${toHex(leaf.userId)}:${leaf.cachedVersion}:${leaf.reason}`;
+      if (this.fetchedLeaves.has(key)) continue;
+      this.fetchedLeaves.add(key);
+      const user = toHex(leaf.userId);
+      try {
+        if (!historyByUser.has(user)) {
+          const oldest = oldestByUser.get(user) ?? leaf.cachedVersion;
+          try { historyByUser.set(user, await readDeviceListHistory(this.routes, leaf.userId, oldest)); this.historyFailedUsers.delete(user); }
+          catch { historyByUser.set(user, null); this.historyFailedUsers.add(user); }
+        }
+        const signed = historyByUser.get(user);
+        if (signed === null || signed === undefined) continue;
+        const { head, history } = signed;
+        let verdict: { changed: boolean; quarantined: number };
+        const own = this.me !== null && toHex(this.me.userId) === user;
+        try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
+        catch (e) {
+          // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
+          // The refusal writes nothing in the core, so the worker keeps it. An own-user history under another key is an
+          // own-trust signal (fixA), never an unlisted contact; the leaf is not fetched again before the next ready.
+          if (e instanceof CoreError && LEAF_VERDICTS.has(e.code)) this.unlistedUsers.add(user);
+          if (e instanceof CoreError && e.code === 'E_UMK_CHANGED' && own) this.ownRefusedLeaves.add(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
+          throw e;
+        }
+        // The quarantine count is not read: what it counts the core stores, and trust_state's `blocked` reports it.
+        if (verdict.changed) keyChanged = true;
+        this.unlistedUsers.delete(user);
+        if (own) this.ownRefusedLeaves.delete(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
+        unknownUsers.delete(user);
+        core.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
+        this.refreshTrustGeneration();
+      } catch { /* Keep the leaf untrusted; the next ready retries. */ }
+    }
+    if (keyChanged) this.noteChangedLeaves(core.pendingLeaves());
+    this.pendingUsers = new Set([...this.historyFailedUsers, ...unknownUsers]);
+    this.publishTrust();
+    return null;
+  }
+
+  /**
+   * Remembers where each user's changed leaves are. A group that had one, is still active here and no longer has any
+   * changed leaf of that user lost it to a validated Remove (the core then cleared only that group's send block).
+   */
+  private noteChangedLeaves(leaves: readonly { groupId: Id; userId: Id; reason: string }[]): void {
+    const now = new Map<string, Set<string>>();
+    for (const leaf of leaves) {
+      if (leaf.reason !== 'changed') continue;
+      const user = toHex(leaf.userId);
+      let groups = now.get(user);
+      if (groups === undefined) { groups = new Set(); now.set(user, groups); }
+      groups.add(toHex(leaf.groupId));
+    }
+    const active = new Set(this.requireCore().groups().filter((g) => g.state === 2).map((g) => toHex(g.groupId)));
+    for (const [user, before] of this.changedLeafGroups) {
+      for (const group of before) {
+        if (now.get(user)?.has(group) === true || !active.has(group)) continue;
+        let removed = this.removedGroups.get(user);
+        if (removed === undefined) { removed = new Set(); this.removedGroups.set(user, removed); }
+        removed.add(group);
+      }
+    }
+    for (const [user, removed] of this.removedGroups) {
+      for (const group of removed) if (!active.has(group) || now.get(user)?.has(group) === true) removed.delete(group);
+      if (removed.size === 0) this.removedGroups.delete(user);
+    }
+    this.changedLeafGroups = now;
+  }
+
+  private sharedUser(userHex: string): boolean {
+    const groups = this.core?.groups() ?? [];
+    if ([...this.dms].some(([channelId, dm]) => dm.members.some((u) => toHex(u) === userHex)
+      && groups.some((g) => g.state === 2 && toHex(g.targetId) === channelId))) return true;
+    for (const community of this.slices.get('communities') ?? []) {
+      if (this.slices.get(`members:${community.id}`)?.some((member) => member.userId === userHex)
+        && groups.some((g) => g.state === 2 && g.communityId !== null && toHex(g.communityId) === community.id)) return true;
+    }
+    return false;
+  }
+
+  private publishTrust(): void {
+    if (this.core === null) return;
+    // The page learns the channel a Remove unblocked, never the group id.
+    const channelOf = new Map<string, string>();
+    for (const group of this.core.groups()) {
+      if (group.kind !== 0) continue;
+      const channelId = toHex(group.targetId);
+      if (this.dms.has(channelId) || this.channels.has(channelId)) channelOf.set(toHex(group.groupId), channelId);
+    }
+    // The core pins the own key as well; nobody compares a safety number with themselves, so the own row is no contact.
+    // What the core says about it is not dropped: ABI 8 keeps the own row verified and never changed, and its `blocked`
+    // says an own-user leaf is under another key (E_UMK_CHANGED) or an own device is unlisted. That stands on the account
+    // slice, where the page alerts on it (ruling M6 revised: no own-key compare; a Remove of the leaf ends it).
+    const own = this.me === null ? null : toHex(this.me.userId);
+    let rows: TrustRecord[];
+    try {
+      rows = this.core.trustState();
+    } catch (e) {
+      // R3: a trust state the core cannot read never leaves an earlier verified view standing. Every contact reads as
+      // history pending (not verified, no Verify) until the core answers again; the gate is read as it is.
+      this.recordError(errorOf(e).code);
+      this.slices.set('trust', (this.slices.get('trust') ?? []).map((row) => ({ ...row, verified: false, unlisted: true as const })));
+      this.publishSendBlocks();
+      return;
+    }
+    const ownRow = own === null ? undefined : rows.find((row) => toHex(row.userId) === own);
+    const ownTrust: AccountState['ownTrust'] = ownRow?.blocked === 'E_UMK_CHANGED' || this.ownRefusedLeaves.size > 0 ? 'changed'
+      : (ownRow?.blocked ?? null) !== null || (own !== null && this.unlistedUsers.has(own)) ? 'unlisted' : null;
+    if (!this.storeCleared && this.accountState.ownTrust !== ownTrust) this.setAccount({ ownTrust });
+    this.slices.set('trust', rows.filter((row) => toHex(row.userId) !== own).map((row): TrustSummary => {
+      const userId = toHex(row.userId);
+      // An approved key ends the changed state everywhere, so no group is left to call removed.
+      if (row.changedUmk === null) this.removedGroups.delete(userId);
+      const removedIn = [...new Set([...this.removedGroups.get(userId) ?? []].flatMap((g) => channelOf.get(g) ?? []))].sort();
+      const blocked = row.blocked;
+      // A failed leaf (not a changed key) reads as unlisted; so do a refusal the core stored nothing for and Flow 05's
+      // "history pending" (the list read has not completed): the unlisted announcement and no Verify.
+      const unlisted = (blocked !== null && blocked !== 'E_UMK_CHANGED') || this.unlistedUsers.has(userId) || this.pendingUsers.has(userId);
+      return { userId, name: this.nameOf(userId), shared: this.sharedUser(userId), umk: toHex(row.umk),
+        // F4: never verified while the core holds a failed or changed verdict for one of the contact's leaves.
+        firstSeen: Number(row.firstSeen), verified: row.verified && blocked === null, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk),
+        ...(unlisted ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}),
+        ...(blocked !== null ? { blocked } : {}) };
+    }));
+    this.publishSendBlocks();
+  }
+
+  /** The composer's send gate (W-01): send_block_code of each active channel group, by channel; open channels are absent. */
+  private publishSendBlocks(): void {
+    if (this.core === null) return;
+    const blocks: SendBlocksState = {};
+    for (const group of this.core.groups()) {
+      if (group.kind !== 0 || group.state !== 2) continue;
+      const channelId = toHex(group.targetId);
+      if (!this.dms.has(channelId) && !this.channels.has(channelId)) continue;
+      const code = this.core.sendBlockCode(group.groupId);
+      if (code !== null) blocks[channelId] = { code, own: this.core.sendBlockOwn(group.groupId) };
+    }
+    this.slices.set('sendBlocks', blocks);
+  }
+
+  private verifyContact(userId: string, umk: string): Promise<null> {
+    if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
+    this.requireCore().trustVerify(fromHex(userId), fromHex(umk));
+    // The approval re-judged this user's leaves in the core and released held messages (the generation moved): the trust
+    // slice and every open timeline are read again from the core below, and the user's leaves are fetched again.
+    for (const key of this.fetchedLeaves) if (key.split(':')[2] === userId) this.fetchedLeaves.delete(key);
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    void this.barrier.track(this.refreshTrust()).catch(() => undefined);
+    this.refreshTrustGeneration();
+    this.publishTrust();
+    return Promise.resolve(null);
+  }
+
+  /** The digits for exactly the key the page compares (ABI 8); the core refuses a key that is not its comparison key. */
+  private safetyNumber(userId: string, umk: string): string {
+    if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
+    return this.requireCore().safetyNumberFor(fromHex(userId), fromHex(umk));
+  }
+
+  private search(command: Extract<Command, { m: 'search' }>, requestId: number): Promise<null> {
+    const previous = this.searchCursor;
+    this.searchCursor = null;
+    const scope = { kind: command.scope, id: command.id === null ? null : fromHex(command.id) };
+    if (command.cursor !== null && (previous?.token !== command.cursor.token
+      || previous.scope.scope !== command.scope || previous.scope.id !== command.id || previous.scope.query !== command.query))
+      throw new CoreError('E_CORE_INPUT', 'stale search cursor');
+    const cursor = command.cursor === null ? null : previous!.position;
+    const hits = this.requireCore().search(scope, command.query, cursor, 50);
+    if (this.searchGate.current(requestId)) {
+      const destinations = new Map<string, { channelId: string; communityId: string | null }>();
+      for (const group of this.requireCore().groups()) {
+        if (group.kind !== 0) continue;
+        const channelId = toHex(group.targetId);
+        if (this.dms.has(channelId)) destinations.set(toHex(group.groupId), { channelId, communityId: null });
+        else {
+          const known = this.channels.get(channelId);
+          if (known !== undefined && group.communityId !== null && known.communityId === toHex(group.communityId))
+            destinations.set(toHex(group.groupId), { channelId, communityId: known.communityId });
+        }
+      }
+      const rows = hits.slice(0, 50).flatMap((h) => {
+        const destination = destinations.get(toHex(h.groupId));
+        return destination === undefined ? [] : [{ ...destination, seq: h.seq.toString(),
+          snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString() }];
+      });
+      const last = hits.at(-1);
+      if (last !== undefined) this.searchCursor = { token: String(requestId), scope: command,
+        position: { rank: last.rank, groupId: last.groupId, seq: last.seq } };
+      this.slices.set('search', { requestId, hits: rows,
+        cursor: last === undefined ? null : { token: String(requestId) } });
+    }
+    return Promise.resolve(null);
+  }
+
+  private typing(channelId: string, on: boolean): Promise<null> {
+    if (!this.open.has(channelId) || this.groupState(channelId) !== 'active'
+      || this.phase !== 'ready' || this.connectionState.status !== 'online')
+      throw new Refusal('E_NOT_READY', '');
+    this.gateway?.sendTyping(fromHex(channelId), on);
+    if (on) this.typingOn.add(channelId); else this.typingOn.delete(channelId);
+    return Promise.resolve(null);
+  }
+
+  private voiceSelf(callId: string, flags: number): Promise<null> {
+    if (this.connectionState.status !== 'online') throw new Refusal('E_NOT_READY', '');
+    this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
+    return Promise.resolve(null);
+  }
+
+  private typingOff(): void {
+    for (const channelId of this.typingOn) this.gateway?.sendTyping(fromHex(channelId), false);
+    this.typingOn.clear();
+  }
+
+  private stopTypingIfUnviewable(): void {
+    for (const channelId of new Set([...this.typingOn, ...this.incomingTyping.keys()])) {
+      if (this.open.has(channelId) && this.groupState(channelId) === 'active'
+        && this.phase === 'ready' && this.connectionState.status === 'online') continue;
+      if (this.typingOn.delete(channelId)) this.gateway?.sendTyping(fromHex(channelId), false);
+      this.incomingTyping.delete(channelId);
+      this.slices.set(`typing:${channelId}`, []);
+    }
+  }
+
+  private clearReauthTimer(): void {
+    if (this.reauthTimer !== null) { this.deps.clearTimeout(this.reauthTimer); this.reauthTimer = null; }
+  }
+
+  private async resign(nonce: string): Promise<{ released: true }> {
+    await this.barrier.close();
+    this.clearReauthTimer();
+    try {
+      this.typingOff();
+      this.gateway?.stop();
+      this.sync?.stop();
+      this.requireCore().pause();
+    } catch (e) {
+      try {
+        await this.requireCore().resume();
+        // M2: resume()'s sequence, a fresh engine and its expected groups before the socket.
+        this.startEngine();
+        this.updateExpected();
+        this.gateway?.start();
+        this.barrier.reopen();
+      } catch {
+        this.setAccount({ phase: 'paused-error', error: errorOf(e) });
+        // M1: a store this worker can neither pause nor resume is no lead to keep. The lock goes to the tab that asked,
+        // and this worker waits behind it as a released one does (it boots from the store again when it leads).
+        const instance = this.requireInstance();
+        this.dropStore();
+        await this.leadership?.release();
+        this.leadership = null;
+        this.awaitLeadership(instance);
+        this.setAccount({ error: errorOf(e) });
+      }
+      throw e;
+    }
+    const instance = this.requireInstance();
+    this.dropStore();
+    await this.leadership?.release();
+    this.leadership = null;
+    this.setAccount({ phase: 'other-tab' });
+    this.deps.post({ t: 'released', instance: toHex(instance.instanceId), nonce });
+    this.awaitLeadership(instance);
+    return { released: true };
+  }
+
+  /**
+   * Drops what this worker knew of the account it led with, before the lock goes. Meanwhile the other tab may sign out,
+   * sign in as someone else or reset the store: nothing of this account is kept (the page's views went with the shell
+   * and open their channels again once this tab leads). The paused store is kept to be resumed, never opened again.
+   */
+  private dropStore(): void {
+    const core = this.core;
+    this.forgetAccount();
+    this.pausedCore = core;
+    this.setAccount({ user: null, deviceId: null, recoveryKey: null, signIn: null, error: null, rootMismatch: false, ownTrust: null });
+  }
+
+  /**
+   * After a release this worker waits for the lock again, queued behind the new leader, as a tab that started while
+   * another one led does: a hand-back (or the leader's tab closing) boots it from the store the other tab wrote. The
+   * paused core, the stopped engine and the socket are dropped, so enterReady builds a fresh gateway and engine.
+   */
+  private awaitLeadership(instance: Instance): void {
+    this.starting = Promise.resolve(null);
+    this.barrier.reopen();
+    void this.lead(instance);
+  }
+
   // ---- sending ----
 
   /** The group a command of an open channel sends into: open, and its group active, else E_NOT_READY. */
@@ -1739,7 +2316,7 @@ export class Controller {
   }
 
   /** Requirement 9: the page has already encoded its mentions; the descriptors never enter a slice. */
-  private send(c: Extract<Command, { m: 'send' }>): Promise<{ msgId: string }> {
+  private async send(c: Extract<Command, { m: 'send' }>): Promise<{ msgId: string }> {
     const groupId = this.activeGroup(c.channelId);
     const ids = c.attachments ?? [];
     let descriptors: AttachmentDescriptor[] = [];
@@ -1759,15 +2336,39 @@ export class Controller {
     };
     let msgId: Id;
     // The core enforces the 4000-byte limit (E_ENVELOPE_LIMIT); the controller does not measure the text.
-    try { msgId = this.requireSync().sendRequest(groupId, request); }
-    catch (e) {
+    try {
+      msgId = await this.sendWithTrustRetry(groupId, request);
+    } catch (e) {
       // The taken references were never sent; each is deleted now, or expires after pending_ttl (L-HTTP-83).
       const channel = fromHex(c.channelId);
-      for (const d of descriptors) void this.routes.deleteBlob(channel, d.blobId).catch(() => undefined);
+      for (const d of descriptors) void this.barrier.track(this.routes.deleteBlob(channel, d.blobId).catch(() => undefined));
       throw e;
     }
     this.refreshTimeline(c.channelId);
-    return Promise.resolve({ msgId: toHex(msgId) });
+    return { msgId: toHex(msgId) };
+  }
+
+  /**
+   * Queues any envelope type. Controller ruling 2: the core refuses a group holding a failed leaf. A device that joined
+   * before the list naming it was ingested fails against the cached list until a refresh ingests the newer one, so the
+   * group's leaves are read again and the request is tried once more; the core alone decides the second answer. A changed
+   * key (E_UMK_CHANGED) is not retried.
+   */
+  private async sendWithTrustRetry(groupId: Id, request: SendRequest): Promise<Id> {
+    try { return this.requireSync().sendRequest(groupId, request); }
+    catch (e) {
+      if (!(e instanceof CoreError) || !LEAF_VERDICTS.has(e.code)) throw e;
+      await this.refreshGroupTrust(groupId);
+      return this.requireSync().sendRequest(groupId, request);
+    }
+  }
+
+  /** Forgets which leaves of the group were already fetched and waits for a trust refresh that reads them again. */
+  private async refreshGroupTrust(groupId: Id): Promise<void> {
+    const prefix = `${toHex(groupId)}:`;
+    for (const key of this.fetchedLeaves) if (key.startsWith(prefix)) this.fetchedLeaves.delete(key);
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    await this.barrier.track(this.refreshTrust()).catch(() => undefined);
   }
 
   /** Pre-flight ruling 1(iv): a message id that no outbox holds is an idempotent no-op. */
@@ -1790,11 +2391,16 @@ export class Controller {
 
   /** Requirement 10: an edit, delete, reaction or pin is queued as its fold type aimed at the message; the page's state
    *  changes only when the core folds it (a pending fold shows as a PendingAction). The core's refusals cross as they are. */
-  private fold(channelId: string, msgId: string, type: 1 | 2 | 3 | 4 | 5 | 6, body: string): Promise<null> {
+  private async fold(channelId: string, msgId: string, type: 1 | 2 | 3 | 4 | 5 | 6, body: string): Promise<null> {
+    if (type === 1 || type === 2) {
+      this.searchGate.invalidate();
+      this.searchCursor = null;
+      this.slices.set('search', { requestId: 0, hits: [], cursor: null });
+    }
     const groupId = this.activeGroup(channelId);
-    this.requireSync().sendRequest(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
+    await this.sendWithTrustRetry(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
     this.refreshTimeline(channelId);
-    return Promise.resolve(null);
+    return null;
   }
 
   private editMessage(channelId: string, msgId: string, text: string): Promise<null> { return this.fold(channelId, msgId, 1, text); }
@@ -1828,7 +2434,7 @@ export class Controller {
   private onDiscarded(g: Id, row: OutboxRow): void {
     let channel: Id;
     try { channel = this.channelOfGroup(g); } catch { return; }
-    for (const a of row.attachments) void this.routes.deleteBlob(channel, a.blobId).catch(() => undefined);
+    for (const a of row.attachments) void this.barrier.track(this.routes.deleteBlob(channel, a.blobId).catch(() => undefined));
   }
 
   /** Requirement 12, single flight: a call during a run makes the run go once more after it ends. */
@@ -1842,7 +2448,7 @@ export class Controller {
       }
     })();
     this.purging = run;
-    void run.catch(() => undefined);
+    void this.barrier.track(run).catch(() => undefined);
   }
 
   /** Read through a call: a wipe or a revocation can land in any await of a purge run. */

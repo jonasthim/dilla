@@ -19,6 +19,12 @@ describe('applyTheme', () => {
     expect(el.dataset.theme).toBe('light');
     expect(el.dataset.density).toBe('regular');
   });
+  it('keeps a chosen density when the theme changes', () => {
+    const el = document.createElement('html');
+    el.dataset.density = 'compact';
+    applyTheme(el, 'light');
+    expect(el.dataset.density).toBe('compact');
+  });
 });
 
 describe('followSystemTheme', () => {

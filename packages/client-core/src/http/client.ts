@@ -103,7 +103,7 @@ export class HttpClient {
 
 async function readBody(response: Response, maxBodyBytes?: number): Promise<Uint8Array> {
   const bound = response.status >= 200 && response.status <= 299
-    ? maxBodyBytes : Math.max(ERROR_BODY_CAP, maxBodyBytes ?? 0);
+    ? maxBodyBytes : ERROR_BODY_CAP;
   if (bound === undefined) {
     return new Uint8Array(await response.arrayBuffer());
   }

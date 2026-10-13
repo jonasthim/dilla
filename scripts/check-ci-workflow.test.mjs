@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkWorkflow, NON_RACE_STEP, raceGatedTests } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
 // The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
 const GO_TEST = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
 
-const GOOD = `name: ci
+const GOOD_BASE = `name: ci
 on:
   push:
     branches: [main]
@@ -39,6 +39,15 @@ jobs:
         with:
           name: ui-screens
           path: target/ui-screens/web-2b
+          if-no-files-found: error
+      - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--
+      - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish-- --viewport=360x740
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens-web-2c
+          path: |
+            target/ui-screens/web-2c/desktop/**
+            target/ui-screens/web-2c/phone/**
           if-no-files-found: error
   rust-native:
     runs-on: ubuntu-latest
@@ -162,9 +171,9 @@ jobs:
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
-  browser-web:
+  chromium-web:
     runs-on: ubuntu-latest
-    timeout-minutes: 41
+    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -183,17 +192,84 @@ jobs:
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
-      - run: npx playwright install --with-deps chromium firefox webkit
-      - run: npm run test:e2e:core -w @dilla/e2e
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:core:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - run: npm run test:e2e:web -w @dilla/e2e
+      - run: npm run test:e2e:web:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: browser-web-results
+          name: browser-web-results-chromium
+          path: e2e/test-results
+          if-no-files-found: error
+
+  firefox-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist
+      - run: npx playwright install --with-deps firefox
+      - run: npm run test:e2e:core:firefox -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npm run test:e2e:web:firefox -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-web-results-firefox
+          path: e2e/test-results
+          if-no-files-found: error
+
+  webkit-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    needs: [rust-native, rust-wasi, web-build]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist
+      - run: npx playwright install --with-deps webkit
+      - run: npm run test:e2e:web:webkit -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-web-results-webkit
           path: e2e/test-results
           if-no-files-found: error
 
@@ -236,7 +312,7 @@ jobs:
     steps:
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: v2.14.0
 
   go-vuln:
     runs-on: ubuntu-latest
@@ -327,6 +403,29 @@ jobs:
           provenance: mode=max
           sbom: true
 `;
+
+// The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
+// right after checkout, the canonical pinned install step (ruling of 2026-10-13; hardened after the d3429ce lead).
+const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build'];
+
+function withWasmClang(text) {
+  const out = [];
+  let job = null;
+  for (const line of text.split('\n')) {
+    const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (key) job = key[1];
+    if (WASM_JOBS.includes(job) && line === '    steps:') {
+      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@v7', WASM_CLANG_STEP);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+const GOOD = withWasmClang(GOOD_BASE);
+
+const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
 // The race-gated Go tests of the repository (ruling I8), as GOOD's non-race step names them.
 const GATED = [
@@ -551,7 +650,7 @@ for (const [job, needle] of [
   ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
   ['go-harness', 'go test -race -shuffle=on -timeout 25m ./internal/testkit/...'],
   ['go-harness', 'name: dilla-testkit'],
-  ['go-lint', 'version: v2.13.2'],
+  ['go-lint', 'version: v2.14.0'],
   ['go-vuln', '-scan package -tags dillapins ./internal/deps'],
   ['go-sqlc', 'sqlc diff'],
   ['go-postgres', 'postgres:18.6-alpine3.24'],
@@ -890,7 +989,7 @@ const PLACEHOLDER_GUARD_IMAGE =
   '          test -f internal/web/dist/index.html\n' +
   `          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi\n`;
 
-for (const job of ['web-build', 'browser-web']) {
+for (const job of ['web-build', ...Object.keys(BROWSER_WEB_JOBS)]) {
   test(`a workflow without the ${job} job is reported`, () => {
     const problems = checkWorkflow(fixture(GOOD.replace(jobBody(job), '')));
     assert.ok(problems.some((p) => p.includes(`missing job "${job}"`)), problems.join('\n'));
@@ -910,21 +1009,23 @@ for (const [job, needle] of [
   ['web-build', 'path: packages/web/dist/'],
   ['web-build', 'name: dilla-core-harness'],
   ['web-build', 'path: packages/client-core/harness-dist/'],
-  ['browser-web', 'timeout-minutes: 41'],
-  ['browser-web', 'name: dilla-core-wasi'],
-  ['browser-web', 'path: internal/mlswasi/testdata'],
-  ['browser-web', 'name: dilla-testkit'],
-  ['browser-web', 'name: dilla-web-dist'],
-  ['browser-web', 'path: packages/web/dist'],
-  ['browser-web', 'name: dilla-core-harness'],
-  ['browser-web', 'path: packages/client-core/harness-dist'],
-  ['browser-web', 'npx playwright install --with-deps chromium firefox webkit'],
-  ['browser-web', 'npm run test:e2e:core -w @dilla/e2e'],
-  ['browser-web', 'npm run test:e2e:web -w @dilla/e2e'],
-  ['browser-web', 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit'],
-  ['browser-web', 'if: failure()'],
-  ['browser-web', 'name: browser-web-results'],
-  ['browser-web', 'path: e2e/test-results'],
+  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, { engine, core }]) => [
+    [job, `timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}`],
+    [job, 'name: dilla-core-wasi'],
+    [job, 'path: internal/mlswasi/testdata'],
+    [job, 'name: dilla-testkit'],
+    [job, 'name: dilla-web-dist'],
+    [job, 'path: packages/web/dist'],
+    [job, 'name: dilla-core-harness'],
+    [job, 'path: packages/client-core/harness-dist'],
+    [job, `npx playwright install --with-deps ${engine}`],
+    ...(core ? [[job, `npm run test:e2e:core:${engine} -w @dilla/e2e`]] : []),
+    [job, `npm run test:e2e:web:${engine} -w @dilla/e2e`],
+    [job, 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit'],
+    [job, 'if: failure()'],
+    [job, `name: browser-web-results-${engine}`],
+    [job, 'path: e2e/test-results'],
+  ]),
   ['go-release', 'name: dilla-web-dist'],
   ['go-release', 'path: internal/web/dist'],
   ['go-release', 'content="placeholder"'],
@@ -946,13 +1047,39 @@ for (const [job, needle] of [
   });
 }
 
-for (const need of ['rust-native', 'rust-wasi', 'web-build']) {
-  test(`a browser-web job without needs: ${need} is reported`, () => {
-    const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
-    const problems = checkWorkflow(fixture(GOOD.replace('    needs: [rust-native, rust-wasi, web-build]\n', `    needs: [${kept}]\n`)));
-    assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes(`needs: ${need}`)), problems.join('\n'));
-  });
+for (const job of Object.keys(BROWSER_WEB_JOBS)) {
+  for (const need of ['rust-native', 'rust-wasi', 'web-build']) {
+    test(`a ${job} job without needs: ${need} is reported`, () => {
+      const body = jobBody(job);
+      const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
+      const cut = body.replace('    needs: [rust-native, rust-wasi, web-build]\n', `    needs: [${kept}]\n`);
+      assert.notEqual(cut, body, 'fixture sanity: needs');
+      const problems = checkWorkflow(fixture(GOOD.replace(body, () => cut)));
+      assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(`needs: ${need}`)), problems.join('\n'));
+    });
+  }
 }
+
+// Ruling of 2026-10-13: browser-web is one job per engine. Dropping an engine's job, folding the engines back into
+// one job, or two engines uploading one artifact name (upload-artifact v4+ refuses a duplicate) is reported.
+test('a workflow missing one engine job is reported, also when another job runs that engine', () => {
+  const firefox = jobBody('firefox-web');
+  const problems = checkWorkflow(fixture(GOOD.replace(firefox, '')));
+  assert.ok(problems.some((p) => p.includes('missing job "firefox-web"')), problems.join('\n'));
+  const merged = jobBody('chromium-web')
+    .replace('npx playwright install --with-deps chromium', 'npx playwright install --with-deps chromium firefox')
+    .replace('npm run test:e2e:web:chromium -w @dilla/e2e', 'npm run test:e2e:web -w @dilla/e2e');
+  const folded = checkWorkflow(fixture(GOOD.replace(firefox, '').replace(jobBody('chromium-web'), () => merged)));
+  assert.ok(folded.some((p) => p.includes('missing job "firefox-web"')), folded.join('\n'));
+  assert.ok(folded.some((p) => p.includes('"chromium-web"') && p.includes('test:e2e:web:chromium')), folded.join('\n'));
+});
+
+test('two engine jobs uploading one artifact name are reported', () => {
+  const body = jobBody('firefox-web');
+  const shared = body.replace('name: browser-web-results-firefox', 'name: browser-web-results-chromium');
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => shared)));
+  assert.ok(problems.some((p) => p.includes('"firefox-web"') && p.includes('browser-web-results-firefox')), problems.join('\n'));
+});
 
 test('go-release must point the webdist test at the downloaded client', () => {
   const line = '          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist\n';
@@ -1050,18 +1177,188 @@ test('neither the checker nor the fixture names an earlier screenshot directory 
   }
 });
 
-test('a browser-web job back at the web-1 budget is reported (web-2a)', () => {
-  const body = jobBody('browser-web');
-  const old = body.replace('    timeout-minutes: 41\n', '    timeout-minutes: 30\n');
-  assert.notEqual(old, body, 'fixture sanity: the derived budget');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => old)));
-  assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes('timeout-minutes: 41')), problems.join('\n'));
+for (const [job, { timeout }] of Object.entries(BROWSER_WEB_JOBS)) {
+  test(`a ${job} job off its derived budget is reported (web-2c)`, () => {
+    const body = jobBody(job);
+    const off = body.replace(`    timeout-minutes: ${timeout}\n`, `    timeout-minutes: ${timeout - 5}\n`);
+    assert.notEqual(off, body, 'fixture sanity: the derived budget');
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => off)));
+    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(`timeout-minutes: ${timeout}`)), problems.join('\n'));
+  });
+}
+
+// web-2c task 11 (L-CI-22): the seven new story families at both viewports, both upload paths and the budget.
+test('web-2c captures, both paths and timeout are required independently', () => {
+  const desktop = 'node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--';
+  const phone = 'node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish-- --viewport=360x740';
+  const required = [
+    ['desktop step', GOOD.replace(`      - run: ${desktop}\n`, '')],
+    ['phone step', GOOD.replace(`      - run: ${phone}\n`, '')],
+    ['desktop path', GOOD.replace('target/ui-screens/web-2c/desktop/**', 'target/ui-screens/web-2b/desktop/**')],
+    ['phone path', GOOD.replace('target/ui-screens/web-2c/phone/**', 'target/ui-screens/web-2b/phone/**')],
+    ['timeout', GOOD.replace(`timeout-minutes: ${BUDGET}`, `timeout-minutes: ${BUDGET - 1}`)],
+  ];
+  for (const [name, workflow] of required) {
+    const problems = checkWorkflow(fixture(workflow));
+    assert.ok(problems.length > 0, `${name}: checker accepted a missing gate`);
+    assert.match(problems.join('\n'), /web-2c|screenshot|browser-web|timeout/i, name);
+  }
 });
 
-test('a browser-web job back at the web-2a budget is reported (web-2b)', () => {
-  const body = jobBody('browser-web');
-  const old = body.replace('    timeout-minutes: 41\n', '    timeout-minutes: 36\n');
-  assert.notEqual(old, body, 'fixture sanity: the derived budget');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => old)));
-  assert.ok(problems.some((p) => p.includes('"browser-web"') && p.includes('timeout-minutes: 41')), problems.join('\n'));
+// Ruling of 2026-10-13 (web-2c D5 in CI), hardened after the d3429ce scanner lead: every wasm32-unknown-unknown
+// build compiles SQLite with one exact clang 23 build, and the checker compares whole blocks, not substrings.
+/** GOOD with one job's body passed through `edit`. */
+function editJob(job, edit) {
+  const body = jobBody(job);
+  const edited = edit(body);
+  assert.notEqual(edited, body, `fixture sanity: the edit of ${job} changed nothing`);
+  return GOOD.replace(body, edited);
+}
+
+const STEP_RULE = (job) =>
+  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`;
+const ENV_RULE = (job) =>
+  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`;
+
+const LLVM_PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev', 'llvm-23-linker-tools', 'llvm-23-runtime'];
+
+test('the canonical step pins every llvm-toolchain-23 package at one version and reads each back', () => {
+  assert.ok(WASM_CLANG_STEP.includes(`          v='${WASM_LLVM_VERSION}'`));
+  assert.match(WASM_LLVM_VERSION, /^1:23\.\d+\.\d+~/);
+  const install = WASM_CLANG_STEP.split('\n').find((l) => l.includes('apt-get install'));
+  for (const p of LLVM_PACKAGES) {
+    assert.ok(install.includes(` "${p}=$v"`), `${p} is not installed at the pinned version`);
+  }
+  assert.ok(!/\s(clang-23|llvm-23)(\s|$)/.test(install), 'an unpinned package name in the install line');
+  assert.ok(WASM_CLANG_STEP.includes(`          for p in ${LLVM_PACKAGES.join(' ')}; do test "$(dpkg-query -W -f='\${Version}' "$p")" = "$v"; done`));
+  assert.ok(WASM_CLANG_STEP.includes('          apt-cache policy clang-23 llvm-23'));
+});
+
+test('the canonical step checks the fingerprint on the keyring apt is pointed at', () => {
+  const lines = WASM_CLANG_STEP.split('\n').map((l) => l.trim());
+  const dearmor = lines.indexOf('gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"');
+  const check = lines.indexOf(`test "$primaries" = ${WASM_LLVM_KEY_FPR}`);
+  const install = lines.indexOf('sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
+  const same = lines.indexOf('cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg');
+  const source = lines.findIndex((l) => l.includes('[signed-by=/usr/share/keyrings/apt-llvm.gpg]'));
+  assert.ok(dearmor !== -1 && dearmor < check && check < install && install < same && same < source, lines.join('\n'));
+  assert.ok(lines[check - 1].startsWith('primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg"'));
+  assert.ok(WASM_CLANG_ENV_BLOCK.includes('CC_wasm32_unknown_unknown: /usr/bin/clang-23'));
+  assert.ok(WASM_CLANG_ENV_BLOCK.includes('AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23'));
+});
+
+for (const job of WASM_JOBS) {
+  test(`a ${job} job without the clang 23 job env is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(`${WASM_CLANG_ENV_BLOCK}\n`, ''))));
+    assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job whose CC is a bare clang-23 that PATH resolves is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(': /usr/bin/clang-23', ': clang-23'))));
+    assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job env with an extra compiler flag is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_CLANG_ENV_BLOCK, `${WASM_CLANG_ENV_BLOCK}\n      CFLAGS_wasm32_unknown_unknown: -O0`))));
+    assert.ok(problems.includes(ENV_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job installing an unpinned clang is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(' "clang-23=$v"', ' clang-23'))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job pinned to another build is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1.2', '23.1.3')))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job checking another key fingerprint is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_KEY_FPR, '0'.repeat(40)))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job that skips the clang 23 step with an if: is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace('      - name: clang 23 for the wasm C build\n', '      - name: clang 23 for the wasm C build\n        if: false\n'))));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+  test(`a ${job} job that installs clang 23 after other steps is reported`, () => {
+    const moved = editJob(job, (b) => {
+      const without = b.replace(`${WASM_CLANG_STEP}\n`, '');
+      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_STEP}\n`;
+    });
+    const problems = checkWorkflow(fixture(moved));
+    assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
+  });
+}
+
+// The validator differential of the d3429ce lead: the earlier rule matched substrings, so this job passed it while
+// running no install at all, with the required strings in a comment and in an echo.
+test('an evading job that only names the pinned strings in a comment and an echo is reported', () => {
+  const evading = editJob('web-build', (b) =>
+    b.replace(
+      `${WASM_CLANG_STEP}\n`,
+      `      # ${WASM_CLANG_STEP.split('\n').map((l) => l.trim()).join(' ; ')}\n` +
+        `      - run: echo '${WASM_CLANG_STEP.split('\n').filter((l) => l.includes('apt-get install')).join('').trim()}'\n`,
+    ),
+  );
+  const problems = checkWorkflow(fixture(evading));
+  assert.ok(problems.includes(STEP_RULE('web-build')), problems.join('\n'));
+});
+
+for (const [what, edit, expected] of [
+  [
+    'the hyphenated target variable on a step, which cc reads before the underscored one',
+    (b) => b.replace('      - run: wasm-pack build', '      - env:\n          CC_wasm32-unknown-unknown: /usr/bin/gcc\n        run: wasm-pack build'),
+    /names a C toolchain variable outside the canonical clang 23 job env/,
+  ],
+  [
+    'a TARGET_CC in a flow-style step env',
+    (b) => b.replace('      - run: wasm-pack build', '      - env: { TARGET_CC: gcc }\n        run: wasm-pack build'),
+    /names a C toolchain variable outside the canonical clang 23 job env/,
+  ],
+  [
+    'a quoted CC key on a step',
+    (b) => b.replace('      - run: wasm-pack build', '      - env:\n          "CC": gcc\n        run: wasm-pack build'),
+    /names a C toolchain variable outside the canonical clang 23 job env/,
+  ],
+  [
+    'a step that exports the compiler through GITHUB_ENV',
+    (b) => b.replace('      - run: wasm-pack build', '      - run: echo "CC_wasm32_unknown_unknown=/usr/bin/gcc" >> "$GITHUB_ENV"\n      - run: wasm-pack build'),
+    /writes GITHUB_ENV or GITHUB_PATH/,
+  ],
+  [
+    'a step that puts another clang first on PATH',
+    (b) => b.replace('      - run: wasm-pack build', '      - run: echo "$RUNNER_TEMP/fake" >> "$GITHUB_PATH"\n      - run: wasm-pack build'),
+    /writes GITHUB_ENV or GITHUB_PATH/,
+  ],
+]) {
+  test(`web-build with ${what} is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob('web-build', edit)));
+    assert.ok(problems.some((p) => expected.test(p)), problems.join('\n'));
+  });
+}
+
+test('a compiler variable in the workflow-level env is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace('env:\n  CARGO_TERM_COLOR: always\n', 'env:\n  CARGO_TERM_COLOR: always\n  CC: gcc\n')));
+  assert.ok(problems.some((p) => /names a C toolchain variable outside the canonical clang 23 job env/.test(p)), problems.join('\n'));
+});
+
+test('a YAML anchor and alias that would reuse an env block is reported', () => {
+  const anchored = GOOD.replace('env:\n  CARGO_TERM_COLOR: always\n', 'env: &shared\n  CARGO_TERM_COLOR: always\n').replace(
+    '  deny:\n    runs-on: ubuntu-latest\n',
+    '  deny:\n    runs-on: ubuntu-latest\n    env: *shared\n',
+  );
+  const problems = checkWorkflow(fixture(anchored));
+  assert.ok(problems.some((p) => p.includes('YAML anchors, aliases and merge keys are not allowed')), problems.join('\n'));
+});
+
+test('a wasm job added tomorrow without the pinned clang 23 is reported', () => {
+  const extra =
+    '  wasm-extra:\n' +
+    '    runs-on: ubuntu-latest\n' +
+    '    steps:\n' +
+    '      - uses: actions/checkout@v7\n' +
+    '      - run: cargo build -p dilla-core --target wasm32-unknown-unknown --locked\n';
+  const problems = checkWorkflow(fixture(GOOD.replace('  deny:\n', `${extra}  deny:\n`)));
+  assert.ok(problems.includes(ENV_RULE('wasm-extra')), problems.join('\n'));
+  assert.ok(problems.includes(STEP_RULE('wasm-extra')), problems.join('\n'));
+});
+
+test('jobs that build no wasm need no clang 23', () => {
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });

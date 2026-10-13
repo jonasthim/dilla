@@ -1,0 +1,11 @@
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { SearchPalette } from './SearchPalette.tsx';
+const noop = () => {};
+const labels = { search: 'Search your messages', empty: 'No results in this scope', close: 'Close', scope: { channel: 'this conversation', community: 'this community', all: 'everything' } };
+const hits = [{ id: 'hit-1', snippet: 'lamp one', location: 'general' }, { id: 'hit-2', snippet: 'lamp two', location: 'loot' }];
+const meta: Meta<typeof SearchPalette> = { title: 'Search/SearchPalette', component: SearchPalette };
+export default meta;
+type Story = StoryObj<typeof SearchPalette>;
+const args = { open: true, query: 'lamp', scope: 'all' as const, hits, labels, onQuery: noop, onScope: noop, onPick: noop, onClose: noop };
+export const Empty: Story = { args: { ...args, query: 'absent', hits: [] } };
+export const Results: Story = { args };

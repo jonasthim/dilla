@@ -11,6 +11,8 @@ use crate::ds::{
     RegisterGroup, ResyncRequest,
 };
 use crate::{Frame, TestkitError};
+use dilla_core::cbor::Encoder;
+use dilla_core::client::ClientCore;
 use dilla_core::envelope::{Attachment, Envelope, EnvelopeType};
 use dilla_core::identity::{
     CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier, SskSigner,
@@ -30,6 +32,7 @@ use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rusqlite::OptionalExtension;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -226,6 +229,34 @@ impl TestClient {
         Self::assemble(name, device_id, dsk, identity, self.ssk_seed)
     }
 
+    /// A replacement browser leaf for a fixture-only UMK rotation. The account's existing SSK
+    /// remains the list signer accepted by the server; the fresh UMK signs that SSK anew.
+    pub fn rotated_device(&self, name: &str, seed: u64) -> Result<Self, TestkitError> {
+        let (material, device_id, dsk) = Self::device_keys(seed);
+        let umk = UmkSigner::from_bytes(&material);
+        let ssk = SskSigner::from_bytes(&self.ssk_seed);
+        let dsk_pub = dsk.verifying_key().to_bytes();
+        let identity = CredentialIdentity {
+            v: 1,
+            umk_pub: umk.public(),
+            user_id: self.identity.user_id,
+            device_id,
+            kind: self.identity.kind,
+            tier: Tier::Browser,
+            signer_tier: SignerTier::Browser,
+            ssk_pub: ssk.public(),
+            sig_umk_ssk: umk.sign_ssk(&ssk.public()),
+            sig_ssk_dev: ssk.sign_device(
+                &device_id,
+                &dsk_pub,
+                self.identity.kind,
+                Tier::Browser,
+                SignerTier::Browser,
+            ),
+        };
+        Self::assemble(name, device_id, dsk, identity, self.ssk_seed)
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -250,6 +281,75 @@ impl TestClient {
 
     pub fn provider(&self) -> &DillaProvider {
         &self.provider
+    }
+
+    /// Open the production trust core over this fixture's actual MLS store. The headless
+    /// scenario client predates app rows, so install only the identity/group metadata that
+    /// ClientCore needs to locate those already-persisted trees.
+    pub fn trust_core(&self, instance_id: [u8; 16]) -> Result<ClientCore, TestkitError> {
+        let mut e = Encoder::new();
+        e.array(13)
+            .uint(2)
+            .bytes(&instance_id)
+            .bytes(self.user_id().as_bytes())
+            .bytes(self.device_id.as_bytes())
+            .bytes(&self.dsk.verifying_key().to_bytes())
+            .bytes(&self.identity.umk_pub)
+            .bytes(&self.identity.ssk_pub)
+            .text(&self.name)
+            .bytes(&self.identity.encode())
+            .bytes(&[])
+            .uint(1)
+            .bytes(&[])
+            .uint(1);
+        let identity = e.into_vec();
+        let conn = self.provider.storage().conn().clone();
+        ClientCore::open(conn.clone()).map_err(|e| TestkitError::Scenario(e.code.into()))?;
+        {
+            let guard = conn
+                .lock()
+                .map_err(|_| TestkitError::Scenario("trust store lock".into()))?;
+            guard
+                .execute(
+                    "INSERT OR REPLACE INTO app_meta(k,v) VALUES('identity',?1)",
+                    [&identity],
+                )
+                .map_err(|e| TestkitError::Scenario(format!("trust identity: {e}")))?;
+            for (id, group) in &self.groups {
+                let binding = group.binding();
+                guard.execute(
+                    "INSERT OR REPLACE INTO app_groups(group_id,kind,community_id,target_id,state,epoch) VALUES(?1,0,?2,?3,2,?4)",
+                    rusqlite::params![id, binding.community_id.as_ref().map(|v| v.as_bytes().as_slice()), binding.target_id.as_slice(), group.epoch() as i64],
+                ).map_err(|e| TestkitError::Scenario(format!("trust group: {e}")))?;
+            }
+        }
+        ClientCore::open(conn).map_err(|e| TestkitError::Scenario(e.code.into()))
+    }
+
+    pub fn cached_trust_head(
+        &self,
+        user: &[u8; 16],
+    ) -> Result<Option<(u64, Vec<u8>)>, TestkitError> {
+        let conn = self.provider.storage().conn().clone();
+        let guard = conn
+            .lock()
+            .map_err(|_| TestkitError::Scenario("trust store lock".into()))?;
+        let row: Option<(i64, Vec<u8>)> = guard
+            .query_row(
+                "SELECT version,list FROM app_device_lists WHERE user_id=?1",
+                [user.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| TestkitError::Scenario(format!("trust cache: {e}")))?;
+        row.map(|(v, blob)| {
+            Ok((
+                u64::try_from(v)
+                    .map_err(|_| TestkitError::Scenario("E_DEVICE_LIST_STALE".into()))?,
+                blob,
+            ))
+        })
+        .transpose()
     }
 
     pub fn signer(&self) -> &SignatureKeyPair {
@@ -941,7 +1041,7 @@ impl TestClient {
                             continue;
                         }
                         match group.process_message(&self.provider, message)? {
-                            DillaProcessed::StagedCommit(staged) => {
+                            DillaProcessed::StagedCommit(staged, _) => {
                                 group.merge_staged_commit(&self.provider, *staged)?;
                                 self.queued.remove(&group_id);
                             }

@@ -416,6 +416,10 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 	if err != nil {
 		return Token{}, unauth
 	}
+	assertionSpent, collision := s.crossUserIDCollision(r, device.UserID)
+	if collision != nil {
+		return Token{}, collision
+	}
 	if device.RevokedAt != nil {
 		return Token{}, unauth
 	}
@@ -449,7 +453,7 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 			}
 		}
 	}
-	scope, err := s.scopeFor(ctx, r, device)
+	scope, err := s.scopeFor(ctx, r, device, assertionSpent)
 	if err != nil {
 		return Token{}, err
 	}
@@ -464,6 +468,29 @@ func (s *Sessions) issue(ctx context.Context, r EstablishRequest) (Token, error)
 	return tok, nil
 }
 
+// A registration assertion for an occupied id must not be mistaken for a bad
+// signature by that id's existing device. Verify the proposed key and spend the
+// assertion before revealing the collision in the registration error vocabulary.
+func (s *Sessions) crossUserIDCollision(r EstablishRequest, existingUser id.ID) (bool, error) {
+	reg := r.Registration
+	if len(r.Login) == 0 || reg == nil || s.Assertions == nil || reg.DeviceID != r.DeviceID ||
+		reg.Tier != 1 || reg.SignerTier != 1 || len(reg.DSKPub) != ed25519.PublicKeySize {
+		return false, nil
+	}
+	s.verifies.Add(1)
+	if !ed25519.Verify(reg.DSKPub, SessionPreimage(s.instanceID, r.DeviceID, r.Nonce, r.Purpose), r.Sig) {
+		return false, nil
+	}
+	user, second, ok := s.Assertions.Spend(string(r.Login))
+	if !ok || second {
+		return false, nil
+	}
+	if user == existingUser {
+		return true, nil
+	}
+	return false, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest, "device_id already exists"))
+}
+
 // ListError maps a verified-list failure to the session/API refusal.
 func ListError(err error) error {
 	var abi *mlswasi.ABIError
@@ -473,9 +500,12 @@ func ListError(err error) error {
 	return server.Unavailable(1000, "device list unavailable")
 }
 
-func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device store.DeviceRow) (Scope, error) {
+func (s *Sessions) scopeFor(ctx context.Context, r EstablishRequest, device store.DeviceRow, assertionSpent bool) (Scope, error) {
 	unauth := server.Errorf(server.CodeUnauthenticated, "")
 	if len(r.Login) > 0 {
+		if assertionSpent {
+			return ScopePending, nil
+		}
 		if s.Assertions == nil {
 			return 0, unauth
 		}

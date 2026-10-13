@@ -35,7 +35,23 @@ let handle: StoreHandle | undefined;
 let resigned = false;
 
 /** The commands the page can send once the store is open. */
-type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume';
+type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume' | 'torn' | 'check';
+
+/**
+ * opfs-report: `torn` commits 300 rows, then rewrites every one of them in a transaction it leaves
+ * open. An 8-page cache against ~1.2 MB of rewritten rows makes SQLite spill: it journals each
+ * committed page and then overwrites it in the database file, so the rollback journal becomes the
+ * only copy of the committed rows. A reload then kills the worker in exactly the state a page unload
+ * mid-ingest leaves behind. `check` is what the next open must find: the integrity check clean and
+ * all 300 committed rows as they were committed.
+ */
+const COMMITTED = 'hex(zeroblob(2000))';
+const TORN_SQL = `CREATE TABLE IF NOT EXISTS torn (i INTEGER PRIMARY KEY, v TEXT NOT NULL);
+  WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 300)
+  INSERT OR REPLACE INTO torn (i, v) SELECT i, ${COMMITTED} FROM n;
+  PRAGMA cache_size = 8; BEGIN;
+  UPDATE torn SET v = hex(randomblob(2000));`;
+const CHECK_SQL = "SELECT count(*) FROM pragma_integrity_check WHERE integrity_check <> 'ok'";
 type Command = { type: 'append' } | { type: 'resign' } | { type: 'mls'; id: number; op: MlsOp };
 
 /**
@@ -94,7 +110,7 @@ function runCommand(command: Command): void {
   }
   if (command.type === 'mls') {
     const { id, op } = command;
-    if (!['create', 'load', 'hold', 'release', 'pause', 'resume'].includes(op)) {
+    if (!['create', 'load', 'hold', 'release', 'pause', 'resume', 'torn', 'check'].includes(op)) {
       post({ type: 'mls-result', id, ok: false, error: `E_SPIKE_OP: unknown op ${op}` });
       return;
     }
@@ -107,6 +123,20 @@ function runCommand(command: Command): void {
         if (!resigned) ready = true;
         drain();
       });
+      return;
+    }
+    if (op === 'torn' || op === 'check') {
+      try {
+        if (op === 'torn') handle.exec(TORN_SQL);
+        const value = JSON.stringify({
+          rows: Number(handle.query_scalar_i64('SELECT count(*) FROM torn')),
+          committed: Number(handle.query_scalar_i64(`SELECT count(*) FROM torn WHERE v = ${COMMITTED}`)),
+          problems: op === 'check' ? Number(handle.query_scalar_i64(CHECK_SQL)) : 0,
+        });
+        post({ type: 'mls-result', id, ok: true, value });
+      } catch (err) {
+        post({ type: 'mls-result', id, ok: false, error: (err as Error).message });
+      }
       return;
     }
     try {
@@ -315,6 +345,30 @@ function fromHex(s: string): Uint8Array {
   return out;
 }
 
+/** The small deterministic CBOR subset returned by the test-only schema probe and search. */
+function decodeCoreValue(bytes: Uint8Array): unknown {
+  let at = 0;
+  const read = (): unknown => {
+    const head = bytes[at++];
+    if (head === undefined) throw new Error('E_SPIKE_SHAPE: short CBOR');
+    const major = head >> 5;
+    const ai = head & 31;
+    const length = ai < 24 ? ai : ai === 24 ? bytes[at++] : ai === 25 ? ((bytes[at++] ?? 0) << 8) | (bytes[at++] ?? 0) : undefined;
+    if (length === undefined) throw new Error('E_SPIKE_SHAPE: unsupported CBOR length');
+    if (major === 0) return length;
+    if (major === 4) return Array.from({ length }, read);
+    if (major === 2 || major === 3) {
+      const chunk = bytes.subarray(at, at + length);
+      at += length;
+      return major === 2 ? chunk : new TextDecoder().decode(chunk);
+    }
+    throw new Error('E_SPIKE_SHAPE: unsupported CBOR type');
+  };
+  const value = read();
+  if (at !== bytes.length) throw new Error('E_SPIKE_SHAPE: trailing CBOR');
+  return value;
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -405,6 +459,21 @@ async function runCore(op: string, instance: string): Promise<Record<string, unk
         confirm: toHex(confirm),
         encryptHead: toHex(encrypted.subarray(0, 18)),
       };
+    }
+    case 'seed-v3': {
+      const c = need() as CoreHandle & { test_downgrade_to_v3_and_force_no_fts(): void; test_schema_capability(): Uint8Array; test_schema_inventory(): Uint8Array };
+      c.test_downgrade_to_v3_and_force_no_fts();
+      const [schema] = decodeCoreValue(c.test_schema_capability()) as [number, number];
+      const [inventory, markers] = decodeCoreValue(c.test_schema_inventory()) as [string[], string[]];
+      c.close();
+      core = undefined;
+      return { schema, closed: true, inventory, markers };
+    }
+    case 'search-fallback': {
+      const c = need() as CoreHandle & { test_schema_capability(): Uint8Array };
+      const [schema, searchFts5] = decodeCoreValue(c.test_schema_capability()) as [number, number];
+      const rows = decodeCoreValue(c.search(2, null, 'hello from', null, 50)) as [Uint8Array, number, string, number][];
+      return { schema, searchFts5, hits: rows.length, snippet: rows[0]?.[2] ?? '' };
     }
     case 'snapshot': {
       const c = need();

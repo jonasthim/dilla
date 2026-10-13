@@ -1,6 +1,8 @@
 // The state slices the worker publishes and the page renders (L-TS-08). Every id is 32 lower-case hex
 // characters; every slice value is immutable and replaced whole.
-export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error'
+import type { TrustBlock } from '../core-port';
+export type { TrustBlock };
+export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'paused-error' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error'
   | 'signin-login' | 'signin-totp' | 'signin-key' | 'enrolling' | 'cleared';
 export interface AccountState {
   phase: BootPhase;
@@ -13,11 +15,12 @@ export interface AccountState {
   /** BACKUPS-RECOVERY-04: the instance holds a root object this account did not seal (E_ROOT_MISMATCH at ready), so
    *  the recovery key cannot open it until the operator resets it; cleared by a later matching check and by a wipe. */
   rootMismatch: boolean;
+  /** The core's trust state for this account's own key, which Privacy does not list as a contact: 'changed' while a
+   *  signed list under another key is pending for this user, 'unlisted' while the core refuses an own leaf against the
+   *  own signed list (a device this person did not add). null otherwise; re-derived at each trust publish. */
+  ownTrust: 'changed' | 'unlisted' | null;
 }
-/** The one error shape that crosses the worker boundary (ret errors and AccountState.error). For a
- *  DillaHttpError, code and detail are the server's error-array elements 0 and 1 passed through
- *  verbatim, status its HTTP status (0 for a network failure) and retryAfterMs its wait; for every
- *  other error status is 0 and retryAfterMs null. The page switches on code and status, never on detail. */
+/** Page-bound errors have a stable code and no detail. */
 export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null; }
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;
   reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
@@ -57,13 +60,41 @@ export interface TrayItem { id: string; name: string; size: number; mime: string
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }
 export interface DmSummary { id: string; kind: 3 | 4; members: string[]; name: string; group: ChannelGroupState; }
 export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; lastSeen: number; revokedAt: number | null; listed: boolean; own: boolean; }
+/**
+ * L-TS-40's trust row. Ruling (c) of 2026-10-13 adds two worker-derived Privacy states, present only while they hold:
+ * `unlisted` (one of the contact's leaves failed its signed list, or Flow 05's "history pending": the list read has not
+ * completed, which shares the unlisted copy and its no-Verify rule) and `removedIn` (channels whose validated Remove of the
+ * changed leaf cleared that group's send block while the key stays changed and unverified).
+ */
+export interface TrustSummary { userId: string; name: string; shared: boolean; umk: string; firstSeen: number; verified: boolean; changedUmk: string | null;
+  unlisted?: true; removedIn?: string[]; blocked?: TrustBlock }
+/**
+ * Fix wave C1 (ABI 8): `blocked` is the core's stored verdict of the contact's leaves still in an active group, present only
+ * while one holds. `verified` is true only while nothing is blocked. 'E_UMK_CHANGED' reads as a changed key (also when
+ * `changedUmk` is null: a leaf under another key that no validated list presents); any other code reads as unlisted.
+ *
+ * `sendBlocks`: channel id (hex) → the code the core refuses a send with in that channel's group (send_block_code), only for
+ * blocked channels, and `own` when only own-user leaves hold it (send_block_own). The composer pauses on it and says why
+ * (W-01, R1): the own account's copy for an own block, else the changed-key copy for a changed contact of the conversation
+ * (with or without a key to compare), else privacy.leafFailed.
+ */
+export interface SendBlock { code: TrustBlock; own: boolean }
+export type SendBlocksState = Record<string, SendBlock>;
+export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string }[];
+  cursor: { token: string } | null }
+export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
+  devices: number; errors: { code: string; at: number }[] }
+export interface TypingState { userId: string; name: string; expiresAt: number }
 export interface BadgeState { unread: number; mentions: number; }
 export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number; }
 export interface NoticesState { nextId: number; items: Notice[]; }      // items ≤ 32, oldest first; ids increase for the worker's life
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
-  | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | `pins:${string}` | `tray:${string}`;
+  | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
+  | `typing:${string}` | `pins:${string}` | `tray:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
-  dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>; }
+  [k: `typing:${string}`]: TypingState[];
+  dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
+  trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState }
 export const TIMELINE_PAGE = 100;

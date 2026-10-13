@@ -11,6 +11,18 @@ import { FakeServer, NOW_S, fakeDeviceProof, routesFor } from './fake-server';
 const DEV_A = new Uint8Array(16).fill(0xa1);
 const DEV_B = new Uint8Array(16).fill(0xb1);
 
+it('answers absent and paged peer lists like the HTTP route', async () => {
+  // Missing and paged list responses stand in for dillad; signed-list validity is covered by client_trust.rs.
+  const server = new FakeServer();
+  const { c } = await ada(server);
+  const peer = server.register('peer-list', DEV_B);
+  expect(await c.routes.getDeviceList(peer)).toBeNull();
+  expect(await c.routes.getDeviceListHistory(peer, 0n)).toMatchObject({ count: 0, lastVersion: null });
+  for (let v = 1; v <= 65; v += 1) server.publishList(peer, [{ deviceId: DEV_B, revokedAt: null }]);
+  expect((await c.routes.getDeviceListHistory(peer, 0n)).count).toBe(64);
+  expect(await raw(server, 'GET', `/v1/users/${toHex(peer)}/device-list?after=0`, null)).toMatchObject({ status: 401 });
+});
+
 function client(server: FakeServer): { routes: Routes; use(token: string | null): void } {
   const holder: { token: string | null } = { token: null };
   const routes = routesFor(server, { token: () => holder.token, reauthenticate: () => Promise.resolve(false) });

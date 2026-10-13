@@ -6,19 +6,23 @@ import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
 import { openChannelFlow, resyncGroup, welcomeFrame, welcomeStep } from './channel';
-import { SyncError } from './errors';
+import { FAILED_LEAF, SyncError } from './errors';
 import { SerialQueues } from './group-queue';
 import { JoinAll } from './joinall';
 import type { SyncInternals } from './internals';
 import { discardSend, drainOne, retrySend, sendMessage, sendRequest } from './send';
+import { readDeviceListHistory, signedHeadList } from '../state/trust';
 
 export type SyncRoutes = Pick<Routes, 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
-  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'>;
+  | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome' | 'getChannel'
+  | 'getDeviceList' | 'getDeviceListHistory'>;
 export type SyncGateway = Pick<Gateway, 'subscribe' | 'commitAck'>;
 export interface SyncDeps {
   core: CorePort; routes: SyncRoutes; gateway: SyncGateway; instance: Instance; deviceId: Id;
   now(): number; random(): number; setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   onGroupChanged(groupId: Id, result: ApplyResult): void; onOutboxChanged(groupId: Id): void;
+  onTrustChanged(): void;
+  trackJob?(job: Promise<unknown>): void;
   onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void;
   onJoinAll(progress: { done: number; total: number; failed: number }): void;
   /** A Welcome for an unexpected group; the controller reloads DMs. */
@@ -29,6 +33,9 @@ export interface SyncDeps {
   beforeSend(groupId: Id, row: OutboxRow): Promise<void>;
   /** Called by discardSend after sendDiscard with the row as the outbox held it. */
   onDiscarded(groupId: Id, row: OutboxRow): void;
+  /** Reads the group's leaves' signed lists again (the controller's trust refresh). drainOne calls it once for a queued row
+   *  that send_encrypt refused by a leaf verdict, and retrySend before a verdict-failed row is tried again. */
+  refreshGroupTrust(groupId: Id): Promise<void>;
 }
 export const SYNC = {
   handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400,
@@ -47,11 +54,12 @@ const key = (g: Id): string => `g:${toHex(g)}`;
 const HELD_MAX = 512;
 
 export class SyncEngine implements SyncInternals {
-  readonly queues = new SerialQueues();
+  readonly queues: SerialQueues;
   readonly echoWait = new Map<string, { msgHex: string; timer: number }>();
   readonly epochWait = new Map<string, number>();
   readonly count425 = new Map<string, number>();
   readonly reframedOnce = new Set<string>();
+  readonly trustRetried = new Map<string, 'pending' | 'done'>();
   readonly resyncTried = new Set<string>();
   readonly quiet = new Set<string>();
   readonly unexpectedReported = new Set<string>();
@@ -67,7 +75,7 @@ export class SyncEngine implements SyncInternals {
   private unsubscribe: (() => void) | null = null;
   private isStopped = false;
 
-  constructor(readonly deps: SyncDeps) {}
+  constructor(readonly deps: SyncDeps) { this.queues = new SerialQueues((job) => deps.trackJob?.(job)); }
   stopped(): boolean { return this.isStopped; }
   start(): void {
     if (this.unsubscribe !== null || this.isStopped) return;
@@ -79,7 +87,7 @@ export class SyncEngine implements SyncInternals {
     this.isStopped = true;
     this.unsubscribe?.(); this.unsubscribe = null;
     for (const id of this.timers) this.deps.clearTimeout(id);
-    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear();
+    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear(); this.trustRetried.clear();
     this.queues.clear();
     for (const wake of this.waiters) wake();
     this.waiters.clear();
@@ -184,7 +192,10 @@ export class SyncEngine implements SyncInternals {
       const result = this.deps.core.groupApply(g, hs, ms, seq);
       await this.applyHook(g, result, 'frame');
       if (result.state === 2) this.armCursor(g);
-    } catch (e) { if (e instanceof CoreError) this.requestCatchUp(g); else throw e; }
+    } catch (e) {
+      if (e instanceof CoreError) { this.reportCurrent(g); this.requestCatchUp(g); }
+      else throw e;
+    }
   }
   private async deletedJob(f: Frame): Promise<void> {
     await Promise.resolve();
@@ -195,7 +206,7 @@ export class SyncEngine implements SyncInternals {
     try {
       const result = this.deps.core.messageDeleted(g, seq);
       if (result.newSeqs.length > 0) this.deps.onGroupChanged(g, result);
-    } catch (e) { if (!(e instanceof CoreError)) throw e; }
+    } catch (e) { if (e instanceof CoreError) this.reportCurrent(g); else throw e; }
   }
   private armCursor(g: Id): void {
     const hex = toHex(g); if (this.cursorTimer.has(hex)) return;
@@ -203,6 +214,11 @@ export class SyncEngine implements SyncInternals {
       this.cursorTimer.delete(hex);
       void this.queues.run(key(g), () => this.cursorStep(g)).catch(() => undefined);
     }));
+  }
+  /** A core refusal may have atomically quarantined earlier text before returning the error. */
+  private reportCurrent(g: Id): void {
+    const current = this.snapshot(g);
+    if (current !== null) this.deps.onGroupChanged(g, current);
   }
   private disarmCursor(g: Id): void {
     const h = toHex(g); const id = this.cursorTimer.get(h); if (id !== undefined) this.cancelTimer(id); this.cursorTimer.delete(h);
@@ -243,6 +259,7 @@ export class SyncEngine implements SyncInternals {
       await this.cursorStep(g);
       return true;
     } catch (e) {
+      if (e instanceof CoreError) this.reportCurrent(g);
       if ((this.membershipLost(g, e) || (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED'))
         && !this.resyncTried.has(toHex(g))) {
         await resyncGroup(this, g, false);
@@ -293,6 +310,19 @@ export class SyncEngine implements SyncInternals {
       if (this.isStopped) return false;
       const active = arr(decode(proposals)).some((x) => u64(arr(x, 5)[4]) === 0n);
       if (!active && row.proposalsPending === 0) return false;
+      for (const candidate of this.deps.core.proposedAdds(g, proposals)) {
+        const { head, history } = await readDeviceListHistory(this.deps.routes, candidate.userId, candidate.cachedVersion);
+        if (this.isStopped) return false;
+        try {
+          this.deps.core.deviceListIngestAdd(g, proposals, candidate.index, candidate.userId, history, signedHeadList(head), BigInt(Math.floor(this.deps.now() / 1000)));
+        } catch (e) {
+          // Controller ruling 3: a candidate whose leaf fails is left out of this commit by the core (commit_build), never
+          // a refusal that stalls this device's commits. A stale or unreadable history still refuses: the next attempt
+          // fetches it again.
+          if (!(e instanceof CoreError) || !FAILED_LEAF.has(e.code)) throw e;
+        }
+        this.deps.onTrustChanged();
+      }
       const body = this.deps.core.commitBuild(g, proposals); built = true;
       await this.deps.routes.postCommit(g, body);
       if (this.isStopped) return false;

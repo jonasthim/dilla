@@ -137,6 +137,7 @@ export function Composer({
     const files = e.clipboardData.files;
     if (files.length > 0 && onPasteFiles) {
       e.preventDefault();
+      if (disabled) return;
       onPasteFiles(Array.from(files));
     }
   };
@@ -161,7 +162,7 @@ export function Composer({
       </label>
       <div className="d-composer__box">
         {attachLabel !== undefined && onAttach ? (
-          <button type="button" className="d-composer__attach" aria-label={attachLabel} onClick={() => onAttach()}>
+          <button type="button" className="d-composer__attach" aria-label={attachLabel} disabled={disabled === true} onClick={() => onAttach()}>
             <span aria-hidden="true">+</span>
           </button>
         ) : null}

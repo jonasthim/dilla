@@ -1,5 +1,4 @@
-// The single-tab rule (L-TS-09, ruling 13): one worker per instance holds the Web Lock
-// dilla-core:<instance hex> until it dies; the browser releases it on pagehide or termination.
+// One worker per instance holds the Web Lock until it voluntarily releases it or dies.
 import { LOCK_PREFIX } from './protocol';
 
 export interface LockLike { name: string }
@@ -15,24 +14,24 @@ export function lockName(instanceHex: string): string {
   return LOCK_PREFIX + instanceHex;
 }
 
-/** Never settles: the grant callback returns this, so the lock is held until the worker dies. */
-const holdForever = (): Promise<never> => new Promise<never>(() => {});
+export interface Leadership { release(): Promise<void> }
 
-/** Resolves once this worker holds the lock, which it then keeps until it dies. Calls onWaiting first when another holder exists. */
-export async function acquireLeadership(locks: LockManagerLike, name: string, onWaiting: () => void): Promise<void> {
-  const granted = await new Promise<boolean>((resolve, reject) => {
-    locks.request(name, { ifAvailable: true }, async (lock) => {
-      if (lock === null) { resolve(false); return; }
-      resolve(true);
-      await holdForever();
-    }).catch(reject);
+/** Resolves on grant. release resolves only after the lock request callback has exited. */
+export async function acquireLeadership(locks: LockManagerLike, name: string, onWaiting: () => void): Promise<Leadership> {
+  const request = (ifAvailable: boolean): Promise<Leadership | null> => new Promise((resolve, reject) => {
+    let releaseHold: (() => void) | null = null;
+    const hold = new Promise<void>((done) => { releaseHold = done; });
+    const exited = locks.request(name, { ifAvailable }, async (lock) => {
+      if (lock === null) { resolve(null); return; }
+      resolve({ release: async () => { releaseHold?.(); await exited; } });
+      await hold;
+    });
+    void exited.catch(reject);
   });
-  if (granted) return;
+  const immediate = await request(true);
+  if (immediate !== null) return immediate;
   onWaiting();
-  await new Promise<void>((resolve, reject) => {
-    locks.request(name, {}, async () => {
-      resolve();
-      await holdForever();
-    }).catch(reject);
-  });
+  const waited = await request(false);
+  if (waited === null) throw new Error('E_NOT_READY');
+  return waited;
 }

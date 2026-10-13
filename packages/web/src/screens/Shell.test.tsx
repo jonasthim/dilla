@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, DeviceSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
@@ -61,6 +61,373 @@ function setup(path: string, opts: { channels?: boolean; communities?: { id: str
 const path = () => window.location.pathname;
 const composer = (name = 'general') => screen.getByRole('textbox', { name: `message #${name}` });
 const sendButton = () => screen.getByRole('button', { name: 'send' });
+it('opens scoped search with a modifier and sends the typed query', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}/{/Control}');
+  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  await user.type(input, 'lamp');
+  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
+  expect(input).toHaveFocus();
+});
+
+it('persists a chosen search scope through the worker setting', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}k{/Control}');
+  await user.click(screen.getByRole('button', { name: 'this community' }));
+  expect(fake.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: 'searchScope', value: 'community' });
+});
+
+it('takes a picked community search hit to its channel and focuses the row', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'found', seq: '5', body: 'lamp' })] }));
+  } });
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /lamp/ }));
+  await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
+  await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="5"]')).toHaveFocus());
+});
+
+it('focuses the destination row when the previous channel has the same sequence', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline({ items: [item({ key: 'old-five', seq: '5', body: 'old' })] }));
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'target-five', seq: '5', body: 'lamp' })] }));
+  } });
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /lamp/ }));
+  await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
+  await waitFor(() => expect(screen.getByText('lamp', { selector: '.d-message-row__body' }).closest('.d-message-row')).toHaveFocus());
+});
+
+it('accepts the worker request id after invalidation and loads earlier pages for a picked row', async () => {
+  const older = item({ key: 'older', seq: '5', body: 'lamp' });
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set('search', { requestId: 0, hits: [], cursor: null });
+    client.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [item({ key: 'newer', seq: '20', body: 'later' })], hasEarlier: true }));
+  } });
+  fake.handler = command => {
+    if (command.m === 'loadEarlier' && command.channelId === RAND) fake.set(`timeline:${RAND}`, timeline({ channelId: RAND, items: [older, item({ key: 'newer', seq: '20', body: 'later' })], hasEarlier: false }));
+    return Promise.resolve(null);
+  };
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
+  act(() => fake.set('search', { requestId: 9, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /lamp/ }));
+  await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: RAND }));
+  await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="5"]')).toHaveFocus());
+});
+
+it('reports a search hit unavailable if its channel never loads a timeline', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`);
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'gone');
+  act(() => fake.set('search', { requestId: 5, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'gone', rank: '0' }], cursor: null }));
+  await user.click(screen.getByRole('option', { name: /gone/ }));
+  await waitFor(() => expect(screen.getByText('That message is no longer available')).toBeInTheDocument(), { timeout: 2500 });
+  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
+});
+
+it('takes a keyboard-picked DM hit to its DM route and focuses the row', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    withDms(client);
+    client.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 'dm-found', seq: '8', body: 'lamp' })] }));
+  } });
+  await user.keyboard('{Control>}k{/Control}');
+  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  await user.type(input, 'lamp');
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '8', snippet: 'lamp', rank: '0' }], cursor: null }));
+  await user.keyboard('{Enter}');
+  await waitFor(() => expect(window.location.pathname).toBe(`/dm/${DM}`));
+  await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="8"]')).toHaveFocus());
+});
+
+it('sends typing off when leaving the visible channel', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await user.type(composer(), 'draft');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  await waitFor(() => expect(fake.callsOf('typing')).toContainEqual({ m: 'typing', channelId: GEN, on: false }));
+});
+it('returns focus to where search was opened when Escape closes it', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await user.click(composer());
+  await user.keyboard('{Control>}k{/Control}');
+  expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+  expect(composer()).toHaveFocus();
+});
+
+// W-06: the palette is a modal dialog, so the shell beneath it is inert; M-01: no second palette, none under a modal.
+it('opens search as a modal dialog, once, and never under another open dialog', async () => {
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await user.click(composer());
+  await user.keyboard('{Control>}k{/Control}');
+  const dialog = screen.getByRole('dialog', { name: 'Search your messages' });
+  expect(dialog.tagName).toBe('DIALOG');
+  expect(dialog).toHaveAttribute('open');
+  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  await user.keyboard('{Control>}k{/Control}');
+  expect(screen.getAllByRole('dialog', { name: 'Search your messages' })).toHaveLength(1);
+  await user.keyboard('{Escape}');
+  expect(input).not.toBeInTheDocument();
+  expect(composer()).toHaveFocus();
+  const other = document.createElement('dialog');
+  other.setAttribute('open', '');
+  document.body.append(other);
+  try {
+    await user.keyboard('{Control>}k{/Control}');
+    expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+  } finally { other.remove(); }
+});
+
+it('opens no search under the Settings dialog', async () => {
+  const { user } = setup('/settings/devices');
+  await user.keyboard('{Control>}k{/Control}');
+  expect(screen.queryByRole('combobox', { name: 'Search your messages' })).toBeNull();
+});
+
+it('says searching while the worker answers, then the scope’s empty text', async () => {
+  let answer!: (value: null) => void;
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  fake.handler = command => command.m === 'search' && command.scope === 'all'
+    ? new Promise(resolve => { answer = resolve; }) : Promise.resolve(null);
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'z');
+  act(() => fake.set('search', { requestId: 3, hits: [], cursor: null }));
+  expect(screen.getByRole('search')).toHaveTextContent('Searching your messages');
+  await act(async () => { answer(null); await Promise.resolve(); });
+  expect(screen.getByRole('search')).toHaveTextContent('No messages found');
+  await user.click(screen.getByRole('button', { name: 'this conversation' }));
+  act(() => fake.set('search', { requestId: 4, hits: [], cursor: null }));
+  await waitFor(() => expect(screen.getByRole('search')).toHaveTextContent('No results in this scope'));
+});
+
+it('renews typing while the draft keeps changing, within the server’s hold', async () => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+  try {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+    await user.type(composer(), 'ab');
+    expect(fake.callsOf('typing')).toEqual([{ m: 'typing', channelId: GEN, on: true }]);
+    clock.mockReturnValue(1_005_000);
+    await user.type(composer(), 'c');
+    expect(fake.callsOf('typing')).toEqual([{ m: 'typing', channelId: GEN, on: true }, { m: 'typing', channelId: GEN, on: true }]);
+  } finally { clock.mockRestore(); }
+});
+
+it('names typing people once each, in one polite status above the composer', () => {
+  const { fake } = setup(`/c/${A}/${GEN}`, { before: client => client.set(`timeline:${GEN}`, timeline()) });
+  act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: PEER, name: 'bob', expiresAt: NOW + 9 }]));
+  const status = screen.getByText('bob is typing');
+  expect(status).toHaveAttribute('role', 'status');
+  expect(document.querySelector('.d-app-shell__main')).toContainElement(status);
+  act(() => fake.set(`typing:${GEN}`, [{ userId: PEER, name: 'bob', expiresAt: NOW + 10 }, { userId: BOT, name: 'Helper', expiresAt: NOW + 10 }]));
+  expect(screen.getAllByText(/typing/)).toHaveLength(1);
+  expect(screen.getByText('Several people are typing')).toHaveAttribute('role', 'status');
+});
+
+it('says only in the unblocked conversation that a validated Remove restored sending', async () => {
+  const removed = 'You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere.';
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: 'cc'.repeat(32), removedIn: [GEN] }]);
+  } });
+  expect(screen.getByText(removed)).toHaveAttribute('role', 'status');
+  await user.click(screen.getByRole('button', { name: 'random' }));
+  expect(screen.queryByText(removed)).toBeNull();
+});
+
+// Flow 05 "changed": the alert stands in the conversation the changed contact is in, cannot be dismissed, and its action
+// leads to Privacy's comparison. Task 10's browser run found it only inside Settings.
+it('stands a changed contact of this conversation as an alert that leads to Privacy', async () => {
+  const changed = 'This contact’s identity changed. Compare the number before sending.';
+  const { user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [
+      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32) },
+      { userId: STRANGER, name: 'eve', shared: true, umk: 'ee'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'dd'.repeat(32) },
+    ]);
+  } });
+  const alert = screen.getByRole('alert');
+  expect(alert).toHaveTextContent(changed);
+  expect(alert).toHaveTextContent('bob');
+  expect(screen.queryByText('eve')).toBeNull();
+  expect(within(alert).queryByRole('button', { name: /dismiss/i })).toBeNull();
+  await user.click(within(alert).getByRole('button', { name: 'Compare with bob' }));
+  expect(path()).toBe('/settings/privacy');
+});
+
+// Requirement 1 of task 10 (L-CORE-40), W-01: the core's send gate per conversation (the sendBlocks slice) blocks the
+// composer, and the composer says why: the changed-key copy for E_UMK_CHANGED, privacy.leafFailed for any failed leaf.
+it('blocks the composer from the core\'s send block, and says why', async () => {
+  const changed = 'This contact’s identity changed. Compare the number before sending.';
+  const failed = 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.';
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [
+      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32),
+        blocked: 'E_UMK_CHANGED' },
+    ]);
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: false } });
+  } });
+  expectBlocked();
+  const reason = document.querySelector('.d-composer__reason');
+  expect(reason).toHaveTextContent(changed);
+  expect(composer('general').getAttribute('aria-describedby')?.split(' ')).toContain(reason?.id);
+  expect(screen.getByRole('button', { name: 'attach files' })).toBeDisabled();
+  await user.type(composer('general'), 'held back{Enter}');
+  expect(fake.callsOf('send')).toEqual([]);
+  for (const code of ['E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_CREDENTIAL'] as const) {
+    act(() => fake.set('sendBlocks', { [GEN]: { code, own: false } }));
+    expectBlocked();
+    expect(document.querySelector('.d-composer__reason')).toHaveTextContent(failed);
+    expect(document.body).not.toHaveTextContent(code);
+  }
+  // The core lifted the block (verified, or a validated Remove here): sending resumes.
+  act(() => fake.set('sendBlocks', {}));
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+  expect(screen.getByRole('button', { name: 'attach files' })).toBeEnabled();
+});
+
+it('blocks only the conversation the core names', () => {
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('sendBlocks', { [RAND]: { code: 'E_DEVICE_UNLISTED', own: false } });
+  } });
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
+// R1: privacy.changed asks for a comparison only when a changed member of this conversation has a key to compare.
+it('says there is nothing to compare under the composer when the changed contact has no key', () => {
+  const noKey = 'This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed.';
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: null, blocked: 'E_UMK_CHANGED' }]);
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: false } });
+  } });
+  expectBlocked();
+  expect(document.querySelector('.d-composer__reason')).toHaveTextContent(noKey);
+  expect(document.querySelector('.d-composer__reason')).not.toHaveTextContent('Compare the number');
+});
+
+// R1: a block held by an own-user leaf names the own account and Devices, never a contact's number to compare.
+it('says the own account is the reason under the composer when only own devices block the conversation', () => {
+  const ownChanged = 'A device using your account under a different identity is in some of your conversations. Sending is paused there. Open Devices and remove any device you don’t recognise.';
+  const ownUnlisted = 'A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices.';
+  const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set('account', account({ ownTrust: 'changed' }));
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', []);
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: true } });
+  } });
+  expectBlocked();
+  const reason = () => document.querySelector('.d-composer__reason');
+  expect(reason()).toHaveTextContent(ownChanged);
+  expect(reason()).not.toHaveTextContent('Compare');
+  act(() => {
+    fake.set('account', account({ ownTrust: 'unlisted' }));
+    fake.set('sendBlocks', { [GEN]: { code: 'E_DEVICE_UNLISTED', own: true } });
+  });
+  expectBlocked();
+  expect(reason()).toHaveTextContent(ownUnlisted);
+});
+
+// R2: a pin, reaction, edit or delete the core refuses for a trust reason says the blocked copy, never the raw code.
+it('shows a trust refusal of a pin as the conversation\'s blocked copy, not a raw code', async () => {
+  const changed = 'This contact’s identity changed. Compare the number before sending.';
+  const failed = 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.';
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', msgId: '11'.repeat(16), seq: '1', body: 'pin me' })] }));
+    client.set('trust', [
+      { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32),
+        blocked: 'E_UMK_CHANGED' },
+    ]);
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: false } });
+  } });
+  fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_UMK_CHANGED' })) : Promise.resolve(null);
+  const row = () => screen.getByText('pin me').closest<HTMLElement>('.d-message-row')!;
+  const shown = screen.getAllByText(changed).length;
+  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(1));
+  // The alert and the composer already say it; the refusal adds its own dismissable banner with the same text.
+  await waitFor(() => expect(screen.getAllByText(changed).length).toBe(shown + 1));
+  expect(document.body).not.toHaveTextContent('E_UMK_CHANGED');
+  expect(document.body).not.toHaveTextContent('That did not work');
+  // Any other trust code reads as the failed-device copy.
+  fake.handler = c => c.m === 'pin' ? Promise.reject(refusal({ code: 'E_DEVICE_UNLISTED' })) : Promise.resolve(null);
+  act(() => fake.set('sendBlocks', { [GEN]: { code: 'E_DEVICE_UNLISTED', own: false } }));
+  await user.click(within(row()).getByRole('button', { name: 'pin' }));
+  await waitFor(() => expect(fake.callsOf('pin')).toHaveLength(2));
+  await waitFor(() => expect(screen.getAllByText(failed).length).toBeGreaterThan(1));
+  expect(document.body).not.toHaveTextContent('E_DEVICE_UNLISTED');
+});
+
+// A send the core refuses for a trust reason says what the composer would say, never "That did not work (E_…)".
+it('shows a trust refusal of a send as the composer reason, not a raw code', async () => {
+  const failed = 'A device in this conversation failed the identity check. Sending is paused here until it’s removed.';
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('sendBlocks', {});
+  } });
+  fake.handler = c => c.m === 'send' ? Promise.reject(refusal({ code: 'E_DEVICE_UNLISTED' })) : Promise.resolve(null);
+  await user.type(composer('general'), 'hello{Enter}');
+  await waitFor(() => expect(document.querySelector('.d-composer__reason')).toHaveTextContent(failed));
+  expect(document.body).not.toHaveTextContent('E_DEVICE_UNLISTED');
+  // The next published gate replaces the page's guess.
+  act(() => fake.set('sendBlocks', {}));
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
+// C1: blocked E_UMK_CHANGED with no changedUmk is a leaf under a key no validated list presents: nothing to compare.
+it('stands a changed contact with no key to compare without Compare, and says a Remove clears it', () => {
+  const noKey = 'This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed.';
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: null, blocked: 'E_UMK_CHANGED' }]);
+  } });
+  const alert = screen.getByRole('alert');
+  expect(alert).toHaveTextContent('bob');
+  expect(alert).toHaveTextContent(noKey);
+  expect(alert).toHaveAttribute('data-tone', 'danger');
+  expect(within(alert).queryByRole('button')).toBeNull();
+});
+
+it('leaves the composer open where the changed contact is not a member', () => {
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [
+      { userId: STRANGER, name: 'eve', shared: true, umk: 'ee'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'dd'.repeat(32) },
+    ]);
+  } });
+  expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
+// Settings' Privacy section carries the same alert and action; the conversation's copy under the modal would repeat the
+// announcement and give a second, unreachable "Compare with" button.
+it('leaves the changed alert to Privacy while Settings covers the conversation', () => {
+  setup('/settings/privacy', { state: { settingsFrom: `/c/${A}/${GEN}` }, before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: 'cc'.repeat(32) }]);
+  } });
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Compare with bob' })).toBeNull();
+});
+
+it('stands no changed alert where a validated Remove restored sending', () => {
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: 'cc'.repeat(32), removedIn: [GEN] }]);
+  } });
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
 // A blocked composer stays focusable: aria-disabled on the textarea, the native attribute on the button only (L-UI-13).
 function expectBlocked(name = 'general') {
   expect(composer(name)).toHaveAttribute('aria-disabled', 'true');
@@ -164,6 +531,18 @@ function setupWith(handler: FakeClient['handler']) {
 }
 
 describe('timeline', () => {
+  it('uses neutral reason copy on unreadable rows without exposing runtime codes', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
+      item({ key: 'changed', state: 'cannot-read', reason: 'E_UMK_CHANGED', body: '' }),
+      item({ key: 'unlisted', state: 'cannot-read', reason: 'E_DEVICE_UNLISTED', body: '' }),
+    ] })));
+    const log = screen.getByRole('log', { name: 'messages in #general' });
+    expect(log).toHaveTextContent('This contact’s identity changed. Compare the number before sending.');
+    expect(log).toHaveTextContent('This device is not on the contact’s list.');
+    expect(log).not.toHaveTextContent('E_UMK_CHANGED');
+    expect(log).not.toHaveTextContent('E_DEVICE_UNLISTED');
+  });
   it('shows names, tags and every row state, and never an unreadable body', async () => {
     const { fake, user, view } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [
@@ -190,7 +569,7 @@ describe('timeline', () => {
     expect(within(log).getAllByText('bot')).toHaveLength(1);
     expect(within(log).getAllByText(formatTime(NOW))).toHaveLength(8);
     expect(within(log).getByText('This message could not be read on this device.')).toBeInTheDocument();
-    expect(within(log).getByText('E_SENDER_MISMATCH')).toBeInTheDocument();
+    expect(within(log).queryByText('E_SENDER_MISMATCH')).toBeNull();
     expect(screen.queryByText(/SECRET-PLAINTEXT/)).toBeNull();
     expect(within(log).getByText('message deleted')).toBeInTheDocument();
     expect(screen.queryByText(/GONE-TEXT/)).toBeNull();
@@ -590,6 +969,30 @@ describe('a recovery root this account did not seal', () => {
     await expectNoAxeViolations(view.container);
     act(() => fake.set('account', account({ rootMismatch: false })));
     expect(screen.queryByText(TEXT)).toBeNull();
+  });
+});
+
+// Privacy lists no own row, so what the core reports about this account's own key stands here, persistent like a
+// changed contact's alert: a different own identity, or a device under this account that the own list does not name.
+describe('the own account’s identity', () => {
+  const CHANGED = 'A device using your account under a different identity is in some of your conversations. Sending is paused there. Open Devices and remove any device you don’t recognise.';
+  const UNLISTED = 'A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices.';
+  it('shows a persistent danger banner whose action opens Devices, and none otherwise', async () => {
+    const { fake, view, user } = setup(`/c/${A}/${GEN}`, { before: f => f.set('account', account({ ownTrust: 'changed' })) });
+    const alert = screen.getByText(CHANGED).closest('[role="alert"]') as HTMLElement;
+    expect(alert).not.toBeNull();
+    expect(alert).toHaveAttribute('data-tone', 'danger');
+    expect(within(alert).queryByRole('button', { name: /dismiss/i })).toBeNull();
+    expect(within(alert).queryByRole('button', { name: /compare/i })).toBeNull();
+    await expectNoAxeViolations(view.container);
+    act(() => fake.set('account', account({ ownTrust: 'unlisted' })));
+    expect(screen.queryByText(CHANGED)).toBeNull();
+    const unlisted = screen.getByText(UNLISTED).closest('[role="alert"]') as HTMLElement;
+    expect(unlisted).toHaveAttribute('data-tone', 'danger');
+    await user.click(within(unlisted).getByRole('button', { name: 'Open devices' }));
+    expect(path()).toBe('/settings/devices');
+    act(() => fake.set('account', account({ ownTrust: null })));
+    expect(screen.queryByText(UNLISTED)).toBeNull();
   });
 });
 

@@ -11,7 +11,10 @@
 use dilla_core::cbor::{Encoder, decode_strict};
 use dilla_core::client::{ClientCore, ClientError};
 use dilla_core::envelope::{Attachment, Envelope, EnvelopeType};
-use dilla_core::identity::{CredentialIdentity, Kind, SignerTier, SskSigner, Tier, UmkSigner};
+use dilla_core::identity::{
+    CredentialIdentity, DeviceEntry, DeviceList, DeviceListUnsigned, Kind, SignerTier, SskSigner,
+    Tier, UmkSigner,
+};
 use dilla_core::ids::{CommunityId, DeviceId, InstanceId, MsgId, UserId};
 use dilla_core::mls::{
     CIPHERSUITE, ConnHandle, DillaBinding, DillaGroup, DillaProcessed, DillaProvider, GroupKind,
@@ -975,6 +978,251 @@ pub fn alice_and_bob() -> (Instance, Relay, Core, Core) {
     (instance, relay, a, b)
 }
 
+/// Existing message fixtures begin with both current leaves backed by signed v1 lists.
+pub fn alice_and_bob_trusted() -> (Instance, Relay, Core, Core) {
+    let (instance, relay, mut alice, mut bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    ingest_core_list(&mut bob, &relay, &alice);
+    (instance, relay, alice, bob)
+}
+
+/// Publish one fixture core's genuinely signed list to a receiver after its leaf exists.
+pub fn ingest_core_list(receiver: &mut Core, relay: &Relay, sender: &Core) {
+    ingest_list_body(
+        receiver,
+        relay,
+        sender.user,
+        sender.device,
+        &sender.core.device_list_body().expect("list body"),
+    );
+}
+
+/// Feed a real signed list through the authenticated proposal path before committing an Add.
+pub fn ingest_add_candidate(receiver: &mut Core, relay: &Relay, sender: &Core) {
+    ingest_add_candidate_in(receiver, relay, sender, &GROUP);
+}
+
+pub fn ingest_add_candidate_in(
+    receiver: &mut Core,
+    relay: &Relay,
+    sender: &Core,
+    group_id: &[u8; 16],
+) {
+    let proposals = relay.proposals_body();
+    let candidates = receiver
+        .core
+        .proposed_adds(group_id, &proposals)
+        .expect("candidates");
+    let index = decode_strict(&candidates, |d| {
+        let n = d.array_len()?;
+        let mut found = None;
+        for _ in 0..n {
+            d.array(3)?;
+            let index = d.uint()?;
+            let user = d.bytes_exact::<16>()?;
+            d.uint()?;
+            if user == sender.user {
+                found = Some(index);
+            }
+        }
+        Ok(found)
+    })
+    .expect("candidate list")
+    .expect("sender candidate");
+    let put = sender.core.device_list_body().expect("signed PUT");
+    let (version, blob, sig, prev) = decode_strict(&put, |d| {
+        d.array(4)?;
+        Ok((
+            d.uint()?,
+            d.bytes()?.to_vec(),
+            d.bytes_exact::<64>()?,
+            d.bytes_exact::<32>()?,
+        ))
+    })
+    .expect("PUT body");
+    let mut history = Encoder::new();
+    history
+        .array(1)
+        .array(4)
+        .uint(version)
+        .bytes(&blob)
+        .bytes(&sig)
+        .bytes(&prev);
+    receiver
+        .core
+        .device_list_ingest_add(
+            group_id,
+            &proposals,
+            index,
+            &sender.user,
+            &history.into_vec(),
+            &blob,
+            NOW,
+        )
+        .expect("authenticated pre-Add list");
+}
+
+pub fn ingest_list_body(
+    receiver: &mut Core,
+    relay: &Relay,
+    user: [u8; 16],
+    device: [u8; 16],
+    body: &[u8],
+) {
+    let (version, blob, sig, prev) = decode_strict(body, |d| {
+        d.array(4)?;
+        Ok((
+            d.uint()?,
+            d.bytes()?.to_vec(),
+            d.bytes_exact::<64>()?,
+            d.bytes_exact::<32>()?,
+        ))
+    })
+    .expect("signed PUT body");
+    let mut history = Encoder::new();
+    history
+        .array(1)
+        .array(4)
+        .uint(version)
+        .bytes(&blob)
+        .bytes(&sig)
+        .bytes(&prev);
+    receiver
+        .core
+        .device_list_ingest(
+            &relay.group_id,
+            relay.leaf_of(device),
+            &user,
+            &history.into_vec(),
+            &blob,
+            NOW,
+        )
+        .expect("fixture list ingest");
+}
+
+/// Publish a signed v2 list containing two real MLS keys for one fixture user.
+pub fn ingest_raw_peer_pair(receiver: &mut Core, relay: &Relay, first: &RawPeer, second: &RawPeer) {
+    assert_eq!(first.user, second.user);
+    let first_body = first.device_list_body();
+    let (_, first_blob, first_sig, first_prev) = decode_strict(&first_body, |d| {
+        d.array(4)?;
+        Ok((
+            d.uint()?,
+            d.bytes()?.to_vec(),
+            d.bytes_exact::<64>()?,
+            d.bytes_exact::<32>()?,
+        ))
+    })
+    .expect("first PUT");
+    let first_list = DeviceList::decode(&first_blob).expect("first signed list");
+    let ssk = SskSigner::from_bytes(&[first.user[0].wrapping_add(0x40); 32]);
+    let entries = [first, second]
+        .map(|peer| DeviceEntry {
+            device_id: DeviceId::from_bytes(peer.device),
+            dsk_pub: peer.signer.public().try_into().expect("DSK"),
+            tier: Tier::Native,
+            added_at: NOW,
+            revoked_at: None,
+        })
+        .to_vec();
+    let unsigned = DeviceListUnsigned {
+        v: 1,
+        user_id: UserId::from_bytes(first.user),
+        version: 2,
+        prev_hash: first_list.hash(),
+        entries,
+    };
+    let second_list = DeviceList {
+        sig_ssk: ssk.sign_device_list(&unsigned),
+        unsigned,
+    };
+    let mut history = Encoder::new();
+    history
+        .array(2)
+        .array(4)
+        .uint(1)
+        .bytes(&first_blob)
+        .bytes(&first_sig)
+        .bytes(&first_prev)
+        .array(4)
+        .uint(2)
+        .bytes(&second_list.encode())
+        .bytes(&second_list.sig_ssk)
+        .bytes(&second_list.unsigned.prev_hash);
+    receiver
+        .core
+        .device_list_ingest(
+            &relay.group_id,
+            relay.leaf_of(second.device),
+            &first.user,
+            &history.into_vec(),
+            &second_list.encode(),
+            NOW,
+        )
+        .expect("two-device signed list");
+}
+
+/// Supply the signed list extension created when a second local device enrols.
+pub fn ingest_enrolled_pair(receiver: &mut Core, relay: &Relay, first: &Core, second: &Core) {
+    ingest_enrolled_pair_bodies(
+        receiver,
+        relay,
+        first.user,
+        second.device,
+        &first.core.device_list_body().expect("first PUT"),
+        &second.core.device_list_body().expect("enrolled PUT"),
+    );
+}
+
+pub fn ingest_enrolled_pair_bodies(
+    receiver: &mut Core,
+    relay: &Relay,
+    user: [u8; 16],
+    device: [u8; 16],
+    first_body: &[u8],
+    second_body: &[u8],
+) {
+    let parse = |body: &[u8]| {
+        decode_strict(body, |d| {
+            d.array(4)?;
+            Ok((
+                d.uint()?,
+                d.bytes()?.to_vec(),
+                d.bytes_exact::<64>()?,
+                d.bytes_exact::<32>()?,
+            ))
+        })
+        .expect("signed PUT")
+    };
+    let a = parse(first_body);
+    let b = parse(second_body);
+    assert_eq!((a.0, b.0), (1, 2));
+    let mut history = Encoder::new();
+    history
+        .array(2)
+        .array(4)
+        .uint(a.0)
+        .bytes(&a.1)
+        .bytes(&a.2)
+        .bytes(&a.3)
+        .array(4)
+        .uint(b.0)
+        .bytes(&b.1)
+        .bytes(&b.2)
+        .bytes(&b.3);
+    receiver
+        .core
+        .device_list_ingest(
+            &relay.group_id,
+            relay.leaf_of(device),
+            &user,
+            &history.into_vec(),
+            &b.1,
+            NOW,
+        )
+        .expect("enrolled signed list");
+}
+
 // ---------------------------------------------------------------------------------------------
 // The instance's external-sender key.
 
@@ -1416,10 +1664,46 @@ pub struct RawPeer {
 }
 
 impl RawPeer {
+    /// A signed v1 list for fixture-only trust ingress.
+    pub fn device_list_body(&self) -> Vec<u8> {
+        let ssk = SskSigner::from_bytes(&[self.user[0].wrapping_add(0x40); 32]);
+        let dsk_pub: [u8; 32] = self.signer.public().try_into().expect("dsk");
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(self.user),
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![DeviceEntry {
+                device_id: DeviceId::from_bytes(self.device),
+                dsk_pub,
+                tier: Tier::Native,
+                added_at: NOW,
+                revoked_at: None,
+            }],
+        };
+        let list = DeviceList {
+            sig_ssk: ssk.sign_device_list(&unsigned),
+            unsigned,
+        };
+        let mut e = Encoder::new();
+        e.array(4)
+            .uint(1)
+            .bytes(&list.encode())
+            .bytes(&list.sig_ssk)
+            .bytes(&[0; 32]);
+        e.into_vec()
+    }
     /// A native-tier user whose credential is a well-formed `CredentialIdentity`.
     pub fn new(user: u8, device: u8) -> Self {
-        let umk = UmkSigner::from_bytes(&[user; 32]);
-        let ssk = SskSigner::from_bytes(&[user.wrapping_add(0x40); 32]);
+        Self::new_with_keys(user, device, user, user.wrapping_add(0x40))
+    }
+
+    /// A new real MLS device for the same user with rotated identity keys.
+    pub fn new_with_keys(user: u8, device: u8, umk_seed: u8, ssk_seed: u8) -> Self {
+        let umk = UmkSigner::from_bytes(&[umk_seed; 32]);
+        let ssk = SskSigner::from_bytes(&[ssk_seed; 32]);
+        let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).expect("keygen");
+        let dsk_pub: [u8; 32] = signer.public().try_into().expect("32-byte DSK");
         let identity = CredentialIdentity {
             v: 1,
             umk_pub: umk.public(),
@@ -1430,9 +1714,29 @@ impl RawPeer {
             signer_tier: SignerTier::Native,
             ssk_pub: ssk.public(),
             sig_umk_ssk: umk.sign_ssk(&ssk.public()),
-            sig_ssk_dev: [0u8; 64],
+            sig_ssk_dev: ssk.sign_device(
+                &DeviceId::from_bytes([device; 16]),
+                &dsk_pub,
+                Kind::User,
+                Tier::Native,
+                SignerTier::Native,
+            ),
         };
-        Self::with_identity(identity.encode(), [user; 16], [device; 16])
+        let provider = DillaProvider::new(memory());
+        provider.storage().migrate().expect("migrate");
+        signer.store(provider.storage()).expect("store signer");
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(identity.encode()).into(),
+            signature_key: signer.public().into(),
+        };
+        Self {
+            provider,
+            signer,
+            credential,
+            user: [user; 16],
+            device: [device; 16],
+            group: None,
+        }
     }
 
     /// A member whose basic-credential identity is `identity`, verbatim.
@@ -1567,7 +1871,7 @@ impl RawPeer {
             .process_message(&self.provider, message)
             .expect("process the commit")
         {
-            DillaProcessed::StagedCommit(staged) => group
+            DillaProcessed::StagedCommit(staged, _) => group
                 .merge_staged_commit(&self.provider, *staged)
                 .expect("merge"),
             other => panic!("expected a commit at seq {seq}, got {other:?}"),

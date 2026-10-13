@@ -41,6 +41,7 @@ pub(super) struct StoredMessage<'a> {
     pub sender_user: Option<&'a [u8; 16]>,
     pub sender_device: &'a [u8; 16],
     pub sender_leaf: Option<u32>,
+    pub sender_sig_key: Option<&'a [u8]>,
     pub sender_kind: Option<u8>,
     pub sender_tier: Option<u8>,
     pub msg_id: Option<&'a [u8; 16]>,
@@ -58,8 +59,8 @@ pub(super) fn insert_message(
     c.execute(
         "INSERT INTO app_messages \
          (group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
-          sender_leaf,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention,reply_to) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+          sender_leaf,sender_sig_key,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention,reply_to) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             m.group_id.as_slice(),
             m.seq as i64,
@@ -70,6 +71,7 @@ pub(super) fn insert_message(
             m.sender_user.map(|v| v.as_slice()),
             m.sender_device.as_slice(),
             m.sender_leaf,
+            m.sender_sig_key,
             m.sender_kind,
             m.sender_tier,
             m.msg_id.map(|v| v.as_slice()),
@@ -81,6 +83,7 @@ pub(super) fn insert_message(
             m.reply_to.map(|v| v.as_slice()),
         ],
     )?;
+    super::search::index_fold(c, m.group_id, m.seq)?;
     Ok(())
 }
 
@@ -113,6 +116,9 @@ pub(super) fn refold_insert(
             }),
             own,
         )?;
+        if let Some(row) = fold::resolve(c, group_id, &target)? {
+            super::search::index_fold(c, group_id, row.seq)?;
+        }
     }
     Ok(())
 }
@@ -279,6 +285,7 @@ fn own_message<'a>(
         sender_user: Some(&own.user_id),
         sender_device: &own.device_id,
         sender_leaf: leaf,
+        sender_sig_key: None,
         sender_kind: Some(own.kind),
         sender_tier: Some(own.tier),
         msg_id: Some(env.msg_id.as_bytes()),
@@ -362,6 +369,10 @@ impl ClientCore {
                 E_CORE_STATE,
                 format!("group state {}", row.state),
             ));
+        }
+        // A changed-key or failed leaf still in the group blocks queuing (and again at encryption).
+        if let Some(code) = self.send_block_code(id)? {
+            return Err(ClientError::new(code, ""));
         }
         let input = |detail: &'static str| Err(ClientError::new(E_CORE_INPUT, detail));
         let unheld = || ClientError::new(E_CORE_NOT_FOUND, "target is not held");
@@ -475,6 +486,19 @@ impl ClientCore {
             if group.has_pending_commit() {
                 this.keep_group(id, group);
                 return Err(ClientError::new(E_CORE_STATE, "a commit is pending"));
+            }
+            // The gate holds where confidentiality is decided: at encryption to the current
+            // tree, not only when the row was queued before a key change arrived.
+            match this.read(|c| super::trust::send_block(c, &group, &id)) {
+                Ok(None) => {}
+                Ok(Some(code)) => {
+                    this.keep_group(id, group);
+                    return Err(ClientError::new(code, ""));
+                }
+                Err(e) => {
+                    this.keep_group(id, group);
+                    return Err(e);
+                }
             }
             let env = Envelope::decode(&o.envelope)
                 .map_err(|_| ClientError::new(E_CORE_STORAGE, "outbox envelope does not decode"))?;

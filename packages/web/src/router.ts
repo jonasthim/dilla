@@ -1,7 +1,7 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance';
+export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';
 export type SignInNotice = 'race' | 'evicted';
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }
@@ -12,7 +12,7 @@ export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null;
 export const SETTINGS_FROM = 'settingsFrom';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
-const SETTINGS_SECTION = /^\/settings\/(devices|notifications|appearance)$/;
+const SETTINGS_SECTION = /^\/settings\/(devices|notifications|appearance|privacy|keyboard|diagnostics)$/;
 
 /**
  * The `from` a history state names: a same-origin path (one leading slash, never two) that is not itself a

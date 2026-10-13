@@ -478,6 +478,7 @@ impl ClientCore {
                 tree,
                 &bind,
             )?;
+            u.with_conn(|c| super::trust::audit_tree(c,&g,id,&own.user_id,&own.device_id,None,None))?;
             let joined = checked("epoch", g.epoch())?;
             let commit = wire::tls(&commit)?;
             let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
@@ -615,6 +616,7 @@ impl ClientCore {
                                             tree_hash: item.tree_hash.as_slice(),
                                         },
                                     )?;
+                                    u.with_conn(|c| super::trust::audit_tree(c,&g,id,&own.user_id,&own.device_id,None,None))?;
                                     // With the epoch the server's (checked above): over an
                                     // existing row, a Welcome
                                     // into an epoch at or below one this device has held is a

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/livekit/protocol/livekit"
+
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
@@ -15,8 +17,8 @@ type VoiceGateway interface {
 }
 
 // The voice_state flag bits (protocol/02 § Gateway frames, DEV-60, ruling F10). The instance sets
-// bits 0, 3 and 4 from what its SFU reports; bits 1 and 2 are reserved for the client-reported mute
-// and deafen state no client→server path carries yet (follow-up card 11).
+// bits 0, 3 and 4 from what its SFU reports; bits 1 and 2 carry client-reported mute
+// and deafen state after the live participant and channel audience checks.
 const (
 	VoiceInCall   uint64 = 1 << 0
 	VoiceSelfMute uint64 = 1 << 1
@@ -24,6 +26,20 @@ const (
 	VoiceVideo    uint64 = 1 << 3
 	VoiceScreen   uint64 = 1 << 4
 )
+
+// voiceTrackFlags reads the current published video sources from the SFU participant.
+func voiceTrackFlags(part *livekit.ParticipantInfo) uint64 {
+	var flags uint64
+	for _, track := range part.GetTracks() {
+		switch track.GetSource() {
+		case livekit.TrackSource_CAMERA:
+			flags |= VoiceVideo
+		case livekit.TrackSource_SCREEN_SHARE:
+			flags |= VoiceScreen
+		}
+	}
+	return flags
+}
 
 const (
 	// announceInterval is the least time between two deliveries of queued voice_state frames: what

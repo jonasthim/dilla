@@ -135,7 +135,7 @@ pub enum DillaProcessed {
     Application(Box<ReceivedApplication>),
     Proposal(Box<QueuedProposal>),
     ExternalJoinProposal(Box<QueuedProposal>),
-    StagedCommit(Box<StagedCommit>),
+    StagedCommit(Box<StagedCommit>, ([u8; 16], [u8; 16])),
     OwnPendingCommit,
     OwnPrivateMessage,
 }
@@ -724,7 +724,13 @@ impl DillaGroup {
                     c.as_ref(),
                 )
                 .map_err(MlsError::Protocol)?;
-                DillaProcessed::StagedCommit(c)
+                let basic = BasicCredential::try_from(credential).map_err(openmls)?;
+                let identity = crate::identity::CredentialIdentity::decode(basic.identity())
+                    .map_err(MlsError::Protocol)?;
+                DillaProcessed::StagedCommit(
+                    c,
+                    (*identity.user_id.as_bytes(), *identity.device_id.as_bytes()),
+                )
             }
             ProcessedMessageContent::OwnPendingCommit => DillaProcessed::OwnPendingCommit,
             ProcessedMessageContent::OwnPrivateMessage => DillaProcessed::OwnPrivateMessage,
@@ -860,6 +866,40 @@ impl DillaGroup {
         Ok(())
     }
 
+    /// Takes every queued `Add` that `keep` refuses back out of the queue, so the next
+    /// `self_update` (which consumes the whole queue) does not commit it. `keep` answers
+    /// `Ok(false)` to drop an Add and an error to refuse; on an error nothing is removed.
+    pub fn drop_queued_adds<E: From<MlsError>>(
+        &mut self,
+        provider: &DillaProvider,
+        mut keep: impl FnMut(&KeyPackage) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        let mut refs: Vec<openmls::ciphersuite::hash_ref::ProposalRef> = Vec::new();
+        for p in self.group.pending_proposals() {
+            if let Proposal::Add(add) = p.proposal()
+                && !keep(add.key_package())?
+            {
+                refs.push(p.proposal_reference_ref().clone());
+            }
+        }
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let group = &mut self.group;
+        provider
+            .storage()
+            .transaction(|| {
+                for r in &refs {
+                    group
+                        .remove_pending_proposal(provider.storage(), r)
+                        .map_err(openmls)?;
+                }
+                Ok::<(), MlsError>(())
+            })
+            .map_err(MlsError::from)?;
+        Ok(())
+    }
+
     /// How many members the group has, as this client's tree holds it.
     pub fn member_count(&self) -> usize {
         self.group.members().count()
@@ -902,6 +942,32 @@ impl DillaGroup {
 
     pub fn epoch(&self) -> u64 {
         self.group.epoch().as_u64()
+    }
+
+    /// Authenticated members of the current MLS tree, including each signature key.
+    pub fn members(&self) -> Vec<Member> {
+        self.group.members().collect()
+    }
+
+    /// One authenticated current-tree member by leaf index.
+    pub fn member_at(&self, leaf_index: u32) -> Option<Member> {
+        self.group.member_at(LeafNodeIndex::new(leaf_index))
+    }
+
+    /// Hash from the signed GroupInfo for this current authenticated tree.
+    pub fn tree_hash(
+        &self,
+        provider: &DillaProvider,
+        signer: &SignatureKeyPair,
+    ) -> Result<[u8; 32], MlsError> {
+        let info = self.export_group_info(provider, signer)?;
+        let openmls::framing::MlsMessageBodyOut::GroupInfo(info) = info.body() else {
+            return Err(MlsError::OpenMls("export was not GroupInfo".into()));
+        };
+        info.group_context()
+            .tree_hash()
+            .try_into()
+            .map_err(|_| MlsError::OpenMls("tree hash is not 32 bytes".into()))
     }
 
     /// Whether a staged commit awaits a merge or abort.
@@ -1225,7 +1291,7 @@ mod media_tests {
         let processed = bob
             .process_message(&bob_p, message)
             .expect("bob accepts the commit that applies his own leave");
-        assert!(matches!(processed, DillaProcessed::StagedCommit(_)));
+        assert!(matches!(processed, DillaProcessed::StagedCommit(_, _)));
     }
 
     /// One device of a group, with what it signs with.
@@ -1405,7 +1471,7 @@ mod media_tests {
                 let q = received(&mut carol, message);
                 carol.g.store_pending_proposal(&carol.p, q).expect("queue");
             }
-            let DillaProcessed::StagedCommit(staged) = carol
+            let DillaProcessed::StagedCommit(staged, _) = carol
                 .g
                 .process_message(&carol.p, protocol(&commit.commit))
                 .expect("carol accepts the commit")

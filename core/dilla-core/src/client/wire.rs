@@ -1,8 +1,8 @@
 //! Deterministic CBOR values returned by the client and sent to the delivery service.
 
 use super::ClientError;
-use super::error::{E_CORE_INPUT, E_CORE_MLS};
-use crate::cbor::{Encoder, decode_strict};
+use super::error::{E_CORE_INPUT, E_CORE_LIMIT, E_CORE_MLS};
+use crate::cbor::{Decoder, Encoder, decode_strict};
 use crate::envelope::Attachment;
 use crate::identity::DeviceList;
 use crate::mls::StorageError;
@@ -45,43 +45,45 @@ pub(crate) struct ProposalItem {
 }
 
 pub(crate) fn decode_proposals_body(bytes: &[u8]) -> Result<Vec<ProposalItem>, ClientError> {
-    let rows = decode_strict(bytes, |d| {
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(ClientError::new(E_CORE_LIMIT, ""));
+    }
+    let mut header = Decoder::new(bytes);
+    let count = header.array_len().map_err(|e| shape("proposals_body", e))?;
+    if count > 1024 {
+        header.array(5).map_err(|e| shape("proposals_body", e))?;
+        return Err(ClientError::new(E_CORE_LIMIT, ""));
+    }
+    decode_strict(bytes, |d| {
         let n = d.array_len()?;
         let mut rows = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
             d.array(5)?;
-            rows.push((
-                d.bytes()?.to_vec(),
-                d.uint()?,
-                d.opt_uint()?,
-                d.bytes()?.to_vec(),
-                d.uint()?,
-            ));
-        }
-        Ok(rows)
-    })
-    .map_err(|e| shape("proposals_body", e))?;
-    rows.into_iter()
-        .map(|(reference, kind, target_leaf, blob, void)| {
-            let target_leaf = target_leaf
-                .map(|v| {
-                    u32::try_from(v)
-                        .map_err(|_| shape("proposals_body", "target leaf out of range"))
-                })
-                .transpose()?;
+            let reference = d.bytes()?.to_vec();
+            let kind = d.uint()?;
+            let target_leaf = d
+                .opt_uint()?
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| crate::cbor::CborError::IntegerOverflow)?;
+            let blob = d.bytes()?.to_vec();
+            let void = d.uint()?;
             if void > 1 {
-                return Err(shape("proposals_body", format!("void {void}")));
+                return Err(crate::cbor::CborError::IntegerOverflow);
             }
-            Ok(ProposalItem {
+            rows.push(ProposalItem {
                 reference,
                 kind,
                 target_leaf,
                 blob,
                 void: void == 1,
-            })
-        })
-        .collect()
+            });
+        }
+        Ok(rows)
+    })
+    .map_err(|e| shape("proposals_body", e))
 }
+
 #[allow(dead_code)] // next_seq is part of the delivery-service body.
 pub(crate) struct InfoBody {
     pub epoch: u64,
@@ -715,4 +717,47 @@ pub(crate) fn sealed_objects(
         .opt_bytes(state)
         .uint(u64::from(state_uploaded));
     e.into_vec()
+}
+
+#[cfg(test)]
+mod proposal_limit_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_proposal_body_is_refused_before_copying_rows() {
+        let mut over_count = Encoder::new();
+        over_count.array(1025);
+        for _ in 0..1025 {
+            over_count
+                .array(5)
+                .bytes(&[])
+                .uint(0)
+                .null()
+                .bytes(&[])
+                .uint(0);
+        }
+        assert_eq!(
+            decode_proposals_body(&over_count.into_vec())
+                .err()
+                .unwrap()
+                .code,
+            "E_CORE_LIMIT"
+        );
+        let mut oversized = Encoder::new();
+        oversized
+            .array(1)
+            .array(5)
+            .bytes(&[])
+            .uint(0)
+            .null()
+            .bytes(&vec![0; 4 * 1024 * 1024])
+            .uint(0);
+        assert_eq!(
+            decode_proposals_body(&oversized.into_vec())
+                .err()
+                .unwrap()
+                .code,
+            "E_CORE_LIMIT"
+        );
+    }
 }

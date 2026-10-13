@@ -470,3 +470,25 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
     await peer.close();
   }
 });
+
+// The follower is a second page of the same context: the store, the Web Lock and BroadcastChannel are per origin
+// and profile, so a second persistent profile (secondBrowser) would be a fresh device at needs-signup, never other-tab.
+test('a pause failure retains the old Web Lock and leaves the follower outside', async ({ page, context }) => {
+  await openHarness(page);
+  await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('needs-signup');
+  await ok(page, { m: 'signupBegin' });
+  const keys = (await slice<AccountState>(page, 'account'))!;
+  await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username: `busy${Date.now()}`, display: 'Busy Holder', password: keys.instance!.passwordSignup ? 'busy password 1' : null, recoveryKeyAcknowledged: true });
+  await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
+  const other = { page: await context.newPage() };
+  try {
+    await openHarness(other.page);
+    await expect.poll(() => phaseOf(other.page), { timeout: WAIT }).toBe('other-tab');
+    await page.evaluate(() => (window as unknown as HarnessWindow).dilla.hook('pause-fail-once'));
+    const answer = await call(page, { m: 'resign', nonce: '01'.repeat(16) });
+    expect(answer.ok).toBe(false);
+    await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
+    await expect.poll(() => phaseOf(other.page), { timeout: WAIT }).toBe('other-tab');
+    expect((await slice<AccountState>(page, 'account'))?.error?.code).not.toBe('E_RELEASED');
+  } finally { await other.page.close(); }
+});

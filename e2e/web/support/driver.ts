@@ -88,6 +88,22 @@ export class WebDriver {
   async enrol(): Promise<PeerEnrolled> { return this.strip(await this.request<PeerEnrolled & { id: number; ok: boolean }>('enrol', {})); }
   /** L-E2E-10 `revoke`: list v+1 with that device revoked, signed and published by the peer's first device. */
   async revoke(deviceId: string): Promise<{ version: number }> { return this.strip(await this.request<{ version: number; id: number; ok: boolean }>('revoke', { device_id: deviceId })); }
+  async trustList(userId: string): Promise<{ version: number; pin: string | null; verified: boolean; changed: string | null; pendingUmk: string | null }> {
+    return this.strip(await this.request<{ version: number; pin: string | null; verified: boolean; changed: string | null; pendingUmk: string | null; id: number; ok: boolean }>('trust_list', { user: userId }));
+  }
+  async rotateUmk(userId?: string): Promise<{ user: string; version: number }> {
+    return this.strip(await this.request<{ user: string; version: number; id: number; ok: boolean }>('rotate_umk', userId === undefined ? {} : { user: userId }));
+  }
+  /** `leave`: the acting device proposes its own removal from the group (a member Remove another member commits). */
+  async leave(channelId?: string): Promise<{ group_id: string }> {
+    return this.strip(await this.request<{ group_id: string; id: number; ok: boolean }>('leave', channelId === undefined ? {} : { channel_id: channelId }));
+  }
+  async typing(channelId: string, on: boolean): Promise<void> {
+    await this.request('typing', { channel: channelId, on });
+  }
+  async searchSeed(channelId: string, body: string): Promise<{ seq: number }> {
+    return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('search_seed', { channel: channelId, body }));
+  }
   async openDm(userId: string): Promise<PeerOpenedDm> { return this.strip(await this.request<PeerOpenedDm & { id: number; ok: boolean }>('open_dm', { user_id: userId })); }
   async dms(): Promise<{ dms: PeerDm[] }> { return this.strip(await this.request<{ dms: PeerDm[]; id: number; ok: boolean }>('dms', {})); }
   async sendDm(channelId: string, body: string): Promise<{ seq: number }> { return this.strip(await this.request<{ seq: number; id: number; ok: boolean }>('send_dm', { channel_id: channelId, body })); }

@@ -1,4 +1,6 @@
 import { arr, bin, decode, encode, opt, str, u53, u64, CborError, type CborValue } from './cbor';
+import { decodePendingLeaves, decodeTrustState } from './state/trust';
+import { decodeSearchHits, validateSearch } from './state/search';
 
 export class CoreError extends Error {
   readonly code: string;
@@ -39,6 +41,23 @@ export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created
   attachments: { blobId: Uint8Array; size: number; mime: string; name: string }[]; }
 export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; }
 export interface PurgeRow { groupId: Id; seq: bigint; channelId: Id; blobIds: Uint8Array[]; }
+export interface PendingLeaf { groupId: Id; leafIndex: number; userId: Id; cachedVersion: bigint; reason: string; }
+/** The stored verdict that blocks a user's leaf (and with it sending in its group); E_UMK_CHANGED wins (ABI 8). */
+export type TrustBlock = 'E_UMK_CHANGED' | 'E_CREDENTIAL' | 'E_DEVICE_UNLISTED' | 'E_TIER_MISMATCH';
+const TRUST_BLOCKS: readonly string[] = ['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'];
+/** The core's block_code: a known verdict as it is, any other stored code as a failed identity check (fail closed). */
+export function trustBlock(code: string): TrustBlock {
+  return TRUST_BLOCKS.includes(code) ? code as TrustBlock : 'E_CREDENTIAL';
+}
+/**
+ * One trust_state row (ABI 8). `blocked` is the stored verdict of this user's leaves still in an active group, read from
+ * the store (right after a reload too). The own user's row is always present: its own credential's key, verified, never
+ * changed; its `blocked` reports an own-user leaf under another key (E_UMK_CHANGED) or an unlisted own device.
+ */
+export interface TrustRecord { userId: Id; umk: Uint8Array; firstSeen: bigint; verified: boolean; changedUmk: Uint8Array | null; blocked: TrustBlock | null; }
+export interface SearchScope { kind: 'channel' | 'community' | 'all'; id: Id | null; }
+export interface SearchCursor { rank: bigint; groupId: Id; seq: bigint; }
+export interface SearchHit { groupId: Id; seq: bigint; snippet: string; rank: bigint; }
 export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; }
 export interface ReactionInfo { emoji: string; count: number; mine: boolean; }
 export interface AttachmentInfo { index: number; size: number; mime: string; w: number | null; h: number | null; hasThumb: boolean; name: string; }
@@ -97,6 +116,23 @@ export interface CorePort {
   deviceListRevoke(input: { recoveryKey: string; rootSealed: Uint8Array; stateSealed: Uint8Array; listBody: Uint8Array; deviceIds: Id[]; now: bigint }): SignedLists;
   ownDeviceListUpdate(historyBody: Uint8Array): { version: bigint; listed: boolean };
   ownDeviceList(): OwnDeviceList;
+  pendingLeaves(): PendingLeaf[];
+  proposedAdds(groupId: Id, proposalsBody: Uint8Array): { index: bigint; userId: Id; cachedVersion: bigint }[];
+  deviceListIngestAdd(groupId: Id, proposalsBody: Uint8Array, index: bigint, requestedUser: Id,
+    history: Uint8Array, headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number };
+  deviceListIngest(groupId: Id, leafIndex: number, requestedUser: Id, history: Uint8Array, headList: Uint8Array, now: bigint): { version: bigint; changed: boolean; quarantined: number };
+  revalidatePending(groupId: Id, leafIndex: number, limit: number): number;
+  trustState(): TrustRecord[];
+  trustGeneration(): bigint;
+  trustVerify(userId: Id, umk: Uint8Array): void;
+  /** Pairwise digits for exactly the key the page will approve (the pending changed key, else the pinned one);
+   *  E_DEVICE_LIST_STALE when `expectedUmk` is not that key, E_CORE_NOT_FOUND with no cached list or no shared group. */
+  safetyNumberFor(userId: Id, expectedUmk: Uint8Array): string;
+  /** The code send_prepare/send_encrypt refuse with in this group, or null when sending is open (ABI 8). */
+  sendBlockCode(groupId: Id): TrustBlock | null;
+  /** True when that block is held only by own-user leaves (R1: the page names the own account, not a contact). */
+  sendBlockOwn(groupId: Id): boolean;
+  search(scope: SearchScope, query: string, cursor: SearchCursor | null, limit: number): SearchHit[];
 }
 
 export interface CoreHandle {
@@ -147,6 +183,19 @@ export interface CoreHandle {
       device_list_revoke(recovery_key: string, root_sealed: Uint8Array, state_sealed: Uint8Array, list_body: Uint8Array, device_ids: Uint8Array, now: bigint): Uint8Array;
       own_device_list_update(history_body: Uint8Array): Uint8Array;
       own_device_list(): Uint8Array;
+      pending_leaves(): Uint8Array;
+      proposed_adds(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
+      device_list_ingest_add(group_id: Uint8Array, proposals_body: Uint8Array, index: bigint, requested_user: Uint8Array,
+        history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
+      device_list_ingest(group_id: Uint8Array, leaf_index: number, requested_user: Uint8Array, history_body: Uint8Array, head_list: Uint8Array, now: bigint): Uint8Array;
+      revalidate_pending(group_id: Uint8Array, leaf_index: number, limit: number): number;
+      trust_state(): Uint8Array;
+      trust_generation(): bigint;
+      trust_verify(user_id: Uint8Array, expected_umk: Uint8Array): void;
+      safety_number_for(user_id: Uint8Array, expected_umk: Uint8Array): string;
+      send_block_code(group_id: Uint8Array): string | undefined;
+      send_block_own(group_id: Uint8Array): boolean;
+      search(scope_kind: number, scope_id: Uint8Array | null, query: string, before: Uint8Array | null, limit: number): Uint8Array;
       state_sealed_uploaded(): void;
       state_sealed_current(): boolean;
       pins(group_id: Uint8Array): Uint8Array;
@@ -178,6 +227,14 @@ function oneOf<T extends number>(v: CborValue, values: readonly T[]): T {
   const n = u53(v);
   if (!values.includes(n as T)) throw new CborError('E_CBOR_RANGE', `unexpected value ${n}`);
   return n as T;
+}
+function readTrustIngest(bytes: Uint8Array): { version: bigint; changed: boolean; quarantined: number } {
+  try {
+    const a = arr(decode(bytes), 3);
+    const changed = u64(a[1]);
+    if (changed !== 0n && changed !== 1n) throw new CborError('E_CBOR_RANGE', 'changed bit');
+    return { version: u64(a[0]), changed: changed === 1n, quarantined: u53(a[2]) };
+  } catch (error) { throw new CoreError('E_CORE_WASM', String(error)); }
 }
 function readIdentity(v: CborValue): IdentityInfo {
   const a = arr(v, 6);
@@ -370,5 +427,38 @@ export function wrapCore(handle: CoreHandle): CorePort {
       const a = arr(v, 2); return { version: u64(field(a, 0)), listed: oneOf(field(a, 1), [0, 1]) === 1 };
     })),
     ownDeviceList: () => call(() => decoded('ownDeviceList', handle.own_device_list(), readOwnList)),
+    pendingLeaves: () => call(() => decodePendingLeaves(handle.pending_leaves())),
+    proposedAdds: (groupId, proposalsBody) => call(() => decoded('proposedAdds', handle.proposed_adds(groupId, proposalsBody), (v) =>
+      arr(v).map((row) => { const a = arr(row, 3); return { index: u64(a[0]), userId: bin(a[1], 16), cachedVersion: u64(a[2]) }; }))),
+    deviceListIngestAdd: (groupId, proposalsBody, index, requestedUser, history, headList, now) => call(() =>
+      readTrustIngest(handle.device_list_ingest_add(groupId, proposalsBody, index, requestedUser, history, headList, now))),
+    deviceListIngest: (groupId, leafIndex, requestedUser, history, headList, now) => call(() =>
+      readTrustIngest(handle.device_list_ingest(groupId, leafIndex, requestedUser, history, headList, now))),
+    revalidatePending: (groupId, leafIndex, limit) => call(() => handle.revalidate_pending(groupId, leafIndex, limit)),
+    trustState: () => call(() => decodeTrustState(handle.trust_state())),
+    trustGeneration: () => call(() => handle.trust_generation()),
+    trustVerify: (userId, umk) => call(() => {
+      if (userId.length !== 16 || umk.length !== 32) throw new CoreError('E_CORE_INPUT');
+      handle.trust_verify(userId, umk);
+    }),
+    safetyNumberFor: (userId, expectedUmk) => call(() => {
+      if (userId.length !== 16 || expectedUmk.length !== 32) throw new CoreError('E_CORE_INPUT');
+      return handle.safety_number_for(userId, expectedUmk);
+    }),
+    sendBlockCode: (groupId) => call(() => {
+      if (groupId.length !== 16) throw new CoreError('E_CORE_INPUT');
+      const code = handle.send_block_code(groupId);
+      return code === undefined || code === null ? null : trustBlock(code);
+    }),
+    sendBlockOwn: (groupId) => call(() => {
+      if (groupId.length !== 16) throw new CoreError('E_CORE_INPUT');
+      return handle.send_block_own(groupId) === true;
+    }),
+    search: (scope, query, cursor, limit) => call(() => {
+      validateSearch(scope, query, cursor, limit);
+      const kind = scope.kind === 'channel' ? 0 : scope.kind === 'community' ? 1 : 2;
+      return decodeSearchHits(handle.search(kind, scope.id, query,
+        cursor === null ? null : encode([cursor.rank, cursor.groupId, cursor.seq]), limit));
+    }),
   };
 }

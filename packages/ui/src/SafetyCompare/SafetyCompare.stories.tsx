@@ -1,0 +1,12 @@
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { SafetyCompare } from './SafetyCompare.tsx';
+const noop = () => {};
+const labels = { title: 'Compare safety numbers', copy: 'Copy number', verify: 'All 12 blocks match', close: 'Close', instructions: 'Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself.', confirm: 'Yes, all 12 blocks match', firstSeen: 'This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify.', states: { 'first-seen': 'First seen here — not verified', changed: 'Identity changed', verified: 'Identity compared', unlisted: 'Device missing' } };
+const groups = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(5, '0'));
+const meta: Meta<typeof SafetyCompare> = { title: 'Trust/SafetyCompare', component: SafetyCompare };
+export default meta;
+type Story = StoryObj<typeof SafetyCompare>;
+const args = { open: true, contactName: 'Ada', approvedUmk: 'ab'.repeat(32), groups, canVerify: true, labels, onCopy: noop, onVerify: noop, onClose: noop };
+export const FirstSeen: Story = { args: { ...args, state: 'first-seen' } };
+export const Changed: Story = { args: { ...args, state: 'changed' } };
+export const Verified: Story = { args: { ...args, state: 'verified' } };
