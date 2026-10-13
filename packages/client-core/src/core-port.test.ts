@@ -76,6 +76,14 @@ it('reads an open send gate as null and fails closed on a code it does not know'
   expect(caught(() => stub({ send_block_code: () => 'x' }).port.sendBlockCode(new Uint8Array(15))).code).toBe('E_CORE_INPUT');
 });
 
+it('reads whether a send block is the own account\'s, and checks the group id first (R1)', () => {
+  const s = stub({ send_block_own: () => true });
+  expect(s.port.sendBlockOwn(G)).toBe(true);
+  expect(s.calls.map((c) => [c.method, c.args])).toEqual([['send_block_own', [G]]]);
+  expect(stub({ send_block_own: () => false }).port.sendBlockOwn(G)).toBe(false);
+  expect(caught(() => stub({ send_block_own: () => true }).port.sendBlockOwn(new Uint8Array(15))).code).toBe('E_CORE_INPUT');
+});
+
 it('refuses a safety-number key that is not 32 bytes before calling the core', () => {
   const s = stub({ safety_number_for: () => 'never' });
   expect(caught(() => s.port.safetyNumberFor(USER, new Uint8Array(31))).code).toBe('E_CORE_INPUT');

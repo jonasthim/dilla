@@ -32,7 +32,7 @@ import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem, type TrustSummary,
-  type WorkerError,
+  type SendBlocksState, type WorkerError,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -2142,13 +2142,13 @@ export class Controller {
   /** The composer's send gate (W-01): send_block_code of each active channel group, by channel; open channels are absent. */
   private publishSendBlocks(): void {
     if (this.core === null) return;
-    const blocks: Record<string, TrustBlock> = {};
+    const blocks: SendBlocksState = {};
     for (const group of this.core.groups()) {
       if (group.kind !== 0 || group.state !== 2) continue;
       const channelId = toHex(group.targetId);
       if (!this.dms.has(channelId) && !this.channels.has(channelId)) continue;
       const code = this.core.sendBlockCode(group.groupId);
-      if (code !== null) blocks[channelId] = code;
+      if (code !== null) blocks[channelId] = { code, own: this.core.sendBlockOwn(group.groupId) };
     }
     this.slices.set('sendBlocks', blocks);
   }

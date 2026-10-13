@@ -980,6 +980,18 @@ impl ClientCore {
         &self,
         group_id: &[u8; 16],
     ) -> Result<Option<&'static str>, ClientError> {
+        Ok(self.send_gate(group_id)?.map(|(code, _)| code))
+    }
+
+    /// Whether the group's send block (the code `send_block_code` answers) is held only by leaves
+    /// of the own user: the page then names the own account, not a contact, as the reason. False
+    /// when nothing blocks, and for a group whose state does not load (its rows are not judged by
+    /// user).
+    pub fn send_block_own(&self, group_id: &[u8; 16]) -> Result<bool, ClientError> {
+        Ok(self.send_gate(group_id)?.is_some_and(|(_, own)| own))
+    }
+
+    fn send_gate(&self, group_id: &[u8; 16]) -> Result<Option<(&'static str, bool)>, ClientError> {
         let cached = self.groups.get(group_id);
         // A group state that does not load answers from the stored rows too (fail closed).
         let loaded = if cached.is_none() {
@@ -987,8 +999,21 @@ impl ClientCore {
         } else {
             None
         };
+        let own_user = self.own().ok().map(|own| own.user_id);
         match cached.or(loaded.as_ref()) {
-            Some(group) => self.read(|c| send_block(c, group, group_id)),
+            Some(group) => self.read(|c| {
+                let blocks = member_blocks(c, group, group_id)?;
+                // As send_block: a changed-key block wins, else the first.
+                let code = blocks
+                    .iter()
+                    .map(|(_, k)| *k)
+                    .find(|k| *k == E_UMK_CHANGED)
+                    .or(blocks.first().map(|(_, k)| *k));
+                Ok(code.map(|code| {
+                    let mut holders = blocks.iter().filter(|(_, k)| *k == code);
+                    (code, own_user.is_some() && holders.all(|(u, _)| *u == own_user))
+                }))
+            }),
             None => self.read(|c| {
                 let code: Option<String> = c
                     .query_row(
@@ -997,7 +1022,7 @@ impl ClientCore {
                         |r| r.get(0),
                     )
                     .optional()?;
-                Ok(code.map(|code| block_code(&code)))
+                Ok(code.map(|code| (block_code(&code), false)))
             }),
         }
     }

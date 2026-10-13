@@ -130,6 +130,8 @@ export interface CorePort {
   safetyNumberFor(userId: Id, expectedUmk: Uint8Array): string;
   /** The code send_prepare/send_encrypt refuse with in this group, or null when sending is open (ABI 8). */
   sendBlockCode(groupId: Id): TrustBlock | null;
+  /** True when that block is held only by own-user leaves (R1: the page names the own account, not a contact). */
+  sendBlockOwn(groupId: Id): boolean;
   search(scope: SearchScope, query: string, cursor: SearchCursor | null, limit: number): SearchHit[];
 }
 
@@ -192,6 +194,7 @@ export interface CoreHandle {
       trust_verify(user_id: Uint8Array, expected_umk: Uint8Array): void;
       safety_number_for(user_id: Uint8Array, expected_umk: Uint8Array): string;
       send_block_code(group_id: Uint8Array): string | undefined;
+      send_block_own(group_id: Uint8Array): boolean;
       search(scope_kind: number, scope_id: Uint8Array | null, query: string, before: Uint8Array | null, limit: number): Uint8Array;
       state_sealed_uploaded(): void;
       state_sealed_current(): boolean;
@@ -446,6 +449,10 @@ export function wrapCore(handle: CoreHandle): CorePort {
       if (groupId.length !== 16) throw new CoreError('E_CORE_INPUT');
       const code = handle.send_block_code(groupId);
       return code === undefined || code === null ? null : trustBlock(code);
+    }),
+    sendBlockOwn: (groupId) => call(() => {
+      if (groupId.length !== 16) throw new CoreError('E_CORE_INPUT');
+      return handle.send_block_own(groupId) === true;
     }),
     search: (scope, query, cursor, limit) => call(() => {
       validateSearch(scope, query, cursor, limit);

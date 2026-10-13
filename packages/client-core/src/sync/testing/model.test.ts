@@ -1300,6 +1300,28 @@ describe('trust send block (trust.rs leaf_verdict/send_block, messages.rs send_p
     expect(core.sendBlockCode(G)).toBeNull();
   });
 
+  it('says a send block is the own account\'s only when own-user leaves alone hold its code (trust.rs send_block_own, R1)', () => {
+    const core = trusted();
+    expect(core.sendBlockOwn(G)).toBe(false);
+    const v1 = listOf(1, [PEER.device]);
+    core.deviceListIngest(G, 1, PEER.user, encode([v1]), v1[1], 10n);
+    expect(core.sendBlockCode(G)).toBe('E_DEVICE_UNLISTED');
+    expect(core.sendBlockOwn(G)).toBe(false);
+    const IMPOSTOR = idOf(0xd0, 52);
+    core.addPendingLeaf(G, 3, ME.user, IMPOSTOR, fakeDskPub(IMPOSTOR), 1);
+    core.setLeafVerdict(G, 3, 'E_UMK_CHANGED');
+    expect(core.sendBlockCode(G)).toBe('E_UMK_CHANGED');
+    expect(core.sendBlockOwn(G)).toBe(true);
+    core.setLeafVerdict(G, 1, 'E_UMK_CHANGED');
+    expect(core.sendBlockOwn(G)).toBe(false);
+    // A group whose state is not held is never read as the own account's.
+    const UNLOADED = idOf(0x9b, 42);
+    core.addPendingLeaf(UNLOADED, 1, ME.user, IMPOSTOR, fakeDskPub(IMPOSTOR), 1);
+    core.setLeafVerdict(UNLOADED, 1, 'E_UMK_CHANGED');
+    expect(core.sendBlockOwn(UNLOADED)).toBe(false);
+    expect(thrown(() => core.sendBlockOwn(new Uint8Array(15)))).toMatchObject({ code: 'E_CORE_INPUT' });
+  });
+
   it('records an own-user Add candidate under another key as E_UMK_CHANGED and leaves it out of the commit', () => {
     const core = trusted();
     const IMPOSTOR = idOf(0xd0, 51);

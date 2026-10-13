@@ -74,9 +74,12 @@ export interface TrustSummary { userId: string; name: string; shared: boolean; u
  * `changedUmk` is null: a leaf under another key that no validated list presents); any other code reads as unlisted.
  *
  * `sendBlocks`: channel id (hex) → the code the core refuses a send with in that channel's group (send_block_code), only for
- * blocked channels; the composer pauses on it (W-01: privacy.leafFailed, the changed-key copy for 'E_UMK_CHANGED').
+ * blocked channels, and `own` when only own-user leaves hold it (send_block_own). The composer pauses on it and says why
+ * (W-01, R1): the own account's copy for an own block, else the changed-key copy for a changed contact of the conversation
+ * (with or without a key to compare), else privacy.leafFailed.
  */
-export type SendBlocksState = Record<string, TrustBlock>;
+export interface SendBlock { code: TrustBlock; own: boolean }
+export type SendBlocksState = Record<string, SendBlock>;
 export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string }[];
   cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;

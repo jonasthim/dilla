@@ -65,6 +65,7 @@ interface ExpectedCoreHandle {
   trust_state(): Uint8Array;
   trust_generation(): bigint;
   send_block_code(group_id: Uint8Array): string | undefined;
+  send_block_own(group_id: Uint8Array): boolean;
   trust_verify(user_id: Uint8Array, expected_umk: Uint8Array): void;
   safety_number_for(user_id: Uint8Array, expected_umk: Uint8Array): string;
   search(scope_kind: number, scope_id: Uint8Array | null | undefined, query: string, before: Uint8Array | null | undefined, limit: number): Uint8Array;
@@ -155,6 +156,7 @@ expectTrue<Equals<H['revalidate_pending'], E['revalidate_pending']>>();
 expectTrue<Equals<H['trust_state'], E['trust_state']>>();
 expectTrue<Equals<H['trust_generation'], E['trust_generation']>>();
 expectTrue<Equals<H['send_block_code'], E['send_block_code']>>();
+expectTrue<Equals<H['send_block_own'], E['send_block_own']>>();
 expectTrue<Equals<H['trust_verify'], E['trust_verify']>>();
 expectTrue<Equals<H['safety_number_for'], E['safety_number_for']>>();
 expectTrue<Equals<H['search'], E['search']>>();

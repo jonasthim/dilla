@@ -7,10 +7,10 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 | state | shown action | worker fact | announcement |
 |---|---|---|---|
 | First seen here — not verified | `privacy.firstSeen` under the state; Compare with {name} | pin exists, verified=0, changedUmk=null | Privacy heading |
-| changed | Compare with {name}; alert cannot dismiss; the composer of each conversation with that contact is blocked with the same text | changedUmk is validated pending key | `privacy.changed` |
-| changed, no key to compare | alert cannot dismiss, no Compare; a validated Remove of the changed device ends it per conversation | blocked=E_UMK_CHANGED, changedUmk=null | `privacy.changedNoKey` |
-| failed device in a conversation | composer blocked with the reason; no Verify | sendBlocks[channel] is E_DEVICE_UNLISTED, E_TIER_MISMATCH or E_CREDENTIAL | `privacy.leafFailed` |
-| own account: other identity or unlisted device | danger banner in the shell and Devices, no dismiss; its action opens Devices (no compare) | account.ownTrust is changed or unlisted | `privacy.ownChanged` / `privacy.ownUnlisted` |
+| changed | Compare with {name}; alert cannot dismiss; the composer of each conversation with that contact is blocked with the same text | changedUmk is validated pending key; sendBlocks[channel] is E_UMK_CHANGED, not own | `privacy.changed` |
+| changed, no key to compare | alert cannot dismiss, no Compare; the composer is blocked with the same text; a validated Remove of the changed device ends it per conversation | blocked=E_UMK_CHANGED, changedUmk=null; sendBlocks[channel] is E_UMK_CHANGED, not own, and no changed member of the conversation has a key | `privacy.changedNoKey` |
+| failed device in a conversation | composer blocked with the reason; no Verify; a refused edit, reaction, delete or pin shows the same reason | sendBlocks[channel] is E_DEVICE_UNLISTED, E_TIER_MISMATCH or E_CREDENTIAL, not own | `privacy.leafFailed` |
+| own account: other identity or unlisted device | danger banner in the shell and Devices, no dismiss; its action opens Devices (no compare); the composer of a conversation only own devices block says the same text | account.ownTrust is changed or unlisted; sendBlocks[channel].own (E_UMK_CHANGED: ownChanged, else ownUnlisted) | `privacy.ownChanged` / `privacy.ownUnlisted` |
 | unlisted | no Verify | leaf is quarantined | `privacy.unlisted` |
 | verified | show the compared key and date | exact current pin verified=1 | Privacy heading |
 | no shared group | no Verify | shared=false | `privacy.noShared` |
@@ -158,10 +158,10 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.unlisted | This device is not on the contact’s list. | unlisted state |
 | privacy.noShared | Open a conversation with this person to compare numbers. | no shared group |
 | privacy.removed | You can send in this conversation after this member leaves. Their changed identity is still unverified elsewhere. | group recovery |
-| privacy.changedNoKey | This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed. | changed alert without Compare (no pending key) |
-| privacy.leafFailed | A device in this conversation failed the identity check. Sending is paused here until it’s removed. | reason under the blocked composer (failed device) |
-| privacy.ownChanged | A device using your account under a different identity is in some of your conversations. Sending is paused there. Open Devices and remove any device you don’t recognise. | shell and Devices danger banner, persistent |
-| privacy.ownUnlisted | A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices. | shell and Devices danger banner, persistent |
+| privacy.changedNoKey | This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed. | changed alert without Compare (no pending key); reason under the blocked composer when no changed member has a key |
+| privacy.leafFailed | A device in this conversation failed the identity check. Sending is paused here until it’s removed. | reason under the blocked composer (failed device); a refused edit, reaction, delete or pin there |
+| privacy.ownChanged | A device using your account under a different identity is in some of your conversations. Sending is paused there. Open Devices and remove any device you don’t recognise. | shell and Devices danger banner, persistent; reason under a composer only own devices block (other identity) |
+| privacy.ownUnlisted | A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices. | shell and Devices danger banner, persistent; reason under a composer only own devices block (unlisted) |
 | privacy.ownAction | Open devices | own-account banner action |
 | privacy.loading | Working out the number… | compare dialog status while the number loads |
 | privacy.loadFailed | The number could not be worked out. Close this and try again. | compare dialog alert |

@@ -2491,3 +2491,48 @@ fn fixr_the_own_pin_repair_drops_an_impostors_cached_own_list() {
         "a list under the own key stays"
     );
 }
+
+/// R1: the page names the own account as the reason for a send block only when the leaves that
+/// hold the block's code are all the own user's (an own-user leaf under another key); a
+/// contact's failed or changed leaf is never read as the own account's.
+#[test]
+fn fixr_send_block_own_names_an_own_account_block() {
+    let (instance, mut relay, mut alice, mut bob) = alice_and_bob();
+    fixa_own_umk(&alice, &mut bob, &relay);
+    ingest_core_list(&mut alice, &relay, &bob);
+    assert!(!alice.core.send_block_own(&GROUP).unwrap(), "nothing blocks");
+    let mut forged = RawPeer::new_with_keys(0xb2, 0xd3, 0xd5, 0xd6);
+    forged.join_external(&mut relay);
+    alice.sync(&relay);
+    assert_eq!(
+        alice.core.send_block_code(&GROUP).unwrap(),
+        Some("E_CREDENTIAL")
+    );
+    assert!(
+        !alice.core.send_block_own(&GROUP).unwrap(),
+        "a contact's failed leaf"
+    );
+    let mut impostor = RawPeer::new_with_keys(0xa1, 0xe5, 0xe2, 0xe1);
+    impostor.join_external(&mut relay);
+    alice.sync(&relay);
+    assert_eq!(
+        alice.core.send_block_code(&GROUP).unwrap(),
+        Some("E_UMK_CHANGED")
+    );
+    assert!(
+        alice.core.send_block_own(&GROUP).unwrap(),
+        "the changed-key block is held by an own-user leaf only"
+    );
+    let mut alice = alice.reopen();
+    assert!(
+        alice.core.send_block_own(&GROUP).unwrap(),
+        "read from the store"
+    );
+    instance.propose_remove(&mut relay, impostor.device);
+    alice.commit(&mut relay);
+    assert_eq!(
+        alice.core.send_block_code(&GROUP).unwrap(),
+        Some("E_CREDENTIAL")
+    );
+    assert!(!alice.core.send_block_own(&GROUP).unwrap());
+}

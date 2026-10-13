@@ -671,6 +671,11 @@ impl CoreHandle {
         self.with_core(|c| c.send_block_code(&group_id))
             .map(|code| code.map(str::to_owned))
     }
+    /// Whether that block is held only by leaves of the own user (the page names the own account).
+    pub fn send_block_own(&self, group_id: &[u8]) -> Result<bool, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.send_block_own(&group_id))
+    }
     /// Approve the exact pending validated contact key.
     pub fn trust_verify(&self, user_id: &[u8], expected_umk: &[u8]) -> Result<(), JsError> {
         let user_id = js_fixed_arg::<16>("user_id", user_id)?;

@@ -271,7 +271,7 @@ it('blocks the composer from the core\'s send block, and says why', async () => 
       { userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false, changedUmk: 'cc'.repeat(32),
         blocked: 'E_UMK_CHANGED' },
     ]);
-    client.set('sendBlocks', { [GEN]: 'E_UMK_CHANGED' });
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: false } });
   } });
   expectBlocked();
   const reason = document.querySelector('.d-composer__reason');
@@ -281,7 +281,7 @@ it('blocks the composer from the core\'s send block, and says why', async () => 
   await user.type(composer('general'), 'held back{Enter}');
   expect(fake.callsOf('send')).toEqual([]);
   for (const code of ['E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_CREDENTIAL'] as const) {
-    act(() => fake.set('sendBlocks', { [GEN]: code }));
+    act(() => fake.set('sendBlocks', { [GEN]: { code, own: false } }));
     expectBlocked();
     expect(document.querySelector('.d-composer__reason')).toHaveTextContent(failed);
     expect(document.body).not.toHaveTextContent(code);
@@ -295,9 +295,45 @@ it('blocks the composer from the core\'s send block, and says why', async () => 
 it('blocks only the conversation the core names', () => {
   setup(`/c/${A}/${GEN}`, { before: client => {
     client.set(`timeline:${GEN}`, timeline());
-    client.set('sendBlocks', { [RAND]: 'E_DEVICE_UNLISTED' });
+    client.set('sendBlocks', { [RAND]: { code: 'E_DEVICE_UNLISTED', own: false } });
   } });
   expect(composer('general')).not.toHaveAttribute('aria-disabled');
+});
+
+// R1: privacy.changed asks for a comparison only when a changed member of this conversation has a key to compare.
+it('says there is nothing to compare under the composer when the changed contact has no key', () => {
+  const noKey = 'This contact’s identity changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their changed device is a member until it’s removed.';
+  setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', [{ userId: PEER, name: 'bob', shared: true, umk: 'bb'.repeat(32), firstSeen: 1, verified: false,
+      changedUmk: null, blocked: 'E_UMK_CHANGED' }]);
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: false } });
+  } });
+  expectBlocked();
+  expect(document.querySelector('.d-composer__reason')).toHaveTextContent(noKey);
+  expect(document.querySelector('.d-composer__reason')).not.toHaveTextContent('Compare the number');
+});
+
+// R1: a block held by an own-user leaf names the own account and Devices, never a contact's number to compare.
+it('says the own account is the reason under the composer when only own devices block the conversation', () => {
+  const ownChanged = 'A device using your account under a different identity is in some of your conversations. Sending is paused there. Open Devices and remove any device you don’t recognise.';
+  const ownUnlisted = 'A device that is not on your device list is using your account in some conversations. Sending is paused there. Remove it in Devices.';
+  const { fake } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set('account', account({ ownTrust: 'changed' }));
+    client.set(`timeline:${GEN}`, timeline());
+    client.set('trust', []);
+    client.set('sendBlocks', { [GEN]: { code: 'E_UMK_CHANGED', own: true } });
+  } });
+  expectBlocked();
+  const reason = () => document.querySelector('.d-composer__reason');
+  expect(reason()).toHaveTextContent(ownChanged);
+  expect(reason()).not.toHaveTextContent('Compare');
+  act(() => {
+    fake.set('account', account({ ownTrust: 'unlisted' }));
+    fake.set('sendBlocks', { [GEN]: { code: 'E_DEVICE_UNLISTED', own: true } });
+  });
+  expectBlocked();
+  expect(reason()).toHaveTextContent(ownUnlisted);
 });
 
 // A send the core refuses for a trust reason says what the composer would say, never "That did not work (E_…)".

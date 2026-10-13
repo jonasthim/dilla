@@ -382,6 +382,7 @@ function world(opts: {
     trustVerify: vi.fn((_u: Uint8Array, _k: Uint8Array): void => {}),
     safetyNumberFor: vi.fn((_u: Uint8Array, _k: Uint8Array): string => Array.from({ length: 12 }, () => '12345').join(' ')),
     sendBlockCode: vi.fn((_g: Uint8Array): TrustBlock | null => null),
+    sendBlockOwn: vi.fn((_g: Uint8Array): boolean => false),
     keyPackages: vi.fn((_count: number, _last: boolean): Uint8Array => new Uint8Array([1])),
     search: vi.fn((_scope: unknown, _query: string, _cursor: unknown, _limit: number) => [] as {
       groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint }[]),
@@ -1058,12 +1059,18 @@ it('publishes the core\'s send block per channel and re-reads it on every trust 
   w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(GROUP) ? 'E_UMK_CHANGED' : null));
   w.core.trustGeneration.mockReturnValue(1n);
   w.sync.deps!.onTrustChanged();
-  expect(w.last('sendBlocks')).toEqual({ [toHex(CHANNEL)]: 'E_UMK_CHANGED' });
+  expect(w.last('sendBlocks')).toEqual({ [toHex(CHANNEL)]: { code: 'E_UMK_CHANGED', own: false } });
   expect(JSON.stringify(w.last('sendBlocks'))).not.toContain(toHex(GROUP));
+  // R1: a block held only by own-user leaves is the own account's, so the composer names Devices, not a contact.
+  w.core.sendBlockOwn.mockImplementation((g: Uint8Array) => toHex(g) === toHex(GROUP));
+  w.core.trustGeneration.mockReturnValue(4n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({ [toHex(CHANNEL)]: { code: 'E_UMK_CHANGED', own: true } });
   w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(DM_GROUP) ? 'E_DEVICE_UNLISTED' : null));
+  w.core.sendBlockOwn.mockImplementation(() => false);
   w.core.trustGeneration.mockReturnValue(2n);
   w.sync.deps!.onTrustChanged();
-  expect(w.last('sendBlocks')).toEqual({ [toHex(DM_CHANNEL)]: 'E_DEVICE_UNLISTED' });
+  expect(w.last('sendBlocks')).toEqual({ [toHex(DM_CHANNEL)]: { code: 'E_DEVICE_UNLISTED', own: false } });
   w.core.sendBlockCode.mockImplementation(() => null);
   w.core.trustGeneration.mockReturnValue(3n);
   w.sync.deps!.onTrustChanged();

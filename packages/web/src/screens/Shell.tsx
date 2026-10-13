@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ChannelGroupState, ChannelSummary, TrustBlock, TrustSummary } from '@dilla/client-core';
+import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, SidebarTabs,
   StatusBar, StatusChunk,
@@ -34,9 +34,15 @@ const CATEGORY = 2;
 // The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
 const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
 
-/** The composer's reason for a send block: the changed-key copy for a changed key, privacy.leafFailed for any failed leaf. */
-export function blockReason(code: TrustBlock): StringKey {
-  return code === 'E_UMK_CHANGED' ? 'privacy.changed' : 'privacy.leafFailed';
+/**
+ * The composer's reason for a send block (W-01, R1). A block only own-user leaves hold names the own account and Devices;
+ * a changed key asks for a comparison only when a changed member of the conversation (`changed`) has a key to compare,
+ * else it says there is nothing to compare yet; any other failed leaf is privacy.leafFailed.
+ */
+export function blockReason(block: SendBlock, changed: readonly TrustSummary[]): StringKey {
+  if (block.own) return block.code === 'E_UMK_CHANGED' ? 'privacy.ownChanged' : 'privacy.ownUnlisted';
+  if (block.code !== 'E_UMK_CHANGED') return 'privacy.leafFailed';
+  return changed.some(row => row.changedUmk !== null) ? 'privacy.changed' : 'privacy.changedNoKey';
 }
 
 /** A contact whose identity changed: a validated pending key, or a leaf the core holds under a key no list presents. */
@@ -591,11 +597,16 @@ export function Shell(): React.JSX.Element {
   // L-CORE-40, W-01: the core's send gate of this conversation (sendBlocks) blocks the composer until the key is verified or
   // a validated Remove; the composer says why instead of letting a send fail. Before the worker first publishes the gate,
   // a changed member of this conversation blocks it (fail closed). A trust refusal of a send stands until the next gate.
-  const gate = sendBlocks === undefined ? (changedMembers.length > 0 ? 'E_UMK_CHANGED' : undefined) : targetId === null ? undefined : sendBlocks[targetId];
-  const refused = refusedSend !== null && refusedSend.channelId === targetId && refusedSend.gate === sendBlocks ? refusedSend.code : undefined;
+  // A refused send or the fail-closed guess does not say whose leaf holds the block: it is the own account's only when no
+  // changed contact is in the conversation and the worker reports an own key under another identity.
+  const guess = (code: TrustBlock): SendBlock =>
+    ({ code, own: code === 'E_UMK_CHANGED' && changedMembers.length === 0 && account?.ownTrust === 'changed' });
+  const gate = sendBlocks === undefined ? (changedMembers.length > 0 ? guess('E_UMK_CHANGED') : undefined)
+    : targetId === null ? undefined : sendBlocks[targetId];
+  const refused = refusedSend !== null && refusedSend.channelId === targetId && refusedSend.gate === sendBlocks ? guess(refusedSend.code) : undefined;
   const block = gate ?? refused;
   const reasonKey: StringKey | null = openError !== null ? 'shell.composer.openFailed'
-    : composerBlock(group) ?? (block !== undefined ? blockReason(block) : null);
+    : composerBlock(group) ?? (block !== undefined ? blockReason(block, changedMembers) : null);
   const composerLabel = channel !== null ? t('shell.composer.label', { channel: channel.name })
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composerPlaceholder = channel !== null ? t('shell.composer.placeholder', { channel: channel.name })

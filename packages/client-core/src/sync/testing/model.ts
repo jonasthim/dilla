@@ -499,6 +499,13 @@ export class ModelCore implements CorePort {
     const rows = [...this.verdicts].filter(([key]) => key.startsWith(`${toHex(groupId)}/`)).map(([, code]) => trustBlock(code));
     return rows.includes('E_UMK_CHANGED') ? 'E_UMK_CHANGED' : rows[0] ?? null;
   }
+  /** trust.rs send_block_own: the block's code is held by own-user leaves only; never for a group whose state is not held. */
+  sendBlockOwn(groupId: Id): boolean {
+    if (groupId.length !== 16) throw coreError('E_CORE_INPUT');
+    if (!this.gs.has(toHex(groupId))) return false;
+    const code = this.sendBlock(groupId);
+    return code !== null && this.memberBlocks(groupId).filter((b) => b.code === code).every((b) => same(b.userId, this.me.user));
+  }
   /** The Add candidates of a proposals body, by position (trust.rs candidate_leaves); unknown KeyPackages are not modelled. */
   private candidates(groupId: Id, proposalsBody: Uint8Array): { index: bigint; leaf: MCandidate }[] {
     this.must(groupId);
