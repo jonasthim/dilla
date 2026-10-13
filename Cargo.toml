@@ -7,6 +7,9 @@ members = [
     "testkit",
 ]
 default-members = ["core/dilla-core", "testkit"]
+# Third-party source carried with a patch (core/vendor/README.md): never a member, so fmt, clippy and
+# the workspace lints leave the upstream code as it was published.
+exclude = ["core/vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -25,3 +28,8 @@ codegen-units = 1
 inherits = "release"
 opt-level = "z"
 strip = true
+
+# opfs-report: sqlite-wasm-vfs 0.2.0 with one patched answer, so the journal of an interrupted write
+# is played back on the next open. Remove when the browser store moves to sqlite-wasm-vfs >= 0.3.0.
+[patch.crates-io]
+sqlite-wasm-vfs = { path = "core/vendor/sqlite-wasm-vfs" }

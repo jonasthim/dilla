@@ -35,7 +35,23 @@ let handle: StoreHandle | undefined;
 let resigned = false;
 
 /** The commands the page can send once the store is open. */
-type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume';
+type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume' | 'torn' | 'check';
+
+/**
+ * opfs-report: `torn` commits 300 rows, then rewrites every one of them in a transaction it leaves
+ * open. An 8-page cache against ~1.2 MB of rewritten rows makes SQLite spill: it journals each
+ * committed page and then overwrites it in the database file, so the rollback journal becomes the
+ * only copy of the committed rows. A reload then kills the worker in exactly the state a page unload
+ * mid-ingest leaves behind. `check` is what the next open must find: the integrity check clean and
+ * all 300 committed rows as they were committed.
+ */
+const COMMITTED = 'hex(zeroblob(2000))';
+const TORN_SQL = `CREATE TABLE IF NOT EXISTS torn (i INTEGER PRIMARY KEY, v TEXT NOT NULL);
+  WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 300)
+  INSERT OR REPLACE INTO torn (i, v) SELECT i, ${COMMITTED} FROM n;
+  PRAGMA cache_size = 8; BEGIN;
+  UPDATE torn SET v = hex(randomblob(2000));`;
+const CHECK_SQL = "SELECT count(*) FROM pragma_integrity_check WHERE integrity_check <> 'ok'";
 type Command = { type: 'append' } | { type: 'resign' } | { type: 'mls'; id: number; op: MlsOp };
 
 /**
@@ -94,7 +110,7 @@ function runCommand(command: Command): void {
   }
   if (command.type === 'mls') {
     const { id, op } = command;
-    if (!['create', 'load', 'hold', 'release', 'pause', 'resume'].includes(op)) {
+    if (!['create', 'load', 'hold', 'release', 'pause', 'resume', 'torn', 'check'].includes(op)) {
       post({ type: 'mls-result', id, ok: false, error: `E_SPIKE_OP: unknown op ${op}` });
       return;
     }
@@ -107,6 +123,20 @@ function runCommand(command: Command): void {
         if (!resigned) ready = true;
         drain();
       });
+      return;
+    }
+    if (op === 'torn' || op === 'check') {
+      try {
+        if (op === 'torn') handle.exec(TORN_SQL);
+        const value = JSON.stringify({
+          rows: Number(handle.query_scalar_i64('SELECT count(*) FROM torn')),
+          committed: Number(handle.query_scalar_i64(`SELECT count(*) FROM torn WHERE v = ${COMMITTED}`)),
+          problems: op === 'check' ? Number(handle.query_scalar_i64(CHECK_SQL)) : 0,
+        });
+        post({ type: 'mls-result', id, ok: true, value });
+      } catch (err) {
+        post({ type: 'mls-result', id, ok: false, error: (err as Error).message });
+      }
       return;
     }
     try {

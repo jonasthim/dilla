@@ -18,7 +18,7 @@ interface WorkerReport {
   error?: string;
 }
 
-type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume';
+type MlsOp = 'create' | 'load' | 'hold' | 'release' | 'pause' | 'resume' | 'torn' | 'check';
 type MlsReply = { ok: true; value: string } | { ok: false; error: string };
 
 const params = new URLSearchParams(location.search);
