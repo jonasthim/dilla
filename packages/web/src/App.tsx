@@ -87,12 +87,14 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     channel.addEventListener('message', onMessage);
     return () => { channel.removeEventListener('message', onMessage); channel.close(); };
   }, [client, diagnostics?.instance, phase]);
-  // C1 hand-back: after a release the worker waits for the lock again; once it leads (the other tab handed back or
-  // closed) the phase leaves ready and returns to it, and the shell comes back in place of the paused view.
+  // C1 hand-back: after a release the worker waits for the lock again (other-tab); once it leads (the other tab handed
+  // back or closed) it boots from the store, and from then on the page follows the worker's phase again: the shell when
+  // it is ready, the splash or an error otherwise.
   const leftReady = useRef(false);
   useEffect(() => {
     if (paused === 'no') { leftReady.current = false; return; }
-    if (phase !== 'ready') { leftReady.current = true; return; }
+    if (phase === 'ready' && !leftReady.current) return;
+    if (phase === 'other-tab' || phase === 'paused-error' || phase === undefined) { leftReady.current = true; return; }
     if (paused === 'released' && leftReady.current) {
       leftReady.current = false;
       resigning.current = false;

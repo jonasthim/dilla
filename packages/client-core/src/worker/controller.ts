@@ -298,6 +298,8 @@ export class Controller {
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
+  /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
+  private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
   private session: Session | null = null;
   private signup: Signup | null = null;
@@ -582,7 +584,9 @@ export class Controller {
   /** deps.boot, then the phase the store's identity calls for (requirement 10). Never throws. */
   private async bootStore(instance: Instance): Promise<void> {
     try {
-      const outcome = await this.deps.boot(instance);
+      const paused = this.pausedCore;
+      this.pausedCore = null;
+      const outcome = paused === null ? await this.deps.boot(instance) : await this.resumePaused(paused, instance);
       if (outcome.kind === 'unsupported') {
         this.setAccount({ phase: 'unsupported', error: sanitizeWorkerError(new Refusal('E_UNSUPPORTED', outcome.reason)) });
         return;
@@ -624,6 +628,21 @@ export class Controller {
     } catch (e) {
       // After a revocation the error is its consequence (a 401 that reauthenticate turned into revoked).
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
+    }
+  }
+
+  /**
+   * A worker that released the lead keeps its paused store: the OPFS pool lives in this worker and stays paused, and a
+   * fresh open here would find that paused pool and fail ("unable to open database file"). Resuming re-acquires the
+   * pool and rebuilds the core from what the other tab wrote. If that fails, a fresh open is the fallback.
+   */
+  private async resumePaused(core: CorePort, instance: Instance): Promise<BootOutcome> {
+    try {
+      await core.resume();
+      return { kind: 'opened', core, instance };
+    } catch {
+      try { core.close(); } catch { /* nothing left to release */ }
+      return this.deps.boot(instance);
     }
   }
 
@@ -2231,20 +2250,35 @@ export class Controller {
         this.setAccount({ phase: 'paused-error', error: errorOf(e) });
         // M1: a store this worker can neither pause nor resume is no lead to keep. The lock goes to the tab that asked,
         // and this worker waits behind it as a released one does (it boots from the store again when it leads).
+        const instance = this.requireInstance();
+        this.dropStore();
         await this.leadership?.release();
         this.leadership = null;
-        this.awaitLeadership(this.requireInstance());
+        this.awaitLeadership(instance);
         this.setAccount({ error: errorOf(e) });
       }
       throw e;
     }
+    const instance = this.requireInstance();
+    this.dropStore();
     await this.leadership?.release();
     this.leadership = null;
-    const instance = this.requireInstance();
     this.setAccount({ phase: 'other-tab' });
     this.deps.post({ t: 'released', instance: toHex(instance.instanceId), nonce });
     this.awaitLeadership(instance);
     return { released: true };
+  }
+
+  /**
+   * Drops what this worker knew of the account it led with, before the lock goes. Meanwhile the other tab may sign out,
+   * sign in as someone else or reset the store: nothing of this account is kept (the page's views went with the shell
+   * and open their channels again once this tab leads). The paused store is kept to be resumed, never opened again.
+   */
+  private dropStore(): void {
+    const core = this.core;
+    this.forgetAccount();
+    this.pausedCore = core;
+    this.setAccount({ user: null, deviceId: null, recoveryKey: null, signIn: null, error: null, rootMismatch: false, ownTrust: null });
   }
 
   /**
@@ -2253,12 +2287,6 @@ export class Controller {
    * paused core, the stopped engine and the socket are dropped, so enterReady builds a fresh gateway and engine.
    */
   private awaitLeadership(instance: Instance): void {
-    const core = this.core;
-    // Meanwhile the other tab may sign out, sign in as someone else or reset the store: nothing of this account is kept
-    // (the page's views went with the shell and open their channels again once this tab leads).
-    this.forgetAccount();
-    try { core?.close(); } catch { /* the paused store holds nothing to release */ }
-    this.setAccount({ user: null, deviceId: null, recoveryKey: null, signIn: null, error: null, rootMismatch: false, ownTrust: null });
     this.starting = Promise.resolve(null);
     this.barrier.reopen();
     void this.lead(instance);

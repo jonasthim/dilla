@@ -515,8 +515,9 @@ function world(opts: {
     refreshOwnDeviceList: account.refreshOwnDeviceList,
     repairBackupState: account.repairBackupState,
   };
+  const bootCount = { value: 0 };
   const h = harness({
-    boot: (instance) => Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }),
+    boot: (instance) => { bootCount.value += 1; return Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }); },
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.now ? { now: opts.now } : {}),
@@ -531,6 +532,7 @@ function world(opts: {
     timeline: () => h.last<TimelineState>(`timeline:${toHex(CHANNEL)}`),
     badges: () => h.last<Record<string, BadgeState>>('badges'),
     notices: () => h.last<NoticesState>('notices'),
+    get boots(): number { return bootCount.value; },
   };
 }
 type World = ReturnType<typeof world>;
@@ -1306,6 +1308,46 @@ function otherTab(w: World): { granted: Promise<void>; release: () => void } {
   return { granted, release: () => { release(); } };
 }
 
+// Wave C2, found by the browser hand-back (A -> B -> A): the OPFS pool lives in this worker and stays paused after a
+// release, and a fresh open here finds that paused pool and fails ("unable to open database file"). A tab that leads
+// again resumes the store it paused instead, also when its rollback had failed; a resume that fails falls back to boot.
+it('leads again by resuming the store it paused, not by opening it again', async () => {
+  for (const rollbackFails of [false, true]) {
+    const w = world();
+    await toReady(w);
+    if (rollbackFails) {
+      w.core.pause.mockImplementationOnce(() => { throw new CoreError('E_STORE_BUSY', ''); });
+      w.core.resume.mockImplementationOnce(() => Promise.reject(new CoreError('E_STORE_BUSY', '')));
+    }
+    const boots = w.boots;
+    const tabB = otherTab(w);
+    w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+    await vi.waitFor(() => expect(w.ret(92)).toBeDefined());
+    await tabB.granted;
+    expect(w.core.close).not.toHaveBeenCalled();
+    const resumes = w.core.resume.mock.calls.length;
+    tabB.release();
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+    expect(w.core.resume.mock.calls.length, `rollback fails: ${String(rollbackFails)}`).toBe(resumes + 1);
+    expect(w.boots).toBe(boots);
+  }
+});
+
+it('falls back to a fresh open when the paused store cannot resume', async () => {
+  const w = world();
+  await toReady(w);
+  const boots = w.boots;
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true }));
+  await tabB.granted;
+  w.core.resume.mockImplementationOnce(() => Promise.reject(new CoreError('E_STORE_RESUME', '')));
+  tabB.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  expect(w.core.close).toHaveBeenCalledOnce();
+  expect(w.boots).toBe(boots + 1);
+});
+
 it('a tab that resigned leads again when the new leader hands back, with a fresh engine (A -> B -> A -> B)', async () => {
   const w = world();
   await toReady(w);
@@ -1314,7 +1356,8 @@ it('a tab that resigned leads again when the new leader hands back, with a fresh
   await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true }));
   await tabB.granted;
   expect(w.account()?.phase).toBe('other-tab');
-  expect(w.core.close).toHaveBeenCalledOnce();
+  // The paused store stays with this worker, to be resumed when it leads again.
+  expect(w.core.close).not.toHaveBeenCalled();
   const builds = w.sync.builds;
   const starts = w.sync.start.mock.calls.length;
   const gatewayStarts = w.calls.filter((c) => c === 'gateway.start').length;
