@@ -15,7 +15,7 @@ import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow,
+  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustBlock,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
@@ -156,7 +156,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
   'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-  'refreshTrust', 'verifyContact', 'safetyNumber', 'ownKey', 'search', 'typing', 'voiceSelf', 'resign',
+  'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -188,7 +188,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'joinCommunity', 'selectCommunity', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-    'refreshTrust', 'verifyContact', 'safetyNumber', 'ownKey', 'search', 'typing', 'voiceSelf', 'resign',
+    'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
   ],
 };
 
@@ -256,6 +256,7 @@ function invalid(command: Record<string, unknown>): string | null {
     if (command.value !== null && typeof command.value !== 'string') return 'value is not a string or null';
   }
   if (m === 'verifyContact' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
+  if (m === 'safetyNumber' && command.umk !== undefined && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
   if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
   if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
   if (m === 'resign' && (typeof command.nonce !== 'string' || !ID.test(command.nonce))) return 'nonce is not 32 lowercase hex';
@@ -340,16 +341,17 @@ export class Controller {
   private trustRefresh: Promise<null> | null = null;
   private trustRefreshAgain = false;
   private seenTrustGeneration: bigint | null = null;
-  // Ruling (c) of 2026-10-13: Privacy states the core answers only per leaf, kept here and published per contact.
-  // A user whose latest ingest quarantined one of its leaves, or whose leaf the core refused by a leaf verdict.
+  // Ruling (c) of 2026-10-13, narrowed by fix wave C1 (F4): the verified/failed/changed state is the core's trust_state
+  // `blocked`, read from the store. The worker keeps only what the core stores no answer for: a user whose leaf ingest the
+  // core refused with a leaf verdict (that refusal writes nothing), until a clean ingest of that user.
   private readonly unlistedUsers = new Set<string>();
+  // Own-user leaves (`group:leafIndex`) whose list ingest the core refused with E_UMK_CHANGED (an own-user history under
+  // another key): an own-trust signal, held while the core still reports the leaf, so the banner never waits for a store read.
+  private readonly ownRefusedLeaves = new Set<string>();
   // Flow 05 "history pending": users whose last signed-list read failed (kept until a read succeeds, since a failed leaf
   // is not read again before the next ready), and the published union of those with users whose history is still unknown.
   private readonly historyFailedUsers = new Set<string>();
   private pendingUsers = new Set<string>();
-  // Users whose key this page just approved: trust_verify re-judged their leaves, and a count read while their change was
-  // pending told nothing, so they read as pending (never verified) until their leaves are ingested again (lead (s)).
-  private readonly recheckUsers = new Set<string>();
   // user hex -> groups (hex) where pendingLeaves last reported a 'changed' leaf of that user.
   private changedLeafGroups = new Map<string, Set<string>>();
   // user hex -> still active groups whose changed leaf has since left the tree (a validated Remove cleared their block).
@@ -485,8 +487,7 @@ export class Controller {
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
       case 'refreshTrust': return this.refreshTrust();
       case 'verifyContact': return this.verifyContact(command.userId, command.umk);
-      case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId));
-      case 'ownKey': return Promise.resolve(this.ownKey());
+      case 'safetyNumber': return Promise.resolve(this.safetyNumber(command.userId, command.umk));
       case 'search': return this.search(command, searchId ?? this.searchGate.next());
       case 'typing': return this.typing(command.channelId, command.on);
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
@@ -1691,7 +1692,7 @@ export class Controller {
     for (const known of this.channels.values()) communities.add(known.communityId);
     const timelines = new Set([...this.open.keys(), ...this.pinsOpen, ...this.incomingTyping.keys(), ...this.typingOn]);
     this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
-    this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.recheckUsers.clear();
+    this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
@@ -1717,6 +1718,7 @@ export class Controller {
     this.slices.set('settings', {});
     this.slices.set('notices', this.noticesState);
     this.slices.set('trust', []);
+    this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.setConnection({ status: 'offline', generation: null });
   }
@@ -1973,11 +1975,12 @@ export class Controller {
     const leaves = core.pendingLeaves();
     this.noteChangedLeaves(leaves);
     let keyChanged = false;
-    const changingUsers = new Set<string>();
     // A user the core no longer reports in any active group has no history left to wait for.
     const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
     for (const user of this.historyFailedUsers) if (!present.has(user)) this.historyFailedUsers.delete(user);
-    for (const user of this.recheckUsers) if (!present.has(user)) this.recheckUsers.delete(user);
+    // A refused own leaf the core no longer reports has left the group (a validated Remove).
+    const current = new Set(leaves.map((leaf) => `${toHex(leaf.groupId)}:${leaf.leafIndex}`));
+    for (const leaf of this.ownRefusedLeaves) if (!current.has(leaf)) this.ownRefusedLeaves.delete(leaf);
     // Users with a leaf whose signed history the core has never accepted; a successful ingest below caches their list.
     const unknownUsers = new Set(leaves.filter((leaf) => leaf.reason === 'unknown').map((leaf) => toHex(leaf.userId)));
     const historyByUser = new Map<string, { head: Uint8Array; history: Uint8Array } | null>();
@@ -2004,20 +2007,20 @@ export class Controller {
         if (signed === null || signed === undefined) continue;
         const { head, history } = signed;
         let verdict: { changed: boolean; quarantined: number };
+        const own = this.me !== null && toHex(this.me.userId) === user;
         try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
         catch (e) {
           // Only the core's own leaf verdicts say the device is off the list; a stale read or limit says nothing about it.
-          if (e instanceof CoreError && LEAF_VERDICTS.has(e.code)) { this.unlistedUsers.add(user); this.recheckUsers.delete(user); }
+          // The refusal writes nothing in the core, so the worker keeps it. An own-user history under another key is an
+          // own-trust signal (fixA), never an unlisted contact; the leaf is not fetched again before the next ready.
+          if (e instanceof CoreError && LEAF_VERDICTS.has(e.code)) this.unlistedUsers.add(user);
+          if (e instanceof CoreError && e.code === 'E_UMK_CHANGED' && own) this.ownRefusedLeaves.add(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
           throw e;
         }
-        // With a changed key the count also holds the leaves it quarantined as changed, so it cannot tell; keep the last.
-        // The core says `changed` only on the ingest that starts the change; while it stays pending (reason 'changed',
-        // or started earlier in this run) the count still includes the changed-key leaves.
-        if (verdict.changed) { keyChanged = true; changingUsers.add(user); }
-        else if (changingUsers.has(user) || leaf.reason === 'changed') { /* cannot tell; keep the last */ }
-        else if (verdict.quarantined > 0) this.unlistedUsers.add(user);
-        else this.unlistedUsers.delete(user);
-        if (!changingUsers.has(user) && leaf.reason !== 'changed') this.recheckUsers.delete(user);
+        // The quarantine count is not read: what it counts the core stores, and trust_state's `blocked` reports it.
+        if (verdict.changed) keyChanged = true;
+        this.unlistedUsers.delete(user);
+        if (own) this.ownRefusedLeaves.delete(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
         unknownUsers.delete(user);
         core.revalidatePending(leaf.groupId, leaf.leafIndex, 256);
         this.refreshTrustGeneration();
@@ -2079,34 +2082,52 @@ export class Controller {
       if (this.dms.has(channelId) || this.channels.has(channelId)) channelOf.set(toHex(group.groupId), channelId);
     }
     // The core pins the own key as well; nobody compares a safety number with themselves, so the own row is no contact.
-    // What the core says about it is not dropped: a changed own key or an own leaf the core refused against the own
-    // signed list (a device this person did not add) stands on the account slice, where the page alerts on it.
+    // What the core says about it is not dropped: ABI 8 keeps the own row verified and never changed, and its `blocked`
+    // says an own-user leaf is under another key (E_UMK_CHANGED) or an own device is unlisted. That stands on the account
+    // slice, where the page alerts on it (ruling M6 revised: no own-key compare; a Remove of the leaf ends it).
     const own = this.me === null ? null : toHex(this.me.userId);
     const rows = this.core.trustState();
     const ownRow = own === null ? undefined : rows.find((row) => toHex(row.userId) === own);
-    // An own key approved on this page (ruling M6) stays changed until its leaves are read again, as an approved contact
-    // stays pending (lead (s)): a stale view never reads as clean.
-    const ownTrust: AccountState['ownTrust'] = ownRow !== undefined && (ownRow.changedUmk !== null || (own !== null && this.recheckUsers.has(own))) ? 'changed'
-      : own !== null && this.unlistedUsers.has(own) ? 'unlisted' : null;
+    const ownTrust: AccountState['ownTrust'] = ownRow?.blocked === 'E_UMK_CHANGED' || this.ownRefusedLeaves.size > 0 ? 'changed'
+      : (ownRow?.blocked ?? null) !== null || (own !== null && this.unlistedUsers.has(own)) ? 'unlisted' : null;
     if (!this.storeCleared && this.accountState.ownTrust !== ownTrust) this.setAccount({ ownTrust });
     this.slices.set('trust', rows.filter((row) => toHex(row.userId) !== own).map((row): TrustSummary => {
       const userId = toHex(row.userId);
       // An approved key ends the changed state everywhere, so no group is left to call removed.
       if (row.changedUmk === null) this.removedGroups.delete(userId);
       const removedIn = [...new Set([...this.removedGroups.get(userId) ?? []].flatMap((g) => channelOf.get(g) ?? []))].sort();
+      const blocked = row.blocked;
+      // A failed leaf (not a changed key) reads as unlisted; so do a refusal the core stored nothing for and Flow 05's
+      // "history pending" (the list read has not completed): the unlisted announcement and no Verify.
+      const unlisted = (blocked !== null && blocked !== 'E_UMK_CHANGED') || this.unlistedUsers.has(userId) || this.pendingUsers.has(userId);
       return { userId, name: this.nameOf(userId), shared: this.sharedUser(userId), umk: toHex(row.umk),
-        firstSeen: Number(row.firstSeen), verified: row.verified, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk),
-        // History pending has Flow 05's unlisted announcement and, like unlisted, no Verify.
-        ...(this.unlistedUsers.has(userId) || this.pendingUsers.has(userId) || this.recheckUsers.has(userId) ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}) };
+        // F4: never verified while the core holds a failed or changed verdict for one of the contact's leaves.
+        firstSeen: Number(row.firstSeen), verified: row.verified && blocked === null, changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk),
+        ...(unlisted ? { unlisted: true as const } : {}), ...(removedIn.length > 0 ? { removedIn } : {}),
+        ...(blocked !== null ? { blocked } : {}) };
     }));
+    this.publishSendBlocks();
+  }
+
+  /** The composer's send gate (W-01): send_block_code of each active channel group, by channel; open channels are absent. */
+  private publishSendBlocks(): void {
+    if (this.core === null) return;
+    const blocks: Record<string, TrustBlock> = {};
+    for (const group of this.core.groups()) {
+      if (group.kind !== 0 || group.state !== 2) continue;
+      const channelId = toHex(group.targetId);
+      if (!this.dms.has(channelId) && !this.channels.has(channelId)) continue;
+      const code = this.core.sendBlockCode(group.groupId);
+      if (code !== null) blocks[channelId] = code;
+    }
+    this.slices.set('sendBlocks', blocks);
   }
 
   private verifyContact(userId: string, umk: string): Promise<null> {
     if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
     this.requireCore().trustVerify(fromHex(userId), fromHex(umk));
-    // The approval re-judged this user's leaves in the core; while a change was pending the worker could not read the
-    // quarantine count, so the contact stays pending until its leaves are ingested again, never verified on a stale view.
-    this.recheckUsers.add(userId);
+    // The approval re-judged this user's leaves in the core and released held messages (the generation moved): the trust
+    // slice and every open timeline are read again from the core below, and the user's leaves are fetched again.
     for (const key of this.fetchedLeaves) if (key.split(':')[2] === userId) this.fetchedLeaves.delete(key);
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust()).catch(() => undefined);
@@ -2115,26 +2136,17 @@ export class Controller {
     return Promise.resolve(null);
   }
 
-  /**
-   * Ruling M6 (2026-10-13): the own row stays out of the contacts, but the ownChanged banner offers Compare. The page
-   * opens a comparison against the pending own key with this record, then uses safetyNumber and verifyContact with the
-   * own user id as for a contact; approving the key ends the banner. Public keys only; null before the core pins one.
-   */
-  private ownKey(): { userId: string; umk: string; changedUmk: string | null; verified: boolean } | null {
-    const me = this.me;
-    if (me === null) return null;
-    const own = toHex(me.userId);
-    const row = this.requireCore().trustState().find((r) => toHex(r.userId) === own);
-    if (row === undefined) return null;
-    return { userId: own, umk: toHex(row.umk), changedUmk: row.changedUmk === null ? null : toHex(row.changedUmk), verified: row.verified };
-  }
-
-  private safetyNumber(userId: string): string {
+  /** The digits for exactly the key the page compares (ABI 8); without one, the core's comparison key (changed, else pinned). */
+  private safetyNumber(userId: string, umk: string | undefined): string {
     if (!this.sharedUser(userId)) throw new Refusal('E_CORE_NOT_FOUND', '');
-    // ABI 8 binds the digits to the compared key; the page-side key arrives with the next commit.
-    const row = this.requireCore().trustState().find((r) => toHex(r.userId) === userId);
-    if (row === undefined) throw new Refusal('E_CORE_NOT_FOUND', '');
-    return this.requireCore().safetyNumberFor(fromHex(userId), row.changedUmk ?? row.umk);
+    const core = this.requireCore();
+    let key = umk === undefined ? undefined : fromHex(umk);
+    if (key === undefined) {
+      const row = core.trustState().find((r) => toHex(r.userId) === userId);
+      if (row === undefined) throw new Refusal('E_CORE_NOT_FOUND', '');
+      key = row.changedUmk ?? row.umk;
+    }
+    return core.safetyNumberFor(fromHex(userId), key);
   }
 
   private search(command: Extract<Command, { m: 'search' }>, requestId: number): Promise<null> {

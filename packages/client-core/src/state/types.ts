@@ -1,5 +1,7 @@
 // The state slices the worker publishes and the page renders (L-TS-08). Every id is 32 lower-case hex
 // characters; every slice value is immutable and replaced whole.
+import type { TrustBlock } from '../core-port';
+export type { TrustBlock };
 export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'paused-error' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error'
   | 'signin-login' | 'signin-totp' | 'signin-key' | 'enrolling' | 'cleared';
 export interface AccountState {
@@ -65,7 +67,16 @@ export interface DeviceSummary { id: string; tier: 0 | 1; signerTier: 0 | 1; las
  * changed leaf cleared that group's send block while the key stays changed and unverified).
  */
 export interface TrustSummary { userId: string; name: string; shared: boolean; umk: string; firstSeen: number; verified: boolean; changedUmk: string | null;
-  unlisted?: true; removedIn?: string[] }
+  unlisted?: true; removedIn?: string[]; blocked?: TrustBlock }
+/**
+ * Fix wave C1 (ABI 8): `blocked` is the core's stored verdict of the contact's leaves still in an active group, present only
+ * while one holds. `verified` is true only while nothing is blocked. 'E_UMK_CHANGED' reads as a changed key (also when
+ * `changedUmk` is null: a leaf under another key that no validated list presents); any other code reads as unlisted.
+ *
+ * `sendBlocks`: channel id (hex) → the code the core refuses a send with in that channel's group (send_block_code), only for
+ * blocked channels; the composer pauses on it (W-01: privacy.leafFailed, the changed-key copy for 'E_UMK_CHANGED').
+ */
+export type SendBlocksState = Record<string, TrustBlock>;
 export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string }[];
   cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
@@ -75,12 +86,12 @@ export interface BadgeState { unread: number; mentions: number; }
 export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number; }
 export interface NoticesState { nextId: number; items: Notice[]; }      // items ≤ 32, oldest first; ids increase for the worker's life
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
-  | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'search' | 'diagnostics'
+  | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
   [k: `typing:${string}`]: TypingState[];
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
-  trust: TrustSummary[]; search: SearchState; diagnostics: DiagnosticsState }
+  trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState }
 export const TIMELINE_PAGE = 100;

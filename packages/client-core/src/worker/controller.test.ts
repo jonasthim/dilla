@@ -8,7 +8,7 @@ import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/cryp
 import {
   CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo,
   type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord,
-  type SignedLists, type TimelineRow, type TrustRecord,
+  type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
@@ -381,7 +381,7 @@ function world(opts: {
     ownRolesSet: vi.fn((_c: Uint8Array, _ids: Uint8Array[]): void => {}),
     trustVerify: vi.fn((_u: Uint8Array, _k: Uint8Array): void => {}),
     safetyNumberFor: vi.fn((_u: Uint8Array, _k: Uint8Array): string => Array.from({ length: 12 }, () => '12345').join(' ')),
-    sendBlockCode: vi.fn((_g: Uint8Array): null => null),
+    sendBlockCode: vi.fn((_g: Uint8Array): TrustBlock | null => null),
     keyPackages: vi.fn((_count: number, _last: boolean): Uint8Array => new Uint8Array([1])),
     search: vi.fn((_scope: unknown, _query: string, _cursor: unknown, _limit: number) => [] as {
       groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint }[]),
@@ -798,62 +798,67 @@ it('leaves the own user out of the trust slice', async () => {
   expect(w.account()?.ownTrust).toBeNull();
 });
 
-// Leaving the own row out of the contacts must not hide what the core says about the own account: a changed own key or
-// an own leaf that fails against the own signed list (a device this person did not add) moves to the account slice.
-it('keeps a changed own key on the account slice, out of the contacts, until the core reports it ended', async () => {
+// Leaving the own row out of the contacts must not hide what the core says about the own account. ABI 8 (F3): the own row
+// is always verified and never changed; its `blocked` reports an own-user leaf under another key (E_UMK_CHANGED) or an
+// unlisted own device. The banner is raised from that, never from changedUmk or the network-filled sets.
+const ownRow = (blocked: TrustBlock | null): TrustRecord =>
+  ({ userId: USER, umk: new Uint8Array(32).fill(0xaa), firstSeen: 1n, verified: true, changedUmk: null, blocked });
+
+it('raises ownTrust from the own row\'s blocked verdict: changed for E_UMK_CHANGED, unlisted for any other code', async () => {
   const w = world();
   await toReady(w);
-  const ownUmk = new Uint8Array(32).fill(0xaa);
-  w.core.trustState.mockReturnValue([
-    { userId: USER, umk: ownUmk, firstSeen: 1n, verified: false, changedUmk: CHANGED_UMK, blocked: null },
-    ...strangerTrust(null),
-  ]);
+  w.core.trustState.mockReturnValue([ownRow('E_UMK_CHANGED'), ...strangerTrust(null)]);
   w.call(9801, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(9801)).toMatchObject({ ok: true }));
   expect(w.last<TrustSummary[]>('trust')?.map((row) => row.userId)).toEqual([toHex(STRANGER)]);
   expect(w.account()?.ownTrust).toBe('changed');
-  w.core.trustState.mockReturnValue([
-    { userId: USER, umk: ownUmk, firstSeen: 1n, verified: false, changedUmk: null, blocked: null },
-    ...strangerTrust(null),
-  ]);
+  for (const [blocked, want] of [['E_DEVICE_UNLISTED', 'unlisted'], ['E_CREDENTIAL', 'unlisted'], ['E_TIER_MISMATCH', 'unlisted'], [null, null]] as const) {
+    w.core.trustState.mockReturnValue([ownRow(blocked), ...strangerTrust(null)]);
+    w.core.trustGeneration.mockReturnValue(w.core.trustGeneration() + 1n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.account()?.ownTrust).toBe(want);
+  }
+});
+
+it('reads the own banner straight from the store after a reload, before any list is fetched', async () => {
+  const w = world();
+  w.core.trustState.mockReturnValue([ownRow('E_UMK_CHANGED')]);
+  await toReady(w);
+  await vi.waitFor(() => expect(w.account()?.ownTrust).toBe('changed'));
+  expect(w.routes.getDeviceList).not.toHaveBeenCalled();
+});
+
+// fixA: an own-user history under another UMK throws E_UMK_CHANGED from the ingest. It is an own-trust signal, not an
+// unlisted contact, and it is not fetched again in a loop.
+it('raises ownTrust on an own-user E_UMK_CHANGED ingest without a crash or a retry, and drops it with the leaf', async () => {
+  const w = world();
+  await toReady(w);
+  w.core.trustState.mockReturnValue([ownRow(null), ...strangerTrust(null)]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
+    raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 4, userId: USER, cachedVersion: 0n, reason: 'unknown' }]);
+  w.core.deviceListIngest.mockImplementation(() => { throw new CoreError('E_UMK_CHANGED', ''); });
   w.call(9802, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(9802)).toMatchObject({ ok: true }));
+  expect(w.account()?.ownTrust).toBe('changed');
+  expect(w.account()?.phase).toBe('ready');
+  w.call(9803, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9803)).toMatchObject({ ok: true }));
+  expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+  expect(w.account()?.ownTrust).toBe('changed');
+  // A validated Remove takes the leaf out of the group: the core no longer reports it, and nothing else holds the banner.
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.call(9804, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(9804)).toMatchObject({ ok: true }));
   expect(w.account()?.ownTrust).toBeNull();
 });
 
-it('ownKey gives the page the own account key to compare, and approving its pending key ends the banner (ruling M6)', async () => {
+// Ruling M6 revised: no own-key compare, so the ownKey command (7bf0bfe) is gone.
+it('no longer accepts the ownKey command', async () => {
   const w = world();
   await toReady(w);
-  w.call(9803, { m: 'ownKey' });
-  await vi.waitFor(() => expect(w.ret(9803)).toBeDefined());
-  expect(w.ret(9803)).toEqual({ t: 'ret', id: 9803, ok: true, value: null });
-  const ownUmk = new Uint8Array(32).fill(0xaa);
-  w.core.trustState.mockReturnValue([{ userId: USER, umk: ownUmk, firstSeen: 1n, verified: true, changedUmk: CHANGED_UMK, blocked: null }]);
-  w.call(9804, { m: 'ownKey' });
-  await vi.waitFor(() => expect(w.ret(9804)).toBeDefined());
-  expect(w.ret(9804)).toEqual({ t: 'ret', id: 9804, ok: true,
-    value: { userId: toHex(USER), umk: toHex(ownUmk), changedUmk: toHex(CHANGED_UMK), verified: true } });
-  // The own account compares and verifies like a contact, in a group its other device shares.
-  w.state.groups = [textGroup(2)];
-  w.call(9805, { m: 'safetyNumber', userId: toHex(USER) });
-  await vi.waitFor(() => expect(w.ret(9805)).toMatchObject({ ok: true }));
-  w.call(9806, { m: 'verifyContact', userId: toHex(USER), umk: toHex(CHANGED_UMK) });
-  await vi.waitFor(() => expect(w.ret(9806)).toMatchObject({ ok: true }));
-  expect(w.core.trustVerify).toHaveBeenCalledWith(USER, CHANGED_UMK);
-  // The approval ends the change in the core, but the own leaves are not read again yet: the banner stays until they are
-  // (lead (s): a stale view never reads as clean), then ends.
-  w.core.trustState.mockReturnValue([{ userId: USER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
-  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
-  const gate = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
-  const signedHead = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
-  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
-  w.routes.getDeviceList.mockImplementationOnce(() => gate.promise);
-  w.call(9807, { m: 'verifyContact', userId: toHex(USER), umk: toHex(CHANGED_UMK) });
-  await vi.waitFor(() => expect(w.ret(9807)).toMatchObject({ ok: true }));
-  expect(w.account()?.ownTrust).toBe('changed');
-  gate.resolve({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
-  w.core.deviceListIngest.mockReturnValue({ version: 1n, changed: false, quarantined: 0 });
-  await vi.waitFor(() => expect(w.account()?.ownTrust).toBeNull());
+  w.call(9805, { m: 'ownKey' });
+  await vi.waitFor(() => expect(w.ret(9805)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
 });
 
 it('keeps an own leaf the core refused against the own signed list on the account slice', async () => {
@@ -902,75 +907,147 @@ it('does not call a contact with a pending key change unlisted from the changed-
   expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
 });
 
-// While a change is pending the quarantine count is not read (above), so it may hide a leaf of the new key that its list
-// does not name: the core calls it E_UMK_CHANGED until the key is approved, then re-judges it (trust_verify). The
-// approval is a core trust change, so the contact is read again before it can stand as verified (lead (s)).
-it('reads an approved contact again before it stands as verified', async () => {
+// F4 (lead s): the published verified/failed/changed state is the core's trust_state row, read from the store; the
+// quarantine count of an ingest is not read for it. An approval is published from the row trust_verify left behind.
+it('publishes an approved contact from the core\'s row: verified only while none of its leaves is blocked', async () => {
   const w = world();
   w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
   await toReady(w);
   w.state.groups = [{ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
   w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
-  w.core.pendingLeaves.mockReturnValue([{ groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'changed' }]);
-  w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 1 });
   w.call(9781, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(9781)).toMatchObject({ ok: true }));
-  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ shared: true, changedUmk: toHex(CHANGED_UMK) });
-  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
-  // The approval: the core now pins the new key verified and re-judged the leaves; the worker has not read them yet.
-  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
-  w.core.pendingLeaves.mockReturnValue([{ groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
-  const read = deferred<Awaited<ReturnType<typeof w.routes.getDeviceList>>>();
-  w.routes.getDeviceList.mockImplementationOnce(() => read.promise);
-  w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 1 });
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ shared: true, changedUmk: toHex(CHANGED_UMK), verified: false });
+  // The approval re-judged the leaves in the core: one of them is still off the approved key's list.
+  w.core.trustVerify.mockImplementation(() => {
+    w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: 'E_DEVICE_UNLISTED' }]);
+    w.core.trustGeneration.mockReturnValue(5n);
+  });
   w.call(9782, { m: 'verifyContact', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });
   await vi.waitFor(() => expect(w.ret(9782)).toMatchObject({ ok: true }));
   expect(w.core.trustVerify).toHaveBeenCalledWith(STRANGER, CHANGED_UMK);
-  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: true, changedUmk: null, unlisted: true });
-  await vi.waitFor(() => expect(w.routes.getDeviceList).toHaveBeenCalledWith(STRANGER));
-  read.resolve({ version: 1n, blob: new Uint8Array([9]), raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
-  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2));
-  await settle();
-  // The core's count after the approval is about the approved key alone: the unlisted leaf keeps the contact unlisted.
-  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: true, unlisted: true });
-});
-
-it('lets an approved contact stand as verified once a clean ingest read it again', async () => {
-  const w = world();
-  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
-  await toReady(w);
-  w.state.groups = [{ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: false, changedUmk: null, unlisted: true, blocked: 'E_DEVICE_UNLISTED' });
+  // Once the core has nothing blocked, the approval stands, with no extra round of fetches.
   w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: CHANGED_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: null }]);
-  w.core.pendingLeaves.mockReturnValue([{ groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
-  w.core.deviceListIngest.mockReturnValue({ version: 1n, changed: false, quarantined: 0 });
-  w.call(9783, { m: 'verifyContact', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });
-  await vi.waitFor(() => expect(w.ret(9783)).toMatchObject({ ok: true }));
-  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1));
-  await settle();
-  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: true, changedUmk: null });
-  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  w.core.trustGeneration.mockReturnValue(6n);
+  w.sync.deps!.onTrustChanged();
+  const row = w.last<TrustSummary[]>('trust')?.[0];
+  expect(row).toMatchObject({ verified: true, changedUmk: null });
+  expect(row).not.toHaveProperty('unlisted');
+  expect(row).not.toHaveProperty('blocked');
 });
 
-it('marks a contact unlisted from a quarantining ingest or a core leaf verdict, and clears it after a clean ingest', async () => {
+it('never reads a contact with a stored blocked verdict as verified, right after a reload and before any refetch', async () => {
+  const w = world();
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: 'E_CREDENTIAL' }]);
+  await toReady(w);
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ verified: false, unlisted: true, blocked: 'E_CREDENTIAL' }));
+  expect(w.routes.getDeviceList).not.toHaveBeenCalled();
+  // A changed-key block reads as changed even when no validated list presented the key (changedUmk is null).
+  w.core.trustState.mockReturnValue([{ userId: STRANGER, umk: STRANGER_UMK, firstSeen: 1n, verified: true, changedUmk: null, blocked: 'E_UMK_CHANGED' }]);
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  const row = w.last<TrustSummary[]>('trust')?.[0];
+  expect(row).toMatchObject({ verified: false, blocked: 'E_UMK_CHANGED' });
+  // Its Verify is the compare dialog's, not "unlisted": the changed key is not an unlisted device.
+  expect(row).not.toHaveProperty('unlisted');
+});
+
+it('marks a contact unlisted from the core\'s failed verdict or a leaf verdict the core refused with, never from the count', async () => {
   const w = world();
   await toReady(w);
   w.core.trustState.mockReturnValue(strangerTrust(null));
   w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  // A count with nothing stored in the core says nothing about this contact.
   w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 1 });
   w.call(981, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(981)).toMatchObject({ ok: true }));
-  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER), unlisted: true });
-  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 2, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
-  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 });
-  w.call(982, { m: 'refreshTrust' });
-  await vi.waitFor(() => expect(w.ret(982)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  // The core's stored verdict does.
+  w.core.trustState.mockReturnValue([{ ...strangerTrust(null)[0], blocked: 'E_TIER_MISMATCH' }]);
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true, blocked: 'E_TIER_MISMATCH', verified: false });
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
   expect(w.last<TrustSummary[]>('trust')?.[0]).toEqual({ userId: toHex(STRANGER), name: expect.any(String) as string, shared: false,
     umk: toHex(STRANGER_UMK), firstSeen: 1, verified: false, changedUmk: null });
+  // A leaf verdict the ingest threw is stored nowhere in the core: the worker keeps it until a clean ingest.
   w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
   w.core.deviceListIngest.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_UNLISTED', 'leaf not on the list'); });
   w.call(983, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(983)).toMatchObject({ ok: true }));
   expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 4, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 });
+  w.call(984, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(984)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+});
+
+// Item 6: trust_verify releases held messages at the same seq and moves the generation; the open timeline is read again.
+it('re-reads an open timeline after a verify so the released held messages show', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  await openGeneral(w);
+  w.state.groups = [textGroup(2)];
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.routes.listMembers.mockResolvedValue([{ userId: STRANGER, username: 's', display: 'S', kind: 0 as const, nick: '', roleIds: [] }]);
+  w.call(9790, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+  await vi.waitFor(() => expect(w.ret(9790)).toMatchObject({ ok: true }));
+  expect(w.timeline()?.items[0]?.body).toBe('');
+  w.core.trustVerify.mockImplementation(() => {
+    w.state.rows = [strangerRow(1)];
+    w.core.trustGeneration.mockReturnValue(9n);
+  });
+  w.call(9791, { m: 'verifyContact', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });
+  await vi.waitFor(() => expect(w.ret(9791)).toMatchObject({ ok: true }));
+  expect(w.timeline()?.items[0]?.body).toBe('from a stranger 1');
+});
+
+// Item 4: the safety number is bound to the key the page compares (ABI 8 safety_number_for(user, expected_umk)).
+it('passes the compared key to the core\'s safety number, and refuses a malformed one', async () => {
+  const w = world();
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+  await toReady(w);
+  w.state.groups = [{ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  w.core.trustState.mockReturnValue(strangerTrust(CHANGED_UMK));
+  w.call(9792, { m: 'safetyNumber', userId: toHex(STRANGER), umk: toHex(CHANGED_UMK) });
+  await vi.waitFor(() => expect(w.ret(9792)).toMatchObject({ ok: true }));
+  expect(w.core.safetyNumberFor).toHaveBeenLastCalledWith(STRANGER, CHANGED_UMK);
+  w.core.safetyNumberFor.mockImplementationOnce(() => { throw new CoreError('E_DEVICE_LIST_STALE', 'not the comparison key'); });
+  w.call(9793, { m: 'safetyNumber', userId: toHex(STRANGER), umk: toHex(STRANGER_UMK) });
+  await vi.waitFor(() => expect(w.ret(9793)).toMatchObject({ ok: false, error: { code: 'E_DEVICE_LIST_STALE', detail: '' } }));
+  // Until the page sends the key (wave C2), the worker binds the core's own comparison key: the changed one, else the pin.
+  w.call(9794, { m: 'safetyNumber', userId: toHex(STRANGER) });
+  await vi.waitFor(() => expect(w.ret(9794)).toMatchObject({ ok: true }));
+  expect(w.core.safetyNumberFor).toHaveBeenLastCalledWith(STRANGER, CHANGED_UMK);
+  w.call(9795, { m: 'safetyNumber', userId: toHex(STRANGER), umk: 'AB' });
+  await vi.waitFor(() => expect(w.ret(9795)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+});
+
+// Item 5: the per-group send block (send_block_code) for the composer, by channel; no group id reaches the page.
+it('publishes the core\'s send block per channel and re-reads it on every trust generation change', async () => {
+  const w = world();
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+  await toReady(w);
+  await openGeneral(w);
+  w.state.groups = [textGroup(2), { ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(GROUP) ? 'E_UMK_CHANGED' : null));
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({ [toHex(CHANNEL)]: 'E_UMK_CHANGED' });
+  expect(JSON.stringify(w.last('sendBlocks'))).not.toContain(toHex(GROUP));
+  w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(DM_GROUP) ? 'E_DEVICE_UNLISTED' : null));
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({ [toHex(DM_CHANNEL)]: 'E_DEVICE_UNLISTED' });
+  w.core.sendBlockCode.mockImplementation(() => null);
+  w.core.trustGeneration.mockReturnValue(3n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.last('sendBlocks')).toEqual({});
 });
 
 // Flow 05 "history pending": while the list read is not complete the contact shows privacy.unlisted with no Verify,
