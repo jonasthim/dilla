@@ -630,6 +630,43 @@ it('hands the core the signed list of the candidate head, never the served row a
   expect(w.core.deviceListIngest.mock.calls[0][4]).toEqual(new Uint8Array([9]));
 });
 
+// Controller ruling 2 (89923a6): the core refuses sending to a group holding a failed leaf. A device that joined
+// before this device ingested the list naming it fails against the cached list until a trust refresh ingests the newer
+// one, which ends that verdict (trust.rs apply_verdict). Found in core-worker.spec.ts: A's send right after its own
+// second device B joined was refused E_DEVICE_UNLISTED while the refresh the join started was still in flight.
+it('a send refused by a leaf verdict waits for one trust refresh and is tried once more', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  const order: string[] = [];
+  w.core.deviceListIngest.mockImplementation(() => { order.push('ingest'); return { version: 2n, changed: false, quarantined: 0 }; });
+  w.sync.sendRequest
+    .mockImplementationOnce(() => { order.push('send'); throw new CoreError('E_DEVICE_UNLISTED', ''); })
+    .mockImplementationOnce(() => { order.push('send'); return new Uint8Array(16).fill(0x77); });
+  w.call(51, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+  await vi.waitFor(() => expect(w.ret(51)).toBeDefined());
+  expect(w.ret(51)).toEqual({ t: 'ret', id: 51, ok: true, value: { msgId: '77'.repeat(16) } });
+  expect(order).toEqual(['send', 'ingest', 'send']);
+});
+
+it('a send still refused after the trust refresh answers the verdict, and a changed key is not retried', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.sync.sendRequest.mockImplementation(() => { throw new CoreError('E_DEVICE_UNLISTED', ''); });
+  w.call(52, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+  await vi.waitFor(() => expect(w.ret(52)).toBeDefined());
+  expect(w.ret(52)).toMatchObject({ ok: false, error: { code: 'E_DEVICE_UNLISTED' } });
+  expect(w.sync.sendRequest).toHaveBeenCalledTimes(2);
+  w.sync.sendRequest.mockClear();
+  w.sync.sendRequest.mockImplementation(() => { throw new CoreError('E_UMK_CHANGED', ''); });
+  w.call(53, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
+  await vi.waitFor(() => expect(w.ret(53)).toBeDefined());
+  expect(w.ret(53)).toMatchObject({ ok: false, error: { code: 'E_UMK_CHANGED' } });
+  expect(w.sync.sendRequest).toHaveBeenCalledTimes(1);
+});
+
 it('clears an old search slice when a newer core search refuses', async () => {
   const w = world();
   await toReady(w);

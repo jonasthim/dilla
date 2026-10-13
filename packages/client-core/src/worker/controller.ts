@@ -2141,7 +2141,7 @@ export class Controller {
   }
 
   /** Requirement 9: the page has already encoded its mentions; the descriptors never enter a slice. */
-  private send(c: Extract<Command, { m: 'send' }>): Promise<{ msgId: string }> {
+  private async send(c: Extract<Command, { m: 'send' }>): Promise<{ msgId: string }> {
     const groupId = this.activeGroup(c.channelId);
     const ids = c.attachments ?? [];
     let descriptors: AttachmentDescriptor[] = [];
@@ -2161,15 +2161,32 @@ export class Controller {
     };
     let msgId: Id;
     // The core enforces the 4000-byte limit (E_ENVELOPE_LIMIT); the controller does not measure the text.
-    try { msgId = this.requireSync().sendRequest(groupId, request); }
-    catch (e) {
+    try {
+      try { msgId = this.requireSync().sendRequest(groupId, request); }
+      catch (e) {
+        if (!(e instanceof CoreError) || !LEAF_VERDICTS.has(e.code)) throw e;
+        // Controller ruling 2: the core refuses a group holding a failed leaf. A device that joined before the list
+        // naming it was ingested fails against the cached list until a refresh ingests the newer one, so this
+        // group's leaves are read again and the send is tried once more; the core alone decides the second answer.
+        await this.refreshGroupTrust(groupId);
+        msgId = this.requireSync().sendRequest(groupId, request);
+      }
+    } catch (e) {
       // The taken references were never sent; each is deleted now, or expires after pending_ttl (L-HTTP-83).
       const channel = fromHex(c.channelId);
       for (const d of descriptors) void this.barrier.track(this.routes.deleteBlob(channel, d.blobId).catch(() => undefined));
       throw e;
     }
     this.refreshTimeline(c.channelId);
-    return Promise.resolve({ msgId: toHex(msgId) });
+    return { msgId: toHex(msgId) };
+  }
+
+  /** Forgets which leaves of the group were already fetched and waits for a trust refresh that reads them again. */
+  private async refreshGroupTrust(groupId: Id): Promise<void> {
+    const prefix = `${toHex(groupId)}:`;
+    for (const key of this.fetchedLeaves) if (key.startsWith(prefix)) this.fetchedLeaves.delete(key);
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    await this.barrier.track(this.refreshTrust()).catch(() => undefined);
   }
 
   /** Pre-flight ruling 1(iv): a message id that no outbox holds is an idempotent no-op. */
