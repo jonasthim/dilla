@@ -539,7 +539,7 @@ function world(opts: {
 type World = ReturnType<typeof world>;
 
 it('uses admission request ids rather than rank to discard an old search', async () => {
-  const { SearchGate } = await import('./runtime');
+  const { SearchGate } = await import('./barrier');
   const gate = new SearchGate();
   const older = gate.next();
   const newer = gate.next();

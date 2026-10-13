@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SyncError } from './errors';
 import { SerialQueues } from './group-queue';
-import { CommandBarrier } from '../worker/runtime';
+import { CommandBarrier } from '../worker/barrier';
 import { deferred, settle } from './testing/model';
 
 describe('SerialQueues: one serial queue per group (rule 1)', () => {

@@ -24,7 +24,7 @@ it('holds the one lock until release has left its callback', async () => {
   expect(locks.exited).toBe(1);
 });
 it('waits for a durable child even after its accepted send command returns', async () => {
-  const { CommandBarrier } = await import('./runtime');
+  const { CommandBarrier } = await import('./barrier');
   const barrier = new CommandBarrier();
   const write = deferred<void>();
   // eslint-disable-next-line @typescript-eslint/require-await -- a command may return before its durable child

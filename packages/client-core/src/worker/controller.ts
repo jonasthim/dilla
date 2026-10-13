@@ -37,7 +37,7 @@ import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
 import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
-import { CommandBarrier, SearchGate } from './runtime';
+import { CommandBarrier, SearchGate } from './barrier';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
