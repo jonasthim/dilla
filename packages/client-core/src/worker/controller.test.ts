@@ -1649,6 +1649,26 @@ it('a trust generation change posts each open timeline once, never an empty one 
   expect(w.timeline()?.items).toEqual([]);
 });
 
+it('a trust generation change empties an open timeline it cannot re-read, never leaving the old text (lead on 68194e7)', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  expect(w.timeline()?.items[0]?.body).not.toBe('');
+  // A generation change that leaves this timeline's rows as they were keeps it (an equal slice is not posted again).
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.timeline()?.items).toHaveLength(1);
+  // The channel leaves the community's list while its timeline is still open, then a trust write retracts its rows.
+  w.routes.listChannels.mockResolvedValueOnce([]);
+  w.call(72, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+  await vi.waitFor(() => expect(w.ret(72)).toMatchObject({ ok: true }));
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  expect(w.timeline()?.items).toEqual([]);
+});
+
 async function toKeys(w: World): Promise<void> {
   w.call(1, { m: 'start' });
   await vi.waitFor(() => expect(w.account()?.phase).toBe('needs-signup'));

@@ -1830,16 +1830,17 @@ export class Controller {
     return this.open.get(channelId)?.groupId ?? hint ?? channelGroup(fromHex(channelId), groups)?.groupId ?? null;
   }
 
-  private refreshTimeline(channelId: string, hint?: Id): void {
+  /** Answers whether the timeline was read again and set (false: the channel is not known, or nothing is open). */
+  private refreshTimeline(channelId: string, hint?: Id): boolean {
     const target = this.target(channelId);
     const core = this.core;
     const me = this.me;
-    if (target === undefined || core === null || me === null) return;
+    if (target === undefined || core === null || me === null) return false;
     const groups = core.groups();
     const group = this.groupState(channelId, groups);
     if (group === 'unsupported') {
       this.slices.set(`timeline:${channelId}`, { channelId, group, items: [], hasEarlier: false });
-      return;
+      return true;
     }
     const limit = this.open.get(channelId)?.limit ?? TIMELINE_PAGE;
     const groupId = this.timelineGroup(channelId, groups, hint);
@@ -1850,6 +1851,7 @@ export class Controller {
     this.slices.set(`timeline:${channelId}`, timeline);
     // A DM has no community member list to look senders up in.
     if (target.communityId !== null) this.lookUpMembers(target.communityId, timeline.items);
+    return true;
   }
 
   /** A sender who is not in the loaded member list re-runs listMembers once per unknown user (L-TS-09). */
@@ -1940,10 +1942,14 @@ export class Controller {
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     // L-CORE-43: no slice of the old generation stays on display. The refreshed timeline replaces it in one set (M4: an
     // empty one first made a second render, lost the scroll position and could re-announce the log); only a timeline
-    // that cannot be read now is emptied.
+    // that is not re-read now (it throws, or returns without a set: a channel no longer listed) is emptied.
     for (const channelId of this.open.keys()) {
-      try { this.refreshTimeline(channelId); continue; } catch { /* emptied below */ }
-      this.slices.set(`timeline:${channelId}`, { channelId, group: this.groupState(channelId), items: [], hasEarlier: false });
+      let read = false;
+      try { read = this.refreshTimeline(channelId); } catch { /* emptied below */ }
+      if (read) continue;
+      let group: ChannelGroupState = 'none';
+      try { group = this.groupState(channelId); } catch { /* none */ }
+      this.slices.set(`timeline:${channelId}`, { channelId, group, items: [], hasEarlier: false });
     }
     this.publishTrust();
   }
