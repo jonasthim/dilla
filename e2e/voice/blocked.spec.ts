@@ -1,7 +1,8 @@
 // VOICE-E2E (web-3 task 10): a poisoned call group stops the call in the browser (decision 4, RV-1, RV-3), through the
 // real SFU, against a native peer that poisons it:
 // (a) before join: a contact whose identity changed is in the call group, so the join is refused before anything is
-//     posted, and the browser never reaches the group or the room;
+//     posted, and the browser never reaches the group or the room; the notice names the contact, and verifying them
+//     offers the join again without a reload;
 // (b) mid-call: a device that fails the signed-list check joins, so the browser leaves and its leaf goes;
 // (c) mid-call identity change (RV-3): the call pauses on each browser that saw it, without ending for anyone, until
 //     the contact is verified or leaves;
@@ -15,7 +16,7 @@ import {
   POLL, VoicePeer, WAIT, callSlice, changedSeen, connected, copy, dock, framesPass, heard, heardCount, introduce, joinVoice, noiseOff,
   onboard, openVoice, peerName, self, sentCount, stage, tile,
 } from './support/voice';
-import { dmComposer, dmsNav, sidebarTab } from '../web/support/app';
+import { dmComposer, dmsNav, openSettings, sidebarTab } from '../web/support/app';
 
 watchContexts(test);
 
@@ -45,14 +46,28 @@ test('(a) a changed contact in the call group refuses the join before anything i
     await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked', { timeout: WAIT });
     expect((await callSlice(alice.page))?.error?.code).toBe('E_UMK_CHANGED');
-    // The notice names the changed contact only when they are among the call's participants in the room (task-6 review
-    // M4); the native peer holds a leaf of the group but never enters the room, so the notice is the unnamed one
-    // (voice.blockedJoin rather than voice.blockedChanged; task 10 report, concern 3).
-    await expect(notice(alice.page, copy('voice.blockedJoin'))).toBeVisible({ timeout: WAIT });
+    // The native peer holds a leaf of the group but never enters the room: the core's refusal names it from the call
+    // tree, so the notice names the changed contact (task 10, concern 3).
+    const name = peerName(s);
+    await expect(notice(alice.page, copy('voice.blockedChanged', { name }))).toBeVisible({ timeout: WAIT });
     await expect(dock(alice.page)).toHaveCount(0);
     // The join stays held while the contact is changed (flow 06: no join button until the cause is gone).
-    await expect(stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true })).toHaveCount(0);
+    const join = stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true });
+    await expect(join).toHaveCount(0);
     expect((await callSlice(alice.page))?.error?.code).toBe('E_UMK_CHANGED');
+
+    await test.step('alice verifies the peer: the join is offered again without a reload', async () => {
+      await openSettings(alice.page, 'privacy');
+      await alice.page.getByRole('button', { name: copy('privacy.compare', { name }) }).click();
+      const dialog = alice.page.getByRole('dialog', { name: copy('privacy.title') });
+      await expect(dialog).toBeVisible({ timeout: WAIT });
+      await dialog.getByRole('button', { name: copy('privacy.copy') }).click();
+      await dialog.getByRole('checkbox', { name: copy('privacy.confirm') }).check();
+      await dialog.getByRole('button', { name: copy('privacy.verify') }).click();
+      await expect(dialog).toHaveCount(0, { timeout: WAIT });
+      await alice.page.getByRole('button', { name: copy('settings.close') }).click();
+      await expect(join).toHaveCount(1, { timeout: WAIT });
+    });
 
     // Positive control: bob, who met the peer only after the rotation, joins after alice's attempt; the peer's group
     // and the room both see him, so a device that had reached either would be seen too.

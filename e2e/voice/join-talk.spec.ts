@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, audioRunning, heard, introduce, joinVoice, keyPath, onboard, openVoice, self, snapshotDevices, tile,
+  VoicePeer, WAIT, audioRunning, heard, joinVoice, keyPath, onboard, openVoice, self, snapshotDevices, tile,
 } from './support/voice';
 
 watchContexts(test);
@@ -43,7 +43,7 @@ test('two browsers join one voice channel, see each other ok and hear each other
     const s = await peer.setup();
     await onboard(alice, peer, 'alice');
     await onboard(bob, peer, 'bob');
-    await introduce(peer, [alice, bob]);
+    await peer.seat(2); // no hello: a voice tile names a member the page loaded after it (task 10, concern 4)
     const a = await self(alice.page);
     const b = await self(bob.page);
 
@@ -65,7 +65,9 @@ test('two browsers join one voice channel, see each other ok and hear each other
     await heard(alice.page, b.device);
     await heard(bob.page, a.device);
     // Bob's tile passed through `connecting` on alice's stage before it was ok.
-    const history = await tileHistory(alice.page);
+    // Alice's page loaded the member list before bob joined the server: his tile names him once the worker has read it
+    // again (task 10, concern 4), so a state recorded before that is under his id's first 8 characters.
+    const history = (await tileHistory(alice.page)).map((e) => e.replace(`${b.user.slice(0, 8)}:`, 'bob:'));
     expect(history.indexOf('bob:connecting'), history.join(' ')).toBeGreaterThanOrEqual(0);
     expect(history.indexOf('bob:connecting')).toBeLessThan(history.indexOf('bob:ok'));
 

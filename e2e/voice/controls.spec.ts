@@ -4,7 +4,7 @@
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, audioRunning, copy, framesPass, heard, heardCount, introduce, joinVoice, noiseOff, onboard, pushToTalk, self,
+  VoicePeer, WAIT, audioRunning, copy, framesPass, heard, heardCount, joinVoice, noiseOff, onboard, pushToTalk, self,
   sentCount, tile,
 } from './support/voice';
 
@@ -21,7 +21,7 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await onboard(bob, peer, 'bob');
-    await introduce(peer, [alice, bob]);
+    await peer.seat(2); // no hello: a voice tile names a member the page loaded after it (task 10, concern 4)
     const a = await self(alice.page);
     // Without noise suppression the fake microphone's steady tone is sent as full frames, a frame clock of its own.
     await noiseOff(alice.page);

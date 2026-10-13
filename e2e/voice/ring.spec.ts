@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  POLL, VoicePeer, WAIT, advanceClock, audioRunning, catchUpClock, changedSeen, connected, copy, dmPair, framesPass, introduce,
+  POLL, VoicePeer, WAIT, advanceClock, audioRunning, changedSeen, connected, copy, dmPair, framesPass, introduce,
   joinVoice, noiseOff, sentCount,
   notificationsSeen, onboard, openDm, ringChannelsSeen, ringPings, ringTimerLive, rings, self, setHidden, slice, stripButton, tile,
 } from './support/voice';
@@ -157,7 +157,6 @@ test('blocked DM: a ring of a DM whose contact\'s identity changed never shows; 
     await expect.poll(async () => (await other.syncDm(odm.channel_id)).members, POLL).toBe(2);
     await openDm(bob.page, odm.channel_id, o.user_id.slice(0, 8));
     await setHidden(bob.page, true);
-    await catchUpClock();
     await peer.callJoin(dm.channel_id);
     const started = await peer.callStart(dm.channel_id);
     expect(started.created).toBe(true);

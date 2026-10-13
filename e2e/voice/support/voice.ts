@@ -132,8 +132,9 @@ export async function onboard(person: Person, peer: VoicePeer, display: string):
 
 /**
  * Seats the browsers in `general` and has each say hello there, so every page knows every other by name: a page loads a
- * community's member list once, and looks a sender up again only when a message names one it lacks (L-TS-09); a voice
- * participant who joined the server later would otherwise show as its id's first 8 characters (task 10 report, card).
+ * community's member list once, and looks a sender up again only when a message names one it lacks (L-TS-09). The DM
+ * picker needs that (it lists the loaded members). A voice tile does not: a participant the list lacks is looked up
+ * (task 10, concern 4), so the voice specs only seat the browsers (`seat`).
  */
 export async function introduce(peer: VoicePeer, people: readonly Person[], browsersSeated = people.length): Promise<void> {
   await peer.seat(browsersSeated);
@@ -155,8 +156,9 @@ export async function openDmWith(page: Page, community: string, name: string): P
   await expect(dmComposer(page)).toBeEnabled({ timeout: WAIT });
   return new URL(page.url()).pathname.split('/')[2];
 }
-/** Alice and bob in the peer's server, their DM opened by alice and open on both sides, and the instance clock caught
- *  up with the wall clock (catchUpClock: a ring's expires_ts then means what it says on the page). Answers the DM. */
+/** Alice and bob in the peer's server, their DM opened by alice and open on both sides. Answers the DM. The instance
+ *  clock stays where the test host froze it (minutes behind the pages): a ring's 30 s run from its arrival on the page,
+ *  never from expires_ts read on the page's clock (task 10, concern 5). */
 export async function dmPair(alice: Person, bob: Person, peer: VoicePeer): Promise<string> {
   await peer.setup();
   await onboard(alice, peer, 'alice');
@@ -164,7 +166,6 @@ export async function dmPair(alice: Person, bob: Person, peer: VoicePeer): Promi
   await introduce(peer, [alice, bob]);
   const dm = await openDmWith(alice.page, peer.communityName, 'bob');
   await openDm(bob.page, dm, 'alice');
-  await catchUpClock();
   return dm;
 }
 
@@ -221,21 +222,6 @@ export function stripButton(page: Page, key: 'call.start' | 'call.join'): Locato
 /** The incoming rings on screen (L-UI-70), each with `data-ring` `incoming` or `busy`. */
 export function rings(page: Page): Locator { return page.locator('.d-ring-banner__ring'); }
 
-/**
- * Moves the test host's instance clock up to the wall clock (it is a fake clock, frozen at the host's start but for
- * /debug/clock): a ring's op 53 carries an absolute `expires_ts`, which the page compares with its own clock, so a
- * ring sent on a clock minutes behind would read as already over.
- */
-export async function catchUpClock(): Promise<void> {
-  const control = process.env.DILLA_TESTKIT_CONTROL;
-  if (!control) throw new Error('DILLA_TESTKIT_CONTROL is unset: the web globalSetup exports it');
-  const state = await fetch(`${control}/debug/state`);
-  expect(state.status, 'GET /debug/state').toBe(200);
-  const now = ((await state.json()) as { now_unix: number }).now_unix;
-  const behind = Math.floor(Date.now() / 1000) - now;
-  if (behind <= 0) return;
-  await advanceClock(behind);
-}
 /** Moves the instance clock `seconds` forward (POST /debug/clock). */
 export async function advanceClock(seconds: number): Promise<void> {
   const control = process.env.DILLA_TESTKIT_CONTROL;

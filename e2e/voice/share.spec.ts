@@ -4,7 +4,7 @@
 // (`getDisplayMedia` needs that activation); the fake UI flag picks the screen.
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
-import { VoicePeer, WAIT, copy, heard, introduce, joinVoice, onboard, self, tile } from './support/voice';
+import { VoicePeer, WAIT, copy, heard, joinVoice, onboard, self, tile } from './support/voice';
 
 watchContexts(test);
 
@@ -17,7 +17,7 @@ test('a screen share and a camera reach the other browser verified, and stop', a
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await onboard(bob, peer, 'bob');
-    await introduce(peer, [alice, bob]);
+    await peer.seat(2); // no hello: a voice tile names a member the page loaded after it (task 10, concern 4)
     const a = await self(alice.page);
     await joinVoice(alice.page, peer.communityName, peer.voiceName);
     await joinVoice(bob.page, peer.communityName, peer.voiceName);
