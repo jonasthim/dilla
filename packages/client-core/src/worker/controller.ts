@@ -1653,31 +1653,50 @@ export class Controller {
       this.setAccount({ phase: 'error', error: errorOf(e) });
       throw e;
     }
+    this.forgetAccount();
+    this.storeCleared = true;
+    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false, ownTrust: null });
+  }
+
+  /**
+   * Drops everything this worker holds about the store's account and empties every slice the page shows from it: the
+   * core and its session parts, the socket and engine, the trust annotations, channels, DMs, timelines, notices, search,
+   * typing and trays. A wipe ends with it; so does a release, after which another tab may sign out, sign in as someone
+   * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
+   */
+  private forgetAccount(): void {
     const communities = new Set<string>((this.slices.get('communities') ?? []).map((c) => c.id));
     for (const known of this.channels.values()) communities.add(known.communityId);
-    const timelines = [...this.open.keys()];
+    const timelines = new Set([...this.open.keys(), ...this.pinsOpen, ...this.incomingTyping.keys(), ...this.typingOn]);
     this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
     this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.recheckUsers.clear();
+    this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
+    this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
+    this.searchGate.invalidate(); this.searchCursor = null;
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
     this.slices.set('communities', []);
     for (const communityId of communities) {
       this.slices.set(`channels:${communityId}`, []);
       this.slices.set(`members:${communityId}`, []);
     }
-    for (const channelId of timelines) this.slices.set(`timeline:${channelId}`, { channelId, group: 'none', items: [], hasEarlier: false });
+    for (const channelId of timelines) {
+      this.slices.set(`timeline:${channelId}`, { channelId, group: 'none', items: [], hasEarlier: false });
+      this.slices.set(`typing:${channelId}`, []);
+      if (this.slices.get(`pins:${channelId}`) !== undefined) this.slices.set(`pins:${channelId}`, []);
+    }
     this.slices.set('dms', []);
     this.slices.set('devices', []);
     this.slices.set('badges', {});
     this.slices.set('settings', {});
     this.slices.set('notices', this.noticesState);
+    this.slices.set('trust', []);
+    this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.setConnection({ status: 'offline', generation: null });
-    this.storeCleared = true;
-    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false, ownTrust: null });
   }
 
   // ---- channels and timelines ----
@@ -2158,13 +2177,11 @@ export class Controller {
    */
   private awaitLeadership(instance: Instance): void {
     const core = this.core;
-    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null;
-    this.gateway = null; this.sync = null; this.me = null;
+    // Meanwhile the other tab may sign out, sign in as someone else or reset the store: nothing of this account is kept
+    // (the page's views went with the shell and open their channels again once this tab leads).
+    this.forgetAccount();
     try { core?.close(); } catch { /* the paused store holds nothing to release */ }
-    this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
-    // The page's views went with the shell; they open their channels again once this tab leads.
-    this.open.clear(); this.opening.clear(); this.pinsOpen.clear(); this.incomingTyping.clear();
-    this.setConnection({ status: 'offline', generation: null });
+    this.setAccount({ user: null, deviceId: null, recoveryKey: null, signIn: null, error: null, rootMismatch: false, ownTrust: null });
     this.starting = Promise.resolve(null);
     this.barrier.reopen();
     void this.lead(instance);

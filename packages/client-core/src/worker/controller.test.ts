@@ -1074,7 +1074,7 @@ it('refuses malformed key approval and sends typing off on channel close', async
   await vi.waitFor(() => expect(w.ret(95)).toBeDefined());
   expect(w.gateway.sendTyping).toHaveBeenCalledWith(CHANNEL, true);
   w.call(96, { m: 'closeChannel', channelId: toHex(CHANNEL) });
-  await vi.waitFor(() => expect(w.ret(96)).toBeDefined());
+  await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true }));
   expect(w.gateway.sendTyping).toHaveBeenCalledWith(CHANNEL, false);
 });
 
@@ -1129,6 +1129,53 @@ it('a tab that resigned leads again when the new leader hands back, with a fresh
   expect(w.account()?.phase).toBe('other-tab');
   again.release();
   await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+});
+
+it('a tab that leads again rebuilds from the store: nothing of the account before carries over (B switched account)', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  expect(w.last<MemberSummary[]>(`members:${toHex(COMMUNITY)}`)).not.toEqual([]);
+  // The old account's state: a live message notice, and a contact the core refused by a leaf verdict.
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+  w.core.deviceListIngest.mockImplementation(() => { throw new CoreError('E_DEVICE_UNLISTED', ''); });
+  w.call(96, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ unlisted: true });
+  w.core.pendingLeaves.mockReturnValue([]);
+  w.state.groups = [textGroup(2)];
+  w.state.rows = [{ ...strangerRow(1), recvTs: NOW_S + 61n }];
+  w.state.activity = [act(GROUP, 1, 0)];
+  w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
+  expect(w.notices()?.items).toHaveLength(1);
+  w.state.groups = []; w.state.rows = []; w.state.activity = [];
+  const tabB = otherTab(w);
+  w.call(92, { m: 'resign', nonce: 'aa'.repeat(16) });
+  await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true }));
+  await tabB.granted;
+  // Meanwhile tab B signed out and signed in to another account on this instance, in no community.
+  const other = new Uint8Array(16).fill(0x77);
+  w.core.identity = (): IdentityInfo => ({ phase: 2, instanceId: INSTANCE_ID, userId: other, deviceId: OTHER_DEVICE,
+    username: 'other', listPublished: true });
+  w.state.joined = false;
+  tabB.release();
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  expect(w.account()?.user).toEqual({ id: toHex(other), username: 'other' });
+  expect(w.last('communities')).toEqual([]);
+  expect(w.last(`channels:${toHex(COMMUNITY)}`)).toEqual([]);
+  expect(w.last(`members:${toHex(COMMUNITY)}`)).toEqual([]);
+  expect(w.last<TimelineState>(`timeline:${toHex(CHANNEL)}`)?.items).toEqual([]);
+  expect(w.notices()?.items).toEqual([]);
+  // The same person is a contact of the new account too: what the old account's refresh said about them is gone.
+  w.call(97, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(97)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ userId: toHex(STRANGER) });
+  expect(w.last<TrustSummary[]>('trust')?.[0]).not.toHaveProperty('unlisted');
+  // The old account's channel is unknown to this one.
+  w.call(95, { m: 'openChannel', channelId: toHex(CHANNEL) });
+  await vi.waitFor(() => expect(w.ret(95)).toBeDefined());
+  expect(w.ret(95)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
 });
 
 it('resign waits for a DM reload spawned by an unexpected Welcome', async () => {
