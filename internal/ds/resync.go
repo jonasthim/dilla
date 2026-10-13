@@ -72,7 +72,7 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	}
 	rejoin := false
 	if err := d.guardResyncTarget(ctx, s, groupID, epoch); err != nil {
-		ok, rerr := d.rejoinSupersedes(ctx, s, groupID, joining)
+		ok, rerr := d.rejoinSupersedes(ctx, s, groupID, epoch, joining)
 		if rerr != nil {
 			return CommitResult{}, rerr
 		}
@@ -143,19 +143,27 @@ func (d *DS) guardResyncTarget(ctx context.Context, s Session, groupID id.ID, ep
 }
 
 // rejoinSupersedes is guard 1's one exception (web-3 task 10, concern 2): in a CALL group, the
-// target of an outstanding instance Remove may still resync while its user is admitted to the call
-// (the ACL a join is gated by). Every instance Remove of a call-group leaf ends a membership — a
-// leave, the room sweep's absent device, a cut — and the own-leaf external commit ends that same
-// membership itself (one device, one leaf: checkExternalCommitReplacesOwnLeaf), so the commit
-// satisfies the Remove (clause 1's Remove case, which the transaction deletes) and the device is
-// back on a NEW membership, exactly as "commit the Remove, then join" would leave it. Without it a
-// person alone in voice could not rejoin until the call ended: nobody can commit the Remove of the
-// only leaf. What guard 1 exists for still holds: a device whose user the call no longer admits
-// (a kick, a ban, a lost view_channel or connect) is refused, and the commit is held to a join's
-// checks of the device (not revoked, its DSK in the newest signed device list; joinerChecks), so
-// a device a device-list change is removing cannot re-add itself either. Text and channel groups
-// keep the guard whole; the heal path keeps it whole too.
-func (d *DS) rejoinSupersedes(ctx context.Context, s Session, groupID id.ID, joining bool) (bool, error) {
+// target of an outstanding instance Remove may still resync when that Remove carries out the
+// device's OWN leave. Without it a person alone in voice could not rejoin until the call ended:
+// nobody can commit the Remove of the only leaf.
+//
+// A leave is told from an eviction by the leaver's own Remove of its leaf (protocol/01 "Leaving":
+// the worker posts it before it leaves the room, and the SFU's leave report then has the instance
+// propose its Remove on top). It must be outstanding at this epoch, by a member of the device's own
+// user (clause 3 of invariant 4 scopes a member Remove to its proposer's user). A device the
+// instance is already removing cannot post one (409 E_REMOVE_PENDING), so an eviction issued first
+// — the cut of a device whose media was not dilla's, the room sweep's absent device, the fork
+// watchdog's committer, a kick — is never superseded: it keeps the device out until a member
+// commits it (the security review of e619526). On top of that the user must still be eligible
+// under the channel ACL (a kick, a ban or a lost connect after the leave), and the commit is held
+// to a joiner's device checks (not revoked, its DSK in the newest signed device list;
+// joinerChecks).
+//
+// The own-leaf external commit removes the very leaf the Remove targets (one device, one leaf:
+// checkExternalCommitReplacesOwnLeaf), so it satisfies that Remove (clause 1's Remove case, which
+// the transaction deletes) and the device is back on a NEW membership — the outcome of "commit the
+// leave, then join". Text and channel groups keep the guard whole; the heal path does too.
+func (d *DS) rejoinSupersedes(ctx context.Context, s Session, groupID id.ID, epoch uint64, joining bool) (bool, error) {
 	if joining {
 		return false, nil
 	}
@@ -164,6 +172,30 @@ func (d *DS) rejoinSupersedes(ctx context.Context, s Session, groupID id.ID, joi
 		return false, err
 	}
 	if row.Kind != groupKindCall {
+		return false, nil
+	}
+	leaf, err := d.leafOf(ctx, groupID, s.DeviceID)
+	if err != nil {
+		var noLeaf *Error
+		if errors.As(err, &noLeaf) {
+			return false, nil
+		}
+		return false, err
+	}
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
+	if err != nil {
+		return false, err
+	}
+	left := false
+	for _, p := range rows {
+		if p.Origin == 0 || p.VoidAt != nil || p.Kind != uint8(mlswasi.ProposalRemove) ||
+			p.TargetLeaf == nil || *p.TargetLeaf != leaf {
+			continue
+		}
+		left = true
+		break
+	}
+	if !left {
 		return false, nil
 	}
 	return d.opts.ACL.Eligible(ctx, groupID, s.UserID)

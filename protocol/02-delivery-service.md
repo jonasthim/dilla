@@ -519,7 +519,10 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    refused with `E_FORBIDDEN` when the resyncing device is the target of an outstanding non-void
    instance Remove, and the instance re-issues its outstanding proposals for the new epoch
    immediately afterwards. One exception to the first guard (web-3, a voice rejoin): in a **call**
-   group the target's resync is admitted while its user is still eligible for the group under the
+   group the target's resync is admitted when the Remove carries out the device's own leave — a
+   member Remove of that leaf by its own user is outstanding at this epoch, which can only have been
+   posted before the instance's (a later one is `409 E_REMOVE_PENDING`), so an eviction the device
+   did not ask for is never superseded — while its user is still eligible for the group under the
    channel ACL, and its device then passes a joiner's checks (not revoked, its DSK in the newest
    signed device list). Its own-leaf external commit removes the very leaf the Remove targets, so it
    satisfies that Remove, which is deleted with the commit and never re-issued onto the new leaf: the

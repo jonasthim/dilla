@@ -241,6 +241,25 @@ expect_425 send bob chat the re-issued Remove still holds the group
 	}
 }
 
+// An eviction is never superseded (the security review of e619526): the instance removes bob
+// without his asking (a cut, the room sweep, the fork watchdog), and his resync is refused while
+// that Remove stands, his user still eligible or not; once alice commits it, he may join afresh.
+func TestACallGroupEvictionIsNotSupersededByARejoin(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir()})
+	t.Cleanup(h.Stop)
+	const gid = "e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9"
+	runScript(t, h, `instance dilla
+client alice
+client bob
+group call kind=call target=`+gid+` community=none creator=alice
+join bob call via=external
+sync alice
+kick alice bob
+expect_reject E_FORBIDDEN resync bob call
+expect_425 send alice call the eviction still holds the call
+`)
+}
+
 // A call group's rejoin supersedes the Remove its leave caused (web-3 task 10, concern 2): bob
 // leaves voice, the instance proposes the Remove of his leaf, and he rejoins before anybody commits
 // it — the own-leaf external commit removes that leaf itself. It is accepted, the Remove is done
@@ -256,6 +275,7 @@ client bob
 group call kind=call target=`+gid+` community=none creator=alice
 join bob call via=external
 sync alice
+leave bob call
 kick alice bob
 resync bob call
 sync alice
@@ -285,6 +305,7 @@ func TestACallGroupRejoinAloneSupersedesTheRemoveOfItsOwnLeaf(t *testing.T) {
 	runScript(t, h, `instance dilla
 client alice
 group call kind=call target=`+gid+` community=none creator=alice
+leave alice call
 kick alice alice
 resync alice call
 send alice call alone again
