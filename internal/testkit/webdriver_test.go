@@ -31,10 +31,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/testkit"
@@ -185,6 +189,293 @@ func TestWebDriverVoiceSelfUsesStoredLiveParticipant(t *testing.T) {
 	h.AddVoiceParticipant(call, device)
 	if got := alice.ok("voice_self", map[string]any{"call": call.String(), "flags": 1}); got["accepted"] != true {
 		t.Fatalf("voice_self answer = %v", got)
+	}
+}
+
+// dilla-web-3 task 4 (L-E2E-30): the native peer joins a voice channel's call group through the real delivery
+// service, a second actor (the device `enrol` added) joins and leaves it, and call_members reads the roster
+// after a sync — the sync that also commits the leaver's own Remove.
+func TestWebDriverCallVerbs(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true})
+	t.Cleanup(h.Stop)
+	ctx := context.Background()
+	peer := startWebDriver(t, h, h.BaseURL(), "peer", 0xca11a)
+	sp := peer.ok("setup", map[string]any{"community": "voice verbs", "channel": "general",
+		"password": "correct horse battery staple", "voice": true})
+	voice := mustID(t, sp["voice_channel_id"])
+	if ch, err := h.Repo().GetChannel(ctx, voice); err != nil || ch.Kind != api.ChannelVoice ||
+		ch.CommunityID == nil || *ch.CommunityID != mustID(t, sp["community_id"]) {
+		t.Fatalf("the voice channel row = %+v, %v; want a voice channel of the peer's community", ch, err)
+	}
+	peer.ok("register", nil)
+	en := peer.ok("enrol", nil)
+	peerDev, secondDev := sp["device_id"].(string), en["device_id"].(string)
+
+	// 1. The peer finds no call group (L-HTTP-100 answers null) and registers one: leaf 0.
+	j1 := peer.ok("call_join", map[string]any{"actor": "peer", "channel": voice.String()})
+	group := mustID(t, j1["group"])
+	if j1["leaf"] != float64(0) {
+		t.Fatalf("the peer's call_join answered %v, want leaf 0", j1)
+	}
+	if groups, err := h.Repo().GroupsForTarget(ctx, voice, api.GroupCall); err != nil || len(groups) != 1 || groups[0].GroupID != group {
+		t.Fatalf("open call groups of the voice channel = %v, %v; want exactly %s", groups, err, group)
+	}
+	if m := peer.ok("call_members", map[string]any{"actor": "peer", "channel": voice.String()}); m["group"] != j1["group"] {
+		t.Fatalf("call_members answered group %v, want %v", m["group"], j1["group"])
+	}
+	waitCallMembers(t, peer, "peer", voice, peerDev)
+
+	// 2. The second actor reads the same group from the route and joins it by external commit: leaf 1.
+	j2 := peer.ok("call_join", map[string]any{"actor": "second", "channel": voice.String()})
+	if j2["group"] != j1["group"] || j2["leaf"] != float64(1) {
+		t.Fatalf("the second actor's call_join answered %v, want group %v at leaf 1", j2, j1["group"])
+	}
+	waitCallMembers(t, peer, "peer", voice, peerDev, secondDev)
+
+	// 3. The second actor proposes its own Remove; the peer's call_members commits it.
+	if got := peer.ok("call_leave", map[string]any{"actor": "second", "channel": voice.String()}); len(got) != 2 {
+		t.Fatalf("call_leave answered %v, want {}", got)
+	}
+	waitCallMembers(t, peer, "peer", voice, peerDev)
+}
+
+// waitCallMembers asks actor's call_members until its devices are exactly want, sorted.
+func waitCallMembers(t *testing.T, d *webDriver, actor string, channel id.ID, want ...string) {
+	t.Helper()
+	sorted := slices.Clone(want)
+	slices.Sort(sorted)
+	deadline := time.Now().Add(driverWait)
+	for {
+		got := d.ok("call_members", map[string]any{"actor": actor, "channel": channel.String()})["devices"].([]any)
+		match := len(got) == len(sorted)
+		for i := 0; match && i < len(got); i++ {
+			match = got[i] == any(sorted[i])
+		}
+		if match {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's call roster is %v, want exactly %v in that order", actor, got, sorted)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// dilla-web-3 task 4: the peer starts a DM call; the browserless second actor (another driver) rings with op 53,
+// declines with the expires_ts its own gateway received, and the peer's device hears the decline. The harness reads
+// both devices' rings over gateway connections of its own.
+func TestWebDriverCallStartRingsADMPeer(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir(), ProductionACL: true, SFU: true})
+	t.Cleanup(h.Stop)
+	peer := startWebDriver(t, h, h.BaseURL(), "peer", 0xca11b)
+	second := startWebDriver(t, h, h.BaseURL(), "second", 0xca11c)
+	sp := peer.ok("setup", map[string]any{"community": "ringing", "channel": "general"})
+	ss := second.ok("setup", map[string]any{"community": "second's own", "channel": "elsewhere"})
+	peerUser, secondUser := mustID(t, sp["user_id"]), mustID(t, ss["user_id"])
+	dm := peer.ok("open_dm", map[string]any{"user_id": ss["user_id"]})
+	channel := mustID(t, dm["channel_id"])
+	peerGW := dialGatewayAs(t, h, "peer", peerUser, mustID(t, sp["device_id"]))
+	secondGW := dialGatewayAs(t, h, "second", secondUser, mustID(t, ss["device_id"]))
+
+	if j := peer.ok("call_join", map[string]any{"actor": "peer", "channel": channel.String()}); j["leaf"] != float64(0) {
+		t.Fatalf("the peer's call_join in the DM answered %v, want leaf 0", j)
+	}
+	started := peer.ok("call_start", map[string]any{"actor": "peer", "channel": channel.String()})
+	call := mustID(t, started["call"])
+	if started["created"] != true {
+		t.Fatalf("the first call_start answered %v, want created", started)
+	}
+	ring := secondGW.nextRing(t)
+	if ring.call != call || ring.channel != channel || ring.user != peerUser || ring.state != 1 || ring.expires == 0 {
+		t.Fatalf("the second actor's device got %+v; want state 1 of call %s in %s from %s", ring, call, channel, peerUser)
+	}
+
+	if got := second.ok("call_decline", map[string]any{"actor": "peer", "call": call.String()}); len(got) != 2 {
+		t.Fatalf("call_decline answered %v, want {}", got)
+	}
+	declined := peerGW.nextRing(t)
+	if declined.call != call || declined.user != secondUser || declined.state != 2 || declined.expires != ring.expires {
+		t.Fatalf("the peer's device got %+v; want state 2 of call %s from %s with expires %d", declined, call, secondUser, ring.expires)
+	}
+	if over := secondGW.nextRing(t); over.state != 0 || over.user != peerUser || over.expires != ring.expires {
+		t.Fatalf("the second actor's device got %+v after its decline, want state 0", over)
+	}
+
+	again := peer.ok("call_start", map[string]any{"actor": "peer", "channel": channel.String()})
+	if again["created"] != false || again["call"] != started["call"] {
+		t.Fatalf("the second call_start answered %v, want the same call, not created", again)
+	}
+	secondGW.noRing(t)
+}
+
+// callRing is one op 53 payload: [call_id, channel_id, user_id, state, expires_ts] (L-GW-33).
+type callRing struct {
+	call, channel, user id.ID
+	state, expires      uint64
+}
+
+// gatewayReader is a gateway connection of the harness's own, opened as a device the drivers also act as: it keeps
+// the op 53 frames that device receives and answers a heartbeat barrier.
+type gatewayReader struct {
+	name  string
+	conn  *websocket.Conn
+	rings chan callRing
+	acked atomic.Uint64
+	sent  atomic.Uint64
+	ack   chan struct{}
+	done  chan struct{}
+	mu    sync.Mutex
+	err   error
+}
+
+func dialGatewayAs(t *testing.T, h *testkit.Harness, name string, user, device id.ID) *gatewayReader {
+	t.Helper()
+	ctx := context.Background()
+	dev, err := h.Repo().GetDevice(ctx, device)
+	if err != nil {
+		t.Fatalf("%s's device row: %v", name, err)
+	}
+	token, err := h.Server().Sessions().NewDeviceSession(ctx, h.Repo(), user, device, dev.Tier)
+	if err != nil {
+		t.Fatalf("a session for %s's device: %v", name, err)
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, driverWait)
+	defer cancel()
+	c, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(h.BaseURL(), "http")+"/gateway", //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
+		&websocket.DialOptions{
+			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token.Token}},
+			Subprotocols: []string{"dilla.v1"},
+		})
+	if err != nil {
+		t.Fatalf("dial the gateway as %s: %v", name, err)
+	}
+	c.SetReadLimit(8 << 20)
+	g := &gatewayReader{name: name, conn: c, rings: make(chan callRing, 64), ack: make(chan struct{}, 1), done: make(chan struct{})}
+	t.Cleanup(func() { _ = c.CloseNow(); <-g.done })
+	if op, _ := g.read(dialCtx, t); op != 0 {
+		t.Fatalf("%s's first gateway frame is op %d, want hello", name, op)
+	}
+	g.write(dialCtx, t, []any{uint64(1), uint64(1), nil, []any{"", uint64(1), uint64(1), uint64(1), uint64(0)}})
+	for {
+		op, _ := g.read(dialCtx, t)
+		if op == 3 {
+			break
+		}
+	}
+	go g.loop()
+	return g
+}
+
+func (g *gatewayReader) read(ctx context.Context, t *testing.T) (uint64, []any) {
+	t.Helper()
+	_, b, err := g.conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("%s's gateway read: %v", g.name, err)
+	}
+	var frame []any
+	if err := cborx.Unmarshal(b, &frame); err != nil || len(frame) != 4 {
+		t.Fatalf("%s's gateway frame %x: %v", g.name, b, err)
+	}
+	op, _ := frame[0].(uint64)
+	payload, _ := frame[3].([]any)
+	return op, payload
+}
+
+func (g *gatewayReader) write(ctx context.Context, t *testing.T, frame []any) {
+	t.Helper()
+	b, err := cborx.Marshal(frame)
+	if err != nil {
+		t.Fatalf("marshal a frame for %s: %v", g.name, err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.conn.Write(ctx, websocket.MessageBinary, b); err != nil {
+		t.Fatalf("%s's gateway write: %v", g.name, err)
+	}
+}
+
+// loop keeps every op 53 and counts heartbeat acks, in the order the connection delivers them.
+func (g *gatewayReader) loop() {
+	defer close(g.done)
+	for {
+		_, b, err := g.conn.Read(context.Background())
+		if err != nil {
+			g.mu.Lock()
+			g.err = err
+			g.mu.Unlock()
+			return
+		}
+		var frame []any
+		if err := cborx.Unmarshal(b, &frame); err != nil || len(frame) != 4 {
+			continue
+		}
+		payload, _ := frame[3].([]any)
+		switch op, _ := frame[0].(uint64); op {
+		case 7:
+			g.acked.Add(1)
+			select {
+			case g.ack <- struct{}{}:
+			default:
+			}
+		case 53:
+			g.rings <- decodeRing(payload)
+		}
+	}
+}
+
+func decodeRing(p []any) callRing {
+	if len(p) != 5 {
+		return callRing{}
+	}
+	asID := func(v any) id.ID {
+		var out id.ID
+		if b, ok := v.([]byte); ok && len(b) == len(out) {
+			copy(out[:], b)
+		}
+		return out
+	}
+	state, _ := p[3].(uint64)
+	expires, _ := p[4].(uint64)
+	return callRing{call: asID(p[0]), channel: asID(p[1]), user: asID(p[2]), state: state, expires: expires}
+}
+
+func (g *gatewayReader) nextRing(t *testing.T) callRing {
+	t.Helper()
+	select {
+	case r := <-g.rings:
+		return r
+	case <-time.After(driverWait):
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		t.Fatalf("%s's device received no op 53 within %v (reader error: %v)", g.name, driverWait, g.err)
+	}
+	return callRing{}
+}
+
+// barrier sends a heartbeat and waits for every ack owed: the gateway writes one connection's frames in order, so
+// an op 53 queued for this device before the heartbeat is in rings when it returns.
+func (g *gatewayReader) barrier(t *testing.T) {
+	t.Helper()
+	target := g.sent.Add(1)
+	g.write(context.Background(), t, []any{uint64(6), uint64(0), nil, []any{uint64(0), uint64(1)}})
+	deadline := time.After(driverWait)
+	for g.acked.Load() < target {
+		select {
+		case <-g.ack:
+		case <-deadline:
+			t.Fatalf("%s's gateway never acknowledged the heartbeat", g.name)
+		}
+	}
+}
+
+// noRing fails when an op 53 reached the device before a heartbeat barrier sent now.
+func (g *gatewayReader) noRing(t *testing.T) {
+	t.Helper()
+	g.barrier(t)
+	select {
+	case r := <-g.rings:
+		t.Fatalf("%s's device got another op 53: %+v", g.name, r)
+	default:
 	}
 }
 

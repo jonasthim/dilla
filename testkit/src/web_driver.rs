@@ -1,6 +1,7 @@
 //! `dilla-testkit web-driver`: the native peer of the browser tests (dilla-web-1, L-E2E-01; the
 //! enrolment, revocation, DM and per-channel verbs of dilla-web-2a, L-E2E-10; and the typed
-//! envelopes, deletes and attachment verbs of dilla-web-2b, L-E2E-20).
+//! envelopes, deletes and attachment verbs of dilla-web-2b, L-E2E-20; the call and ring verbs of dilla-web-3,
+//! L-E2E-30).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
@@ -11,12 +12,12 @@ use dilla_core::cbor::{Decoder, Encoder, decode_strict};
 use dilla_core::envelope::{Attachment, EnvelopeType};
 use dilla_core::identity::DeviceList;
 use dilla_core::ids::{CommunityId, InstanceId, MsgId};
-use dilla_core::mls::{DillaBinding, GroupKind};
+use dilla_core::mls::{DillaBinding, GroupKind, external_senders};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::ds::remote::{HttpDs, ServedDeviceList, instance_document};
-use crate::{DsError, Received, Runner, TestClient, TestkitError};
+use crate::{DeliveryService, DsError, Received, Runner, TestClient, TestkitError};
 
 const GROUP: &str = "text";
 const BODY_MAX_BYTES: usize = 4000;
@@ -53,12 +54,20 @@ struct Peer {
     password: Option<String>,
 }
 
+/// Who a call verb acts as (L-E2E-30): the peer's acting device, or the device `enrol` added to its account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Actor {
+    Peer,
+    Second,
+}
+
 /// The device `enrol` added to the peer's account, kept until `revoke` names it.
 struct Second {
     client: TestClient,
-    /// Held so the enrolled device's session lives as long as the device; nothing reads it.
-    #[allow(dead_code)]
+    /// The enrolled device's own session: the call verbs act through it for `actor: "second"`.
     ds: HttpDs,
+    /// The device `rotate_umk` replaced: it holds no leaf any more and acts as no actor.
+    replaced: bool,
 }
 
 struct Sent {
@@ -85,6 +94,12 @@ pub struct WebDriver {
     second: Option<Second>,
     /// The community of each channel this driver joined (`join`): a rotation in a joined group binds that channel.
     joined: BTreeMap<[u8; 16], [u8; 16]>,
+    /// The call group each actor holds per channel (`call_join` until `call_leave`).
+    calls: BTreeMap<(Actor, [u8; 16]), Vec<u8>>,
+    /// How many call groups this driver registered: each gets its own id (a DM's text group holds the channel's).
+    call_groups_made: u64,
+    /// The `expires_ts` of the last op 53 state 1 each actor's gateway received, per call (`call_decline`).
+    ringing: BTreeMap<(Actor, [u8; 16]), u64>,
 }
 
 impl WebDriver {
@@ -106,6 +121,9 @@ impl WebDriver {
             dms: BTreeMap::new(),
             second: None,
             joined: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            call_groups_made: 0,
+            ringing: BTreeMap::new(),
         }
     }
 
@@ -277,6 +295,14 @@ impl WebDriver {
                     if !valid {
                         return Err(scenario("password must be 1..=128 bytes"));
                     }
+                }
+                if req.get("voice").is_some_and(|v| !v.is_boolean()) {
+                    return Err(scenario("voice must be boolean"));
+                }
+                if req.get("voice").and_then(Value::as_bool) == Some(true) && channel.len() > 94 {
+                    return Err(scenario(
+                        "channel must be 1..=94 bytes with a voice channel",
+                    ));
                 }
             }
             "join" => {
@@ -468,6 +494,14 @@ impl WebDriver {
                     Self::hex16(req, "channel_id")?;
                 }
             }
+            "call_join" | "call_leave" | "call_members" | "call_start" => {
+                Self::actor(req)?;
+                Self::hex16(req, "channel")?;
+            }
+            "call_decline" => {
+                Self::actor(req)?;
+                Self::hex16(req, "call")?;
+            }
             "register" | "update" | "enrol" | "dms" => {}
             _ => return Err(scenario(format!("unknown op {op}"))),
         }
@@ -524,6 +558,11 @@ impl WebDriver {
             "trust_list" => self.trust_list(req).map_err(new_verb_error),
             "rotate_umk" => self.rotate_umk(req).map_err(new_verb_error),
             "leave" => self.leave(req).map_err(new_verb_error),
+            "call_join" => self.call_join(req).map_err(new_verb_error),
+            "call_leave" => self.call_leave(req).map_err(new_verb_error),
+            "call_members" => self.call_members(req).map_err(new_verb_error),
+            "call_start" => self.call_start(req).map_err(new_verb_error),
+            "call_decline" => self.call_decline(req).map_err(new_verb_error),
             _ => unreachable!(),
         }
     }
@@ -539,13 +578,14 @@ impl WebDriver {
             .get("password")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        let with_voice = req.get("voice").and_then(Value::as_bool).unwrap_or(false);
         let name = Self::username(self.seed);
         self.runner.exec_line("instance web")?;
         self.runner
             .exec_line(&format!("client {name} key_packages=none"))?;
         self.runner
             .exec_line(&format!("publish_key_packages {name} 32"))?;
-        let (user_id, device_id, community, channels, invite_code) = self.runner.with_session(&name, |client, ds| {
+        let (user_id, device_id, community, channels, voice, invite_code) = self.runner.with_session(&name, |client, ds| {
             let user_id = client.user_id().to_hex();
             let device_id = client.device_id().to_hex();
             if let Some(password) = &password { ds.set_password(password)?; }
@@ -569,8 +609,17 @@ impl WebDriver {
                 }
                 channels.push(channel);
             }
+            let voice = if with_voice {
+                let (voice, mode, visibility) = ds.create_channel(&community, 1, &format!("{channel_name}-voice"))?;
+                if mode != 0 || visibility != 0 {
+                    return Err(scenario(format!("the instance answered mode {mode} visibility {visibility} for a voice channel")));
+                }
+                Some(voice)
+            } else {
+                None
+            };
             let invite_code = ds.create_invite(&community, 100, 3600)?;
-            Ok((user_id, device_id, community, channels, invite_code))
+            Ok((user_id, device_id, community, channels, voice, invite_code))
         })?;
         let channel = channels[0];
         self.peer = Some(Peer {
@@ -603,7 +652,8 @@ impl WebDriver {
         Ok(
             json!({"username": name, "display": name, "user_id": user_id, "device_id": device_id,
             "community_id": hex::encode(community), "channel_id": hex::encode(channel),
-            "channel_ids": channels.iter().map(hex::encode).collect::<Vec<_>>(), "invite_code": invite_code}),
+            "channel_ids": channels.iter().map(hex::encode).collect::<Vec<_>>(), "invite_code": invite_code,
+            "voice_channel_id": voice.map(hex::encode)}),
         )
     }
 
@@ -747,7 +797,11 @@ impl WebDriver {
             .epoch_of(&group)
             .ok_or_else(|| scenario("the join left no group state"))?;
         let device_id = second.device_id().to_hex();
-        self.second = Some(Second { client: second, ds });
+        self.second = Some(Second {
+            client: second,
+            ds,
+            replaced: false,
+        });
         Ok(
             json!({"device_id": device_id, "version": next.unsigned.version, "epoch": epoch, "scopes": [1, 0]}),
         )
@@ -778,6 +832,7 @@ impl WebDriver {
             .is_some_and(|s| s.client.device_id().as_bytes() == &target)
         {
             self.second = None;
+            self.calls.retain(|(actor, _), _| *actor != Actor::Second);
         }
         Ok(json!({"version": next.unsigned.version}))
     }
@@ -1252,7 +1307,10 @@ impl WebDriver {
         self.second = Some(Second {
             client: old,
             ds: old_ds,
+            replaced: true,
         });
+        // The replaced device's call groups went with its leaf.
+        self.calls.retain(|(actor, _), _| *actor != Actor::Second);
         Ok(json!({"user": hex::encode(user), "version": next.unsigned.version}))
     }
 
@@ -1264,6 +1322,208 @@ impl WebDriver {
         self.runner
             .with_member(&name, |client, ds| client.leave(ds, &group))?;
         Ok(json!({"group_id": hex::encode(group)}))
+    }
+
+    fn actor(req: &Value) -> Result<Actor, TestkitError> {
+        match req.get("actor") {
+            None => Ok(Actor::Peer),
+            Some(v) => match v.as_str() {
+                Some("peer") => Ok(Actor::Peer),
+                Some("second") => Ok(Actor::Second),
+                _ => Err(scenario("actor must be peer or second")),
+            },
+        }
+    }
+
+    fn second_actor(&mut self) -> Result<&mut Second, TestkitError> {
+        self.second
+            .as_mut()
+            .filter(|s| !s.replaced)
+            .ok_or_else(|| scenario("no second device: enrol first"))
+    }
+
+    /// Runs `f` with the actor's client and its own `/v1` session (the call routes are no `DeliveryService` call).
+    fn session_of<T>(
+        &mut self,
+        actor: Actor,
+        f: impl FnOnce(&TestClient, &mut HttpDs) -> Result<T, TestkitError>,
+    ) -> Result<T, TestkitError> {
+        match actor {
+            Actor::Peer => {
+                let name = self.peer().name.clone();
+                self.runner.with_session(&name, f)
+            }
+            Actor::Second => {
+                let second = self.second_actor()?;
+                f(&second.client, &mut second.ds)
+            }
+        }
+    }
+
+    /// Runs `f` with the actor's client and its view of the delivery service, as a scenario statement does.
+    fn member_of<T>(
+        &mut self,
+        actor: Actor,
+        f: impl FnOnce(&mut TestClient, &mut dyn DeliveryService) -> Result<T, TestkitError>,
+    ) -> Result<T, TestkitError> {
+        match actor {
+            Actor::Peer => {
+                let name = self.peer().name.clone();
+                self.runner.with_member(&name, f)
+            }
+            Actor::Second => {
+                let second = self.second_actor()?;
+                f(&mut second.client, &mut second.ds)
+            }
+        }
+    }
+
+    /// The id of the next call group this driver registers: unique per driver seed, actor, channel and count.
+    fn next_call_group_id(&mut self, actor: Actor, channel: [u8; 16]) -> [u8; 16] {
+        self.call_groups_made += 1;
+        let mut hash = Sha256::new();
+        hash.update(b"dilla-testkit call group");
+        hash.update(self.seed.to_be_bytes());
+        hash.update([actor as u8]);
+        hash.update(channel);
+        hash.update(self.call_groups_made.to_be_bytes());
+        let digest: [u8; 32] = hash.finalize().into();
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&digest[..16]);
+        id
+    }
+
+    /// `call_join {actor, channel}` → `{group, leaf}` (L-E2E-30): reads the channel's call group from the instance
+    /// (L-HTTP-100) and joins it by external commit, or registers a fresh one when the instance names none. A
+    /// joiner that still holds state of that group (a rejoin) replaces its leaf, as a resync does.
+    fn call_join(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let actor = Self::actor(req)?;
+        let channel = Self::hex16(req, "channel")?;
+        let (info, call) = self.session_of(actor, |_, ds| {
+            Ok((ds.get_channel(&channel)?, ds.get_channel_call(&channel)?))
+        })?;
+        let doc = instance_document(&self.ds_url)?;
+        let instance_id = InstanceId::from_bytes(doc.instance_id);
+        let binding = DillaBinding {
+            v: 1,
+            instance_id,
+            community_id: info.community_id.map(CommunityId::from_bytes),
+            target_id: channel,
+            kind: GroupKind::Call,
+            policy_version: 1,
+            e2ee_version: 1,
+            media_version: GroupKind::Call.media_version(),
+        };
+        let group = match call.group_id {
+            Some(group) => {
+                let group = group.to_vec();
+                self.member_of(actor, |c, ds| {
+                    if c.epoch_of(&group).is_some() {
+                        c.resync(ds, &group, &binding)
+                    } else {
+                        c.join_external(ds, &group, &binding)
+                    }
+                })?;
+                group
+            }
+            None => {
+                let id = self.next_call_group_id(actor, channel);
+                let senders =
+                    external_senders(doc.external_sender_pub.to_vec().into(), &instance_id);
+                self.member_of(actor, |c, ds| {
+                    c.create_group_as(ds, &id, binding.clone(), Some(senders))
+                })?
+            }
+        };
+        let leaf = self.member_of(actor, |c, _| {
+            let own = c.device_id();
+            c.roster(&group)
+                .and_then(|r| r.iter().find(|e| e.device_id == own).map(|e| e.leaf_index))
+                .ok_or_else(|| scenario("the join left no leaf of this device"))
+        })?;
+        self.calls.insert((actor, channel), group.clone());
+        Ok(json!({"group": hex::encode(group), "leaf": leaf}))
+    }
+
+    fn call_group(&self, actor: Actor, channel: [u8; 16]) -> Result<Vec<u8>, TestkitError> {
+        self.calls.get(&(actor, channel)).cloned().ok_or_else(|| {
+            scenario("the actor holds no call group of this channel: call_join first")
+        })
+    }
+
+    /// `call_leave {actor, channel}` → `{}`: the actor proposes its own Remove (`POST /v1/groups/{id}/proposal`, a
+    /// `409 E_REMOVE_PENDING` being fine) and forgets the group, as the worker's `callLeave` does. Another member's
+    /// commit applies the Remove.
+    fn call_leave(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let actor = Self::actor(req)?;
+        let channel = Self::hex16(req, "channel")?;
+        let group = self.call_group(actor, channel)?;
+        self.member_of(actor, |c, ds| {
+            c.leave(ds, &group)?;
+            c.forget(&group)
+        })?;
+        self.calls.remove(&(actor, channel));
+        Ok(json!({}))
+    }
+
+    /// `call_members {actor, channel}` → `{group, devices}`: after a sync that also commits any outstanding
+    /// proposal (a leaver's own Remove), the device ids of the actor's call-group roster, sorted.
+    fn call_members(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let actor = Self::actor(req)?;
+        let channel = Self::hex16(req, "channel")?;
+        let group = self.call_group(actor, channel)?;
+        let (got, deleted, roster) = self.member_of(actor, |c, ds| {
+            let mut got = c.sync(ds)?;
+            for attempt in 1..=3 {
+                let outstanding = ds.proposals(&group)?.iter().any(|p| !p.void);
+                if !outstanding {
+                    break;
+                }
+                match c.commit(ds, &group) {
+                    Ok(()) => break,
+                    Err(TestkitError::Ds(DsError::CommitConflict { .. })) if attempt < 3 => {
+                        got.extend(c.sync(ds)?)
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            got.extend(c.sync(ds)?);
+            Ok((got, c.take_deleted(), c.roster(&group)))
+        })?;
+        // What the peer's sync took for its text groups stays for its `sync`.
+        if actor == Actor::Peer {
+            self.hold(&got);
+            self.pending.extend(got);
+            self.pending_deleted.extend(deleted);
+        }
+        let roster =
+            roster.ok_or_else(|| scenario("the actor holds no state for its call group"))?;
+        let mut devices: Vec<String> = roster.iter().map(|r| r.device_id.to_hex()).collect();
+        devices.sort();
+        Ok(json!({"group": hex::encode(group), "devices": devices}))
+    }
+
+    /// `call_start {actor, channel}` → `{call, created}`: `POST /v1/channels/{id}/calls`. A start that opens a DM's
+    /// call (`201`) rings its other participants; the peer never connects to the SFU.
+    fn call_start(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let actor = Self::actor(req)?;
+        let channel = Self::hex16(req, "channel")?;
+        let started = self.session_of(actor, |_, ds| Ok(ds.start_call(&channel, "")?))?;
+        Ok(json!({"call": hex::encode(started.call_id), "created": started.created}))
+    }
+
+    /// `call_decline {actor, call}` → `{}`: `POST /v1/calls/{id}/decline` with the `expires_ts` of the last op 53
+    /// state 1 the actor's gateway received for that call, or 0 when none did (a no-op `204`, L-HTTP-104).
+    fn call_decline(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let actor = Self::actor(req)?;
+        let call = Self::hex16(req, "call")?;
+        let rings = self.session_of(actor, |_, ds| Ok(ds.take_rings()?))?;
+        for ring in rings.iter().filter(|r| r.state == 1) {
+            self.ringing.insert((actor, ring.call), ring.expires);
+        }
+        let expires = self.ringing.get(&(actor, call)).copied().unwrap_or(0);
+        self.session_of(actor, |_, ds| Ok(ds.decline_call(&call, expires)?))?;
+        Ok(json!({}))
     }
 
     fn attachment_material(seed: u64, counter: u64) -> ([u8; 32], [u8; 12]) {
@@ -1712,6 +1972,58 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn the_call_verbs_validate_their_fields_before_the_setup_check() {
+        let mut d = driver(1);
+        let channel = "ab".repeat(16);
+        let cases = [
+            (
+                json!({"id": 1, "op": "call_join", "actor": "peer"}),
+                "scenario: the request carries no channel",
+            ),
+            (
+                json!({"id": 2, "op": "call_join", "actor": "third", "channel": channel}),
+                "scenario: actor must be peer or second",
+            ),
+            (
+                json!({"id": 3, "op": "call_leave", "actor": 2, "channel": channel}),
+                "scenario: actor must be peer or second",
+            ),
+            (
+                json!({"id": 4, "op": "call_members", "actor": "second", "channel": "AB".repeat(16)}),
+                "scenario: channel is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 5, "op": "call_start", "channel": "ab".repeat(17)}),
+                "scenario: channel is not 32 lowercase hex",
+            ),
+            (
+                json!({"id": 6, "op": "call_decline", "actor": "peer"}),
+                "scenario: the request carries no call",
+            ),
+            (
+                json!({"id": 7, "op": "setup", "community": "c", "channel": "general", "voice": 1}),
+                "scenario: voice must be boolean",
+            ),
+            // Well-formed requests reach the setup check; an absent actor is the peer.
+            (
+                json!({"id": 8, "op": "call_join", "actor": "second", "channel": channel}),
+                "scenario: setup first",
+            ),
+            (
+                json!({"id": 9, "op": "call_start", "channel": channel}),
+                "scenario: setup first",
+            ),
+            (
+                json!({"id": 10, "op": "call_decline", "actor": "peer", "call": channel}),
+                "scenario: setup first",
+            ),
+        ];
+        for (req, want) in cases {
+            assert_eq!(error_of(&d.handle(&req)), want, "{req}");
+        }
     }
 
     fn driver(seed: u64) -> WebDriver {
