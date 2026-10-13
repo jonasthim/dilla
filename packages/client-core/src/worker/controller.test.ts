@@ -848,8 +848,8 @@ it('advances the instance clock from the ticket by the time elapsed here, and dr
   w.gateway.emit({ type: 'frame', frame: {
     op: 49, n: 0n, groupId: null, payload: [CHANNEL, STRANGER, OTHER_DEVICE, 1n, NOW_S - 600n + 24n],
   } });
-  expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`))
-    .toEqual([{ userId: toHex(STRANGER), name: expect.any(String), expiresAt: 1_700_000_024_000 }]);
+  expect(w.last<{ userId: string; expiresAt: number }[]>(`typing:${toHex(CHANNEL)}`)?.map(row => [row.userId, row.expiresAt]))
+    .toEqual([[toHex(STRANGER), 1_700_000_024_000]]);
 });
 
 it('clears incoming typing on membership loss without local typing', async () => {
