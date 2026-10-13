@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV, WASM_CLANG_INSTALL, WASM_CLANG_STEPS } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
 // The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
 const GO_TEST = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
 
-const GOOD = `name: ci
+const GOOD_BASE = `name: ci
 on:
   push:
     branches: [main]
@@ -403,6 +403,44 @@ jobs:
           provenance: mode=max
           sbom: true
 `;
+
+// The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: clang 23 by job env and an install
+// step ahead of the first wasm build (ruling of 2026-10-13).
+const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build'];
+const WASM_CLANG_JOB_ENV =
+  '    env:\n' +
+  '      CC_wasm32_unknown_unknown: clang-23\n' +
+  '      AR_wasm32_unknown_unknown: llvm-ar-23\n';
+const WASM_CLANG_STEP =
+  '      - name: clang 23 for the wasm C build\n' +
+  '        run: |\n' +
+  '          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"\n' +
+  `          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')\n` +
+  '          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421\n' +
+  '          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"\n' +
+  '          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list\n' +
+  '          sudo apt-get update\n' +
+  `          ${WASM_CLANG_INSTALL}\n` +
+  `          clang-23 --version | grep -E 'clang version 23\\.'\n` +
+  '          llvm-ar-23 --version\n';
+
+function withWasmClang(text) {
+  const lines = text.split('\n');
+  const out = [];
+  let job = null;
+  for (const line of lines) {
+    const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (key) job = key[1];
+    if (WASM_JOBS.includes(job) && line === '    steps:') {
+      out.push(WASM_CLANG_JOB_ENV.trimEnd(), line, WASM_CLANG_STEP.trimEnd());
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+const GOOD = withWasmClang(GOOD_BASE);
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
@@ -1182,4 +1220,65 @@ test('web-2c captures, both paths and timeout are required independently', () =>
     assert.ok(problems.length > 0, `${name}: checker accepted a missing gate`);
     assert.match(problems.join('\n'), /web-2c|screenshot|browser-web|timeout/i, name);
   }
+});
+
+// Ruling of 2026-10-13 (web-2c D5 in CI): every wasm32-unknown-unknown build compiles SQLite with clang 23.
+/** GOOD with one job's body passed through `edit`. */
+function editJob(job, edit) {
+  const body = jobBody(job);
+  return GOOD.replace(body, edit(body));
+}
+
+for (const job of WASM_JOBS) {
+  for (const env of WASM_CLANG_ENV) {
+    test(`a ${job} job without the job-level ${env.split(':')[0]} is reported`, () => {
+      const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(`      ${env}\n`, ''))));
+      assert.ok(problems.includes(`ci.yml: job "${job}" builds for wasm32-unknown-unknown without the job-level env ${env}`), problems.join('\n'));
+    });
+  }
+  for (const step of WASM_CLANG_STEPS) {
+    test(`a ${job} job that lost "${step}" is reported`, () => {
+      const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(step, 'true'))));
+      assert.ok(problems.includes(`ci.yml: job "${job}" builds for wasm32-unknown-unknown and is missing: ${step}`), problems.join('\n'));
+    });
+  }
+  test(`a ${job} job that installs clang 23 after its first wasm build is reported`, () => {
+    const moved = editJob(job, (b) => {
+      const without = b.replace(WASM_CLANG_STEP, '');
+      return `${without.replace(/\n*$/, '')}\n${WASM_CLANG_STEP}`;
+    });
+    const problems = checkWorkflow(fixture(moved));
+    assert.ok(problems.includes(`ci.yml: job "${job}" must install clang 23 before its first wasm build`), problems.join('\n'));
+  });
+}
+
+test('the clang 23 variables set on one step only are reported: they must reach every build of the job', () => {
+  const stepLevel = editJob('web-build', (b) =>
+    b.replace(WASM_CLANG_JOB_ENV, '').replace(
+      '      - run: wasm-pack build',
+      '      - env:\n          CC_wasm32_unknown_unknown: clang-23\n          AR_wasm32_unknown_unknown: llvm-ar-23\n        run: wasm-pack build',
+    ),
+  );
+  const problems = checkWorkflow(fixture(stepLevel));
+  for (const env of WASM_CLANG_ENV) {
+    assert.ok(problems.includes(`ci.yml: job "web-build" builds for wasm32-unknown-unknown without the job-level env ${env}`), problems.join('\n'));
+  }
+});
+
+test('a wasm job added tomorrow without clang 23 is reported', () => {
+  const extra =
+    '  wasm-extra:\n' +
+    '    runs-on: ubuntu-latest\n' +
+    '    steps:\n' +
+    '      - run: cargo build -p dilla-core --target wasm32-unknown-unknown --locked\n';
+  const problems = checkWorkflow(fixture(GOOD.replace('  deny:\n', `${extra}  deny:\n`)));
+  for (const env of WASM_CLANG_ENV) {
+    assert.ok(problems.includes(`ci.yml: job "wasm-extra" builds for wasm32-unknown-unknown without the job-level env ${env}`), problems.join('\n'));
+  }
+  assert.ok(problems.includes(`ci.yml: job "wasm-extra" builds for wasm32-unknown-unknown and is missing: ${WASM_CLANG_INSTALL}`), problems.join('\n'));
+});
+
+test('a job that builds no wasm needs no clang 23', () => {
+  const problems = checkWorkflow(fixture(GOOD));
+  assert.ok(!problems.some((p) => /job "(deny|go|node)" builds for wasm32/.test(p)), problems.join('\n'));
 });

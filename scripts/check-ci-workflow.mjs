@@ -401,6 +401,44 @@ function assertWasmPackUsesTheSizeProfile(text, problems) {
   });
 }
 
+/**
+ * Ruling of 2026-10-13 (Jonas; web-2c D5 in CI): the wasm C build (sqlite-wasm-rs compiles SQLite3MC through
+ * cc) uses clang 23, the dev box's major. The runner's own clang made the same tree about 25 KB larger, so the
+ * 3,450,000-byte budget measured different bytes in CI than on the box it was set on. Every job that builds for
+ * wasm32-unknown-unknown carries the two job-level variables cc reads and an install step, ahead of its first
+ * wasm build, that checks the apt.llvm.org key by fingerprint and the installed major.
+ */
+export const WASM_CLANG_ENV = ['CC_wasm32_unknown_unknown: clang-23', 'AR_wasm32_unknown_unknown: llvm-ar-23'];
+export const WASM_CLANG_INSTALL = 'sudo apt-get install -y --no-install-recommends clang-23 llvm-23';
+export const WASM_CLANG_STEPS = [
+  'test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421',
+  'llvm-toolchain-$(lsb_release -cs)-23 main',
+  WASM_CLANG_INSTALL,
+  "clang-23 --version | grep -E 'clang version 23\\.'",
+];
+const WASM_BUILD = /wasm-pack build|cargo \w+ .*--target wasm32-unknown-unknown/;
+
+function assertWasmJobsUseClang23(jobs, problems) {
+  for (const [name, body] of Object.entries(jobs)) {
+    const lines = body.split('\n');
+    const firstBuild = lines.findIndex((l) => WASM_BUILD.test(l));
+    if (firstBuild === -1 && !body.includes('targets: wasm32-unknown-unknown')) continue;
+    for (const env of WASM_CLANG_ENV) {
+      // Six spaces: the job's own env, which reaches every step; a step-level env would cover one step only.
+      if (!lines.includes(`      ${env}`)) {
+        problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown without the job-level env ${env}`);
+      }
+    }
+    for (const step of WASM_CLANG_STEPS) {
+      if (!body.includes(step)) problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown and is missing: ${step}`);
+    }
+    const install = lines.findIndex((l) => l.includes(WASM_CLANG_INSTALL));
+    if (install !== -1 && firstBuild !== -1 && install > firstBuild) {
+      problems.push(`ci.yml: job "${name}" must install clang 23 before its first wasm build`);
+    }
+  }
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -464,6 +502,7 @@ export function checkWorkflow(root) {
   assertTestStepIsNotNarrowed(text, (msg) => problems.push(`ci.yml: ${msg}`));
   assertEveryUploadFailsOnNoFiles(text, problems);
   assertWasmPackUsesTheSizeProfile(text, problems);
+  assertWasmJobsUseClang23(jobs, problems);
 
   // Task 18. The Dockerfile cross-compiles with GOOS/GOARCH from a $BUILDPLATFORM builder, so
   // nothing runs under emulation and setup-qemu-action would only add a slow, useless step.

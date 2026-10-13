@@ -79,8 +79,24 @@ jobs:
           if-no-files-found: error
   rust-wasm-node:
     runs-on: ubuntu-latest
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
+    env:
+      CC_wasm32_unknown_unknown: clang-23
+      AR_wasm32_unknown_unknown: llvm-ar-23
     steps:
       - uses: actions/checkout@v7
+      - name: clang 23 for the wasm C build
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
+          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
+          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
+          clang-23 --version | grep -E 'clang version 23\.'
+          llvm-ar-23 --version
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: wasm32-unknown-unknown
@@ -171,8 +187,24 @@ jobs:
   browser-spike:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
+    env:
+      CC_wasm32_unknown_unknown: clang-23
+      AR_wasm32_unknown_unknown: llvm-ar-23
     steps:
       - uses: actions/checkout@v7
+      - name: clang 23 for the wasm C build
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
+          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
+          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
+          clang-23 --version | grep -E 'clang version 23\.'
+          llvm-ar-23 --version
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: wasm32-unknown-unknown
@@ -200,8 +232,24 @@ jobs:
     # SP-27's cold container run was unavailable; the controller retains the 25-minute budget.
     timeout-minutes: 25
     needs: [rust-native, rust-wasi]
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
+    env:
+      CC_wasm32_unknown_unknown: clang-23
+      AR_wasm32_unknown_unknown: llvm-ar-23
     steps:
       - uses: actions/checkout@v7
+      - name: clang 23 for the wasm C build
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
+          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
+          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
+          clang-23 --version | grep -E 'clang version 23\.'
+          llvm-ar-23 --version
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -257,8 +305,24 @@ jobs:
     # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
     # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
     timeout-minutes: 15
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
+    env:
+      CC_wasm32_unknown_unknown: clang-23
+      AR_wasm32_unknown_unknown: llvm-ar-23
     steps:
       - uses: actions/checkout@v7
+      - name: clang 23 for the wasm C build
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.key"
+          fpr=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.key" | awk -F: '/^fpr/ {print $10; exit}')
+          test "$fpr" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.key"
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
+          clang-23 --version | grep -E 'clang version 23\.'
+          llvm-ar-23 --version
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: wasm32-unknown-unknown
