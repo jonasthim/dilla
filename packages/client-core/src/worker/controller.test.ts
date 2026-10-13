@@ -1617,6 +1617,26 @@ it('candidate list ingestion invalidates a published timeline before commit conf
   expect(w.timeline()?.items[0]?.body).toBe('');
 });
 
+it('a trust generation change posts each open timeline once, never an empty one first; a timeline that cannot be read is emptied (M4)', async () => {
+  const w = world();
+  await toReady(w);
+  w.state.rows = [strangerRow(1)];
+  await openGeneral(w);
+  const name = `timeline:${toHex(CHANNEL)}`;
+  const posts = () => w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === name);
+  const before = posts().length;
+  w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_UMK_CHANGED', body: '' }];
+  w.core.trustGeneration.mockReturnValue(1n);
+  w.sync.deps!.onTrustChanged();
+  expect(posts().slice(before).map((m) => (m.value as TimelineState).items.length)).toEqual([1]);
+  const timeline = w.core.timeline;
+  w.core.timeline = () => { throw new CoreError('E_CORE_STORAGE', ''); };
+  w.core.trustGeneration.mockReturnValue(2n);
+  w.sync.deps!.onTrustChanged();
+  w.core.timeline = timeline;
+  expect(w.timeline()?.items).toEqual([]);
+});
+
 async function toKeys(w: World): Promise<void> {
   w.call(1, { m: 'start' });
   await vi.waitFor(() => expect(w.account()?.phase).toBe('needs-signup'));

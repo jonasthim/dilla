@@ -1938,9 +1938,13 @@ export class Controller {
     this.searchGate.invalidate();
     this.searchCursor = null;
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
-    for (const channelId of this.open.keys()) this.slices.set(`timeline:${channelId}`,
-      { channelId, group: this.groupState(channelId), items: [], hasEarlier: false });
-    for (const channelId of this.open.keys()) this.refreshTimeline(channelId);
+    // L-CORE-43: no slice of the old generation stays on display. The refreshed timeline replaces it in one set (M4: an
+    // empty one first made a second render, lost the scroll position and could re-announce the log); only a timeline
+    // that cannot be read now is emptied.
+    for (const channelId of this.open.keys()) {
+      try { this.refreshTimeline(channelId); continue; } catch { /* emptied below */ }
+      this.slices.set(`timeline:${channelId}`, { channelId, group: this.groupState(channelId), items: [], hasEarlier: false });
+    }
     this.publishTrust();
   }
 
