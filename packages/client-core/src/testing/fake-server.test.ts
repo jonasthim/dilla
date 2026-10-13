@@ -719,3 +719,31 @@ describe('FakeServer answers the message delete through its delivery-service mod
     expect((await raw(server, 'DELETE', `/v1/groups/${toHex(g)}/messages/99`, me.token)).status).toBe(404);
   });
 });
+
+// web-3 task 6 (lesson f): the call routes answer through the real Routes as 09 § Voice says dillad does.
+describe('FakeServer calls (L-HTTP-100..104)', () => {
+  it('answers the snapshot, the start (201 then 200), E_CALL_FULL, and the decline with its 204, 400 and 404', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const dm = new Uint8Array(16).fill(0xd7);
+    const voice = new Uint8Array(16).fill(0xc7);
+    const group = new Uint8Array(16).fill(0x9d);
+    expect(await c.routes.getChannelCall(dm).catch((e: DillaHttpError) => e.code)).toBe('E_NOT_FOUND');
+    server.calls.set(toHex(dm), { groupId: group, callId: null, dm: true, participants: [] });
+    server.calls.set(toHex(voice), { groupId: group, callId: null, dm: false, participants: [] });
+    expect(await c.routes.getChannelCall(dm)).toEqual({ groupId: group, callId: null, participants: [] });
+    await expect(c.routes.declineCall(dm, 1700000030)).rejects.toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+    expect((await c.routes.startCall(dm, 'vp8')).created).toBe(true);
+    expect((await c.routes.startCall(dm, '')).created).toBe(false);
+    expect(await c.routes.declineCall(dm, 1700000030)).toBeUndefined();
+    expect((await raw(server, 'POST', `/v1/calls/${toHex(dm)}/decline`, [...server.tokens.keys()].at(-1) ?? null, encode([])))).toMatchObject({ status: 400 });
+    await c.routes.startCall(voice, '');
+    await expect(c.routes.declineCall(voice, 1)).rejects.toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    server.maxVoiceParticipants = 0;
+    await expect(c.routes.startCall(voice, '')).rejects.toMatchObject({ status: 409, code: 'E_CALL_FULL' });
+    expect(await c.routes.postProposal(group, encode([1, new Uint8Array(4)]))).toEqual({ seq: 1n });
+    await c.routes.shareCall(dm);
+    await c.routes.unshareCall(dm);
+    await c.routes.postCallStats(dm, [0, null, 1, 0, 0, 0]);
+  });
+});

@@ -768,3 +768,113 @@ describe('Routes: web-2b deletes and blobs', () => {
     expect(await routes.listMembers(COMMUNITY)).toEqual([{ userId: USER, username: 'jonas', display: 'Jonas', kind: 0, nick: '', roleIds: [] }]);
   });
 });
+
+describe('Routes: web-3 calls (L-TS-55)', () => {
+  const CALL = fill(16, 0x21);
+  const DEV_B = fill(16, 0x22);
+  const party = (i: number): [Uint8Array, Uint8Array, number] => [member(i % 256), DEV_B, 1];
+  const ICE: [string[], string, string][] = [[['turn:dilla.test:3478?transport=udp'], 'u', 'c']];
+
+  it('getChannelCall reads the group, the live call and its participants', async () => {
+    const { t, http, routes } = setup();
+    t.replies.push(cborReply(200, [GROUP, CALL, [[USER, DEVICE, 1], [PEER_USER, DEV_B, 7]]]));
+    expect(await routes.getChannelCall(CHANNEL)).toEqual({ groupId: GROUP, callId: CALL,
+      participants: [{ userId: USER, deviceId: DEVICE, flags: 1 }, { userId: PEER_USER, deviceId: DEV_B, flags: 7 }] });
+    expect(t.seen[0].method).toBe('GET');
+    expect(t.seen[0].url).toBe(`https://dilla.test/v1/channels/${hex(CHANNEL)}/call`);
+    expect(http.requests[0].bucket).toBe('read');
+    t.replies.push(cborReply(200, [null, null, []]));
+    expect(await routes.getChannelCall(CHANNEL)).toEqual({ groupId: null, callId: null, participants: [] });
+  });
+
+  // Attacker: an instance that answers a snapshot of unbounded size to exhaust the worker; the decoder stops at the
+  // ledger's bound (1,024 participants, 4,096 calls) with E_CBOR_SHAPE.
+  it('bounds the participants at 1,024 and the calls at 4,096', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [GROUP, CALL, Array.from({ length: 1024 }, (_, i) => party(i))]));
+    expect((await routes.getChannelCall(CHANNEL)).participants).toHaveLength(1024);
+    t.replies.push(cborReply(200, [GROUP, CALL, Array.from({ length: 1025 }, (_, i) => party(i))]));
+    await expect(routes.getChannelCall(CHANNEL)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+    t.replies.push(cborReply(200, [[CHANNEL, CALL, Array.from({ length: 1025 }, (_, i) => party(i))]]));
+    await expect(routes.getCommunityCalls(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+    t.replies.push(cborReply(200, Array.from({ length: 4096 }, () => [CHANNEL, CALL, []])));
+    expect(await routes.getCommunityCalls(COMMUNITY)).toHaveLength(4096);
+    t.replies.push(cborReply(200, Array.from({ length: 4097 }, () => [CHANNEL, CALL, []])));
+    await expect(routes.getCommunityCalls(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+  });
+
+  it('refuses a participant flag above 31 and an id of the wrong length', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [GROUP, CALL, [[USER, DEVICE, 32]]]));
+    await expect(routes.getChannelCall(CHANNEL)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+    t.replies.push(cborReply(200, [fill(15, 1), CALL, []]));
+    await expect(routes.getChannelCall(CHANNEL)).rejects.toBeInstanceOf(Error);
+  });
+
+  it('getCommunityCalls reads each live call of the community', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [[CHANNEL, CALL, [[USER, DEVICE, 3]]]]));
+    expect(await routes.getCommunityCalls(COMMUNITY)).toEqual([{ channelId: CHANNEL, callId: CALL,
+      participants: [{ userId: USER, deviceId: DEVICE, flags: 3 }] }]);
+    expect(t.seen[0].url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/calls`);
+  });
+
+  it('startCall sends the decoders, reads the six elements and tells a 201 from a 200', async () => {
+    const { t, http, routes } = setup();
+    t.replies.push(cborReply(201, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', ICE, [64_000, 2_500_000, 1]]));
+    expect(await routes.startCall(CHANNEL, 'vp8,h264')).toEqual({ created: true, callId: CALL, groupId: GROUP,
+      livekitUrl: 'wss://dilla.test/rtc', token: 'tok', iceServers: ICE, caps: [64_000, 2_500_000, 1] });
+    expect(t.seen[0].url).toBe(`https://dilla.test/v1/channels/${hex(CHANNEL)}/calls`);
+    expect(t.seen[0].body).toEqual(encode(['vp8,h264']));
+    expect(http.requests[0].idempotent).toBe(false);
+    t.replies.push(cborReply(200, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', [], [64_000, 2_500_000, 0]]));
+    expect((await routes.startCall(CHANNEL, '')).created).toBe(false);
+    expect(t.seen[1].body).toEqual(encode([]));
+  });
+
+  it('share, unshare and stats map onto their routes', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent(), noContent(), noContent());
+    await routes.shareCall(CALL);
+    await routes.unshareCall(CALL);
+    await routes.postCallStats(CALL, [3, null, 40, 0, 0, 1_048_576]);
+    expect(t.seen.map((s) => `${s.method} ${new URL(s.url).pathname}`)).toEqual([
+      `POST /v1/calls/${hex(CALL)}/share`, `DELETE /v1/calls/${hex(CALL)}/share`, `POST /v1/calls/${hex(CALL)}/stats`]);
+    expect(t.seen[2].body).toEqual(encode([3, null, 40, 0, 0, 1_048_576]));
+  });
+
+  it('a 429 on the stats route is not waited out', async () => {
+    const { t, routes } = setup();
+    t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 4000));
+    await expect(routes.postCallStats(CALL, [0, 2, 0, 1000, 7, 0])).rejects.toMatchObject({ status: 429 });
+    expect(t.sleeps).toEqual([]);
+  });
+
+  it('postProposal sends the core body unchanged and reads the seq', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [42]));
+    expect(await routes.postProposal(GROUP, BODY)).toEqual({ seq: 42n });
+    expect(t.seen[0].url).toBe(`https://dilla.test/v1/groups/${hex(GROUP)}/proposal`);
+    expect(t.seen[0].body).toEqual(BODY);
+  });
+
+  it('declineCall(callId, 1700000030) sends [1700000030] and gives 204; its 404 is surfaced as E_NOT_FOUND', async () => {
+    const { t, routes } = setup();
+    t.replies.push(noContent());
+    expect(await routes.declineCall(CALL, 1700000030)).toBeUndefined();
+    expect(t.seen[0].method).toBe('POST');
+    expect(t.seen[0].url).toBe(`https://dilla.test/v1/calls/${hex(CALL)}/decline`);
+    expect(t.seen[0].body).toEqual(encode([1700000030]));
+    t.replies.push(refusal(404, 'E_NOT_FOUND', 'no such call'));
+    await expect(routes.declineCall(CALL, 1700000030)).rejects.toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+  });
+
+  it('refuses bad call inputs before sending', async () => {
+    const { t, routes } = setup();
+    await expect(routes.getChannelCall(fill(15, 1))).rejects.toThrow('E_ROUTE_INPUT');
+    await expect(routes.declineCall(CALL, -1)).rejects.toThrow('E_ROUTE_INPUT');
+    await expect(routes.declineCall(CALL, 1.5)).rejects.toThrow('E_ROUTE_INPUT');
+    await expect(routes.shareCall(fill(17, 1))).rejects.toThrow('E_ROUTE_INPUT');
+    expect(t.seen).toHaveLength(0);
+  });
+});

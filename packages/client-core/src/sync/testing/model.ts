@@ -30,6 +30,7 @@ import {
   type SealedObjects,
   type SignedLists,
   type PendingLeaf, type TrustRecord, type SearchHit, type TrustBlock, trustBlock,
+  type CallMediaEpoch, readCallMediaEpoch,
 } from '../../core-port';
 import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
@@ -158,6 +159,8 @@ export const wire = {
   info: (groupId: Id, epoch: bigint): Uint8Array => encode(['info', groupId, epoch]),
   tree: (groupId: Id, epoch: bigint): Uint8Array => encode(['tree', groupId, epoch]),
   binding: (communityId: Id | null, channelId: Id): Uint8Array => encode(['binding', communityId, channelId]),
+  /** A call group's binding (kind 1, media version 1): the text binding with the kind appended. */
+  callBinding: (communityId: Id | null, channelId: Id): Uint8Array => encode(['binding', communityId, channelId, 1]),
 };
 
 /**
@@ -264,6 +267,10 @@ interface MProp {
 
 interface MGroup {
   groupId: Id;
+  /** app_groups.kind: 0 text, 1 call (L-CORE-50, L-CORE-51). */
+  kind: 0 | 1;
+  /** This device's own leaf index in a call group (the roster's own_leaf of call_media_epoch). */
+  ownLeaf: number;
   communityId: Id | null;
   targetId: Id;
   state: 0 | 1 | 2 | 3 | 4;
@@ -376,8 +383,11 @@ type HsOutcome = 'ok' | 'skip' | 'changed' | 'stop' | 'gone';
 
 /** A leaf as the trust double judges it: its credential's user, device, key, tier and UMK. */
 interface MCandidate { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; umk: Uint8Array }
-/** A current leaf of a group, with the signed-list version and head its last ingest cached. */
-interface MLeaf extends MCandidate { groupId: Id; leafIndex: number; version: bigint; head: Uint8Array | null }
+/** A current leaf of a group, with the signed-list version and head its last ingest cached. `forced` is a test's stand-in
+ *  for a leaf whose credential no list can vouch for (a forged or failed leaf): its verdict, whatever the lists say. */
+interface MLeaf extends MCandidate { groupId: Id; leafIndex: number; version: bigint; head: Uint8Array | null; forced?: string }
+/** A leaf of a call group's served tree (the stand-in tree names none; a test sets them, ModelCore.setCallTree). */
+export interface CallTreeLeaf { leafIndex: number; user: Id; device: Id; tier?: 0 | 1; code?: string }
 /** The group-authenticated evidence of a message held unreadable by its sender leaf's verdict (app_pending_history). */
 type Held = NonNullable<ReturnType<typeof readApp>>;
 
@@ -444,7 +454,8 @@ export class ModelCore implements CorePort {
     if (this.verdicts.delete(`${toHex(groupId)}/${toHex(leaf.dskPub)}`)) this.generation += 1n;
   }
   /** trust.rs leaf_verdict: the pin first (rule 2), then the cached signed list (rule 3). */
-  private judge(leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; umk: Uint8Array }): string | null {
+  private judge(leaf: { userId: Id; deviceId: Id; dskPub: Uint8Array; tier: 0 | 1; umk: Uint8Array; forced?: string }): string | null {
+    if (leaf.forced !== undefined) return leaf.forced;
     const pin = this.trustPins.get(toHex(leaf.userId));
     if (pin !== undefined) {
       if (pin.changedUmk !== null) {
@@ -688,6 +699,238 @@ export class ModelCore implements CorePort {
     return digits.match(/.{5}/g)?.join(' ') ?? '';
   }
   search(): SearchHit[] { return []; }
+
+  // --- web-3 call groups (L-CORE-50..52; client/calls.rs, groups.rs group_create_kind / group_join_kind) ---
+
+  /** The leaves the served tree of a call group brings, by group hex: the stand-in tree names none, so a test sets them. */
+  private readonly callTrees = new Map<string, CallTreeLeaf[]>();
+  /** The CBOR buffer the last call_media_epoch handed over, by group hex: the adapter zero-fills it (L-TS-55). */
+  private readonly epochBytes = new Map<string, Uint8Array>();
+  /** The hex of the last base key derived, by group hex: a test looks for it where no key may be. */
+  private readonly baseKeys = new Map<string, string>();
+
+  /** Test hook: the leaves (besides this device's own) of call group `groupId`'s served tree. A `code` forces that leaf's
+   *  verdict (a forged or failed leaf); else the trust rules judge it against the cached lists. A held, active group gains
+   *  them at once, as the audit of the transition that added them would (trust.rs audit_member). */
+  setCallTree(groupId: Id, leaves: readonly CallTreeLeaf[]): void {
+    this.callTrees.set(toHex(groupId), leaves.map((l) => ({ ...l })));
+    const g = this.gs.get(toHex(groupId));
+    if (g !== undefined && g.state === 2) this.installTree(g);
+  }
+  /** Test hook: one more leaf with a forced failing verdict (an unlisted, forged device) in call group `groupId`'s tree:
+   *  held and active, the leaf and its stored verdict are there at once (the next epoch's audit wrote them). */
+  addFailedLeaf(groupId: Id, code: string): void {
+    const tree = this.callTrees.get(toHex(groupId)) ?? [];
+    const g = this.gs.get(toHex(groupId));
+    const taken = new Set([...tree.map((l) => l.leafIndex), g?.ownLeaf ?? -1]);
+    let leafIndex = 0;
+    while (taken.has(leafIndex)) leafIndex += 1;
+    const n = 0x40 + tree.length;
+    this.setCallTree(groupId, [...tree, { leafIndex, user: idOf(0xf0, n), device: idOf(0xf1, n), code }]);
+  }
+  /** Test hook: the cached signed list and the pin of `userId`, as an earlier ingest of that row left them (`blob` is the
+   *  signed list ModelDs served at `version`). Its leaves in later joined trees validate against it. */
+  trustList(userId: Id, version: bigint, blob: Uint8Array): void {
+    const list = readFakeList(blob);
+    if (list === null) throw coreError('E_CORE_INPUT', 'not a fake list');
+    const user = toHex(userId);
+    if (!this.trustPins.has(user)) this.trustPins.set(user, { userId: userId.slice(), umk: fakeDskPub(userId), firstSeen: 0n, verified: false, changedUmk: null, blocked: null });
+    const pin = this.trustPins.get(user);
+    this.userLists.set(user, { version, list, head: blob.slice(), umk: (pin?.changedUmk ?? pin?.umk ?? fakeDskPub(userId)).slice() });
+  }
+  /** Test hook: `userId`'s identity changed (a validated list under a new key): every current leaf of the user in a held
+   *  group carries the new key and the stored E_UMK_CHANGED verdict (setLeafVerdict's rule, RV-3). */
+  changeIdentity(userId: Id): void {
+    for (const leaf of [...this.leaves.values()]) {
+      if (same(leaf.userId, userId) && this.gs.get(toHex(leaf.groupId))?.state === 2) this.setLeafVerdict(leaf.groupId, leaf.leafIndex, 'E_UMK_CHANGED');
+    }
+  }
+  /** Test hook: a held group's send block (send_block_code answers `code`): a leaf of a stranger with that stored verdict. */
+  blockGroup(groupId: Id, code: string): void {
+    const g = this.must(groupId);
+    const n = 0x80 + [...this.leaves.values()].filter((l) => same(l.groupId, groupId)).length;
+    const leaf: MLeaf = { groupId: g.groupId, leafIndex: 1000 + n, userId: idOf(0xf2, n), deviceId: idOf(0xf3, n),
+      dskPub: fakeDskPub(idOf(0xf3, n)), tier: 1, umk: fakeDskPub(idOf(0xf2, n)), version: 0n, head: null, forced: code };
+    this.leaves.set(`${toHex(groupId)}/${leaf.leafIndex}`, leaf);
+    if (this.applyVerdict(leaf, code)) this.generation += 1n;
+  }
+  /** Test hook: clears what blockGroup set on the group. */
+  unblockGroup(groupId: Id): void {
+    for (const [key, leaf] of [...this.leaves]) {
+      if (!same(leaf.groupId, groupId) || leaf.leafIndex < 1000) continue;
+      this.leaves.delete(key);
+      this.verdicts.delete(`${toHex(groupId)}/${toHex(leaf.dskPub)}`);
+      this.generation += 1n;
+    }
+  }
+  /** Test hook: a group this device already holds, active at `epoch` (a DM's text group joined earlier). */
+  seedGroup(groupId: Id, kind: 0 | 1, communityId: Id | null, targetId: Id, epoch = 1n, nextSeq = 1n): void {
+    const g = this.fresh(groupId, communityId, targetId, 2, kind);
+    g.epoch = epoch; g.joinedEpoch = epoch; g.maxEpoch = epoch; g.nextSeq = nextSeq;
+    this.gs.set(toHex(groupId), g);
+  }
+  lastBaseKeyHex(groupId: Id): string { return this.baseKeys.get(toHex(groupId)) ?? ''; }
+  lastEpochBytes(groupId: Id): Uint8Array { return this.epochBytes.get(toHex(groupId)) ?? new Uint8Array(0); }
+
+  callGroupCreate(groupId: Id, communityId: Id | null, channelId: Id): Uint8Array {
+    this.log('callGroupCreate', groupId);
+    const prev = this.gs.get(toHex(groupId));
+    if (prev !== undefined) throw coreError('E_CORE_STATE', `group exists in state ${String(prev.state)}`);
+    const holder = this.holder(channelId, groupId, 1);
+    if (holder !== undefined) throw coreError('E_CORE_STATE', `channel has group ${toHex(holder.groupId)}`);
+    this.gs.set(toHex(groupId), this.fresh(groupId, communityId, channelId, 0, 1));
+    return encode([groupId, wire.callBinding(communityId, channelId), wire.info(groupId, 0n), wire.tree(groupId, 0n)]);
+  }
+
+  /** group_join_kind for a call group: the text join's checks with kind 1, then the served tree's audit and the join gate
+   *  (a pending leaf tolerated, ruling RV-1); every other refusal rolls the whole join back. */
+  callGroupJoinExternal(eg: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array {
+    this.log('callGroupJoinExternal', eg.groupId);
+    const info = arr(decode(infoBody), 4);
+    const epoch = u64(at(info, 0));
+    if (epoch !== u64(at(arr(decode(treeBody), 3), 0))) throw coreError('E_CORE_INPUT', 'info_body and tree_body disagree');
+    if (!same(bin(at(arr(decode(bin(at(info, 1))), 3), 1), 16), eg.groupId)) throw coreError('E_CORE_INPUT', 'GroupInfo group id does not match');
+    const prev = this.gs.get(toHex(eg.groupId));
+    if (prev !== undefined && (prev.state === 0 || prev.state === 1)) throw coreError('E_CORE_STATE', `group state ${String(prev.state)}`);
+    if (prev !== undefined && !this.boundTo(prev, eg.communityId, eg.channelId, 1)) throw coreError('E_CORE_STATE', 'group is bound to another channel');
+    const holder = this.holder(eg.channelId, eg.groupId, 1);
+    if (holder !== undefined) throw coreError('E_CORE_STATE', `channel has group ${toHex(holder.groupId)}`);
+    if (prev !== undefined && epoch < this.floorOf(prev)) throw coreError('E_CORE_INPUT', 'GroupInfo would rejoin at or below an epoch this device has held');
+    const g = this.fresh(eg.groupId, eg.communityId, eg.channelId, 1, 1);
+    if (prev !== undefined) { g.maxEpoch = prev.maxEpoch; g.nextSeq = prev.nextSeq; g.wasGone = prev.state === 4; }
+    g.joinEpoch = epoch + 1n;
+    g.epoch = g.joinEpoch;
+    this.gs.set(toHex(eg.groupId), g);
+    this.installTree(g);
+    const refused = this.callGate(g, true);
+    if (refused !== null) {
+      // The join's unit rolls back: no row, no verdict rows and no MLS state of the refused join survive.
+      this.dropCallLeaves(eg.groupId);
+      if (prev !== undefined) this.gs.set(toHex(eg.groupId), prev); else this.gs.delete(toHex(eg.groupId));
+      throw coreError(refused, '');
+    }
+    return encode([wire.commit(epoch + 1n, this.me.device, [this.me.device], []), wire.info(eg.groupId, epoch + 1n)]);
+  }
+
+  callMediaEpoch(groupId: Id): CallMediaEpoch {
+    this.log('callMediaEpoch', groupId);
+    const g = this.callRow(groupId);
+    if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
+    const refused = this.callGate(g, false);
+    if (refused !== null) throw coreError(refused, '');
+    // A stand-in key and code, distinct per group and epoch and never zero.
+    const key = Uint8Array.from({ length: 16 }, (_, i) => ((g.groupId[i] ?? 0) ^ Number((g.epoch * 37n + BigInt(i) * 11n) & 0xffn)) | 0x01);
+    const digits = Array.from({ length: 30 }, (_, i) => String(((key[i % 16] ?? 0) + i) % 10)).join('');
+    const roster = [{ leaf: g.ownLeaf, device: this.me.device, user: this.me.user },
+      ...[...this.leaves.values()].filter((l) => same(l.groupId, groupId)).map((l) => ({ leaf: l.leafIndex, device: l.deviceId, user: l.userId }))]
+      .sort((a, b) => a.leaf - b.leaf);
+    const bytes = encode([g.epoch, key, g.ownLeaf, roster.map((r) => [r.leaf, r.device, r.user]), digits.match(/.{5}/g)?.join(' ') ?? '']);
+    this.baseKeys.set(toHex(groupId), toHex(key));
+    this.epochBytes.set(toHex(groupId), bytes);
+    key.fill(0);
+    // The wasm adapter's own decoder: the key is copied out and these bytes are zero-filled (L-TS-55).
+    return readCallMediaEpoch(bytes);
+  }
+
+  callJoinCheck(groupId: Id): void {
+    this.log('callJoinCheck', groupId);
+    const g = this.callRow(groupId);
+    if (g.state !== 1) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
+    const refused = this.callGate(g, false);
+    if (refused !== null) throw coreError(refused, '');
+  }
+
+  callLeaveProposal(groupId: Id): Uint8Array {
+    this.log('callLeaveProposal', groupId);
+    const g = this.callRow(groupId);
+    if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
+    this.msgs += 1;
+    const ref = idOf(0x5f, this.msgs);
+    // OpenMLS keeps its own leave in the pending proposal store: call_rotate takes it out again.
+    g.proposals.set(toHex(ref), { op: 'remove', device: this.me.device });
+    return encode([g.epoch, wire.prop(ref, 'remove', this.me.device)]);
+  }
+
+  /** commit_build_inner with `rotate`: this device's own pending Remove is withdrawn (OpenMLS refuses a self-removal),
+   *  then an empty commit of whatever else is queued. */
+  callRotate(groupId: Id): Uint8Array {
+    this.log('callRotate', groupId);
+    const g = this.callRow(groupId);
+    for (const [ref, p] of [...g.proposals]) if (p.op === 'remove' && same(p.device, this.me.device)) g.proposals.delete(ref);
+    return this.commitBuild(groupId, encode([]));
+  }
+
+  callGroupForget(groupId: Id): void {
+    this.log('callGroupForget', groupId);
+    const g = this.callRow(groupId);
+    if (g.state === 4) return;
+    g.state = 4; g.epoch = 0n; g.proposals.clear(); g.pending = null; g.fromResync = false; g.wasGone = false;
+    this.dropCallLeaves(groupId);
+  }
+
+  /** calls.rs call_row: E_CORE_NOT_FOUND for an unknown id, E_CORE_INPUT for a group that is not a call group. */
+  private callRow(groupId: Id): MGroup {
+    const g = this.gs.get(toHex(groupId));
+    if (g === undefined) throw coreError('E_CORE_NOT_FOUND', '');
+    if (g.kind !== 1) throw coreError('E_CORE_INPUT', 'not a call group');
+    return g;
+  }
+
+  /** The audit of a call group's served tree: each leaf joins `leaves` with the verdict the trust rules give it. */
+  private installTree(g: MGroup): void {
+    const tree = this.callTrees.get(toHex(g.groupId)) ?? [];
+    const taken = new Set(tree.map((l) => l.leafIndex));
+    let own = 0;
+    while (taken.has(own)) own += 1;
+    g.ownLeaf = own;
+    for (const t of tree) {
+      const key = `${toHex(g.groupId)}/${t.leafIndex}`;
+      if (this.leaves.has(key)) continue;
+      const cached = this.userLists.get(toHex(t.user));
+      const leaf: MLeaf = { groupId: g.groupId, leafIndex: t.leafIndex, userId: t.user.slice(), deviceId: t.device.slice(),
+        dskPub: fakeDskPub(t.device), tier: t.tier ?? 1, umk: cached?.umk.slice() ?? fakeDskPub(t.user),
+        version: cached?.version ?? 0n, head: cached?.head.slice() ?? null, ...(t.code === undefined ? {} : { forced: t.code }) };
+      this.leaves.set(key, leaf);
+      if (this.applyVerdict(leaf, this.judge(leaf))) this.generation += 1n;
+    }
+  }
+
+  private dropCallLeaves(groupId: Id): void {
+    for (const [key, leaf] of [...this.leaves]) {
+      if (!same(leaf.groupId, groupId)) continue;
+      this.leaves.delete(key);
+      if (this.verdicts.delete(`${toHex(groupId)}/${toHex(leaf.dskPub)}`)) this.generation += 1n;
+    }
+  }
+
+  /** calls.rs gate_verdict, in the ledger's order; null when the gate passes. `staleOk` is the join's tolerance of a
+   *  pending leaf (call_join_check settles it before anything is posted). */
+  private callGate(g: MGroup, staleOk: boolean): string | null {
+    // 1. The send block: a stored failed or changed-key verdict of a leaf of this tree.
+    const block = this.sendBlock(g.groupId);
+    if (block !== null) return block;
+    // 2. Every other leaf validates against its cached signed list now; pending refuses (RV-1).
+    for (const leaf of [...this.leaves.values()].filter((l) => same(l.groupId, g.groupId)).sort((a, b) => a.leafIndex - b.leafIndex)) {
+      if (this.isOwn(leaf)) continue;
+      const verdict = this.judge(leaf);
+      if (verdict === null || (verdict === 'E_DEVICE_LIST_STALE' && staleOk)) continue;
+      return verdict;
+    }
+    // 3. The text group held for the call's target: a community that disagrees is E_BINDING (review M3); a DM's text
+    // group's send block refuses (decision 4).
+    const text = this.holder(g.targetId, g.groupId, 0);
+    if (text !== undefined) {
+      const textCommunity = text.communityId === null ? null : toHex(text.communityId);
+      const callCommunity = g.communityId === null ? null : toHex(g.communityId);
+      if (textCommunity !== callCommunity) return 'E_BINDING';
+      if (textCommunity === null) {
+        const textBlock = this.sendBlock(text.groupId);
+        if (textBlock !== null) return textBlock;
+      }
+    }
+    return null;
+  }
+
   /** Every group-scoped call except the reads groups/outbox/timeline, in call order. */
   readonly calls: CoreCall[] = [];
   readonly applyCalls: ApplyCall[] = [];
@@ -818,7 +1061,7 @@ export class ModelCore implements CorePort {
   groupCreate(groupId: Id, communityId: Id | null, channelId: Id): Uint8Array {
     this.log('groupCreate', groupId);
     for (const g of this.gs.values()) {
-      if (same(g.targetId, channelId) && g.state !== 4) throw coreError('E_CORE_STATE', 'a group exists for the channel');
+      if (same(g.targetId, channelId) && g.state !== 4 && g.kind === 0) throw coreError('E_CORE_STATE', 'a group exists for the channel');
     }
     this.gs.set(toHex(groupId), this.fresh(groupId, communityId, channelId, 0));
     return encode([groupId, wire.binding(communityId, channelId), wire.info(groupId, 0n), wire.tree(groupId, 0n)]);
@@ -838,6 +1081,8 @@ export class ModelCore implements CorePort {
     if (g.state !== 0 && g.state !== 1) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
     g.proposals.clear();
     g.pending = null;
+    // A staged call group's audit rows go with it (the joined tree is not held any more).
+    if (g.kind === 1) this.dropCallLeaves(groupId);
     if (g.fromResync) {
       // As the core writes it (groups.rs: state 3, epoch 0): the old group state was already replaced (CORE-ENGINE-03).
       g.state = 3;
@@ -1032,7 +1277,8 @@ export class ModelCore implements CorePort {
           stopped = true;
           break;
         }
-      } else if (r.msg !== null) {
+      } else if (r.msg !== null && g.kind === 0) {
+        // L-CORE-52 (sync.rs): a call group's application messages are skipped, never decrypted or folded.
         const m = this.applyMessage(g, r.msg);
         if (m.inserted) newSeqs.push(r.seq);
         if (m.adopted) adopted = true;
@@ -1135,6 +1381,8 @@ export class ModelCore implements CorePort {
     if (!Number.isInteger(type) || type < 0 || type > 6) throw coreError('E_CORE_INPUT', 'type is out of range');
     if (type !== 0 && attachments.length > 0) throw coreError('E_CORE_INPUT', 'only a message carries attachments');
     const g = this.must(groupId);
+    // L-CORE-52 (messages.rs): sending stays text-only; a call group carries no messages.
+    if (g.kind !== 0) throw coreError('E_CORE_INPUT', 'not a text group');
     if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
     // messages.rs send_prepare: a changed-key or failed leaf still in the group blocks queuing (and again at send_encrypt).
     const block = this.sendBlock(groupId);
@@ -1396,9 +1644,9 @@ export class ModelCore implements CorePort {
     return o;
   }
 
-  private fresh(groupId: Id, communityId: Id | null, targetId: Id, state: 0 | 1 | 2): MGroup {
+  private fresh(groupId: Id, communityId: Id | null, targetId: Id, state: 0 | 1 | 2, kind: 0 | 1 = 0): MGroup {
     return {
-      groupId, communityId, targetId, state, epoch: 0n, joinedEpoch: 0n, joinEpoch: 0n, preJoinEpoch: 0n, nextSeq: 1n, ackedSeq: 0n, ackedEpoch: 0n,
+      groupId, kind, ownLeaf: 0, communityId, targetId, state, epoch: 0n, joinedEpoch: 0n, joinEpoch: 0n, preJoinEpoch: 0n, nextSeq: 1n, ackedSeq: 0n, ackedEpoch: 0n,
       proposals: new Map(), pending: null, fromResync: false, wasGone: false, maxEpoch: 0n, rows: new Map(), held: new Map(),
       reactions: new Map(), pins: new Map(),
     };
@@ -1406,7 +1654,7 @@ export class ModelCore implements CorePort {
 
   private info(g: MGroup): GroupInfo {
     return {
-      groupId: g.groupId, kind: 0, communityId: g.communityId, targetId: g.targetId, state: g.state,
+      groupId: g.groupId, kind: g.kind, communityId: g.communityId, targetId: g.targetId, state: g.state,
       epoch: g.state === 4 ? 0n : g.epoch, nextSeq: g.nextSeq, proposalsPending: g.proposals.size, pendingCommit: g.pending !== null,
     };
   }
@@ -1725,15 +1973,16 @@ export class ModelCore implements CorePort {
       .find((o) => same(wire.commitment(o.msgId), c));
   }
 
-  /** The row is the text group of channelId in communityId (a join never rebinds a row). */
-  private boundTo(g: MGroup, communityId: Id | null, channelId: Id): boolean {
-    return (g.communityId === null ? communityId === null : communityId !== null && same(g.communityId, communityId)) &&
+  /** The row is the group of `kind` of channelId in communityId (a join never rebinds a row; groups.rs bound_to). */
+  private boundTo(g: MGroup, communityId: Id | null, channelId: Id, kind: 0 | 1 = 0): boolean {
+    return g.kind === kind && (g.communityId === null ? communityId === null : communityId !== null && same(g.communityId, communityId)) &&
       same(g.targetId, channelId);
   }
 
-  /** Another non-gone group that holds channelId. */
-  private holder(channelId: Id, except: Id): MGroup | undefined {
-    return [...this.gs.values()].find((x) => !same(x.groupId, except) && same(x.targetId, channelId) && x.state !== 4);
+  /** Another non-gone group of `kind` that holds channelId (groups.rs holder, L-CORE-51: a DM's text group and its call
+   *  group share the target and never collide). */
+  private holder(channelId: Id, except: Id, kind: 0 | 1 = 0): MGroup | undefined {
+    return [...this.gs.values()].find((x) => !same(x.groupId, except) && same(x.targetId, channelId) && x.state !== 4 && x.kind === kind);
   }
 
   /** The epoch floor of L-CORE-07: maxEpoch, and the epoch of the group state still stored (states 2 and 3). */
@@ -1753,7 +2002,9 @@ export class ModelCore implements CorePort {
 
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
-  | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage';
+  | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
+  // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
+  | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** fail: throw before acting; lose: act, then throw a network error; before/after: run fn around acting; gate: wait first. */
 export type Injection = { fail: Error } | { lose: true } | { before: () => void } | { after: () => void } | { gate: Promise<void> };
@@ -1794,6 +2045,10 @@ interface DsProposal {
 
 interface DsGroup {
   id: Id;
+  /** mls_groups.kind: 0 text, 1 call. */
+  kind: 0 | 1;
+  /** A call group the instance closed (L-HTTP-105): L-HTTP-100 no longer names it and a start answers 403. */
+  closed: boolean;
   channelId: Id;
   epoch: bigint;
   next: bigint;
@@ -2042,6 +2297,112 @@ export class ModelDs {
     return id;
   }
 
+  // --- web-3 calls (09 § Voice, L-HTTP-100..105, L-GW-32, L-GW-33) ---
+
+  /** livekit.max_voice_participants as the start's E_CALL_FULL reads it. */
+  maxVoiceParticipants = 25;
+  /** channel hex → its live call: a call id is the channel id (internal/ds/state.go callIDOf). */
+  private readonly liveCalls = new Map<string, { callId: Id; channelId: Id; groupId: Id; participants: Map<string, { user: Id; device: Id; flags: number }> }>();
+  /** Voice channels by channel hex → their community (the start and the snapshot need a channel the caller may view). */
+  private readonly voiceChannels = new Map<string, Id>();
+
+  addVoiceChannel(communityId: Id, channelId: Id): void {
+    this.voiceChannels.set(toHex(channelId), communityId);
+  }
+  /** A call group peer registered for the channel (kind 1), with peer's device its only member. */
+  peerCreateCall(peer: Peer, channelId: Id): Id {
+    this.counter += 1;
+    const id = idOf(0x9c, this.counter);
+    this.groups.set(toHex(id), this.newGroup(id, channelId, toHex(peer.device), 1));
+    return id;
+  }
+  /** L-HTTP-105: the idle close; L-HTTP-100 no longer names the group and a start on it answers 403 E_LEAF_NOT_CURRENT. */
+  closeCallGroup(groupId: Id): void {
+    this.must(groupId).closed = true;
+    for (const [key, call] of this.liveCalls) if (same(call.groupId, groupId)) this.liveCalls.delete(key);
+  }
+  /** A device's voice_state as the SFU reports it (flags 0: it left), fanned out as op 50 to every attached device. */
+  voice(channelId: Id, peer: Peer, flags: number): void {
+    const call = this.liveCalls.get(toHex(channelId));
+    if (call === undefined) return;
+    if (flags === 0) call.participants.delete(toHex(peer.device));
+    else call.participants.set(toHex(peer.device), { user: peer.user, device: peer.device, flags });
+    for (const dev of this.sinks.keys()) this.emitEphemeral(dev, 50, [peer.user, peer.device, call.callId, BigInt(flags)]);
+  }
+  /** One op 53 call_ring to `to`'s attached device (L-GW-33): the instance alone sends it. */
+  ring(to: Id, callId: Id, channelId: Id, user: Id, state: 0 | 1 | 2, expiresTs: number): void {
+    this.emitEphemeral(toHex(to), 53, [callId, channelId, user, BigInt(state), BigInt(expiresTs)]);
+  }
+  /** The live call of the channel ends (every ring stops; the call group closes as endCall does). */
+  endCall(channelId: Id): void {
+    const call = this.liveCalls.get(toHex(channelId));
+    if (call === undefined) return;
+    this.liveCalls.delete(toHex(channelId));
+    this.closeCallGroup(call.groupId);
+  }
+  /** The newest row of `user`'s signed list as served (a test seeds a device's cache with it). */
+  listRow(user: Id): { version: bigint; blob: Uint8Array } | undefined {
+    const rows = this.lists.get(toHex(user));
+    const last = rows?.[rows.length - 1];
+    return last === undefined ? undefined : { version: last.version, blob: last.blob };
+  }
+
+  private mayView(d: string, channelId: Id): boolean {
+    const dm = this.dms.get(toHex(channelId));
+    if (dm !== undefined) return dm.users.some((user) => toHex(user) === this.owners.get(d));
+    return this.voiceChannels.has(toHex(channelId)) || this.channels.has(toHex(channelId));
+  }
+  private snapshot(channelId: Id): { groupId: Id | null; callId: Id | null; participants: { userId: Id; deviceId: Id; flags: number }[] } {
+    const call = this.liveCalls.get(toHex(channelId));
+    const participants = call === undefined ? [] : [...call.participants.values()]
+      .sort((a, b) => toHex(a.user).localeCompare(toHex(b.user)) || toHex(a.device).localeCompare(toHex(b.device)))
+      .map((p) => ({ userId: p.user, deviceId: p.device, flags: p.flags }));
+    return { groupId: call?.groupId ?? this.openGroupOf(channelId, 1)?.id ?? null, callId: call?.callId ?? null, participants };
+  }
+  private startCall(d: string, channelId: Id): { created: boolean; callId: Id; groupId: Id; livekitUrl: string; token: string;
+    iceServers: [string[], string, string][]; caps: [number, number, number] } {
+    if (!this.mayView(d, channelId)) throw httpError(404, 'E_NOT_FOUND');
+    const live = this.liveCalls.get(toHex(channelId));
+    const g = live === undefined ? this.openGroupOf(channelId, 1) : this.groups.get(toHex(live.groupId));
+    // The leaf gate: a token only for a current leaf of the call group's current epoch.
+    if (g === undefined || g.closed || !g.members.has(d)) throw httpError(403, 'E_LEAF_NOT_CURRENT');
+    if (live !== undefined && live.participants.size >= this.maxVoiceParticipants) throw httpError(409, 'E_CALL_FULL');
+    if (live === undefined) this.liveCalls.set(toHex(channelId), { callId: channelId, channelId, groupId: g.id, participants: new Map() });
+    return { created: live === undefined, callId: channelId, groupId: g.id, livekitUrl: 'wss://model.test/rtc', token: `token-${d.slice(0, 8)}`,
+      iceServers: [[['turn:model.test:3478?transport=udp'], 'user', 'credential']], caps: [64_000, 2_500_000, 1] };
+  }
+  private liveCall(callId: Id): { callId: Id; channelId: Id; groupId: Id } {
+    const call = [...this.liveCalls.values()].find((c) => same(c.callId, callId));
+    if (call === undefined) throw httpError(404, 'E_NOT_FOUND');
+    return call;
+  }
+  /** POST /v1/groups/{id}/proposal by a member (L-HTTP-103): stored and fanned out as a handshake; a second Remove of the
+   *  same leaf is 409 E_REMOVE_PENDING. */
+  private postProposal(d: string, id: Id, body: Uint8Array): { seq: bigint } {
+    const g = this.must(id);
+    if (!g.members.has(d)) throw httpError(403, 'E_LEAF_NOT_CURRENT');
+    const v = arr(decode(body), 2);
+    if (u64(at(v, 0)) !== g.epoch) throw httpError(409, 'E_COMMIT_CONFLICT');
+    const blob = bin(at(v, 1));
+    const p = arr(decode(blob), 4);
+    const removes = (x: DsProposal): boolean => {
+      const q = arr(decode(x.blob), 4);
+      return x.epoch === g.epoch && !x.void && str(at(q, 2)) === 'remove' && same(bin(at(q, 3), 16), bin(at(p, 3), 16));
+    };
+    if (str(at(p, 2)) === 'remove' && g.proposals.some(removes)) throw httpError(409, 'E_REMOVE_PENDING');
+    g.proposals.push({ ref: bin(at(p, 1), 16), blob, epoch: g.epoch, void: false });
+    const e: DsEntry = { seq: g.next, epoch: g.epoch, hs: { kind: 0, sender: 0n }, uploader: null, blob, commitment: null, deleted: false,
+      franking: new Uint8Array(32), recvTs: this.tick() };
+    g.next += 1n;
+    g.log.push(e);
+    for (const m of [...g.members]) this.emit(m, 16, g.id, [e.seq, e.epoch, 0n, 0n, blob]);
+    return { seq: e.seq };
+  }
+  private emitEphemeral(dev: string, op: number, payload: CborValue[]): void {
+    const sink = this.sinks.get(dev);
+    if (sink !== undefined) sink({ op, n: 0n, groupId: null, payload });
+  }
+
   /** An external commit (kind 2, sender null) by peer that adds it, framed at the current epoch. */
   peerJoin(groupId: Id, peer: Peer): bigint {
     const g = this.must(groupId);
@@ -2269,6 +2630,26 @@ export class ModelDs {
         return { raw: encode(rows.map((row) => [row.version, row.blob, row.sig, row.prev])),
           count: rows.length, lastVersion: rows.length ? at(rows, rows.length - 1).version : null };
       }),
+      getChannelCall: (channelId) => this.call(d, 'getChannelCall', null, null, () => {
+        if (!this.mayView(d, channelId)) throw httpError(404, 'E_NOT_FOUND');
+        return this.snapshot(channelId);
+      }),
+      getCommunityCalls: (communityId) => this.call(d, 'getCommunityCalls', null, null, () => [...this.voiceChannels]
+        .filter(([channel, community]) => same(community, communityId) && this.liveCalls.has(channel))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([channel]) => { const s = this.snapshot(this.liveCalls.get(channel)!.channelId);
+          return { channelId: this.liveCalls.get(channel)!.channelId, callId: s.callId!, participants: s.participants }; })),
+      startCall: (channelId) => this.call(d, 'startCall', null, null, () => this.startCall(d, channelId)),
+      shareCall: (callId) => this.call(d, 'shareCall', null, null, () => { this.liveCall(callId); }),
+      unshareCall: () => this.call(d, 'unshareCall', null, null, () => undefined),
+      postCallStats: (callId) => this.call(d, 'postCallStats', null, null, () => { this.liveCall(callId); }),
+      postProposal: (id, body) => this.call(d, 'postProposal', id, null, () => this.postProposal(d, id, body)),
+      declineCall: (callId) => this.call(d, 'declineCall', null, null, () => {
+        const call = this.liveCall(callId);
+        const dm = this.dms.get(toHex(call.channelId));
+        if (dm === undefined) throw httpError(400, 'E_INVALID_REQUEST');
+        if (!this.mayView(d, call.channelId)) throw httpError(404, 'E_NOT_FOUND');
+      }),
     };
   }
 
@@ -2300,13 +2681,16 @@ export class ModelDs {
   private postGroup(d: string, body: Uint8Array): { nextSeq: bigint } {
     const v = arr(decode(body), 4);
     const id = bin(at(v, 0), 16);
-    const binding = arr(decode(bin(at(v, 1))), 3);
+    const binding = arr(decode(bin(at(v, 1))));
+    if (binding.length !== 3 && binding.length !== 4) throw httpError(400, 'E_INVALID_REQUEST');
     const channelId = bin(at(binding, 2), 16);
+    const kind = binding.length === 4 && u64(at(binding, 3)) === 1n ? 1 : 0;
     if (this.unlisted(d)) throw httpError(400, 'E_INVALID_REQUEST');
-    if (this.openGroupOf(channelId) !== undefined) throw httpError(409, 'E_GROUP_EXISTS');
-    this.groups.set(toHex(id), this.newGroup(id, channelId, d));
+    if (this.openGroupOf(channelId, kind) !== undefined) throw httpError(409, 'E_GROUP_EXISTS');
+    this.groups.set(toHex(id), this.newGroup(id, channelId, d, kind));
     const dm = this.dms.get(toHex(channelId));
-    if (dm !== undefined) {
+    // A DM's text group adds every participant device; a call group is joined by external commit only.
+    if (dm !== undefined && kind === 0) {
       const g = this.must(id);
       for (const user of dm.users) {
         for (const [device, owner] of this.owners) {
@@ -2385,13 +2769,20 @@ export class ModelDs {
     };
   }
 
-  private newGroup(id: Id, channelId: Id, member: string): DsGroup {
-    return { id, channelId, epoch: 0n, next: 1n, log: [], members: new Set([member]), proposals: [], prunedBelow: 0n };
+  private newGroup(id: Id, channelId: Id, member: string, kind: 0 | 1 = 0): DsGroup {
+    return { id, kind, closed: false, channelId, epoch: 0n, next: 1n, log: [], members: new Set([member]), proposals: [], prunedBelow: 0n };
   }
 
-  private openGroupOf(channelId: Id): DsGroup | undefined {
-    for (const g of this.groups.values()) if (same(g.channelId, channelId)) return g;
-    return undefined;
+  /** The channel's open group of `kind` (a call group: the newest, L-HTTP-100); a DM's text group and its call group share
+   *  the channel and never collide. */
+  private openGroupOf(channelId: Id, kind: 0 | 1 = 0): DsGroup | undefined {
+    let found: DsGroup | undefined;
+    for (const g of this.groups.values()) {
+      if (!same(g.channelId, channelId) || g.kind !== kind || g.closed) continue;
+      if (kind === 0) return g;
+      found = g;
+    }
+    return found;
   }
 
   private must(id: Id): DsGroup {

@@ -38,6 +38,7 @@ import { LEAF_VERDICTS, SyncError } from '../sync/errors';
 import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
+import { CallController } from '../calls/controller';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -48,7 +49,8 @@ export interface ControllerDeps {
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   boot(instance: Instance): Promise<BootOutcome>;
   resetDevice(instance: Instance): Promise<void>;  // removes the KEK record and the OPFS directory dilla/<instance hex>
-  post(message: FromWorker): void;
+  /** Posts to the own page; `transfer` moves buffers (a callKeys key, L-TS-52) instead of copying them. */
+  post(message: FromWorker, transfer?: Transferable[]): void;
   testHooks: boolean;
   parts?: Partial<ControllerParts>;                // unit tests and the core-worker harness only; src/worker/entry.ts passes none
   thumbs?: ThumbDeps | null;                       // unit tests only; absent: probed from the worker global (L-TS-35)
@@ -390,6 +392,8 @@ export class Controller {
   private readonly incomingTyping = new Map<string, Map<string, number>>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
   private deviceCount = 0;
+  /** web-3: voice presence, calls and rings (L-TS-56). */
+  private readonly calls: CallController;
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -405,6 +409,31 @@ export class Controller {
       onGeneration: (generation) => { this.setConnection({ generation: generation.toString() }); },
     });
     this.routes = this.parts.routes(http);
+    this.calls = new CallController({
+      core: () => this.core,
+      routes: this.routes,
+      publish: (name, value) => { this.slices.set(name, value); },
+      participant: (user, device, flags) => {
+        const own = this.me !== null && toHex(this.me.deviceId) === device;
+        return { userId: user, deviceId: device, name: this.nameOf(user), flags, own, web: own, bot: this.isBot(user) };
+      },
+      voiceChannels: (community) => [...this.channels].filter(([, k]) => k.communityId === community && k.row.kind === 1).map(([id]) => id),
+      known: (channel) => this.channels.has(channel) || this.dms.has(channel),
+      callTarget: (channel) => {
+        const known = this.channels.get(channel);
+        if (known !== undefined) return known.row.kind === 1 ? { communityId: known.communityId } : undefined;
+        return this.dms.has(channel) ? { communityId: null } : undefined;
+      },
+      communityListed: (community) => this.listed(community),
+    });
+  }
+
+  /** A bot account (member kind 1) in any loaded member list: the bot mark of a voice row. */
+  private isBot(userHex: string): boolean {
+    for (const community of this.slices.get('communities') ?? []) {
+      if (this.slices.get(`members:${community.id}`)?.some((m) => m.userId === userHex && m.kind === 1)) return true;
+    }
+    return false;
   }
 
   /** Requirement 12: a pending scope in phase 2 is a revocation; a wipe in progress mints nothing (head ruling 27).
@@ -516,8 +545,9 @@ export class Controller {
       case 'search': return this.search(command, searchId ?? this.searchGate.next());
       case 'typing': return this.typing(command.channelId, command.on);
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
-      // web-3 task 1: the call commands are in the contract; task 6 implements them.
-      case 'callJoin': case 'callLeave': case 'callShare': case 'callRefresh': case 'callStats': case 'loadVoice': case 'callDecline':
+      case 'loadVoice': return this.calls.loadVoice(command.communityId, command.channelId);
+      // web-3 task 1: the call commands are in the contract; task 6b implements them.
+      case 'callJoin': case 'callLeave': case 'callShare': case 'callRefresh': case 'callStats': case 'callDecline':
         return Promise.reject(new Refusal('E_UNAVAILABLE', 'calls are not implemented yet'));
       case 'resign': return this.resign(command.nonce);
     }
@@ -774,6 +804,7 @@ export class Controller {
     this.slices.set('settings', core.settings());
     this.publishBadges();
     if (this.slices.get('notices') === undefined) this.slices.set('notices', this.noticesState);
+    this.calls.publishInitial();
     // (j) after a reload mid-ceremony the store records no username (head ruling 42): the account names it.
     let username = core.identity().username;
     if (username === '') username = (await this.routes.getAccountMe()).username;
@@ -878,6 +909,8 @@ export class Controller {
       this.onReady(e.info);
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {
       this.incomingTypingFrame(e.frame.payload);
+    } else if (e.type === 'frame' && (e.frame.op === Op.voiceState || e.frame.op === Op.callRing)) {
+      this.safely(() => { this.calls.onFrame(e.frame); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
     }
@@ -1765,6 +1798,7 @@ export class Controller {
     this.slices.set('trust', []);
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
+    this.calls.reset();
     this.setConnection({ status: 'offline', generation: null });
   }
 

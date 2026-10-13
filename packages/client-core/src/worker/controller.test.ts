@@ -4278,7 +4278,9 @@ describe('call commands before task 6', () => {
     commands.forEach((command, i) => { w.call(7100 + i, command); });
     await vi.waitFor(() => { for (let i = 0; i < commands.length; i++) expect(w.ret(7100 + i)).toBeDefined(); });
     commands.forEach((command, i) => {
-      expect(w.ret(7100 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_UNAVAILABLE', detail: '' } });
+      // Task 6a: loadVoice is implemented; an unknown channel or community is refused before any route call.
+      const code = command.m === 'loadVoice' ? 'E_BAD_INPUT' : 'E_UNAVAILABLE';
+      expect(w.ret(7100 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code, detail: '' } });
     });
     expect(routeCalls(w)).toBe(before);
     // I2: until task 6 the stub never names a changed user; any call slice it publishes keeps changedUser null.

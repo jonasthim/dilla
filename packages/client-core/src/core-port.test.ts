@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decode, encode, type CborInput } from './cbor';
-import { CoreError, wrapCore, type CoreHandle } from './core-port';
+import { CoreError, trustBlock, wrapCore, type CoreHandle } from './core-port';
 import { fromHex } from './hex';
 
 const G = new Uint8Array(16).fill(0x67);
@@ -83,6 +83,72 @@ it('reads whether a send block is the own account\'s, and checks the group id fi
   expect(stub({ send_block_own: () => false }).port.sendBlockOwn(G)).toBe(false);
   expect(caught(() => stub({ send_block_own: () => true }).port.sendBlockOwn(new Uint8Array(15))).code).toBe('E_CORE_INPUT');
 });
+
+// web-3 task 6 (progress note of task 5): the call gate's E_BINDING (a DM call group bound to a made-up community) is a
+// trust block like the four verdicts, never folded into E_CREDENTIAL.
+it('keeps E_BINDING as a trust block of its own', () => {
+  expect(stub({ send_block_code: () => 'E_BINDING' }).port.sendBlockCode(G)).toBe('E_BINDING');
+  expect(trustBlock('E_BINDING')).toBe('E_BINDING');
+});
+
+describe('wrapCore web-3 calls (L-TS-55)', () => {
+  const KEY = Uint8Array.from({ length: 16 }, (_, i) => 0xa0 + i);
+  const CODE = '12345 67890 12345 67890 12345 67890';
+  const epochBody = (): Uint8Array => encode([7, KEY, 1, [[0, DEV, USER], [1, new Uint8Array(16).fill(0x33), COMM]], CODE]);
+
+  it('copies the key into a fresh 16-byte buffer and zero-fills the whole decoded buffer the facade returned', () => {
+    const raw = epochBody();
+    const s = stub({ call_media_epoch: () => raw });
+    const m = s.port.callMediaEpoch(G);
+    expect(m.epoch).toBe(7n);
+    expect(m.baseKey).toBeInstanceOf(ArrayBuffer);
+    expect(m.baseKey.byteLength).toBe(16);
+    expect(new Uint8Array(m.baseKey)).toEqual(KEY);
+    expect(m.ownLeaf).toBe(1);
+    expect(m.roster).toEqual([{ leaf: 0, deviceId: DEV, userId: USER }, { leaf: 1, deviceId: new Uint8Array(16).fill(0x33), userId: COMM }]);
+    expect(m.code).toBe(CODE);
+    // Nothing of the key is left in the bytes the facade handed over, and the copy shares no memory with them.
+    expect(raw.every((b) => b === 0)).toBe(true);
+    expect(m.baseKey).not.toBe(raw.buffer);
+    expect(s.calls).toEqual([{ method: 'call_media_epoch', args: [G] }]);
+  });
+
+  it('zero-fills the decoded buffer also when it does not decode', () => {
+    const raw = encode([7, KEY.slice(0, 15), 1, [], CODE]);
+    expect(caught(() => stub({ call_media_epoch: () => raw }).port.callMediaEpoch(G)).code).toBe('E_CORE_DECODE');
+    expect(raw.every((b) => b === 0)).toBe(true);
+    const bad = encode([7, KEY, 1, [], 'not a code']);
+    expect(caught(() => stub({ call_media_epoch: () => bad }).port.callMediaEpoch(G)).code).toBe('E_CORE_DECODE');
+    expect(bad.every((b) => b === 0)).toBe(true);
+  });
+
+  it('maps the call gate refusal to its code', () => {
+    const s = stub({ call_media_epoch: () => { throw new Error('E_UMK_CHANGED'); } });
+    expect(caught(() => s.port.callMediaEpoch(G)).code).toBe('E_UMK_CHANGED');
+  });
+
+  it('forwards the six other call exports in the facade argument order', () => {
+    const s = stub({
+      call_group_create: () => BODY_OUT, call_group_join_external: () => BODY_OUT, call_join_check: () => undefined,
+      call_leave_proposal: () => BODY_OUT, call_rotate: () => BODY_OUT, call_group_forget: () => undefined,
+    });
+    const info = encode(['info']);
+    const tree = encode(['tree']);
+    const pub = new Uint8Array(32).fill(2);
+    expect(s.port.callGroupCreate(G, null, CHAN, 3n, pub)).toBe(BODY_OUT);
+    expect(s.port.callGroupJoinExternal({ groupId: G, communityId: COMM, channelId: CHAN, policyVersion: 3n }, info, tree)).toBe(BODY_OUT);
+    s.port.callJoinCheck(G);
+    expect(s.port.callLeaveProposal(G)).toBe(BODY_OUT);
+    expect(s.port.callRotate(G)).toBe(BODY_OUT);
+    s.port.callGroupForget(G);
+    expect(s.calls.map((c) => [c.method, c.args])).toEqual([
+      ['call_group_create', [G, null, CHAN, 3n, pub]],
+      ['call_group_join_external', [G, COMM, CHAN, 3n, info, tree]],
+      ['call_join_check', [G]], ['call_leave_proposal', [G]], ['call_rotate', [G]], ['call_group_forget', [G]],
+    ]);
+  });
+});
+const BODY_OUT = new Uint8Array([0x82, 0x01, 0x02]);
 
 it('refuses a safety-number key that is not 32 bytes before calling the core', () => {
   const s = stub({ safety_number_for: () => 'never' });

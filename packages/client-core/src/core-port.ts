@@ -42,9 +42,13 @@ export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created
 export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; }
 export interface PurgeRow { groupId: Id; seq: bigint; channelId: Id; blobIds: Uint8Array[]; }
 export interface PendingLeaf { groupId: Id; leafIndex: number; userId: Id; cachedVersion: bigint; reason: string; }
-/** The stored verdict that blocks a user's leaf (and with it sending in its group); E_UMK_CHANGED wins (ABI 8). */
-export type TrustBlock = 'E_UMK_CHANGED' | 'E_CREDENTIAL' | 'E_DEVICE_UNLISTED' | 'E_TIER_MISMATCH';
-const TRUST_BLOCKS: readonly string[] = ['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH'];
+/** The stored verdict that blocks a user's leaf (and with it sending in its group); E_UMK_CHANGED wins (ABI 8).
+ *  E_BINDING (web-3, ABI 9) is the call gate's refusal of a DM call group bound to a community its text group is not
+ *  (client/calls.rs dm_text_id): a block of its own, never folded into E_CREDENTIAL. */
+export type TrustBlock = 'E_UMK_CHANGED' | 'E_CREDENTIAL' | 'E_DEVICE_UNLISTED' | 'E_TIER_MISMATCH' | 'E_BINDING';
+const TRUST_BLOCKS: readonly string[] = ['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_BINDING'];
+/** Whether a refusal code is a trust block: the call gate's hard refusals (task 6 blocks or pauses on these). */
+export function isTrustBlock(code: string): code is TrustBlock { return TRUST_BLOCKS.includes(code); }
 /** The core's block_code: a known verdict as it is, any other stored code as a failed identity check (fail closed). */
 export function trustBlock(code: string): TrustBlock {
   return TRUST_BLOCKS.includes(code) ? code as TrustBlock : 'E_CREDENTIAL';
@@ -133,6 +137,55 @@ export interface CorePort {
   /** True when that block is held only by own-user leaves (R1: the page names the own account, not a contact). */
   sendBlockOwn(groupId: Id): boolean;
   search(scope: SearchScope, query: string, cursor: SearchCursor | null, limit: number): SearchHit[];
+  // ---- web-3 call groups (L-WASM-34, L-TS-55); pendingLeaves and deviceListIngest serve call groups too (L-CORE-52) ----
+  /** group_create for a call group: CBOR [group_id, binding, group_info, ratchet_tree] for POST /v1/groups. */
+  callGroupCreate(groupId: Id, communityId: Id | null, channelId: Id, policyVersion: bigint, externalSenderPub: Uint8Array): Uint8Array;
+  /** The external join of a call group, gated in the core; the commit comes back unposted, the group staged (state 1). */
+  callGroupJoinExternal(g: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array;
+  /** The current epoch's media key, refused by the call gate before any key byte is derived. */
+  callMediaEpoch(groupId: Id): CallMediaEpoch;
+  /** The full call gate on a staged call group; the worker posts the join commit only when this passes (RV-1). */
+  callJoinCheck(groupId: Id): void;
+  /** CBOR [epoch, proposal]: a Remove of this device's own leaf, for POST /v1/groups/{id}/proposal. */
+  callLeaveProposal(groupId: Id): Uint8Array;
+  /** An empty commit with an UpdatePath in commit_build's body shape; it cancels a pending own leave. */
+  callRotate(groupId: Id): Uint8Array;
+  /** Deletes the call group's state and sets its row to gone. */
+  callGroupForget(groupId: Id): void;
+}
+
+/** One epoch of a call group (L-TS-55). `baseKey` is a fresh 16-byte buffer the worker transfers once; nothing else
+ *  holds the key bytes (the decoded buffer they came in is zero-filled). */
+export interface CallMediaEpoch { epoch: bigint; baseKey: ArrayBuffer; ownLeaf: number; roster: { leaf: number; deviceId: Id; userId: Id }[]; code: string }
+const CALL_CODE = /^(\d{5} ){5}\d{5}$/;
+const CALL_ROSTER_MAX = 1024;
+/**
+ * The adapter of L-TS-55 over call_media_epoch's CBOR [epoch, base_key(16), own_leaf, [[leaf, device_id, user_id]],
+ * code]: the key is copied into a fresh ArrayBuffer and the whole decoded buffer is zero-filled, whether or not it
+ * decodes. The facade's own Vec is already zeroized (L-WASM-34); this clears the copy wasm-bindgen handed out.
+ */
+export function readCallMediaEpoch(bytes: Uint8Array): CallMediaEpoch {
+  try {
+    const a = arr(decode(bytes), 5);
+    const key = bin(field(a, 1), 16);
+    const roster = arr(field(a, 3));
+    if (roster.length > CALL_ROSTER_MAX) throw new CborError('E_CBOR_SHAPE', 'roster limit');
+    const code = str(field(a, 4));
+    if (!CALL_CODE.test(code)) throw new CborError('E_CBOR_RANGE', 'call code');
+    const out: CallMediaEpoch = {
+      epoch: u64(field(a, 0)), baseKey: new ArrayBuffer(16), ownLeaf: u53(field(a, 2)),
+      roster: roster.map((row) => { const r = arr(row, 3); return { leaf: u53(field(r, 0)), deviceId: bin(field(r, 1), 16), userId: bin(field(r, 2), 16) }; }),
+      code,
+    };
+    new Uint8Array(out.baseKey).set(key);
+    key.fill(0);
+    return out;
+  } catch (err) {
+    if (err instanceof CborError || err instanceof RangeError) throw new CoreError('E_CORE_DECODE', `callMediaEpoch: ${err.message}`);
+    throw err;
+  } finally {
+    bytes.fill(0);
+  }
 }
 
 export interface CoreHandle {
@@ -203,6 +256,13 @@ export interface CoreHandle {
       purges(): Uint8Array;
       purge_done(group_id: Uint8Array, seq: bigint): void;
       own_roles_set(community_id: Uint8Array, role_ids: Uint8Array): void;
+      call_group_create(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, external_sender_pub: Uint8Array): Uint8Array;
+      call_group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
+      call_media_epoch(group_id: Uint8Array): Uint8Array;
+      call_join_check(group_id: Uint8Array): void;
+      call_leave_proposal(group_id: Uint8Array): Uint8Array;
+      call_rotate(group_id: Uint8Array): Uint8Array;
+      call_group_forget(group_id: Uint8Array): void;
     }
     export interface StoreOpenConfigLike { directory: string; db_name: string; kek_hex: string; }
     export interface CoreWasmModule {
@@ -460,5 +520,14 @@ export function wrapCore(handle: CoreHandle): CorePort {
       return decodeSearchHits(handle.search(kind, scope.id, query,
         cursor === null ? null : encode([cursor.rank, cursor.groupId, cursor.seq]), limit));
     }),
+    callGroupCreate: (groupId, communityId, channelId, policyVersion, externalSenderPub) => call(() =>
+      handle.call_group_create(groupId, communityId, channelId, policyVersion, externalSenderPub)),
+    callGroupJoinExternal: (g, infoBody, treeBody) => call(() =>
+      handle.call_group_join_external(g.groupId, g.communityId, g.channelId, g.policyVersion, infoBody, treeBody)),
+    callMediaEpoch: (groupId) => call(() => readCallMediaEpoch(handle.call_media_epoch(groupId))),
+    callJoinCheck: (groupId) => call(() => handle.call_join_check(groupId)),
+    callLeaveProposal: (groupId) => call(() => handle.call_leave_proposal(groupId)),
+    callRotate: (groupId) => call(() => handle.call_rotate(groupId)),
+    callGroupForget: (groupId) => call(() => handle.call_group_forget(groupId)),
   };
 }

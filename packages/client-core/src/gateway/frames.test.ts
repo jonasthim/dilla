@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { arr, CborError, decode, encode } from '../cbor';
 import { fromHex, toHex } from '../hex';
-import { decodeFrame, encodeFrame, Op } from './frames';
+import { callRingOf, decodeFrame, encodeFrame, frameOp, Op, voiceStateOf } from './frames';
 
 interface FrameCase { name: string; op: number; n: number; group_id: string; payload: string; frame: string }
 interface FrameReject { name: string; frame: string; code: string }
@@ -128,4 +128,43 @@ it('accepts call_ring states 0..2 and refuses state 3, a short id and a missing 
   expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1, 'soon']))).toThrow('E_FRAME_SHAPE');
   // L-GW-33: an ephemeral frame has n = 0.
   expect(() => decodeFrame(encodeFrame(Op.callRing, 1, null, [call, channel, user, 1, 1758659030]))).toThrow('E_FRAME_SHAPE');
+});
+
+// web-3 task 6 (L-TS-55): the typed reads of ops 50 and 53 the worker acts on.
+describe('typed voice and ring frames', () => {
+  const [call, channel, user, device] = [fid(5), fid(6), fid(7), fid(8)];
+
+  it('op 50 decodes with every flag bit of 02 § voice_state (in_call, mute, deaf, video, screen)', () => {
+    for (const flags of [0, 1, 3, 7, 9, 17, 31]) {
+      const frame = decodeFrame(encodeFrame(Op.voiceState, 0, null, [user, device, call, flags]));
+      expect(voiceStateOf(frame)).toEqual({ userId: user, deviceId: device, callId: call, flags });
+    }
+  });
+
+  // Attacker: an instance sending a reserved flag bit; the decoder refuses it, and the gateway drops it (below).
+  it('op 50 refuses flags above 31 and a short id', () => {
+    expect(() => decodeFrame(encodeFrame(Op.voiceState, 0, null, [user, device, call, 32]))).toThrow('E_FRAME_SHAPE');
+    expect(() => decodeFrame(encodeFrame(Op.voiceState, 0, null, [user, device.slice(1), call, 1]))).toThrow('E_FRAME_SHAPE');
+  });
+
+  it('op 53 decodes to { callId, channelId, userId, state, expiresTs }', () => {
+    for (const state of [0, 1, 2] as const) {
+      const frame = decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, state, 1_700_000_030]));
+      expect(callRingOf(frame)).toEqual({ callId: call, channelId: channel, userId: user, state, expiresTs: 1_700_000_030 });
+    }
+  });
+
+  it('a typed read of a frame of another op, or an expiry past the safe integers, is a shape error', () => {
+    expect(() => callRingOf({ op: Op.voiceState, n: 0n, groupId: null, payload: [user, device, call, 1n] })).toThrow('E_FRAME_SHAPE');
+    expect(() => voiceStateOf({ op: Op.callRing, n: 0n, groupId: null, payload: [call, channel, user, 1n, 5n] })).toThrow('E_FRAME_SHAPE');
+    expect(() => callRingOf(decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1, 2n ** 60n]))))
+      .toThrow('E_FRAME_SHAPE');
+  });
+
+  it('frameOp names the op of a frame whose payload does not decode, and null for a broken envelope', () => {
+    expect(frameOp(encodeFrame(Op.callRing, 0, null, [call, channel, user, 3, 1]))).toBe(53);
+    expect(frameOp(encodeFrame(Op.voiceState, 0, null, [user, device, call, 99]))).toBe(50);
+    expect(frameOp(encode([53, 0, null]))).toBeNull();
+    expect(frameOp(new Uint8Array([0xff]))).toBeNull();
+  });
 });

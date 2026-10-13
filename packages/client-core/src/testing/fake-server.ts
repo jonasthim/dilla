@@ -245,6 +245,47 @@ export class FakeServer {
     return this.route(entry);
   };
 
+  // ---- web-3 calls (09 § Voice, L-HTTP-100..104): the routes' shapes and refusals; the call group itself is ModelDs's ----
+  /** channel hex → the channel's call as L-HTTP-100 answers it; `dm` marks a DM or group DM (decline is theirs only). */
+  readonly calls = new Map<string, { groupId: Uint8Array | null; callId: Uint8Array | null; dm: boolean;
+    participants: [Uint8Array, Uint8Array, number][] }>();
+  maxVoiceParticipants = 25;
+  private proposalSeq = 0;
+
+  private callRoute(r: LoggedRequest, line: string): Response | null {
+    const snapshot = /^GET \/v1\/channels\/([0-9a-f]{32})\/call$/.exec(line);
+    if (snapshot?.[1] !== undefined) {
+      const call = this.calls.get(snapshot[1]);
+      return call === undefined ? refuse(404, 'E_NOT_FOUND') : reply(200, [call.groupId, call.callId, call.participants]);
+    }
+    const start = /^POST \/v1\/channels\/([0-9a-f]{32})\/calls$/.exec(line);
+    if (start?.[1] !== undefined) {
+      const call = this.calls.get(start[1]);
+      if (call === undefined) return refuse(404, 'E_NOT_FOUND');
+      if (call.groupId === null) return refuse(403, 'E_LEAF_NOT_CURRENT');
+      if (call.participants.length >= this.maxVoiceParticipants) return refuse(409, 'E_CALL_FULL');
+      const created = call.callId === null;
+      call.callId = fromHex(start[1]);
+      return reply(created ? 201 : 200, [call.callId, call.groupId, 'wss://dilla.test/rtc', 'token', [], [64_000, 2_500_000, 1]]);
+    }
+    const decline = /^POST \/v1\/calls\/([0-9a-f]{32})\/decline$/.exec(line);
+    if (decline?.[1] !== undefined) {
+      let body: CborValue;
+      try { body = decode(r.body); } catch { return refuse(400, 'E_INVALID_REQUEST'); }
+      if (!Array.isArray(body) || body.length !== 1 || typeof body[0] !== 'bigint' || body[0] < 0n) return refuse(400, 'E_INVALID_REQUEST');
+      const call = [...this.calls.values()].find((c) => c.callId !== null && toHex(c.callId) === decline[1]);
+      if (call === undefined) return refuse(404, 'E_NOT_FOUND');
+      return call.dm ? reply(204) : refuse(400, 'E_INVALID_REQUEST');
+    }
+    if (/^POST \/v1\/groups\/[0-9a-f]{32}\/proposal$/.test(line)) { this.proposalSeq += 1; return reply(201, [this.proposalSeq]); }
+    const callOp = /^(POST|DELETE) \/v1\/calls\/([0-9a-f]{32})\/(share|stats)$/.exec(line);
+    if (callOp?.[2] !== undefined) {
+      const live = [...this.calls.values()].some((c) => c.callId !== null && toHex(c.callId) === callOp[2]);
+      return live || callOp[1] === 'DELETE' ? reply(204) : refuse(404, 'E_NOT_FOUND');
+    }
+    return null;
+  }
+
   private route(r: LoggedRequest): Response {
     const line = `${r.method} ${r.path}`;
     if (line === 'POST /v1/accounts') return this.createAccount(r.body);
@@ -282,7 +323,9 @@ export class FakeServer {
     const device = r.auth === null ? undefined : this.tokens.get(r.auth);
     const user = device === undefined ? undefined : this.devices.get(device);
     if (device === undefined || user === undefined || this.revoked.has(device)) return refuse(401, 'E_UNAUTHENTICATED');
-    const list = /^(PUT|GET) \/v1\/users\/([0-9a-f]{32})\/device-list$/.exec(line);
+    const callRoute = this.callRoute(r, line);
+    if (callRoute !== null) return callRoute;
+    const list =/^(PUT|GET) \/v1\/users\/([0-9a-f]{32})\/device-list$/.exec(line);
     if (list?.[2] !== undefined) {
       if (list[1] === 'PUT') {
         if (user !== list[2]) return refuse(403, 'E_FORBIDDEN');

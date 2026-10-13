@@ -1,6 +1,6 @@
 import { arr, bin, u53, u64, type CborValue } from '../cbor';
 import { DillaHttpError } from '../http/errors';
-import { encodeFrame, decodeFrame, Op, type Frame } from './frames';
+import { DROPPABLE_OPS, encodeFrame, decodeFrame, frameOp, Op, type Frame } from './frames';
 import { toHex } from '../hex';
 
 export type GatewayStatus = 'idle' | 'connecting' | 'ready' | 'waiting';
@@ -183,8 +183,16 @@ export class Gateway {
       return;
     }
     let frame: Frame;
-    try { frame = decodeFrame(new Uint8Array(event.data)); }
-    catch { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
+    const bytes = new Uint8Array(event.data);
+    try { frame = decodeFrame(bytes); }
+    catch {
+      // web-3 (L-GW-33): a malformed voice_state or call_ring of a ready session is dropped, never acted on, and the
+      // socket stays open; any other undecodable frame is a protocol failure.
+      const op = this.phase === 'ready' ? frameOp(bytes) : null;
+      if (op !== null && DROPPABLE_OPS.has(op)) return;
+      this.teardown(CLIENT_CLOSE.undecodable, true);
+      return;
+    }
     if (frame.n > this.lastN) this.lastN = frame.n;
     if (this.phase === 'hello') {
       if (frame.op !== Op.hello) { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
@@ -218,8 +226,10 @@ export class Gateway {
     }
     if (this.phase === 'ready') {
       if (frame.op === Op.heartbeatAck) this.cancel('ackTimer');
-      // The group frames, and the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49).
-      else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.typing) this.emit({ type: 'frame', frame });
+      // The group frames, the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49), and the
+      // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33).
+      else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.typing
+        || frame.op === Op.voiceState || frame.op === Op.callRing) this.emit({ type: 'frame', frame });
       else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);
     }
   }
