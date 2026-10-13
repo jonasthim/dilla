@@ -1272,69 +1272,6 @@ fn oversized_signed_history_is_rejected_before_decode() {
 
 // ---- Claude security review (sec-trust): regressions for T2-LAST-01..03 and leads (p)(q)(r). ----
 
-fn sec_entry(peer: &RawPeer) -> DeviceEntry {
-    DeviceEntry {
-        device_id: DeviceId::from_bytes(peer.device),
-        dsk_pub: peer.signer.public().try_into().unwrap(),
-        tier: Tier::Native,
-        added_at: NOW + 2,
-        revoked_at: None,
-    }
-}
-
-fn sec_next(prev: &DeviceList, entries: Vec<DeviceEntry>, ssk_seed: u8) -> DeviceList {
-    let unsigned = DeviceListUnsigned {
-        v: 1,
-        user_id: prev.unsigned.user_id,
-        version: prev.unsigned.version + 1,
-        prev_hash: prev.hash(),
-        entries,
-    };
-    DeviceList {
-        sig_ssk: SskSigner::from_bytes(&[ssk_seed; 32]).sign_device_list(&unsigned),
-        unsigned,
-    }
-}
-
-fn sec_history(lists: &[&DeviceList]) -> Vec<u8> {
-    let mut e = Encoder::new();
-    e.array(lists.len());
-    for list in lists {
-        e.array(4)
-            .uint(list.unsigned.version)
-            .bytes(&list.encode())
-            .bytes(&list.sig_ssk)
-            .bytes(&list.unsigned.prev_hash);
-    }
-    e.into_vec()
-}
-
-fn sec_ingest(
-    alice: &mut Core,
-    relay: &Relay,
-    user: &[u8; 16],
-    via: [u8; 16],
-    lists: &[&DeviceList],
-) -> (u64, u64, u64) {
-    let head = lists.last().unwrap().encode();
-    let answer = alice
-        .core
-        .device_list_ingest(
-            &GROUP,
-            relay.leaf_of(via),
-            user,
-            &sec_history(lists),
-            &head,
-            NOW + 3,
-        )
-        .expect("signed ingest");
-    decode_strict(&answer, |d| {
-        d.array(3)?;
-        Ok((d.uint()?, d.uint()?, d.uint()?))
-    })
-    .unwrap()
-}
-
 type SecState = ([u8; 32], u64, Option<[u8; 32]>);
 
 fn sec_state_of(alice: &Core, user: &[u8; 16]) -> Option<SecState> {
@@ -1373,19 +1310,6 @@ fn sec_send(alice: &mut Core) -> &'static str {
         Ok(_) => "OK",
         Err(e) => e.code,
     }
-}
-
-fn sec_cached_umk(alice: &Core, user: &[u8; 16]) -> [u8; 32] {
-    alice
-        .probe
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT umk_pub FROM app_device_lists WHERE user_id=?1",
-            [user.as_slice()],
-            |r| r.get(0),
-        )
-        .unwrap()
 }
 
 /// Alice's group with a fixture Bob whose UMK (seed 0xb2) and SSK (seed 0xf2) are known, so a

@@ -402,6 +402,19 @@ impl ClientCore {
         id: &[u8; 16],
         proposals_body: &[u8],
     ) -> Result<Vec<u8>, ClientError> {
+        self.commit_build_inner(id, proposals_body, false)
+    }
+
+    /// `commit_build`'s body. With `rotate` (`call_rotate`), this device's own pending `Remove` of
+    /// its own leaf is taken out of its queue first: a rotation is an UpdatePath commit, and a
+    /// device never commits its own removal (OpenMLS refuses it); another member commits the
+    /// posted proposal.
+    pub(super) fn commit_build_inner(
+        &mut self,
+        id: &[u8; 16],
+        proposals_body: &[u8],
+        rotate: bool,
+    ) -> Result<Vec<u8>, ClientError> {
         self.own()?;
         let proposals = wire::decode_proposals_body(proposals_body)?;
         let row = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
@@ -451,6 +464,9 @@ impl ClientCore {
                             group = DillaGroup::load(ctx.provider, &GroupId::from_slice(id))?.ok_or_else(absent)?;
                         }
                     }
+                }
+                if rotate {
+                    group.withdraw_leave(ctx.provider)?;
                 }
                 // Ruling 3 for the whole queue: `self_update` commits every queued proposal,
                 // including an Add that `group_apply` queued from a handshake row (it is never
@@ -665,6 +681,8 @@ impl ClientCore {
                 format!("group state {}", r.state),
             ));
         }
+        // L-CORE-52: a call group's application messages are skipped, never decrypted or folded.
+        let call = r.kind == super::groups::row_kind(crate::mls::GroupKind::Call);
         let mut next = r.next_seq as u64;
         let mut new_seqs = Vec::new();
         let mut flags = 0u8;
@@ -769,8 +787,8 @@ impl ClientCore {
                             // A row already stored at this seq (an own row confirmed ahead of
                             // next_seq, or one the server serves twice) is skipped before any
                             // MLS processing; rule 2 alone updates a stored row.
-                            let occupied =
-                                !m.deleted && u.with_conn(|c| message_stored(c, id, m.seq))?;
+                            let occupied = call
+                                || !m.deleted && u.with_conn(|c| message_stored(c, id, m.seq))?;
                             if occupied {
                                 // Skipped: not listed; next_seq moves past it below.
                             } else if m.deleted

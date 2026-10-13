@@ -1761,12 +1761,17 @@ impl RawPeer {
 
     /// Creates the relay's group for CHANNEL with the instance as external sender and registers it.
     pub fn create(&mut self, relay: &mut Relay, instance: &Instance) {
+        self.create_as(relay, instance, &text_binding(CHANNEL));
+    }
+
+    /// `create` under `binding`.
+    pub fn create_as(&mut self, relay: &mut Relay, instance: &Instance, binding: &DillaBinding) {
         let group = DillaGroup::create(
             &self.provider,
             &self.signer,
             self.credential.clone(),
             GroupId::from_slice(&relay.group_id),
-            text_binding(CHANNEL),
+            binding.clone(),
             Some(external_senders(
                 instance.signer.public().into(),
                 &InstanceId::from_bytes(INSTANCE),
@@ -1785,7 +1790,7 @@ impl RawPeer {
         let mut e = Encoder::new();
         e.array(4)
             .bytes(&relay.group_id)
-            .bytes(&text_binding(CHANNEL).encode())
+            .bytes(&binding.encode())
             .bytes(&info)
             .bytes(&tree);
         relay.register(&e.into_vec()).expect("register");
@@ -2009,6 +2014,11 @@ impl RawPeer {
     /// Joins the relay's group by external commit (POST …/resync) against the CHANNEL binding.
     /// Answers the seq of the external commit.
     pub fn join_external(&mut self, relay: &mut Relay) -> u64 {
+        self.join_external_as(relay, &text_binding(CHANNEL))
+    }
+
+    /// `join_external` against `binding`.
+    pub fn join_external_as(&mut self, relay: &mut Relay, binding: &DillaBinding) -> u64 {
         let info = group_info_in(&relay.group_info).expect("the relay's GroupInfo");
         let tree_bytes = relay
             .public()
@@ -2022,7 +2032,7 @@ impl RawPeer {
             self.credential.clone(),
             info,
             tree,
-            &text_binding(CHANNEL),
+            binding,
         )
         .expect("external join");
         let own_info = group
@@ -2155,4 +2165,287 @@ pub fn enrolled_core(first: &Core, recovery_key: &str, now: u64) -> Core {
         user: first.user,
         device,
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Signed-list helpers (moved unchanged from tests/client_trust.rs for tests/client_calls.rs).
+
+pub fn sec_entry(peer: &RawPeer) -> DeviceEntry {
+    DeviceEntry {
+        device_id: DeviceId::from_bytes(peer.device),
+        dsk_pub: peer.signer.public().try_into().unwrap(),
+        tier: Tier::Native,
+        added_at: NOW + 2,
+        revoked_at: None,
+    }
+}
+
+pub fn sec_next(prev: &DeviceList, entries: Vec<DeviceEntry>, ssk_seed: u8) -> DeviceList {
+    let unsigned = DeviceListUnsigned {
+        v: 1,
+        user_id: prev.unsigned.user_id,
+        version: prev.unsigned.version + 1,
+        prev_hash: prev.hash(),
+        entries,
+    };
+    DeviceList {
+        sig_ssk: SskSigner::from_bytes(&[ssk_seed; 32]).sign_device_list(&unsigned),
+        unsigned,
+    }
+}
+
+pub fn sec_history(lists: &[&DeviceList]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(lists.len());
+    for list in lists {
+        e.array(4)
+            .uint(list.unsigned.version)
+            .bytes(&list.encode())
+            .bytes(&list.sig_ssk)
+            .bytes(&list.unsigned.prev_hash);
+    }
+    e.into_vec()
+}
+
+pub fn sec_ingest(
+    alice: &mut Core,
+    relay: &Relay,
+    user: &[u8; 16],
+    via: [u8; 16],
+    lists: &[&DeviceList],
+) -> (u64, u64, u64) {
+    let head = lists.last().unwrap().encode();
+    let answer = alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(via),
+            user,
+            &sec_history(lists),
+            &head,
+            NOW + 3,
+        )
+        .expect("signed ingest");
+    decode_strict(&answer, |d| {
+        d.array(3)?;
+        Ok((d.uint()?, d.uint()?, d.uint()?))
+    })
+    .unwrap()
+}
+
+pub fn sec_cached_umk(alice: &Core, user: &[u8; 16]) -> [u8; 32] {
+    alice
+        .probe
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT umk_pub FROM app_device_lists WHERE user_id=?1",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Call groups (web-3 task 5): the call group of a voice channel or a DM, its media epoch.
+
+/// A call group id, apart from GROUP so a DM's text group and call group can be held together.
+pub const CALL: [u8; 16] = [0xca; 16];
+/// A voice channel of COMMUNITY.
+pub const VOICE: [u8; 16] = [0x77; 16];
+/// A DM's channel: the target of its text group and of its call group.
+pub const DM: [u8; 16] = DM_CHANNEL;
+
+/// The binding of a call group: kind call, media version 1.
+pub fn call_binding(community: Option<[u8; 16]>, channel: [u8; 16]) -> DillaBinding {
+    DillaBinding {
+        community_id: community.map(CommunityId::from_bytes),
+        kind: GroupKind::Call,
+        media_version: GroupKind::Call.media_version(),
+        ..text_binding(channel)
+    }
+}
+
+impl Core {
+    /// call_group_create → POST /v1/groups → group_registered.
+    pub fn call_create_and_register(
+        &mut self,
+        relay: &mut Relay,
+        instance: &Instance,
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+    ) {
+        let body = self
+            .core
+            .call_group_create(
+                &relay.group_id,
+                community,
+                channel,
+                POLICY,
+                &instance.public(),
+            )
+            .expect("call_group_create");
+        let created = relay.register(&body).expect("register");
+        let next_seq = decode_strict(&created, |d| {
+            d.array(2)?;
+            d.bytes_exact::<16>()?;
+            d.uint()
+        })
+        .expect("201 body");
+        self.core
+            .group_registered(&relay.group_id, next_seq)
+            .expect("group_registered");
+    }
+}
+
+impl RawPeer {
+    /// Creates and registers the relay's call group for VOICE in COMMUNITY.
+    pub fn create_call(&mut self, relay: &mut Relay, instance: &Instance) {
+        self.create_as(relay, instance, &call_binding(Some(COMMUNITY), VOICE));
+    }
+
+    /// Joins the relay's call group for VOICE in COMMUNITY by external commit.
+    pub fn join_external_call(&mut self, relay: &mut Relay) -> u64 {
+        self.join_external_as(relay, &call_binding(Some(COMMUNITY), VOICE))
+    }
+
+    /// The same device (credential and signature key) in a fresh store, holding no group: for a
+    /// second group the fixture device must be a member of.
+    pub fn twin(&self) -> RawPeer {
+        let signer = SignatureKeyPair::tls_deserialize_exact(
+            self.signer
+                .tls_serialize_detached()
+                .expect("serialize")
+                .as_slice(),
+        )
+        .expect("deserialize");
+        let provider = DillaProvider::new(memory());
+        provider.storage().migrate().expect("migrate");
+        signer.store(provider.storage()).expect("store signer");
+        RawPeer {
+            provider,
+            signer,
+            credential: self.credential.clone(),
+            user: self.user,
+            device: self.device,
+            group: None,
+        }
+    }
+}
+
+/// Alice's call group CALL for VOICE in COMMUNITY with a fixture Bob (UMK seed 0xb2, SSK seed
+/// 0xf2), both active at epoch 1; Bob's v1 list is ingested through the call group.
+pub fn call_raw_bob() -> (Relay, Core, RawPeer, DeviceList) {
+    let instance = Instance::generate();
+    let mut call = Relay::new(CALL);
+    let mut alice = ready_core(0xa1, "alice");
+    alice.call_create_and_register(&mut call, &instance, Some(&COMMUNITY), &VOICE);
+    let mut bob = RawPeer::new(0xb2, 0xb3);
+    bob.join_external_call(&mut call);
+    alice.sync(&call);
+    let body = bob.device_list_body();
+    ingest_list_body(&mut alice, &call, bob.user, bob.device, &body);
+    (call, alice, bob, list_of(&body))
+}
+
+/// The signed list a `device_list_body` PUT body carries.
+pub fn list_of(body: &[u8]) -> DeviceList {
+    let blob = decode_strict(body, |d| {
+        d.array(4)?;
+        d.uint()?;
+        let blob = d.bytes()?.to_vec();
+        d.skip()?;
+        d.skip()?;
+        Ok(blob)
+    })
+    .expect("signed PUT body");
+    DeviceList::decode(&blob).expect("a signed list")
+}
+
+/// `sec_ingest` through the relay's own group (a call group, or any other one).
+pub fn call_ingest(
+    alice: &mut Core,
+    relay: &Relay,
+    user: &[u8; 16],
+    via: [u8; 16],
+    lists: &[&DeviceList],
+) -> (u64, u64, u64) {
+    let head = lists.last().expect("a list").encode();
+    let answer = alice
+        .core
+        .device_list_ingest(
+            &relay.group_id,
+            relay.leaf_of(via),
+            user,
+            &sec_history(lists),
+            &head,
+            NOW + 3,
+        )
+        .expect("signed ingest");
+    decode_strict(&answer, |d| {
+        d.array(3)?;
+        Ok((d.uint()?, d.uint()?, d.uint()?))
+    })
+    .expect("ingest answer")
+}
+
+/// Pins `peer`'s signed v1 list on `alice` before she holds any group with it: through a text
+/// group GROUP on CHANNEL that a twin of the peer's device joins.
+pub fn pin_list(alice: &mut Core, peer: &RawPeer) {
+    let instance = Instance::generate();
+    let mut text = Relay::new(GROUP);
+    alice.create_and_register(&mut text, &instance);
+    let mut twin = peer.twin();
+    twin.join_external(&mut text);
+    alice.sync(&text);
+    ingest_list_body(
+        alice,
+        &text,
+        peer.user,
+        peer.device,
+        &peer.device_list_body(),
+    );
+}
+
+/// `call_media_epoch`'s answer: [epoch, base_key, own_leaf, [[leaf, device_id, user_id]], code].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaEpochOut {
+    pub epoch: u64,
+    pub base_key: [u8; 16],
+    pub own_leaf: u64,
+    pub roster: Vec<(u64, [u8; 16], [u8; 16])>,
+    pub code: String,
+}
+
+pub fn decode_media_epoch(bytes: &[u8]) -> MediaEpochOut {
+    decode_strict(bytes, |d| {
+        d.array(5)?;
+        let epoch = d.uint()?;
+        let base_key = d.bytes_exact::<16>()?;
+        let own_leaf = d.uint()?;
+        let n = d.array_len()?;
+        let mut roster = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(3)?;
+            roster.push((d.uint()?, d.bytes_exact::<16>()?, d.bytes_exact::<16>()?));
+        }
+        let code = d.text()?.to_owned();
+        Ok(MediaEpochOut {
+            epoch,
+            base_key,
+            own_leaf,
+            roster,
+            code,
+        })
+    })
+    .expect("call_media_epoch shape")
+}
+
+/// `call_leave_proposal`'s answer: [epoch, proposal].
+pub fn decode_epoch_proposal(bytes: &[u8]) -> (u64, Vec<u8>) {
+    decode_strict(bytes, |d| {
+        d.array(2)?;
+        Ok((d.uint()?, d.bytes()?.to_vec()))
+    })
+    .expect("call_leave_proposal shape")
 }
