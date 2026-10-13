@@ -5,7 +5,7 @@
 // Attacker statement (lesson e): the notifier refuses nothing. What it shows is the body of a message the core
 // already decrypted and the timeline would render, on this device only, and only with the person's own permission.
 import { effectiveNotifyMode, isMuted } from '@dilla/client-core';
-import type { CoreClient, Notice } from '@dilla/client-core';
+import type { CoreClient, Notice, Ring } from '@dilla/client-core';
 import type { PermissionState } from './notify-permission.ts';
 import { t } from './strings/index.ts';
 import { mergeMembers, nameBook, plainBody } from './screens/shell-model.ts';
@@ -110,4 +110,42 @@ export function startNotifier(deps: NotifierDeps): () => void {
     stopped = true;
     unsubscribe();
   };
+}
+
+export interface RingNotifyDeps {
+  Notification: NotificationCtor | undefined;
+  settings: Readonly<Record<string, string>>;
+  /** The DM's kind for its notify mode: 3 a DM, 4 a group DM. */
+  kind: 3 | 4;
+  focus(): void;
+  open(channelId: string): void;
+}
+
+/**
+ * The desktop notification of an incoming DM ring (flow 06, decision 6), or null when none may show: only with the
+ * permission already granted (a ring never asks for it), never for a busy ring (already in a call) or a quiet one (the
+ * DM is muted, R1), and never when the DM's notify mode is nothing. One per call (`tag`); the caller closes it when
+ * the ring ends. A click focuses the window, opens the DM and closes it.
+ *
+ * Attacker statement (lesson e): the notifier refuses nothing new. A ring reaches this page only after the worker
+ * checked that the caller shares the DM with this person and that neither of the DM's groups is send-blocked (L-TS-56
+ * step 8); what it shows is that caller's own display name.
+ */
+export function ringNotification(ring: Ring, deps: RingNotifyDeps): NotificationHandle | null {
+  const Ctor = deps.Notification;
+  if (Ctor === undefined || Ctor.permission !== 'granted') return null;
+  if (ring.busy || ring.quiet || isMuted(deps.settings, ring.channelId)) return null;
+  if (effectiveNotifyMode(deps.settings, ring.channelId, deps.kind) === 'nothing') return null;
+  try {
+    const note = new Ctor(t('call.ring.notifyTitle', { name: ring.callerName }),
+      { body: t('call.ring.notifyBody'), tag: `dilla-ring-${ring.callId}`, silent: false });
+    note.onclick = () => {
+      deps.focus();
+      deps.open(ring.channelId);
+      note.close();
+    };
+    return note;
+  } catch {
+    return null;
+  }
 }

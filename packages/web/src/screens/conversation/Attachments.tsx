@@ -4,7 +4,7 @@ import { BROWSER_ATTACHMENT_CAP, safeName, type AttachmentSummary, type CoreClie
 import { AttachmentCard, AttachmentTray, Lightbox } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
-import { t } from '../../strings/index.ts';
+import { en, t } from '../../strings/index.ts';
 import { formatSize } from '../shell-model.ts';
 import type { ConversationAction } from './Conversation.tsx';
 import { useBlobUrl } from './useBlobUrl.tsx';
@@ -56,6 +56,26 @@ function Card(p: { channelId: string; seq: string | null; summary: AttachmentSum
   const activeThumb = useRef<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const thumbUrl = useBlobUrl(thumb);
+  // The inline player (flow 06, L-UI-71, R9): nothing is fetched before the person's play; the blob is opened then and
+  // shown from a page-minted URL that useBlobUrl revokes on unmount (or when an error drops it). Never autoplayed.
+  const playable = (a.kind === 'audio' || a.kind === 'video') && !a.tooLarge && p.seq !== null;
+  const [media, setMedia] = useState<Blob | null>(null);
+  const [playState, setPlayState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const mediaUrl = useBlobUrl(media);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const play = async () => {
+    if (p.seq === null || playState === 'loading') return;
+    setPlayState('loading');
+    try {
+      const result = await client.call({ m: 'openAttachment', channelId: p.channelId, seq: p.seq, index: a.index, thumb: false });
+      if (!isOpened(result)) throw new Error('E_BLOB_OPEN');
+      if (alive.current) setMedia(result.blob);
+    } catch {
+      if (alive.current) setPlayState('error');
+    }
+  };
+  const playerState = playState === 'error' ? 'error' : mediaUrl !== null ? 'ready' : playState;
   useEffect(() => {
     if (a.kind !== 'image' || !a.thumb || a.tooLarge || p.seq === null) return;
     const key = `${p.seq}:${a.index}`;
@@ -82,15 +102,20 @@ function Card(p: { channelId: string; seq: string | null; summary: AttachmentSum
     }
   };
   const name = safeName(a.name, t('shell.attachment.unnamed'));
-  return <div ref={el => { buttonRef.current = el?.querySelector('button') ?? null; }}>
-    {/* Until the inline players land (web-3 task 9), audio and video show as file cards. */}
-    <AttachmentCard kind={a.kind === 'image' ? 'image' : 'file'} name={name} size={formatSize(a.size)} thumbUrl={thumbUrl} w={a.w} h={a.h}
+  return <div ref={el => { buttonRef.current = el?.querySelector('button') ?? null; }} data-doc-state={playable ? 'media-player' : undefined}>
+    <AttachmentCard kind={a.kind} name={name} size={formatSize(a.size)} thumbUrl={thumbUrl} w={a.w} h={a.h}
       openLabel={t('shell.attachment.open', { name })} saveLabel={t('shell.attachment.save', { name })}
       {...(a.kind === 'image' && p.seq !== null && !a.tooLarge ? { onOpen: () => { if (buttonRef.current) p.onOpenImage(a.index, buttonRef.current); } } : {})}
       {...(p.seq !== null && !a.tooLarge ? { onSave: () => { void save(); } } : {})}
       state={a.tooLarge ? 'too-large' : state}
       stateText={a.tooLarge ? t('shell.attachment.tooLarge') : state === 'loading' ? t('shell.attachment.opening') : state === 'failed' ? t('shell.attachment.failed', { code }) : undefined}
-      tabbable={p.tabbable} />
+      tabbable={p.tabbable}
+      {...(playable ? { player: {
+        src: playerState === 'ready' ? mediaUrl : null, state: playerState,
+        labels: { play: en['media.play'], loading: t('media.loading'), error: t('media.error'), save: t('media.save') },
+        onPlay: () => { void play(); },
+        onError: () => { setMedia(null); setPlayState('error'); },
+      } } : {})} />
   </div>;
 }
 

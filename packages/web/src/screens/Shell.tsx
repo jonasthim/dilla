@@ -22,6 +22,8 @@ import {
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
 import { ActiveVoiceList, DmCall, Dock, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { RingFlow } from './voice/Ring.tsx';
+import { useSounds } from './voice/useSounds.tsx';
 
 /**
  * Focuses the rail's settings button (task 17 names it by `aria-label`), where focus returns when Settings closes;
@@ -123,6 +125,7 @@ export function Shell(): React.JSX.Element {
   const sendBlocks = useSlice('sendBlocks');
   const callSlice = useSlice('call');
   const voiceSlice = useSlice('voice');
+  const rings = useSlice('rings');
   // A send the core refused for a trust reason, until the next published gate says more (W-01).
   const [refusedSend, setRefusedSend] = useState<{ channelId: string; code: TrustBlock; gate: unknown } | null>(null);
 
@@ -553,6 +556,13 @@ export function Shell(): React.JSX.Element {
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
   );
 
+  useSounds({ rings, room: call.channelId === null ? undefined : voiceSlice?.[call.channelId], inCall: call.channelId,
+    deafened: call.state?.deafened ?? false, settings: settings ?? {}, selfId: self?.id ?? null });
+  // A ring is answered in its DM: the DM opens and its call is joined (leaving the current voice first, useCall's join).
+  const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}}
+    inCallWhere={call.channelId === null ? null : whereOf(call.channelId)}
+    onOpen={id => navigate({ name: 'dm', channelId: id })}
+    onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
   const voiceCtx: VoiceContext = {
     call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
@@ -780,7 +790,7 @@ export function Shell(): React.JSX.Element {
           settingsLabel={t('shell.rail.settings')} onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
           itemLabel={railLabel} />}
         sidebar={sidebar}
-        header={header}
+        header={<>{ringFlow}{header}</>}
         composer={composer === null ? null : <>
           {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}
           {typingNames.length > 0 && !searchOpen ? <TypingIndicator names={typingNames}

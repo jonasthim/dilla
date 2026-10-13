@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import type { ChannelSummary, Notice } from '@dilla/client-core';
 import { FakeClient } from './test/fake-client.ts';
 import { account, ME } from './test/fixtures.ts';
-import { noticeTitle, shouldNotify, startNotifier, type NotifyContext } from './notify.ts';
+import { noticeTitle, ringNotification, shouldNotify, startNotifier, type NotificationCtor, type NotifyContext } from './notify.ts';
+import type { Ring } from '@dilla/client-core';
 
 const A = 'a1'.repeat(16);
 const GEN = 'c3'.repeat(16);
@@ -155,5 +156,54 @@ describe('startNotifier', () => {
     expect(Note.made.map(n => n.options.body)).toEqual(['@Ada L look, @bob and @everyone', 'ping @Ada L @eeeeeeee']);
     expect(Note.made.some(n => String(n.options.body).includes('<@'))).toBe(false);
     stop();
+  });
+});
+
+describe('ringNotification (flow 06, R1, R8)', () => {
+  const ring = (over: Partial<Ring> = {}): Ring => ({ callId: DM, channelId: DM, callerUser: '28'.repeat(16), callerName: 'bob',
+    ringTs: 1_900_000_030, expiresAt: 0, busy: false, quiet: false, ...over });
+  function ctor(permission: NotificationPermission) {
+    const made: { title: string; options: NotificationOptions; closed: boolean; onclick: ((ev: Event) => unknown) | null }[] = [];
+    const requestPermission = vi.fn();
+    class N {
+      static readonly permission = permission;
+      static readonly requestPermission = requestPermission;
+      closed = false;
+      onclick: ((ev: Event) => unknown) | null = null;
+      constructor(readonly title: string, readonly options: NotificationOptions) { made.push(this); }
+      close() { this.closed = true; }
+    }
+    return { Ctor: N as unknown as NotificationCtor, made, requestPermission };
+  }
+  const deps = (Ctor: NotificationCtor | undefined, settings: Record<string, string> = {}) =>
+    ({ Notification: Ctor, settings, kind: 3 as const, focus: vi.fn(), open: vi.fn() });
+
+  it('raises one tagged notification for a ring that is neither busy nor quiet, with permission granted', () => {
+    const { Ctor, made } = ctor('granted');
+    const d = deps(Ctor);
+    const handle = ringNotification(ring(), d);
+    expect(made).toHaveLength(1);
+    expect(made[0]).toMatchObject({ title: 'bob is calling', options: { body: 'Open dilla to answer.', tag: `dilla-ring-${DM}` } });
+    made[0].onclick?.(new Event('click'));
+    expect(d.focus).toHaveBeenCalled();
+    expect(d.open).toHaveBeenCalledWith(DM);
+    expect(made[0].closed).toBe(true);
+    handle?.close();
+  });
+  it('raises nothing for a busy ring, a quiet (muted) ring or a DM set to nothing', () => {
+    for (const [r, settings] of [[ring({ busy: true }), {}], [ring({ quiet: true }), {}], [ring(), { [`notify.channel.${DM}`]: 'nothing' }]] as const) {
+      const { Ctor, made } = ctor('granted');
+      expect(ringNotification(r, deps(Ctor, settings))).toBeNull();
+      expect(made).toEqual([]);
+    }
+  });
+  it('raises nothing without permission and never asks for it', () => {
+    for (const permission of ['default', 'denied'] as const) {
+      const { Ctor, made, requestPermission } = ctor(permission);
+      expect(ringNotification(ring(), deps(Ctor))).toBeNull();
+      expect(made).toEqual([]);
+      expect(requestPermission).not.toHaveBeenCalled();
+    }
+    expect(ringNotification(ring(), deps(undefined))).toBeNull();
   });
 });

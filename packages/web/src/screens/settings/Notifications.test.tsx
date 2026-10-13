@@ -127,3 +127,26 @@ describe('the default and per channel', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_SETTING_KEY). Try again.');
   });
 });
+
+describe('sounds (flow 06, R4)', () => {
+  it('Settings → Voice and → Notifications store their keys through setSetting (the Notifications half)', async () => {
+    const { fake, user } = setup();
+    const voice = screen.getByRole('switch', { name: 'join and leave sounds' });
+    const ring = screen.getByRole('switch', { name: 'ring for calls' });
+    // Both on by default.
+    expect(voice).toHaveAttribute('aria-checked', 'true');
+    expect(ring).toHaveAttribute('aria-checked', 'true');
+    await user.click(voice);
+    expect(fake.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'sound.voice', value: 'off' });
+    await user.click(ring);
+    expect(fake.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'sound.ring', value: 'off' });
+    expect(screen.getByRole('heading', { name: 'sounds' })).toBeInTheDocument();
+  });
+  it('shows a stored off and turns it back on', async () => {
+    const { fake, user } = setup({ settings: { 'sound.ring': 'off' } });
+    const ring = screen.getByRole('switch', { name: 'ring for calls' });
+    expect(ring).toHaveAttribute('aria-checked', 'false');
+    await user.click(ring);
+    expect(fake.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'sound.ring', value: 'on' });
+  });
+});

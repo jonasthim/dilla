@@ -77,6 +77,16 @@ export function Notifications(): React.JSX.Element {
           value={settings[SETTINGS.notifyDefault] ?? 'dms-mentions'}
           onChange={value => write(SETTINGS.notifyDefault, value)} />
       </SettingsRow>
+      {/* Flow 06 § Sounds (R4): both on by default; each is an on/off switch. */}
+      <h3>{t('settings.notify.sounds')}</h3>
+      <SettingsRow id="sound-voice-row" label={t('settings.sound.voice')}>
+        <Toggle id="sound-voice" label={t('settings.sound.voice')} checked={settings[SETTINGS.soundVoice] !== 'off'}
+          onChange={on => write(SETTINGS.soundVoice, on ? 'on' : 'off')} />
+      </SettingsRow>
+      <SettingsRow id="sound-ring-row" label={t('settings.sound.ring')}>
+        <Toggle id="sound-ring" label={t('settings.sound.ring')} checked={settings[SETTINGS.soundRing] !== 'off'}
+          onChange={on => write(SETTINGS.soundRing, on ? 'on' : 'off')} />
+      </SettingsRow>
       <h3>{t('notify.channels.title')}</h3>
       <p>{t('notify.channels.body')}</p>
       <ul className="dw-notify-list">
