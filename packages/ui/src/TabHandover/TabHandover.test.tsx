@@ -25,9 +25,15 @@ it('offers the action only in other-tab and retry in failure', async () => {
   await expectNoAxeViolations(view.container);
 });
 
-it('announces the paused copy without offering an action', () => {
-  render(<TabHandover phase="paused" labels={{ otherTab: 'dilla is open in another tab', use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused' }} onUse={vi.fn()} onRetry={vi.fn()} />);
+it('says what a paused tab is and offers to take dilla back', async () => {
+  const onUse = vi.fn();
+  const detail = 'dilla moved to another tab. This tab takes over when that one closes, or you can use it here now.';
+  render(<TabHandover phase="paused" labels={{ otherTab: 'dilla is open in another tab', use: 'Use this tab', wait: 'Moving to this tab…', failed: 'Close the other tab, then try again.', paused: 'This tab is paused', pausedDetail: detail }} onUse={onUse} onRetry={vi.fn()} />);
   expect(screen.getByRole('status')).toHaveTextContent('This tab is paused');
-  expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
-  expect(screen.queryByRole('button')).toBeNull();
+  // Only the heading is the live region: the detail and the button are not re-read on a phase change (M-08).
+  expect(screen.getByRole('status')).not.toHaveTextContent(detail);
+  expect(screen.getByRole('heading', { name: 'This tab is paused' })).toHaveAttribute('tabindex', '-1');
+  expect(screen.getByText(detail)).toBeInTheDocument();
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Use this tab' }));
+  expect(onUse).toHaveBeenCalledOnce();
 });

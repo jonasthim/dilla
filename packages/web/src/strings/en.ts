@@ -27,6 +27,7 @@ export const en = {
   'tabs.wait': 'Moving to this tab…',
   'tabs.failed': 'Close the other tab, then try again.',
   'tabs.paused': 'This tab is paused',
+  'tabs.pausedDetail': 'dilla moved to another tab. This tab takes over when that one closes, or you can use it here now.',
   'typing.one': '{name} is typing',
   'typing.many': 'Several people are typing',
   'boot.loading.status': 'Starting dilla',

@@ -75,8 +75,8 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
         || typeof value.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(value.nonce)) return;
       if (resigning.current) return;
       resigning.current = true;
-      flushSync(() => setPaused('resigning'));
-      document.querySelector<HTMLElement>('.dw-other-tab')?.focus();
+      flushSync(() => { setTabPhase('other-tab'); setPaused('resigning'); });
+      document.querySelector<HTMLElement>('.dw-other-tab h2')?.focus();
       void client.call({ m: 'resign', nonce: value.nonce }).then(() => {
         const release = new BroadcastChannel(`dilla-core:${instance}`);
         release.postMessage({ t: 'released', instance, nonce: value.nonce });
@@ -87,6 +87,19 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     channel.addEventListener('message', onMessage);
     return () => { channel.removeEventListener('message', onMessage); channel.close(); };
   }, [client, diagnostics?.instance, phase]);
+  // C1 hand-back: after a release the worker waits for the lock again; once it leads (the other tab handed back or
+  // closed) the phase leaves ready and returns to it, and the shell comes back in place of the paused view.
+  const leftReady = useRef(false);
+  useEffect(() => {
+    if (paused === 'no') { leftReady.current = false; return; }
+    if (phase !== 'ready') { leftReady.current = true; return; }
+    if (paused === 'released' && leftReady.current) {
+      leftReady.current = false;
+      resigning.current = false;
+      setTabPhase('other-tab');
+      setPaused('no');
+    }
+  }, [paused, phase]);
   const useThisTab = () => {
     const instance = diagnostics?.instance;
     if (!instance) { setTabPhase('failed'); return; }
@@ -156,8 +169,10 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const failed = props.fatal ?? startError;
   if (failed) return <Boot fatal={failed} />;
   // The paused view keeps its place after the screens, so it stays mounted (and focused) while the shell goes.
+  // A paused tab can take dilla back: its hand-over request shows the waiting or failed phase in the same place.
+  const pausedPhase = paused === 'resigning' || (tabPhase !== 'waiting' && tabPhase !== 'failed') ? 'paused' : tabPhase;
   const pausedView = paused !== 'no' || phase === 'paused-error'
-    ? <OtherTab phase="paused" overlay={paused === 'resigning' && phase === 'ready'} onUse={useThisTab} /> : null;
+    ? <OtherTab phase={pausedPhase} overlay={paused === 'resigning' && phase === 'ready'} onUse={useThisTab} /> : null;
   let body: ReactNode;
   if (pausedView !== null) body = paused === 'resigning' && phase === 'ready' ? screenBody() : null;
   else if (phase === 'other-tab') body = <OtherTab phase={tabPhase} onUse={useThisTab} onRetry={useThisTab} />;

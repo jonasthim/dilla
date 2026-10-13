@@ -82,7 +82,8 @@ describe('App', () => {
       const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0)!;
       const takeover = (n: string) => { for (const cb of [...leader.listeners]) cb({ data: { t: 'takeover', instance, nonce: n } }); };
       act(() => takeover(nonce));
-      const paused = document.querySelector('.dw-other-tab');
+      // M-08: focus goes to the paused heading Flow 05 names, not the full-screen wrapper.
+      const paused = screen.getByRole('heading', { name: 'This tab is paused' });
       expect(document.activeElement).toBe(paused);
       expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
       expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument();
@@ -90,11 +91,59 @@ describe('App', () => {
       expect(fake.callsOf('resign')).toEqual([{ m: 'resign', nonce }]);
       await act(async () => { fake.set('account', account({ phase: 'other-tab' })); finish({ released: true }); await Promise.resolve(); });
       expect(screen.queryByRole('navigation', { name: 'servers' })).toBeNull();
-      expect(screen.queryByRole('button', { name: 'Use this tab' })).toBeNull();
-      expect(document.querySelector('.dw-other-tab')).toBe(paused);
+      expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBe(paused);
       expect(document.activeElement).toBe(paused);
+      // P6 / M-07: the paused tab says what happened and can take dilla back.
+      expect(screen.getByText('dilla moved to another tab. This tab takes over when that one closes, or you can use it here now.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Use this tab' })).toBeInTheDocument();
       const forwarded = channels.filter(c => c.posted.length > 0);
       expect(forwarded.map(c => [c.name, c.posted, c.closed])).toEqual([[`dilla-core:${instance}`, [{ t: 'released', instance, nonce }], true]]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  // C1 hand-back: a released tab whose worker leads again (the other tab handed back or closed) shows the shell again.
+  it('clears the paused view when the released tab is ready again, and hands back from it', async () => {
+    const channels: { name: string; listeners: Set<(event: { data: unknown }) => void> }[] = [];
+    class FakeChannel {
+      readonly listeners = new Set<(event: { data: unknown }) => void>();
+      constructor(readonly name: string) { channels.push(this); }
+      postMessage(): void {}
+      addEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.add(cb); }
+      removeEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.delete(cb); }
+      close(): void {}
+    }
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    vi.mocked(requestHandover).mockClear();
+    try {
+      const instance = 'ab'.repeat(16);
+      const fake = new FakeClient();
+      fake.handler = c => c.m === 'resign' ? Promise.resolve({ released: true }) : Promise.resolve(null);
+      fake.set('account', account({ phase: 'ready' }));
+      fake.set('communities', []);
+      fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [] });
+      const user = userEvent.setup();
+      render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+      const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0)!;
+      await act(async () => {
+        for (const cb of [...leader.listeners]) cb({ data: { t: 'takeover', instance, nonce: '01'.repeat(16) } });
+        fake.set('account', account({ phase: 'other-tab' }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+      expect(requestHandover).toHaveBeenCalledOnce();
+      expect(vi.mocked(requestHandover).mock.calls[0][0]).toBe(instance);
+      expect(screen.getByRole('status')).toHaveTextContent('Moving to this tab…');
+      act(() => fake.set('account', account({ phase: 'loading' })));
+      act(() => fake.set('account', account({ phase: 'ready' })));
+      expect(screen.queryByRole('heading', { name: 'This tab is paused' })).toBeNull();
+      expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument();
+      // A second takeover pauses it again (the resign guard was reset).
+      const again = channels.filter(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0).at(-1)!;
+      await act(async () => {
+        for (const cb of [...again.listeners]) cb({ data: { t: 'takeover', instance, nonce: '02'.repeat(16) } });
+        await Promise.resolve();
+      });
+      expect(fake.callsOf('resign')).toHaveLength(2);
     } finally { vi.unstubAllGlobals(); }
   });
   it('starts the core once and shows the loading splash', () => {

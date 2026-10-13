@@ -1,3 +1,4 @@
-.d-tab-handover { max-width: 100%; padding: 1rem; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: var(--surface); color: var(--fg); }
-.d-tab-handover button { min-width: 24px; min-height: 24px; padding: .5rem; border: 1px solid var(--accent); border-radius: var(--r-sm); background: var(--surface-hi); color: var(--fg); cursor: pointer; font: inherit; }
+.d-tab-handover { display: grid; justify-items: start; gap: .75rem; max-width: 100%; padding: 1rem; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: var(--surface); color: var(--fg); font-family: var(--font-mono); }
+.d-tab-handover__heading { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-display); }
+.d-tab-handover__detail { margin: 0; color: var(--fg-2); }
 .d-tab-handover :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }

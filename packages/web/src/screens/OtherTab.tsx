@@ -9,6 +9,6 @@ export function OtherTab({ onUse, onRetry = onUse, phase = 'other-tab', overlay 
   onUse: () => void; onRetry?: () => void; phase?: 'other-tab' | 'waiting' | 'failed' | 'paused'; overlay?: boolean;
 }): React.JSX.Element {
   return <div data-doc-state="tabs-handover" tabIndex={-1} className={overlay ? 'dw-other-tab dw-other-tab--overlay' : 'dw-other-tab'}><TabHandover phase={phase}
-    labels={{ otherTab: t('boot.otherTab.status'), use: t('tabs.use'), wait: t('tabs.wait'), failed: t('tabs.failed'), paused: t('tabs.paused') }}
+    labels={{ otherTab: t('boot.otherTab.status'), use: t('tabs.use'), wait: t('tabs.wait'), failed: t('tabs.failed'), paused: t('tabs.paused'), pausedDetail: t('tabs.pausedDetail') }}
     onUse={onUse} onRetry={onRetry} /></div>;
 }
