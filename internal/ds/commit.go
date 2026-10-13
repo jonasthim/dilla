@@ -59,7 +59,6 @@ func (d *DS) Commit(ctx context.Context, s Session, groupID id.ID, c CommitReque
 type commitOptions struct {
 	external         bool  // an external commit: resync and join
 	joining          bool  // an external commit by a device that holds no leaf: a join (B36)
-	joinerChecks     bool  // a resync held to a join's device checks: a call-group rejoin (rejoinSupersedes)
 	skipFreeze       bool  // R25: resync is exempt, under its own two guards
 	allowRatchetTree bool  // invariant 11's heal endpoint, the one route that DOES take a tree
 	handshakeKind    uint8 // 0 means "derive it from `external`"
@@ -362,7 +361,7 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			// the transaction back and the stale handle is evicted below, as for any failure
 			// after the merge.
 			if o.external {
-				if err := d.checkExternalJoiner(ctx, g, groupID, s, state, processed.NewLeaf, o.joining || o.joinerChecks); err != nil {
+				if err := d.checkExternalJoiner(ctx, g, groupID, s, state, processed.NewLeaf, o.joining); err != nil {
 					return err
 				}
 			}
@@ -565,6 +564,9 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 		if pending.Origin != 0 || pending.VoidAt != nil {
 			continue
 		}
+		if exemptFromClause1 {
+			continue
+		}
 		if _, ok := applied[string(pending.Ref)]; ok {
 			continue
 		}
@@ -572,13 +574,6 @@ func (d *DS) checkAppliedProposals(ctx context.Context, g DeviceListVerifier, gr
 		if err != nil {
 			return nil, err
 		}
-		if exemptFromClause1 && !ok {
-			// Omitted, and re-issued for the new epoch at step (9).
-			continue
-		}
-		// An exempt external commit that removes the leaf anyway — a call-group rejoin by the
-		// target of a Remove (rejoinSupersedes) removes its own previous leaf — satisfies the Remove
-		// too: it is deleted with the applied refs, never re-issued onto the leaf the joiner takes.
 		if !ok {
 			return nil, errCommitInvalid("outstanding_proposals",
 				fmt.Sprintf("the commit does not reference the outstanding proposal %x", pending.Ref))

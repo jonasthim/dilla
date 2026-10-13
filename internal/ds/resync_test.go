@@ -81,61 +81,16 @@ func TestAResyncByTheTargetOfAnOutstandingRemoveIsForbidden(t *testing.T) {
 	}
 }
 
-// A call group's own rejoin (web-3 task 10, concern 2): a person who leaves voice and comes back
-// before anybody commits the Remove their leave caused — always so when they were alone in the
-// call — rejoins by an own-leaf external commit, which removes that very leaf. In a CALL group the
-// Remove is superseded when the device left of its own accord (its own Remove of the leaf was posted
-// before the instance's: a later one is refused with E_REMOVE_PENDING) and its user is still
-// admitted to the call: the commit ends the membership the Remove was for, exactly as "commit the
-// Remove, then join" would. So guard 1 lets it through to the commit (the parse refuses the dummy
-// body here).
-func TestACallGroupRejoinByAnEligibleTargetOfAnOutstandingRemovePassesTheGuard(t *testing.T) {
+// Guard 1 holds in a call group too, also when the device's own leave preceded the instance's
+// Remove and its user is eligible (web-3 task 10, concern 2; the security review of e619526 and
+// dd88a47): a member Remove of the leaf proves nothing about why the instance removes it — any
+// device of the user may post one at any time of the epoch, before an eviction — so no exception
+// is made, and the rejoin is the client's to wait for (calls/join.ts).
+func TestACallGroupRejoinWhileItsOwnLeaveIsOutstandingIsForbidden(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.groupWithMembers(t, 2)
 	h.repo.markCall(g.id)
 	h.putMemberRemove(t, g.id, g.leafOf(1), 30)
-	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
-		t.Fatalf("ProposeRemove: %v", err)
-	}
-	_, err := h.ds.Resync(context.Background(), g.sessionOf(1), g.id, ds.ResyncRequest{
-		ExternalCommit: []byte{0x00},
-		GroupInfo:      []byte{0x01},
-	})
-	var dsErr *ds.Error
-	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
-		t.Fatalf("got %v, want the parse's E_COMMIT_INVALID: an eligible device's rejoin supersedes its Remove", err)
-	}
-}
-
-// …but never for a user the call no longer admits: a kick, a ban or a lost connect is what such a
-// Remove carries out, and guard 1 still refuses the device that would re-add itself.
-func TestACallGroupRejoinByAnIneligibleTargetOfAnOutstandingRemoveIsForbidden(t *testing.T) {
-	h := newDSHarness(t)
-	g := h.groupWithMembers(t, 2)
-	h.repo.markCall(g.id)
-	h.putMemberRemove(t, g.id, g.leafOf(1), 30)
-	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
-		t.Fatalf("ProposeRemove: %v", err)
-	}
-	h.acl.forbid(g.sessionOf(1).UserID)
-	_, err := h.ds.Resync(context.Background(), g.sessionOf(1), g.id, ds.ResyncRequest{
-		ExternalCommit: []byte{0x00},
-		GroupInfo:      []byte{0x01},
-	})
-	var dsErr *ds.Error
-	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
-		t.Fatalf("got %v, want E_FORBIDDEN", err)
-	}
-}
-
-// …and never for an eviction: an instance Remove the device did not ask for by its own Remove (the
-// cut of a device whose media was not dilla's, the room sweep's absent device, the fork watchdog's
-// committer) keeps the device out until a member commits it, even while its user is eligible. Only
-// a leave can be superseded (the security review of e619526).
-func TestACallGroupRejoinByTheTargetOfAnEvictionIsForbidden(t *testing.T) {
-	h := newDSHarness(t)
-	g := h.groupWithMembers(t, 2)
-	h.repo.markCall(g.id)
 	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
 		t.Fatalf("ProposeRemove: %v", err)
 	}
@@ -145,7 +100,7 @@ func TestACallGroupRejoinByTheTargetOfAnEvictionIsForbidden(t *testing.T) {
 	})
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
-		t.Fatalf("got %v, want E_FORBIDDEN: an eviction the device did not ask for is never superseded", err)
+		t.Fatalf("got %v, want E_FORBIDDEN", err)
 	}
 }
 
