@@ -549,7 +549,7 @@ export async function signIn(page: Page, account: Account, instanceName: string,
   await finishSignIn(page, account, instanceName);
 }
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance';
+export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
 /** The rail's settings button, then the section from the settings navigation; resolves with the dialog. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
