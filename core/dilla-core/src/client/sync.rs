@@ -450,6 +450,17 @@ impl ClientCore {
                         }
                     }
                 }
+                // Ruling 3 for the whole queue: `self_update` commits every queued proposal,
+                // including an Add that `group_apply` queued from a handshake row (it is never
+                // validated there) or that validated when an earlier commit was built. A queued
+                // Add whose leaf fails is taken out; one whose signed history is unknown refuses.
+                group.drop_queued_adds(ctx.provider, |kp| {
+                    match u.with_conn(|c| Ok(super::trust::validate_proposed_add(c, kp)))? {
+                        Ok(()) => Ok(true),
+                        Err(e) if e.code == super::error::E_DEVICE_LIST_STALE => Err(e),
+                        Err(_) => Ok(false),
+                    }
+                })?;
                 let epoch = group.epoch();
                 let bundle = group.self_update(ctx.provider, ctx.signer.ok_or_else(|| ClientError::new(super::error::E_CORE_NO_IDENTITY, ""))?)?;
                 u.with_conn(|c| set_pending(c, id, true))?;

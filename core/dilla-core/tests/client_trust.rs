@@ -1825,3 +1825,57 @@ fn sec_a_failed_proposed_add_is_left_out_of_this_devices_commit() {
     );
     assert_eq!(sec_send(&mut alice), "OK");
 }
+
+/// Ruling 3, the usual order: the instance's Add reaches this device as a handshake row first
+/// (`group_apply` queues it), and only then does this device build a commit. A failed Add that
+/// is already queued must be left out as well: `self_update` consumes the whole queue, so it
+/// would otherwise commit the failed leaf and address a Welcome to its device.
+#[test]
+fn sec_a_failed_add_queued_by_sync_is_left_out_of_this_devices_commit() {
+    let (instance, mut relay, mut alice, bob) = alice_and_bob();
+    ingest_core_list(&mut alice, &relay, &bob);
+    let mut xavier = RawPeer::new(0xd1, 0xd2);
+    xavier.join_external(&mut relay);
+    alice.sync(&relay);
+    ingest_list_body(
+        &mut alice,
+        &relay,
+        xavier.user,
+        xavier.device,
+        &xavier.device_list_body(),
+    );
+    let forged = RawPeer::new_with_keys(0xd1, 0xd3, 0xd5, 0xd6);
+    instance.propose_add(&mut relay, &sec_key_package(&forged));
+    alice.sync(&relay);
+    let body = alice
+        .core
+        .commit_build(&GROUP, &relay.proposals_body())
+        .expect("the failed Add does not refuse the commit");
+    let welcomes = decode_strict(&body, |d| {
+        d.array(5)?;
+        d.uint()?;
+        d.bytes()?;
+        d.bytes()?;
+        let n = d.array_len()?;
+        for _ in 0..n {
+            d.array(2)?;
+            d.bytes()?;
+            d.bytes()?;
+        }
+        d.null()?;
+        Ok(n)
+    })
+    .expect("commit_build body");
+    assert_eq!(welcomes, 0, "no Welcome is addressed to the failed device");
+    relay.commit(&body).expect("commit accepted");
+    alice.core.commit_confirm(&GROUP).expect("commit_confirm");
+    let members = pending(&alice.core.pending_leaves().unwrap())
+        .into_iter()
+        .filter(|row| row.0 == GROUP)
+        .count();
+    assert_eq!(
+        members, 3,
+        "Alice, Bob and Xavier only: the failed leaf was not committed"
+    );
+    assert_eq!(sec_send(&mut alice), "OK");
+}

@@ -866,6 +866,40 @@ impl DillaGroup {
         Ok(())
     }
 
+    /// Takes every queued `Add` that `keep` refuses back out of the queue, so the next
+    /// `self_update` (which consumes the whole queue) does not commit it. `keep` answers
+    /// `Ok(false)` to drop an Add and an error to refuse; on an error nothing is removed.
+    pub fn drop_queued_adds<E: From<MlsError>>(
+        &mut self,
+        provider: &DillaProvider,
+        mut keep: impl FnMut(&KeyPackage) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        let mut refs: Vec<openmls::ciphersuite::hash_ref::ProposalRef> = Vec::new();
+        for p in self.group.pending_proposals() {
+            if let Proposal::Add(add) = p.proposal()
+                && !keep(add.key_package())?
+            {
+                refs.push(p.proposal_reference_ref().clone());
+            }
+        }
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let group = &mut self.group;
+        provider
+            .storage()
+            .transaction(|| {
+                for r in &refs {
+                    group
+                        .remove_pending_proposal(provider.storage(), r)
+                        .map_err(openmls)?;
+                }
+                Ok::<(), MlsError>(())
+            })
+            .map_err(MlsError::from)?;
+        Ok(())
+    }
+
     /// How many members the group has, as this client's tree holds it.
     pub fn member_count(&self) -> usize {
         self.group.members().count()
