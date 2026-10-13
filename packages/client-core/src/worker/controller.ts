@@ -737,6 +737,10 @@ export class Controller {
     this.publishDms();
     // The gateway's first ready can arrive before the phase is ready, when a purge run returns at once.
     this.runPurges();
+    // I3: so can its trust refresh, which reads nothing before the phase is ready; this one does. It also republishes
+    // the trust slice now that every member and DM slice has landed.
+    if (this.trustRefresh !== null) this.trustRefreshAgain = true;
+    void this.barrier.track(this.refreshTrust()).catch(() => undefined);
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */

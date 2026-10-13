@@ -587,6 +587,23 @@ it('refreshes only core-owned pending leaves and never publishes list bytes', as
   expect(JSON.stringify(w.posted)).not.toContain(Array.from(signedHead).join(','));
 });
 
+it('runs the trust refresh that a gateway ready arriving before phase ready could not (client I3)', async () => {
+  const w = world();
+  const signedHead = encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]);
+  w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedHead });
+  w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 0, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+  const dms = deferred<{ channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[] }[]>();
+  w.routes.listDms.mockImplementationOnce(() => dms.promise);
+  w.call(1, { m: 'start' });
+  await vi.waitFor(() => expect(w.routes.listDms).toHaveBeenCalled());
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.core.pendingLeaves).toHaveBeenCalled());
+  expect(w.core.deviceListIngest).not.toHaveBeenCalled();
+  dms.resolve([]);
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+  await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalled());
+});
+
 it('a second ready during trust ingestion reads its newly pending leaf before the refresh settles', async () => {
   const w = world();
   await toReady(w);
