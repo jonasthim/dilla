@@ -85,6 +85,20 @@ describe('DillaE2EEManager (interfaces.md c.4)', () => {
     expect(w.posted[0].msg.wasmUrl).toMatch(/\/wasm\/dilla_core_wasm_bg\.wasm$/);
   });
 
+  it('posts MEDIA_WASM_URL from wasm-url.ts, the one module a bundler aliases to the core wasm (decision 5)', async () => {
+    vi.resetModules();
+    vi.doMock('../src/wasm-url', () => ({ MEDIA_WASM_URL: 'https://alias.test/assets/dilla_core_wasm_bg-Abc123.wasm' }));
+    try {
+      const { DillaE2EEManager: Aliased } = await import('../src/manager');
+      const w = new FakeWorker();
+      new Aliased(w as unknown as Worker);
+      expect(w.posted[0].msg.wasmUrl).toBe('https://alias.test/assets/dilla_core_wasm_bg-Abc123.wasm');
+    } finally {
+      vi.doUnmock('../src/wasm-url');
+      vi.resetModules();
+    }
+  });
+
   it('installEpoch transfers a copy of the key, zeroes the caller’s key and resolves on epochInstalled', async () => {
     const { w, m } = setup();
     const k = keys();

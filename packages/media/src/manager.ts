@@ -5,6 +5,7 @@ import type {
 } from 'livekit-client';
 import type { DillaBlockOptions, DillaMediaStats, DillaTransformOptions, FromWorker, SlotId, ToWorker } from './protocol';
 import { codecFromMime, isDeviceIdentity, kindMatchesSource, sourceToSlot } from './slots';
+import { MEDIA_WASM_URL } from './wasm-url';
 
 // livekit-client 2.22.3 event names as their string values, checked against the enums at compile time, so this
 // module needs no runtime import of livekit-client (it is also loaded by Node unit tests).
@@ -141,7 +142,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     worker.addEventListener('error', (e: Event) => this.failWorker(`worker error: ${(e as ErrorEvent).message ?? 'unknown'}`));
     worker.addEventListener('messageerror', () => this.failWorker('a worker message could not be deserialised'));
     this.initTimer = setTimeout(() => this.failWorker('the worker did not answer init'), opts?.initTimeoutMs ?? INIT_TIMEOUT_MS);
-    this.post({ kind: 'init', v: 1, logLevel: 'warn', wasmUrl: new URL('../wasm/dilla_core_wasm_bg.wasm', import.meta.url).href });
+    this.post({ kind: 'init', v: 1, logLevel: 'warn', wasmUrl: MEDIA_WASM_URL });
   }
 
   get isEnabled(): boolean {
