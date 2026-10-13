@@ -1230,6 +1230,9 @@ export class Controller {
     this.slices.set(`members:${communityId}`, rows.map((m) => ({
       userId: toHex(m.userId), username: m.username, display: m.display, kind: m.kind, roleIds: m.roleIds.map(toHex),
     })));
+    // Product P1: the trust slice names each contact and says whether a group is shared from these member lists; a list
+    // that lands after it (every reload: the first ready refreshes trust before the communities load) republishes it.
+    this.publishTrust();
     // Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once.
     const core = this.core;
     const me = this.me;
@@ -1326,6 +1329,8 @@ export class Controller {
     this.dms.clear();
     for (const [id, dm] of next) this.dms.set(id, dm);
     this.publishDms();
+    // Product P1: a DM is a shared group for its members (sharedUser), so the trust slice is republished with it.
+    this.publishTrust();
     this.updateExpected();
     this.publishBadges();
   }

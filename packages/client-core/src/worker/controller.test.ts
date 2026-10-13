@@ -604,6 +604,30 @@ it('runs the trust refresh that a gateway ready arriving before phase ready coul
   await vi.waitFor(() => expect(w.core.deviceListIngest).toHaveBeenCalled());
 });
 
+it('republishes trust when a member slice or the DMs land after it, so a reloaded Privacy has names and Compare (product P1)', async () => {
+  const w = world();
+  w.state.groups = [textGroup(2)];
+  w.core.trustState.mockReturnValue(strangerTrust(null));
+  await toReady(w);
+  w.call(70, { m: 'refreshTrust' });
+  await vi.waitFor(() => expect(w.ret(70)).toMatchObject({ ok: true }));
+  expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ name: toHex(STRANGER).slice(0, 8), shared: false });
+  // The next member read names the contact; nothing else touches trust.
+  w.routes.listMembers.mockResolvedValue([
+    { userId: USER, username: 'web', display: 'Web', kind: 0, nick: '', roleIds: [] },
+    { userId: STRANGER, username: 'bjorn', display: 'Björn', kind: 0, nick: '', roleIds: [] },
+  ]);
+  w.call(71, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.[0]).toMatchObject({ name: 'Björn', shared: true }));
+  // A DM with a person no community lists: the DM list landing republishes too.
+  const dmPeer = new Uint8Array(16).fill(0x3d);
+  w.core.trustState.mockReturnValue([...strangerTrust(null), { userId: dmPeer, umk: STRANGER_UMK, firstSeen: 1n, verified: false, changedUmk: null }]);
+  w.state.groups = [textGroup(2), { ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL }];
+  w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, dmPeer] }];
+  w.gateway.emit({ type: 'ready', info: READY_INFO });
+  await vi.waitFor(() => expect(w.last<TrustSummary[]>('trust')?.find((t) => t.userId === toHex(dmPeer))).toMatchObject({ shared: true }));
+});
+
 it('a second ready during trust ingestion reads its newly pending leaf before the refresh settles', async () => {
   const w = world();
   await toReady(w);
