@@ -518,6 +518,9 @@ test('a real core joins a DM call group and maps the SFU-less 501 to failed afte
     await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
     const account = (await slice<AccountState>(page, 'account'))!;
     const dm = await peer.openDm(account.user!.id);
+    // The instance only proposes the browser's device; the peer's sync_dm commits that Add, and its Welcome is what puts the
+    // DM into the browser's list (L-TS-22 rule 7), as badges.spec.ts does it.
+    await expect.poll(async () => (await peer.syncDm(dm.channel_id)).members, { timeout: WAIT }).toBe(2);
     await expect.poll(async () => (await slice<{ id: string }[]>(page, 'dms'))?.some((d) => d.id === dm.channel_id) ?? false,
       { timeout: WAIT }).toBe(true);
     const peerCall = await verbs.callJoin(dm.channel_id);
@@ -561,6 +564,8 @@ test('a real core registers a DM call group and maps the SFU-less 501 to failed 
     await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
     const me = (await slice<AccountState>(page, 'account'))!.user!.id;
     const dm = await peer.openDm(me);
+    // The peer's sync_dm commits the browser's Add; its Welcome puts the DM into the browser's list (L-TS-22 rule 7).
+    await expect.poll(async () => (await peer.syncDm(dm.channel_id)).members, { timeout: WAIT }).toBe(2);
     await expect.poll(async () => (await slice<{ id: string }[]>(page, 'dms'))?.some((d) => d.id === dm.channel_id) ?? false,
       { timeout: WAIT }).toBe(true);
     await ok(page, { m: 'loadVoice', communityId: null, channelId: dm.channel_id });
