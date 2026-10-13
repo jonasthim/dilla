@@ -361,7 +361,10 @@ The instance alone sends it; it is never persisted or replayed, and `group_id` i
 | 2 | declined: sent to every device of the caller | the participant who declined |
 
 `expires_ts` is the unix second at which the ring ends: `now + 30` when the ring starts, repeated
-unchanged in that ring's state 0 and state 2 frames. A start that **opens** a call (`201`) on a DM
+unchanged in that ring's state 0 and state 2 frames. It is a second on the instance's clock and
+the ring's identity (the decline echoes it); a client never compares it with its own clock, and
+times a ring's 30 seconds from the arrival of its state 1, which the instance sends once, as the
+ring starts. A start that **opens** a call (`201`) on a DM
 or group DM rings every other participant who has no device in the call, sending state 1 to each
 of that user's online devices; a `200` start of a live call rings no one, and there is at most one
 ring per (call, user). A user's ring stops (state 0 to every device of that user) at the first of:

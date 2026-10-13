@@ -1,7 +1,8 @@
 // Incoming DM rings (L-TS-56 step 8, L-GW-33, decision 6, R1, R5, RV-4). The instance is the only sender of op 53, so
 // every ring is checked against what this device knows: a DM or group DM it holds in its own list, a caller who is
 // another participant of it, and no send block on the DM's text group or on its call group (decision 4 extended to
-// rings). A ring lasts at most 30 s here whatever the instance says, one per channel, at most eight.
+// rings). A ring lasts 30 s from its arrival here whatever the instance says (and whatever this page's clock says of its
+// expires_ts), one per channel, at most eight.
 import type { CallRingFrame } from '../gateway/frames';
 import { toHex } from '../hex';
 import type { Ring, RingsState } from '../state/types';
@@ -55,8 +56,12 @@ export class Rings {
     if (existing < 0 && this.rings.length >= RINGS_MAX) return;
     const now = this.deps.now();
     const ring: Ring = {
+      // Web-3 task 10, concern 5: expires_ts is a second on the instance's clock, never compared with this page's (a page
+      // clock 30 s ahead would see every ring over on arrival). State 1 is sent once, when the ring starts (never persisted
+      // or replayed: 02 § call_ring), so the ring's 30 s run from its arrival here; the instance's state 0 ends it sooner.
+      // expires_ts stays the ring's identity for the decline (ringTs).
       callId: toHex(f.callId), channelId: channel, callerUser: caller, callerName: this.deps.nameOf(caller), ringTs: f.expiresTs,
-      expiresAt: Math.min(f.expiresTs * 1000, now + RING_MS), busy: this.deps.busy(), quiet: this.deps.quiet(channel),
+      expiresAt: now + RING_MS, busy: this.deps.busy(), quiet: this.deps.quiet(channel),
     };
     this.rings = existing < 0 ? [...this.rings, ring] : this.rings.map((r, i) => (i === existing ? ring : r));
     this.arm(ring);

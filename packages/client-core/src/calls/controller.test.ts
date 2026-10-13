@@ -822,6 +822,21 @@ describe('rings (L-TS-56 step 8)', () => {
     expect(w.slice('rings')).toEqual([]);
   });
 
+  // Web-3 task 10, concern 5: expires_ts is the instance's clock, not the page's. A page clock 60 s ahead of the instance
+  // (the ring's expires_ts already past on the page) still rings for 30 s from the frame's arrival; the decline still
+  // echoes the instance's expires_ts.
+  it('a ring lasts 30 s from its arrival whatever the page clock says of its expires_ts', async () => {
+    const w = await harness({ dm: true });
+    const receivedAt = w.clock.now();
+    const expires = Math.floor(receivedAt / 1000) - 30;
+    w.gateway.push(ring(1, { expires }));
+    expect(w.slice('rings')[0]).toMatchObject({ ringTs: expires, expiresAt: receivedAt + 30_000 });
+    await w.clock.advance(29_999);
+    expect(w.slice('rings')).toHaveLength(1);
+    await w.clock.advance(1);
+    expect(w.slice('rings')).toEqual([]);
+  });
+
   it('joining the DM call clears its ring', async () => {
     const w = await harness({ dm: true });
     w.gateway.push(ring(1));
