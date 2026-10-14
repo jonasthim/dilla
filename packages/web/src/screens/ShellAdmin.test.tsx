@@ -102,6 +102,21 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
   });
 
+  it('a pane toggled off and on while wide still closes on narrowing: nothing inert', async () => {
+    const listeners: ((e: { matches: boolean }) => void)[] = [];
+    window.matchMedia = ((query: string) => ({ matches: true, media: query, onchange: null, dispatchEvent: () => false,
+      addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
+      removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
+    const { user } = setup();
+    const toggle = screen.getByRole('button', { name: /^members/ });
+    await user.click(toggle);
+    await user.click(toggle);
+    expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
+    act(() => { for (const cb of [...listeners]) cb({ matches: false }); });
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(document.querySelector('[inert]')).toBeNull();
+  });
+
   it('a pane the person opened with the toggle stays open on narrowing', async () => {
     const listeners: ((e: { matches: boolean }) => void)[] = [];
     window.matchMedia = ((query: string) => ({ matches: false, media: query, onchange: null, dispatchEvent: () => false,

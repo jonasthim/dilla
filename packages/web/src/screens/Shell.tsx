@@ -173,16 +173,24 @@ export function Shell(): React.JSX.Element {
   // Flow 08: the member pane (a toggle in the channel header; open at 64rem or wider, not remembered) and the server settings
   // dialog (the server it is open for, and its tab).
   const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
-  // Final fix B2: the open default is the wide column's. Crossing below 64rem closes it unless the person pressed the toggle
-  // in this session, so the drawer opens only from the toggle.
-  const membersToggled = useRef(false);
+  // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
+  // shell was already narrow (a drawer the person asked for there); widening forgets that. The drawer never opens by itself.
+  const openedNarrow = useRef(false);
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
     const query = window.matchMedia('(min-width: 64rem)');
-    const onChange = (e: { matches: boolean }) => { if (!e.matches && !membersToggled.current) setMembersOpen(false); };
+    const onChange = (e: { matches: boolean }) => {
+      if (e.matches) openedNarrow.current = false;
+      else if (!openedNarrow.current) setMembersOpen(false);
+    };
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
+  const toggleMembers = () => {
+    const narrowNow = typeof window.matchMedia !== 'function' || !window.matchMedia('(min-width: 64rem)').matches;
+    openedNarrow.current = !membersOpen && narrowNow;
+    setMembersOpen(!membersOpen);
+  };
   const [adminFor, setAdminFor] = useState<string | null>(null);
   const [adminTab, setAdminTab] = useState<AdminTab>('overview');
   // Final fix I1: where focus was when server settings opened (as searchOpener); it goes back there when the dialog closes.
@@ -846,7 +854,7 @@ export function Shell(): React.JSX.Element {
       actions={<>
         {openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : null}
         {canManageChannels ? <Button onClick={() => setEditChannelId(channel.id)}>{t('admin.channel.open')}</Button> : null}
-        <Button data-members-toggle="" pressed={membersOpen} onClick={() => { membersToggled.current = true; setMembersOpen(open => !open); }}>
+        <Button data-members-toggle="" pressed={membersOpen} onClick={toggleMembers}>
           {t('members.toggle')}</Button>
       </>} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}

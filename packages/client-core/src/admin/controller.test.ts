@@ -636,6 +636,22 @@ describe('removal notices (web3.4 C4)', () => {
     expect(removals(w)).toEqual([]);
   });
 
+  it('final fix I3: two notices, only server A rejoined: A\'s notice goes, B\'s stays', async () => {
+    const w = world();
+    const B = id16(0x51);
+    const row = (id: Uint8Array, name: string) => ({ id, name, owner: USER, policyVersion: 1n });
+    w.routes.listCommunities.mockResolvedValue([row(COMMUNITY, 'friends'), row(B, 'other')]);
+    await toReady(w);
+    w.routes.listCommunities.mockResolvedValue([]);
+    w.gateway.emit(changed);
+    await vi.waitFor(() => expect(removals(w)?.map((r) => r.communityId)).toEqual([CID, toHex(B)]));
+    w.routes.listCommunities.mockResolvedValue([row(COMMUNITY, 'friends')]);
+    w.routes.getInvite.mockResolvedValue({ communityId: COMMUNITY, communityName: 'friends', expires: 0n });
+    expect(await run(w, { m: 'joinCommunity', invite: 'AB12CD34' })).toMatchObject({ ok: true });
+    expect(w.last<{ id: string }[]>('communities')?.map((c) => c.id)).toEqual([CID]);
+    expect(removals(w)).toEqual([{ id: 2, communityId: toHex(B), name: 'other' }]);
+  });
+
   it('the first list at ready tells nothing, even of a server missing from a list cached nowhere', async () => {
     const w = world();
     w.state.joined = false;
