@@ -44,6 +44,9 @@ export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
   fetch: typeof fetch; WebSocket: typeof WebSocket; locks: LockManagerLike;
   now(): number;                                   // ms
+  /** A monotonic clock (ms, performance.now): elapsed-time bounds that a wall-clock step must not stretch or cut
+   *  (task-10 fix review N2). Defaults to now. */
+  monotonic?(): number;
   random(): number;
   setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
@@ -207,6 +210,8 @@ const STATS_MAX = 1_048_576;
 /** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
  *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
 export const MEMBER_REREAD_MIN_MS = 5_000;
+/** WB client m5: resign waits at most this long for the call's leave before it releases the store. */
+export const RESIGN_LEAVE_MS = 2_000;
 export const VOICE_LOOKUPS_MAX = 256;
 const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= STATS_MAX;
 /** L-TS-53: six non-negative integers of at most 1,048,576; relayProtocol (element 1) may be null. */
@@ -429,6 +434,7 @@ export class Controller {
       publish: (name, value) => { this.slices.set(name, value); },
       errorOf: (e) => errorOf(e),
       now: () => deps.now(),
+      monotonic: () => (deps.monotonic ?? deps.now)(),
       setTimeout: (fn, ms) => deps.setTimeout(fn, ms),
       clearTimeout: (id) => { deps.clearTimeout(id); },
       randomId: () => crypto.getRandomValues(new Uint8Array(16)),
@@ -2030,7 +2036,9 @@ export class Controller {
     if (running !== undefined) { running.again = true; return; }
     const read = { again: false };
     this.memberReads.set(communityId, read);
-    void this.barrier.track((async () => {
+    // WB client m5: only the read itself is tracked by the barrier; the pacing sleep is not, so a hand-over's close never
+    // waits for it, and nothing is read once the barrier closed.
+    void (async () => {
       try {
         let paced = from === 'voice';
         do {
@@ -2039,15 +2047,18 @@ export class Controller {
             const wait = (this.memberReadEnded.get(communityId) ?? -Infinity) + MEMBER_REREAD_MIN_MS - this.deps.now();
             if (wait > 0) await new Promise<void>((resolve) => { this.deps.setTimeout(resolve, wait); });
           }
-          const rows = await this.routes.listMembers(fromHex(communityId));
-          this.memberReadEnded.set(communityId, this.deps.now());
-          if (this.listed(communityId)) this.publishMembers(communityId, rows);
+          if (this.barrier.isClosed()) return;
+          await this.barrier.track((async () => {
+            const rows = await this.routes.listMembers(fromHex(communityId));
+            this.memberReadEnded.set(communityId, this.deps.now());
+            if (this.listed(communityId)) this.publishMembers(communityId, rows);
+          })());
           paced = true;
         } while (read.again);
       } finally {
         this.memberReads.delete(communityId);
       }
-    })().catch(() => undefined));
+    })().catch(() => undefined);
   }
 
   // ---- the sync engine's reports ----
@@ -2423,10 +2434,19 @@ export class Controller {
   }
 
   private async resign(nonce: string): Promise<{ released: true }> {
+    // WB client m5: the new tab waits 5 s for this release (handover.ts). A join in flight (its rejoin wait lasts up to
+    // 30 s) is cancelled first, so the barrier does not wait for it: its teardown sends the self-Remove.
+    this.calls.cancelJoin();
     await this.barrier.close();
     this.clearReauthTimer();
-    // L-TS-56 step 9: the call is left and the rings cleared before the store is released.
-    await this.calls.shutdown();
+    // L-TS-56 step 9: the call is left and the rings cleared before the store is released; the leave's round trips are
+    // bounded, since the instance removes the leaf when the call ends anyway.
+    let bound: number | null = null;
+    await Promise.race([
+      this.calls.shutdown(),
+      new Promise<void>((resolve) => { bound = this.deps.setTimeout(resolve, RESIGN_LEAVE_MS); }),
+    ]);
+    if (bound !== null) this.deps.clearTimeout(bound);
     try {
       this.typingOff();
       this.gateway?.stop();

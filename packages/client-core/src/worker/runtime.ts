@@ -42,6 +42,7 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
     WebSocket: (scope as DedicatedWorkerGlobalScope & typeof globalThis).WebSocket,
     locks: { request: async (name, opts, callback) => { await scope.navigator.locks.request(name, opts, callback); } },
     now: () => Date.now(),
+    monotonic: () => scope.performance.now(),
     random: () => Math.random(),
     setTimeout: (fn, ms) => scope.setTimeout(fn, ms),
     clearTimeout: (id) => { scope.clearTimeout(id); },

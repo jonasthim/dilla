@@ -80,6 +80,15 @@ export class Rings {
     this.deps.publish(this.rings);
   }
 
+  /** WB client m6: `busy` follows this device's call, not only the moment the ring arrived: a ring that came while in a
+   *  call gets its sound and notification once that call is left (and loses them if a call starts). */
+  refreshBusy(): void {
+    const busy = this.deps.busy();
+    if (!this.rings.some((r) => r.busy !== busy)) return;
+    this.rings = this.rings.map((r) => (r.busy === busy ? r : { ...r, busy }));
+    this.deps.publish(this.rings);
+  }
+
   /** The ring a decline answers: its call and its expires_ts both match (a later ring of the same DM stays). */
   removeCall(callHex: string, ringTs: number): void {
     for (const r of this.rings.filter((x) => x.callId === callHex && x.ringTs === ringTs)) this.remove(r.channelId);

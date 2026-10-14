@@ -18,7 +18,8 @@ import type { Routes } from '../http/routes';
 import { DillaHttpError } from '../http/errors';
 import { INSTANCE, readyInfo } from '../sync/testing/harness';
 import { COMMUNITY, FakeGateway, ManualClock, ME, ModelCore, ModelDs, PEER, THIRD, FOURTH, idOf, settle, type Peer } from '../sync/testing/model';
-import { Controller, type ControllerParts } from '../worker/controller';
+import { Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
+import { CALL_ROTATE_RETRIES } from './controller';
 import type { FromWorker } from '../worker/protocol';
 
 export const VOICE = idOf(0xc5, 1);
@@ -163,11 +164,13 @@ export async function harness(opts: HarnessOptions = {}) {
     repairBackupState: () => Promise.resolve(false),
   };
   let released = 0;
+  /** The wall clock's step from the monotonic one (a test moves it: NTP, a resumed laptop). */
+  const wall = { skew: 0 };
   const controller = new Controller({
     origin: 'http://127.0.0.1:8453', fetch: (() => Promise.reject(new Error('no fetch'))),
     WebSocket: class {} as unknown as typeof WebSocket,
     locks: { request: async (name, _o, cb) => { await cb({ name }); } },
-    now: clock.now, random: () => 0.5, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, sleep: () => Promise.resolve(),
+    now: () => clock.now() + wall.skew, monotonic: clock.now, random: () => 0.5, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, sleep: () => Promise.resolve(),
     boot: (instance): Promise<BootOutcome> => Promise.resolve({ kind: 'opened', core: model, instance }),
     resetDevice: () => Promise.resolve(),
     post: (message, transfer = []) => {
@@ -213,7 +216,7 @@ export async function harness(opts: HarnessOptions = {}) {
   await clock.advance(0);
 
   return {
-    controller, model, ds, clock, server, call, send, ret, slice, voiceSelfSent, sessionState,
+    controller, model, ds, clock, server, call, send, ret, slice, voiceSelfSent, sessionState, wall,
     /** The gateway reports a revoked socket (the worker re-establishes its session, or ends in revoked). */
     revokeSocket: (): void => { fake.emit({ type: 'revoked' }); },
     callGroup, voice: toHex(VOICE), dm: toHex(DM), dms, gateway: { push: (f: Frame): void => { fake.frame(f); } },
@@ -1516,6 +1519,190 @@ describe('a refused mid-call rekey holds sending (wb-security I1)', () => {
     await settled(w, 8);
     expect(keysPosted(w)).toHaveLength(1);
     expect(w.slice('call')).toMatchObject({ phase: 'in', error: null });
+  });
+});
+
+describe('a failed start on a group this device is alone in (wb-client I4)', () => {
+  // The start fails after the join registered a fresh group (or joined one whose tree holds only this device). Nobody can
+  // commit a self-Remove of the only leaf, and the core refuses to rejoin the same group at an epoch it has held, so a
+  // self-Remove and a forget would lock this device out of the channel's voice until the idle close (RV-2, 10 min).
+  it('a start refused after a fresh registration leaves no self-Remove, and the next join works at once', async () => {
+    const w = await harness({ voiceChannel: true });
+    w.server.reset();
+    w.server.answer('POST calls', 500, 'E_INTERNAL');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_INTERNAL');
+    expect(w.slice('call')).toMatchObject({ phase: 'failed' });
+    expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls', 'DELETE call']);
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    const again = await w.call(JOIN(w)) as CallJoinResult;
+    expect(w.slice('call')).toMatchObject({ phase: 'in', callId: again.callId });
+    expect(keysPosted(w)).toHaveLength(1);
+  });
+
+  it('a device that joined meanwhile (the conditional end answers 409) gets the self-Remove after all', async () => {
+    const w = await harness({ voiceChannel: true });
+    w.server.reset();
+    w.server.answer('POST calls', 500, 'E_INTERNAL');
+    w.server.reply('DELETE call', false);
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_INTERNAL');
+    expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls', 'DELETE call', 'POST proposal']);
+  });
+
+  it('a start refused on a joined group with another member still sends the self-Remove', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.server.answer('POST calls', 500, 'E_INTERNAL');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_INTERNAL');
+    expect(lastCallRoute(w)).toBe('POST proposal');
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+});
+
+describe('the hourly leaf rotation survives a throwing commitConfirm (wb-client m7)', () => {
+  const rotations = (w: World): number => w.model.calls.filter((c) => c.m === 'callRotate').length;
+
+  // protocol/01 obliges a fresh call leaf at least hourly: a throw after the commit was posted must not stop it for the
+  // rest of the call. The instance took the commit, so the engine adopts it as this device's own when it arrives (the
+  // call stays in, on the new epoch), and the rotation is armed again.
+  it('a commitConfirm that throws keeps the call on the adopted commit and rotates again', async () => {
+    const w = await joined();
+    const real = w.model.commitConfirm.bind(w.model);
+    let throws = 1;
+    w.model.commitConfirm = (g: Id) => { if (throws > 0) { throws -= 1; throw new CoreError('E_CORE_STATE', 'merge failed'); } return real(g); };
+    await w.clock.advance(3_600_000);
+    await settled(w, 8);
+    expect(rotations(w)).toBe(1);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: (BigInt(w.result.epoch) + 1n).toString() });
+    await w.clock.advance(60_000);
+    await settled(w, 8);
+    expect(rotations(w)).toBe(2);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', epoch: (BigInt(w.result.epoch) + 2n).toString() });
+  });
+
+  // The bound: a rotation that keeps failing is retried CALL_ROTATE_RETRIES times a minute apart, then hourly again.
+  it('a rotation that keeps failing retries a bounded number of times, then waits for the next hour', async () => {
+    const w = await joined();
+    w.model.commitConfirm = (): never => { throw new CoreError('E_CORE_STATE', 'merge failed'); };
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    for (let i = 0; i < 10; i++) { await w.clock.advance(60_000); await settled(w); }
+    expect(rotations(w)).toBe(1 + CALL_ROTATE_RETRIES);
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    expect(rotations(w)).toBeGreaterThan(1 + CALL_ROTATE_RETRIES);
+    expect(w.slice('call').phase).toBe('in');
+  });
+});
+
+describe('a hand-over is not held up by call work (wb-client m5)', () => {
+  // The new tab gives up after 5 s (handover.ts): resign must release the store well inside that.
+  const MS = 4_000;
+  async function resignWithin(w: World): Promise<number> {
+    const start = w.clock.now();
+    w.send({ m: 'resign', nonce: 'ab'.repeat(16) });
+    for (let i = 0; i < 40 && w.released() === 0; i++) { await settle(); await w.clock.advance(250); }
+    return w.clock.now() - start;
+  }
+
+  it('a join waiting out its earlier Remove is cancelled at once by resign', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.ds.removeTarget.add(toHex(ME.device));
+    w.send(JOIN(w));
+    for (let i = 0; i < 4; i++) { await settle(); await w.clock.advance(1_000); }
+    expect(w.slice('call')).toMatchObject({ phase: 'joining', rejoining: true });
+    const took = await resignWithin(w);
+    expect(w.released()).toBe(1);
+    expect(took).toBeLessThan(MS);
+  });
+
+  it('a paced voice-driven member read does not hold resign for its pacing sleep', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    const late: Peer = { user: idOf(0xe9, 1), device: idOf(0xd9, 1) };
+    w.gateway.push(voiceFrame(late, VOICE, 1));
+    for (let i = 0; i < 4; i++) await settle();
+    // A second unknown user right after: its read is paced 5 s behind the first.
+    w.gateway.push(voiceFrame({ user: idOf(0xe9, 2), device: idOf(0xd9, 2) }, VOICE, 1));
+    await settle();
+    const took = await resignWithin(w);
+    expect(w.released()).toBe(1);
+    expect(took).toBeLessThan(MEMBER_REREAD_MIN_MS);
+  });
+
+  it('a leave that cannot finish holds resign for a bounded time only', async () => {
+    const w = await joined();
+    w.server.hold('POST proposal');
+    const took = await resignWithin(w);
+    expect(w.released()).toBe(1);
+    expect(took).toBeLessThan(MS);
+  });
+});
+
+describe('a ring follows whether this device is busy (wb-client m6)', () => {
+  it('a ring that arrived during a call is no longer busy once the call is left, and busy again in the next', async () => {
+    const w = await joined({ dm: true });
+    w.gateway.push(ring(1));
+    expect(w.slice('rings')).toEqual([expect.objectContaining({ channelId: w.dm, busy: true })]);
+    await w.call({ m: 'callLeave', reason: 'user' });
+    expect(w.slice('rings')).toEqual([expect.objectContaining({ channelId: w.dm, busy: false })]);
+    await w.call(JOIN(w));
+    expect(w.slice('rings')).toEqual([expect.objectContaining({ channelId: w.dm, busy: true })]);
+  });
+});
+
+describe('the rejoin wait and a leave during its reads (task-10 fix review N1, N2)', () => {
+  // N1: a leave that lands while one of the wait's two reads is in flight stops the join: nothing is posted, and no
+  // call starts or rings afterwards.
+  for (const label of ['GET channel call', 'GET group info'] as const) {
+    it(`a leave while the wait's ${label} is in flight posts nothing afterwards`, async () => {
+      const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+      w.ds.removeTarget.add(toHex(ME.device));
+      const id = w.send(JOIN(w));
+      for (let i = 0; i < 4 && w.slice('call').rejoining !== true; i++) { await settle(); await w.clock.advance(0); }
+      expect(w.slice('call')).toMatchObject({ phase: 'joining', rejoining: true });
+      const held = w.server.hold(label);
+      // The read answers as if the Remove had been committed (the group moved on), which would send the join on.
+      w.ds.removeTarget.delete(toHex(ME.device));
+      w.ds.peerCommit(w.callGroup, PEER);
+      for (let i = 0; i < 4; i++) { await settle(); await w.clock.advance(1_000); }
+      await held.reached;
+      const leave = w.send({ m: 'callLeave', reason: 'user' });
+      await settle();
+      const before = w.server.routes().length;
+      held.release();
+      await waitRet(w, id);
+      await waitRet(w, leave);
+      await settled(w);
+      expect(w.ret(id)).toMatchObject({ ok: false, error: { code: 'E_NO_CALL' } });
+      expect(w.server.routes().slice(before).filter((r) => r === 'POST resync' || r === 'POST calls' || r === 'POST group')).toEqual([]);
+      expect(w.pushes('callKeys')).toHaveLength(0);
+      expect(w.slice('call')).toMatchObject({ phase: 'idle' });
+    });
+  }
+
+  // N2: the 30 s bound is elapsed time on a monotonic clock: a wall clock stepped back an hour (NTP, a resumed laptop)
+  // does not stretch it, and one stepped forward does not cut it short.
+  async function runFor(w: World, id: number, ms: number): Promise<void> {
+    for (let t = 0; t < ms && w.ret(id) === undefined; t += 1_000) { await settle(); await w.clock.advance(1_000); }
+    await settle();
+  }
+  it('a wall clock stepped back does not stretch the wait past 30 s', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.ds.removeTarget.add(toHex(ME.device));
+    const id = w.send(JOIN(w));
+    await runFor(w, id, 3_000);
+    w.wall.skew = -3_600_000;
+    await runFor(w, id, 29_000);
+    expect(w.ret(id)).toMatchObject({ ok: false, error: { code: 'E_REMOVE_PENDING' } });
+  });
+  it('a wall clock stepped forward does not cut the wait short', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.ds.removeTarget.add(toHex(ME.device));
+    const id = w.send(JOIN(w));
+    await runFor(w, id, 3_000);
+    w.wall.skew = 3_600_000;
+    await runFor(w, id, 10_000);
+    expect(w.ret(id)).toBeUndefined();
+    expect(w.slice('call')).toMatchObject({ phase: 'joining', rejoining: true });
   });
 });
 

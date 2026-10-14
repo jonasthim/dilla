@@ -17,6 +17,9 @@ import { VoiceBook, type VoiceRoutes } from './voice';
 /** L-TS-56 step 5: a fresh leaf secret every hour of a call, and a conflicted rotation tried again a minute later. */
 export const CALL_ROTATE_MS = 3_600_000;
 export const CALL_ROTATE_RETRY_MS = 60_000;
+/** WB client m7: a rotation that fails (refused, conflicted, or its confirm throws) is tried again a minute later this many
+ *  times in a row; then it waits for the next hourly tick, so a fault that persists is not retried every minute. */
+export const CALL_ROTATE_RETRIES = 5;
 /** L-TS-56 step 1: the list refresh of a call's pending leaves waits at most this long for the whole batch. */
 export const WAIT_LIST_MS = 10_000;
 
@@ -31,6 +34,8 @@ export interface CallDeps {
   publish<K extends 'call' | 'voice' | 'rings'>(name: K, value: SliceTypes[K]): void;
   errorOf(e: unknown): WorkerError;
   now(): number;
+  /** A monotonic clock (ms): the rejoin's 30 s bound (task-10 fix review N2). */
+  monotonic(): number;
   setTimeout(fn: () => void, ms: number): number;
   clearTimeout(id: number): void;
   randomId(): Id;
@@ -84,6 +89,8 @@ export class CallController {
   private live: Live | null = null;
   private joining: JoinToken | null = null;
   private rotateTimer: number | null = null;
+  /** Rotations failed in a row since the last one that committed (WB client m7). */
+  private rotateFailures = 0;
   /** The channel whose blocked phase was seen held by that channel's own send block (its text group): that phase goes idle
    *  once the block clears (integration card), so the page can offer the join again. */
   private blockSeen: string | null = null;
@@ -165,7 +172,7 @@ export class CallController {
         core, routes: this.deps.routes, policyVersion: instance.policyVersion, externalSenderPub: instance.externalSenderPub,
         randomId: () => this.deps.randomId(), refreshLeaves: (g) => this.deps.refreshLeaves(g),
         wait: (ms) => new Promise<void>((resolve) => { this.deps.setTimeout(resolve, ms); }),
-        now: () => this.deps.now(),
+        now: () => this.deps.monotonic(),
         cancelled: () => token.cancelled !== null,
         rejoining: () => {
           if (token.cancelled === null && this.joining === token && this.state.phase === 'joining') this.setState({ ...this.state, rejoining: true });
@@ -173,7 +180,7 @@ export class CallController {
       }, { channelId, communityId: target.communityId === null ? null : fromHex(target.communityId), vdec });
     } catch (e) {
       const cause = e instanceof JoinRefused ? e.cause : e;
-      if (e instanceof JoinRefused && e.leave !== null) await this.teardown(token, e.leave);
+      if (e instanceof JoinRefused && e.leave !== null) await this.teardown(token, e.leave, e.alone ? channelId : null);
       if (token.cancelled !== null) throw this.cancelled(token);
       const phase = e instanceof JoinRefused ? e.phase : 'failed';
       const code = this.deps.errorOf(cause).code;
@@ -202,6 +209,7 @@ export class CallController {
     this.postKeys(this.live, media);
     this.setIn(media);
     this.rings.remove(channel);
+    this.rotateFailures = 0;
     this.armRotation(CALL_ROTATE_MS);
     this.deps.afterJoin(groupId);
     return { callId: toHex(started.callId), groupId: toHex(groupId), livekitUrl: started.livekitUrl, token: started.token,
@@ -385,11 +393,24 @@ export class CallController {
     });
   }
 
-  /** A cancelled join's group: left with its self-Remove, or (a reset: the session is gone) forgotten locally. */
-  private async teardown(token: JoinToken, groupId: Id): Promise<void> {
+  /** A cancelled or refused join's group: left with its self-Remove, or (a reset: the session is gone) forgotten locally.
+   *  `aloneIn` (WB client I4) is the channel of a group whose tree holds only this device: nobody could commit its
+   *  self-Remove, so the call is ended conditionally (its group closes, the next join registers afresh) and the group is
+   *  forgotten without one. Should another device have joined meanwhile (409), the self-Remove is sent after all. */
+  private async teardown(token: JoinToken, groupId: Id, aloneIn: Id | null = null): Promise<void> {
     if (token.cancelled === 'reset') {
       try { this.deps.core()?.callGroupForget(groupId); } catch { /* forgotten already */ }
       return;
+    }
+    if (aloneIn !== null) {
+      // The call id of a call is its channel's id (protocol/09 § Voice). A start that never reached the instance left no
+      // call to end (404): the group stays with this one leaf until the idle close (RV-2), and the next join resyncs it.
+      let ended = true;
+      try { ended = await this.deps.routes.endCallIfAlone(aloneIn); } catch { /* no call: nothing to end */ }
+      if (ended) {
+        await this.deps.serial(groupId, () => { try { this.deps.core()?.callGroupForget(groupId); } catch { /* forgotten */ } return Promise.resolve(); });
+        return;
+      }
     }
     await this.leaveGroup(groupId);
   }
@@ -404,6 +425,14 @@ export class CallController {
   private armRotation(ms: number): void {
     this.stopRotation();
     this.rotateTimer = this.deps.setTimeout(() => { this.rotateTimer = null; this.deps.track(this.rotate()); }, ms);
+  }
+
+  /** A failed rotation of the live call: a minute later, at most CALL_ROTATE_RETRIES times in a row, then hourly again. */
+  private retryRotation(live: Live): void {
+    if (this.live !== live || live.leaving) return;
+    this.rotateFailures += 1;
+    if (this.rotateFailures > CALL_ROTATE_RETRIES) { this.rotateFailures = 0; this.armRotation(CALL_ROTATE_MS); return; }
+    this.armRotation(CALL_ROTATE_RETRY_MS);
   }
 
   private stopRotation(): void {
@@ -425,15 +454,25 @@ export class CallController {
       if (this.state.phase === 'paused') { this.armRotation(CALL_ROTATE_MS); return; }
       let body: Uint8Array;
       try { body = core.callRotate(live.groupId); }
-      catch { this.armRotation(CALL_ROTATE_RETRY_MS); return; }
+      catch { this.retryRotation(live); return; }
       try {
         await this.deps.routes.postCommit(live.groupId, body);
       } catch {
         try { core.commitAbort(live.groupId); } catch { /* nothing pending */ }
-        if (this.live === live && !live.leaving) this.armRotation(CALL_ROTATE_RETRY_MS);
+        this.retryRotation(live);
         return;
       }
-      const result = core.commitConfirm(live.groupId);
+      // WB client m7: a confirm that throws must not stop the hourly rotation for the rest of the call (the job's
+      // rejection was swallowed and nothing re-armed it). The instance has accepted the commit, so its pending state is
+      // kept: the engine adopts the commit as this device's own when it arrives (aborting it would make that commit a
+      // stranger's, and a call group that loses its state ends). The rotation is armed again, bounded.
+      let result: ApplyResult;
+      try { result = core.commitConfirm(live.groupId); }
+      catch {
+        this.retryRotation(live);
+        return;
+      }
+      this.rotateFailures = 0;
       if (this.live === live && !live.leaving) this.armRotation(CALL_ROTATE_MS);
       this.deps.onCommitted(live.groupId, result);
     });
@@ -537,6 +576,11 @@ export class CallController {
 
   // ---- step 9: resign and wipe ----
 
+  /** WB client m5: a join in flight stops at its next step (its teardown sends the self-Remove), as a leave stops it. */
+  cancelJoin(): void {
+    if (this.joining !== null && this.live === null) this.joining.cancelled ??= 'leave';
+  }
+
   /** resign: the call is left (its self-Remove posted) and the rings cleared before the store is released. */
   async shutdown(): Promise<void> {
     try { await this.leave(); } catch { /* the instance removes the leaf when the call ends */ }
@@ -567,6 +611,7 @@ export class CallController {
     else if (this.textBlocked(next.channelId)) this.blockSeen = next.channelId;
     this.state = next;
     this.deps.publish('call', next);
+    this.rings.refreshBusy();
   }
 
   private outgoingNames(live: Live): CallState['outgoing'] {

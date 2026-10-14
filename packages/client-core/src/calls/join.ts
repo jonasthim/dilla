@@ -19,7 +19,8 @@ export interface JoinDeps {
   refreshLeaves(groupId: Id): Promise<void>;
   /** Resolves after `ms` on the worker's clock (the rejoin's wait for its own Remove). */
   wait(ms: number): Promise<void>;
-  /** The worker's clock (ms): the rejoin's wait is bounded by elapsed time, not by a count of its steps. */
+  /** A monotonic clock (ms; performance.now in the worker, task-10 fix review N2): the rejoin's wait is bounded by
+   *  elapsed time, not by a count of its steps, and a wall-clock step neither stretches nor cuts it. */
   now(): number;
   /** True once the join was cancelled (a leave, sign-out or revocation): a wait stops there. */
   cancelled(): boolean;
@@ -48,10 +49,19 @@ export interface Joined { groupId: Id; media: CallMediaEpoch; started: CallStart
 export class JoinRefused extends Error {
   /** The users the last call read named in the call (review M4: the only candidates of a changedUser). */
   users: string[] = [];
-  constructor(readonly code: string, readonly phase: 'blocked' | 'failed', readonly cause: unknown, readonly leave: Id | null) {
+  /** WB client I4: `leave` is a group whose tree holds only this device (it registered it, or the join epoch's roster
+   *  is its own leaf alone). Nobody can commit a self-Remove there, so the controller ends it conditionally instead. */
+  constructor(readonly code: string, readonly phase: 'blocked' | 'failed', readonly cause: unknown, readonly leave: Id | null,
+    readonly alone = false) {
     super(code);
     this.name = 'JoinRefused';
   }
+}
+
+/** Task-10 fix review N1: a join cancelled (a leave, sign-out or revocation) posts nothing more. `leave` is the group it
+ *  already joined, if any (the controller sends its self-Remove). */
+function stopped(leave: Id | null): JoinRefused {
+  return new JoinRefused('E_NO_CALL', 'failed', new CoreError('E_NO_CALL', 'the join was cancelled'), leave);
 }
 
 const codeOf = (e: unknown): string => (e instanceof CoreError || e instanceof DillaHttpError ? e.code : 'E_INTERNAL');
@@ -81,11 +91,13 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
     seen.read = read;
     forgetStale(d.core, t.channelId, read.groupId);
     let groupId: Id;
+    let created = false;
     if (read.groupId === null) {
       groupId = d.randomId();
       let body: Uint8Array;
       try { body = d.core.callGroupCreate(groupId, t.communityId, t.channelId, d.policyVersion, d.externalSenderPub); }
       catch (e) { throw refused(e, null); }
+      if (d.cancelled()) { d.core.groupDiscard(groupId); throw stopped(null); }
       let nextSeq: bigint;
       try { ({ nextSeq } = await d.routes.postGroup(body)); }
       catch (e) {
@@ -99,6 +111,7 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
         throw refused(e, null);
       }
       d.core.groupRegistered(groupId, nextSeq);
+      created = true;
     } else {
       groupId = read.groupId;
       const tried: { info: Uint8Array | null } = { info: null };
@@ -112,6 +125,7 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
       }
     }
     const media = await mediaEpoch(d, groupId);
+    if (d.cancelled()) { new Uint8Array(media.baseKey).fill(0); throw stopped(groupId); }
     try {
       return { groupId, media, started: await d.routes.startCall(t.channelId, t.vdec) };
     } catch (e) {
@@ -125,7 +139,8 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
         read = await d.routes.getChannelCall(t.channelId);
         continue;
       }
-      throw new JoinRefused(codeOf(e), 'failed', e, groupId);
+      const alone = created || (media.roster.length === 1 && media.roster[0]?.leaf === media.ownLeaf);
+      throw new JoinRefused(codeOf(e), 'failed', e, groupId, alone);
     }
   }
 }
@@ -141,8 +156,12 @@ async function waitForRemove(d: JoinDeps, t: JoinTarget, refusal: JoinRefused, s
     await d.wait(Math.min(REJOIN_STEP_MS, left));
     if (d.cancelled()) throw refusal;
     const read = await d.routes.getChannelCall(t.channelId);
+    // N1: a leave during a read stops the wait there; the join goes no further.
+    if (d.cancelled()) throw refusal;
     if (read.groupId === null || toHex(read.groupId) !== toHex(groupId)) return read;
-    if (toHex(await d.routes.getGroupInfo(groupId)) !== toHex(info)) return read;
+    const now = await d.routes.getGroupInfo(groupId);
+    if (d.cancelled()) throw refusal;
+    if (toHex(now) !== toHex(info)) return read;
   }
 }
 
@@ -168,6 +187,7 @@ async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id, tried: { in
     discard(d.core, groupId);
     throw refused(e, null);
   }
+  if (d.cancelled()) { discard(d.core, groupId); throw stopped(null); }
   let seq: bigint;
   try { ({ seq } = await d.routes.postResync(groupId, body)); }
   catch (e) {
