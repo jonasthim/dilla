@@ -249,11 +249,39 @@ export class CallController {
     this.lost(live);
   }
 
-  private lost(live: Live): void {
+  /** web3.4 C4 fix round 1: a server is gone from this account (a kick, a ban, its delete, a leave on another device), and
+   *  with it these channels. A call in one ends here at once through the removed phase, as a lost membership does: the
+   *  page stops its media and drops its keys on that phase, and the group is forgotten. The voice book forgets the
+   *  channels, so a later rejoin shows only what the instance says then. */
+  channelsDropped(channels: readonly string[]): void {
+    if (channels.length === 0) return;
+    const gone = new Set(channels);
+    const live = this.live;
+    if (live !== null && !live.leaving && gone.has(live.channel)) this.lost(live, true);
+    for (const channel of gone) this.book.forget(channel);
+  }
+
+  /** `dropped` (C4 fix round 1): the channel's server is gone from this account. The channel is not read again (it may no
+   *  longer be seen: the removal says E_NOT_FOUND at once), and the group is forgotten on its lane, so an own commit the
+   *  engine is posting (an op 17 Remove) finishes first. */
+  private lost(live: Live, dropped = false): void {
     this.stopRotation();
     this.live = null;
-    try { this.deps.core()?.callGroupForget(live.groupId); } catch { /* forgotten already */ }
+    if (dropped) {
+      const groupId = live.groupId;
+      this.deps.track(this.deps.serial(groupId, () => {
+        try { this.deps.core()?.callGroupForget(groupId); } catch { /* forgotten already */ }
+        return Promise.resolve();
+      }));
+    } else {
+      try { this.deps.core()?.callGroupForget(live.groupId); } catch { /* forgotten already */ }
+    }
     this.deps.callEnded(toHex(live.callId));
+    if (dropped) {
+      this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel,
+        error: this.deps.errorOf(new DillaHttpError({ status: 404, code: 'E_NOT_FOUND', detail: 'the server is gone', retryAfterMs: null, extra: [] })) });
+      return;
+    }
     this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel });
     // Product walk I8: the own entry leaves the voice slice now (the instance's leave reaches it later, or never once the
     // membership is gone), and the channel's call is read again: a 404 means this device may no longer see the channel,

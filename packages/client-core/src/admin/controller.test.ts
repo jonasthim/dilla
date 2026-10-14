@@ -5,7 +5,7 @@ import type { GatewayEvent } from '../gateway/gateway';
 import { toHex } from '../hex';
 import type { BanRow, InviteRow, RoleRow } from '../http/routes';
 import type { BanSummary, ChannelSummary, CommunityAccess, InviteSummary, RemovalNotice, RoleSummary } from '../state/types';
-import { CHANNEL, COMMUNITY, STRANGER, USER, refusal, toReady, world, type World } from '../worker/world';
+import { CHANNEL, COMMUNITY, LOCK, STRANGER, USER, refusal, toReady, world, type World } from '../worker/world';
 
 const CID = toHex(COMMUNITY);
 const STRANGER_HEX = toHex(STRANGER);
@@ -652,5 +652,171 @@ describe('removal notices (web3.4 C4)', () => {
     expect(removals(w)?.map((r) => r.name)).toEqual(['s2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']);
     expect(removals(w)?.map((r) => r.id)).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
     expect(removals(w)?.[7]).toEqual({ id: 9, communityId: toHex(ids[8]), name: 's9' });
+  });
+
+  // ---- C4 fix round 1 ----
+
+  const listOf = (w: World): string[] | undefined => w.last<{ id: string }[]>('communities')?.map((c) => c.id);
+  type Rows = Awaited<ReturnType<World['routes']['listCommunities']>>;
+  const friends: Rows = [{ id: COMMUNITY, name: 'friends', owner: USER, policyVersion: 1n }];
+  /** The next list read waits for the returned gate; `reached` once it was asked. */
+  function holdList(w: World): { gate: ReturnType<typeof deferred<Rows>>; reached: () => boolean } {
+    const gate = deferred<Rows>();
+    let asked = false;
+    w.routes.listCommunities.mockImplementationOnce(() => { asked = true; return gate.promise; });
+    return { gate, reached: () => asked };
+  }
+
+  it('fix 1: a leave whose answer was lost (status 0) keeps the entry: the server gone at the next read is no notice', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.leaveCommunity.mockImplementationOnce(() => { w.state.joined = false; return Promise.reject(refusal(0, 'E_NETWORK')); });
+    expect(await run(w, { m: 'leaveCommunity', communityId: CID })).toMatchObject({ ok: false });
+    await run(w, { m: 'refreshCommunities' });
+    expect(listOf(w)).toEqual([]);
+    expect(anyRemoval(w)).toBe(false);
+  });
+
+  it('fix 1: a leave or delete retried to a 404 went through: dropped, success, and no notice', async () => {
+    for (const m of ['leaveCommunity', 'deleteCommunity'] as const) {
+      const w = world();
+      await toReady(w);
+      w.routes[m].mockImplementationOnce(() => { w.state.joined = false; return Promise.reject(refusal(404, 'E_NOT_FOUND')); });
+      expect(await run(w, { m, communityId: CID })).toMatchObject({ ok: true });
+      expect(listOf(w)).toEqual([]);
+      await run(w, { m: 'refreshCommunities' });
+      expect(anyRemoval(w)).toBe(false);
+    }
+  });
+
+  it('fix 1: a leave refused with 400, 403 or 409 clears the entry: a later kick is told', async () => {
+    for (const status of [400, 403, 409]) {
+      const w = world();
+      await toReady(w);
+      w.routes.leaveCommunity.mockRejectedValueOnce(refusal(status, 'E_REFUSED'));
+      expect(await run(w, { m: 'leaveCommunity', communityId: CID })).toMatchObject({ ok: false });
+      w.state.joined = false;
+      await run(w, { m: 'refreshCommunities' });
+      expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]);
+    }
+  });
+
+  it('fix 2: an older list read landing after the join\'s read is ignored: no false notice, and the new server stays', async () => {
+    const w = world();
+    await toReady(w);
+    const NEW = id16(0x33);
+    const stale = holdList(w);
+    next += 1;
+    const id = next;
+    w.call(id, { m: 'refreshCommunities' });
+    await vi.waitFor(() => expect(stale.reached()).toBe(true));
+    w.routes.getInvite.mockResolvedValueOnce({ communityId: NEW, communityName: 'new', expires: 0n });
+    w.routes.joinCommunity.mockImplementationOnce(() => { w.state.created.push({ id: NEW, name: 'new' }); return Promise.resolve(); });
+    expect(await run(w, { m: 'joinCommunity', invite: 'AB12CD34' })).toMatchObject({ ok: true });
+    expect(listOf(w)).toEqual([CID, toHex(NEW)]);
+    stale.gate.resolve(friends);
+    await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+    expect(listOf(w)).toEqual([CID, toHex(NEW)]);
+    expect(anyRemoval(w)).toBe(false);
+  });
+
+  it('fix 2: an older read that still lists a removed server lands after the newer one: ignored, no second notice', async () => {
+    const w = world();
+    await toReady(w);
+    const stale = holdList(w);
+    next += 1;
+    const id = next;
+    w.call(id, { m: 'refreshCommunities' });
+    await vi.waitFor(() => expect(stale.reached()).toBe(true));
+    w.state.joined = false;
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]);
+    stale.gate.resolve(friends);
+    await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+    expect(listOf(w)).toEqual([]);
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]);
+  });
+
+  it('fix 3: a forgotten account takes its notices and its own leaves with it', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.joined = false;
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)).toHaveLength(1);
+    w.state.joined = true;
+    await run(w, { m: 'refreshCommunities' });
+    // A leave of the old account that may have gone through (a 5xx) keeps its entry until the lock goes to another tab.
+    const selfRemoved = (w.controller as unknown as { admin: { selfRemoved: Set<string> } }).admin.selfRemoved;
+    w.routes.leaveCommunity.mockRejectedValueOnce(refusal(503, 'E_UNAVAILABLE'));
+    expect(await run(w, { m: 'leaveCommunity', communityId: CID })).toMatchObject({ ok: false });
+    expect([...selfRemoved]).toEqual([CID]);
+    let handBack: () => void = () => {};
+    const granted = new Promise<void>((resolve) => {
+      void w.locks.request(LOCK, {}, () => { resolve(); return new Promise<void>((done) => { handBack = done; }); });
+    });
+    expect(await run(w, { m: 'resign', nonce: 'aa'.repeat(16) })).toMatchObject({ ok: true });
+    expect(removals(w)).toEqual([]);
+    expect([...selfRemoved]).toEqual([]);
+    await granted;
+    handBack();
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+    expect(removals(w)).toEqual([]);
+    // The account that leads now is removed: it is told.
+    w.state.joined = false;
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)?.map((r) => r.communityId)).toEqual([CID]);
+  });
+
+  it('fix 4: a 5xx leave and a read that still lists the server: a later kick is told', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.leaveCommunity.mockRejectedValueOnce(refusal(503, 'E_UNAVAILABLE'));
+    expect(await run(w, { m: 'leaveCommunity', communityId: CID })).toMatchObject({ ok: false });
+    await run(w, { m: 'refreshCommunities' });
+    expect(listOf(w)).toEqual([CID]);
+    w.state.joined = false;
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]);
+  });
+
+  it('fix 4: a read that lists the server while its leave is still in flight keeps the entry', async () => {
+    const w = world();
+    await toReady(w);
+    const held = deferred<undefined>();
+    w.routes.leaveCommunity.mockImplementationOnce(() => held.promise);
+    next += 1;
+    const leave = next;
+    w.call(leave, { m: 'leaveCommunity', communityId: CID });
+    await vi.waitFor(() => expect(w.routes.leaveCommunity).toHaveBeenCalled());
+    await run(w, { m: 'refreshCommunities' });
+    expect(listOf(w)).toEqual([CID]);
+    w.state.joined = false;
+    held.reject(refusal(503, 'E_UNAVAILABLE'));
+    await vi.waitFor(() => expect(w.ret(leave)).toBeDefined());
+    await run(w, { m: 'refreshCommunities' });
+    expect(anyRemoval(w)).toBe(false);
+  });
+
+  it('fix 8: a re-read that lands while the delete is still in flight leaves no notice', async () => {
+    const w = world();
+    await toReady(w);
+    const held = deferred<undefined>();
+    w.routes.deleteCommunity.mockImplementation(() => { w.state.joined = false; return held.promise; });
+    next += 1;
+    const del = next;
+    w.call(del, { m: 'deleteCommunity', communityId: CID });
+    await vi.waitFor(() => expect(w.routes.deleteCommunity).toHaveBeenCalled());
+    await run(w, { m: 'refreshCommunities' });
+    expect(listOf(w)).toEqual([]);
+    held.resolve(undefined);
+    await vi.waitFor(() => expect(w.ret(del)).toMatchObject({ ok: true }));
+    expect(anyRemoval(w)).toBe(false);
+  });
+
+  it('fix 9: ready publishes an empty removals slice, as it does notices', async () => {
+    const w = world();
+    await toReady(w);
+    expect(removals(w)).toEqual([]);
   });
 });

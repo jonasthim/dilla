@@ -144,19 +144,28 @@ export class AdminController {
   }
 
   /** The servers this account left or deleted itself (web3.4 C4): their absence from a list read is no removal notice.
-   *  Set before the request, so a read that lands while it is in flight is covered too. A refusal (4xx) takes it out
-   *  again, and so does a join of the same server (the worker's joinPath); a failure that may have gone through (a lost
-   *  answer, a 5xx) keeps it, so the person is never told they were removed from a server they left. */
+   *  Set before the request, so a read that lands while it is in flight is covered too. A refusal that went nowhere
+   *  (400, 403, 409 and the other 4xx but 404) takes it out again, and so does a join of the same server (the worker's
+   *  joinPath). A failure that may have gone through (status 0, a lost answer or a timeout; a 5xx) keeps it, so the
+   *  person is never told they were removed from a server they left; a list read that still lists the server once no
+   *  request is in flight takes it out (the worker's refreshCommunities). A 404 is a retried request whose first attempt
+   *  went through: the server is gone, and the command succeeds. */
   readonly selfRemoved = new Set<string>();
+  /** The servers whose leave or delete is in flight (C4 fix round 1): a list read that lists one keeps its entry. */
+  readonly pendingSelf = new Set<string>();
 
   private async removingSelf(communityId: string, run: () => Promise<void>): Promise<void> {
     this.selfRemoved.add(communityId);
+    this.pendingSelf.add(communityId);
     try {
       await this.guarded(communityId, run);
     } catch (e) {
       const status = statusOf(e);
-      if (status !== null && status < 500) this.selfRemoved.delete(communityId);
+      if (status === 404) return;
+      if (status !== null && status >= 400 && status < 500) this.selfRemoved.delete(communityId);
       throw e;
+    } finally {
+      this.pendingSelf.delete(communityId);
     }
   }
 

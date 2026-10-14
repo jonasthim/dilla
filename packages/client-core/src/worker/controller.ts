@@ -495,6 +495,9 @@ export class Controller {
   private readonly parts: ControllerParts;
   /** The id of the last removal notice (web3.4 C4). */
   private removalSeq = 0;
+  /** The sequence of the last community list read begun, and of the last one applied (C4 fix round 1). */
+  private listSeq = 0;
+  private listApplied = 0;
   private readonly slices: SliceStore;
   private readonly routes: Routes;
   private instance: Instance | null = null;
@@ -1087,6 +1090,8 @@ export class Controller {
     this.slices.set('settings', core.settings());
     this.publishBadges();
     if (this.slices.get('notices') === undefined) this.slices.set('notices', this.noticesState);
+    // C4 fix round 1: the removals slice is present from ready on, as notices is.
+    if (this.slices.get('removals') === undefined) this.slices.set('removals', []);
     this.calls.publishInitial();
     // (j) after a reload mid-ceremony the store records no username (head ruling 42): the account names it.
     let username = core.identity().username;
@@ -1538,12 +1543,20 @@ export class Controller {
   }
 
   private async refreshCommunities(): Promise<void> {
+    // C4 fix round 1: list reads overlap (op 54, a join, a transfer); one that began before the last applied is older
+    // than what the page shows, and applying it would drop, or bring back, a server falsely.
+    const seq = ++this.listSeq;
     const rows = await this.routes.listCommunities();
     if (this.storeCleared) return;
+    if (seq < this.listApplied) return;
+    this.listApplied = seq;
     // The list before this read; absent before the first list after a boot, which tells nothing (web3.4 C4).
     const before = this.slices.get('communities');
     const list = rows.map((r) => ({ id: toHex(r.id), name: r.name, owner: toHex(r.owner) }));
     this.slices.set('communities', list);
+    // C4 fix round 1: a server still listed with no leave or delete of it in flight was not left (a 5xx that did not go
+    // through): its later removal is told.
+    for (const id of this.admin.selfRemoved) if (this.listed(id) && !this.admin.pendingSelf.has(id)) this.admin.selfRemoved.delete(id);
     // Pre-flight ruling 1(vi): a community that is no longer listed loses its selection and its slices.
     const gone = new Set<string>();
     const removed = (before ?? []).filter((c) => !this.listed(c.id));
@@ -1560,15 +1573,20 @@ export class Controller {
 
   private dropCommunity(communityId: string): void {
     if (this.selected === communityId) this.selected = null;
+    const dropped: string[] = [];
     for (const [channelId, known] of this.channels) {
       if (known.communityId !== communityId) continue;
       this.channels.delete(channelId);
       this.open.delete(channelId);
+      dropped.push(channelId);
     }
     this.slices.set(`channels:${communityId}`, []);
     this.slices.set(`members:${communityId}`, []);
     this.admin.forget(communityId);
-    // web3.4 C4: no voice row of the server's channels stays on the page; a call in one ends through its removed phase.
+    // C4 fix round 1: a call in one of its channels ends here at once (its removed phase, its group forgotten), and the
+    // voice book forgets the channels, so a rejoin starts from the instance's state, not from what was seen before.
+    this.safely(() => { this.calls.channelsDropped(dropped); });
+    // web3.4 C4: no voice row of the server's channels stays on the page (visibleVoice stays as the guard).
     const voice = this.slices.get('voice');
     if (voice !== undefined) {
       const visible = this.visibleVoice(voice);
@@ -2202,6 +2220,10 @@ export class Controller {
     this.slices.set('badges', {});
     this.slices.set('settings', {});
     this.slices.set('notices', this.noticesState);
+    // C4 fix round 1: the removal notices and the own leaves of this account go with it; the next account's removals are
+    // told whatever this one left.
+    if (this.slices.get('removals') !== undefined) this.slices.set('removals', []);
+    this.admin.selfRemoved.clear();
     this.slices.set('trust', []);
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });

@@ -19,7 +19,7 @@ import { DillaHttpError } from '../http/errors';
 import { INSTANCE, readyInfo } from '../sync/testing/harness';
 import { COMMUNITY, FakeGateway, ManualClock, ME, ModelCore, ModelDs, PEER, THIRD, FOURTH, idOf, settle, type Peer } from '../sync/testing/model';
 import { COMMUNITY_RELOAD_DEBOUNCE_MS, Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
-import { CALL_ROTATE_RETRIES } from './controller';
+import { CALL_ROTATE_MS, CALL_ROTATE_RETRIES } from './controller';
 import type { FromWorker } from '../worker/protocol';
 
 export const VOICE = idOf(0xc5, 1);
@@ -726,7 +726,8 @@ describe('keys after the join (L-TS-56 step 2)', () => {
 });
 
 // web3.4 C4, review focus 2: removed from the server (kicked or banned) while in one of its calls. The server's re-read
-// drops it and tells once; the call itself ends through the existing removed phase, when the own leaf's Remove lands.
+// drops it and tells once; the call itself ends here at once through the existing removed phase (C4 fix round 1), not
+// only when the own leaf's Remove lands.
 describe('removed from the server while busy (web3.4 C4)', () => {
   const changed: Frame = { op: 54, n: 0n, groupId: null, payload: [COMMUNITY] as CborValue[] };
   const told = [{ id: 1, communityId: toHex(COMMUNITY), name: 'friends' }];
@@ -781,6 +782,52 @@ describe('removed from the server while busy (web3.4 C4)', () => {
       expect(w.slice('removals')).toEqual(told);
       expect(w.slice('communities')).toEqual([]);
       expect(await w.call({ m: 'refreshCommunities' })).toBeNull();
+      // Fix 7: the call ended as removed, and the group reached state 4 (the engine's commit first, then the forget).
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice });
+      expect(w.model.group(w.callGroup)?.state).toBe(4);
+      expect(w.pushes('callKeys')).toHaveLength(0);
+    } finally {
+      LISTED.value = true;
+    }
+  });
+
+  it('fix 5: the call of a dropped server ends here at once: removed, its group forgotten, no rotation, no key', async () => {
+    const w = await joined();
+    try {
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      await removedFromServer(w);
+      // No Remove commit has landed: the drop alone ends the call.
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, callId: null, epoch: null, roster: [],
+        error: { code: 'E_NOT_FOUND' } });
+      expect(w.slice('voice')[w.voice]).toBeUndefined();
+      expect(w.model.calls.some((c) => c.m === 'callGroupForget')).toBe(true);
+      expect(w.model.group(w.callGroup)?.state).toBe(4);
+      w.server.reset();
+      await w.clock.advance(CALL_ROTATE_MS);
+      await settled(w);
+      expect(w.server.routes()).not.toContain('POST commit');
+      expect(w.pushes('callKeys')).toHaveLength(0);
+      // The page's leave after it keeps the removed phase.
+      expect(await w.call({ m: 'callLeave', reason: 'user' })).toBeNull();
+      expect(w.slice('call').phase).toBe('removed');
+    } finally {
+      LISTED.value = true;
+    }
+  });
+
+  it('fix 6: a rejoin does not bring back the participants the voice book held before the drop', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    try {
+      w.gateway.push(voiceFrame(THIRD, VOICE, 1));
+      expect(w.slice('voice')[w.voice]?.participants.map((p) => p.name)).toEqual(['carol']);
+      await removedFromServer(w);
+      expect(w.slice('voice')[w.voice]).toBeUndefined();
+      LISTED.value = true;
+      expect(await w.call({ m: 'refreshCommunities' })).toBeNull();
+      expect(await w.call({ m: 'selectCommunity', communityId: toHex(COMMUNITY) })).toBeNull();
+      await settled(w);
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      expect(w.slice('voice')[w.voice]?.participants.map((p) => p.name)).toEqual(['bob']);
     } finally {
       LISTED.value = true;
     }
