@@ -133,13 +133,25 @@ export const CALL_IDLE: CallState = { phase: 'idle', channelId: null, callId: nu
   changedUser: null, rejoining: false };
 export const VOICE_EMPTY: VoiceState = {};
 export const RINGS_EMPTY: RingsState = [];
+/** What the caller may do in one server (GET /v1/communities/{id}/permissions); `top` is their rank, 0..2^31. */
+export interface CommunityAccess { top: number; owner: boolean; manageCommunity: boolean; manageChannels: boolean;
+  kickMembers: boolean; banMembers: boolean; createInvite: boolean; manageRoles: boolean }
+export interface RoleSummary { id: string; name: string; color: number; position: number; hoist: boolean; mentionable: boolean }
+/** One ban; `name` is the display name, else the username, else ''. */
+export interface BanSummary { userId: string; name: string; reason: string; byUser: string; created: number; expires: number | null }
+export interface InviteSummary { id: string; createdBy: string | null; maxUses: number; uses: number; created: number; expires: number }
+/** A server the caller was removed from, to be told once. */
+export interface RemovalNotice { id: number; communityId: string; name: string }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
-  | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings';
+  | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
+  | `permissions:${string}` | `roles:${string}` | `bans:${string}` | `invites:${string}` | 'removals';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
   [k: `typing:${string}`]: TypingState[];
+  [k: `permissions:${string}`]: CommunityAccess; [k: `roles:${string}`]: RoleSummary[]; [k: `bans:${string}`]: BanSummary[];
+  [k: `invites:${string}`]: InviteSummary[]; removals: RemovalNotice[];
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
   trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState;
   call: CallState; voice: VoiceState; rings: RingsState }

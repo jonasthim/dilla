@@ -1,0 +1,43 @@
+// Who may do what to whom in a server. The client's gate is advisory: the instance decides every request again.
+import { OWNER_TOP } from '../http/routes';
+import type { CommunityAccess, RoleSummary } from '../state/types';
+
+/** The permission bits of internal/api/perm.go (Perm*), the ones moderation reads. */
+export const PERM = {
+  createInvite: 1n << 11n,
+  kickMembers: 1n << 12n,
+  banMembers: 1n << 13n,
+  manageChannels: 1n << 14n,
+  manageRoles: 1n << 15n,
+  manageCommunity: 1n << 16n,
+  administrator: 1n << 20n,
+} as const;
+
+/** What a member may do community-wide, from the resolved bits and rank of GET /v1/communities/{id}/permissions. The owner
+ *  and an administrator hold every permission. */
+export function accessOf(bits: bigint, top: number, owner: boolean): CommunityAccess {
+  const all = owner || (bits & PERM.administrator) !== 0n;
+  const has = (bit: bigint): boolean => all || (bits & bit) !== 0n;
+  return { top, owner, manageCommunity: has(PERM.manageCommunity), manageChannels: has(PERM.manageChannels),
+    kickMembers: has(PERM.kickMembers), banMembers: has(PERM.banMembers), createInvite: has(PERM.createInvite),
+    manageRoles: has(PERM.manageRoles) };
+}
+
+/** The highest role position among `roleIds`; 0 with none. A role id the client has no row for counts as just under the
+ *  owner, so a stale role list never lets anyone act on a member the client cannot rank. */
+export function topOf(roleIds: readonly string[], roles: readonly RoleSummary[]): number {
+  const position = new Map(roles.map((r) => [r.id, r.position]));
+  let top = 0;
+  for (const roleId of roleIds) top = Math.max(top, position.get(roleId) ?? OWNER_TOP - 1);
+  return top;
+}
+
+/** Whether `me` may kick or ban `target`: never the owner or oneself; always for the owner; otherwise only from a strictly
+ *  higher rank than the target's, and never with no rank at all. */
+export function canModerate(args: { me: string; target: string; owner: string; myTop: number; targetTop: number }): boolean {
+  const { me, target, owner, myTop, targetTop } = args;
+  if (target === owner || target === me) return false;
+  if (me === owner) return true;
+  if (myTop === 0) return false;
+  return targetTop < myTop;
+}
