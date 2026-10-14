@@ -1473,4 +1473,21 @@ describe('ModelDs creates servers and channels as internal/api does', () => {
     expect((await peer.createInvite(created.id, { maxUses: 10, ttlSeconds: 604_800 })).url).toMatch(/^https:\/\/model\.test\/i\/\S+$/);
     expect(await codeOf(ds.routesFor(THIRD.device).createInvite(created.id, { maxUses: 10, ttlSeconds: 60 }))).toBe('E_NOT_FOUND');
   });
+
+  it('answers the owner every permission at the top rank, any other member the @everyone base at rank 0, and a stranger 404', async () => {
+    const ds = new ModelDs();
+    ds.own(ME.user, ME.device);
+    ds.own(PEER.user, PEER.device);
+    const created = await ds.routesFor(ME.device).createCommunity('Midgard Crew');
+    ds.addMember(created.id, PEER.user);
+    expect(await ds.routesFor(ME.device).getPermissions(created.id)).toEqual({ bits: (1n << 30n) - 1n, top: 2 ** 31 });
+    const base = await ds.routesFor(PEER.device).getPermissions(created.id);
+    expect(base.top).toBe(0);
+    expect(base.bits & (1n << 11n)).not.toBe(0n);   // CreateInvite
+    expect(base.bits & (1n << 12n)).toBe(0n);       // KickMembers
+    const roles = await ds.routesFor(PEER.device).listRoles(created.id);
+    expect(roles.map((r) => [r.name, r.position, r.allow])).toEqual([['@everyone', 0, base.bits]]);
+    expect(await codeOf(ds.routesFor(THIRD.device).getPermissions(created.id))).toBe('E_NOT_FOUND');
+    expect(await codeOf(ds.routesFor(THIRD.device).listRoles(created.id))).toBe('E_NOT_FOUND');
+  });
 });

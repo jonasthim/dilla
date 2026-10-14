@@ -37,7 +37,7 @@ import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
-import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, nameProblem, type Routes } from '../../http/routes';
+import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, OWNER_TOP, nameProblem, type Routes } from '../../http/routes';
 import { mentionsMe } from '../../state/mentions';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from '../../testing/fake-list';
 
@@ -2033,8 +2033,14 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   | 'endCallIfAlone'
   // v0.1.0-web3.1: the create flow (internal/api communities.go, channels.go, invites.go), so a suite creates its server
   // and its channels through the client path.
-  | 'listCommunities' | 'createCommunity' | 'createChannel' | 'createInvite';
+  | 'listCommunities' | 'createCommunity' | 'createChannel' | 'createInvite'
+  // web3.4: the caller's own permissions and the roles list, as the instance resolves them for the model's servers.
+  | 'getPermissions' | 'listRoles';
 export type ModelRoutes = Pick<Routes, RouteName>;
+/** The @everyone base of a new server (internal/api everyoneRoleAllow): view, send, attach, react, history, connect, speak, video,
+ *  screen share and create invite. Every defined permission bit is below 2^30. */
+export const MODEL_EVERYONE_ALLOW = 0b1111_1111_0011n;
+export const MODEL_PERM_ALL = (1n << 30n) - 1n;
 /** fail: throw before acting; lose: act, then throw a network error; before/after: run fn around acting; gate: wait first. */
 export type Injection = { fail: Error } | { lose: true } | { before: () => void } | { after: () => void } | { gate: Promise<void> };
 
@@ -2585,6 +2591,17 @@ export class ModelDs {
         this.counter += 1;
         const code = `MODEL${String(this.counter)}`;
         return { inviteId: idOf(0x1e, this.counter), code, url: `https://model.test/i/${code}`, expires: this.clockS + 604_800n };
+      }),
+      // The owner holds every permission at the top rank; any other member holds the @everyone base at rank 0.
+      getPermissions: (communityId) => this.call(d, 'getPermissions', null, null, () => {
+        const c = this.memberOf(d, communityId);
+        return c.owner === this.owners.get(d) ? { bits: MODEL_PERM_ALL, top: OWNER_TOP } : { bits: MODEL_EVERYONE_ALLOW, top: 0 };
+      }),
+      listRoles: (communityId) => this.call(d, 'listRoles', null, null, () => {
+        this.memberOf(d, communityId);
+        const everyone = communityId.slice();
+        everyone[0] = 0xc7;
+        return [{ id: everyone, name: '@everyone', color: 0, position: 0, allow: MODEL_EVERYONE_ALLOW, deny: 0n, hoist: false, mentionable: false }];
       }),
       postGroup: (body) => this.call(d, 'postGroup', null, null, () => this.postGroup(d, body)),
       getGroupInfo: (id) =>

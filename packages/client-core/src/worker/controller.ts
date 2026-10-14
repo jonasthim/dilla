@@ -42,6 +42,7 @@ import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerL
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
+import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -212,6 +213,20 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'callStats',
   'loadVoice',
   'callDecline',
+  'renameCommunity',
+  'deleteCommunity',
+  'leaveCommunity',
+  'transferOwnership',
+  'createCategory',
+  'updateChannel',
+  'moveChannel',
+  'deleteChannel',
+  'kickMember',
+  'banMember',
+  'unbanMember',
+  'loadBans',
+  'loadInvites',
+  'revokeInvite',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -247,6 +262,20 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   voiceSelf: ['callId'],
   callJoin: ['channelId'],
   callDecline: ['callId'],
+  renameCommunity: ['communityId'],
+  deleteCommunity: ['communityId'],
+  leaveCommunity: ['communityId'],
+  transferOwnership: ['communityId', 'userId'],
+  createCategory: ['communityId'],
+  updateChannel: ['channelId'],
+  moveChannel: ['channelId'],
+  deleteChannel: ['channelId'],
+  kickMember: ['communityId', 'userId'],
+  banMember: ['communityId', 'userId'],
+  unbanMember: ['communityId', 'userId'],
+  loadBans: ['communityId'],
+  loadInvites: ['communityId'],
+  revokeInvite: ['communityId', 'inviteId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
@@ -302,6 +331,20 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'callStats',
     'loadVoice',
     'callDecline',
+    'renameCommunity',
+    'deleteCommunity',
+    'leaveCommunity',
+    'transferOwnership',
+    'createCategory',
+    'updateChannel',
+    'moveChannel',
+    'deleteChannel',
+    'kickMember',
+    'banMember',
+    'unbanMember',
+    'loadBans',
+    'loadInvites',
+    'revokeInvite',
   ],
 };
 
@@ -324,7 +367,9 @@ const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
 const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string' && ID.test(v));
 
 /** Per-feature synchronous checks (wave 1+): each returns an E_BAD_INPUT reason or null. */
-const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {};
+const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {
+  ...ADMIN_VALIDATORS,
+};
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.
  *  Every refusal here answers only the owning page's own malformed command (deps.post reaches only that page). */
@@ -542,6 +587,8 @@ export class Controller {
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
   private readonly calls: CallController;
+  /** web3.4: server admin and moderation (flow 08). */
+  private readonly admin: AdminController;
   /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
   private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
   private readonly ownInCall = new Set<string>();
@@ -604,6 +651,26 @@ export class Controller {
         return dm === undefined ? undefined : { communityId: null, members: dm.members.map(toHex) };
       },
       communityListed: (community) => this.listed(community),
+    });
+    this.admin = new AdminController({
+      routes: this.routes,
+      now: () => deps.now(),
+      me: () => this.me,
+      get: (name) => this.slices.get(name),
+      publish: (name, value) => { this.slices.set(name, value); },
+      listed: (communityId) => this.listed(communityId),
+      channelsOf: (communityId) => [...this.channels].filter(([, k]) => k.communityId === communityId).map(([id, k]) => ({ id, row: k.row })),
+      communityOf: (channelId) => this.channels.get(channelId)?.communityId ?? null,
+      setChannel: (communityId, row) => { this.channels.set(toHex(row.id), { communityId, row }); },
+      removeChannel: (channelId) => { this.channels.delete(channelId); this.open.delete(channelId); },
+      publishChannels: (communityId) => { this.publishChannels(communityId); this.updateExpected(); this.publishBadges(); },
+      structureChanged: (communityId) => { this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1); },
+      reloadCommunity: (communityId) => this.loadCommunity(communityId),
+      reloadMembers: (communityId) => this.reloadMembers(communityId),
+      refreshCommunities: () => this.refreshCommunities(),
+      dropCommunity: (communityId) => { this.dropCommunity(communityId); },
+      track: (job) => { void this.barrier.track(job).catch(() => undefined); },
+      refusal: (code, detail) => new Refusal(code, detail),
     });
   }
 
@@ -744,6 +811,20 @@ export class Controller {
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);
       case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
+      case 'renameCommunity': return this.admin.renameCommunity(command.communityId, command.name);
+      case 'deleteCommunity': return this.admin.deleteCommunity(command.communityId);
+      case 'leaveCommunity': return this.admin.leaveCommunity(command.communityId);
+      case 'transferOwnership': return this.admin.transferOwnership(command.communityId, command.userId);
+      case 'createCategory': return this.admin.createCategory(command.communityId, command.name);
+      case 'updateChannel': return this.admin.updateChannel(command.channelId, command.name, command.topic, command.parent);
+      case 'moveChannel': return this.admin.moveChannel(command.channelId, command.direction);
+      case 'deleteChannel': return this.admin.deleteChannel(command.channelId);
+      case 'kickMember': return this.admin.kickMember(command.communityId, command.userId);
+      case 'banMember': return this.admin.banMember(command.communityId, command.userId, command.reason, command.seconds);
+      case 'unbanMember': return this.admin.unbanMember(command.communityId, command.userId);
+      case 'loadBans': return this.admin.loadBans(command.communityId);
+      case 'loadInvites': return this.admin.loadInvites(command.communityId);
+      case 'revokeInvite': return this.admin.revokeInvite(command.communityId, command.inviteId);
       case 'resign': return this.resign(command.nonce);
     }
   }
@@ -1470,6 +1551,7 @@ export class Controller {
     }
     this.slices.set(`channels:${communityId}`, []);
     this.slices.set(`members:${communityId}`, []);
+    this.admin.forget(communityId);
     this.updateExpected();
     this.publishBadges();
   }
@@ -1580,6 +1662,15 @@ export class Controller {
     this.updateExpected();
     this.publishBadges();
     this.publishDms();                               // a DM's name comes from the member lists
+    // The access reads are tracked by the barrier, not awaited: a select never waits on them, and a failed read leaves them absent.
+    void this.barrier.track(this.admin.loadAccess(communityId)).catch(() => undefined);
+  }
+
+  /** The member list of one server, read again (a kick, a ban, a transfer). */
+  private async reloadMembers(communityId: string): Promise<void> {
+    const rows = await this.routes.listMembers(fromHex(communityId));
+    if (this.storeCleared || !this.listed(communityId)) return;
+    this.publishMembers(communityId, rows);
   }
 
   private publishMembers(communityId: string, rows: readonly MemberRow[]): void {

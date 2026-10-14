@@ -67,6 +67,20 @@ export type Command =
   | { m: 'callStats'; report: CallStatsReport }                                          // → null
   | { m: 'loadVoice'; communityId: string | null; channelId: string | null }            // exactly one id → null
   | { m: 'callDecline'; callId: string; ringTs: number }                                 // ringTs: op 53's expires_ts → null
+  | { m: 'renameCommunity'; communityId: string; name: string }
+  | { m: 'deleteCommunity'; communityId: string }           // dropped before the ret; no removal notice
+  | { m: 'leaveCommunity'; communityId: string }            // same
+  | { m: 'transferOwnership'; communityId: string; userId: string }
+  | { m: 'createCategory'; communityId: string; name: string }   // → { channelId }
+  | { m: 'updateChannel'; channelId: string; name: string | null; topic: string | null; parent: string }  // parent: 'keep'|'top'|32-hex
+  | { m: 'moveChannel'; channelId: string; direction: 'up' | 'down' }
+  | { m: 'deleteChannel'; channelId: string }
+  | { m: 'kickMember'; communityId: string; userId: string }
+  | { m: 'banMember'; communityId: string; userId: string; reason: string; seconds: number | null }  // 3600..3_153_600_000
+  | { m: 'unbanMember'; communityId: string; userId: string }
+  | { m: 'loadBans'; communityId: string }      // slice bans:<cid>
+  | { m: 'loadInvites'; communityId: string }   // slice invites:<cid>, live only
+  | { m: 'revokeInvite'; communityId: string; inviteId: string }
   | { m: 'resign'; nonce: string };
 export type ToWorker = { t: 'call'; id: number; command: Command };
 export type FromWorker =
