@@ -495,6 +495,165 @@
       "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
       "community": 8179,
       "channel": 8179
+    },
+    {
+      "name": "held_role_allow_and_deny_overlap",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 2,
+          "deny": 2
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "unheld_role_changes_nothing",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 32768,
+          "deny": 2
+        },
+        {
+          "id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "position": 2,
+          "allow": 1048576,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "role_overwrites_apply_in_ascending_position",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 0,
+          "deny": 0
+        },
+        {
+          "id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "position": 2,
+          "allow": 0,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      ],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "allow": 16,
+          "deny": 4
+        },
+        {
+          "kind": 0,
+          "target": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "allow": 4,
+          "deny": 16
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "overwrites_for_other_targets_ignored",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 0,
+          "deny": 0
+        },
+        {
+          "id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "position": 1,
+          "allow": 0,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [
+        {
+          "kind": 1,
+          "target": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+          "allow": 0,
+          "deny": 1
+        },
+        {
+          "kind": 0,
+          "target": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "allow": 0,
+          "deny": 2
+        },
+        {
+          "kind": 1,
+          "target": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "allow": 0,
+          "deny": 16
+        },
+        {
+          "kind": 0,
+          "target": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "allow": 0,
+          "deny": 32
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
     }
   ]
 }
