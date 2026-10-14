@@ -31,7 +31,8 @@ The media key never appears in this flow: the browser derives it in the core wor
 | incoming ring — normal | ring banner `call.ring.incoming` with `call.ring.answer` and `call.ring.decline`; the ring sound plays; a desktop notification `call.ring.notifyTitle` / `call.ring.notifyBody` when the tab is hidden | `rings` holds the ring, `busy` and `quiet` false | `role="alert"` once |
 | incoming ring — busy | ring banner `call.ring.busy`; no sound, no notification; answering leaves the current voice first | `rings` entry with `busy` true | `role="alert"` once |
 | incoming ring — quiet | ring banner `call.ring.incoming`; no sound, no notification (R1) | `rings` entry with `quiet` true (the DM is muted) | `role="alert"` once |
-| outgoing ring | the DM's call strip says `call.outgoing.ringing`; a decline adds `call.outgoing.declined`; when every ring has ended without an answer, `call.outgoing.noAnswer`; no ringback tone (R3) | `call.outgoing` | strip text through the dock's status region |
+| outgoing ring | the DM's call strip says `call.outgoing.ringing`; a participant the instance did not ring (its pair bound held the ring back) is `call.outgoing.notRung` instead; a decline adds `call.outgoing.declined`; when every ring has ended without an answer (30 s from the start, or nobody left ringing), `call.outgoing.noAnswer`; no ringback tone (R3) | `call.outgoing` (`ringing`, `declined`, `notRung`; the start's `rung` element, 09 § Voice) | strip text through the dock's status region |
+| unanswered (added 2026-10-14, product walk I6) | when every ring has ended and nobody else was ever in the call, the caller leaves by itself 5 s later (the grace covers an answer still connecting); the strip keeps the ring's last line (`call.outgoing.noAnswer` or `call.outgoing.declined`) as its notice, with `call.start` | `call.outgoing` final, the page's tiles empty since the start | `voice.announce.left`, then the strip's notice |
 | attachment player — idle | the attachment card shows `media.play` and `media.save` | `AttachmentSummary.kind` audio or video, not `tooLarge` | none |
 | attachment player — loading | `media.loading` in place of the play button | the page is opening the blob | none |
 | attachment player — ready | the native `<audio controls>` or `<video controls playsinline>` with the file's shown name as its accessible name; playback starts only on the explicit play | a page-minted `blob:` URL, revoked on unmount | none |
@@ -282,6 +283,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `call.ring.answer='answer'`, `call.ring.decline='decline'`
 - `call.ring.notifyTitle='{name} is calling'`, `call.ring.notifyBody='Open dilla to answer.'`
 - `call.outgoing.ringing='ringing {names}'`, `call.outgoing.declined='{name} declined.'`, `call.outgoing.noAnswer='No answer.'`
+- `call.outgoing.notRung='{names} not rung: called too recently.'` (the participants the instance did not ring, its pair bound of 15 s and 20 an hour; added 2026-10-14, product walk I6)
 
 *Media players:*
 - `media.play='play {name}'`, `media.loading='loading'`

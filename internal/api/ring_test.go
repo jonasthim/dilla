@@ -461,7 +461,11 @@ func TestACommunityVoiceCallNeverRings(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("start = %d %s", status, e.ErrCode(body))
 	}
-	call := decodeCall(t, body).CallID
+	started := decodeCall(t, body)
+	if started.HasRung {
+		t.Fatalf("a community voice start carries rung %v; want the six elements", started.Rung)
+	}
+	call := started.CallID
 	for _, dev := range []id.ID{deviceOf(t, e, tok), bobDev} {
 		if rings := gw.rings(dev); len(rings) != 0 {
 			t.Fatalf("a community voice call rang %s: %+v", dev, rings)
@@ -568,6 +572,44 @@ func TestRingsArePairRateLimited(t *testing.T) {
 	h.e.Clk.Advance(time.Hour)
 	if !h.rang(t, h.dm, h.alice, bob, bobDev) {
 		t.Fatal("a ring past the rolling hour did not ring bob")
+	}
+}
+
+// WB product walk I6: the caller learns whom the start rang. A start that opens a DM or group-DM call
+// carries a seventh element, the users it rang; a recipient the pair rule held back is not in it, so
+// the caller's page never says "ringing" for a ring nobody got. A 200 start and a community voice
+// start keep the six elements.
+func TestAStartTellsTheCallerWhomItRang(t *testing.T) {
+	h := newDMCallHost(t)
+	status, body := h.e.Do(http.MethodPost, "/v1/channels/"+h.dm.String()+"/calls", h.alice.tok, []any{})
+	if status != http.StatusCreated {
+		t.Fatalf("start = %d %x", status, body)
+	}
+	first := decodeCall(t, body)
+	if !first.HasRung || !slices.Equal(first.Rung, []id.ID{h.bob.user}) {
+		t.Fatalf("the first start's rung = %v (present %v), want [bob]", first.Rung, first.HasRung)
+	}
+	// bob's own start of the live call is a 200: nothing rang, and the answer keeps six elements.
+	status, body = h.e.Do(http.MethodPost, "/v1/channels/"+h.dm.String()+"/calls", h.bob.tok, []any{})
+	if status != http.StatusOK || decodeCall(t, body).HasRung {
+		t.Fatalf("a 200 start = %d with rung present %v, want 200 and six elements", status, decodeCall(t, body).HasRung)
+	}
+	h.end(t, first.CallID, h.alice)
+	// A call-back within the 15 s pair gap opens the call and rings nobody: rung is empty.
+	h.e.Clk.Advance(5 * time.Second)
+	h.register(t, h.dm, h.alice, h.bob)
+	status, body = h.e.Do(http.MethodPost, "/v1/channels/"+h.dm.String()+"/calls", h.alice.tok, []any{})
+	again := decodeCall(t, body)
+	if status != http.StatusCreated || !again.HasRung || len(again.Rung) != 0 {
+		t.Fatalf("a call-back within the pair gap = %d rung %v (present %v), want 201 and an empty rung", status, again.Rung, again.HasRung)
+	}
+	h.end(t, again.CallID, h.alice)
+	// A group DM where bob's pair is still held and carol's is not: only carol is rung.
+	gdm := h.openDMWith(t, h.alice, h.bob, h.carol)
+	status, body = h.e.Do(http.MethodPost, "/v1/channels/"+gdm.String()+"/calls", h.alice.tok, []any{})
+	group := decodeCall(t, body)
+	if status != http.StatusCreated || !slices.Equal(group.Rung, []id.ID{h.carol.user}) {
+		t.Fatalf("the group DM start = %d rung %v, want 201 and [carol]", status, group.Rung)
 	}
 }
 

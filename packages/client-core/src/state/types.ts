@@ -105,7 +105,9 @@ export type CallStatsReport = [candidateType: number, relayProtocol: number | nu
 export type CallPhase = 'idle' | 'joining' | 'in' | 'paused' | 'leaving' | 'blocked' | 'removed' | 'failed';
 export interface CallState { phase: CallPhase; channelId: string | null; callId: string | null; epoch: string | null;
   code: string | null; error: WorkerError | null; roster: { userId: string; deviceId: string; leaf: number }[];
-  outgoing: { ringing: string[]; declined: string[] } | null;    // user names; DM calls this device opened
+  // User names; DM calls this device opened. notRung (WB product walk I6): participants the instance did not ring (its
+  // pair rule held the ring back, or a cap), so the caller is never told "ringing" for a ring nobody got.
+  outgoing: { ringing: string[]; declined: string[]; notRung: string[] } | null;
   // Ruling I2 (2026-10-13): the 32-hex user id of the changed contact while the phase is paused (RV-3) or after an
   // E_UMK_CHANGED join refusal (the first by user_id when several changed); null otherwise. Fills {name} in
   // voice.paused and voice.blockedChanged, also when a refused join left `roster` empty.

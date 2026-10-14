@@ -320,10 +320,10 @@ describe('review round 1', () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
     await app.user.click(await main().findByRole('button', { name: 'call' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
-    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: ['bob'], declined: [] } }));
+    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: ['bob'], declined: [], notRung: [] } }));
     const status = () => document.querySelector('.d-voice-dock [role="status"]');
     await waitFor(() => expect(status()).toHaveTextContent('ringing bob'));
-    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: [], declined: ['bob'] } }));
+    app.client.publish('call', callState({ phase: 'in', channelId: DM, callId: DM, outgoing: { ringing: [], declined: ['bob'], notRung: [] } }));
     await waitFor(() => expect(status()).toHaveTextContent('bob declined.'));
   });
 

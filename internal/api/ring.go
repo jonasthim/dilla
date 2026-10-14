@@ -117,14 +117,15 @@ func (r *Ringer) WithMaxUsers(n int) *Ringer {
 // Start rings recipients for call, which caller has just opened (a 201) in ch, a DM or group DM:
 // each of them gets state 1 on every online device, unless that user is already being rung for the
 // call (at most one ring per (call, user)) or the pair rate rule holds the ring back. Any other kind
-// of channel rings nobody.
+// of channel rings nobody. It answers the users it rang (WB product walk I6: the caller is told, so a
+// ring the pair rule or a cap held back is never shown as ringing).
 //
 // Attacker (review I2): one caller starting call after call to fill the ringing-call table and
 // silence everyone else's rings. A caller holds at most maxRingingCallsPerCaller ringing calls; its
 // next start rings nobody while every other caller still rings.
-func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.ID) {
+func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.ID) []id.ID {
 	if r == nil || (ch.Kind != ChannelDM && ch.Kind != ChannelGroupDM) {
-		return
+		return nil
 	}
 	now := r.clk.Now()
 	expires := uint64(now.Unix()) + RingSeconds //nolint:gosec // G115: the instance clock is after 1970
@@ -138,7 +139,7 @@ func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.
 	}
 	if r.maxUsers > 0 && len(users) > r.maxUsers {
 		r.log.Warn("a call has more recipients than a call holds; it rings nobody", "call_id", call.String(), "recipients", len(users))
-		return
+		return nil
 	}
 	var started, suppressed []id.ID
 	capped := false
@@ -147,14 +148,14 @@ func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.
 	if mine[call] == 0 && len(mine) >= maxRingingCallsPerCaller {
 		r.mu.Unlock()
 		r.log.Warn("this caller has too many calls ringing; this call rings nobody", "caller", caller.String(), "call_id", call.String())
-		return
+		return nil
 	}
 	rc := r.calls[call]
 	if rc == nil {
 		if len(r.calls) >= maxRingingCalls {
 			r.mu.Unlock()
 			r.log.Warn("too many calls are ringing; this call rings nobody", "call_id", call.String())
-			return
+			return nil
 		}
 		rc = &ringCall{channel: ch.ID, users: map[id.ID]*ring{}}
 	}
@@ -193,6 +194,7 @@ func (r *Ringer) Start(ch store.ChannelRow, call, caller id.ID, recipients []id.
 	for _, u := range started {
 		r.deliver(u, call, ch.ID, caller, 1, expires)
 	}
+	return started
 }
 
 // allowLocked applies the pair rate rule to one ring of recipient by caller at offset at and, when
@@ -390,14 +392,14 @@ func (r *Ringer) deliver(to, call, channel, user id.ID, state, expires uint64) {
 // ring rings the other participants of a DM or group-DM call caller has just opened: every
 // participant user but the caller who has no device in the call's room. A community channel rings
 // nobody.
-func (h *Calls) ring(ctx context.Context, ch store.ChannelRow, row store.VoiceSessionRow, caller id.ID) {
+func (h *Calls) ring(ctx context.Context, ch store.ChannelRow, row store.VoiceSessionRow, caller id.ID) []id.ID {
 	if h.ringer == nil || (ch.Kind != ChannelDM && ch.Kind != ChannelGroupDM) {
-		return
+		return nil
 	}
 	members, err := h.repo.ListChannelMembers(ctx, ch.ID)
 	if err != nil {
 		h.log.WarnContext(ctx, "reading a DM's participants to ring them failed; nobody is rung", "err", err)
-		return
+		return nil
 	}
 	inCall := map[id.ID]bool{caller: true}
 	if h.events != nil {
@@ -411,7 +413,7 @@ func (h *Calls) ring(ctx context.Context, ch store.ChannelRow, row store.VoiceSe
 			recipients = append(recipients, u)
 		}
 	}
-	h.ringer.Start(ch, row.CallID, caller, recipients)
+	return h.ringer.Start(ch, row.CallID, caller, recipients)
 }
 
 // decline is POST /v1/calls/{call_id}/decline `[expires_ts]` (L-HTTP-104): 204 whether or not the

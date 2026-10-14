@@ -47,7 +47,10 @@ export interface ChannelCall { groupId: Uint8Array | null; callId: Uint8Array | 
 export interface CommunityCall { channelId: Uint8Array; callId: Uint8Array; participants: CallParticipant[]; }
 export type IceServer = [urls: string[], username: string, credential: string];
 export interface CallStarted { created: boolean; callId: Uint8Array; groupId: Uint8Array; livekitUrl: string; token: string;
-  iceServers: IceServer[]; caps: [number, number, number]; }
+  iceServers: IceServer[]; caps: [number, number, number];
+  /** The users a start that opened a DM or group-DM call rang (the seventh element, WB product walk I6); null when the
+   *  answer has six elements (any other start, or an instance from before it). */
+  rung: Uint8Array[] | null; }
 export type CallStats = [number, number | null, number, number, number, number];
 
 function id(name: string, v: Uint8Array): string {
@@ -384,7 +387,8 @@ export class Routes {
         const s = atLeast(server, 3);
         return [arr(s[0]).map(str), str(s[1]), str(s[2])];
       }),
-      caps: [u53(caps[0]), u53(caps[1]), u53(caps[2])] };
+      caps: [u53(caps[0]), u53(caps[1]), u53(caps[2])],
+      rung: a.length > 6 ? arr(a[6]).map((u) => bin(u, 16)) : null };
   }
   async shareCall(callId: Uint8Array): Promise<void> {
     await this.body('POST', callPath(callId, '/share'), 'write', false, { body: encode([]), ok: [204] });

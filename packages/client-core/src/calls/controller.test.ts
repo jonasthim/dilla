@@ -848,11 +848,23 @@ describe('rings (L-TS-56 step 8)', () => {
   it('an outgoing DM call lists who is ringing and appends decliners from state 2', async () => {
     const w = await harness({ dm: 'group' });
     await w.call({ m: 'callJoin', channelId: w.dm, vdec: '' });
-    expect(w.slice('call').outgoing).toEqual({ ringing: ['bob', 'carol'], declined: [] });
+    expect(w.slice('call').outgoing).toEqual({ ringing: ['bob', 'carol'], declined: [], notRung: [] });
     w.gateway.push(voiceFrame(THIRD, DM, 1));
-    expect(w.slice('call').outgoing).toEqual({ ringing: ['bob'], declined: [] });
+    expect(w.slice('call').outgoing).toEqual({ ringing: ['bob'], declined: [], notRung: [] });
     w.gateway.push(ring(2, { user: PEER }));
-    expect(w.slice('call').outgoing).toEqual({ ringing: [], declined: ['bob'] });
+    expect(w.slice('call').outgoing).toEqual({ ringing: [], declined: ['bob'], notRung: [] });
+  });
+
+  // WB product walk I6: the instance answers whom the start rang; a participant its pair rule held back is never listed
+  // as ringing, but as not rung, so the caller's strip says so instead of "ringing".
+  it('an outgoing DM call lists only the participants the instance rang', async () => {
+    const w = await harness({ dm: 'group' });
+    w.ds.ringHeld.add(toHex(PEER.user));
+    await w.call({ m: 'callJoin', channelId: w.dm, vdec: '' });
+    expect(w.slice('call').outgoing).toEqual({ ringing: ['carol'], declined: [], notRung: ['bob'] });
+    // bob joins after all (from the DM's call button): he is no longer "not rung".
+    w.gateway.push(voiceFrame(PEER, DM, 1));
+    expect(w.slice('call').outgoing).toEqual({ ringing: ['carol'], declined: [], notRung: [] });
   });
 
   it('a ring expires locally at expiresAt when no state 0 arrives', async () => {

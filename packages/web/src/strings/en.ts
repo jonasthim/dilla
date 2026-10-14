@@ -458,6 +458,7 @@ export const en = {
   'call.outgoing.ringing': 'ringing {names}',
   'call.outgoing.declined': '{name} declined.',
   'call.outgoing.noAnswer': 'No answer.',
+  'call.outgoing.notRung': '{names} not rung: called too recently.',
   'media.play': 'play {name}',
   'media.loading': 'loading',
   'media.error': 'This browser cannot play this file.',

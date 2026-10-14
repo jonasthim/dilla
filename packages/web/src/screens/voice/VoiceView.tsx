@@ -10,7 +10,7 @@ import {
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, userName, voiceStateLabels } from '../shell-model.ts';
-import type { CallView } from './useCall.tsx';
+import { outgoingText, type CallView } from './useCall.tsx';
 
 /** What the voice surfaces read besides the CallView. */
 export interface VoiceContext {
@@ -97,7 +97,7 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
     }
     if (slice.phase === 'failed' && v.call.channelId !== channelId) return { kind: 'info', text: t('voice.failed'), action: null, focusOnce: false };
   }
-  if (v.call.notice?.channelId === channelId) return { kind: 'info', text: t(v.call.notice.key), action: null, focusOnce: false };
+  if (v.call.notice?.channelId === channelId) return { kind: 'info', text: v.call.notice.text ?? t(v.call.notice.key), action: null, focusOnce: false };
   const mic = v.call.channelId === channelId && v.call.state !== null ? micNoticeKey(v.call.state.mic) : null;
   return mic !== null ? { kind: 'info', text: t(mic), action: null, focusOnce: false } : null;
 }
@@ -256,18 +256,10 @@ function StripNotice({ notice, refObj }: { notice: CallStageNotice | null; refOb
  */
 export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
   const outgoing = v.slice?.channelId === channelId ? v.slice.outgoing : null;
-  // A ring lasts 30 s (R5): once that long has passed with nobody answering, the strip says so.
-  const [expired, setExpired] = useState(false);
-  const ringing = outgoing !== null && outgoing.ringing.length > 0;
-  useEffect(() => {
-    setExpired(false);
-    if (!ringing) return;
-    const timer = setTimeout(() => setExpired(true), RING_MS);
-    return () => clearTimeout(timer);
-  }, [ringing]);
+  // A ring lasts 30 s (R5, useCall's clock): once that long has passed with nobody answering, the strip says so.
   const inThisCall = v.call.channelId === channelId;
-  const others = (v.voice?.[channelId]?.participants ?? []).some(p => p.userId !== v.self?.id);
-  const text = inThisCall ? outgoingText(outgoing, others, expired) : null;
+  const others = (v.voice?.[channelId]?.participants ?? []).some(p => p.userId !== v.self?.id) || (v.call.state?.tiles.length ?? 0) > 0;
+  const text = inThisCall ? outgoingText(outgoing, others, v.call.ringExpired) : null;
   // The outgoing ring is spoken through the dock's status region, once per change (flow 06 § States, review I3).
   const { announce } = v.call;
   useEffect(() => { if (text !== null) announce(text); }, [text, announce]);
@@ -308,20 +300,6 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
   );
 }
 
-const RING_MS = 30_000;
-
-/**
- * The outgoing ring's line (R3, R7): `ringing {names}` while it rings, `{name} declined.` per decline, `No answer.` once
- * every ring ended (30 s, or nobody left ringing) with nobody else in the call; null when there is nothing to say.
- */
-export function outgoingText(outgoing: CallState['outgoing'], othersInCall: boolean, expired: boolean): string | null {
-  if (outgoing === null) return null;
-  const parts: string[] = [];
-  if (outgoing.ringing.length > 0 && !expired) parts.push(t('call.outgoing.ringing', { names: outgoing.ringing.join(', ') }));
-  for (const name of outgoing.declined) parts.push(t('call.outgoing.declined', { name }));
-  if (!othersInCall && (expired || outgoing.ringing.length === 0) && outgoing.declined.length === 0) parts.push(t('call.outgoing.noAnswer'));
-  return parts.length > 0 ? parts.join(' ') : null;
-}
 
 /** One stop for the rows: the stop row and its join button are tab stops, every other row and join is not. */
 function place(rows: readonly HTMLButtonElement[], stop: number): void {

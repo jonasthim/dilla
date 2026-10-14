@@ -2330,6 +2330,8 @@ export class ModelDs {
 
   /** livekit.max_voice_participants as the start's E_CALL_FULL reads it. */
   maxVoiceParticipants = 25;
+  /** WB product walk I6: users (hex) a DM start does not ring, as the instance's pair rule would hold them back. */
+  readonly ringHeld = new Set<string>();
   /** channel hex → its live call: a call id is the channel id (internal/ds/state.go callIDOf). */
   private readonly liveCalls = new Map<string, { callId: Id; channelId: Id; groupId: Id; participants: Map<string, { user: Id; device: Id; flags: number }> }>();
   /** Voice channels by channel hex → their community (the start and the snapshot need a channel the caller may view). */
@@ -2389,7 +2391,7 @@ export class ModelDs {
     return { groupId: call?.groupId ?? this.openGroupOf(channelId, 1)?.id ?? null, callId: call?.callId ?? null, participants };
   }
   private startCall(d: string, channelId: Id): { created: boolean; callId: Id; groupId: Id; livekitUrl: string; token: string;
-    iceServers: [string[], string, string][]; caps: [number, number, number] } {
+    iceServers: [string[], string, string][]; caps: [number, number, number]; rung: Id[] | null } {
     if (!this.mayView(d, channelId)) throw httpError(404, 'E_NOT_FOUND');
     const live = this.liveCalls.get(toHex(channelId));
     const g = live === undefined ? this.openGroupOf(channelId, 1) : this.groups.get(toHex(live.groupId));
@@ -2397,8 +2399,12 @@ export class ModelDs {
     if (g === undefined || g.closed || !g.members.has(d)) throw httpError(403, 'E_LEAF_NOT_CURRENT');
     if (live !== undefined && live.participants.size >= this.maxVoiceParticipants) throw httpError(409, 'E_CALL_FULL');
     if (live === undefined) this.liveCalls.set(toHex(channelId), { callId: channelId, channelId, groupId: g.id, participants: new Map() });
+    // A start that opens a DM call answers whom it rang (09 § Voice, WB product walk I6).
+    const dm = this.dms.get(toHex(channelId));
+    const rung = live === undefined && dm !== undefined
+      ? dm.users.filter((u) => toHex(u) !== this.owners.get(d) && !this.ringHeld.has(toHex(u))) : null;
     return { created: live === undefined, callId: channelId, groupId: g.id, livekitUrl: 'wss://model.test/rtc', token: `token-${d.slice(0, 8)}`,
-      iceServers: [[['turn:model.test:3478?transport=udp'], 'user', 'credential']], caps: [64_000, 2_500_000, 1] };
+      iceServers: [[['turn:model.test:3478?transport=udp'], 'user', 'credential']], caps: [64_000, 2_500_000, 1], rung };
   }
   private liveCall(callId: Id): { callId: Id; channelId: Id; groupId: Id } {
     const call = [...this.liveCalls.values()].find((c) => same(c.callId, callId));

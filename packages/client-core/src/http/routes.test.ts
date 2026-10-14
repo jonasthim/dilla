@@ -823,13 +823,24 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     const { t, http, routes } = setup();
     t.replies.push(cborReply(201, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', ICE, [64_000, 2_500_000, 1]]));
     expect(await routes.startCall(CHANNEL, 'vp8,h264')).toEqual({ created: true, callId: CALL, groupId: GROUP,
-      livekitUrl: 'wss://dilla.test/rtc', token: 'tok', iceServers: ICE, caps: [64_000, 2_500_000, 1] });
+      livekitUrl: 'wss://dilla.test/rtc', token: 'tok', iceServers: ICE, caps: [64_000, 2_500_000, 1], rung: null });
     expect(t.seen[0].url).toBe(`https://dilla.test/v1/channels/${hex(CHANNEL)}/calls`);
     expect(t.seen[0].body).toEqual(encode(['vp8,h264']));
     expect(http.requests[0].idempotent).toBe(false);
     t.replies.push(cborReply(200, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', [], [64_000, 2_500_000, 0]]));
     expect((await routes.startCall(CHANNEL, '')).created).toBe(false);
     expect(t.seen[1].body).toEqual(encode([]));
+  });
+
+  // WB product walk I6: a start that opens a DM call carries a seventh element, the users it rang.
+  it('startCall reads the seventh element, the users a DM start rang', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', ICE, [64_000, 2_500_000, 1], [USER]]));
+    expect((await routes.startCall(CHANNEL, '')).rung).toEqual([USER]);
+    t.replies.push(cborReply(201, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', ICE, [64_000, 2_500_000, 1], []]));
+    expect((await routes.startCall(CHANNEL, '')).rung).toEqual([]);
+    t.replies.push(cborReply(201, [CALL, GROUP, 'wss://dilla.test/rtc', 'tok', ICE, [64_000, 2_500_000, 1], [new Uint8Array(3)]]));
+    await expect(routes.startCall(CHANNEL, '')).rejects.toThrow();
   });
 
   it('share, unshare and stats map onto their routes', async () => {

@@ -68,7 +68,7 @@ export class CallRefusal extends CoreError {}
 
 interface Live {
   channel: string; channelId: Id; dm: boolean; members: string[]; groupId: Id; callId: Id; vdec: string;
-  postedEpoch: bigint; leaving: boolean; outgoing: { ringing: string[]; declined: string[] } | null;
+  postedEpoch: bigint; leaving: boolean; outgoing: { ringing: string[]; declined: string[]; notRung: string[] } | null;
   /** The users of the last keyed roster: the candidates of a pause's changedUser (review M4). */
   rosterUsers: string[];
   /** The devices of the last keyed roster: a leave from a roster of this device alone ends the call (concern 2). */
@@ -202,7 +202,11 @@ export class CallController {
     }
     const own = toHex(this.deps.me()?.userId ?? new Uint8Array(16));
     const others = target.members.filter((u) => u !== own);
-    const outgoing = dm && started.created ? { ringing: others.filter((u) => !this.book.usersIn(channel).has(u)), declined: [] } : null;
+    // WB product walk I6: the instance answers whom it rang; an instance that does not (six elements) rang everyone.
+    const rung = started.rung === null ? null : new Set(started.rung.map((u) => toHex(u)));
+    const waiting = others.filter((u) => !this.book.usersIn(channel).has(u));
+    const outgoing = dm && started.created ? { ringing: waiting.filter((u) => rung === null || rung.has(u)), declined: [],
+      notRung: waiting.filter((u) => rung !== null && !rung.has(u)) } : null;
     this.live = { channel, channelId, dm, members: target.members, groupId, callId: started.callId, vdec, postedEpoch: media.epoch,
       leaving: false, outgoing, rosterUsers: [], rosterDevices: [], leaveRun: null };
     // The join epoch's key: a push posted before this command's ret, its buffer transferred (L-TS-52).
@@ -551,7 +555,7 @@ export class CallController {
     const user = toHex(f.userId);
     if (live?.outgoing == null || live.channel !== toHex(f.channelId) || !live.members.includes(user)
       || user === toHex(this.deps.me()?.userId ?? new Uint8Array(16))) return;
-    live.outgoing = { ringing: live.outgoing.ringing.filter((u) => u !== user),
+    live.outgoing = { ringing: live.outgoing.ringing.filter((u) => u !== user), notRung: live.outgoing.notRung,
       declined: live.outgoing.declined.includes(user) ? live.outgoing.declined : [...live.outgoing.declined, user] };
     this.setState({ ...this.state, outgoing: this.outgoingNames(live) });
   }
@@ -561,8 +565,9 @@ export class CallController {
     if (live?.outgoing == null) return;
     const inCall = this.book.usersIn(live.channel);
     const ringing = live.outgoing.ringing.filter((u) => !inCall.has(u));
-    if (ringing.length === live.outgoing.ringing.length) return;
-    live.outgoing = { ...live.outgoing, ringing };
+    const notRung = live.outgoing.notRung.filter((u) => !inCall.has(u));
+    if (ringing.length === live.outgoing.ringing.length && notRung.length === live.outgoing.notRung.length) return;
+    live.outgoing = { ...live.outgoing, ringing, notRung };
     this.setState({ ...this.state, outgoing: this.outgoingNames(live) });
   }
 
@@ -620,7 +625,8 @@ export class CallController {
 
   private outgoingNames(live: Live): CallState['outgoing'] {
     return live.outgoing === null ? null
-      : { ringing: live.outgoing.ringing.map((u) => this.deps.nameOf(u)), declined: live.outgoing.declined.map((u) => this.deps.nameOf(u)) };
+      : { ringing: live.outgoing.ringing.map((u) => this.deps.nameOf(u)), declined: live.outgoing.declined.map((u) => this.deps.nameOf(u)),
+        notRung: live.outgoing.notRung.map((u) => this.deps.nameOf(u)) };
   }
 
   /** The active text group of a DM (kind 0), never its call group (L-CORE-51). */

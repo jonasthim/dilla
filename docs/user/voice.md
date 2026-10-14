@@ -106,7 +106,8 @@ someone stops."
 In a direct message (or a group direct message), the strip under the header has **call** when nobody is in a call
 there, and **join call** when someone is. Pressing **call** joins the call and rings the others; the strip says
 "ringing {name}" while it rings, "{name} declined." when someone declines, and "No answer." when every ring ended
-without an answer. There is no ringback tone. During the call the tiles sit above the conversation, which stays
+without an answer. If nobody answered, you leave the call by yourself 5 seconds later, and the strip keeps saying why.
+A call someone answered never ends by itself. There is no ringback tone. During the call the tiles sit above the conversation, which stays
 usable below them; at phone width, **messages** switches between the call and the conversation.
 
 ![Ada is calling: the ring banner with answer and decline above Mira's #general](screenshots/call-ring-desktop.png)
@@ -124,7 +125,8 @@ sound. With the keyboard, Tab from the start of the main area reaches **answer**
 - while you are already in a call says "{name} is calling. Answering leaves {where}." and plays nothing.
 
 The same person rings you at most once every 15 seconds (and 20 times an hour); a call they start more often still
-opens, it just does not ring you. In a group direct message, each person is rung on their own.
+opens, it just does not ring you, and the caller's strip says "{name} not rung: called too recently." instead of
+"ringing {name}". In a group direct message, each person is rung on their own.
 
 ![The ring banner at 360 pixels wide, fixed at the top](screenshots/call-ring-phone.png)
 

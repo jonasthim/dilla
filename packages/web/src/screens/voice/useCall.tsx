@@ -38,8 +38,35 @@ function soundContext(): AudioContext | null {
 
 export const VoiceDepsContext = createContext<VoiceDeps>({ load: loadCallModule, createSounds: () => createSounds(soundContext) });
 
-/** A transient notice of a start or a control (micDenied and the like are read from the session's state instead). */
-export interface CallNotice { channelId: string; key: StringKey }
+/** A transient notice of a start or a control (micDenied and the like are read from the session's state instead). `text`,
+ *  when set, is the notice's words already filled (the outgoing ring's last line, product walk I6). */
+export interface CallNotice { channelId: string; key: StringKey; text?: string }
+
+/** A ring lasts 30 s (R5). */
+export const RING_MS = 30_000;
+/** Product walk I6: a DM call nobody answered ends this long after its outgoing ring ended (the grace covers an answer
+ *  that is still connecting). */
+export const UNANSWERED_LEAVE_MS = 5_000;
+
+/**
+ * The outgoing ring's line (R3, R7): `ringing {names}` while it rings, `{names} not rung: …` for the participants the
+ * instance did not ring (product walk I6), `{name} declined.` per decline, `No answer.` once every ring ended (30 s, or
+ * nobody left ringing or waiting) with nobody else in the call; null when there is nothing to say.
+ */
+export function outgoingText(outgoing: CallState['outgoing'], othersInCall: boolean, expired: boolean): string | null {
+  if (outgoing === null) return null;
+  const parts: string[] = [];
+  if (outgoing.ringing.length > 0 && !expired) parts.push(t('call.outgoing.ringing', { names: outgoing.ringing.join(', ') }));
+  if (outgoing.notRung.length > 0 && !othersInCall) parts.push(t('call.outgoing.notRung', { names: outgoing.notRung.join(', ') }));
+  for (const name of outgoing.declined) parts.push(t('call.outgoing.declined', { name }));
+  if (unanswered(outgoing, othersInCall, expired) && outgoing.declined.length === 0) parts.push(t('call.outgoing.noAnswer'));
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
+/** Every ring of the outgoing call has ended (30 s, or nobody left ringing or waiting to be rung) with nobody else in it. */
+function unanswered(outgoing: NonNullable<CallState['outgoing']>, othersInCall: boolean, expired: boolean): boolean {
+  return !othersInCall && (expired || (outgoing.ringing.length === 0 && outgoing.notRung.length === 0));
+}
 
 export interface CallView {
   /** The channel or DM this device is in, or is joining. */
@@ -64,8 +91,11 @@ export interface CallView {
   /** True once per attached join: the stage that shows it moves focus to its first control and takes the flag. */
   takeStageFocus: () => boolean;
   unsupported: boolean;
+  /** The outgoing ring of the DM call this device opened has run its 30 s (product walk I6). */
+  ringExpired: boolean;
   join: (channelId: string) => void;
-  leave: () => void;
+  /** `after`: the notice the stage or strip shows once left (product walk I6: the unanswered ring's last line). */
+  leave: (after?: CallNotice) => void;
   closeUnsupported: () => void;
   toggleMute: () => void;
   toggleDeafen: () => void;
@@ -130,6 +160,8 @@ export function useCall(o: UseCallOptions): CallView {
   // WB a11y I3: the same text again (a second "You joined harbour.") is said again: the region is emptied first and the
   // text set a moment later, since setting identical text changes nothing a screen reader hears.
   const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Product walk I6: someone else was in this call at some point (it was answered); it then never ends by itself. */
+  const answered = useRef(false);
   const announce = useCallback((text: string) => {
     if (announceTimer.current !== null) { clearTimeout(announceTimer.current); announceTimer.current = null; }
     setAnnouncement(prev => {
@@ -155,6 +187,7 @@ export function useCall(o: UseCallOptions): CallView {
   }, []);
 
   const attach = useCallback((next: PageCall, id: string) => {
+    answered.current = false;
     sessionRef.current = next;
     channelRef.current = id;
     setSession(next);
@@ -248,7 +281,7 @@ export function useCall(o: UseCallOptions): CallView {
   const joinRef = useRef(join);
   joinRef.current = join;
 
-  const leave = useCallback(() => {
+  const leave = useCallback((after?: CallNotice) => {
     const current = sessionRef.current;
     const id = channelRef.current;
     if (current === null && starting.current) {
@@ -262,6 +295,7 @@ export function useCall(o: UseCallOptions): CallView {
     }
     if (current === null || id === null) return;
     detach();
+    if (after !== undefined) setNotice(after);
     const done = current.leave('user').finally(() => {
       if (leaving.current === done) leaving.current = null;
       setLasting(t('voice.announce.left', { where: live.current.whereOf(id) }));
@@ -386,6 +420,33 @@ export function useCall(o: UseCallOptions): CallView {
     }
   }, [slice, session, client, announce, safely, teardown]);
 
+  // Product walk I6: the outgoing ring of a DM call this device opened. It lasts 30 s from the call's start, whoever was
+  // rung; once every ring ended with nobody else ever in the call, the caller leaves by itself after a short grace, and the
+  // strip keeps the ring's last line. A call someone answered never ends by itself.
+  const outgoing = slice !== undefined && channelId !== null && slice.channelId === channelId
+    && (slice.phase === 'in' || slice.phase === 'paused') ? slice.outgoing : null;
+  const hasOutgoing = outgoing !== null;
+  const [ringExpired, setRingExpired] = useState(false);
+  useEffect(() => {
+    setRingExpired(false);
+    if (!hasOutgoing) return;
+    const timer = setTimeout(() => setRingExpired(true), RING_MS);
+    return () => clearTimeout(timer);
+  }, [hasOutgoing, channelId]);
+  const othersNow = (state?.tiles.length ?? 0) > 0;
+  if (othersNow) answered.current = true;
+  const ended = outgoing !== null && !answered.current && unanswered(outgoing, othersNow, ringExpired);
+  const endText = ended ? outgoingText(outgoing, false, ringExpired) : null;
+  const leaveRef = useRef<(after?: CallNotice) => void>(() => undefined);
+  useEffect(() => {
+    if (endText === null || channelId === null) return;
+    const id = channelId;
+    const timer = setTimeout(() => {
+      if (!answered.current) leaveRef.current({ channelId: id, key: 'call.outgoing.noAnswer', text: endText });
+    }, UNANSWERED_LEAVE_MS);
+    return () => clearTimeout(timer);
+  }, [endText, channelId]);
+
   // Control/⌘+Shift+M and Control/⌘+Shift+D while in voice (decision 1); no single-key shortcut, and none during an IME
   // composition. Either modifier works on every platform, as the Control/⌘+K entry does.
   useEffect(() => {
@@ -434,8 +495,9 @@ export function useCall(o: UseCallOptions): CallView {
     };
   }, []);
 
+  leaveRef.current = leave;
   return {
-    channelId, joining, session, state, announcement, lasting, announce, notice, blockedMidCall, unsupported,
+    channelId, joining, session, state, announcement, lasting, announce, notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
     join, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume,

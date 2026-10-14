@@ -1035,6 +1035,54 @@ pub struct CallStarted {
     pub created: bool,
 }
 
+/// `POST /v1/channels/{id}/calls`'s answer: six elements, or seven for a start that opened a DM or
+/// group-DM call, whose seventh, `rung([user_id])`, lists the users the start rang (WB product walk
+/// I6). The testkit reads past it.
+fn decode_call_started(out: &[u8], created: bool) -> Result<CallStarted, CborError> {
+    decode_strict(out, |d| {
+        // Six elements, or seven for a start that opened a DM or group-DM call: the seventh,
+        // `rung`, lists the users the start rang (WB product walk I6); the testkit reads past it.
+        let len = d.array_len()?;
+        if len != 6 && len != 7 {
+            return Err(CborError::WrongArrayLen {
+                expected: 6,
+                actual: len,
+            });
+        }
+        let call_id = d.bytes_exact::<16>()?;
+        let group_id = d.bytes_exact::<16>()?;
+        let livekit_url = d.text()?.to_owned();
+        let token = d.text()?.to_owned();
+        let servers = array_or_null(d)?;
+        let mut ice_servers = Vec::with_capacity(servers);
+        for _ in 0..servers {
+            d.array(3)?;
+            let urls = (0..d.array_len()?)
+                .map(|_| d.text().map(str::to_owned))
+                .collect::<Result<Vec<_>, _>>()?;
+            let username = d.text()?.to_owned();
+            let credential = d.text()?.to_owned();
+            ice_servers.push((urls, username, credential));
+        }
+        d.array(3)?;
+        let caps = [d.uint()?, d.uint()?, d.uint()?];
+        if len == 7 {
+            for _ in 0..d.array_len()? {
+                d.bytes_exact::<16>()?;
+            }
+        }
+        Ok(CallStarted {
+            call_id,
+            group_id,
+            livekit_url,
+            token,
+            ice_servers,
+            caps,
+            created,
+        })
+    })
+}
+
 impl HttpDs {
     #[cfg(test)]
     pub(crate) fn for_device_list_test(base: &str) -> Self {
@@ -1274,36 +1322,7 @@ impl HttpDs {
             Some(("application/cbor", &body)),
         )?;
         check_status(status, &out)?;
-        let created = status == 201;
-        decode_strict(&out, |d| {
-            d.array(6)?;
-            let call_id = d.bytes_exact::<16>()?;
-            let group_id = d.bytes_exact::<16>()?;
-            let livekit_url = d.text()?.to_owned();
-            let token = d.text()?.to_owned();
-            let servers = array_or_null(d)?;
-            let mut ice_servers = Vec::with_capacity(servers);
-            for _ in 0..servers {
-                d.array(3)?;
-                let urls = (0..d.array_len()?)
-                    .map(|_| d.text().map(str::to_owned))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let username = d.text()?.to_owned();
-                let credential = d.text()?.to_owned();
-                ice_servers.push((urls, username, credential));
-            }
-            d.array(3)?;
-            let caps = [d.uint()?, d.uint()?, d.uint()?];
-            Ok(CallStarted {
-                call_id,
-                group_id,
-                livekit_url,
-                token,
-                ice_servers,
-                caps,
-                created,
-            })
-        })
+        decode_call_started(&out, status == 201)
         .map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
     }
 
@@ -2662,6 +2681,31 @@ mod tests {
             e.uint(1);
         });
         assert!(decode_instance_document(&old).is_err());
+    }
+
+    /// WB product walk I6: a DM start's seventh element, `rung`, is read past; six elements still
+    /// decode, and five or eight are refused.
+    #[test]
+    fn a_call_start_answer_has_six_or_seven_elements() {
+        let answer = |n: usize| {
+            cbor(|e| {
+                e.array(n).bytes(&[1; 16]).bytes(&[2; 16]).text("ws://x").text("t");
+                e.array(1).array(3).array(1).text("turn:x").text("u").text("c");
+                e.array(3).uint(64_000).uint(2_500_000).uint(1);
+                if n >= 7 {
+                    e.array(1).bytes(&[3; 16]);
+                }
+                if n == 8 {
+                    e.uint(0);
+                }
+            })
+        };
+        for n in [6, 7] {
+            let got = decode_call_started(&answer(n), true).unwrap();
+            assert_eq!((got.call_id, got.group_id, got.caps), ([1; 16], [2; 16], [64_000, 2_500_000, 1]));
+            assert!(got.created);
+        }
+        assert!(decode_call_started(&answer(8), true).is_err());
     }
 
     /// protocol/02's error array: the code, the detail and every extended position, whatever the

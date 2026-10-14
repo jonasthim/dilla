@@ -316,6 +316,20 @@ type callResponse struct {
 	Caps       callCaps
 }
 
+// callRungResponse is callResponse with a seventh element, `rung([user_id])`: the users the start
+// rang. Only a start that opens a DM or group-DM call answers it (WB product walk I6), so the caller
+// shows "ringing" only for a ring that went out; any other start keeps the six elements.
+type callRungResponse struct {
+	_          struct{} `cbor:",toarray"`
+	CallID     id.ID
+	GroupID    id.ID
+	LiveKitURL string
+	Token      string
+	ICEServers []iceServer
+	Caps       callCaps
+	Rung       []id.ID
+}
+
 // callCaps is `[max_audio_bitrate_bps, max_share_bitrate_bps, vp9]` (DEV-26, MD-10).
 type callCaps struct {
 	_                  struct{} `cbor:",toarray"`
@@ -526,13 +540,21 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	// L-GW-33: only a start that opens the call rings; a 200 start of a live call never does, and
 	// neither does a start that read the call not live but lost the race to open it (its row names
 	// another start's room; task-3 review M2).
-	if status == http.StatusCreated && row.LivekitRoom == room {
-		h.ring(r.Context(), ch, row, s.UserID)
-	}
-	if err := server.EncodeBody(w, status, callResponse{
+	var answer any = callResponse{
 		CallID: callID, GroupID: groupID, LiveKitURL: h.cfg.LiveKitURL, Token: token,
 		ICEServers: ice, Caps: h.caps(),
-	}); err != nil {
+	}
+	if status == http.StatusCreated && row.LivekitRoom == room && (ch.Kind == ChannelDM || ch.Kind == ChannelGroupDM) {
+		rung := h.ring(r.Context(), ch, row, s.UserID)
+		if rung == nil {
+			rung = []id.ID{}
+		}
+		answer = callRungResponse{
+			CallID: callID, GroupID: groupID, LiveKitURL: h.cfg.LiveKitURL, Token: token,
+			ICEServers: ice, Caps: h.caps(), Rung: rung,
+		}
+	}
+	if err := server.EncodeBody(w, status, answer); err != nil {
 		h.log.WarnContext(r.Context(), "write call response", "err", err)
 	}
 }
