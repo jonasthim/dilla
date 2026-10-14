@@ -2392,6 +2392,9 @@ export class Controller {
   }
 
   private typing(channelId: string, on: boolean): Promise<null> {
+    // WB product walk I1: an off with no signal on is a no-op. The page's off for the channel it just left arrives after
+    // closeChannel (which sent the off already), as do the offs after a membership loss or the link's end.
+    if (!on && !this.typingOn.has(channelId)) return Promise.resolve(null);
     if (!this.open.has(channelId) || this.groupState(channelId) !== 'active'
       || this.phase !== 'ready' || this.connectionState.status !== 'online')
       throw new Refusal('E_NOT_READY', '');

@@ -1161,6 +1161,30 @@ it('stops typing on lost membership and refuses typing until viewable and online
   expect(w.gateway.sendTyping.mock.calls.filter((args) => args[1] === true)).toHaveLength(1);
 });
 
+// WB product walk I1: the page's typing-off for the channel it just left reaches the worker after closeChannel; an off with
+// no signal on is a no-op that resolves (closeChannel, a membership loss or the link's end already sent it), never E_NOT_READY.
+it('a typing off for a channel with no signal on resolves and sends nothing', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(981, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(981)).toMatchObject({ ok: true }));
+  w.call(982, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+  await vi.waitFor(() => expect(w.ret(982)).toMatchObject({ ok: true }));
+  expect(w.gateway.sendTyping).toHaveBeenCalledTimes(2);
+  w.call(983, { m: 'typing', channelId: toHex(CHANNEL), on: false });
+  await vi.waitFor(() => expect(w.ret(983)).toMatchObject({ ok: true }));
+  expect(w.gateway.sendTyping).toHaveBeenCalledTimes(2);
+  // A channel never opened, and an off while offline, resolve the same way.
+  w.call(984, { m: 'typing', channelId: 'ab'.repeat(16), on: false });
+  await vi.waitFor(() => expect(w.ret(984)).toMatchObject({ ok: true }));
+  // An on for a closed channel is still refused.
+  w.call(985, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(985)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } }));
+  expect(w.gateway.sendTyping).toHaveBeenCalledTimes(2);
+});
+
 it('ignores incoming typing frames after an open channel loses membership', async () => {
   const w = world();
   await toReady(w);
