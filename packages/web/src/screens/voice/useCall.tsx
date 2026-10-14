@@ -284,8 +284,10 @@ export function useCall(o: UseCallOptions): CallView {
         setChannelId(id);
         setJoining(true);
         const settings = client.get('settings') ?? {};
-        handed = true;
-        const next = await mod.startPageCall(mod.browserDeps(client), { channelId: id, vdec: mod.localDecodeList() }, {
+        // The start's arguments are built before the context counts as handed: a throw while building them closes it below.
+        const callDeps = mod.browserDeps(client);
+        const target = { channelId: id, vdec: mod.localDecodeList() };
+        const opts: Parameters<VoiceModule['startPageCall']>[2] = {
           instanceId: client.get('account')?.instance?.id ?? '',
           input: settings[SETTINGS.voiceInput] ?? '',
           output: settings[SETTINGS.voiceOutput] ?? '',
@@ -296,7 +298,9 @@ export function useCall(o: UseCallOptions): CallView {
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
           self: settings[SETTINGS.voiceSelf] === 'deafened' ? 'deafened' : settings[SETTINGS.voiceSelf] === 'muted' ? 'muted' : null,
           ...(ctx !== null ? { audioContext: ctx } : {}),
-        });
+        };
+        handed = true;
+        const next = await mod.startPageCall(callDeps, target, opts);
         // The shell unmounted while the start was pending: nobody drives this call, so it ends at once.
         if (!mounted.current) { void next.leave('user'); return; }
         attach(next, id);

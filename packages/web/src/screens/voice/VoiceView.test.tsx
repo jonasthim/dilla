@@ -516,6 +516,14 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
     expect(app.startedWith).toEqual([]);
   });
 
+  it('closes the context when building the start’s arguments throws before the session gets it', async () => {
+    const app = renderVoiceShell();
+    app.module.browserDeps = () => { throw new Error('E_INTERNAL'); };
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.callContexts[0]?.closed).toBe(true));
+    expect(app.startedWith).toEqual([]);
+  });
+
   it('closes the context of a join cancelled by another before it started; the next join brings its own', async () => {
     const app = await inVoice();
     let release: () => void = () => undefined;
