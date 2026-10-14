@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, audible, audioRunning, heard, joinVoice, keyPath, onboard, openVoice, self, snapshotDevices, tile,
+  VoicePeer, WAIT, audible, audioRunning, heard, joinVoice, keyPath, noiseOff, onboard, openVoice, self, snapshotDevices, tile,
 } from './support/voice';
 
 watchContexts(test);
@@ -46,6 +46,10 @@ test('two browsers join one voice channel, see each other ok and hear each other
     await peer.seat(2); // no hello: a voice tile names a member the page loaded after it (task 10, concern 4)
     const a = await self(alice.page);
     const b = await self(bob.page);
+    // web3.3: RNNoise removes the fake microphone's steady tone, so with it on there is nothing to hear (`audible` below);
+    // without it the tone is sent as full frames, as in controls.spec.
+    await noiseOff(alice.page);
+    await noiseOff(bob.page);
 
     await joinVoice(alice.page, peer.communityName, peer.voiceName);
     await openVoice(bob.page, peer.communityName, peer.voiceName);
