@@ -295,6 +295,7 @@ type Querier interface {
 	PutEpochTree(ctx context.Context, arg PutEpochTreeParams) error
 	PutForkReport(ctx context.Context, arg PutForkReportParams) error
 	PutGroupState(ctx context.Context, arg PutGroupStateParams) error
+	PutInviteSignup(ctx context.Context, arg PutInviteSignupParams) error
 	PutKeyPackage(ctx context.Context, arg PutKeyPackageParams) error
 	PutMember(ctx context.Context, arg PutMemberParams) error
 	PutMemberLeaf(ctx context.Context, arg PutMemberLeafParams) error
@@ -364,6 +365,7 @@ type Querier interface {
 	SetGroupHealing(ctx context.Context, arg SetGroupHealingParams) error
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error
 	SoftDeleteCommunity(ctx context.Context, arg SoftDeleteCommunityParams) (int64, error)
+	TakeInviteSignup(ctx context.Context, arg TakeInviteSignupParams) (int64, error)
 	// FOR UPDATE SKIP LOCKED is the one difference from the SQLite form: on Postgres two concurrent
 	// takes for one device read the same snapshot, and a join storm makes that routine.
 	TakeKeyPackage(ctx context.Context, arg TakeKeyPackageParams) (KeyPackages, error)

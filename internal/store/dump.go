@@ -95,6 +95,9 @@ var DumpTables = []string{
 	// backups' parent is users. A restore that dropped blob_tombstones would let a purged blob be
 	// uploaded again under its old name.
 	"blobs", "blob_refs", "blob_tombstones", "backups",
+	// 014_invite_signups.sql, appended by dilla-web-3.1. Its parents are users and invites; a
+	// restore that dropped it would make the join after a backed-up sign-up spend a second use.
+	"invite_signups",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

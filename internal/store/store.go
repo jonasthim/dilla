@@ -160,6 +160,13 @@ type Invites interface {
 	RedeemInvite(ctx context.Context, codeHash []byte, now int64) (InviteRow, error)
 	RevokeInvite(ctx context.Context, inviteID id.ID, at int64) error
 	ListInvites(ctx context.Context, communityID *id.ID) ([]InviteRow, error)
+	// PutInviteSignup remembers that userID registered with the community invite
+	// inviteID, so that person's join with it spends no second use (protocol/09
+	// § Invites). One row per user.
+	PutInviteSignup(ctx context.Context, userID, inviteID id.ID, at int64) error
+	// TakeInviteSignup deletes that row: ErrNotFound unless exactly one row went,
+	// so of two racing joins only one is free.
+	TakeInviteSignup(ctx context.Context, userID, inviteID id.ID) error
 }
 
 // MLS is the delivery service's own table set (004_mls.sql), implemented from

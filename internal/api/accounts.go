@@ -160,8 +160,10 @@ func (d Deps) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	var token auth.Token
 	err = d.Repo.Tx(ctx, func(tx store.Repository) error {
+		var invite store.InviteRow
 		if len(candidates) > 0 {
-			invite, rerr := redeem(ctx, tx, candidates, now)
+			var rerr error
+			invite, rerr = redeem(ctx, tx, candidates, now)
 			if rerr != nil {
 				return rerr
 			}
@@ -175,6 +177,15 @@ func (d Deps) CreateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := tx.CreateUser(ctx, user); err != nil {
 			return err
+		}
+		// A community invite's use is the person's, not the request's: the join of
+		// its community that follows, by this account with this invite, spends no
+		// second one (admitByInvite). The instance remembers the pair here, in the
+		// sign-up's own transaction, so nothing the client sends can claim it.
+		if invite.CommunityID != nil {
+			if err := tx.PutInviteSignup(ctx, user.ID, invite.ID, now); err != nil {
+				return err
+			}
 		}
 		if err := tx.CreateDevice(ctx, device); err != nil {
 			return err

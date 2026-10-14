@@ -416,7 +416,7 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		// The invite is spent AFTER the gate and in the same transaction as the
 		// member row: a join the gate refuses burns no use, and a use is never
 		// spent for a member row that was not written.
-		if err := c.admitByInvite(r.Context(), tx, row, hashes); err != nil {
+		if err := c.admitByInvite(r.Context(), tx, row, s.UserID, hashes); err != nil {
 			return err
 		}
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
@@ -460,7 +460,15 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 //
 // The invite's community is checked BEFORE the redemption, so an invite minted
 // for another community burns no use here.
-func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, row store.CommunityRow, hashes [][]byte) error {
+//
+// A person who registered with this very invite (POST /v1/accounts) already
+// spent its use then, and the instance remembered it (invite_signups). Their
+// first join with it takes that record instead of a second use, so a new person
+// costs an invite one use and "10 uses" means ten people. The record is taken
+// in the join's transaction, so the free join happens once; a revoked or
+// expired invite still admits nobody. Anyone else, the sign-up's own later
+// joins included, redeems as before.
+func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, row store.CommunityRow, userID id.ID, hashes [][]byte) error {
 	policy, err := ParseCommunityPolicy(row.PolicyJSON)
 	if err != nil {
 		return err
@@ -482,8 +490,18 @@ func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, 
 		if inv.CommunityID == nil || *inv.CommunityID != row.ID {
 			return errInviteInvalid("that invite is for another community")
 		}
+		now := c.clk.Now().Unix()
+		switch err := repo.TakeInviteSignup(ctx, userID, inv.ID); {
+		case err == nil:
+			if inv.RevokedAt != nil || inv.ExpiresAt <= now {
+				return errInviteInvalid("the invite is expired, exhausted or revoked")
+			}
+			return nil
+		case !errors.Is(err, store.ErrNotFound):
+			return err
+		}
 		// The row exists, so a refusal now is real: expired, exhausted or revoked.
-		if _, err := repo.RedeemInvite(ctx, inv.CodeHash, c.clk.Now().Unix()); err != nil {
+		if _, err := repo.RedeemInvite(ctx, inv.CodeHash, now); err != nil {
 			if errors.Is(err, store.ErrExhausted) || errors.Is(err, store.ErrNotFound) {
 				return errInviteInvalid("the invite is expired, exhausted or revoked")
 			}

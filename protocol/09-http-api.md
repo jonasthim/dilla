@@ -155,6 +155,15 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 - `code` is the invite's only plaintext, returned once, by the mint. The instance stores its
   SHA-256 and the audit row (`invite.create`) names it by the first four bytes of that hash in
   hex. `url` is the instance's base URL followed by `/i/` and the code.
+- **One use per person.** `POST /v1/accounts` with a community invite spends one use, and the
+  instance records which account that use registered. That account's first `join` of the invite's
+  community with the same invite spends no second use: it consumes the record instead, in the
+  join's transaction, so a new person costs an invite one use and `max_uses = 10` admits ten
+  people. The invite must still be unrevoked and unexpired (`410 E_INVITE_INVALID` otherwise). The
+  record is the instance's own, written by the sign-up; no request field claims it. Any other
+  account, and the same account's later joins (after a `leave`, say), spend a use as every join
+  does, so a used-up invite admits nobody who did not sign up with it. An invite without a
+  community is spent by the sign-up alone and leaves no record.
 - `DELETE` revokes: the caller must be a member of the invite's community and either its creator
   or hold `manage_community`. Revoking a revoked invite is a no-op that keeps the first time; an
   unknown invite, one without a community and one of a community the caller is not in are all
@@ -254,6 +263,8 @@ community answers `404` to everyone.
   they refuse spends no use, and the use and the membership are written together. An open community
   spends an invite it is given all the same. `max_uses` holds under concurrent joins: exactly that
   many succeed.
+  The one exception is the join that follows a sign-up with the same invite, which spends nothing
+  (§ Invites, one use per person).
 - `require_mod_2fa = 1` refuses (`403 E_FORBIDDEN`) a grant of a role whose `allow` carries any
   moderation bit (manage messages, kick, ban, manage channels, manage roles, manage community,
   administrator) to a user who holds neither a confirmed TOTP secret nor a passkey for this
