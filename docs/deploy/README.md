@@ -372,6 +372,8 @@ What it does, in order:
    alone on stdout.
 
 The link is printed on every exit after init, even a failed one, because it cannot be shown again.
+It is valid for 24 hours and one sign-up: open it in a browser to make the first account, then start a server and
+invite people from the web client ([Start a server](../user/getting-started.md#start-a-server)).
 If a step after init fails, the script says how to start over:
 `systemctl disable --now dilla; rm -rf /var/lib/dillad /etc/dilla/dilla.toml`, then run it again.
 
@@ -411,7 +413,9 @@ newt's own address as a `/32`. With newt in the same container, use
 itself.
 
 `--trusted-proxy` is repeatable: give it once per newt host, each as its own `/32`, rather than one
-range that also covers other hosts. With two newt hosts, at 10.0.0.5 and 10.0.0.6:
+range that also covers other hosts. A wide range such as `10.0.0.0/8` is unsafe: anyone in it can forge
+`X-Forwarded-For` and choose the client address dillad sees and rate-limits it by. With two newt
+hosts, at 10.0.0.5 and 10.0.0.6:
 
 ```sh
 link=$(sh install.sh --behind-proxy --domain chat.example.org --listen 10.0.0.20:8080 \

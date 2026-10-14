@@ -8,12 +8,12 @@
 // What it does, in order:
 //   1. builds target/dilla-testhost (`go build`, $GO or `go`) and starts it on 127.0.0.1:<port> and
 //      <control>, with -production-acl and -web-root packages/web/dist, in a temporary data directory;
-//   2. seeds one server owner through the control listener (POST /debug/seed) and, with that account's
-//      session, creates the server "Midgard Crew" with the channels #general and #loot and a server
-//      invite through the public HTTP API (protocol/09). web-1 cannot create a server, so this is the
-//      only part not done through the client; the owner never posts and holds no MLS state;
-//   3. signs ada, björn and mira up through the real onboarding in three Chromium profiles (Mesh theme,
-//      1280×800), lets them talk in #general, and shoots mira's screens;
+//   2. (web-3.1) starts from an empty instance: ada signs up with the host's bootstrap invite and lands in the
+//      empty shell, then, through the client alone, starts the server "Midgard Crew" (which comes with #general and
+//      a voice general), adds the text channel #loot and the voice channel "harbour", and makes an invite link;
+//      ada's screens are shot on the way, at 1280×800 and at 360×740, and the rail once on its own;
+//   3. signs björn and mira up through that invite link in two more Chromium profiles (Mesh theme,
+//      1280×800), lets the three talk in #general, and shoots mira's screens;
 //   3b. replies, reacts, edits, pins, mentions and shares images and files in #general between the three
 //      of them and shoots mira's view of each (the images are drawn by canvas in the page at run time);
 //   4. signs mira in from a fourth browser (recovery key, then username and password, then done), then
@@ -23,7 +23,9 @@
 //      from #general, the dock; then all three leave;
 //   4c. (web-2c and web-3) the native peer's server "Bridge Watch": Privacy, the comparison, search, diagnostics, the
 //      peer's changed identity in the conversation, in Privacy and as a refused voice join, and a second tab;
-//   5. removes mira from the server through the owner's session and shoots the "no longer a member" state;
+//   5. removes mira from the server on ada's authority (the owner's DELETE /v1/communities/{id}/members/{user},
+//      through the host's POST /debug/kick, since the web client has no kick yet) and shoots the "no longer a member"
+//      state. This is the one step not done through a client; the ids it needs are read from the host's database;
 //   6. closes every browser, stops the host and deletes the temporary directories.
 //
 // The host runs its in-process LiveKit on 127.0.0.1:7888 (signalling, reached through the host's /rtc proxy) and
@@ -75,12 +77,13 @@ export async function shootNamedState({ context = null, page, state, outFile }) 
 }
 
 const SERVER = 'Midgard Crew';
-const CHANNELS = [
-  { name: 'general', topic: 'plans, raids and everything that is not loot' },
-  { name: 'loot', topic: '' },
-];
-// web-3: the server's voice channel (kind 1, protocol/09), after the text channels.
+// web-3.1: the channel ada adds after the starter #general, and the voice channel she adds after the starter voice
+// general (the voice guide's calls happen in it).
+const LOOT = 'loot';
 const VOICE = 'harbour';
+// web-3.1 (flow 07): ada's create-flow images, each at both viewports, and the rail on its own.
+export const CREATE_SHOTS = ['create-empty', 'create-server', 'create-channel', 'create-invite']
+  .flatMap((state) => ['desktop', 'phone'].map((viewport) => `${state}-${viewport}`)).concat(['create-rail']);
 // The host's in-process LiveKit: signalling and ICE/UDP (the plan's docs:shots ports).
 const SFU = { port: 7888, udpPort: 7890 };
 const PEOPLE = {
@@ -129,63 +132,6 @@ export function parseArgs(argv) {
   }
   if (out.port === out.control) throw new Error('--port and --control must differ');
   return out;
-}
-
-// ---------------------------------------------------------------------------------------------------
-// A minimal CBOR codec: what the four API calls below send and read (protocol/09 bodies are arrays).
-
-function head(major, n) {
-  const m = major << 5;
-  if (n < 24) return [m | n];
-  if (n < 0x100) return [m | 24, n];
-  if (n < 0x10000) return [m | 25, n >> 8, n & 0xff];
-  return [m | 26, (n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
-}
-
-export function encode(value) {
-  const out = [];
-  const put = (v) => {
-    if (v === null) out.push(0xf6);
-    else if (typeof v === 'number') out.push(...head(0, v));
-    else if (typeof v === 'string') { const b = new TextEncoder().encode(v); out.push(...head(3, b.length), ...b); }
-    else if (v instanceof Uint8Array) out.push(...head(2, v.length), ...v);
-    else if (Array.isArray(v)) { out.push(...head(4, v.length)); v.forEach(put); }
-    else throw new Error(`cbor: cannot encode ${typeof v}`);
-  };
-  put(value);
-  return new Uint8Array(out);
-}
-
-export function decode(bytes) {
-  let at = 0;
-  const uint = (info) => {
-    if (info < 24) return info;
-    const size = { 24: 1, 25: 2, 26: 4, 27: 8 }[info];
-    if (size === undefined) throw new Error(`cbor: unsupported length ${info}`);
-    let n = 0n;
-    for (let i = 0; i < size; i++) n = (n << 8n) | BigInt(bytes[at++]);
-    return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n;
-  };
-  const item = () => {
-    const first = bytes[at++];
-    const major = first >> 5;
-    const info = first & 0x1f;
-    switch (major) {
-      case 0: return uint(info);
-      case 1: { const n = uint(info); return typeof n === 'bigint' ? -1n - n : -1 - n; }
-      case 2: { const n = uint(info); const b = bytes.slice(at, at + n); at += n; return b; }
-      case 3: { const n = uint(info); const s = new TextDecoder().decode(bytes.slice(at, at + n)); at += n; return s; }
-      case 4: { const n = uint(info); return Array.from({ length: n }, item); }
-      case 5: { const n = uint(info); const m = new Map(); for (let i = 0; i < n; i++) m.set(item(), item()); return m; }
-      case 6: uint(info); return item();
-      default:
-        if (first === 0xf4) return false;
-        if (first === 0xf5) return true;
-        if (first === 0xf6 || first === 0xf7) return null;
-        throw new Error(`cbor: unsupported initial byte 0x${first.toString(16)}`);
-    }
-  };
-  return item();
 }
 
 const hex = (b) => Buffer.from(b).toString('hex');
@@ -263,60 +209,33 @@ function startPeer(publicUrl, controlUrl, invite) {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// The server owner and the server, through the control listener and the public API.
+// The removal at the end: the owner's kick, which the web client cannot make yet.
 
-async function api(base, token, method, route, body) {
-  const res = await fetch(base + route, {
-    method,
-    headers: {
-      authorization: `Bearer ${token}`, accept: 'application/cbor',
-      ...(body === undefined ? {} : { 'content-type': 'application/cbor' }),
-    },
-    body: body === undefined ? undefined : encode(body),
-  });
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const value = bytes.length > 0 ? decode(bytes) : null;
-  if (!res.ok) throw new Error(`${method} ${route}: ${res.status} ${JSON.stringify(value, (_, v) => (v instanceof Uint8Array ? hex(v) : v))}`);
-  return value;
-}
-
-async function seedOwner(controlUrl) {
-  const device = hex(randomBytes(16));
-  const res = await fetch(`${controlUrl}/debug/seed`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify([{
-      username: 'sigrid', display: 'Sigrid', bot: false,
-      umk_pub: hex(randomBytes(32)), ssk_pub: hex(randomBytes(32)), sig_umk_ssk: hex(randomBytes(64)),
-      devices: [{ device_id: device, dsk_pub: hex(randomBytes(32)), tier: 0, signer_tier: 0, credential: hex(randomBytes(32)) }],
-    }]),
-  });
-  if (!res.ok) throw new Error(`POST /debug/seed: ${res.status} ${await res.text()}`);
-  const [seeded] = await res.json();
-  return seeded.tokens[device];
-}
-
-async function createServer(publicUrl, token) {
-  const [communityId] = await api(publicUrl, token, 'POST', '/v1/communities', [SERVER, new TextEncoder().encode('{}'), 0, 0]);
-  const community = hex(communityId);
-  for (const [position, c] of CHANNELS.entries()) {
-    await api(publicUrl, token, 'POST', `/v1/communities/${community}/channels`, [0, 0, 0, null, c.name, c.topic, position, 0]);
+/**
+ * Removes `target` from the server `name` on `actor`'s authority: POST /debug/kick with a community runs the production
+ * route DELETE /v1/communities/{id}/members/{user} as the actor's device (e2e/web/membership.spec.ts). The browsers
+ * never show a full device id, so the ids are read from the host's own database, read only.
+ */
+async function kickFromServer(controlUrl, dataDir, name, actor, target) {
+  // Imported here, so that loading this module for its unit tests needs no node:sqlite.
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(dataDir, 'dilla.db'), { readOnly: true });
+  let ids;
+  try {
+    const device = (username) => db.prepare('SELECT d.id AS id FROM devices d JOIN users u ON u.id = d.user_id '
+      + 'WHERE u.username = ? AND d.revoked_at IS NULL ORDER BY d.rowid LIMIT 1').get(username);
+    const community = db.prepare('SELECT id FROM communities WHERE name = ?').all(name);
+    if (community.length !== 1) throw new Error(`the host has ${community.length} servers named ${name}`);
+    const [a, b] = [device(actor), device(target)];
+    if (a === undefined || b === undefined) throw new Error(`no device of ${a === undefined ? actor : target} in the host's database`);
+    ids = { community: hex(community[0].id), actor: hex(a.id), target: hex(b.id) };
+  } finally {
+    db.close();
   }
-  await api(publicUrl, token, 'POST', `/v1/communities/${community}/channels`, [1, 0, 0, null, VOICE, '', CHANNELS.length, 0]);
-  const answer = await api(publicUrl, token, 'POST', `/v1/communities/${community}/invites`, [50, 24 * 3600, 0]);
-  return { community, invite: answer[1] };
-}
-
-/** The user id of `username` in the server's member list (rows are [user_id, joined, nick, roles, username, …]). */
-async function memberId(publicUrl, token, community, username) {
-  const found = [];
-  const walk = (v) => {
-    if (!Array.isArray(v)) return;
-    if (v.length >= 5 && v[0] instanceof Uint8Array && v[4] === username) found.push(hex(v[0]));
-    else v.forEach(walk);
-  };
-  walk(await api(publicUrl, token, 'GET', `/v1/communities/${community}/members`));
-  if (found.length !== 1) throw new Error(`the member list of ${SERVER} has ${found.length} rows for ${username}`);
-  return found[0];
+  const res = await fetch(`${controlUrl}/debug/kick`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ids),
+  });
+  if (res.status !== 204) throw new Error(`POST /debug/kick: ${res.status} ${await res.text()}`);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -544,9 +463,9 @@ async function main(argv) {
   const written = [];
   let peer = null;
   try {
+    // The host prints its instance invites comma-separated; the first is the bootstrap invite an operator hands on.
     const instanceInvite = await host.ready;
-    const owner = await seedOwner(controlUrl);
-    const { community, invite } = await createServer(publicUrl, owner);
+    const bootstrapInvite = instanceInvite.split(',')[0];
     mkdirSync(o.outDir, { recursive: true });
 
     const open = async (who) => {
@@ -554,7 +473,8 @@ async function main(argv) {
         headless: true, viewport: DESKTOP, deviceScaleFactor: 1, colorScheme: 'dark', reducedMotion: 'reduce',
         locale: 'en-GB', timezoneId: 'Europe/Stockholm', baseURL: publicUrl,
         // web-3: Chromium's fake microphone and camera (a steady tone, a moving gradient), granted without a prompt.
-        args: chromiumMediaArgs(fixtures), permissions: ['microphone', 'camera'],
+        // web-3.1: the clipboard too, so the invite dialog's own copy goes through ("Invite link copied.").
+        args: chromiumMediaArgs(fixtures), permissions: ['microphone', 'camera', 'clipboard-read', 'clipboard-write'],
       });
       contexts.push(context);
       // Headless Chromium denies notifications in a persistent profile even after CDP sets "prompt".
@@ -575,17 +495,95 @@ async function main(argv) {
       written.push(file);
     };
 
-    // Ada and Björn first: Ada's browser opens #general first and so creates its group.
-    for (const who of ['ada', 'bjorn']) {
-      pages[who] = await open(who);
-      await onboard(pages[who], PEOPLE[who], invite, null);
-      await composer(pages[who], 'general').and(pages[who].locator(':enabled')).waitFor({ timeout: WAIT });
-    }
+    // web-3.1 (flow 07): the instance is empty. Ada signs up with the bootstrap invite and does the rest through the
+    // client: the server, its channels and the invite link everyone else signs up with.
+    const ada = pages.ada = await open('ada');
+    const shootAda = shotsOf(ada);
+    // Each create-flow image at 1280×800 and at 360×740, with focus kept where the person left it.
+    const shootBoth = async (name) => {
+      for (const [viewport, size] of [['desktop', DESKTOP], ['phone', PHONE]]) {
+        await ada.setViewportSize(size);
+        await settle(ada, { keepFocus: true });
+        await shootAda(`${name}-${viewport}`);
+      }
+      await ada.setViewportSize(DESKTOP);
+    };
+    await onboard(ada, PEOPLE.ada, bootstrapInvite, null);
+    const empty = ada.getByRole('region', { name: t('shell.noServer.title'), exact: true });
+    await empty.waitFor({ timeout: WAIT });
+    await ada.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+    await shootBoth('create-empty');
 
-    // Mira is the camera: the invite landing page, the five onboarding steps, then the shell.
+    // "new server" in the rail: the dialog, with the name typed, then Enter.
+    const rail = byText(ada, 'navigation', 'shell.rail.label');
+    await rail.getByRole('button', { name: t('create.rail.newLabel'), exact: true }).click();
+    const startDialog = byText(ada, 'dialog', 'create.server.title');
+    const serverName = startDialog.getByRole('textbox', { name: t('create.server.name'), exact: true });
+    await serverName.and(ada.locator(':focus')).waitFor({ timeout: WAIT });
+    await serverName.pressSequentially(SERVER);
+    await shootBoth('create-server');
+    await serverName.press('Enter');
+    await startDialog.waitFor({ state: 'hidden', timeout: WAIT });
+    // #general opens with the focus in its composer; Ada's browser is the first in it and so creates its group.
+    await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+    await ada.getByRole('button', { name: t('voice.open', { name: 'general' }), exact: true }).waitFor({ timeout: WAIT });
+    // The rail up close: the server's tile, then "join a server" and "new server", then settings, beside the server's
+    // name and its actions; cut off below the settings tile.
+    await settle(ada);
+    const railFile = path.join(o.outDir, 'create-rail.png');
+    const settingsBox = await byText(ada, 'button', 'shell.rail.settings').boundingBox();
+    if (settingsBox === null) throw new Error('the rail has no settings tile on screen');
+    await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(settingsBox.y + settingsBox.height + 12) } });
+    written.push(railFile);
+
+    // "new channel" (the owner's server action): #loot, then the voice channel "harbour".
+    const addChannel = async (kind, name, shotName) => {
+      await byText(ada, 'button', 'create.channel.open').click();
+      const dialog = byText(ada, 'dialog', 'create.channel.title', { server: SERVER });
+      const field = dialog.getByRole('textbox', { name: t('create.channel.name'), exact: true });
+      await field.and(ada.locator(':focus')).waitFor({ timeout: WAIT });
+      if (kind === 'voice') {
+        await dialog.getByRole('radio', { name: t('create.channel.voice'), exact: true }).click();
+        await field.focus();
+      }
+      await field.pressSequentially(name);
+      if (shotName !== null) await shootBoth(shotName);
+      await field.press('Enter');
+      await dialog.waitFor({ state: 'hidden', timeout: WAIT });
+    };
+    await addChannel('text', LOOT, 'create-channel');
+    await composer(ada, LOOT).and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+    await addChannel('voice', VOICE, null);
+    await ada.getByRole('button', { name: t('voice.open', { name: VOICE }), exact: true }).waitFor({ timeout: WAIT });
+    await ada.getByRole('button', { name: 'general', exact: true }).click();
+    await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
+
+    // "invite link": the dialog makes the link and copies it; the link is read from its field, never the clipboard.
+    await byText(ada, 'button', 'invite.open').click();
+    const inviteDialog = byText(ada, 'dialog', 'invite.title', { server: SERVER });
+    const linkField = inviteDialog.getByRole('textbox', { name: t('invite.link'), exact: true });
+    await linkField.waitFor({ timeout: WAIT });
+    await inviteDialog.getByRole('status').filter({ hasText: t('invite.copied') }).waitFor({ timeout: WAIT });
+    const inviteLink = await linkField.inputValue();
+    const invitePath = new URL(inviteLink).pathname;
+    if (!/^\/i\/[^/]+$/.test(invitePath)) throw new Error(`the invite dialog showed ${JSON.stringify(inviteLink)}, not an /i/ link`);
+    const invite = decodeURIComponent(invitePath.slice(3));
+    await shootBoth('create-invite');
+    await ada.keyboard.press('Escape');
+    await inviteDialog.waitFor({ state: 'hidden', timeout: WAIT });
+    const missing = CREATE_SHOTS.filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));
+    if (missing.length > 0) throw new Error(`create-flow images not shot: ${missing.join(', ')}`);
+
+    // Björn signs up through Ada's link and lands in the server.
+    pages.bjorn = await open('bjorn');
+    await onboard(pages.bjorn, PEOPLE.bjorn, invite, null);
+    await composer(pages.bjorn, 'general').and(pages.bjorn.locator(':enabled')).waitFor({ timeout: WAIT });
+
+    // Mira is the camera: the invite landing page (the link's own path: it names the instance's public address, and
+    // this host serves it on loopback), the five onboarding steps, then the shell.
     const mira = pages.mira = await open('mira');
     const shoot = shotsOf(mira);
-    await mira.goto(`/i/${encodeURIComponent(invite)}`);
+    await mira.goto(invitePath);
     await settle(mira);
     await shoot('invite-landing');
     const miraKey = await onboard(mira, PEOPLE.mira, invite, shoot);
@@ -966,8 +964,7 @@ async function main(argv) {
     await composer(mira, 'general').waitFor({ timeout: WAIT });
 
     // Mira is removed from the server with her tab open; her next message meets the lost membership.
-    const miraId = await memberId(publicUrl, owner, community, PEOPLE.mira.username);
-    await api(publicUrl, owner, 'DELETE', `/v1/communities/${community}/members/${miraId}`);
+    await kickFromServer(controlUrl, path.join(scratch, 'host'), SERVER, PEOPLE.ada.username, PEOPLE.mira.username);
     const box = composer(mira, 'general');
     const notMember = mira.getByText(t('shell.composer.notMember'), { exact: true });
     const lost = 'anyone still here?';

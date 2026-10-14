@@ -1,15 +1,122 @@
 # Getting started with the dilla web client
 
-This page is for a person who has been sent an invite to a dilla instance. It describes the web client
-as it is on 2026-10-13 ("web-2c"): signing up, using the account in a second browser, devices, channels,
+This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
+one. It describes the web client as it is on 2026-10-14 ("web-3.1"): starting a server, inviting people and adding
+channels, signing up, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), contacts and safety numbers, search, settings and a second tab, and what the client cannot do
 yet. Every quoted line is the text the screen shows;
-`{instance}` stands for the instance's address and `{username}` for yours.
+`{instance}` stands for the instance's address, `{username}` for yours and `{server}` for a server's name.
+
+If you were sent an invite, go to [1. Open the invite](#1-open-the-invite). If you are the first person on a new
+instance, start with [Start a server](#start-a-server).
 
 If you run the instance yourself, start with the [operator guide](../deploy/README.md). For voice channels, calls
 in direct messages, camera and screen share, push to talk, sounds, and audio and video files, read
 [Voice, calls and media files](voice.md) next.
+
+## Start a server
+
+This section is for the first person on a new instance. Whoever installed it got a bootstrap invite link from
+`dillad init` (or from the install script), shown once. It looks like `https://chat.example.org/i/<code>`, is valid
+for 24 hours and can be used once. It is an invite to the instance, not to a server.
+
+1. Open the bootstrap link and sign up: the same five steps as [an invited person](#2-sign-up-five-steps).
+2. **Open dilla** opens the app, which has no server in it yet:
+
+   ![The app on a new instance: the main pane says "You are not in a server yet" with the buttons Start a server
+   and Join a server, and the rail on the left has the tiles join and new](screenshots/create-empty-desktop.png)
+
+   "You are not in a server yet" "Start a server and invite your friends, or join one with an invite someone sent
+   you." The sidebar stands on **direct messages**, which has no one to message yet ("There is no one to message
+   yet: direct messages are with people you share a server with. Start a server and invite someone, or join one.").
+3. Press **Start a server**, or the **new** tile in the server rail. The dialog "Start a server" says "You own it:
+   you add its channels and invite people. It starts with a text channel and a voice channel, both called general."
+
+   ![The dialog "Start a server" with the name Midgard Crew typed into Server name, "Up to 255 bytes." and the
+   buttons Close and Create](screenshots/create-server-desktop.png)
+
+4. Type a name under "Server name" ("Up to 255 bytes.") and press **Create** or Enter. While it works the button
+   says "Creating…"; a second press sends nothing more.
+5. The dialog closes, the server is selected and `#general` opens with the cursor in its message field. The server
+   also has a voice channel called general. You are its owner.
+
+The server rail now has two dashed tiles under your servers. **join** (an arrow into a bracket) is "join a server",
+for an invite someone sent you. **new** (a plus) is "new server". Under the server's name sit its actions:
+**+ channel** ("new channel", only for the owner) and **invite link**.
+
+![The rail and the top of the sidebar: the tile MC for Midgard Crew, the tile join with an arrow into a bracket,
+the tile new with a plus, the settings tile, and beside them Midgard Crew with the buttons + channel and invite
+link](screenshots/create-rail.png)
+
+At phone width the empty app and the dialog look like this:
+
+![The app on a new instance at 360 pixels wide: the rail, then "You are not in a server yet" with Start a server and
+Join a server under the direct messages list](screenshots/create-empty-phone.png)
+
+![The dialog "Start a server" at 360 pixels wide](screenshots/create-server-phone.png)
+
+If the server is not created, the name field says why:
+
+| The dialog shows | What to do |
+|---|---|
+| "Give the server a name." | Type a name; spaces alone are not a name |
+| "That name is too long. A server name is up to 255 bytes." | Shorten it. Letters such as å or ü take two bytes each, and an emoji four or more |
+| "A name cannot hold control characters such as tabs or line breaks." | Take them out |
+| "That name was refused. Try another." | The instance refused it; choose another |
+| "Could not start the server ({code}). Try again." | Press **Create** again |
+| "{server} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list." | The server exists. **Try again** adds only what is missing; the same message names the voice channel general, or both channels, when those are missing. Closing the dialog keeps the server as it is |
+
+## Invite people
+
+Anyone in a server can make an invite link to it. Press **invite link** under the server's name. The dialog "Invite
+people to {server}" says "Making an invite link…", then shows the link and copies it for you:
+
+![The dialog "Invite people to Midgard Crew": the invite link in a field, the button copy link, "It can be used 10
+times and expires in 7 days. Anyone who has it can join Midgard Crew." and "Invite link copied."](screenshots/create-invite-desktop.png)
+
+- "It can be used 10 times and expires in 7 days. Anyone who has it can join {server}." Send it only to the people
+  you want in the server.
+- "Invite link copied." means it is on your clipboard. If the browser did not let the page copy it, the dialog says
+  "This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself."
+  Selecting the field selects the whole link.
+- A friend who signs up through the link uses it twice: once for the account and once to join the server. So one
+  link brings in five new people, or ten who already have an account on the instance. Each time you open the dialog
+  it makes a new link.
+- "You cannot invite people to this server." or "Could not make an invite link ({code})." means no link was made;
+  **Try again** asks again.
+
+![The invite dialog at 360 pixels wide: the link field, and copy link on the line under it](screenshots/create-invite-phone.png)
+
+Your friend opens the link and sees the instance's invite page ([1. Open the invite](#1-open-the-invite)), signs
+up in five steps, and lands in your server with its channels. They can message you from **direct messages**.
+
+**Post your welcome after your friends have joined.** A friend does not see messages sent before their browser
+joined: that is how the end-to-end encryption works, since their browser was not yet a member when those messages
+were sent. Their `#general` starts at the moment they joined and says "nothing here yet. Messages sent before this
+browser joined are not shown." Everything sent after that reaches them.
+
+## Add a channel
+
+Only the server's owner can add channels for now. Press **+ channel** ("new channel") under the server's name.
+
+![The dialog "New channel in Midgard Crew": Kind with text selected and voice, Channel name loot, "Shown as #loot.
+Up to 100 bytes." and the buttons Close and Create](screenshots/create-channel-desktop.png)
+
+1. Under "Kind", choose **text** or **voice**. The arrow keys move between them.
+2. Type a name under "Channel name". The line under the field shows how it will look: "Shown as #{name}. Up to 100
+   bytes." for a text channel. A text channel's name is kept in lower case, with spaces turned into hyphens:
+   "Fika på Fredag" becomes `#fika-på-fredag`. A voice channel keeps the name as you typed it.
+3. Press **Create** or Enter ("Creating…"). A new text channel opens with the cursor in its message field; a new
+   voice channel is listed under "voice".
+
+![The new-channel dialog at 360 pixels wide](screenshots/create-channel-phone.png)
+
+The others in the server see a new channel when they come back to their dilla tab, when their connection comes
+back, or when they reload. The dialog says "Give the channel a name.", "That name is too long. A channel name is up
+to 100 bytes.", "A name cannot hold control characters such as tabs or line breaks.", "You cannot add channels to
+this server.", "That name was refused. Try another." or "Could not add the channel ({code}). Try again." when the
+channel was not added.
 
 ## 1. Open the invite
 
@@ -89,7 +196,8 @@ Tick "I have written down or printed my recovery key" to continue ("Tick the box
 If the invite was for a server, you land in that server. Creating the account uses the invite once and
 joining the server uses it a second time, so an invite that can be used only once creates the account and
 then shows the join dialog with "This invite is expired, used up or unknown."; ask for a new server invite.
-If the invite was for the instance only, the app shows "You are not in a server yet" and **Join a server**.
+If the invite was for the instance only, the app shows "You are not in a server yet" with **Start a server**
+([Start a server](#start-a-server)) and **Join a server**.
 
 ## 3. What "this browser holds your key" means
 
@@ -128,10 +236,13 @@ in #general and the message field](screenshots/shell-conversation.png)
 
 From left to right:
 
-- **The server rail.** One tile per server you are in, with its initials. The dashed **+** tile is "join a
-  server": paste a server invite ("A server invite, as a code or a link.") and press **Join**. The last tile
-  is "settings"; a number on a server tile counts its unread channels.
-- **The channel list.** The server's name and its channels. Text channels open here. Voice channels are
+- **The server rail.** One tile per server you are in, with its initials, then two dashed tiles. **join** (an
+  arrow into a bracket) is "join a server": paste a server invite ("A server invite, as a code or a link.") and
+  press **Join**. **new** (a plus) is "new server" ([Start a server](#start-a-server)). The last tile is
+  "settings"; a number on a server tile counts its unread channels.
+- **The channel list.** The server's name, its actions (**invite link** for everyone, and **+ channel** for the
+  owner; see [Invite people](#invite-people) and [Add a channel](#add-a-channel)) and its channels. Text channels
+  open here. Voice channels are
   listed under "voice" and open the voice channel ([Voice, calls and media files](voice.md)); while you are in
   a call, its dock sits above your user panel. Channels the server can read ("Readable by this server") are
   listed, and selecting one shows "This channel does not open here yet". The "channels" and "direct messages" tabs switch the list; an unread channel has
@@ -157,8 +268,8 @@ At phone width the channel list sits above the conversation:
 | Shift+Enter | Starts a new line in the message |
 | Alt+Arrow Up, Alt+Arrow Down | Opens the previous or next channel, from anywhere in the app |
 | Escape | In the message list: back to the message field. In a dialog: closes it |
-| Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the channel list, the channel header, the messages, the message field, the status bar |
-| Arrow keys | Move within the server rail and the channel list, which are one Tab stop each |
+| Tab, Shift+Tab | Moves between the regions: "skip to messages", the server rail, the server's actions (each its own stop), the channel list, the channel header, the messages, the message field, the status bar |
+| Arrow keys | Move within the server rail (your servers, then join, then new server, then settings) and the channel list, which are one Tab stop each |
 | Control+K (⌘+K on a Mac) | Opens search across everything this browser holds |
 | Control+/ | With a conversation open: opens search in this conversation (Control on a Mac too) |
 | Control/⌘+Shift+M, Control/⌘+Shift+D | In a call: mute or unmute, deafen or undeafen ([Voice, calls and media files](voice.md#mute-deafen-and-push-to-talk)) |
@@ -592,14 +703,15 @@ and when the other tab closes it takes over by itself.
 
 ![The hand-over at 360 pixels wide](screenshots/tabs-handover-phone.png)
 
-## 11. Known limits (2026-10-13)
+## 11. Known limits (2026-10-14)
 
 - No native phone or desktop app. A second browser needs the recovery key and the password (and the code,
   for an account with a second factor). A new browser does not get messages from before it joined. Devices have
   no names, and the password cannot be changed from the web client.
-- No server, channel or invite can be created from the web client, and there are no roles, permissions or
-  profile screens. A server invite has to come from someone who can make one through
-  the instance's API, or from the host (`dillad admin invite create`).
+- Only a server's owner can add channels: there are no roles yet that let others do it, and no roles,
+  permissions or profile screens. Channels cannot be renamed, given a topic or removed from the web client, and
+  servers cannot be renamed or removed. An invite link is always for 10 uses and 7 days. Other members see a new
+  channel when they come back to the tab, reconnect or reload, not at once.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
 - No threads, link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
@@ -629,8 +741,11 @@ and when the other tab closes it takes over by itself.
 ## Re-shooting these screenshots
 
 The screenshots are real: `e2e/scripts/shoot-docs.mjs` starts a `dilla-testhost` that serves the built
-client, creates the server "Midgard Crew", signs ada, björn and mira up in three Chromium profiles, lets them
-reply, react, edit, pin, mention and share images and files in #general, signs mira into a fourth (recovery
+client, with no account, server or channel in it. Ada signs up with the host's bootstrap invite and, through the
+client alone, starts the server "Midgard Crew", adds #loot and the voice channel "harbour" and makes an invite link;
+those screens are shot at 1280×800 and at 360×740. Björn and mira sign up through that link in two more Chromium
+profiles, and the three
+reply, react, edit, pin, mention and share images and files in #general; the script signs mira into a fourth browser (recovery
 key, then username and password), and photographs the flows. For section 10 a native test peer (the `dilla-testkit`
 binary) makes the server "Bridge Watch", which mira joins, and later changes its identity key; Privacy, the comparison,
 the changed contact in the conversation, search, diagnostics and a second tab are shot at 1280×800 and at 360×740.
@@ -642,7 +757,9 @@ warnings of section 7 need a device of mira's account that no browser can make, 
 quoted, not shown. Every name and
 message is made up, and the accounts are deleted with the test host. The account has no second factor, so
 step 3 of the sign-in has no screenshot, and the two warnings of sections 6 and 7 that need a second
-sign-in at the same moment or foreign recovery data are quoted, not shown. To re-shoot them (not part of CI):
+sign-in at the same moment or foreign recovery data are quoted, not shown. The web client cannot remove a member
+yet, so for section 5 the script removes mira on ada's authority through the instance's own route (the test host's
+`/debug/kick`); it is the one step no client takes. To re-shoot them (not part of CI):
 
 ```sh
 npm run build -w @dilla/web
