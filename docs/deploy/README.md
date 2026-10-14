@@ -2,9 +2,9 @@
 
 dillad is one static binary (`dillad`) plus one file beside it, `dilla_core_wasi.wasm`, the MLS
 core it runs inside wazero. Everything else an instance needs, the TLS certificate, the TURN relay
-and the LiveKit SFU, runs inside the same process. This page covers the three ways to run it (a
-container image, a systemd unit, a Proxmox LXC helper), the TLS modes, and the backup and restore
-runbook.
+and the LiveKit SFU, runs inside the same process. This page covers the ways to run it (a
+container image, a systemd unit, set up by hand or by the install script, and a Proxmox LXC
+helper), the TLS modes, and the backup and restore runbook.
 
 `dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
 directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay, UDP
@@ -313,21 +313,112 @@ Two directives are absent on purpose, and each has a comment in the unit:
 Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 (`RestartPreventExitStatus=78`), so read `journalctl -u dilla`, fix the file and start it again.
 
+### Install script
+
+`deploy/install.sh` does everything in this section on a Debian 13 machine, LXC container or VM, as
+root, with no Docker: it runs the static `dillad` binary as the systemd service above. Every
+release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, `dilla_core_wasi.wasm` and
+`SHA256SUMS`. Download it, read it, then run it in one of two modes.
+
+Behind a reverse proxy that terminates TLS (Pangolin, Traefik, Caddy, nginx):
+
+```sh
+curl -fsSLO https://github.com/jonasthim/dilla/releases/latest/download/install.sh
+link=$(sh install.sh --behind-proxy --domain chat.example.org \
+  --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.0/24 --public-ip 203.0.113.10)
+```
+
+With dillad terminating TLS itself on 443/tcp:
+
+```sh
+curl -fsSLO https://github.com/jonasthim/dilla/releases/latest/download/install.sh
+link=$(sh install.sh --public --domain chat.example.org --public-ip 203.0.113.10 --agree-tos)
+```
+
+What it does, in order:
+
+1. It checks the arguments, refuses to run as anyone but root, and refuses if `/etc/dilla/dilla.toml`
+   or a non-empty `/var/lib/dillad` already holds an instance.
+2. It downloads `dillad-linux-<amd64|arm64>` (by `uname -m`), `dilla_core_wasi.wasm` and
+   `SHA256SUMS`. It uses curl, else wget, and apt installs only what is missing of `curl` and
+   `ca-certificates`. Both assets are checked with `sha256sum -c` before anything is installed,
+   and a mismatch, or a `SHA256SUMS` without a line for either, stops it.
+3. It installs the binary, the core beside it and the unit, and creates the `dillad` user.
+4. It runs `dillad init` and edits the `dilla.toml` it wrote for the mode. In both modes it sets
+   `livekit.udp_port` (`--udp-port`, 7882) and `livekit.node_ip` (`--node-ip`, when given).
+   - `--behind-proxy`: `tls.mode = "behind_proxy"`, `server.plain_listen` from `--listen`,
+     `server.trusted_proxy_cidrs` from every `--trusted-proxy` (the flag is repeatable),
+     `turn.enabled = false` and `tls.agreed = false`. `--public-ip` is optional here: give it the
+     address clients send UDP 7882 to (with Pangolin, the Pangolin server's). It sets
+     `instance.public_ip` and, without `--node-ip`, `livekit.node_ip`. Without either flag both
+     stay empty, and calls cannot reach the SFU from outside the host until you set
+     `livekit.node_ip`; the script says so.
+   - `--public`: init's `acme_tls_alpn`, as in the manual steps above.
+5. It moves the file to `/etc/dilla/dilla.toml` (0640 root:dillad), sets `/var/lib/dillad` to
+   0700, runs `systemctl enable --now dilla` and then `dillad doctor`. Doctor's report goes to
+   stderr. The `clock`, `certificate`, `turn` and `udp` legs need DNS, the proxy or the UDP forward
+   and are shown as pending, not as a failed install. Any other red leg fails the install.
+6. It prints the next steps on stderr (the DNS record and forwards for `--public`; the Pangolin
+   resource and the UDP forward for `--behind-proxy`) and the bootstrap invite link alone on
+   stdout. The link is printed even when the service did not start, because it cannot be shown
+   again.
+
+The instance keys and the TURN and LiveKit secrets stay in the files init writes; the script never
+prints them. `--version v0.1.0` installs a given release instead of the latest, `--release-url`
+points at another download location, and `--binary`, `--core` and `--sums` install from local files
+(with `--sums`, they are checked against that `SHA256SUMS`; without it, they are installed
+unverified and the script warns). `--check-args` validates the arguments and changes nothing.
+
+To upgrade, run it again with `--upgrade` (optionally with `--version`):
+
+```sh
+sh install.sh --upgrade
+```
+
+It checks the new binary and core against `SHA256SUMS` the same way, replaces only those two
+files, restarts `dilla` and runs doctor. It never runs init and never touches `dilla.toml` or
+`/var/lib/dillad`, and it refuses mode flags.
+
+#### Behind Pangolin
+
+Behind Pangolin, `--listen` is the address newt reaches in the container, and `--trusted-proxy` is
+the range newt connects from. Then, in Pangolin:
+
+- Create an HTTPS resource for the domain that targets `http://<container address>:<listen port>`.
+  Turn Pangolin SSO (resource authentication) off for it, because dilla signs its users in itself.
+  WebSocket upgrades must pass through: Traefik passes them by default, so add no middleware that
+  strips `Upgrade` or `Connection`.
+- Add the raw UDP forward for 7882 described in
+  [Behind a WireGuard tunnel (Pangolin)](#behind-a-wireguard-tunnel-pangolin-mtu-and-udp-7882):
+  a Traefik UDP entry point with a 30-second timeout, `7882:7882/udp` published on `gerbil`, and a
+  route to the container's 7882/udp.
+
+TURN is off in this mode (see [the `behind_proxy` TURN consequence](#the-behind_proxy-turn-consequence)),
+so a member on a network that blocks UDP cannot join calls.
+
 ### Proxmox
 
-`deploy/proxmox-lxc.sh` does the systemd install above inside a new unprivileged Debian 13
-container (nesting on, 2 GiB of memory, an 8 GiB disk). Run it as root on the Proxmox host, from a
-directory that also holds `dilla.service`:
+`deploy/proxmox-lxc.sh` creates a new unprivileged Debian 13 container on the Proxmox host (nesting
+on, 2 GiB of memory, an 8 GiB disk), pushes `install.sh` into it and runs it there. Run it as root on
+the Proxmox host, from a directory that also holds `install.sh`:
 
 ```sh
 link=$(./proxmox-lxc.sh --domain chat.example.org --public-ip 203.0.113.10 --agree-tos)
+link=$(./proxmox-lxc.sh --behind-proxy --domain chat.example.org --listen 0.0.0.0:8080 \
+  --trusted-proxy 10.0.0.0/24 --public-ip 203.0.113.10)
 ```
 
-stdout is the bootstrap invite link and nothing else; every progress line goes to stderr. It
-downloads `dillad-linux-<arch>` and `dilla_core_wasi.wasm` from `--release-url`, or takes local
-copies with `--binary` and `--core`. Forward 443/tcp and 7882/udp from the host to the container.
-A NATed container does not hold the public IP either, so leave `turn.relay_ip = "auto"` as init
-wrote it: the relay binds the container's own address.
+stdout is the bootstrap invite link and nothing else; every progress line goes to stderr. The
+arguments are checked with `install.sh --check-args` before any container exists. Container flags
+(`--ctid`, `--hostname`, `--bridge`, `--storage`, `--template-storage`) stay on the host; the mode
+flags, `--version`, `--release-url`, `--udp-port` and `--node-ip` are passed to `install.sh`.
+`--binary`, `--core` and `--sums` are pushed into the container first. Anything not given locally is
+downloaded and checked inside the container. Without `--behind-proxy`, forward 443/tcp and
+7882/udp from the host to the container. A NATed container does not hold the public IP either, so
+leave `turn.relay_ip = "auto"` as init wrote it: the relay binds the container's own address.
+
+On a container that already exists, such as one from the Proxmox community scripts, skip the helper
+and run `install.sh` inside it directly.
 
 ## 4. Backup and restore
 
