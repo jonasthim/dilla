@@ -1593,6 +1593,32 @@ describe('a hold the page dropped its keys for ends only with a key (re-review N
   });
 });
 
+describe('the hold\'s way-out rotation never runs while the gate refuses (wave 2 security review m1)', () => {
+  it('a changed identity seen after the gate passed again cancels the way-out rotation', async () => {
+    const w = await joined();
+    const realMedia = w.model.callMediaEpoch.bind(w.model);
+    const realRow = w.model.groupRow.bind(w.model);
+    w.model.callMediaEpoch = (): never => { throw new CoreError('E_CORE_STATE', 'unexpected'); };
+    w.model.groupRow = (): never => { throw new CoreError('E_CORE_STATE', 'unexpected'); };
+    await w.call({ m: 'refreshTrust' });
+    await settle();
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_CORE_STATE' } });
+    // The gate passes at the unchanged epoch (the way-out rotation is armed), then a changed identity is seen before it
+    // runs: the gate refuses again, and no rotation may commit while it does.
+    w.model.groupRow = realRow;
+    w.model.callMediaEpoch = realMedia;
+    await w.call({ m: 'refreshTrust' });
+    w.model.callMediaEpoch = (): never => { throw new CoreError('E_UMK_CHANGED', 'changed'); };
+    await w.call({ m: 'refreshTrust' });
+    await settle();
+    expect(w.slice('call').phase).toBe('paused');
+    w.server.reset();
+    await w.clock.advance(2 * 3_600_000);
+    await settled(w);
+    expect(w.server.routes()).not.toContain('POST commit');
+  });
+});
+
 describe('a failed start on a group this device is alone in (wb-client I4)', () => {
   // The start fails after the join registered a fresh group (or joined one whose tree holds only this device). Nobody can
   // commit a self-Remove of the only leaf, and the core refuses to rejoin the same group at an epoch it has held, so a

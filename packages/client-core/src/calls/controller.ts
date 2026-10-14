@@ -288,6 +288,9 @@ export class CallController {
       media = core.callMediaEpoch(live.groupId);
     } catch (e) {
       const code = e instanceof CoreError ? e.code : 'E_INTERNAL';
+      // Wave 2 security review m1: any refusal (a changed identity, a pending leaf, a core error) withdraws the hold's
+      // way-out rotation; it is armed again only once the gate passes at the unchanged epoch. keysDropped stays.
+      live.rotateOut = false;
       // RV-3: a changed identity pauses this device; it stays in the call group and the room.
       if (code === 'E_UMK_CHANGED') {
         const text = live.dm ? this.textGroup(live.channel) : null;

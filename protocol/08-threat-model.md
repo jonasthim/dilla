@@ -69,6 +69,9 @@ Stated plainly in the product's documentation and onboarding:
   each client's hand-over to its media path), and an instance that delays or withholds the commit
   from a member stretches it for that member. The removed leaf is told nothing new by the commit
   itself.
+- A call start's `rung` (`09` § Voice) is empty also when the instance's table of ringing calls is
+  full (4 096 calls, which takes at least 512 callers): any caller can then tell the instance is
+  under that load, though not who causes it or whom they call.
 - The instance may withhold newer device-list history on first sight. Trust on first use cannot
   prove that the served signed head is the newest, so first sight is not called verified.
 - A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in
