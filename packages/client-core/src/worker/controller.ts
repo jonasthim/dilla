@@ -678,7 +678,9 @@ export class Controller {
       reloadCommunity: (communityId) => this.loadCommunity(communityId),
       reloadMembers: (communityId) => this.reloadMembers(communityId),
       refreshCommunities: () => this.refreshCommunities(),
-      dropCommunity: (communityId) => { this.dropCommunity(communityId); },
+      listWritten: () => { this.listWritten(); },
+      // C4 fix round 2: the local drop outranks a list read already in flight, which still lists the server.
+      dropCommunity: (communityId) => { this.listWritten(); this.dropCommunity(communityId); },
       track: (job) => { void this.barrier.track(job).catch(() => undefined); },
       refusal: (code, detail) => new Refusal(code, detail),
     });
@@ -1571,6 +1573,12 @@ export class Controller {
     if (notices.length > 0) this.slices.set('removals', [...(this.slices.get('removals') ?? []), ...notices].slice(-REMOVALS_MAX));
   }
 
+  /** C4 fix round 2: a local write of the community list (a leave, a delete, a rename, a create's fallback) counts as the
+   *  newest read applied, so a read begun before it is not applied over it. */
+  private listWritten(): void {
+    this.listApplied = ++this.listSeq;
+  }
+
   private dropCommunity(communityId: string): void {
     if (this.selected === communityId) this.selected = null;
     const dropped: string[] = [];
@@ -1637,6 +1645,7 @@ export class Controller {
     // As joinPath: the server exists; a failed refresh of the list does not undo that.
     try { await this.refreshCommunities(); } catch { /* listed below; the next ready refreshes it */ }
     if (!this.storeCleared && !this.listed(communityId) && this.me !== null) {
+      this.listWritten();
       this.slices.set('communities', [...(this.slices.get('communities') ?? []),
         { id: communityId, name: communityName, owner: toHex(this.me.userId) }]);
     }

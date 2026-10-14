@@ -41,7 +41,10 @@ export interface AdminDeps {
   /** Reads the member list of a server again (not the channels); rejects when the read does. */
   reloadMembers(communityId: string): Promise<void>;
   refreshCommunities(): Promise<void>;
-  /** The server is gone from this account: its slices are cleared and it is neither selected nor listed. */
+  /** The community list is written here (C4 fix round 2): a list read begun before it is older and is not applied. */
+  listWritten(): void;
+  /** The server is gone from this account: its slices are cleared and it is neither selected nor listed. A list read
+   *  begun before it is older and is not applied. */
   dropCommunity(communityId: string): void;
   track(job: Promise<unknown>): void;
   /** The worker's own refusal (its code reaches the page as E_BAD_INPUT and the like). */
@@ -126,6 +129,7 @@ export class AdminController {
   async renameCommunity(communityId: string, name: string): Promise<null> {
     await this.guarded(communityId, () => this.deps.routes.patchCommunity(fromHex(communityId), { name }));
     const list = this.deps.get('communities') ?? [];
+    this.deps.listWritten();
     this.deps.publish('communities', list.map((c) => (c.id === communityId ? { ...c, name } : c)));
     this.track(this.deps.refreshCommunities());
     return null;

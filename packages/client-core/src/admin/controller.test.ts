@@ -819,4 +819,55 @@ describe('removal notices (web3.4 C4)', () => {
     await toReady(w);
     expect(removals(w)).toEqual([]);
   });
+
+  it('round 2: an older read landing after a local leave neither lists the server again nor makes a false notice', async () => {
+    const w = world();
+    await toReady(w);
+    const stale = holdList(w);
+    next += 1;
+    const id = next;
+    w.call(id, { m: 'refreshCommunities' });
+    await vi.waitFor(() => expect(stale.reached()).toBe(true));
+    w.routes.leaveCommunity.mockImplementationOnce(() => { w.state.joined = false; return Promise.resolve(); });
+    expect(await run(w, { m: 'leaveCommunity', communityId: CID })).toMatchObject({ ok: true });
+    stale.gate.resolve(friends);
+    await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+    expect(listOf(w)).toEqual([]);
+    await run(w, { m: 'refreshCommunities' });
+    expect(anyRemoval(w)).toBe(false);
+  });
+
+  it('round 2: an older read landing after a rename does not bring the old name back', async () => {
+    const w = world();
+    await toReady(w);
+    const stale = holdList(w);
+    next += 1;
+    const id = next;
+    w.call(id, { m: 'refreshCommunities' });
+    await vi.waitFor(() => expect(stale.reached()).toBe(true));
+    // The rename's own re-read is held too, so only the stale read can land.
+    holdList(w);
+    expect(await run(w, { m: 'renameCommunity', communityId: CID, name: 'renamed' })).toMatchObject({ ok: true });
+    stale.gate.resolve(friends);
+    await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+    expect(w.last<{ name: string }[]>('communities')?.map((c) => c.name)).toEqual(['renamed']);
+  });
+
+  it('round 2: an older read landing after a create listed by the fallback does not drop the new server', async () => {
+    const w = world();
+    await toReady(w);
+    const stale = holdList(w);
+    next += 1;
+    const id = next;
+    w.call(id, { m: 'refreshCommunities' });
+    await vi.waitFor(() => expect(stale.reached()).toBe(true));
+    w.routes.listCommunities.mockRejectedValueOnce(refusal(503, 'E_UNAVAILABLE'));
+    const created = await run(w, { m: 'createCommunity', name: 'midgard' }) as { ok: boolean; value: { communityId: string } };
+    expect(created.ok).toBe(true);
+    expect(listOf(w)).toEqual([CID, created.value.communityId]);
+    stale.gate.resolve(friends);
+    await vi.waitFor(() => expect(w.ret(id)).toBeDefined());
+    expect(listOf(w)).toEqual([CID, created.value.communityId]);
+    expect(anyRemoval(w)).toBe(false);
+  });
 });

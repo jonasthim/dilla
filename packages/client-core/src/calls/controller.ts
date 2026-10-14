@@ -83,8 +83,9 @@ interface Live {
   leaveRun: Promise<void> | null;
 }
 /** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
- *  'reset' (forgotten locally, nothing sent); `done` settles once the join has torn down or finished. */
-interface JoinToken { cancelled: 'leave' | 'reset' | null; done: Promise<void> }
+ *  'reset' (forgotten locally, nothing sent), a drop of its server with 'dropped' (torn down as a leave, then phase
+ *  removed); `done` settles once the join has torn down or finished. */
+interface JoinToken { cancelled: 'leave' | 'reset' | 'dropped' | null; done: Promise<void> }
 
 const IN_A_CALL: readonly CallPhase[] = ['joining', 'in', 'paused', 'leaving'];
 
@@ -187,7 +188,7 @@ export class CallController {
     } catch (e) {
       const cause = e instanceof JoinRefused ? e.cause : e;
       if (e instanceof JoinRefused && e.leave !== null) await this.teardown(token, e.leave, e.alone ? channelId : null);
-      if (token.cancelled !== null) throw this.cancelled(token);
+      if (token.cancelled !== null) throw this.cancelled(token, channel);
       const phase = e instanceof JoinRefused ? e.phase : 'failed';
       const code = this.deps.errorOf(cause).code;
       // Ruling I2 and review M4: a refused join names a changed contact only among this call's own participants — the
@@ -204,7 +205,7 @@ export class CallController {
     if (token.cancelled !== null) {
       new Uint8Array(media.baseKey).fill(0);
       await this.teardown(token, groupId);
-      throw this.cancelled(token);
+      throw this.cancelled(token, channel);
     }
     const own = toHex(this.deps.me()?.userId ?? new Uint8Array(16));
     const others = target.members.filter((u) => u !== own);
@@ -258,7 +259,16 @@ export class CallController {
     const gone = new Set(channels);
     const live = this.live;
     if (live !== null && !live.leaving && gone.has(live.channel)) this.lost(live, true);
+    // C4 fix round 2: a join in flight into one stops at its next step; its teardown leaves the group, as a leave's does.
+    else if (this.joining !== null && live === null && this.state.channelId !== null && gone.has(this.state.channelId)) {
+      this.joining.cancelled ??= 'dropped';
+    }
     for (const channel of gone) this.book.forget(channel);
+  }
+
+  /** The removal of a call whose server is gone (E_NOT_FOUND, 404): the page shows voice.removed. */
+  private goneError(): WorkerError {
+    return this.deps.errorOf(new DillaHttpError({ status: 404, code: 'E_NOT_FOUND', detail: 'the server is gone', retryAfterMs: null, extra: [] }));
   }
 
   /** `dropped` (C4 fix round 1): the channel's server is gone from this account. The channel is not read again (it may no
@@ -278,8 +288,7 @@ export class CallController {
     }
     this.deps.callEnded(toHex(live.callId));
     if (dropped) {
-      this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel,
-        error: this.deps.errorOf(new DillaHttpError({ status: 404, code: 'E_NOT_FOUND', detail: 'the server is gone', retryAfterMs: null, extra: [] })) });
+      this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel, error: this.goneError() });
       return;
     }
     this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel });
@@ -489,8 +498,10 @@ export class CallController {
     await this.leaveGroup(groupId);
   }
 
-  private cancelled(token: JoinToken): CallRefusal {
+  private cancelled(token: JoinToken, channel: string): CallRefusal {
     if (token.cancelled === 'leave') this.setState({ ...CALL_IDLE });
+    // C4 fix round 2: the channel's server was dropped while joining; the page says the call was removed.
+    if (token.cancelled === 'dropped') this.setState({ ...CALL_IDLE, phase: 'removed', channelId: channel, error: this.goneError() });
     return new CallRefusal('E_NO_CALL', 'the call was left while it was joining');
   }
 

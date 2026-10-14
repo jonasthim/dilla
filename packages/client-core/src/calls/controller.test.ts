@@ -832,6 +832,28 @@ describe('removed from the server while busy (web3.4 C4)', () => {
       LISTED.value = true;
     }
   });
+
+  it('round 2: a join in flight into a dropped server is cancelled: removed, no key, no live call, no rotation', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    try {
+      const held = w.server.hold('POST calls');
+      const id = w.send(JOIN(w));
+      await held.reached;
+      await removedFromServer(w);
+      held.release();
+      await settled(w, 8);
+      expect(w.ret(id)).toMatchObject({ ok: false });
+      expect(w.pushes('callKeys')).toHaveLength(0);
+      expect((w.controller as unknown as { calls: { live: unknown } }).calls.live).toBeNull();
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, error: { code: 'E_NOT_FOUND' } });
+      w.server.reset();
+      await w.clock.advance(CALL_ROTATE_MS);
+      await settled(w);
+      expect(w.server.routes()).not.toContain('POST commit');
+    } finally {
+      LISTED.value = true;
+    }
+  });
 });
 
 describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
