@@ -6,7 +6,7 @@
 |---|---|---|---|
 | members closed | the `members` toggle in the channel header is not pressed; the aside is not rendered | `members.toggle` | none |
 | members open, wide (shell at 64rem or more) | the aside is a fourth column beside the main pane; the toggle is pressed; it starts open at this width and is not remembered | `members.toggle`, `members.region`, `members.group` | none |
-| members open, overlay (below 64rem) | a drawer from the right, `min(20rem, 100%)` wide; focus moves into it; `members.close` closes it and Escape does the same | `members.region`, `members.close` | none |
+| members open, overlay (below 64rem) | a drawer from the right, `min(20rem, 100%)` wide; focus moves into it; a backdrop covers the rest and a click on it closes the drawer; the rail, sidebar, main and status bar are inert (and so is the banner) while it is open; `members.close` closes it and Escape does the same from anywhere; on close the composer is reachable again | `members.region`, `members.close` | none |
 | members loading | the pane says it is loading | `members.loading` | none |
 | members empty | no one but this account | `members.empty` | none |
 | members grouped | one group per hoisted role, highest first, then the rest; tags on the rows | `members.group`, `members.groupMembers`, `members.owner`, `members.you`, `members.bot` | none |
@@ -32,12 +32,12 @@
 | invites: make with options | the expiry and max-uses selects, the limits note and the make button | `admin.invites.title`, `admin.invites.new`, `admin.invites.expires`, `admin.invites.ttl.halfHour`, `admin.invites.ttl.hour`, `admin.invites.ttl.sixHours`, `admin.invites.ttl.halfDay`, `admin.invites.ttl.day`, `admin.invites.ttl.week`, `admin.invites.ttl.month`, `admin.invites.uses`, `admin.invites.uses.one`, `admin.invites.uses.n`, `admin.invites.limitsNote`, `admin.invites.create`, `invite.options` | none |
 | invites: made | the link is shown by the existing invite link; it cannot be shown again later | `admin.invites.creating`, `admin.invites.codeHidden` | as Flow 07 (`invite.copied`, `invite.blocked`) |
 | invites: live list | one row per live link with a revoke button | `admin.invites.row`, `admin.invites.empty`, `admin.invites.revoke`, `admin.invites.revokeLabel` | none |
-| invites: revoked or refused | the row leaves the list; a refusal shows its error | `admin.invites.revoked`, `admin.invites.error.forbidden`, `admin.invites.error.load`, `admin.invites.error.other` | `admin.invites.revoked`; the error (`role="alert"`) |
+| invites: revoked or refused | the row leaves the list (a server 404 counts as revoked: the row leaves, the announcement fires, no error is shown); a refusal shows its error | `admin.invites.revoked`, `admin.invites.error.forbidden`, `admin.invites.error.load`, `admin.invites.error.other` | `admin.invites.revoked`; the error (`role="alert"`) |
 | bans: loading | the pane says it is loading | `admin.bans.title`, `admin.bans.loading` | none |
 | bans: error | the load error with a retry | `admin.bans.error.load`, `admin.bans.retry` | the error (`role="alert"`) |
 | bans: empty | nobody is banned | `admin.bans.empty` | none |
 | bans: list | one row per ban: who banned, when, until when, and the reason | `admin.bans.by`, `admin.bans.until`, `admin.bans.forever`, `admin.bans.lapsed`, `admin.bans.noReason`, `admin.bans.unknownUser`, `admin.bans.unban`, `admin.bans.unbanLabel` | none |
-| bans: unban | confirm dialog; focus on Cancel; on success the row leaves the list | `admin.bans.unbanTitle`, `admin.bans.unbanBody`, `admin.bans.unbanConfirm`, `admin.bans.unbanBusy`, `admin.bans.unbanned` | `admin.bans.unbanned` |
+| bans: unban | confirm dialog; focus on Cancel; on success the row leaves the list (a server 404 counts as success: the row leaves, the announcement fires, no error is shown) | `admin.bans.unbanTitle`, `admin.bans.unbanBody`, `admin.bans.unbanConfirm`, `admin.bans.unbanBusy`, `admin.bans.unbanned` | `admin.bans.unbanned` |
 | leave (non-owner) | confirm dialog; focus on Cancel | `admin.leave.open`, `admin.leave.title`, `admin.leave.body`, `admin.leave.confirm`, `admin.leave.busy`, `admin.leave.error.other` | dialog title; `admin.left` once done |
 | owner cannot leave | the owner sees why, with delete and hand over beside it | `admin.leave.owner` | none |
 | delete with typed name | confirm stays disabled until the typed name matches the server name (NFC, trimmed) | `admin.delete.title`, `admin.delete.body`, `admin.delete.confirmName`, `admin.delete.mismatch`, `admin.delete.confirm`, `admin.delete.busy`, `admin.delete.error.forbidden`, `admin.delete.error.other`, `admin.delete.done` | dialog title; the error (`role="alert"`) |
@@ -63,8 +63,8 @@
 | an open menu | Escape | closes it; focus returns to the button |
 | an open menu | Tab, or a pointer press outside | closes it |
 | the `members` toggle | Enter/Space | opens or closes the member aside |
-| the member drawer (below 64rem) | Escape | closes the drawer; focus returns to the toggle |
-| a settings tab list | Tab | one stop per tab, then the pane |
+| the member drawer (below 64rem) | Escape, from anywhere while the drawer is open | closes the drawer; focus returns to the toggle |
+| a settings tab list | Tab | one stop for the whole list (roving focus: ArrowUp, ArrowDown, Home and End move between tabs), then the pane |
 | any dialog | Escape | closes it; focus returns to what opened it |
 | a dialog field | Enter | submits; while busy, nothing more is sent |
 
@@ -72,14 +72,15 @@
 
 | transition | focus destination | polite status |
 |---|---|---|
-| a kick, unban, leave, delete or channel-delete confirm opens | Cancel, never the destructive button | dialog title |
-| a dialog with fields opens (ban, new category, edit channel, delete or hand over with a typed name) | its first field | dialog title |
+| a kick, unban, leave or channel-delete confirm opens | Cancel, never the destructive button | dialog title |
+| a dialog with fields opens (ban, new category, edit channel, delete server or hand over with a typed name) | its first field | dialog title |
 | a dialog closes (Cancel, Escape or success) | back to what opened it | none |
 | a menu closes with Escape | the `members.actions` button | none |
 | a menu item is run | its dialog takes focus as above; with no dialog, back to the button | none |
 | the member drawer opens (below 64rem) | into the drawer | none |
 | the member drawer closes with Escape or `members.close` | the `members` toggle | none |
-| the shell tab order | main pane, then the member aside, then the status bar | none |
+| the shell tab order, at 64rem or wider | main pane, then the member aside, then the status bar | none |
+| the member drawer is open, below 64rem | Tab stays inside the drawer; on close, focus returns to the `members` toggle (the shell passes it to AppShell, so it also holds when the opener was the page body) | none |
 | the `members` toggle changes | unchanged; the toggle's pressed state is the state | none |
 | a submit is refused | the field or dialog that holds the error | the error (`role="alert"`) |
 | the person is removed from the server | the banner is shown; focus is not moved by the page, unless the open dialog closed, then it goes to the shell | `removed.notice` |

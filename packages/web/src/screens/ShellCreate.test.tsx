@@ -166,10 +166,10 @@ describe('a server’s actions (flow 07)', () => {
   it('the owner sees new channel and invite link beside the server name; another member only the invite link', () => {
     const { view } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     const group = screen.getByRole('group', { name: 'server actions' });
-    expect(within(group).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['new channel', 'invite link']);
+    expect(within(group).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['new channel', 'invite link', 'server settings', 'edit channel']);
     view.unmount();
     setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
-    expect(within(screen.getByRole('group', { name: 'server actions' })).getAllByRole('button').map(b => b.textContent)).toEqual(['invite link']);
+    expect(within(screen.getByRole('group', { name: 'server actions' })).getAllByRole('button').map(b => b.textContent)).toEqual(['invite link', 'server settings', 'leave server']);
   });
 
   // Product walk M1: in a channel this browser just made, nothing was sent before it joined, so the empty log says only

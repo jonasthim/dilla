@@ -1095,6 +1095,11 @@ describe('keyboard', () => {
     // Flow 07: the server's actions stand under its name, before the tabs (a member who does not own it: the invite only).
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'invite link' }));
+    // Flow 08: server settings, and leave for a member who does not own the server.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'server settings' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'leave server' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
     await user.tab();
@@ -1109,6 +1114,8 @@ describe('keyboard', () => {
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
+    await user.tab();
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: /members/ }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));
     await user.tab();
