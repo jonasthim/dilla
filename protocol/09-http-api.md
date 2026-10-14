@@ -395,7 +395,7 @@ the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
 |---|---|---|
 | `PUT /v1/communities/{id}/bans/{user_id}` | `[reason(tstr), expires(uint\|null)]` | `204` |
 | `DELETE /v1/communities/{id}/bans/{user_id}` | — | `204`; `404` when there is no such ban |
-| `GET /v1/communities/{id}/bans` | — | `[[user_id, reason, by_user, created, expires(uint\|null)]]`, newest first |
+| `GET /v1/communities/{id}/bans` | — | `[[user_id, reason, by_user, created, expires(uint\|null), username(tstr), display(tstr)]]`, newest first; `username`/`display` are `""` for an account that no longer exists |
 | `DELETE /v1/communities/{id}/members/{user_id}` (kick) | — | `204`; `404` when the target is not a member |
 
 - **Rank.** Nobody may ban or kick the owner, and anyone but the owner acts only on a user whose

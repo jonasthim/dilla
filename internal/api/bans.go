@@ -185,10 +185,14 @@ type banResp struct {
 	ByUser  id.ID
 	Created int64
 	Expires *int64
+	// Username and Display are "" when the account no longer exists.
+	Username string
+	Display  string
 }
 
-// list answers [[user_id, reason, by_user, created, expires|null]], newest
-// first. A lapsed ban is listed: the row is the history, BanStands is the gate.
+// list answers [[user_id, reason, by_user, created, expires|null, username,
+// display]], newest first. A lapsed ban is listed: the row is the history,
+// BanStands is the gate.
 func (b *Bans) list(w http.ResponseWriter, r *http.Request) {
 	m, err := moderate(r, b.repo, PermBanMembers)
 	if err != nil {
@@ -202,9 +206,19 @@ func (b *Bans) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]banResp, 0, len(rows))
 	for _, row := range rows {
+		var username, display string
+		switch u, err := b.repo.GetUser(r.Context(), row.UserID); {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			b.fail(w, r, "list bans", err)
+			return
+		default:
+			username, display = u.Username, u.Display
+		}
 		out = append(out, banResp{
 			UserID: row.UserID, Reason: row.Reason, ByUser: row.ByUser,
 			Created: row.Created, Expires: row.Expires,
+			Username: username, Display: display,
 		})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
