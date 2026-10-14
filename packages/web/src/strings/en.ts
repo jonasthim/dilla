@@ -1,8 +1,14 @@
 // Every user-visible string of @dilla/web. Keys are flat and dot-separated; {name} is a placeholder.
 // Apostrophes are typographic (’). The copy lint (scripts/check-ui-copy.mjs) scans this file.
 import { privacy } from './privacy.ts';
+import { admin } from './admin.ts';
+import { members } from './members.ts';
+import { moderation } from './moderation.ts';
 export const en = {
   ...privacy,
+  ...admin,
+  ...members,
+  ...moderation,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',

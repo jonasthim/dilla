@@ -160,14 +160,58 @@ function coreInput(e: unknown, details: ReadonlySet<string>): boolean {
 
 type Method = Command['m'];
 const COMMANDS: ReadonlySet<string> = new Set<Method>([
-  'start', 'signupBegin', 'signupSubmit', 'signupReset', 'resetDevice', 'joinCommunity', 'selectCommunity',
-  'createCommunity', 'createChannel', 'createInvite', 'refreshCommunities',
-  'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
-  'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
-  'forgetBrowser', 'markRead', 'setSetting', 'openDm',
-  'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-  'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
-  'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
+  'start',
+  'signupBegin',
+  'signupSubmit',
+  'signupReset',
+  'resetDevice',
+  'joinCommunity',
+  'selectCommunity',
+  'createCommunity',
+  'createChannel',
+  'createInvite',
+  'refreshCommunities',
+  'openChannel',
+  'closeChannel',
+  'loadEarlier',
+  'send',
+  'retrySend',
+  'discardSend',
+  'signInBegin',
+  'signInLogin',
+  'signInTotp',
+  'signInKey',
+  'signInCancel',
+  'refreshDevices',
+  'revokeDevice',
+  'signOutRevoke',
+  'forgetBrowser',
+  'markRead',
+  'setSetting',
+  'openDm',
+  'editMessage',
+  'deleteMessage',
+  'react',
+  'pin',
+  'loadPins',
+  'closePins',
+  'attachFiles',
+  'discardAttachment',
+  'openAttachment',
+  'refreshTrust',
+  'verifyContact',
+  'safetyNumber',
+  'search',
+  'typing',
+  'voiceSelf',
+  'resign',
+  'callJoin',
+  'callLeave',
+  'callShare',
+  'callRefresh',
+  'callStats',
+  'loadVoice',
+  'callDecline',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -175,15 +219,34 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
-  selectCommunity: ['communityId'], createChannel: ['communityId'], createInvite: ['communityId'], openChannel: ['channelId'], closeChannel: ['channelId'], loadEarlier: ['channelId'],
-  send: ['channelId'], retrySend: ['msgId'], discardSend: ['msgId'],
-  revokeDevice: ['deviceId'], markRead: ['channelId'], openDm: ['userId'],
-  editMessage: ['channelId', 'msgId'], deleteMessage: ['channelId', 'msgId'], react: ['channelId', 'msgId'], pin: ['channelId', 'msgId'],
-  loadPins: ['channelId'], closePins: ['channelId'], attachFiles: ['channelId'], discardAttachment: ['channelId'],
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId')[]>> = {
+  selectCommunity: ['communityId'],
+  createChannel: ['communityId'],
+  createInvite: ['communityId'],
+  openChannel: ['channelId'],
+  closeChannel: ['channelId'],
+  loadEarlier: ['channelId'],
+  send: ['channelId'],
+  retrySend: ['msgId'],
+  discardSend: ['msgId'],
+  revokeDevice: ['deviceId'],
+  markRead: ['channelId'],
+  openDm: ['userId'],
+  editMessage: ['channelId', 'msgId'],
+  deleteMessage: ['channelId', 'msgId'],
+  react: ['channelId', 'msgId'],
+  pin: ['channelId', 'msgId'],
+  loadPins: ['channelId'],
+  closePins: ['channelId'],
+  attachFiles: ['channelId'],
+  discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
-  verifyContact: ['userId'], safetyNumber: ['userId'], typing: ['channelId'], voiceSelf: ['callId'],
-  callJoin: ['channelId'], callDecline: ['callId'],
+  verifyContact: ['userId'],
+  safetyNumber: ['userId'],
+  typing: ['channelId'],
+  voiceSelf: ['callId'],
+  callJoin: ['channelId'],
+  callDecline: ['callId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
@@ -197,11 +260,48 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'signin-totp': ['signInTotp', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
   'ready': [
-    'joinCommunity', 'selectCommunity', 'createCommunity', 'createChannel', 'createInvite', 'refreshCommunities', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
-    'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
-    'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-    'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
-    'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
+    'joinCommunity',
+    'selectCommunity',
+    'createCommunity',
+    'createChannel',
+    'createInvite',
+    'refreshCommunities',
+    'openChannel',
+    'closeChannel',
+    'loadEarlier',
+    'send',
+    'retrySend',
+    'discardSend',
+    'refreshDevices',
+    'revokeDevice',
+    'signOutRevoke',
+    'forgetBrowser',
+    'markRead',
+    'setSetting',
+    'openDm',
+    'editMessage',
+    'deleteMessage',
+    'react',
+    'pin',
+    'loadPins',
+    'closePins',
+    'attachFiles',
+    'discardAttachment',
+    'openAttachment',
+    'refreshTrust',
+    'verifyContact',
+    'safetyNumber',
+    'search',
+    'typing',
+    'voiceSelf',
+    'resign',
+    'callJoin',
+    'callLeave',
+    'callShare',
+    'callRefresh',
+    'callStats',
+    'loadVoice',
+    'callDecline',
   ],
 };
 
@@ -222,6 +322,9 @@ const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSa
 const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
   && r.every((v: unknown, i) => statsField(v) || (i === 1 && v === null));
 const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string' && ID.test(v));
+
+/** Per-feature synchronous checks (wave 1+): each returns an E_BAD_INPUT reason or null. */
+const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {};
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.
  *  Every refusal here answers only the owning page's own malformed command (deps.post reaches only that page). */
@@ -324,6 +427,8 @@ function invalid(command: Record<string, unknown>): string | null {
     if (cursor !== null && (typeof cursor !== 'object' || cursor === undefined || Object.keys(cursor).length !== 1
       || !('token' in cursor) || typeof cursor.token !== 'string' || !/^[1-9][0-9]*$/.test(cursor.token))) return 'invalid search cursor';
   }
+  const extra = VALIDATORS[m as Method]?.(command) ?? null;
+  if (extra !== null) return extra;
   return null;
 }
 
