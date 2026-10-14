@@ -137,9 +137,9 @@ whose roles allow it; the owner can do everything here.
 
 Press **server settings** under the server's name. The dialog "Server settings" has a list of sections
 ("server settings sections"). A section shows only to someone whose roles allow it: **overview** (manage the server),
-**channels** (manage channels), **invites** (create invites) and **bans** (ban members). **leave server** is there for
-everyone. **delete server** and **hand over server** are there for everyone too, but only the owner can use them. Tab
-stops once on the list and once on the section; Escape closes the dialog and focus goes back to **server settings**.
+**channels** (manage channels), **invites** (create invites) and **bans** (ban members). The last section differs: a
+non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Tab stops once on the
+list and once on the section; Escape closes the dialog and focus goes back to **server settings**.
 
 **Overview** renames the server. Type under "Server name" ("Up to 255 bytes. Everyone in the server, and the host,
 can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
@@ -154,7 +154,8 @@ up**, **move down** and **delete**; the screen announces "{name} moved." after a
   messages.") and **Create**.
 - **edit** opens "Edit #{name}" (or "Edit {name}" for a voice channel, "Edit category {name}" for a category). You
   can change the "Channel name" ("Up to 100 bytes."), the "Topic" of a text channel ("Shown under the channel name.
-  Up to 1024 bytes. The host can read it.") and its "Category". A category has only a name.
+  Up to 1024 bytes. The host can read it.") and its "Category". A category has only a name. The header of an open
+  text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
   ends. Deleting a category keeps its channels, without a category. Focus starts on **Cancel**.
@@ -170,8 +171,8 @@ again. Make a new one to share." Copy a link when you make it; if it is lost, re
 
 **Bans** lists who is banned from the server, with "banned by {name} on {date}", when it ends ("ends {date}" or
 "until lifted"), and the reason or "no reason given". A ban that has run out says "ended {date}; can join again". A
-moderator who has since left the server shows as "a former member", and an account that was deleted as "a deleted
-account". **unban** asks "Unban {name}?": "{name} can join {server} again with an invite. This does not add them
+moderator who has since left the server shows as "a former member", and an account the instance no longer names as
+"a deleted account". **unban** asks "Unban {name}?": "{name} can join {server} again with an invite. This does not add them
 back." An empty list says "Nobody is banned from {server}." If the list does not load, **Try again** loads it
 again.
 
@@ -817,8 +818,7 @@ and when the other tab closes it takes over by itself.
 - The web client cannot create or edit roles, and it has no profile screens. The "invite link" button always makes a
   link for 10 uses and 7 days; choose other limits under server settings → invites ([Run your
   server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or ban gives no way to
-  tell the person why. Other members see a new channel when they come back to the tab, reconnect or reload, not at
-  once.
+  tell the person why.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
 - No threads, link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.

@@ -243,8 +243,9 @@ setting in the browser held it back.
 
 If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
 volume. The dock also says "hearing {attached} of {expected}", for example "hearing 2 of 3": {expected} is how many
-people's sound should reach you, and {attached} how many of them do. When the two numbers differ for more than a
-moment, ask the missing person to leave and join again.
+people's sound should reach you, and {attached} how many of them do. The sound of a shared screen counts too. A
+person whose volume you set to 0 counts as not heard. When the two numbers differ for more than a moment, ask the
+missing person to leave and join again.
 
 If you hear no one on any call, ask whoever runs your instance to update it to v0.1.0-web3.3 or later.
 
