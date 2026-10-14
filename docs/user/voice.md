@@ -1,7 +1,7 @@
 # Voice, calls and media files
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
-camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.1".
+camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.3".
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
