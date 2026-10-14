@@ -1,5 +1,6 @@
-import { useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
+import { useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
+import { RoleDot } from '../internal/RoleDot.tsx';
 import './MemberList.css';
 
 export interface MemberListMember {
@@ -57,7 +58,7 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
           <ul className="d-member-list__rows" role="list">
             {group.members.map(m => (
               <li key={m.id} className="d-member-list__row" onContextMenu={e => onContextMenu(m, e)} onKeyDown={e => onKeyDown(m, e)}>
-                {m.color ? <span className="d-member-list__dot" aria-hidden="true" style={{ '--d-swatch': `#${(m.color & 0xffffff).toString(16).padStart(6, '0')}` } as CSSProperties} /> : null}
+                {m.color ? <RoleDot color={m.color} /> : null}
                 <span className="d-member-list__name">{m.name}</span>
                 {m.tags.map(tag => <span key={tag} className="d-member-list__tag">{tag}</span>)}
                 {m.actions.length > 0 ? (

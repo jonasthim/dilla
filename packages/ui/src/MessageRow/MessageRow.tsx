@@ -1,7 +1,8 @@
-import { useId, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
+import { useId, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
+import { RoleDot } from '../internal/RoleDot.tsx';
 import './MessageRow.css';
 
 /** A piece of a message body: plain text, or a mention shown as a pill whose text is its `@` name. */
@@ -45,7 +46,7 @@ function bodyChildren(body: string | readonly BodyPart[]): ReactNode {
   return body.map((part, i) => (part.kind === 'text'
     ? part.text
     : <span key={i} className="d-mention" data-me={flag(part.me)} data-broadcast={flag(part.broadcast)}>
-      {part.color ? <span className="d-mention__dot" aria-hidden="true" style={{ '--d-swatch': `#${(part.color & 0xffffff).toString(16).padStart(6, '0')}` } as CSSProperties} /> : null}{part.label}</span>));
+      {part.color ? <RoleDot color={part.color} inline /> : null}{part.label}</span>));
 }
 
 function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['reply']>; tabIndex: number }) {

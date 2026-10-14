@@ -5,7 +5,5 @@
 .d-member-list__rows { display: grid; margin: 0; padding: 0; list-style: none; }
 .d-member-list__row { display: flex; align-items: center; gap: 0.5rem; min-height: 1.75rem; min-width: 0; }
 .d-member-list__row:hover { background: var(--surface-2); }
-/* The dot's fill is data (--d-swatch, set inline as #rrggbb); the name keeps its token colour for contrast. */
-.d-member-list__dot { flex: none; width: 0.5rem; height: 0.5rem; background: var(--d-swatch); border-radius: var(--r-pill); }
 .d-member-list__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-base); color: var(--fg); }
 .d-member-list__tag { padding: 0 0.375rem; font-size: var(--text-micro); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); }

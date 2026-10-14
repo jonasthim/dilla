@@ -249,12 +249,13 @@ describe('MessageRow mention colour dot', () => {
     const { container } = render(<MessageRow author="mira" time="21:03" state="ok" body={parts} />);
     const pills = [...container.querySelectorAll('.d-mention')];
     expect(pills.map(p => p.textContent)).toEqual(['@mods', '@none', '@zero', '@ada']);
-    const dot = pills[0]!.querySelector('.d-mention__dot') as HTMLElement;
+    const dot = pills[0]!.querySelector('.d-role-dot') as HTMLElement;
     expect(dot).not.toBeNull();
     expect(dot).toHaveAttribute('aria-hidden', 'true');
     expect(dot.style.getPropertyValue('--d-swatch')).toBe('#3498db');
     expect(pills[0]!.firstElementChild).toBe(dot);
-    expect(container.querySelectorAll('.d-mention__dot')).toHaveLength(1);
+    expect(dot).toHaveClass('d-role-dot--inline');
+    expect(container.querySelectorAll('.d-role-dot')).toHaveLength(1);
   });
 
   it('has no serious axe violations with a dotted mention', async () => {
