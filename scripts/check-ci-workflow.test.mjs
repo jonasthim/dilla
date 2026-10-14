@@ -1621,6 +1621,16 @@ test('a ci.yml build that stamps a version is reported', () => {
   assert.ok(problems.some((p) => p.includes('main.Version')), problems.join('\n'));
 });
 
+// Task 3 m2: a quoted symbol after -X, and the -X= spelling, stamp a version all the same.
+test('a ci.yml build that stamps a quoted version is reported', () => {
+  for (const flag of ["-X 'main.Version=1.2.3'", '-X "main.Version=1.2.3"', '-X=main.Version=1.2.3', "-X='main.Version=1.2.3'"]) {
+    const stamped = GOOD.replace("go build -trimpath -ldflags='-s -w' ./cmd/dillad", `go build -trimpath -ldflags="-s -w ${flag}" ./cmd/dillad`);
+    assert.notEqual(stamped, GOOD);
+    const problems = checkWorkflow(fixture(stamped));
+    assert.ok(problems.some((p) => p.includes('stamps main.Version')), `${flag}\n${problems.join('\n')}`);
+  }
+});
+
 test('the CLI checks release.yml too', () => {
   const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));

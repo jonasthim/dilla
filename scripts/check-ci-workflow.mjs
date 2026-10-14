@@ -604,7 +604,8 @@ export function checkWorkflow(root) {
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
-    if (/-X\s*main\.Version/.test(line)) problems.push(`ci.yml:${i + 1}: stamps main.Version; ci builds keep 0.0.0-dev (release.yml stamps the tag)`);
+    // A quoted symbol (-X 'main.Version=…', -X "main.Version=…") and the -X= spelling stamp it all the same.
+    if (/-X[\s=]*['"]?main\.Version/.test(line)) problems.push(`ci.yml:${i + 1}: stamps main.Version; ci builds keep 0.0.0-dev (release.yml stamps the tag)`);
   });
 
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
