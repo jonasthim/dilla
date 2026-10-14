@@ -884,7 +884,8 @@ async function main(argv) {
     // Mira reads #general and stays in voice: the dock above her user panel keeps the controls.
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
-    await shootState(mira, 'voice-dock', null, () => dock(mira).scrollIntoViewIfNeeded());
+    // Product walk I4: no scroll helper: at 360 the dock is pinned on screen by itself.
+    await shootState(mira, 'voice-dock');
     for (const who of [mira, pages.bjorn, pages.ada]) await leaveVoice(who);
     // Back in #general, Ada's and Björn's tabs commit what the instance proposes there (Mira's removal, below).
     for (const who of [pages.bjorn, pages.ada]) {
