@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Installs dillad in a new unprivileged Debian 13 LXC container on a Proxmox VE
-# host, as a systemd service (deploy/dilla.service).
+# Creates a new unprivileged Debian 13 LXC container on a Proxmox VE host and
+# installs dillad in it with install.sh (deploy/install.sh), which does the
+# systemd install of docs/deploy/README.md §3 inside the container.
 #
 # stdout carries exactly one thing: the bootstrap invite link, printed once, so
 # `link=$(./proxmox-lxc.sh ...)` captures it and nothing else. Every progress
@@ -16,36 +17,52 @@ die() {
 usage() {
 	cat >&2 <<'USAGE'
 usage: proxmox-lxc.sh --domain NAME --public-ip IP --agree-tos [options]
+       proxmox-lxc.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-proxy CIDR... [options]
 
-required:
+Run it as root on the Proxmox host, from a directory that also holds install.sh.
+Without --behind-proxy the instance terminates TLS itself (install.sh --public).
+
+required (default mode):
   --domain NAME        the public DNS name of the instance (instance.domain)
   --public-ip IP       the address clients reach the instance on, IPv4 or IPv6
   --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
 
-options:
+behind a TLS-terminating proxy:
+  --behind-proxy       install.sh --behind-proxy: tls.mode = "behind_proxy", TURN off
+  --listen ADDR:PORT   the plain HTTP listener the proxy reaches
+  --trusted-proxy CIDR the proxy's address range; repeatable
+
+container options:
   --ctid N             container id (default: the next free id)
   --hostname NAME      container hostname (default: dilla)
   --bridge NAME        network bridge (default: vmbr0)
   --storage NAME       rootfs storage (default: local-lvm)
   --template-storage N storage that holds the Debian template (default: local)
-  --release-url URL    where dillad-linux-<arch> and dilla_core_wasi.wasm are
-                       downloaded from (default: the latest release)
+
+passed to install.sh:
+  --version TAG        the release to install (default: latest)
+  --release-url URL    where dillad-linux-<arch>, dilla_core_wasi.wasm and
+                       SHA256SUMS are downloaded from (default: the latest release)
   --binary PATH        use this dillad binary instead of downloading one
   --core PATH          use this dilla_core_wasi.wasm instead of downloading one
+  --sums PATH          check --binary and --core against this SHA256SUMS
+  --udp-port N         LiveKit's media port (default 7882)
+  --node-ip IP         the address LiveKit advertises for media
 USAGE
 }
 
 CTID=""
 CT_HOSTNAME="dilla"
-DOMAIN=""
-PUBLIC_IP=""
-AGREE_TOS=0
 BRIDGE="vmbr0"
 STORAGE="local-lvm"
 TEMPLATE_STORAGE="local"
-RELEASE_URL="https://github.com/jonasthim/dilla/releases/latest/download"
 BINARY=""
 CORE=""
+SUMS=""
+RELEASE_URL=""
+BEHIND_PROXY=0
+# The arguments install.sh gets, apart from the mode and the local files.
+INSTALL_ARGS=()
 
 # Flags take their value as "--flag value" or "--flag=value".
 while [ "$#" -gt 0 ]; do
@@ -57,7 +74,7 @@ while [ "$#" -gt 0 ]; do
 		flag="${flag%%=*}"
 		shift
 		;;
-	--agree-tos | -h | --help)
+	--agree-tos | --behind-proxy | -h | --help)
 		shift
 		;;
 	--*)
@@ -73,15 +90,21 @@ while [ "$#" -gt 0 ]; do
 	case "$flag" in
 	--ctid) CTID="$value" ;;
 	--hostname) CT_HOSTNAME="$value" ;;
-	--domain) DOMAIN="$value" ;;
-	--public-ip) PUBLIC_IP="$value" ;;
-	--agree-tos) AGREE_TOS=1 ;;
 	--bridge) BRIDGE="$value" ;;
 	--storage) STORAGE="$value" ;;
 	--template-storage) TEMPLATE_STORAGE="$value" ;;
-	--release-url) RELEASE_URL="${value%/}" ;;
 	--binary) BINARY="$value" ;;
 	--core) CORE="$value" ;;
+	--sums) SUMS="$value" ;;
+	--behind-proxy) BEHIND_PROXY=1 ;;
+	--agree-tos) INSTALL_ARGS+=(--agree-tos) ;;
+	--release-url)
+		RELEASE_URL="${value%/}"
+		INSTALL_ARGS+=("--release-url=$RELEASE_URL")
+		;;
+	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version)
+		INSTALL_ARGS+=("$flag=$value")
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -92,15 +115,26 @@ while [ "$#" -gt 0 ]; do
 		;;
 	esac
 done
+if [ "$BEHIND_PROXY" -eq 1 ]; then
+	MODE_ARG="--behind-proxy"
+else
+	MODE_ARG="--public"
+fi
 
 command -v pct >/dev/null 2>&1 || die "run this on a Proxmox host as root"
 [ "$(id -u)" -eq 0 ] || die "run this on a Proxmox host as root"
 
-if [ -z "$DOMAIN" ] || [ -z "$PUBLIC_IP" ]; then
-	usage
-	die "--domain and --public-ip are required"
-fi
-[ "$AGREE_TOS" -eq 1 ] || die "--agree-tos is required: tls.agreed records your acceptance of the ACME CA's subscriber agreement, and this script has no standing to accept it for you"
+case "${BASH_SOURCE[0]}" in
+*/*) SCRIPT_DIR="${BASH_SOURCE[0]%/*}" ;;
+*) SCRIPT_DIR="." ;;
+esac
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+INSTALLER="$SCRIPT_DIR/install.sh"
+[ -f "$INSTALLER" ] || die "install.sh is not next to this script ($INSTALLER)"
+
+# install.sh validates the mode's arguments here, before a container exists.
+"$BASH" "$INSTALLER" "$MODE_ARG" "${INSTALL_ARGS[@]}" --check-args ||
+	die "install.sh refused the arguments above; nothing was created"
 
 if [ -z "$CTID" ]; then
 	if command -v pvesh >/dev/null 2>&1; then
@@ -116,32 +150,19 @@ if pct status "$CTID" >/dev/null 2>&1; then
 	die "container $CTID already exists; choose another --ctid"
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNIT="$SCRIPT_DIR/dilla.service"
-[ -f "$UNIT" ] || die "dilla.service is not next to this script ($UNIT)"
-
-case "$(uname -m)" in
-x86_64) ARCH=amd64 ;;
-aarch64) ARCH=arm64 ;;
-*) die "unsupported host architecture $(uname -m): dillad is built for amd64 and arm64" ;;
-esac
-
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
-# The two artefacts first, so a bad URL fails before a container exists.
-if [ -z "$BINARY" ]; then
-	log "downloading dillad-linux-$ARCH"
-	curl -fsSL -o "$WORK/dillad" "$RELEASE_URL/dillad-linux-$ARCH" >&2
-	BINARY="$WORK/dillad"
+for f in "$BINARY" "$CORE" "$SUMS"; do
+	[ -z "$f" ] || [ -s "$f" ] || die "$f is missing or empty"
+done
+# Whatever is not local is downloaded inside the container; a release URL that
+# does not answer fails here, before a container exists.
+if [ -z "$BINARY" ] || [ -z "$CORE" ]; then
+	probe="${RELEASE_URL:-https://github.com/jonasthim/dilla/releases/latest/download}"
+	for a in "${INSTALL_ARGS[@]}"; do
+		case "$a" in --version=latest) ;; --version=*) [ -n "$RELEASE_URL" ] || probe="https://github.com/jonasthim/dilla/releases/download/${a#--version=}" ;; esac
+	done
+	log "checking $probe/SHA256SUMS"
+	curl -fsSL -o /dev/null "$probe/SHA256SUMS" >&2 || die "the release at $probe does not answer; nothing was created"
 fi
-if [ -z "$CORE" ]; then
-	log "downloading dilla_core_wasi.wasm"
-	curl -fsSL -o "$WORK/dilla_core_wasi.wasm" "$RELEASE_URL/dilla_core_wasi.wasm" >&2
-	CORE="$WORK/dilla_core_wasi.wasm"
-fi
-[ -s "$BINARY" ] || die "the dillad binary $BINARY is missing or empty"
-[ -s "$CORE" ] || die "the wasi core $CORE is missing or empty"
 
 log "looking for the Debian 13 template"
 pveam update >&2 || log "warning: pveam update failed; using the template list already on this host"
@@ -169,43 +190,39 @@ log "starting container $CTID"
 pct start "$CTID" >&2
 pct exec "$CTID" -- systemctl is-system-running --wait >/dev/null 2>&1 || true
 
-ct() { pct exec "$CTID" -- "$@"; }
-
-log "installing dillad"
-pct push "$CTID" "$BINARY" /usr/local/bin/dillad --perms 0755 >&2
-pct push "$CTID" "$CORE" /usr/local/bin/dilla_core_wasi.wasm --perms 0644 >&2
-pct push "$CTID" "$UNIT" /etc/systemd/system/dilla.service --perms 0644 >&2
-ct useradd --system --user-group --no-create-home --home-dir /var/lib/dillad --shell /usr/sbin/nologin dillad >&2
-
-# init writes <data-dir>/dilla.toml; the unit reads /etc/dilla/dilla.toml, so the
-# file is moved there once init has printed the invite.
-log "initialising the instance"
-INIT_OUT="$(ct /usr/local/bin/dillad init --data-dir=/var/lib/dillad --domain="$DOMAIN" --public-ip="$PUBLIC_IP" --agree-tos)"
-LINK="$(printf '%s\n' "$INIT_OUT" | sed -n 's|^bootstrap invite.*: \(https://[^ ]*\)$|\1|p' | head -n 1)"
-# Everything init printed except the link itself, which has one destination.
-printf '%s\n' "$INIT_OUT" | grep -v '^bootstrap invite' >&2 || true
-[ -n "$LINK" ] || die "dillad init did not print a bootstrap invite link"
-
-ct install -d -m 0755 /etc/dilla >&2
-ct install -m 0640 -o root -g dillad /var/lib/dillad/dilla.toml /etc/dilla/dilla.toml >&2
-ct rm -f /var/lib/dillad/dilla.toml >&2
-ct chown -R dillad:dillad /var/lib/dillad >&2
-ct chmod 0700 /var/lib/dillad >&2
-
-log "starting the service"
-STARTED=1
-ct systemctl daemon-reload >&2
-ct systemctl enable --now dilla >&2 || STARTED=0
-if [ "$STARTED" -eq 1 ]; then
-	log "running dillad doctor"
-	ct runuser -u dillad -- /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml >&2 ||
-		log "warning: dillad doctor reported a failing check; fix it (DNS for $DOMAIN, the firewall, the clock) and run it again"
-else
-	log "error: the service did not start; read its log with: pct exec $CTID -- journalctl -o cat -u dilla"
+log "pushing install.sh into the container"
+pct exec "$CTID" -- install -d -m 0700 /root/dilla-install >&2
+pct push "$CTID" "$INSTALLER" /root/dilla-install/install.sh --perms 0700 >&2
+FILE_ARGS=()
+if [ -n "$BINARY" ]; then
+	pct push "$CTID" "$BINARY" /root/dilla-install/dillad --perms 0755 >&2
+	FILE_ARGS+=(--binary=/root/dilla-install/dillad)
+fi
+if [ -n "$CORE" ]; then
+	pct push "$CTID" "$CORE" /root/dilla-install/dilla_core_wasi.wasm --perms 0644 >&2
+	FILE_ARGS+=(--core=/root/dilla-install/dilla_core_wasi.wasm)
+fi
+if [ -n "$SUMS" ]; then
+	pct push "$CTID" "$SUMS" /root/dilla-install/SHA256SUMS --perms 0644 >&2
+	FILE_ARGS+=(--sums=/root/dilla-install/SHA256SUMS)
 fi
 
+log "running install.sh in container $CTID"
+STATUS=0
+OUT="$(pct exec "$CTID" -- sh /root/dilla-install/install.sh "$MODE_ARG" "${INSTALL_ARGS[@]}" "${FILE_ARGS[@]}")" || STATUS=$?
+# install.sh prints the link alone on its last stdout line; anything else on
+# stdout (pct's own chatter) goes to stderr.
+LINK="$(printf '%s\n' "$OUT" | grep '^https://' | tail -n 1 || true)"
+printf '%s\n' "$OUT" | grep -v '^https://' >&2 || true
+pct exec "$CTID" -- rm -rf /root/dilla-install >&2 || log "warning: could not remove /root/dilla-install from the container"
+
+if [ "$STATUS" -ne 0 ]; then
+	log "error: install.sh failed (exit $STATUS); read the service log with: pct exec $CTID -- journalctl -o cat -u dilla"
+fi
+log "forward 443/tcp (or your proxy's route) and 7882/udp from the host to container $CTID; a NATed container keeps turn.relay_ip = \"auto\""
 # The link is printed once and is stored nowhere: the database holds only its
-# SHA-256. It is printed even when the service failed to start, because the
-# invite stays valid for 24 hours and cannot be shown again.
-printf '%s\n' "$LINK"
-[ "$STARTED" -eq 1 ] || exit 1
+# SHA-256. It is printed even when the install failed, because the invite stays
+# valid for 24 hours and cannot be shown again.
+[ -z "$LINK" ] || printf '%s\n' "$LINK"
+[ "$STATUS" -eq 0 ] || exit 1
+[ -n "$LINK" ] || die "install.sh did not print a bootstrap invite link"
