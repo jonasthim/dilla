@@ -90,10 +90,17 @@ describe('PermissionGrid', () => {
     const group = row('Manage channels');
     expect(group).toHaveAttribute('aria-disabled', 'true');
     expect(group).toHaveAccessibleDescription('Create, edit and delete channels. You cannot give a right you do not have.');
-    within(group).getByRole('radio', { name: 'inherit' }).focus();
+    // The tab-stop radio carries the description itself: a screen reader announces it from the radio, not the group.
+    const stop = within(group).getByRole('radio', { name: 'inherit' });
+    expect(stop).toHaveAccessibleDescription('Create, edit and delete channels. You cannot give a right you do not have.');
+    stop.focus();
     await user.keyboard('{ArrowRight}');
+    expect(stop).toHaveFocus();
+    await user.keyboard('{Home}');
+    expect(stop).toHaveFocus();
     await user.click(within(group).getByRole('radio', { name: 'allow' }));
     expect(onValue).not.toHaveBeenCalled();
+    expect(within(row('View channels')).getByRole('radio', { name: 'inherit' })).toHaveAccessibleDescription('See channels and read them.');
     expect(row('View channels')).not.toHaveAttribute('aria-disabled');
     expect(row('View channels')).toHaveAccessibleDescription('See channels and read them.');
   });
@@ -122,6 +129,30 @@ describe('PermissionGrid', () => {
     expect(sw).toHaveAccessibleDescription('Create, edit and delete channels. You cannot give a right you do not have.');
     await user.click(sw);
     expect(onValue).not.toHaveBeenCalled();
+  });
+
+  it('toggle: the disabledHint is its own element with its own id, apart from the hint', () => {
+    render(<Controlled mode="toggle" />);
+    const sw = screen.getByRole('switch', { name: 'Manage channels' });
+    const hint = screen.getByText('Create, edit and delete channels.');
+    const reason = screen.getByText('You cannot give a right you do not have.');
+    expect(hint).not.toBe(reason);
+    expect(hint.id).not.toBe('');
+    expect(reason.id).not.toBe('');
+    expect(sw.getAttribute('aria-describedby')).toBe(`${hint.id} ${reason.id}`);
+  });
+
+  it('tri: Home and End select the first and last radio of a row', async () => {
+    const user = userEvent.setup();
+    const onValue = vi.fn();
+    render(<Controlled mode="tri" initial={{ send: 'inherit' }} onValue={onValue} />);
+    const send = within(row('Send messages'));
+    send.getByRole('radio', { name: 'inherit' }).focus();
+    await user.keyboard('{End}');
+    expect(send.getByRole('radio', { name: 'deny' })).toHaveFocus();
+    await user.keyboard('{Home}');
+    expect(send.getByRole('radio', { name: 'allow' })).toHaveFocus();
+    expect(onValue.mock.calls).toEqual([['send', 'deny'], ['send', 'allow']]);
   });
 
   it('has no serious axe violations in either mode', async () => {

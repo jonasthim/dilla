@@ -16,7 +16,7 @@ const GROUPS: readonly PermissionGridGroup[] = [
 ];
 const LABELS = { allow: 'allow', inherit: 'inherit', deny: 'deny' };
 
-function Demo({ mode, width, initial }: { mode: 'toggle' | 'tri'; width: number; initial: Record<string, PermValue> }) {
+function Demo({ mode, width, initial }: { mode: 'toggle' | 'tri'; width?: number; initial: Record<string, PermValue> }) {
   const [values, setValues] = useState<Record<string, PermValue>>(initial);
   return (
     <div style={{ width, maxWidth: '100%' }}>
@@ -51,3 +51,17 @@ export const TriWide: Story = {
 export const TriNarrow: Story = { render: render('tri', 360, { view: 'allow', send: 'deny' }) };
 /** The "manage channels" row is disabled with its reason shown and described. */
 export const DisabledRow: Story = { render: render('tri', 720, { manage: 'inherit' }) };
+
+/** Inside a flex parent with `flex: 1` (as in a settings panel) the grid takes the free width and does not collapse. */
+export const InFlexParent: Story = {
+  render: () => (
+    <div style={{ display: 'flex', gap: 16, width: 720, maxWidth: '100%' }}>
+      <nav aria-label="sections" style={{ flex: 'none', width: 120 }}>sections</nav>
+      <div style={{ flex: 1, minWidth: 0 }}><Demo mode="tri" initial={{ view: 'allow' }} /></div>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const grid = canvasElement.querySelector('.d-permission-grid') as HTMLElement;
+    await expect(grid.getBoundingClientRect().width).toBeGreaterThan(300);
+  },
+};

@@ -58,6 +58,28 @@ describe('Toggle', () => {
     expect(onValue.mock.calls.map(c => c[0])).toEqual([true, false, true]);
   });
 
+  it('is also described by the extra element ids in describedBy, after its hint', () => {
+    render(
+      <>
+        <Toggle id="t" label="manage" checked={false} onChange={() => {}} hint="Hint one." describedBy="why" />
+        <span id="why">Because.</span>
+      </>,
+    );
+    const sw = screen.getByRole('switch', { name: 'manage' });
+    expect(sw).toHaveAttribute('aria-describedby', 't-hint why');
+    expect(sw).toHaveAccessibleDescription('Hint one. Because.');
+  });
+
+  it('with describedBy and no hint is described by the extra ids alone', () => {
+    render(
+      <>
+        <Toggle id="t" label="manage" checked={false} onChange={() => {}} describedBy="why" />
+        <span id="why">Because.</span>
+      </>,
+    );
+    expect(screen.getByRole('switch', { name: 'manage' })).toHaveAttribute('aria-describedby', 'why');
+  });
+
   it('is described by its hint', () => {
     render(<Toggle id="notify-permission" label="desktop notifications" checked onChange={() => {}} hint={HINT} />);
     const sw = screen.getByRole('switch', { name: 'desktop notifications' });
