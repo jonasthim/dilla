@@ -3721,7 +3721,10 @@ mod tests {
             e.array(4).uint(54).uint(0).null();
             e.array(1).bytes(&[0x0e; 16]);
         });
-        assert!(matches!(decode_frame(&changed).unwrap(), (0, Inbound::Ignored)));
+        assert!(matches!(
+            decode_frame(&changed).unwrap(),
+            (0, Inbound::Ignored)
+        ));
         let long = cbor(|e| {
             e.array(4).uint(54).uint(0).null();
             e.array(2).bytes(&[0x0e; 16]).uint(1);
