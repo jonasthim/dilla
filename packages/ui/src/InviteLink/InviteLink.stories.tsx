@@ -6,7 +6,7 @@ const meta = {
   title: 'Shell/InviteLink', component: InviteLink,
   args: {
     open: true, state: 'creating', url: '', status: '', error: null,
-    limits: 'It works for 10 people and expires in 7 days. Anyone who has it can join Midgard Crew.',
+    limits: 'It can be used 10 times and expires in 7 days. Anyone who has it can join Midgard Crew.',
     labels: {
       title: 'Invite people to Midgard Crew',
       creating: 'Making an invite link…',

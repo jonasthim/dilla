@@ -15,7 +15,7 @@ Chrome labels use lower case and dialog copy uses sentence case; nothing ends in
 | start a server: refused before sending | the field's error: `create.server.error.empty`, `create.server.error.long` or `create.name.control`; focus stays in the field | none: nothing is sent | the error (`role="alert"`) |
 | start a server: creating | the submit says `create.server.busy` and is `aria-disabled`; a second Enter or click sends nothing | `createCommunity`, then `createChannel` text general, then voice general | none |
 | start a server: refused | the field's error: `create.server.error.refused` (E_INVALID_REQUEST) or `create.server.error.other` | `createCommunity` refused | the error |
-| start a server: channels failed | the server is listed and selected behind the dialog; the field gives way to a warn banner `create.server.partial`; the submit says `create.server.retry` and adds only the channels still missing; closing keeps the server as it is (never a silent rollback) | the server exists; a `createChannel` was refused | the banner (`role="alert"`) |
+| start a server: channels failed | the server is listed and selected behind the dialog; the field gives way to a warn banner that names what is missing: `create.server.partialText` (#general), `create.server.partialVoice` (the voice general) or `create.server.partial` (both); focus moves to the submit, which says `create.server.retry` and adds only the channels still missing (the banner stays while it runs); closing keeps the server as it is (never a silent rollback) | the server exists; a `createChannel` was refused | the banner (`role="alert"`) |
 | start a server: done | the dialog closes; the server is selected and `#general` opens; focus moves to its composer | `communities` lists the server (owner: this account) before `createCommunity` answers; each channel is listed before `createChannel` answers | none |
 | server actions | under the server's name: `create.channel.button` (named `create.channel.open`) for the owner, `invite.open` for every member, in a group named `create.actions` | the owner is `communities[].owner`; the instance serves no role bits, so ownership is the one permission fact (the owner holds ManageChannels; `@everyone` holds CreateInvite by default) | none |
 | new channel: idle | dialog `create.channel.title` with the kind group `create.channel.kind` (`create.channel.text`, `create.channel.voice`; selection follows the arrows) and the field `create.channel.name`; focus in the field; the hint says how the name will show (`create.channel.hintText` or `create.channel.hintVoice`, `create.channel.hint` while empty) | none | dialog title |
@@ -81,6 +81,7 @@ The rail stays a 60 px column, and the captions fit under its 40 px tiles. The s
 |---|---|---|
 | a create dialog opens | its name field (the invite dialog: the dialog, then Tab reaches the link) | dialog title |
 | a submit is refused before or after sending | the field, which holds the error | the error (`role="alert"`) |
+| a starter channel failed (the field gives way to the banner) | the submit, which now says `create.server.retry` | the banner (`role="alert"`) |
 | a server is started | the composer of its `#general`, once it is on screen | none |
 | a text channel is added | its composer, once it is on screen | none |
 | a voice channel is added, or a dialog is closed without creating | back to the opener | none |
@@ -112,6 +113,8 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `create.server.error.empty='Give the server a name.'`, `create.server.error.long='That name is too long. A server name is up to 255 bytes.'`
 - `create.server.error.refused='The server refused that name. Try another.'`, `create.server.error.other='Could not start the server ({code}). Try again.'`
 - `create.server.partial='{name} is ready, but its channels were not added ({code}). Try again, or close this and add them from the channel list.'`
+- `create.server.partialText='{name} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list.'`
+- `create.server.partialVoice='{name} is ready, but its voice channel general was not added ({code}). Try again, or close this and add it from the channel list.'`
 - `create.name.control='A name cannot hold control characters such as tabs or line breaks.'`
 
 *New channel:*

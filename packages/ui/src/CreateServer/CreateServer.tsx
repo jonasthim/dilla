@@ -14,7 +14,8 @@ export interface CreateServerProps {
   error: string | null;
   /** A create is in flight: the submit says so and does nothing more. */
   busy: boolean;
-  /** The server exists but its starter channels were not added: this notice replaces the field, the submit retries. */
+  /** The server exists but a starter channel was not added: this notice replaces the field, the submit retries (and the
+   *  notice stays while the retry runs). */
   partial: string | null;
   labels: { title: string; body: string; name: string; hint: string; submit: string; busy: string; close: string; retry: string };
   onSubmit(): void;
@@ -31,22 +32,29 @@ export function CreateServer({ open, name, onName, error, busy, partial, labels,
   const base = useId();
   const fieldId = `${base}-name`;
   const formId = `${base}-form`;
-  // Runs after Dialog's own open effect (a child's effects run first), so the field, not the dialog, holds focus.
+  const submitId = `${base}-submit`;
+  const showsNotice = partial !== null;
+  // Runs after Dialog's own open effect (a child's effects run first), so the field, not the dialog, holds focus. When the
+  // notice replaces the field, focus moves to its retry instead of falling to the page with the field.
   useEffect(() => {
-    if (open && partial === null) document.getElementById(fieldId)?.focus();
-  }, [open, partial, fieldId]);
+    if (open) document.getElementById(showsNotice ? submitId : fieldId)?.focus();
+  }, [open, showsNotice, fieldId, submitId]);
+  // A refusal (before or after sending) puts focus back in the field that holds it, also when the submit button was pressed.
+  useEffect(() => {
+    if (open && error !== null) document.getElementById(fieldId)?.focus();
+  }, [open, error, fieldId]);
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (busy) return;
-    if (partial !== null) onRetry();
+    if (showsNotice) onRetry();
     else onSubmit();
   };
-  const action = busy ? labels.busy : partial !== null ? labels.retry : labels.submit;
+  const action = busy ? labels.busy : showsNotice ? labels.retry : labels.submit;
   return (
     <Dialog open={open} title={labels.title} closeLabel={labels.close} onClose={onClose}
-      footer={<Button variant="accent" type="submit" form={formId} aria-disabled={busy || undefined}>{action}</Button>}>
+      footer={<Button id={submitId} variant="accent" type="submit" form={formId} aria-disabled={busy || undefined}>{action}</Button>}>
       <form id={formId} className="d-create-server" noValidate onSubmit={submit}>
-        {partial !== null ? <Banner tone="warn">{partial}</Banner> : (
+        {showsNotice ? <Banner tone="warn">{partial}</Banner> : (
           <>
             <p className="d-create-server__body">{labels.body}</p>
             <TextField id={fieldId} label={labels.name} value={name} onChange={onName} hint={labels.hint} error={error ?? undefined}

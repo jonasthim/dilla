@@ -35,6 +35,10 @@ export function CreateChannel({ open, kind, onKind, name, onName, hint, error, b
   useEffect(() => {
     if (open) document.getElementById(fieldId)?.focus();
   }, [open, fieldId]);
+  // A refusal (before or after sending) puts focus back in the field that holds it, also when the submit button was pressed.
+  useEffect(() => {
+    if (open && error !== null) document.getElementById(fieldId)?.focus();
+  }, [open, error, fieldId]);
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!busy) onSubmit();

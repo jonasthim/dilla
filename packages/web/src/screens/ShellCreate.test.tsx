@@ -5,7 +5,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, Command, CommunitySummary, MemberSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
-import { FakeClient } from '../test/fake-client.ts';
+import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { Shell } from './Shell.tsx';
@@ -95,6 +95,60 @@ describe('a fresh instance (flow 07)', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(within(rail()).getByRole('button', { name: 'Midgard Crew' })).toHaveAttribute('aria-current', 'page');
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'message #general' })).toHaveFocus());
+  });
+
+  // Review Focus 2 in the shell: the server stays selected and usable behind the notice, and after the dialog closes.
+  it('a voice channel that fails keeps the new server selected, with #general listed and open to use', async () => {
+    const { fake, user } = setup('/');
+    const answer = worker(fake);
+    fake.handler = c => (c.m === 'createChannel' && c.kind === 'voice' ? Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 })) : answer(c));
+    await user.click(within(rail()).getByRole('button', { name: 'new server' }));
+    await user.type(screen.getByRole('textbox', { name: 'Server name' }), 'Midgard Crew{Enter}');
+    const dialog = await screen.findByRole('dialog', { name: 'Start a server' });
+    await waitFor(() => expect(within(dialog).getByRole('alert')).toHaveTextContent('voice channel general was not added (E_UNAVAILABLE)'));
+    expect(within(rail()).getByRole('button', { name: 'Midgard Crew' })).toHaveAttribute('aria-current', 'page');
+    // Behind the dialog the shell already opened the server's first channel, #general.
+    expect(path()).toBe(`/c/${NEW}/${GEN}`);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(path()).toBe(`/c/${NEW}/${GEN}`);
+    expect(within(screen.getByRole('navigation', { name: 'channels' })).getByText('general', { selector: '.d-chrow__name' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'message #general' })).toBeInTheDocument();
+    expect(fake.callsOf('openChannel').map(c => c.channelId)).toContain(GEN);
+    expect(fake.callsOf('createCommunity')).toHaveLength(1);
+    expect(fake.callsOf('createChannel').filter(c => c.kind === 'text')).toHaveLength(1);
+  });
+
+  // Step 7: Escape closes each create dialog through the native <dialog>, and nothing else takes focus from its opener.
+  it('Escape closes a create dialog and focus goes back to what opened it', async () => {
+    // The browser's own rule, which jsdom lacks: close() hands focus back to the element focused at showModal().
+    const opened = new WeakMap<HTMLDialogElement, Element | null>();
+    const show = vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function (this: HTMLDialogElement) {
+      opened.set(this, document.activeElement); this.setAttribute('open', '');
+    });
+    const close = vi.spyOn(HTMLDialogElement.prototype, 'close').mockImplementation(function (this: HTMLDialogElement) {
+      this.removeAttribute('open');
+      const back = opened.get(this);
+      if (back instanceof HTMLElement && back.isConnected) back.focus();
+    });
+    try {
+      const { user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
+      for (const [opener, title, field] of [
+        [within(rail()).getByRole('button', { name: 'new server' }), 'Start a server', 'Server name'],
+        [screen.getByRole('button', { name: 'new channel' }), 'New channel in Midgard', 'Channel name'],
+      ] as const) {
+        opener.focus();
+        await user.keyboard('{Enter}');
+        expect(screen.getByRole('dialog', { name: title })).toBeInTheDocument();
+        expect(screen.getByRole('textbox', { name: field })).toHaveFocus();
+        await user.keyboard('{Escape}');
+        expect(screen.queryByRole('dialog')).toBeNull();
+        expect(opener).toHaveFocus();
+      }
+    } finally {
+      show.mockRestore();
+      close.mockRestore();
+    }
   });
 
   it('with no server, the direct messages say why there is no one to message', async () => {

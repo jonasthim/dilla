@@ -44,10 +44,20 @@ function idIn(value: unknown, key: 'communityId' | 'channelId'): string | null {
 
 const BAD_RESULT: UiError = { code: 'E_BAD_RESULT', detail: '', status: 0, retryAfterMs: null };
 
+/** What the notice says is missing, by which starters are still missing (indices into STARTERS). */
+function partialKey(missing: readonly number[]): 'create.server.partial' | 'create.server.partialText' | 'create.server.partialVoice' {
+  if (missing.length === 1) return missing[0] === 0 ? 'create.server.partialText' : 'create.server.partialVoice';
+  return 'create.server.partial';
+}
+
+interface MadeServer { communityId: string; name: string; channels: Map<number, string> }
+
 /**
  * "Start a server": the name, then createCommunity, then the two starter channels. `onServer` runs as soon as the server
- * exists, so the shell selects it; `onDone` once #general exists too. A starter channel that fails leaves the server as
- * it is and says so, with a retry that adds only the missing channels (never a silent rollback).
+ * exists, so the shell selects it; `onDone` once both starters exist. A starter channel that fails leaves the server as it
+ * is and names what is missing, with a retry that adds only the missing channels (never a silent rollback, never a second
+ * #general). One server per press: a ref guards the in flight create, since two submits can land before `busy` renders.
+ * A create still running when the dialog closes finishes its work but no longer speaks to this dialog or calls `onDone`.
  */
 export function CreateServerFlow(props: {
   open: boolean; onClose(): void; onServer(communityId: string): void; onDone(result: { communityId: string; channelId: string }): void;
@@ -58,16 +68,19 @@ export function CreateServerFlow(props: {
   const [busy, setBusy] = useState(false);
   const [partial, setPartial] = useState<string | null>(null);
   const running = useRef(false);
+  // Each open of the dialog is one session; work from an earlier one is ignored once it closed.
+  const session = useRef(0);
   // The server this dialog created and the starter channels it holds so far, for the retry.
-  const made = useRef<{ communityId: string; name: string; channels: Map<number, string> } | null>(null);
+  const made = useRef<MadeServer | null>(null);
 
   useEffect(() => {
     if (props.open) return;
-    setName(''); setError(null); setBusy(false); setPartial(null);
+    session.current += 1;
+    setName(''); setError(null); setPartial(null);
     made.current = null;
   }, [props.open]);
 
-  const starters = async (server: { communityId: string; name: string; channels: Map<number, string> }) => {
+  const starters = async (server: MadeServer, mine: () => boolean) => {
     let failure: UiError | null = null;
     for (const [i, starter] of STARTERS.entries()) {
       if (server.channels.has(i)) continue;
@@ -79,19 +92,22 @@ export function CreateServerFlow(props: {
         failure ??= errorOf(e);
       }
     }
+    if (!mine()) return;
     const general = server.channels.get(0);
-    if (failure === null && general !== undefined) {
+    const missing = STARTERS.flatMap((_, i) => (server.channels.has(i) ? [] : [i]));
+    if (missing.length === 0 && general !== undefined) {
       props.onDone({ communityId: server.communityId, channelId: general });
       return;
     }
-    setPartial(t('create.server.partial', { name: server.name, code: (failure ?? BAD_RESULT).code }));
+    setPartial(t(partialKey(missing), { name: server.name, code: (failure ?? BAD_RESULT).code }));
   };
 
-  const run = (work: () => Promise<void>) => {
+  const run = (work: (mine: () => boolean) => Promise<void>) => {
     if (running.current) return;
     running.current = true;
     setBusy(true);
-    void work().finally(() => { running.current = false; setBusy(false); });
+    const at = session.current;
+    void work(() => session.current === at).finally(() => { running.current = false; setBusy(false); });
   };
 
   const submit = () => {
@@ -101,28 +117,29 @@ export function CreateServerFlow(props: {
       return;
     }
     const serverName = name.trim();
-    run(async () => {
+    run(async mine => {
       let communityId: string | null;
       try {
         communityId = idIn(await client.call({ m: 'createCommunity', name: serverName }), 'communityId');
       } catch (e) {
         const code = errorOf(e).code;
-        setError(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? t('create.server.error.refused') : t('create.server.error.other', { code }));
+        if (mine()) setError(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? t('create.server.error.refused') : t('create.server.error.other', { code }));
         return;
       }
-      if (communityId === null) { setError(t('create.server.error.other', { code: BAD_RESULT.code })); return; }
-      const server = { communityId, name: serverName, channels: new Map<number, string>() };
-      made.current = server;
-      props.onServer(communityId);
-      await starters(server);
+      if (communityId === null) { if (mine()) setError(t('create.server.error.other', { code: BAD_RESULT.code })); return; }
+      const server: MadeServer = { communityId, name: serverName, channels: new Map<number, string>() };
+      if (mine()) {
+        made.current = server;
+        props.onServer(communityId);
+      }
+      await starters(server, mine);
     });
   };
 
+  // The notice stays while the retry runs; it changes only with the retry's result.
   const retry = () => {
     const server = made.current;
-    if (server === null) return;
-    setPartial(null);
-    run(() => starters(server));
+    if (server !== null) run(mine => starters(server, mine));
   };
 
   return (

@@ -519,6 +519,8 @@ export const en = {
   'create.server.error.refused': 'The server refused that name. Try another.',
   'create.server.error.other': 'Could not start the server ({code}). Try again.',
   'create.server.partial': '{name} is ready, but its channels were not added ({code}). Try again, or close this and add them from the channel list.',
+  'create.server.partialText': '{name} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list.',
+  'create.server.partialVoice': '{name} is ready, but its voice channel general was not added ({code}). Try again, or close this and add it from the channel list.',
   'create.name.control': 'A name cannot hold control characters such as tabs or line breaks.',
   'create.channel.open': 'new channel',
   'create.channel.button': 'channel',

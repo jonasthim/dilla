@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CreateServer, type CreateServerProps } from './CreateServer.tsx';
-import meta, { Partial as PartialStory } from './CreateServer.stories.tsx';
+import meta, { Partial as PartialStory, PartialVoice } from './CreateServer.stories.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 const labels: CreateServerProps['labels'] = meta.args.labels;
@@ -65,6 +65,29 @@ describe('CreateServer', () => {
     await user.click(screen.getByRole('button', { name: labels.retry }));
     expect(p.onRetry).toHaveBeenCalledTimes(1);
     expect(p.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('a refusal moves focus back to the field, also after the submit button was pressed', async () => {
+    const user = userEvent.setup();
+    const p = props({ name: '   ' });
+    const { rerender } = render(<CreateServer {...p} />);
+    await user.click(screen.getByRole('button', { name: labels.submit }));
+    expect(p.onSubmit).toHaveBeenCalledTimes(1);
+    rerender(<CreateServer {...p} error="Give the server a name." />);
+    expect(screen.getByRole('textbox', { name: labels.name })).toHaveFocus();
+  });
+
+  it('when the notice replaces the field, focus moves to the retry; while it runs the notice stays and nothing more is sent', async () => {
+    const user = userEvent.setup();
+    const p = props({ name: 'Midgard Crew' });
+    const { rerender } = render(<CreateServer {...p} />);
+    expect(screen.getByRole('textbox', { name: labels.name })).toHaveFocus();
+    rerender(<CreateServer {...p} partial={PartialVoice.args.partial} />);
+    expect(screen.getByRole('button', { name: labels.retry })).toHaveFocus();
+    rerender(<CreateServer {...p} partial={PartialVoice.args.partial} busy />);
+    expect(screen.getByRole('alert')).toHaveTextContent(PartialVoice.args.partial);
+    await user.click(screen.getByRole('button', { name: labels.busy }));
+    expect(p.onRetry).not.toHaveBeenCalled();
   });
 
   it('Escape and the close button call onClose; a closed dialog shows nothing', async () => {

@@ -29,3 +29,8 @@ export const Busy: Story = { args: { name: 'Midgard Crew', busy: true } };
 export const Partial = {
   args: { partial: 'Midgard Crew is ready, but its channels were not added (E_UNAVAILABLE). Try again, or close this and add them from the channel list.' },
 } satisfies Story;
+// The voice channel failed (flow 07): the notice names what is missing, and stays while the retry runs.
+export const PartialVoice = {
+  args: { partial: 'Midgard Crew is ready, but its voice channel general was not added (E_UNAVAILABLE). Try again, or close this and add it from the channel list.' },
+} satisfies Story;
+export const Retrying: Story = { args: { partial: PartialVoice.args.partial, busy: true } };

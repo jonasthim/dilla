@@ -51,6 +51,15 @@ describe('CreateChannel', () => {
     expect(p.onSubmit).not.toHaveBeenCalled();
   });
 
+  it('a refusal moves focus back to the field, also after the submit button was pressed', async () => {
+    const user = userEvent.setup();
+    const p = props({ name: 'loot' });
+    const { rerender } = render(<CreateChannel {...p} />);
+    await user.click(screen.getByRole('button', { name: labels.submit }));
+    rerender(<CreateChannel {...p} error="You cannot add channels to this server." />);
+    expect(screen.getByRole('textbox', { name: labels.name })).toHaveFocus();
+  });
+
   it('Escape calls onClose', async () => {
     const user = userEvent.setup();
     const p = props();
