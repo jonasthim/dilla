@@ -1,10 +1,12 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -499,4 +501,111 @@ func listChannelMembers(t *testing.T, e *env, ch id.ID) ([]id.ID, error) {
 		t.Fatal("store.Repository has no ListChannelMembers yet (task 7)")
 	}
 	return lister.ListChannelMembers(t.Context(), ch)
+}
+
+type overwriteRow struct {
+	_         struct{} `cbor:",toarray"`
+	ChannelID id.ID
+	Kind      uint64
+	TargetID  id.ID
+	Allow     uint64
+	Deny      uint64
+}
+
+func listOverwriteRows(t *testing.T, e *env, cid id.ID, tok string) []overwriteRow {
+	t.Helper()
+	status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/overwrites", tok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET overwrites = %d (%x)", status, body)
+	}
+	var rows []overwriteRow
+	mustUnmarshal(t, body, &rows)
+	if rows == nil {
+		t.Fatalf("GET overwrites answered null, want an empty array (%x)", body)
+	}
+	return rows
+}
+
+func TestMembersReadTheOverwritesTheyCanSee(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+
+	// A fresh community has no overwrites: an empty array, never null.
+	if rows := listOverwriteRows(t, e, cid, ownerTok); len(rows) != 0 {
+		t.Fatalf("fresh community overwrites = %+v", rows)
+	}
+
+	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 1, 0, "general")
+	member, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil || len(roles) != 1 {
+		t.Fatalf("ListRoles = %v, %v", roles, err)
+	}
+	everyone := roles[0].ID
+	roleA := createRole(t, e, cid, ownerTok, "a", 3, api.PermViewChannel)
+
+	put := func(kind uint64, target id.ID, allow, deny api.Bits) {
+		t.Helper()
+		path := "/v1/channels/" + ch.String() + "/overwrites/" + strconv.FormatUint(kind, 10) + "/" + target.String()
+		if status, body := e.Do(http.MethodPut, path, ownerTok, []any{uint64(allow), uint64(deny)}); status != http.StatusNoContent {
+			t.Fatalf("PUT overwrite = %d (%x)", status, body)
+		}
+	}
+	put(0, everyone, 0, api.PermViewChannel)
+	put(0, roleA, api.PermViewChannel, 0)
+
+	want := []overwriteRow{
+		{ChannelID: ch, Kind: 0, TargetID: everyone, Deny: uint64(api.PermViewChannel)},
+		{ChannelID: ch, Kind: 0, TargetID: roleA, Allow: uint64(api.PermViewChannel)},
+	}
+	if bytes.Compare(want[0].TargetID[:], want[1].TargetID[:]) > 0 {
+		want[0], want[1] = want[1], want[0]
+	}
+	if got := listOverwriteRows(t, e, cid, ownerTok); !slices.Equal(got, want) {
+		t.Fatalf("owner overwrites = %+v, want %+v", got, want)
+	}
+
+	// B cannot view #general, so it sees none of its overwrites.
+	if got := listOverwriteRows(t, e, cid, memberTok); len(got) != 0 {
+		t.Fatalf("member without the role sees %+v", got)
+	}
+	grant(t, e, cid, ownerTok, member, roleA, http.StatusNoContent)
+	if got := listOverwriteRows(t, e, cid, memberTok); !slices.Equal(got, want) {
+		t.Fatalf("member with the role sees %+v, want %+v", got, want)
+	}
+
+	// Bits outside the vocabulary are cleared in the answer.
+	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{ChannelID: ch, TargetKind: 0, TargetID: roleA,
+		Allow: 1<<40 | 1, Deny: 0}); err != nil {
+		t.Fatalf("PutOverwrite: %v", err)
+	}
+	for _, row := range listOverwriteRows(t, e, cid, ownerTok) {
+		if row.TargetID == roleA && row.Allow != 1 {
+			t.Fatalf("allow = %#x, want 1", row.Allow)
+		}
+	}
+
+	// An overwrite on a category is listed to a member who can view it.
+	cat, _, _ := newChannel(t, e, cid, ownerTok, uint64(api.ChannelCategory), 1, 0, "cat")
+	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{ChannelID: cat, TargetKind: 1, TargetID: member,
+		Allow: uint64(api.PermSendMessages)}); err != nil {
+		t.Fatalf("PutOverwrite: %v", err)
+	}
+	found := false
+	for _, row := range listOverwriteRows(t, e, cid, memberTok) {
+		found = found || (row.ChannelID == cat && row.TargetID == member)
+	}
+	if !found {
+		t.Fatal("the category overwrite is not listed to a member who can view the category")
+	}
+
+	// A non-member and an unknown community both answer 404.
+	_, strangerTok := e.NewUser("stranger")
+	if status, _ := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/overwrites", strangerTok, nil); status != http.StatusNotFound {
+		t.Errorf("non-member = %d, want 404", status)
+	}
+	if status, _ := e.Do(http.MethodGet, "/v1/communities/"+id.New().String()+"/overwrites", ownerTok, nil); status != http.StatusNotFound {
+		t.Errorf("unknown community = %d, want 404", status)
+	}
 }

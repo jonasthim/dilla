@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -97,6 +99,7 @@ func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, c
 
 func (h *Roles) Register(mux *server.Mux) {
 	mux.HandleFunc("GET /v1/communities/{id}/roles", h.list)
+	mux.HandleFunc("GET /v1/communities/{id}/overwrites", h.listOverwrites)
 	mux.HandleFunc("POST /v1/communities/{id}/roles", h.create)
 	mux.HandleFunc("PATCH /v1/roles/{id}", h.patch)
 	mux.HandleFunc("DELETE /v1/roles/{id}", h.delete)
@@ -289,6 +292,76 @@ func (h *Roles) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		h.log.Error("encode roles", "err", err)
+	}
+}
+
+// overwriteResp is one row of GET /v1/communities/{id}/overwrites.
+type overwriteResp struct {
+	_         struct{} `cbor:",toarray"`
+	ChannelID id.ID
+	Kind      uint64
+	TargetID  id.ID
+	Allow     uint64
+	Deny      uint64
+}
+
+// listOverwrites is GET /v1/communities/{id}/overwrites: the overwrites of every
+// live channel (categories included) the caller may view, ordered by channel_id,
+// kind, target_id, with bits outside the vocabulary cleared. Any member may read
+// it; a non-member and an unknown community are 404.
+func (h *Roles) listOverwrites(w http.ResponseWriter, r *http.Request) {
+	s, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	cid, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	if _, err := h.repo.GetMember(ctx, cid, s.UserID); err != nil {
+		h.fail(w, r, "list overwrites", notFound(err))
+		return
+	}
+	snap, err := LoadSnapshot(ctx, h.repo, cid, s.UserID, nil)
+	if err != nil {
+		h.fail(w, r, "list overwrites", notFound(err))
+		return
+	}
+	channels, err := h.repo.ListChannels(ctx, cid)
+	if err != nil {
+		h.fail(w, r, "list overwrites", err)
+		return
+	}
+	out := make([]overwriteResp, 0)
+	for _, ch := range channels {
+		rows, err := h.repo.ListOverwrites(ctx, ch.ID)
+		if err != nil {
+			h.fail(w, r, "list overwrites", err)
+			return
+		}
+		snap.Overwrite = rows
+		if !snap.ResolveChannel(s.UserID).Has(PermViewChannel) {
+			continue
+		}
+		for _, o := range rows {
+			out = append(out, overwriteResp{
+				ChannelID: ch.ID, Kind: uint64(o.TargetKind), TargetID: o.TargetID,
+				Allow: o.Allow & uint64(PermAll), Deny: o.Deny & uint64(PermAll),
+			})
+		}
+	}
+	slices.SortFunc(out, func(a, b overwriteResp) int {
+		return cmp.Or(
+			bytes.Compare(a.ChannelID[:], b.ChannelID[:]),
+			cmp.Compare(a.Kind, b.Kind),
+			bytes.Compare(a.TargetID[:], b.TargetID[:]),
+		)
+	})
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		h.log.Error("encode overwrites", "err", err)
 	}
 }
 
