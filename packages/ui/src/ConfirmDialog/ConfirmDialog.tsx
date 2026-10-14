@@ -43,11 +43,18 @@ export function ConfirmDialog({
   }, [open]);
   // The confirm button was disabled while busy, so focus may have been lost; a refusal puts it on Cancel (never on the
   // destructive button), next to the alert.
+  // The error may arrive in the render after busy ended, so a finished run stays "pending" until an error uses it up.
   const wasBusy = useRef(false);
+  const pending = useRef(false);
   useEffect(() => {
-    if (open && wasBusy.current && !busy && error !== null) cancelButton()?.focus();
+    if (!open || busy) pending.current = false;
+    else if (wasBusy.current) pending.current = true;
     wasBusy.current = busy;
-  }, [busy]);
+    if (open && pending.current && error !== null) {
+      pending.current = false;
+      cancelButton()?.focus();
+    }
+  }, [busy, open, error]);
   const bodyId = `${useId()}-body`;
   return (
     <Dialog open={open} title={title} closeLabel={cancelLabel} onClose={onClose} describedBy={bodyId}

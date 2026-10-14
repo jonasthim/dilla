@@ -67,6 +67,21 @@ describe('ConfirmDialog', () => {
     expect(screen.getByRole('textbox', { name: 'reason' })).toHaveFocus();
   });
 
+  it('an error that arrives one render after busy ended still moves focus to Cancel, once', () => {
+    const p = props();
+    const field = <input aria-label="reason" />;
+    const { rerender } = render(<ConfirmDialog {...p}>{field}</ConfirmDialog>);
+    rerender(<ConfirmDialog {...p} busy>{field}</ConfirmDialog>);
+    rerender(<ConfirmDialog {...p} busy={false}>{field}</ConfirmDialog>);
+    expect(screen.getByRole('button', { name: 'cancel' })).not.toHaveFocus();
+    rerender(<ConfirmDialog {...p} busy={false} error="You cannot ban this member.">{field}</ConfirmDialog>);
+    expect(screen.getByRole('button', { name: 'cancel' })).toHaveFocus();
+    // Used up: the user goes back to the field, and the same error shown again does not take focus away.
+    screen.getByRole('textbox', { name: 'reason' }).focus();
+    rerender(<ConfirmDialog {...p} busy={false} error="You cannot ban this member." attempt={2}>{field}</ConfirmDialog>);
+    expect(screen.getByRole('textbox', { name: 'reason' })).toHaveFocus();
+  });
+
   it('confirm calls onConfirm; cancel and Escape call onClose', async () => {
     const user = userEvent.setup();
     const p = props();
