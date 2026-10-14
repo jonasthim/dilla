@@ -43,6 +43,8 @@ export { Toggle } from './Toggle/Toggle.tsx';
 export type { ToggleProps } from './Toggle/Toggle.tsx';
 export { Segmented } from './Segmented/Segmented.tsx';
 export type { SegmentedProps } from './Segmented/Segmented.tsx';
+export { PermissionGrid } from './PermissionGrid/PermissionGrid.tsx';
+export type { PermissionGridProps, PermissionGridGroup, PermissionGridRow, PermValue } from './PermissionGrid/PermissionGrid.tsx';
 export { SettingsRow } from './SettingsRow/SettingsRow.tsx';
 export type { SettingsRowProps } from './SettingsRow/SettingsRow.tsx';
 export { SettingsNav } from './SettingsNav/SettingsNav.tsx';

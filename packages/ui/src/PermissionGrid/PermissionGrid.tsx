@@ -1,0 +1,95 @@
+import { useId, useRef, type KeyboardEvent } from 'react';
+import { arrowIndex } from '../internal/arrow-select.ts';
+import { Toggle } from '../Toggle/Toggle.tsx';
+import './PermissionGrid.css';
+
+export type PermValue = 'allow' | 'inherit' | 'deny';
+export interface PermissionGridRow { id: string; label: string; hint: string; disabled: boolean; disabledHint?: string }
+export interface PermissionGridGroup { id: string; title: string; rows: readonly PermissionGridRow[] }
+export interface PermissionGridProps {
+  label: string;
+  groups: readonly PermissionGridGroup[];
+  mode: 'toggle' | 'tri';
+  values: Readonly<Record<string, PermValue>>;
+  labels: { allow: string; inherit: string; deny: string };
+  onChange(id: string, v: PermValue): void;
+}
+
+const ORDER: readonly PermValue[] = ['allow', 'inherit', 'deny'];
+
+interface RowProps {
+  base: string;
+  row: PermissionGridRow;
+  value: PermValue;
+  labels: PermissionGridProps['labels'];
+  onChange(v: PermValue): void;
+}
+
+/** One right as a three-way choice: the ARIA radio group, selection following focus, wrapping arrows, one tab stop. */
+function TriRow({ base, row, value, labels, onChange }: RowProps) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const hintId = `${base}-hint`;
+  const reasonId = `${base}-reason`;
+  const reason = row.disabled && row.disabledHint ? row.disabledHint : null;
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const from = refs.current.findIndex(el => el !== null && el === event.target);
+    if (from < 0) return;
+    const next = arrowIndex(event, from, ORDER.length, 'both');
+    if (next === null) return;
+    event.preventDefault();
+    if (row.disabled) return;
+    refs.current[next]?.focus();
+    if (ORDER[next] !== value) onChange(ORDER[next]);
+  };
+
+  return (
+    <div className="d-permission-grid__row" data-disabled={row.disabled ? 'true' : undefined}>
+      <div className="d-permission-grid__text">
+        <span id={`${base}-label`} className="d-permission-grid__name">{row.label}</span>
+        <span id={hintId} className="d-permission-grid__hint">{row.hint}</span>
+        {reason ? <span id={reasonId} className="d-permission-grid__hint d-permission-grid__reason">{reason}</span> : null}
+      </div>
+      <div role="radiogroup" className="d-permission-grid__tri" aria-labelledby={`${base}-label`}
+        aria-describedby={reason ? `${hintId} ${reasonId}` : hintId} aria-disabled={row.disabled ? true : undefined} onKeyDown={onKeyDown}>
+        {ORDER.map((v, i) => (
+          <button key={v} ref={el => { refs.current[i] = el; }} type="button" role="radio" className="d-permission-grid__radio" data-value={v}
+            aria-checked={v === value} aria-disabled={row.disabled ? true : undefined} tabIndex={v === value ? 0 : -1}
+            onClick={() => { if (!row.disabled && v !== value) onChange(v); }}>{labels[v]}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The permission editor body: a labelled group with one `h3` per group of rights. In `toggle` mode each right is a
+ * switch (on is allow, off is inherit). In `tri` mode each right is a radio group of allow, inherit and deny: the
+ * arrows move and select within the row, wrapping, and Tab moves to the next row. A disabled row ignores input but
+ * stays a tab stop, so its reason (`disabledHint`) can be read; the reason is also drawn as text. At narrow widths
+ * the label and hint stack above the control.
+ */
+export function PermissionGrid({ label, groups, mode, values, labels, onChange }: PermissionGridProps) {
+  const uid = useId();
+  return (
+    <div role="group" aria-label={label} className="d-permission-grid">
+      {groups.map(group => (
+        <section key={group.id} className="d-permission-grid__group">
+          <h3 className="d-permission-grid__title">{group.title}</h3>
+          {group.rows.map(row => {
+            const base = `${uid}-${group.id}-${row.id}`;
+            const value = values[row.id] ?? 'inherit';
+            if (mode === 'tri') return <TriRow key={row.id} base={base} row={row} value={value} labels={labels} onChange={v => onChange(row.id, v)} />;
+            const hint = row.disabled && row.disabledHint ? `${row.hint} ${row.disabledHint}` : row.hint;
+            return (
+              <div key={row.id} className="d-permission-grid__row d-permission-grid__row--toggle" data-disabled={row.disabled ? 'true' : undefined}>
+                <Toggle id={base} label={row.label} showLabel hint={hint} disabled={row.disabled} checked={value === 'allow'}
+                  onChange={on => onChange(row.id, on ? 'allow' : 'inherit')} />
+              </div>
+            );
+          })}
+        </section>
+      ))}
+    </div>
+  );
+}
