@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
@@ -1092,6 +1092,47 @@ test('firefox-web must start an audio server before the voice suite', () => {
   const late = body.replace(audio, '').replace(voice, voice + audio);
   const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
   assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
+});
+
+// Web-3 task 10 (review M10): the voice rules match steps, so a comment never satisfies them, and the voice step's own
+// env is required.
+for (const engine of ['chromium', 'firefox']) {
+  const job = `${engine}-web`;
+  const voice = `      - run: npm run test:e2e:voice:${engine} -w @dilla/e2e\n`;
+  test(`a ${job} voice step that is only a comment is reported`, () => {
+    const body = jobBody(job);
+    assert.ok(body.includes(voice), 'fixture sanity: the voice step');
+    const commented = body.replace(voice, `      # - run: npm run test:e2e:voice:${engine} -w @dilla/e2e\n`);
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => commented)));
+    assert.ok(problems.some((p) => p.includes(`"${job}" is missing: npm run test:e2e:voice:${engine}`)), problems.join('\n'));
+  });
+  test(`a ${job} voice step without its own DILLA_TESTKIT env is reported, though the web step has one`, () => {
+    const body = jobBody(job);
+    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+    assert.ok(body.includes(voice + env), 'fixture sanity: the voice step and its env');
+    const bare = body.replace(voice + env, voice);
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => bare)));
+    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes('without its own env')), problems.join('\n'));
+  });
+}
+
+test('a comment naming the audio server above the voice step does not stand in for the real step after it', () => {
+  const body = jobBody('firefox-web');
+  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
+  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
+  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+  assert.ok(body.includes(audio + voice + env), 'fixture sanity: the audio server, then the voice suite');
+  const sneaky = body.replace(audio + voice + env, `      # sh scripts/ci-audio-server.sh\n${voice}${env}${audio}`);
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
+  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
+  const commentOnly = body.replace(audio, '      # - run: sh scripts/ci-audio-server.sh\n');
+  const missing = checkWorkflow(fixture(GOOD.replace(body, () => commentOnly)));
+  assert.ok(missing.some((p) => p.includes('"firefox-web"') && p.includes('ci-audio-server.sh')), missing.join('\n'));
+});
+
+test('jobSteps drops comment lines and keeps each step\'s own lines', () => {
+  const steps = jobSteps('    steps:\n      # - run: a\n      - run: b\n        env:\n          X: 1\n      # c\n      - uses: d\n');
+  assert.deepEqual(steps, [['run: b', 'env:', 'X: 1'], ['uses: d']]);
 });
 
 test('the voice budgets are derived from the measured voice minutes and stay under one runner\'s 45 minutes', () => {

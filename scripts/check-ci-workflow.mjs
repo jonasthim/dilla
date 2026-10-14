@@ -86,6 +86,9 @@ export const BROWSER_WEB_JOBS = {
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 30;
 
+/** The testkit binary's env line, which every suite step that drives the native peer carries. */
+const TESTKIT_ENV = 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit';
+
 /** The steps every per-engine browser job must carry: the four downloads, its one engine, its suites, its own artifact. */
 function browserWebSteps({ engine, timeout, core, voice }) {
   return [
@@ -100,9 +103,8 @@ function browserWebSteps({ engine, timeout, core, voice }) {
     `npx playwright install --with-deps ${engine}`,
     ...(core ? [`npm run test:e2e:core:${engine} -w @dilla/e2e`] : []),
     `npm run test:e2e:web:${engine} -w @dilla/e2e`,
-    ...(voice && engine === 'firefox' ? ['sh scripts/ci-audio-server.sh'] : []),
-    ...(voice ? [`npm run test:e2e:voice:${engine} -w @dilla/e2e`] : []),
-    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
+    // The voice legs (and Firefox's audio server) are checked as steps, not as substrings: checkVoiceSteps.
+    TESTKIT_ENV,
     'if: failure()',
     // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per engine.
     `name: browser-web-results-${engine}`,
@@ -527,6 +529,42 @@ function assertWasmJobsUseClang23(text, jobs, problems) {
   });
 }
 
+/** A job body's steps: each `      - ` item's lines, trimmed, its first line without the dash (`run: …`, `uses: …`).
+ *  Comment lines are dropped, so no rule matched against steps is satisfied by a comment. */
+export function jobSteps(body) {
+  const steps = [];
+  for (const line of body.split('\n')) {
+    const t = line.trim();
+    if (t === '' || t.startsWith('#')) continue;
+    if (/^ {6}- \S/.test(line)) steps.push([t.slice(2)]);
+    else if (steps.length > 0 && /^ {8,}\S/.test(line)) steps[steps.length - 1].push(t);
+  }
+  return steps;
+}
+
+/**
+ * Web-3 task 10 (review M10): each voice leg is a `run:` step of its own whose `env` carries the testkit binary, and in
+ * Firefox an audio-server `run:` step comes before it (headless Firefox's AudioContext stays suspended without one, as
+ * in browser-media). Matched on steps, never on substrings, so a commented-out step or a comment naming the command
+ * satisfies nothing, and the voice step's own env is required, not the web step's.
+ */
+function checkVoiceSteps(jobs, problems) {
+  for (const [job, { engine, voice }] of Object.entries(BROWSER_WEB_JOBS)) {
+    if (!voice || !(job in jobs)) continue;
+    const steps = jobSteps(jobs[job]);
+    const command = `npm run test:e2e:voice:${engine} -w @dilla/e2e`;
+    const voiceAt = steps.findIndex((s) => s[0] === `run: ${command}`);
+    if (voiceAt < 0) problems.push(`ci.yml: job "${job}" is missing: ${command} (a run step of its own)`);
+    else if (!steps[voiceAt].includes(TESTKIT_ENV)) {
+      problems.push(`ci.yml: job "${job}" runs ${command} without its own env ${TESTKIT_ENV}`);
+    }
+    if (engine !== 'firefox') continue;
+    const audioAt = steps.findIndex((s) => s[0] === 'run: sh scripts/ci-audio-server.sh');
+    if (audioAt < 0) problems.push(`ci.yml: job "${job}" is missing: sh scripts/ci-audio-server.sh (a run step of its own)`);
+    else if (voiceAt >= 0 && audioAt > voiceAt) problems.push(`ci.yml: ${job} audio server must start before the voice suite`);
+  }
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -668,15 +706,7 @@ export function checkWorkflow(root) {
     }
   }
 
-  // Web-3 task 10: Firefox's voice suite needs the audio server running first, as browser-media's does.
-  for (const [job, { engine, voice }] of Object.entries(BROWSER_WEB_JOBS)) {
-    if (!voice || engine !== 'firefox' || !(job in jobs)) continue;
-    const audioAt = jobs[job].indexOf('sh scripts/ci-audio-server.sh');
-    const voiceAt = jobs[job].indexOf(`npm run test:e2e:voice:${engine} -w @dilla/e2e`);
-    if (audioAt !== -1 && voiceAt !== -1 && audioAt > voiceAt) {
-      problems.push(`ci.yml: ${job} audio server must start before the voice suite`);
-    }
-  }
+  checkVoiceSteps(jobs, problems);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [
