@@ -415,6 +415,8 @@ curl -fsSLO https://github.com/jonasthim/dilla/releases/download/v0.1.1/install.
 sh install.sh --upgrade
 ```
 
+Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 without output when they are valid.
+
 It checks the new binary and core against `SHA256SUMS` the same way, replaces only those two
 files, restarts `dilla` and runs doctor. The previous pair stays beside them as `dillad.prev` and
 `dilla_core_wasi.wasm.prev`. If the restart fails, it puts them back and restarts again. It never
