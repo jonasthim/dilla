@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -58,6 +59,7 @@ func TestEveryStructuralChangeTellsTheMembersOnce(t *testing.T) {
 		t.Fatalf("join = %d (%x)", status, body)
 	}
 	stranger, _ := e.NewUser("stranger")
+	gw.reset() // the join above is announced too
 
 	want := 0
 	step := func(name string, status, wantStatus int) {
@@ -118,9 +120,199 @@ func TestAMemberPastTheFirstPageIsToldToo(t *testing.T) {
 		}
 		users = append(users, u)
 	}
+	gw.reset() // the joins above are announced too
 
 	if _, _, status := newChannel(t, e, cid, ownerTok, 0, 0, 0, "planering"); status != http.StatusCreated {
 		t.Fatalf("create = %d, want 201", status)
+	}
+	for _, u := range users {
+		if got := gw.count(u); got != 1 {
+			t.Fatalf("member %s was told %d times, want 1", u, got)
+		}
+	}
+}
+
+func (g *changedGW) reset() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.seen = map[id.ID][]id.ID{}
+}
+
+// notifyEnv mounts the community, channel, ban and role routes over one notifier recording into
+// the returned changedGW, and creates a community owned by "owner".
+func notifyEnv(t *testing.T) (e *env, gw *changedGW, cid, owner id.ID, ownerTok string) {
+	t.Helper()
+	e = newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	gw = &changedGW{seen: map[id.ID][]id.ID{}}
+	notify := api.NewStructureNotifier(gw, e.Repo, log)
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).WithNotifier(notify).Register(e.Mux)
+	api.NewChannels(e.Repo, e.DS, e.Clk, 10, log).WithNotifier(notify).Register(e.Mux)
+	api.NewBans(e.Repo, e.DS, e.Clk, log).WithNotifier(notify).Register(e.Mux)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).WithDS(e.DS).WithNotifier(notify).Register(e.Mux)
+	owner, ownerTok = e.NewUser("owner")
+	cid = createCommunity(t, e, ownerTok)
+	return e, gw, cid, owner, ownerTok
+}
+
+// joinAs joins cid as a new user named name and returns its id and token.
+func joinAs(t *testing.T, e *env, cid id.ID, name string) (id.ID, string) {
+	t.Helper()
+	u, tok := e.NewUser(name)
+	joinCommunity(t, e, cid, tok)
+	return u, tok
+}
+
+// told asserts how many op 54 frames each user was sent since the last reset.
+func told(t *testing.T, gw *changedGW, step string, want map[id.ID]int) {
+	t.Helper()
+	for u, n := range want {
+		if got := gw.count(u); got != n {
+			t.Fatalf("after %s user %s was told %d times, want %d", step, u, got, n)
+		}
+	}
+}
+
+// A membership change tells the community's members once, after the commit, and a user it removed
+// once more; a ban of someone who is not a member sends that user nothing, and an unban nothing at
+// all. A refused kick sends nothing.
+func TestMembershipChangesTellTheMembersAndTheRemovedUser(t *testing.T) {
+	path := func(cid, u id.ID, rest string) string {
+		return "/v1/communities/" + cid.String() + rest + u.String()
+	}
+	t.Run("kick", func(t *testing.T) {
+		e, gw, cid, owner, ownerTok := notifyEnv(t)
+		target, _ := joinAs(t, e, cid, "target")
+		other, _ := joinAs(t, e, cid, "other")
+		gw.reset()
+		if status, _ := e.Do(http.MethodDelete, path(cid, target, "/members/"), ownerTok, nil); status != http.StatusNoContent {
+			t.Fatalf("kick = %d", status)
+		}
+		told(t, gw, "kick", map[id.ID]int{target: 1, owner: 1, other: 1})
+	})
+	t.Run("a refused kick", func(t *testing.T) {
+		e, gw, cid, owner, _ := notifyEnv(t)
+		target, _ := joinAs(t, e, cid, "target")
+		other, otherTok := joinAs(t, e, cid, "other")
+		gw.reset()
+		if status, _ := e.Do(http.MethodDelete, path(cid, target, "/members/"), otherTok, nil); status != http.StatusForbidden {
+			t.Fatalf("kick by a plain member = %d, want 403", status)
+		}
+		told(t, gw, "a refused kick", map[id.ID]int{target: 0, owner: 0, other: 0})
+	})
+	t.Run("ban of a member", func(t *testing.T) {
+		e, gw, cid, owner, ownerTok := notifyEnv(t)
+		target, _ := joinAs(t, e, cid, "target")
+		other, _ := joinAs(t, e, cid, "other")
+		gw.reset()
+		if status, _ := e.Do(http.MethodPut, path(cid, target, "/bans/"), ownerTok, []any{"", nil}); status != http.StatusNoContent {
+			t.Fatalf("ban = %d", status)
+		}
+		told(t, gw, "ban of a member", map[id.ID]int{target: 1, owner: 1, other: 1})
+	})
+	t.Run("ban of a non-member and unban", func(t *testing.T) {
+		e, gw, cid, owner, ownerTok := notifyEnv(t)
+		other, _ := joinAs(t, e, cid, "other")
+		target, _ := e.NewUser("target")
+		gw.reset()
+		if status, _ := e.Do(http.MethodPut, path(cid, target, "/bans/"), ownerTok, []any{"", nil}); status != http.StatusNoContent {
+			t.Fatalf("ban = %d", status)
+		}
+		told(t, gw, "ban of a non-member", map[id.ID]int{target: 0, owner: 1, other: 1})
+		gw.reset()
+		if status, _ := e.Do(http.MethodDelete, path(cid, target, "/bans/"), ownerTok, nil); status != http.StatusNoContent {
+			t.Fatalf("unban = %d", status)
+		}
+		told(t, gw, "unban", map[id.ID]int{target: 0, owner: 0, other: 0})
+	})
+	t.Run("join", func(t *testing.T) {
+		e, gw, cid, owner, _ := notifyEnv(t)
+		old, _ := joinAs(t, e, cid, "old")
+		gw.reset()
+		joiner, tok := joinAs(t, e, cid, "joiner")
+		told(t, gw, "join", map[id.ID]int{owner: 1, old: 1, joiner: 1})
+		// Joining again writes no membership row and announces nothing.
+		joinCommunity(t, e, cid, tok)
+		told(t, gw, "a second join", map[id.ID]int{owner: 1, old: 1, joiner: 1})
+	})
+	t.Run("leave", func(t *testing.T) {
+		e, gw, cid, owner, _ := notifyEnv(t)
+		leaver, leaverTok := joinAs(t, e, cid, "leaver")
+		other, _ := joinAs(t, e, cid, "other")
+		gw.reset()
+		if status, _ := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/leave", leaverTok, nil); status != http.StatusNoContent {
+			t.Fatalf("leave = %d", status)
+		}
+		told(t, gw, "leave", map[id.ID]int{leaver: 1, owner: 1, other: 1})
+	})
+	t.Run("delete", func(t *testing.T) {
+		e, gw, cid, owner, ownerTok := notifyEnv(t)
+		a, _ := joinAs(t, e, cid, "a")
+		b, _ := joinAs(t, e, cid, "b")
+		stranger, _ := e.NewUser("stranger")
+		gw.reset()
+		if status, _ := e.Do(http.MethodDelete, "/v1/communities/"+cid.String(), ownerTok, nil); status != http.StatusNoContent {
+			t.Fatalf("delete = %d", status)
+		}
+		told(t, gw, "delete", map[id.ID]int{owner: 1, a: 1, b: 1, stranger: 0})
+		for _, u := range []id.ID{owner, a, b} {
+			if got := gw.seen[u][0]; got != cid {
+				t.Fatalf("user %s was told of %s, want %s", u, got, cid)
+			}
+		}
+	})
+}
+
+// Every role and overwrite mutation tells every member once; a non-member is never told.
+func TestRoleAndOverwriteChangesTellTheMembers(t *testing.T) {
+	e, gw, cid, owner, ownerTok := notifyEnv(t)
+	m, _ := joinAs(t, e, cid, "member")
+	stranger, _ := e.NewUser("stranger")
+	ch, _, status := newChannel(t, e, cid, ownerTok, 0, 0, 0, "planering")
+	if status != http.StatusCreated {
+		t.Fatalf("create channel = %d", status)
+	}
+	gw.reset()
+	want := 0
+	step := func(name string, status, wantStatus int) {
+		t.Helper()
+		if status != wantStatus {
+			t.Fatalf("%s = %d, want %d", name, status, wantStatus)
+		}
+		want++
+		told(t, gw, name, map[id.ID]int{owner: want, m: want, stranger: 0})
+	}
+
+	role := createRole(t, e, cid, ownerTok, "mod", 3, api.PermPinMessages)
+	step("role create", http.StatusCreated, http.StatusCreated)
+	status, _ = e.Do(http.MethodPatch, "/v1/roles/"+role.String(), ownerTok, []any{"mods", nil, nil, nil, nil, nil, nil})
+	step("role patch", status, http.StatusNoContent)
+	grant(t, e, cid, ownerTok, m, role, http.StatusNoContent)
+	step("grant", http.StatusNoContent, http.StatusNoContent)
+	rolePath := "/v1/communities/" + cid.String() + "/members/" + m.String() + "/roles/" + role.String()
+	status, _ = e.Do(http.MethodDelete, rolePath, ownerTok, nil)
+	step("revoke", status, http.StatusNoContent)
+	owPath := "/v1/channels/" + ch.String() + "/overwrites/0/" + role.String()
+	status, _ = e.Do(http.MethodPut, owPath, ownerTok, []any{uint64(0), uint64(api.PermPinMessages)})
+	step("overwrite put", status, http.StatusNoContent)
+	status, _ = e.Do(http.MethodDelete, owPath, ownerTok, nil)
+	step("overwrite delete", status, http.StatusNoContent)
+	status, _ = e.Do(http.MethodDelete, "/v1/roles/"+role.String(), ownerTok, nil)
+	step("role delete", status, http.StatusNoContent)
+}
+
+// A community deleted with 201 members tells each of them once: the members are read a page (200)
+// at a time inside the delete's transaction, and the 201st is on the second page.
+func TestADeletedCommunityTellsAll201Members(t *testing.T) {
+	e, gw, cid, owner, ownerTok := notifyEnv(t)
+	users := []id.ID{owner}
+	for i := range 200 {
+		u, _ := joinAs(t, e, cid, fmt.Sprintf("m%03d", i))
+		users = append(users, u)
+	}
+	gw.reset()
+	if status, _ := e.Do(http.MethodDelete, "/v1/communities/"+cid.String(), ownerTok, nil); status != http.StatusNoContent {
+		t.Fatalf("delete = %d", status)
 	}
 	for _, u := range users {
 		if got := gw.count(u); got != 1 {

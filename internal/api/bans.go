@@ -28,6 +28,14 @@ type Bans struct {
 	log  *slog.Logger
 	// calls cuts a banned user's connected call sessions after the commit; nil touches no call.
 	calls *Calls
+	// notify tells the members, and once the banned member, after the commit (op 54); nil sends nothing.
+	notify *StructureNotifier
+}
+
+// WithNotifier sets where a ban is announced to the members and to the user it removed, and returns b.
+func (b *Bans) WithNotifier(n *StructureNotifier) *Bans {
+	b.notify = n
+	return b
 }
 
 func NewBans(repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) *Bans {
@@ -102,7 +110,10 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 	// The rows first, in one transaction under the community row lock the join
 	// takes too, so a join is either wholly before the ban (and its member row
 	// is deleted here) or wholly after it (and its gate reads the ban) …
+	// removed is whether a membership row was deleted: only a member is told they were removed.
+	removed := false
 	if err := b.repo.Tx(r.Context(), func(tx store.Repository) error {
+		removed = false
 		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
 			return notFound(err)
 		}
@@ -112,7 +123,10 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
-		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil && !errors.Is(err, store.ErrNotFound) {
+		switch err := tx.DeleteMember(r.Context(), m.community, m.target); {
+		case err == nil:
+			removed = true
+		case !errors.Is(err, store.ErrNotFound):
 			return err
 		}
 		// The user's own channel overwrites and channel_members rows go with the
@@ -151,6 +165,12 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 			"community", m.community, "user", m.target, "err", err)
 	}
 	syncAfterMembership(ctx, b.calls, m.community, m.target, nil)
+	// A ban of someone who was not a member tells them nothing: they may never have known the
+	// community.
+	if removed {
+		b.notify.Removed(ctx, m.community, m.target)
+	}
+	b.notify.Changed(ctx, m.community)
 	w.WriteHeader(http.StatusNoContent)
 }
 

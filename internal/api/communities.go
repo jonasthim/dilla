@@ -44,7 +44,8 @@ type Communities struct {
 	// (syncAfterMembership); nil touches no call.
 	calls *Calls
 
-	// notify tells the members, after the commit, that a PATCH changed the community (op 54);
+	// notify tells the members, after the commit, that a PATCH, join, leave or kick changed the
+	// community, the user a leave or kick removed, and a deleted community's members (op 54);
 	// nil tells nobody.
 	notify *StructureNotifier
 }
@@ -56,7 +57,8 @@ func (c *Communities) WithCalls(calls *Calls) *Communities {
 	return c
 }
 
-// WithNotifier sets where a community PATCH is announced to the members, and returns c.
+// WithNotifier sets where a community PATCH, a membership change and a delete are announced, and
+// returns c.
 func (c *Communities) WithNotifier(n *StructureNotifier) *Communities {
 	c.notify = n
 	return c
@@ -452,6 +454,7 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		if err := materialiseJoiner(afterCommit(r), c.repo, cid, s.UserID, now); err != nil {
 			c.log.ErrorContext(r.Context(), "materialise joiner", "community", cid, "user", s.UserID, "err", err)
 		}
+		c.notify.Changed(afterCommit(r), cid)
 	}
 	if err := server.EncodeBody(w, http.StatusOK, []id.ID{cid}); err != nil {
 		c.log.Error("encode join", "err", err)
@@ -744,6 +747,8 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// After the commit, never inside it: see RemoveUserFromCommunityGroups.
 	c.removeFromGroups(r, m.community, m.target)
+	c.notify.Removed(afterCommit(r), m.community, m.target)
+	c.notify.Changed(afterCommit(r), m.community)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -792,6 +797,9 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 	// A member who leaves stops receiving the community's keys: the instance
 	// removes their leaves exactly as for a kick, after the row is gone.
 	c.removeFromGroups(r, row.ID, s.UserID)
+	// The leaver's other tabs and devices learn it too, and the members see one fewer.
+	c.notify.Removed(afterCommit(r), row.ID, s.UserID)
+	c.notify.Changed(afterCommit(r), row.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -805,10 +813,15 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	// Inside the transaction: read what will be closed, then tombstone.
 	// ListChannels filters deleted_at IS NULL, so it runs BEFORE
 	// DeleteChannelsOfCommunity or it returns nothing.
-	var toClose, ids []id.ID
+	var toClose, ids, members []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		channels, err := tx.ListChannels(r.Context(), row.ID)
 		if err != nil {
+			return err
+		}
+		// The members at the moment of the delete, read under its transaction: after the
+		// commit they are told (op 54), and nobody who was not one is.
+		if members, err = communityMemberIDs(r.Context(), tx, row.ID); err != nil {
 			return err
 		}
 		ids = make([]id.ID, 0, len(channels))
@@ -843,6 +856,7 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every live call of its channels ends with it (CALLS-1), as for a channel delete.
 	c.calls.EndChannelCalls(afterCommit(r), ids, "community_deleted")
+	c.notify.ChangedTo(afterCommit(r), row.ID, members)
 	w.WriteHeader(http.StatusNoContent)
 }
 

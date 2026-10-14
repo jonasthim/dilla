@@ -409,7 +409,9 @@ the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
   null for a ban that stands until it is lifted; anything else is `400 E_INVALID_REQUEST`. A ban
   whose `expires` has passed no longer refuses a join but stays listed, as the moderation history,
   until it is lifted.
-- A **kick** removes the membership and writes no ban: the user may join again at once.
+- A **kick** removes the membership and writes no ban: the user may join again at once. A kick,
+  or a ban of a member, removes the membership and, after the commit, the instance sends
+  `community_changed` (`02`) to the remaining members and once to the removed user.
 - Lifting a ban re-adds the user to nothing; they join again.
 - After a ban, a kick or a `leave` has committed, the instance, as the external sender (`02`
   § Roles), issues one `Remove` proposal for every live leaf of the user in every `text` and `call`

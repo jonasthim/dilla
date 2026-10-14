@@ -54,6 +54,15 @@ type Roles struct {
 	// without them no call is touched.
 	tokens CallTokens
 	calls  *Calls
+	// notify tells the community's members, after the commit, that a role, grant or overwrite
+	// changed (op 54); nil sends nothing.
+	notify *StructureNotifier
+}
+
+// WithNotifier sets where a role, grant or channel overwrite change is announced, and returns h.
+func (h *Roles) WithNotifier(n *StructureNotifier) *Roles {
+	h.notify = n
+	return h
 }
 
 func NewRoles(repo store.Repository, clk clock.Clock, rpID string, log *slog.Logger) *Roles {
@@ -367,6 +376,7 @@ func (h *Roles) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "create role", err)
 		return
 	}
+	h.notify.Changed(afterCommit(r), cid)
 	if err := server.EncodeBody(w, http.StatusCreated, []id.ID{role.ID}); err != nil {
 		h.log.Error("encode create role", "err", err)
 	}
@@ -527,6 +537,7 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 	// A role's bits decide who may see every private channel of the community.
 	h.materialiseCommunity(afterCommit(r), current.CommunityID, now)
 	h.syncCallGrants(afterCommit(r), current.CommunityID, nil, nil)
+	h.notify.Changed(afterCommit(r), current.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -578,6 +589,7 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	h.materialiseCommunity(afterCommit(r), role.CommunityID, now)
 	h.syncCallGrants(afterCommit(r), role.CommunityID, nil, nil)
+	h.notify.Changed(afterCommit(r), role.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -725,6 +737,7 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), g.cid, &g.target, nil)
+	h.notify.Changed(afterCommit(r), g.cid)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -753,6 +766,7 @@ func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), g.cid, &g.target, nil)
+	h.notify.Changed(afterCommit(r), g.cid)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -916,6 +930,7 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), *o.ch.CommunityID, nil, &o.ch.ID)
+	h.notify.Changed(afterCommit(r), *o.ch.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -944,6 +959,7 @@ func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), *o.ch.CommunityID, nil, &o.ch.ID)
+	h.notify.Changed(afterCommit(r), *o.ch.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
