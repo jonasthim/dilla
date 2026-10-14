@@ -46,14 +46,16 @@ describe('MemberList', () => {
     expect(screen.getByRole('menu', { name: 'actions for Bjorn' })).toHaveStyle({ position: 'fixed', left: '33px', top: '44px' });
   });
 
-  it.each([
-    ['button -1', { button: -1, detail: 1 }],
-    ['detail 0', { button: 2, detail: 0 }],
-  ])('a contextmenu event from the keyboard (%s) opens the menu at the trigger, not at a pointer', (_name, init) => {
+  it('a contextmenu event from the keyboard (button -1) opens the menu at the trigger, not at a pointer', () => {
     render(<MemberList {...props()} />);
-    fireEvent.contextMenu(screen.getByText('Bjorn').closest('li')!, { clientX: 33, clientY: 44, ...init });
-    const menu = screen.getByRole('menu', { name: 'actions for Bjorn' });
-    expect(menu).not.toHaveStyle({ position: 'fixed' });
+    fireEvent.contextMenu(screen.getByText('Bjorn').closest('li')!, { clientX: 33, clientY: 44, button: -1, detail: 0 });
+    expect(screen.getByRole('menu', { name: 'actions for Bjorn' })).not.toHaveStyle({ position: 'fixed' });
+  });
+
+  it('Chromium’s mouse right-click (button 2, detail 0) opens the menu at the pointer', () => {
+    render(<MemberList {...props()} />);
+    fireEvent.contextMenu(screen.getByText('Bjorn').closest('li')!, { clientX: 33, clientY: 44, button: 2, detail: 0 });
+    expect(screen.getByRole('menu', { name: 'actions for Bjorn' })).toHaveStyle({ position: 'fixed', left: '33px', top: '44px' });
   });
 
   it('Shift+F10 and the ContextMenu key open the menu at the trigger', async () => {

@@ -27,8 +27,9 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
   const onContextMenu = (m: MemberListMember, e: MouseEvent<HTMLLIElement>) => {
     if (m.actions.length === 0) return;
     e.preventDefault();
-    // A contextmenu event from the keyboard (button -1, or no click count) has no pointer: open at the trigger.
-    const fromKeyboard = e.nativeEvent.button === -1 || e.detail === 0;
+    // A contextmenu event from the keyboard has button -1 and no pointer: open at the trigger. (Chromium's mouse
+    // right-click has button 2 and detail 0, so the click count says nothing.)
+    const fromKeyboard = e.nativeEvent.button === -1;
     setMenu({ id: m.id, at: fromKeyboard ? null : { x: e.clientX, y: e.clientY } });
   };
   const onKeyDown = (m: MemberListMember, e: KeyboardEvent<HTMLLIElement>) => {
