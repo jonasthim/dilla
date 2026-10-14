@@ -1238,6 +1238,20 @@ describe('direct messages', () => {
     expect(within(dialog).getByText('Sven')).toBeInTheDocument();
     expect(within(dialog).queryByText('bob')).toBeNull();
   });
+  // Fix round 3 (m4): the picker's refresh is a background read: its failure keeps the cached list and says nothing.
+  it('a failed member refresh on opening the picker shows no banner and keeps the list', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    fake.handler = c => (c.m === 'selectCommunity' ? Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 })) : Promise.resolve(null));
+    const before = fake.callsOf('selectCommunity').length;
+    await user.click(screen.getByRole('button', { name: 'message someone' }));
+    const dialog = screen.getByRole('dialog', { name: 'Message someone' });
+    await waitFor(() => expect(fake.callsOf('selectCommunity').length).toBeGreaterThan(before));
+    await act(async () => { await Promise.resolve(); });
+    expect(within(dialog).getByText('bob')).toBeInTheDocument();
+    expect(screen.queryByText(/That did not work/)).toBeNull();
+  });
+
   it('shows a refused DM in its dialog', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
     fake.handler = c => (c.m === 'openDm' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null));

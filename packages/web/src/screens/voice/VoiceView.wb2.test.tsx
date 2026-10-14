@@ -250,3 +250,16 @@ describe('the hold names the epoch it drops (re-review N-m1)', () => {
     await waitFor(() => expect(app.session.dropKeys).toHaveBeenCalledWith(7n));
   });
 });
+
+describe('fix round 3 (wave 2 client review m5)', () => {
+  it('off the stage, a removal from the server is said as such in the region that outlives the dock', async () => {
+    const app = await inHarbour();
+    await app.user.click(screen.getByRole('button', { name: /^lobby/ }));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
+    await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removed')));
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+      error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
+    await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.removedNotMember')));
+  });
+});

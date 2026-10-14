@@ -185,11 +185,30 @@ describe('App', () => {
         expect(screen.getByRole('button', { name: 'Keep the call' })).toHaveFocus();
         await user.click(screen.getByRole('button', { name: 'Keep the call' }));
         expect(requestHandover).not.toHaveBeenCalled();
+        // Fix round 3 (m3): focus returns to Use this tab, never to the page.
+        expect(screen.getByRole('button', { name: 'Use this tab' })).toHaveFocus();
         await user.click(screen.getByRole('button', { name: 'Use this tab' }));
         await user.click(screen.getByRole('button', { name: 'Leave the call and use this tab' }));
         expect(requestHandover).toHaveBeenCalledOnce();
-        // With no call in the other tab, Use this tab takes over at once.
-        vi.mocked(requestHandover).mockClear();
+      } finally { vi.unstubAllGlobals(); }
+    });
+
+    // Fix round 3 (m6): with no call in the other tab, Use this tab takes over at once, with no question.
+    it('with no call in the other tab, Use this tab takes over at once', async () => {
+      channels.length = 0;
+      vi.stubGlobal('BroadcastChannel', VoiceChannel);
+      vi.mocked(requestHandover).mockClear();
+      try {
+        const fake = new FakeClient();
+        fake.set('account', account({ phase: 'other-tab' }));
+        fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [] });
+        const user = userEvent.setup();
+        render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+        const asked = channels.find(c => c.name === `dilla-voice:${instance}`)!;
+        act(() => { for (const cb of [...asked.listeners]) cb({ data: { t: 'voice', instance, on: false } }); });
+        await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+        expect(requestHandover).toHaveBeenCalledOnce();
+        expect(screen.queryByText('You are in a call in the other tab. Using this tab ends that call.')).toBeNull();
       } finally { vi.unstubAllGlobals(); }
     });
 

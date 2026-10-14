@@ -24,9 +24,16 @@ export function TabHandover({ phase, labels, onUse, onRetry, onConfirm, onKeep }
   const keep = useRef<HTMLDivElement>(null);
   // The confirm phase replaces the Use button under focus: focus starts on the safe choice, keeping the call.
   useEffect(() => { if (phase === 'confirm') keep.current?.querySelector('button')?.focus(); }, [phase]);
+  // Fix round 3 (m3): leaving the question (Keep the call) returns focus to the Use this tab it came from.
+  const section = useRef<HTMLElement>(null);
+  const was = useRef(phase);
+  useEffect(() => {
+    if (was.current === 'confirm' && (phase === 'other-tab' || phase === 'paused')) section.current?.querySelector<HTMLButtonElement>(':scope > .d-btn')?.focus();
+    was.current = phase;
+  }, [phase]);
   const heading = phase === 'failed' ? labels.failed : phase === 'other-tab' ? labels.otherTab : phase === 'paused' ? labels.paused
     : phase === 'confirm' ? labels.voiceWarning ?? labels.otherTab : labels.wait;
-  return <section className="d-tab-handover">
+  return <section ref={section} className="d-tab-handover">
     <div role="status" aria-live="polite"><h2 tabIndex={-1} className="d-tab-handover__heading">{heading}</h2></div>
     {phase === 'paused' && labels.pausedDetail ? <p className="d-tab-handover__detail">{labels.pausedDetail}</p> : null}
     {phase === 'other-tab' || phase === 'paused' ? <Button variant="accent" onClick={onUse}>{labels.use}</Button> : null}

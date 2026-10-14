@@ -385,6 +385,15 @@ export function useCall(o: UseCallOptions): CallView {
     }
   }, [teardown]);
   const slice = o.call;
+  /** Fix round 3 (m5): the channel whose call this device was just removed from; the worker's re-read may then say the
+   *  channel is gone (E_NOT_FOUND), and off the stage the region that outlives the dock says so too. */
+  const removedFrom = useRef<string | null>(null);
+  const goneFrom = slice?.phase === 'removed' && slice.error?.code === 'E_NOT_FOUND' ? slice.channelId : null;
+  useEffect(() => {
+    if (goneFrom === null || goneFrom !== removedFrom.current) return;
+    removedFrom.current = null;
+    if (!live.current.stageShown(goneFrom)) setLasting(t('voice.removedNotMember'));
+  }, [goneFrom]);
   // f10app m2: the rejoin's wait for this device's earlier Remove (up to 30 s, the dock says "connecting") is said once in
   // the dock's status region, so a screen reader user knows why nothing happens yet.
   const rejoining = slice?.phase === 'joining' && slice.rejoining && slice.channelId === channelId && channelId !== null;
@@ -421,7 +430,7 @@ export function useCall(o: UseCallOptions): CallView {
       }
     } else if (phase === 'blocked' || phase === 'removed') {
       if (phase === 'blocked') setBlockedMidCall(id);
-      else setNotice({ channelId: id, key: 'voice.removed' });
+      else { setNotice({ channelId: id, key: 'voice.removed' }); removedFrom.current = id; }
       // Off the stage, nothing else would say why the call ended (review I6).
       if (!live.current.stageShown(id)) setLasting(t(phase === 'blocked' ? 'voice.blocked' : 'voice.removed'));
       setPauseFocusPending(false);

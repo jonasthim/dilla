@@ -656,7 +656,11 @@ export function Shell(): React.JSX.Element {
         rowLabel={badgeLabel}
         content={content}
         // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
-        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => { selectCommunity(community.id); setPickerOpen(true); }}>{t('shell.dms.new')}</Button>
+        // Fix round 3 (m4): a background read: a failure keeps the cached list and raises no banner.
+        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => {
+          client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
+          setPickerOpen(true);
+        }}>{t('shell.dms.new')}</Button>
           : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
             onJoin={id => { openVoice(id); call.join(id); }} /> : undefined} />
       <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
