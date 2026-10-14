@@ -16,6 +16,8 @@ export interface HttpRequest {
   ok?: readonly number[];
   retry429?: boolean;
   signal?: AbortSignal;
+  /** The per-attempt timeout; null opts out (a blob transfer, which may outlast it on a slow link). */
+  timeoutMs?: number | null;
 }
 export interface HttpResponse { status: number; body: Uint8Array; }
 export interface HttpDeps {
@@ -27,9 +29,14 @@ export interface HttpDeps {
   token(): string | null;
   reauthenticate(): Promise<boolean>;
   onGeneration(generation: bigint): void;
+  /** Overrides HTTP_ATTEMPT_TIMEOUT_MS (tests). */
+  attemptTimeoutMs?: number;
 }
 export const RETRY = { maxAttempts: 5, baseMs: 500, capMs: 8000, jitterMs: 250, maxWaitMs: 60000 } as const;
 const ERROR_BODY_CAP = 64 * 1024;
+/** WB I1: one attempt that has not answered in this long ends as E_NETWORK status 0, so a stalled request never holds
+ *  its caller; an idempotent one is retried as any network failure is. */
+export const HTTP_ATTEMPT_TIMEOUT_MS = 30_000;
 const abort = (): DOMException => new DOMException('The operation was aborted.', 'AbortError');
 
 export class HttpClient {
@@ -56,8 +63,11 @@ export class HttpClient {
       if (r.accept !== undefined) headers.set('Accept', r.accept);
       // Routes supplies ArrayBuffer-backed octets; a 25 MiB upload must not be copied here.
       const body = r.contentType === 'application/octet-stream' ? (r.body as Uint8Array<ArrayBuffer>) : r.body?.slice();
+      const timeoutMs = r.timeoutMs === undefined ? (this.deps.attemptTimeoutMs ?? HTTP_ATTEMPT_TIMEOUT_MS) : r.timeoutMs;
+      const signal = timeoutMs === null ? r.signal
+        : r.signal === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([r.signal, AbortSignal.timeout(timeoutMs)]);
       const init: RequestInit = { method: r.method, headers, body,
-        signal: r.signal, credentials: 'omit', cache: 'no-store', redirect: 'error' };
+        signal, credentials: 'omit', cache: 'no-store', redirect: 'error' };
       let error: DillaHttpError;
       try {
         const response = await this.fetchFn(this.baseUrl + r.path, init);
@@ -72,8 +82,10 @@ export class HttpClient {
       } catch (e) {
         if (r.signal?.aborted) throw abort();
         if (e instanceof DillaHttpError) throw e;
-        error = new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: e instanceof Error ? e.message : 'network failure',
-          retryAfterMs: null, extra: [] });
+        // A per-attempt timeout (the caller's own abort answered above) is a network failure like any other.
+        const timedOut = signal?.aborted === true;
+        error = new DillaHttpError({ status: 0, code: 'E_NETWORK',
+          detail: timedOut ? 'the request timed out' : e instanceof Error ? e.message : 'network failure', retryAfterMs: null, extra: [] });
       }
       if (error.status === 401 && r.auth !== false && !reauthenticated) {
         reauthenticated = true;

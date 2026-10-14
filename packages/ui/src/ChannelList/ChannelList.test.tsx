@@ -153,6 +153,31 @@ describe('ChannelList', () => {
     expect(container.querySelector('.d-channel-list__footer')).toBeNull();
   });
 
+  // v0.1.0-web3.1, flow 07: the server's own actions (a new channel, an invite link) stand beside its heading, before the
+  // tabs and outside the rows' roving group, each its own tab stop.
+  it('puts the actions in a group named for the server, after the heading and before the tabs', async () => {
+    const user = userEvent.setup();
+    const onNew = vi.fn();
+    const actions = <><button type="button" onClick={onNew}>new channel</button><button type="button">invite link</button></>;
+    render(<ChannelList {...props({ tabs, actions, actionsLabel: 'Midgard Crew actions' })} />);
+    const nav = screen.getByRole('navigation', { name: 'channels' });
+    const toolbar = within(nav).getByRole('group', { name: 'Midgard Crew actions' });
+    const heading = within(nav).getByRole('heading', { level: 1 });
+    const tablist = within(nav).getByRole('tablist');
+    expect(heading.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toolbar.compareDocumentPosition(tablist) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(toolbar).getAllByRole('button').map(b => b.textContent)).toEqual(['new channel', 'invite link']);
+    await user.tab();
+    expect(within(toolbar).getByRole('button', { name: 'new channel' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(onNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws no action group without actions', () => {
+    render(<ChannelList {...props({ tabs })} />);
+    expect(screen.queryByRole('group')).toBeNull();
+  });
+
   it('has no serious axe violations with badges, a muted row and tabs', async () => {
     const { container } = render(<div className="d-root"><ChannelList {...props({ channels: BADGED, activeId: 'l', rowLabel, tabs, footer: <button type="button">message someone</button> })} /></div>);
     await expectNoAxeViolations(container);

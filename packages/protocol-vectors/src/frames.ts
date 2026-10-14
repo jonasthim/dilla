@@ -13,6 +13,7 @@ const DEVICE = new Uint8Array(16).fill(0x08);
 const USER = new Uint8Array(16).fill(0x09);
 const CHANNEL = new Uint8Array(16).fill(0x0c);
 const CALL = new Uint8Array(16).fill(0x0d);
+const COMMUNITY = new Uint8Array(16).fill(0x0e);
 const TAG = new Uint8Array(32).fill(0x0a);
 const TOKEN = new Uint8Array(32).fill(0x0b);
 
@@ -69,6 +70,9 @@ export function frameVectors() {
     frame('call_ring state 1', 53, 0, null, [CALL, CHANNEL, USER, 1, 1758659030]),
     frame('call_ring state 0', 53, 0, null, [CALL, CHANNEL, USER, 0, 1758659030]),
     frame('call_ring state 2', 53, 0, null, [CALL, CHANNEL, USER, 2, 1758659030]),
+    // op 54 community_changed (S->C, dilla-web-3.1): [community_id]. A member re-reads the
+    // community's channels and settings.
+    frame('community_changed', 54, 0, null, [COMMUNITY]),
   ];
 
   const rejects = [
@@ -102,6 +106,9 @@ export function frameVectors() {
     // client decoder refuses both as E_FRAME_SHAPE (state above 2; four elements, not five).
     { name: 'call_ring state 3', frame: hex(encode([53, 0, null, [CALL, CHANNEL, USER, 3, 1758659030]])), code: 'E_FRAME_TYPE' },
     { name: 'call_ring with 4 elements', frame: hex(encode([53, 0, null, [CALL, CHANNEL, USER, 1]])), code: 'E_FRAME_TYPE' },
+    // op 54 is server-to-client as op 53 is: the instance's code is E_FRAME_TYPE, and a client
+    // decoder refuses two elements, not one, as E_FRAME_SHAPE.
+    { name: 'community_changed with 2 elements', frame: hex(encode([54, 0, null, [COMMUNITY, 1]])), code: 'E_FRAME_TYPE' },
   ];
 
   return {

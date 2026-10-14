@@ -6,3 +6,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const Plain: Story = {};
 export const WithAction: Story = { args: { action: { label: 'join a server', onAction: () => {} } } };
+// Flow 07, the shell with no server: start one, or join one.
+export const TwoWays: Story = { args: { title: 'You are not in a server yet',
+  body: 'Start a server and invite your friends, or join one with an invite someone sent you.',
+  action: { label: 'Start a server', onAction: () => {} }, secondary: { label: 'Join a server', onAction: () => {} } } };

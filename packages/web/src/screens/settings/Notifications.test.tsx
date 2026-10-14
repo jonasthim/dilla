@@ -37,7 +37,7 @@ function setup(opts: { settings?: Record<string, string>; permission?: Notificat
   }
   const fake = new FakeClient();
   fake.set('account', account());
-  fake.set('communities', [{ id: A, name: 'Midgard' }]);
+  fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, [ch(RAND, 'random', { position: 2 }), ch(VOICE, 'lounge', { kind: 1, position: 0 }), ch(GEN, 'general', { position: 1 })]);
   fake.set('dms', DMS);
   fake.set('settings', opts.settings ?? {});

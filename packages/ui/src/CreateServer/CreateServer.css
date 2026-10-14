@@ -1,0 +1,2 @@
+.d-create-server { display: grid; gap: 0.75rem; min-width: min(26rem, calc(100vw - 4.25rem)); }
+.d-create-server__body { margin: 0; max-width: 52ch; }

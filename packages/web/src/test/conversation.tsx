@@ -60,7 +60,7 @@ export function renderConversation(opts: { items?: TimelineItem[]; handler?: Fak
   if (opts.handler !== undefined) fake.handler = opts.handler;
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
-  fake.set('communities', [{ id: A, name: 'Midgard' }]);
+  fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, [CHANNEL]);
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', [{ id: DM, kind: 3, members: [ME.id, PEER], name: 'bob', group: 'active' }]);

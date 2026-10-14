@@ -57,6 +57,9 @@ const (
 	OpVoiceSelf  Op = 52
 	// OpCallRing is the DM-call ring (web-3, L-GW-33): S->C only, never persisted or replayed.
 	OpCallRing Op = 53
+	// OpCommunityChanged tells a community's members that its channels or settings changed
+	// (dilla-web-3.1): S->C only, never persisted or replayed.
+	OpCommunityChanged Op = 54
 )
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
@@ -135,6 +138,8 @@ var opSpecs = map[Op]opSpec{
 	// [call_id, channel_id, user_id, state(0..2), expires_ts]. A client never sends it, so Decode
 	// refuses a client op 53 of any shape with E_FRAME_TYPE at the opcode check.
 	OpCallRing: {elements: 5},
+	// [community_id]. Server-to-client, so a client op 54 is E_FRAME_TYPE at the opcode check.
+	OpCommunityChanged: {elements: 1},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error

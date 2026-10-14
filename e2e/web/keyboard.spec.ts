@@ -134,6 +134,8 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   expect(lap, `focus order ${lap.join(' > ')}`).toEqual([...lap].sort((a, b) => a - b));
   expect(new Set(lap).size, `each region entered once: ${lap.join(' > ')}`).toBe(lap.length);
   for (const required of [0, 1, 2, 4, 5]) expect(lap).toContain(required);
-  expect(stops.get(2), 'the sidebar is two tab stops: the tabs and the rows').toBe(2);
+  // Flow 07 (v0.1.0-web3.1, Keyboard): each server action is its own stop before the tabs. This person joined the
+  // peer's server, so they are a member, not its owner: "invite link" is their one action.
+  expect(stops.get(2), 'the sidebar is three tab stops: the member\'s "invite link", the tabs and the rows').toBe(3);
   expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
 });

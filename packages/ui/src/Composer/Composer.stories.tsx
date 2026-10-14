@@ -34,6 +34,23 @@ export const Focused: Story = {
   args: { label: 'message #Harbour-Crew', placeholder: 'message #Harbour-Crew' },
   decorators: [Story => <FocusField><Story /></FocusField>],
 };
+// Product walk I2: at 360 px a 100-byte channel name in one word, in the shown label, is cut with an ellipsis; the
+// composer never widens.
+export const LongChannelPhone: Story = {
+  args: { label: `message #${'x'.repeat(100)}`, placeholder: `message #${'x'.repeat(100)}` },
+  decorators: [Story => <div style={{ width: 328 }}><FocusField><Story /></FocusField></div>],
+  play: ({ canvasElement }) => {
+    const form = canvasElement.querySelector<HTMLElement>('.d-composer');
+    const label = canvasElement.querySelector<HTMLElement>('.d-composer__label');
+    if (form === null || label === null) throw new Error('LongChannelPhone: no composer');
+    form.querySelector('textarea')?.focus();
+    const f = form.getBoundingClientRect();
+    const l = label.getBoundingClientRect();
+    if (form.scrollWidth > form.clientWidth + 1 || l.right > f.right + 1 || document.documentElement.scrollWidth > window.innerWidth + 1) {
+      throw new Error(`LongChannelPhone: the composer overflows (form ${String(f.width)}, scroll ${String(form.scrollWidth)}, label ends at ${String(l.right)})`);
+    }
+  },
+};
 
 // ---- web-2b (L-UI-53): every string is L-COPY-03's, quoted (en.ts gains them in task 9). ----
 const ATTACH = { attachLabel: 'attach files', onAttach: () => {} };

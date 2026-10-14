@@ -88,12 +88,30 @@ type Channels struct {
 	// calls cuts a removed group-DM participant's connected call session, and re-syncs a channel's
 	// live call after a visibility change; nil touches no call.
 	calls *Calls
+	// notify tells the community's members, after the commit, that a channel was created,
+	// updated or deleted (op 54); nil tells nobody.
+	notify *StructureNotifier
 }
 
 // WithCalls sets the call routes a membership change of a channel re-syncs, and returns c.
 func (c *Channels) WithCalls(calls *Calls) *Channels {
 	c.calls = calls
 	return c
+}
+
+// WithNotifier sets where a community channel's create, update and delete is announced, and
+// returns c.
+func (c *Channels) WithNotifier(n *StructureNotifier) *Channels {
+	c.notify = n
+	return c
+}
+
+// announce sends community_changed for the community row belongs to, after the commit. A DM
+// belongs to none and is not announced.
+func (c *Channels) announce(r *http.Request, row store.ChannelRow) {
+	if row.CommunityID != nil {
+		c.notify.Changed(afterCommit(r), *row.CommunityID)
+	}
 }
 
 // NewChannels takes the delivery service that closes a deleted channel's
@@ -372,6 +390,7 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 	if err := MaterialiseChannelMembers(afterCommit(r), c.repo, c.dsvc, row, row.Created); err != nil {
 		c.log.ErrorContext(r.Context(), "materialise channel members", "channel", row.ID, "err", err)
 	}
+	c.announce(r, row)
 	if err := server.EncodeBody(w, http.StatusCreated, createChannelResp{
 		ChannelID: row.ID, Mode: uint64(row.Mode), Visibility: uint64(row.Visibility),
 	}); err != nil {
@@ -604,6 +623,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 			c.calls.RequestSync(afterCommit(r), *updated.CommunityID, nil, &updated.ID)
 		}
 	}
+	c.announce(r, updated)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -780,6 +800,7 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	// Its live call ends with it (CALLS-1), after its call group is closed: ended in the record now,
 	// so every gate refuses its room, and its room closed immediately after on the call retry loop.
 	c.calls.EndChannelCalls(afterCommit(r), []id.ID{row.ID}, "channel_deleted")
+	c.announce(r, row)
 	w.WriteHeader(http.StatusNoContent)
 }
 

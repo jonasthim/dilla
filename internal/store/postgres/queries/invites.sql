@@ -18,3 +18,9 @@ SELECT * FROM invites ORDER BY created DESC;
 
 -- name: ListInvitesByCommunity :many
 SELECT * FROM invites WHERE community_id = $1 ORDER BY created DESC;
+
+-- name: PutInviteSignup :exec
+INSERT INTO invite_signups (user_id, invite_id, created) VALUES ($1, $2, $3);
+
+-- name: TakeInviteSignup :execrows
+DELETE FROM invite_signups WHERE user_id = $1 AND invite_id = $2;

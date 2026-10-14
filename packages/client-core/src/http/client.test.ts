@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encode } from '../cbor';
-import { HttpClient, RETRY, type HttpRequest } from './client';
+import { HTTP_ATTEMPT_TIMEOUT_MS, HttpClient, RETRY, type HttpRequest } from './client';
 import { DillaHttpError } from './errors';
 import { cborReply, fakeTransport, noContent, refusal, textReply } from './fake-fetch';
 
@@ -303,6 +303,46 @@ describe('abort', () => {
       .rejects.toMatchObject({ name: 'AbortError' });
     expect(t.seen).toHaveLength(1);
     expect(t.sleeps).toEqual([]);
+  });
+});
+
+// WB I1: a request whose answer never comes no longer holds its caller (a create dialog left busy until a reload).
+describe('per-attempt timeout', () => {
+  /** A fetch that never answers, and rejects only when its signal aborts, as a browser's stalled fetch does. */
+  const hang = (t: ReturnType<typeof fakeTransport>): typeof fetch => (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    t.seen.push({ url, method: init?.method ?? 'GET', headers: new Headers(init?.headers), body: null, init: init ?? {} });
+    return new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => { reject(init.signal?.reason as Error); });
+    });
+  };
+
+  it('a stalled attempt ends as E_NETWORK status 0, and a write is not sent again', async () => {
+    const t = fakeTransport();
+    const client = new HttpClient({ ...t.deps, fetch: hang(t), attemptTimeoutMs: 20 });
+    const err = await failure(client.request(POST_WRITE));
+    expect(err).toMatchObject({ code: 'E_NETWORK', status: 0 });
+    expect(t.seen).toHaveLength(1);
+  });
+
+  it('defaults to 30 s, and the caller\'s own abort still answers AbortError', async () => {
+    expect(HTTP_ATTEMPT_TIMEOUT_MS).toBe(30_000);
+    const t = fakeTransport();
+    const controller = new AbortController();
+    const pending = new HttpClient({ ...t.deps, fetch: hang(t) }).request({ ...GET_READ, signal: controller.signal });
+    await new Promise((resolve) => { setTimeout(resolve, 5); });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('a request that opts out (timeoutMs: null) is sent with the caller\'s signal alone', async () => {
+    const t = fakeTransport();
+    t.replies.push(cborReply(200, []), cborReply(200, []));
+    const client = new HttpClient(t.deps);
+    await client.request(GET_READ);
+    await client.request({ ...GET_READ, timeoutMs: null });
+    expect(t.seen[0].init.signal).toBeInstanceOf(AbortSignal);
+    expect(t.seen[1].init.signal).toBeUndefined();
   });
 });
 

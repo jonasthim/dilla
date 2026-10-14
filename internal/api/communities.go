@@ -43,12 +43,22 @@ type Communities struct {
 	// calls cuts a kicked or departing user's connected call sessions after the commit
 	// (syncAfterMembership); nil touches no call.
 	calls *Calls
+
+	// notify tells the members, after the commit, that a PATCH changed the community (op 54);
+	// nil tells nobody.
+	notify *StructureNotifier
 }
 
 // WithCalls sets the call routes a kick or a leave cuts the user's live call sessions through, and
 // returns c. The composition root sets it whenever it runs an SFU.
 func (c *Communities) WithCalls(calls *Calls) *Communities {
 	c.calls = calls
+	return c
+}
+
+// WithNotifier sets where a community PATCH is announced to the members, and returns c.
+func (c *Communities) WithNotifier(n *StructureNotifier) *Communities {
+	c.notify = n
 	return c
 }
 
@@ -325,6 +335,7 @@ func (c *Communities) patch(w http.ResponseWriter, r *http.Request) {
 			c.fail(w, r, "patch community", err)
 			return
 		}
+		c.notify.Changed(afterCommit(r), row.ID)
 	}
 	if err := server.EncodeBody(w, http.StatusOK, []uint64{version}); err != nil {
 		c.log.Error("encode patch community", "err", err)
@@ -416,7 +427,7 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 		// The invite is spent AFTER the gate and in the same transaction as the
 		// member row: a join the gate refuses burns no use, and a use is never
 		// spent for a member row that was not written.
-		if err := c.admitByInvite(r.Context(), tx, row, hashes); err != nil {
+		if err := c.admitByInvite(r.Context(), tx, row, s.UserID, hashes); err != nil {
 			return err
 		}
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
@@ -460,7 +471,15 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 //
 // The invite's community is checked BEFORE the redemption, so an invite minted
 // for another community burns no use here.
-func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, row store.CommunityRow, hashes [][]byte) error {
+//
+// A person who registered with this very invite (POST /v1/accounts) already
+// spent its use then, and the instance remembered it (invite_signups). Their
+// first join with it takes that record instead of a second use, so a new person
+// costs an invite one use and "10 uses" means ten people. The record is taken
+// in the join's transaction, so the free join happens once; a revoked or
+// expired invite still admits nobody. Anyone else, and the sign-up itself once
+// its record is taken, redeems as before.
+func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, row store.CommunityRow, userID id.ID, hashes [][]byte) error {
 	policy, err := ParseCommunityPolicy(row.PolicyJSON)
 	if err != nil {
 		return err
@@ -482,8 +501,18 @@ func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, 
 		if inv.CommunityID == nil || *inv.CommunityID != row.ID {
 			return errInviteInvalid("that invite is for another community")
 		}
+		now := c.clk.Now().Unix()
+		switch err := repo.TakeInviteSignup(ctx, userID, inv.ID); {
+		case err == nil:
+			if inv.RevokedAt != nil || inv.ExpiresAt <= now {
+				return errInviteInvalid("the invite is expired, exhausted or revoked")
+			}
+			return nil
+		case !errors.Is(err, store.ErrNotFound):
+			return err
+		}
 		// The row exists, so a refusal now is real: expired, exhausted or revoked.
-		if _, err := repo.RedeemInvite(ctx, inv.CodeHash, c.clk.Now().Unix()); err != nil {
+		if _, err := repo.RedeemInvite(ctx, inv.CodeHash, now); err != nil {
 			if errors.Is(err, store.ErrExhausted) || errors.Is(err, store.ErrNotFound) {
 				return errInviteInvalid("the invite is expired, exhausted or revoked")
 			}

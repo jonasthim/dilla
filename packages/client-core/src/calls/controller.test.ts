@@ -47,6 +47,8 @@ export interface HarnessOptions {
   dm?: boolean | 'group';
   /** More DMs with bob, carol and dave in turn (for the ring bound). */
   extraDms?: number;
+  /** v0.1.0-web3.1: no seeded server; the model lists what a test creates through the create commands. */
+  created?: boolean;
 }
 
 export async function harness(opts: HarnessOptions = {}) {
@@ -89,10 +91,12 @@ export async function harness(opts: HarnessOptions = {}) {
   const base = ds.routesFor(ME.device) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
   const channelRows = [{ id: VOICE, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'lounge', topic: '', position: 0, seq: 1n, textGroupId: null }];
   const stubs: Record<string, (...a: unknown[]) => Promise<unknown>> = {
+    ...(opts.created === true ? {} : {
+      listCommunities: () => Promise.resolve([{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }]),
+      listChannels: () => Promise.resolve(opts.voiceChannel === true ? channelRows : []),
+    }),
     getInstance: () => Promise.resolve(INSTANCE),
     getLimits: () => Promise.resolve({ maxCiphertextBytes: 131_072, keypackagesPerDevice: 32, keypackageRefillThreshold: 0, heartbeatMs: 30_000, maxFrameBytes: 131_584 }),
-    listCommunities: () => Promise.resolve([{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }]),
-    listChannels: () => Promise.resolve(opts.voiceChannel === true ? channelRows : []),
     listMembers: () => Promise.resolve([ME, PEER, THIRD, FOURTH, ...LATE].map((p) => ({ userId: p.user, username: NAMES.get(toHex(p.user)) ?? '',
       display: NAMES.get(toHex(p.user)) ?? '', kind: 0 as const, nick: '', roleIds: [] }))),
     postTicket: () => Promise.resolve({ ticket: 'ticket', expires: 1_700_000_030n }),
@@ -449,6 +453,16 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls']);
     expect(CALL_KEYS(w.pushes('callKeys')[0]).roster).toEqual([{ leaf: 0, deviceId: toHex(ME.device), userId: toHex(ME.user) }]);
     expect(w.slice('call')).toMatchObject({ phase: 'in', outgoing: null, callId: r.callId });
+  });
+
+  it('a voice channel created through the client path has no call group until its first call registers one', async () => {
+    const w = await harness({ created: true });
+    const { communityId } = await w.call({ m: 'createCommunity', name: 'Midgard Crew' }) as { communityId: string };
+    const { channelId } = await w.call({ m: 'createChannel', communityId, kind: 'voice', name: 'general' }) as { channelId: string };
+    w.server.reset();
+    await w.call({ m: 'callJoin', channelId, vdec: 'vp8' });
+    expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls']);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', channelId });
   });
 
   it('after the instance closed an idle call group, the next join registers a fresh one', async () => {

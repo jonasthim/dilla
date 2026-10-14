@@ -75,7 +75,8 @@ describe('the copy rules', () => {
     expect(en['shell.dm.log']).toBe('messages with {name}');
     // Pre-flight ruling (rows 1.10, loop note 15): `@` before the name, so the composer keeps the name's case (web-1's label rule).
     expect(en['shell.dm.composer']).toBe('message @{name}');
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(173);
+    // Flow 07 (v0.1.0-web3.1) adds 4: shell.noServer.create, shell.dms.noServer, shell.dms.alone and shell.log.emptyMade.
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(177);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);
@@ -118,6 +119,30 @@ describe('flow 06 (L-COPY-05)', () => {
     expect(en['voice.paused'].match(/\{name\}/g)).toHaveLength(2);
     for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',
       'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+  });
+});
+
+describe('flow 07 (v0.1.0-web3.1, the create flow)', () => {
+  const doc = readFileSync(fileURLToPath(new URL('../../../../docs/design/flows/07-create.md', import.meta.url)), 'utf8');
+  const copy = doc.slice(doc.indexOf('## Copy'));
+  const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
+  it('strings: every flow-07 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
+    const table = en as Readonly<Record<string, string>>;
+    for (const [key, value] of pairs) expect(table[key], key).toBe(value);
+    for (const [key, value] of pairs) {
+      for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
+    }
+    const listed = new Set(pairs.map(([key]) => key));
+    const added = Object.keys(en).filter(k => /^(create|invite)\./.test(k) || ['shell.noServer.create', 'shell.noServer.body',
+      'shell.noServer.action', 'shell.dms.noServer', 'shell.dms.alone'].includes(k));
+    expect(added.filter(k => !listed.has(k))).toEqual([]);
+  });
+  it('names the invite constants in the Copy table and keeps the chrome lower case', () => {
+    expect(copy).toContain('`INVITE_MAX_USES=10`');
+    expect(copy).toContain('`INVITE_TTL_DAYS=7`');
+    expect(en['invite.copied']).toBe('Invite link copied.');
+    for (const k of ['create.rail.new', 'create.rail.newLabel', 'create.rail.join', 'create.channel.open', 'create.channel.button',
+      'invite.open', 'invite.copy', 'create.channel.text', 'create.channel.voice', 'create.actions'] as const) expect(en[k], k).toMatch(/^[a-z]/);
   });
 });
 

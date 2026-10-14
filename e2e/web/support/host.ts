@@ -54,18 +54,15 @@ function stop(child: ChildProcess): Promise<void> {
   });
 }
 
-export default async function globalSetup(config: FullConfig): Promise<() => Promise<void>> {
-  const c = config.metadata.dillaHost as HostConfig | undefined;
-  if (!c || !Number.isInteger(c.port) || !Number.isInteger(c.control) ||
-      (c.webRoot !== null && typeof c.webRoot !== 'string') ||
-      (c.sfu !== undefined && (!Number.isInteger(c.sfu.port) || !Number.isInteger(c.sfu.udpPort)))) {
-    throw new Error('playwright config metadata.dillaHost is not a HostConfig');
-  }
-  if (!existsSync(WASI_CORE)) throw new Error(`${WASI_CORE} is missing: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked, then copy it there`);
-  if (c.webRoot !== null && !existsSync(join(REPO_ROOT, c.webRoot, 'index.html'))) {
-    throw new Error(`${join(REPO_ROOT, c.webRoot)} has no index.html: build it first (npm run build:harness -w @dilla/client-core, or npm run build -w @dilla/web)`);
-  }
-  execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', TESTHOST_BIN, './cmd/dilla-testhost'], { stdio: 'inherit' });
+/** A started test host: its public origin, its control origin, the bootstrap invite it printed, and its stop. */
+export interface StartedHost { url: string; control: string; invite: string; stop(): Promise<void> }
+
+/**
+ * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under /tmp/dw, logging to
+ * e2e/test-results/testhost-<port>.log with the invite redacted. The host starts empty: one instance, its bootstrap
+ * invite, no account, no server, no channel (v0.1.0-web3.1's create-flow suite starts a second one of these).
+ */
+export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   const dataDir = `/tmp/dw/host-${c.port}`;
   rmSync(dataDir, { recursive: true, force: true });
   mkdirSync('/tmp/dw', { recursive: true });
@@ -79,10 +76,27 @@ export default async function globalSetup(config: FullConfig): Promise<() => Pro
     const banner = await waitForLine(host, /DILLA_TESTKIT_INVITE=\S+/, 'dilla-testhost', WAIT_MS);
     const invite = parseInvite(banner);
     if (!invite) throw new Error(`dilla-testhost printed no DILLA_TESTKIT_INVITE= line:\n${banner}`);
-    process.env.DILLA_TESTKIT_INVITE = invite;
-    process.env.DILLA_TESTKIT_CONTROL = `http://127.0.0.1:${c.control}`;
-    process.env.DILLA_TEST_HOST = `http://127.0.0.1:${c.port}`;
-    await waitForHttp(process.env.DILLA_TEST_HOST + '/', WAIT_MS);
+    const url = `http://127.0.0.1:${c.port}`;
+    await waitForHttp(url + '/', WAIT_MS);
+    return { url, control: `http://127.0.0.1:${c.control}`, invite, stop: teardown };
   } catch (e) { await teardown(); throw e; }
-  return teardown;
+}
+
+export default async function globalSetup(config: FullConfig): Promise<() => Promise<void>> {
+  const c = config.metadata.dillaHost as HostConfig | undefined;
+  if (!c || !Number.isInteger(c.port) || !Number.isInteger(c.control) ||
+      (c.webRoot !== null && typeof c.webRoot !== 'string') ||
+      (c.sfu !== undefined && (!Number.isInteger(c.sfu.port) || !Number.isInteger(c.sfu.udpPort)))) {
+    throw new Error('playwright config metadata.dillaHost is not a HostConfig');
+  }
+  if (!existsSync(WASI_CORE)) throw new Error(`${WASI_CORE} is missing: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked, then copy it there`);
+  if (c.webRoot !== null && !existsSync(join(REPO_ROOT, c.webRoot, 'index.html'))) {
+    throw new Error(`${join(REPO_ROOT, c.webRoot)} has no index.html: build it first (npm run build:harness -w @dilla/client-core, or npm run build -w @dilla/web)`);
+  }
+  execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', TESTHOST_BIN, './cmd/dilla-testhost'], { stdio: 'inherit' });
+  const host = await startTestHost(c);
+  process.env.DILLA_TESTKIT_INVITE = host.invite;
+  process.env.DILLA_TESTKIT_CONTROL = host.control;
+  process.env.DILLA_TEST_HOST = host.url;
+  return host.stop;
 }

@@ -17,6 +17,11 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* The DM picker (task 20): one row per member, the name and its "message" button, as the Screens/Shell DmPicker story draws it. */
 .dw-dm-picker { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-dm-picker__row { display: flex; justify-content: space-between; align-items: center; gap: var(--group-gap); }
+/* A long chosen name wraps inside its row and never widens the dialog; the button stays whole (product walk I2). */
+.dw-dm-picker__name { min-width: 0; overflow-wrap: anywhere; }
+.dw-dm-picker__row > .d-btn { flex-shrink: 0; }
+/* Flow 07: the owner's "+ channel" action; the glyph is decoration, the button is named "new channel". */
+.dw-new-channel .d-btn__label::before { content: "+ " / ""; color: var(--accent); }
 /* The conversation log fills the pane; the drop overlay is positioned against it. */
 .dw-conversation { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-conversation > .d-message-log { flex: 1 1 auto; }

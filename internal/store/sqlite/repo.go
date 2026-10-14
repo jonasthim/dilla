@@ -863,6 +863,25 @@ func (r *Repo) ListInvites(ctx context.Context, communityID *id.ID) ([]store.Inv
 	return out, nil
 }
 
+func (r *Repo) PutInviteSignup(ctx context.Context, userID, inviteID id.ID, at int64) error {
+	return wrap(r.w.PutInviteSignup(ctx, sqlitedb.PutInviteSignupParams{
+		UserID: userID, InviteID: inviteID, Created: at,
+	}))
+}
+
+// TakeInviteSignup is a DELETE whose row count is the guard, as RedeemInvite's
+// UPDATE is: of two racing takes exactly one sees the row.
+func (r *Repo) TakeInviteSignup(ctx context.Context, userID, inviteID id.ID) error {
+	n, err := r.w.TakeInviteSignup(ctx, sqlitedb.TakeInviteSignupParams{UserID: userID, InviteID: inviteID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func inviteRow(row sqlitedb.Invites) store.InviteRow {
 	return store.InviteRow{
 		ID: row.ID, CodeHash: row.CodeHash, CommunityID: row.CommunityID, CreatedBy: row.CreatedBy,

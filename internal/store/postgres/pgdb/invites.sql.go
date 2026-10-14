@@ -152,6 +152,21 @@ func (q *Queries) ListInvitesByCommunity(ctx context.Context, arg ListInvitesByC
 	return items, nil
 }
 
+const putInviteSignup = `-- name: PutInviteSignup :exec
+INSERT INTO invite_signups (user_id, invite_id, created) VALUES ($1, $2, $3)
+`
+
+type PutInviteSignupParams struct {
+	UserID   id.ID
+	InviteID id.ID
+	Created  int64
+}
+
+func (q *Queries) PutInviteSignup(ctx context.Context, arg PutInviteSignupParams) error {
+	_, err := q.db.ExecContext(ctx, putInviteSignup, arg.UserID, arg.InviteID, arg.Created)
+	return err
+}
+
 const redeemInvite = `-- name: RedeemInvite :one
 UPDATE invites SET used_count = used_count + 1
 WHERE code_hash = $1 AND used_count < max_uses AND revoked_at IS NULL AND expires_at > $2
@@ -193,4 +208,21 @@ type RevokeInviteParams struct {
 func (q *Queries) RevokeInvite(ctx context.Context, arg RevokeInviteParams) error {
 	_, err := q.db.ExecContext(ctx, revokeInvite, arg.RevokedAt, arg.ID)
 	return err
+}
+
+const takeInviteSignup = `-- name: TakeInviteSignup :execrows
+DELETE FROM invite_signups WHERE user_id = $1 AND invite_id = $2
+`
+
+type TakeInviteSignupParams struct {
+	UserID   id.ID
+	InviteID id.ID
+}
+
+func (q *Queries) TakeInviteSignup(ctx context.Context, arg TakeInviteSignupParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, takeInviteSignup, arg.UserID, arg.InviteID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

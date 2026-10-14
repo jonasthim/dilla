@@ -164,6 +164,12 @@ type Instances struct {
 	Created             int64
 }
 
+type InviteSignups struct {
+	UserID   id.ID
+	InviteID id.ID
+	Created  int64
+}
+
 type Invites struct {
 	ID          id.ID
 	CodeHash    []byte

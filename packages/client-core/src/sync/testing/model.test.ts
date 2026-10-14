@@ -1433,3 +1433,44 @@ describe('ModelCore call groups (L-CORE-50..52)', () => {
     expect(codeOf(() => core.callGroupForget(CALL))).toBe('ok');
   });
 });
+
+// v0.1.0-web3.1: the model answers the create routes as internal/api does, so a suite builds its server and its channels
+// through the client path instead of seeding them (the standing rule of the create-flow incident).
+describe('ModelDs creates servers and channels as internal/api does', () => {
+  const codeOf = async (p: Promise<unknown>): Promise<string> => p.then(() => 'ok', (e: unknown) => (e as { code: string }).code);
+
+  it('lists a created server for its owner, and its channels by name, kind and position', async () => {
+    const ds = new ModelDs();
+    ds.own(ME.user, ME.device);
+    const me = ds.routesFor(ME.device);
+    expect(await me.listCommunities()).toEqual([]);
+    const created = await me.createCommunity('Midgard Crew');
+    expect(created.policyVersion).toBe(1n);
+    expect(await me.listCommunities()).toEqual([{ id: created.id, name: 'Midgard Crew', owner: ME.user, policyVersion: 1n }]);
+    const text = await me.createChannel(created.id, { kind: 'text', name: 'general', position: 0 });
+    const voice = await me.createChannel(created.id, { kind: 'voice', name: 'general', position: 1 });
+    expect(text).toMatchObject({ mode: 0, visibility: 0 });
+    expect((await me.listChannels(created.id)).map((c) => [toHex(c.id), c.kind, c.name, c.position, c.textGroupId])).toEqual([
+      [toHex(text.id), 0, 'general', 0, null], [toHex(voice.id), 1, 'general', 1, null],
+    ]);
+    // A seeded channel of another server keeps its old rows.
+    expect(await me.listChannels(COMMUNITY)).toEqual([]);
+  });
+
+  it('refuses a channel to a member who is not the owner (403), an unknown server (404) and a bad name (400)', async () => {
+    const ds = new ModelDs();
+    ds.own(ME.user, ME.device);
+    ds.own(PEER.user, PEER.device);
+    const created = await ds.routesFor(ME.device).createCommunity('Midgard Crew');
+    ds.addMember(created.id, PEER.user);
+    const peer = ds.routesFor(PEER.device);
+    expect((await peer.listCommunities()).map((c) => c.name)).toEqual(['Midgard Crew']);
+    expect(await codeOf(peer.createChannel(created.id, { kind: 'text', name: 'mine', position: 0 }))).toBe('E_FORBIDDEN');
+    expect(await codeOf(peer.createChannel(idOf(0xc9, 9), { kind: 'text', name: 'x', position: 0 }))).toBe('E_NOT_FOUND');
+    expect(await codeOf(ds.routesFor(ME.device).createChannel(created.id, { kind: 'text', name: 'a\u0000b', position: 0 }))).toBe('E_INVALID_REQUEST');
+    expect(await codeOf(ds.routesFor(ME.device).createCommunity(''))).toBe('E_INVALID_REQUEST');
+    // Every member may mint an invite (@everyone holds CreateInvite by default); a stranger may not see the server.
+    expect((await peer.createInvite(created.id, { maxUses: 10, ttlSeconds: 604_800 })).url).toMatch(/^https:\/\/model\.test\/i\/\S+$/);
+    expect(await codeOf(ds.routesFor(THIRD.device).createInvite(created.id, { maxUses: 10, ttlSeconds: 60 }))).toBe('E_NOT_FOUND');
+  });
+});

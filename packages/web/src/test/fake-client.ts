@@ -223,7 +223,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   };
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '1' });
-  fake.set('communities', [{ id: A, name: 'Midgard' }]);
+  fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, CHANNELS);
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', DMS);

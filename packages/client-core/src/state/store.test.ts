@@ -35,17 +35,17 @@ describe('SliceStore', () => {
 
   it('stores a deep-frozen copy, so neither the caller nor a reader can change what was published', () => {
     const { store } = recording();
-    const list: CommunitySummary[] = [{ id: 'a'.repeat(32), name: 'one' }];
+    const list: CommunitySummary[] = [{ id: 'a'.repeat(32), name: 'one', owner: 'ee'.repeat(16) }];
     store.set('communities', list);
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the brief's test, kept as written
     list[0]!.name = 'changed';
-    list.push({ id: 'b'.repeat(32), name: 'two' });
+    list.push({ id: 'b'.repeat(32), name: 'two', owner: 'ee'.repeat(16) });
     const held = store.get('communities')!;
-    expect(held).toEqual([{ id: 'a'.repeat(32), name: 'one' }]);
+    expect(held).toEqual([{ id: 'a'.repeat(32), name: 'one', owner: 'ee'.repeat(16) }]);
     expect(Object.isFrozen(held)).toBe(true);
     expect(Object.isFrozen(held[0])).toBe(true);
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the brief's test, kept as written
-    expect(() => (held as CommunitySummary[]).push({ id: 'c'.repeat(32), name: 'three' })).toThrow(TypeError);
+    expect(() => (held as CommunitySummary[]).push({ id: 'c'.repeat(32), name: 'three', owner: 'ee'.repeat(16) })).toThrow(TypeError);
   });
 
   it('returns the same object until the slice changes', () => {
@@ -54,7 +54,7 @@ describe('SliceStore', () => {
     const first = store.get('communities');
     store.set('communities', []);
     expect(store.get('communities')).toBe(first);
-    store.set('communities', [{ id: 'a'.repeat(32), name: 'x' }]);
+    store.set('communities', [{ id: 'a'.repeat(32), name: 'x', owner: 'ee'.repeat(16) }]);
     expect(store.get('communities')).not.toBe(first);
   });
 });

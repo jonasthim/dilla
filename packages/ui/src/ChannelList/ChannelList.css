@@ -1,5 +1,11 @@
 .d-channel-list { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--bg-2); border-right: 1px solid var(--hairline); }
 .d-channel-list__title { margin: 0; padding: 0.875rem var(--row-pad-x) 0.75rem; font-family: var(--font-serif-italic); font-style: italic; font-weight: var(--weight-body); font-size: var(--text-lg); color: var(--fg); border-bottom: 1px solid var(--hairline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The server's actions sit under its name, above the tabs; the hairline moves below them. */
+.d-channel-list__title:has(+ .d-channel-list__actions) { border-bottom: 0; padding-bottom: 0.375rem; }
+/* Flow 07: both actions on one row in the 240 px sidebar, so their buttons are compact (28 px tall, 6 px sides); they
+   wrap only when a larger text size leaves no room. */
+.d-channel-list__actions { display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0 var(--row-pad-x) 0.625rem; border-bottom: 1px solid var(--hairline); }
+.d-channel-list__actions .d-btn { padding: 0 6px; }
 .d-channel-list__list { list-style: none; margin: 0; padding: 0.5rem; flex: 1; min-height: 0; overflow-y: auto; }
 .d-channel-list__empty { margin: 0; padding: 1rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); }
 .d-channel-list__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }

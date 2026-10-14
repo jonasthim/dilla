@@ -15,6 +15,10 @@ export interface ChannelListProps {
   rowLabel?(c: { name: string; unread: number; mentions: number; muted: boolean }): string;
   tabs?: ReactNode;
   footer?: ReactNode;
+  /** The server's own actions (a new channel, an invite link), a group named `actionsLabel` beside the heading, before the
+   *  tabs and outside the rows' roving group (flow 07). */
+  actions?: ReactNode;
+  actionsLabel?: string;
   /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
    *  not load, or no server at all, while the tabs stay (WORKER-WEB-02, A11Y-DESIGN-02). */
   content?: ReactNode;
@@ -36,7 +40,7 @@ export interface ChannelListProps {
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice }: ChannelListProps) {
+export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel }: ChannelListProps) {
   const activeIndex = channels.findIndex(c => c.id === activeId);
   const roving = useRovingFocus(activeIndex);
   const body = content !== undefined ? content : channels.length === 0 ? (
@@ -71,6 +75,7 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
   return (
     <nav className="d-channel-list" aria-label={label}>
       <h1 className="d-channel-list__title">{title}</h1>
+      {actions !== undefined ? <div className="d-channel-list__actions" role="group" aria-label={actionsLabel}>{actions}</div> : null}
       {tabs !== undefined ? (
         <>
           {tabs}

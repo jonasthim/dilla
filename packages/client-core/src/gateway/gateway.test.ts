@@ -418,6 +418,21 @@ describe('Gateway input checks', () => {
     s.receive(encodeFrame(Op.typing, 0, null, [GROUP, USER, DEVICE, 2, 1]));
     expect(s.closedWith?.code).toBe(CLIENT_CLOSE.undecodable);
   });
+
+  // dilla-web-3.1: community_changed reaches the worker once ready; a malformed one is dropped as an ephemeral
+  // signal is, without closing the socket.
+  it('emits community_changed (op 54) once ready and drops a malformed one', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const changed = encodeFrame(Op.communityChanged, 0, null, [GROUP]);
+    s.receive(changed);
+    expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame] : []))).toEqual([decodeFrame(changed)]);
+    const before = h.events.length;
+    s.receive(encodeFrame(Op.communityChanged, 0, null, [GROUP, 1]));
+    s.receive(encodeFrame(Op.communityChanged, 0, null, [GROUP.slice(1)]));
+    expect(h.events.slice(before)).toEqual([]);
+    expect(s.closedWith).toBeNull();
+  });
 });
 
 describe('Gateway reconnect', () => {

@@ -693,6 +693,13 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
                     expires: d.uint()?,
                 })
             }
+            // Op 54 `community_changed` `[community_id]` (web-3.1): checked for shape, then ignored; the testkit
+            // reads a community's channels when a scenario asks, never on a notice.
+            54 => {
+                expect(1)?;
+                let _community = d.bytes_exact::<16>()?;
+                Inbound::Ignored
+            }
             _ => {
                 for _ in 0..len {
                     d.skip()?;
@@ -3704,6 +3711,30 @@ mod tests {
                 .uint(1);
         });
         assert!(decode_frame(&short).is_err());
+    }
+
+    /// web-3.1: op 54 `[community_id]` is read and ignored; a second element or a short id is refused, as every
+    /// other gateway frame of the wrong shape is.
+    #[test]
+    fn the_community_changed_frame_is_ignored_and_a_misshapen_one_is_refused() {
+        let changed = cbor(|e| {
+            e.array(4).uint(54).uint(0).null();
+            e.array(1).bytes(&[0x0e; 16]);
+        });
+        assert!(matches!(
+            decode_frame(&changed).unwrap(),
+            (0, Inbound::Ignored)
+        ));
+        let long = cbor(|e| {
+            e.array(4).uint(54).uint(0).null();
+            e.array(2).bytes(&[0x0e; 16]).uint(1);
+        });
+        assert!(decode_frame(&long).is_err());
+        let short_id = cbor(|e| {
+            e.array(4).uint(54).uint(0).null();
+            e.array(1).bytes(&[0x0e; 15]);
+        });
+        assert!(decode_frame(&short_id).is_err());
     }
 
     /// web-3 L-HTTP-100 and the community of `GET /v1/channels/{id}`, as the instance writes them: a nil Go slice

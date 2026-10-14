@@ -70,3 +70,10 @@ func (h *Calls) SharersOf(call id.ID) []id.ID {
 	slices.SortFunc(out, func(a, b id.ID) int { return slices.Compare(a[:], b[:]) })
 	return out
 }
+
+// SetMemberPageForTest lowers the notifier's member page size to n and returns the restore.
+func SetMemberPageForTest(n int32) func() {
+	old := memberPage
+	memberPage = n
+	return func() { memberPage = old }
+}

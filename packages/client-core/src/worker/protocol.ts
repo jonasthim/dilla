@@ -8,7 +8,15 @@ export type Command =
   | { m: 'signupReset' }
   | { m: 'resetDevice' }
   | { m: 'joinCommunity'; invite: string }
+  // v0.1.0-web3.1, ready only. Names are checked as the instance checks them: 1..255 UTF-8 bytes for a server, 1..100 for a
+  // channel, no control character, not blank. createChannel adds a top-level channel the server cannot read.
+  | { m: 'createCommunity'; name: string }                                              // → { communityId }; listed before the ret
+  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice'; name: string }   // → { channelId }; listed before the ret
+  | { m: 'createInvite'; communityId: string; maxUses: number; ttlSeconds: number }     // → InviteCreatedResult
   | { m: 'selectCommunity'; communityId: string }
+  // Ready only → null: GET /v1/communities again; the communities slice is published before the answer (the page looks for
+  // a server whose create answer was lost, with the socket still up).
+  | { m: 'refreshCommunities' }
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }

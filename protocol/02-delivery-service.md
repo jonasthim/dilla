@@ -315,6 +315,7 @@ dense on every device of its audience; `group_id` is null.
 | 51 | `typing_set` | C→S | `[channel_id(bstr 16), typing(uint 0\|1)]` |
 | 52 | `voice_self` | C→S | `[call_id(bstr 16), flags(uint 0..3)]` |
 | 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
+| 54 | `community_changed` | S→C | `[community_id(bstr 16)]` |
 
 All ephemeral frames have `n=0` and `group_id=null`; a client may put a `cid` only in the
 frame header, never in the payload. The server accepts `typing_set` only from a member currently
@@ -380,6 +381,17 @@ recipient alone, so no third party can spend a recipient's budget and silence ho
 A client's decoder refuses a malformed `call_ring`, or one whose `state` is above 2, as
 `E_FRAME_SHAPE` and drops it without disconnecting. Sent by a client, any op 53 is `E_FRAME_TYPE`
 at the instance, as every S→C opcode is.
+
+`community_changed` tells the members of a community that its structure changed. The instance
+sends it, after the change commits, to every live connection of every member of the community
+when a channel of it is created, updated or deleted (`09` § Channels) and when the community is
+patched (`09` § Communities). A user who is not a member is never sent it. It names the
+community and nothing else: a client that lists the community reads its channels and members
+again through the routes that check its permissions, and may wait a moment so that a burst of
+changes costs one read. It is never persisted or replayed, so a client also reads the lists on
+`ready`. A client's decoder refuses a `community_changed` of any other shape as `E_FRAME_SHAPE`
+and drops it without disconnecting; it ignores one for a community it does not list. Sent by a
+client, any op 54 is `E_FRAME_TYPE` at the instance.
 
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of

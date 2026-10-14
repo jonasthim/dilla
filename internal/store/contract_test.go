@@ -62,6 +62,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		}},
 		{"Invites", reflect.TypeOf((*store.Invites)(nil)).Elem(), []string{
 			"CreateInvite", "GetInviteByHash", "ListInvites", "RedeemInvite", "RevokeInvite",
+			// dilla-web-3.1 (WB walk I1): the sign-up a join with the same invite
+			// spends no second use for.
+			"PutInviteSignup", "TakeInviteSignup",
 		}},
 		{"MLS", reflect.TypeOf((*store.MLS)(nil)).Elem(), []string{
 			"AppendHandshake",

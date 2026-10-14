@@ -1588,6 +1588,49 @@ test('a release setup-go without cache: false is reported', () => {
   assertReported(releaseProblems((t) => t.replace('          cache: false\n', '')), 'setup-go caches by default');
 });
 
+// v0.1.0-web3.1: the release stamps its tag (without the leading v) into dillad at link time; ci.yml's builds never do.
+test('a release build without the version stamp is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(' -X main.Version=${VERSION}" -o dist/dillad-linux-arm64', '" -o dist/dillad-linux-arm64')),
+    'go build without -X main.Version=${VERSION}');
+});
+
+test('an extra release go build without the version stamp is reported', () => {
+  const extra = "      - name: linux/riscv64\n        run: CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-riscv64 ./cmd/dillad\n";
+  assertReported(releaseProblems((t) => t.replace('      - name: linux/arm64\n', `${extra}      - name: linux/arm64\n`)),
+    'go build without -X main.Version=${VERSION}');
+});
+
+test('a release that does not check the stamped version is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}test "\$\(dist\/dillad-linux-amd64 version .*\n/, '')), 'dillad-linux-amd64 version');
+});
+
+test('a release build whose version does not come from the tag job is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/( {6}- name: linux\/arm64\n {8}env:\n {10}VERSION: )\$\{\{ needs\.tag\.outputs\.version \}\}/, '$1${{ github.ref_name }}')),
+    'uses the version without its own env VERSION: ${{ needs.tag.outputs.version }}');
+});
+
+test('a release whose tag job does not output the version is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('      version: ${{ steps.tag.outputs.version }}\n', '')), 'must output version');
+  assertReported(releaseProblems((t) => t.replace('          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"\n', '')), 'is missing: echo "version=${tag#v}"');
+});
+
+test('a ci.yml build that stamps a version is reported', () => {
+  const stamped = GOOD.replace("go build -trimpath -ldflags='-s -w' ./cmd/dillad", "go build -trimpath -ldflags='-s -w -X main.Version=1.2.3' ./cmd/dillad");
+  assert.notEqual(stamped, GOOD);
+  const problems = checkWorkflow(fixture(stamped));
+  assert.ok(problems.some((p) => p.includes('main.Version')), problems.join('\n'));
+});
+
+// Task 3 m2: a quoted symbol after -X, and the -X= spelling, stamp a version all the same.
+test('a ci.yml build that stamps a quoted version is reported', () => {
+  for (const flag of ["-X 'main.Version=1.2.3'", '-X "main.Version=1.2.3"', '-X=main.Version=1.2.3', "-X='main.Version=1.2.3'"]) {
+    const stamped = GOOD.replace("go build -trimpath -ldflags='-s -w' ./cmd/dillad", `go build -trimpath -ldflags="-s -w ${flag}" ./cmd/dillad`);
+    assert.notEqual(stamped, GOOD);
+    const problems = checkWorkflow(fixture(stamped));
+    assert.ok(problems.some((p) => p.includes('stamps main.Version')), `${flag}\n${problems.join('\n')}`);
+  }
+});
+
 test('the CLI checks release.yml too', () => {
   const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));

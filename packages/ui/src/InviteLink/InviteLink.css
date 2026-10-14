@@ -1,0 +1,9 @@
+.d-invite-link { display: grid; gap: 0.5rem; min-width: min(28rem, calc(100vw - 4.25rem)); }
+.d-invite-link__creating { margin: 0; color: var(--fg-2); }
+.d-invite-link__label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
+.d-invite-link__row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+/* The link is the one thing to read here: full width, mono, never clipped into an ellipsis (it scrolls in the field). */
+.d-invite-link__field { flex: 1 1 14rem; min-width: 0; height: 2.25rem; padding: 0 0.625rem; font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--accent); background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-md); }
+.d-invite-link__limits { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
+.d-invite-link__status { margin: 0; min-height: 1.25rem; font-size: var(--text-sm); color: var(--fg); }
+.d-invite-link__status:not(:empty)::before { content: "› " / ""; color: var(--accent); }

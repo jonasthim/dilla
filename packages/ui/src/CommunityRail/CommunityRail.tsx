@@ -9,6 +9,12 @@ export interface CommunityRailProps {
   onSelect(id: string): void;
   joinLabel: string;
   onJoin(): void;
+  /** A visible caption under the join tile; the join label must contain it (WCAG 2.5.3). */
+  joinCaption?: string;
+  /** "new server" (flow 07): drawn after join when both are given, with `createCaption` under it. */
+  createLabel?: string;
+  createCaption?: string;
+  onCreate?(): void;
   settingsLabel?: string;
   onSettings?(): void;
   itemLabel?(i: { name: string; unread: number; mentions: number }): string;
@@ -24,13 +30,16 @@ function initials(name: string): string {
 
 /**
  * The server rail: one square tile per server, named by the server's full name
- * (the initials are decoration), a "join" tile and, when given, the settings
- * button last. A tile with unread messages or mentions carries a pill at its
+ * (the initials are decoration), a "join" tile, a "new server" tile when given
+ * (flow 07; each action tile may carry a visible caption) and, when given, the
+ * settings button last. A tile with unread messages or mentions carries a pill at its
  * corner and is named by `itemLabel` when one is given. One tab stop with
  * roving focus over every tile, the settings button included (Global
  * Constraints keyboard map).
  */
-export function CommunityRail({ label, items, activeId, onSelect, joinLabel, onJoin, settingsLabel, onSettings, itemLabel }: CommunityRailProps) {
+export function CommunityRail({
+  label, items, activeId, onSelect, joinLabel, onJoin, joinCaption, createLabel, createCaption, onCreate, settingsLabel, onSettings, itemLabel,
+}: CommunityRailProps) {
   const activeIndex = items.findIndex(i => i.id === activeId);
   const roving = useRovingFocus(activeIndex);
   return (
@@ -53,8 +62,25 @@ export function CommunityRail({ label, items, activeId, onSelect, joinLabel, onJ
           );
         })}
         <li>
-          <button type="button" className="d-community-rail__join" aria-label={joinLabel} onClick={onJoin}><span aria-hidden="true">+</span></button>
+          <button type="button" className="d-community-rail__join" data-captioned={joinCaption !== undefined || undefined} aria-label={joinLabel} onClick={onJoin}>
+            <span className="d-community-rail__glyph" aria-hidden="true">
+              {/* An arrow into a bracket: join with an invite. "+" is kept for starting a server. */}
+              <svg className="d-community-rail__icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+                <path d="M9.5 2.5h3v11h-3M2.5 8h7M6.5 5l3 3-3 3" />
+              </svg>
+            </span>
+            {joinCaption !== undefined ? <span className="d-community-rail__caption" aria-hidden="true">{joinCaption}</span> : null}
+          </button>
         </li>
+        {createLabel !== undefined && onCreate !== undefined ? (
+          <li>
+            <button type="button" className="d-community-rail__join d-community-rail__create" data-captioned={createCaption !== undefined || undefined}
+              aria-label={createLabel} onClick={onCreate}>
+              <span className="d-community-rail__glyph" aria-hidden="true">+</span>
+              {createCaption !== undefined ? <span className="d-community-rail__caption" aria-hidden="true">{createCaption}</span> : null}
+            </button>
+          </li>
+        ) : null}
         {settingsLabel !== undefined && onSettings !== undefined ? (
           <li className="d-community-rail__settings-item">
             <button type="button" className="d-community-rail__settings" aria-label={settingsLabel} onClick={onSettings}>

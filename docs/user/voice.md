@@ -1,7 +1,7 @@
 # Voice, calls and media files
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
-camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3".
+camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.1".
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -13,7 +13,9 @@ talk: without one you can still listen.
 ![Mira in the voice channel harbour of Midgard Crew: the tiles of Ada and Björn, Mira's own tile, the call controls
 and, closed, the call code](screenshots/voice-stage-desktop.png)
 
-A server's voice channels are listed under "voice" in the channel list. While people are in one, it also shows under
+A server's voice channels are listed under "voice" in the channel list. A new server starts with one called general,
+and its owner can add more with **new channel** ([Add a channel](getting-started.md#add-a-channel)); here Ada added
+"harbour". While people are in one, it also shows under
 "active voice" at the top of the list, with "{n} in voice" and one line per person and what they are doing
 ("speaking", "muted", "deafened"). People who joined the server after you opened the page are shown by name too.
 

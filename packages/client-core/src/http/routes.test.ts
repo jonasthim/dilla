@@ -167,6 +167,40 @@ const CASES: Case[] = [
     method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/join`, bucket: 'none', idempotent: true, auth: true, sent: encode([null]),
     reply: () => cborReply(200, [COMMUNITY]), expected: undefined,
   },
+  // v0.1.0-web3.1: the create flow (internal/api communities.go createCommunityReq, channels.go createChannelReq,
+  // invites.go createInviteReq), each a fixed-position array.
+  {
+    name: 'createCommunity sends [name, empty policy, 0, 0] and reads [id, role_everyone, policy_version]',
+    call: (r) => r.createCommunity('Midgard Crew'),
+    method: 'POST', path: '/v1/communities', bucket: 'write', idempotent: false, auth: true,
+    sent: encode(['Midgard Crew', new Uint8Array(0), 0, 0]),
+    reply: () => cborReply(201, [COMMUNITY, ROLE, 1]),
+    expected: { id: COMMUNITY, roleEveryone: ROLE, policyVersion: 1n },
+  },
+  {
+    name: 'createChannel of a text channel: kind 0, the e2ee mode, private, top level, no topic, no slowmode',
+    call: (r) => r.createChannel(COMMUNITY, { kind: 'text', name: 'general', position: 0 }),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/channels`, bucket: 'write', idempotent: false, auth: true,
+    sent: encode([0, 0, 0, null, 'general', '', 0, 0]),
+    reply: () => cborReply(201, [CHANNEL, 0, 0]),
+    expected: { id: CHANNEL, mode: 0, visibility: 0 },
+  },
+  {
+    name: 'createChannel of a voice channel is kind 1 at its position',
+    call: (r) => r.createChannel(COMMUNITY, { kind: 'voice', name: 'general', position: 1 }),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/channels`, bucket: 'write', idempotent: false, auth: true,
+    sent: encode([1, 0, 0, null, 'general', '', 1, 0]),
+    reply: () => cborReply(201, [CHANNEL, 0, 0]),
+    expected: { id: CHANNEL, mode: 0, visibility: 0 },
+  },
+  {
+    name: 'createInvite sends [max_uses, ttl_seconds, 0] and reads [invite_id, code, url, expires]',
+    call: (r) => r.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 604_800 }),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/invites`, bucket: 'write', idempotent: false, auth: true,
+    sent: encode([10, 604_800, 0]),
+    reply: () => cborReply(201, [KEY_ID, 'AB12CD34', 'https://dilla.test/i/AB12CD34', 1_800_604_800]),
+    expected: { inviteId: KEY_ID, code: 'AB12CD34', url: 'https://dilla.test/i/AB12CD34', expires: 1_800_604_800n },
+  },
   {
     name: 'listChannels reads text_group_id', call: (r) => r.listChannels(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/channels`, bucket: 'read', idempotent: true, auth: true, sent: null,
@@ -472,6 +506,9 @@ const REFUSALS: RefusalCase[] = [
   { name: 'postTicket 401', call: (r) => r.postTicket(), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
   { name: 'listCommunities 403', call: (r) => r.listCommunities(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'joinCommunity 410', call: (r) => r.joinCommunity(COMMUNITY, 'AB12'), reply: () => refusal(410, 'E_INVITE_INVALID'), status: 410, code: 'E_INVITE_INVALID' },
+  { name: 'createCommunity 400', call: (r) => r.createCommunity('x'), reply: () => refusal(400, 'E_INVALID_REQUEST', 'name must be 1..255 bytes'), status: 400, code: 'E_INVALID_REQUEST' },
+  { name: 'createChannel 403', call: (r) => r.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 0 }), reply: () => refusal(403, 'E_FORBIDDEN', 'manage channels'), status: 403, code: 'E_FORBIDDEN' },
+  { name: 'createInvite 403', call: (r) => r.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 60 }), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'listChannels 404', call: (r) => r.listChannels(COMMUNITY), reply: () => refusal(404, 'E_NOT_FOUND', 'no such object'), status: 404, code: 'E_NOT_FOUND' },
   { name: 'listMembers 404', call: (r) => r.listMembers(COMMUNITY), reply: () => refusal(404, 'E_NOT_FOUND'), status: 404, code: 'E_NOT_FOUND' },
   { name: 'postGroup 409', call: (r) => r.postGroup(BODY), reply: () => refusal(409, 'E_GROUP_EXISTS'), status: 409, code: 'E_GROUP_EXISTS' },
@@ -593,6 +630,55 @@ describe('Routes: retries and inputs', () => {
     }
     expect(t.seen).toHaveLength(0);
   });
+  it('refuses a create the server would refuse, before sending (its own bounds and its control-character rule)', async () => {
+    const { t, routes } = setup();
+    const attempts: (() => Promise<unknown>)[] = [
+      () => routes.createCommunity(''),
+      () => routes.createCommunity('x'.repeat(256)),
+      () => routes.createCommunity('å'.repeat(128)),            // 256 UTF-8 bytes in 128 characters
+      () => routes.createCommunity('tab\there'),
+      () => routes.createCommunity('del\u007f'),
+      () => routes.createCommunity('c1\u0085'),
+      () => routes.createChannel(COMMUNITY, { kind: 'text', name: '', position: 0 }),
+      () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'x'.repeat(101), position: 0 }),
+      () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'new\nline', position: 0 }),
+      () => routes.createChannel(COMMUNITY, { kind: 'category' as 'text', name: 'x', position: 0 }),
+      () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: -1 }),
+      () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 2 ** 31 }),
+      () => routes.createChannel(new Uint8Array(15), { kind: 'text', name: 'x', position: 0 }),
+      () => routes.createInvite(COMMUNITY, { maxUses: 0, ttlSeconds: 60 }),
+      () => routes.createInvite(COMMUNITY, { maxUses: 1001, ttlSeconds: 60 }),
+      () => routes.createInvite(COMMUNITY, { maxUses: 1.5, ttlSeconds: 60 }),
+      () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 0 }),
+      () => routes.createInvite(COMMUNITY, { maxUses: 10, ttlSeconds: 30 * 24 * 3600 + 1 }),
+      () => routes.createInvite(new Uint8Array(17), { maxUses: 10, ttlSeconds: 60 }),
+    ];
+    for (const [i, attempt] of attempts.entries()) {
+      await expect(attempt(), `attempt ${i}`).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    }
+    expect(t.seen).toHaveLength(0);
+  });
+  it('a server name of exactly 255 bytes of emoji is sent, and 256 bytes is refused before any request', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [COMMUNITY, ROLE, 1]));
+    const edge = '😀'.repeat(63) + 'abc';                         // 63×4 + 3 = 255 UTF-8 bytes
+    expect(await routes.createCommunity(edge)).toEqual({ id: COMMUNITY, roleEveryone: ROLE, policyVersion: 1n });
+    expect(t.seen[0].body).toEqual(encode([edge, new Uint8Array(0), 0, 0]));
+    await expect(routes.createCommunity('😀'.repeat(64))).rejects.toThrow(/^E_ROUTE_INPUT: name must be 1\.\.255 bytes$/);
+    expect(t.seen).toHaveLength(1);
+  });
+  it('a channel name of exactly 100 bytes is sent, 101 bytes or a bell character is refused before any request', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [CHANNEL, 0, 0]));
+    const edge = 'å'.repeat(50);                                  // 50×2 = 100 UTF-8 bytes
+    await routes.createChannel(COMMUNITY, { kind: 'text', name: edge, position: 0 });
+    expect(t.seen[0].body).toEqual(encode([0, 0, 0, null, edge, '', 0, 0]));
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: edge + 'x', position: 0 }))
+      .rejects.toThrow(/^E_ROUTE_INPUT: name must be 1\.\.100 bytes$/);
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a\u0007b', position: 0 }))
+      .rejects.toThrow(/^E_ROUTE_INPUT: name contains a control character$/);
+    expect(t.seen).toHaveLength(1);
+  });
   it('postMessage is sent once after a network failure', async () => {
     const { t, routes } = setup();
     t.replies.push(new TypeError('fetch failed'), bytesReply(200, UPLOADED));
@@ -666,6 +752,34 @@ describe('Routes: response shapes', () => {
     await expect(routes.listCommunities()).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
 
+  it('refuses a create answer that is short, and an invite link that is not http(s)', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [COMMUNITY, ROLE]), cborReply(201, [CHANNEL, 0]),
+      cborReply(201, [KEY_ID, 'AB12', 'https://dilla.test/i/AB12']),
+      cborReply(201, [KEY_ID, 'AB12', 'javascript:alert(1)', 1_800_000_000]),
+      cborReply(201, [KEY_ID, 'AB12', 'not a link', 1_800_000_000]));
+    await expect(routes.createCommunity('x')).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 0 })).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+    await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 })).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+    await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 })).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+    await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 })).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+  });
+
+  // WB m6: the link is the instance's invite landing for the answered code, nothing else: path /i/<code>, no query, no
+  // fragment. Attacker: an instance (or anything between) handing out a link that looks like an invite and leads elsewhere.
+  it('refuses an invite link whose path is not /i/<the answered code>', async () => {
+    const { t, routes } = setup();
+    const bad = ['https://dilla.test/i/ZZ99', 'https://dilla.test/x/AB12', 'https://dilla.test/i/AB12/more',
+      'https://dilla.test/', 'https://dilla.test/i/AB12?next=https://evil.test', 'https://dilla.test/i/AB12#x',
+      'https://dilla.test/welcome?invite=AB12'];
+    for (const url of bad) t.replies.push(cborReply(201, [KEY_ID, 'AB12', url, 1_800_000_000]));
+    for (const url of bad) {
+      await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 }), url).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+    }
+    t.replies.push(cborReply(201, [KEY_ID, 'AB12', 'http://dilla.test:8443/i/AB12', 1_800_000_000]));
+    await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 })).resolves.toMatchObject({ url: 'http://dilla.test:8443/i/AB12' });
+  });
+
   it('keeps auth methods it does not know', async () => {
     const { t, routes } = setup();
     const doc = [...INSTANCE_DOC];
@@ -722,6 +836,21 @@ describe('Routes: web-2b deletes and blobs', () => {
     await routes.putBlob(CHANNEL, BLOB_ID, STORED);
     expect(t.seen[0].headers.get('content-type')).toBe('application/octet-stream');
     expect(t.seen[0].init.body).toBe(STORED);
+  });
+
+  // WB I1: the 30 s per-attempt timeout is for small requests; a blob transfer may take longer on a slow link, so the
+  // two blob calls opt out. A backup is capped (256 B kind 0, about 1 MiB kind 1) and sits on the sign-up, sign-in
+  // and revoke paths, so it gets a longer 120 s bound rather than none. Everything else keeps the default.
+  it('blob transfers opt out of the per-attempt timeout; backups get 120 s; a create keeps the default', async () => {
+    const { t, http, routes } = setup();
+    t.replies.push(cborReply(201, [BLOB_ID, 5]), bytesReply(200, STORED), cborReply(201, [new Uint8Array(32), 9]),
+      cborReply(200, [new Uint8Array(4), 1]), cborReply(201, [CHANNEL, 0, 0]));
+    await routes.putBlob(CHANNEL, BLOB_ID, STORED);
+    await routes.getBlob(CHANNEL, BLOB_ID);
+    await routes.putBackup(0, new Uint8Array(4));
+    await routes.getBackup(0);
+    await routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 0 });
+    expect(http.requests.map((r) => r.timeoutMs)).toEqual([null, null, 120_000, 120_000, undefined]);
   });
 
   it('confirmBlob sends neither a body nor a content type', async () => {
