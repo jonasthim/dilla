@@ -1564,6 +1564,30 @@ test('every third-party action in release.yml is pinned to a commit', () => {
   for (const line of thirdParty) assert.match(line, /@[0-9a-f]{40} # \S+$/, line);
 });
 
+test('a release that attaches an unstamped install.sh is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}sed -i "s\/\^DILLA_RELEASE_TAG=.*\n/, '')), 'DILLA_RELEASE_TAG');
+});
+
+test('a release that does not check the stamp landed is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}test "\$\(grep -c "\^DILLA_RELEASE_TAG=.*\n/, '')), 'grep -c');
+});
+
+test('a release that does not refuse an existing release by name is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}if gh release view "\$TAG".*\n/, '')), 'gh release view');
+});
+
+test('a tag job that releases a commit off main is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}git merge-base --is-ancestor .*\n/, '')), 'origin/main');
+});
+
+test('a build cache in the release workflow is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('          node-version-file: .nvmrc\n', '          node-version-file: .nvmrc\n          cache: npm\n')), 'build cache');
+});
+
+test('a release setup-go without cache: false is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('          cache: false\n', '')), 'setup-go caches by default');
+});
+
 test('the CLI checks release.yml too', () => {
   const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));

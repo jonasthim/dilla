@@ -3,9 +3,17 @@ name: release
 # embedded, the wasm32-wasip1 core, deploy/install.sh and SHA256SUMS over all of them. install.sh
 # downloads exactly these assets. No container image is built or pushed here.
 #
-# workflow_dispatch re-runs a release for an existing tag: choose the tag itself as the ref in "Use
-# workflow from" and type the same tag; the tag job refuses a mismatch, so the assets are always
-# built from the tagged commit.
+# The attached install.sh has the tag stamped into DILLA_RELEASE_TAG, so it installs this release by
+# default: there is no "latest" (GitHub never serves a prerelease as latest, and every hyphenated tag
+# is a prerelease here).
+#
+# Only a tag on a commit of main is released: main is what ci.yml gates. Third-party actions are
+# pinned to commits and no job restores a build cache, because the release job publishes what
+# install.sh runs as root.
+#
+# workflow_dispatch builds the release for an existing tag that has none yet (say, after a failed
+# run): choose the tag itself as the ref in "Use workflow from" and type the same tag; the tag job
+# refuses a mismatch. A release that already exists is refused; delete it first to rebuild it.
 on:
   push:
     tags: ['v*']
@@ -29,7 +37,10 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
-      - name: The release tag is the ref the workflow runs on
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: The release tag is the ref the workflow runs on, on a commit of main
         id: tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
@@ -43,6 +54,7 @@ jobs:
             *[!A-Za-z0-9.+_-]*) echo "the tag holds a character a release tag must not: $tag"; exit 1 ;;
           esac
           test "$GITHUB_REF" = "refs/tags/$tag" || { echo "run the workflow from the tag $tag itself, not from $GITHUB_REF"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$tag points at $GITHUB_SHA, which is not on main; only main, which ci.yml gates, is released"; exit 1; }
           case "$tag" in
             *-*) prerelease=true ;;
             *) prerelease=false ;;
@@ -83,11 +95,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: npm
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
@@ -128,7 +139,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
       - run: rm -rf internal/web/dist
       - name: Fetch the web client built by the web-build job
         uses: actions/download-artifact@v8
@@ -171,8 +182,12 @@ jobs:
           name: dilla-core-wasi
           path: release
       - name: Assets and SHA256SUMS
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
         run: |
           cp deploy/install.sh release/install.sh
+          sed -i "s/^DILLA_RELEASE_TAG=\"\"$/DILLA_RELEASE_TAG=\"$TAG\"/" release/install.sh
+          test "$(grep -c "^DILLA_RELEASE_TAG=\"$TAG\"$" release/install.sh)" -eq 1
           cd release
           for f in dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh; do test -s "$f"; done
           test "$(ls | wc -l)" -eq 4
@@ -185,6 +200,7 @@ jobs:
           TAG: ${{ needs.tag.outputs.tag }}
           PRERELEASE: ${{ needs.tag.outputs.prerelease }}
         run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists; delete it first to rebuild it"; exit 1; fi
           flags=""
           if [ "$PRERELEASE" = true ]; then flags="--prerelease"; fi
           gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $flags \

@@ -758,7 +758,13 @@ export function checkWorkflow(root) {
 export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'go-release', 'release'];
 export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
 const RELEASE_STEPS = {
-  tag: ['test "$GITHUB_REF" = "refs/tags/$tag"', 'INPUT_TAG: ${{ inputs.tag }}', '*-*) prerelease=true ;;'],
+  tag: [
+    'test "$GITHUB_REF" = "refs/tags/$tag"',
+    'INPUT_TAG: ${{ inputs.tag }}',
+    '*-*) prerelease=true ;;',
+    // Only a commit on main, which ci.yml has gated, is released (review M6).
+    'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
+  ],
   'web-build': [
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
     'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
@@ -774,6 +780,10 @@ const RELEASE_STEPS = {
   ],
   release: [
     'cp deploy/install.sh release/install.sh',
+    // install.sh downloads from the tag stamped into it (review I1): no "latest", which a prerelease never is.
+    `sed -i "s/^DILLA_RELEASE_TAG=\\"\\"$/DILLA_RELEASE_TAG=\\"$TAG\\"/" release/install.sh`,
+    'test "$(grep -c "^DILLA_RELEASE_TAG=\\"$TAG\\"$" release/install.sh)" -eq 1',
+    'gh release view "$TAG"',
     `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
     'sha256sum -c --strict SHA256SUMS',
     'gh release create "$TAG" --verify-tag',
@@ -812,6 +822,15 @@ export function checkReleaseWorkflow(root) {
   if (!/^ {2}workflow_dispatch:\n {4}inputs:\n {6}tag:$/m.test(text)) problems.push(`${file}: must offer workflow_dispatch with a tag input`);
   if (!/^permissions:\n {2}contents: read$/m.test(text)) problems.push(`${file}: the workflow-level token must be read-only (permissions: contents: read)`);
   if (/docker\/|ghcr\.io|packages: write/.test(text)) problems.push(`${file}: builds or pushes a container image; the release carries only the native assets`);
+  // A tag run can restore a cache a branch run wrote, and the release embeds what it builds (review M7).
+  lines.forEach((line, i) => {
+    if (/^\s*cache:\s*(?!false\s*$)\S/.test(line) || /uses:\s*Swatinem\/rust-cache@/.test(line)) {
+      problems.push(`${file}:${i + 1}: a build cache in the release workflow; release builds start clean`);
+    }
+  });
+  for (const m of text.matchAll(/uses: actions\/setup-go@\S+\n((?: {8,}\S.*\n)*)/g)) {
+    if (!/^ {10}cache: false$/m.test(m[1])) problems.push(`${file}: actions/setup-go caches by default; set cache: false in the release workflow`);
+  }
 
   const jobs = splitJobs(text);
   for (const name of RELEASE_JOBS) {
