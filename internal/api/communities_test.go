@@ -572,3 +572,87 @@ func newTestCredential(user id.ID, rpID string, now int64) store.WebauthnCredent
 		Flags: []byte{0}, ExtensionsJSON: "{}", Created: now,
 	}
 }
+
+func TestOwnPermissionsRead(t *testing.T) {
+	e := communityEnv(t)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	path := "/v1/communities/" + cid.String() + "/permissions"
+	read := func(tok string) (uint64, uint64) {
+		t.Helper()
+		status, body := e.Do(http.MethodGet, path, tok, nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET permissions = %d (%x)", status, body)
+		}
+		var got struct {
+			_    struct{} `cbor:",toarray"`
+			Bits uint64
+			Top  uint64
+		}
+		mustUnmarshal(t, body, &got)
+		return got.Bits, got.Top
+	}
+	join := func(tok string) {
+		t.Helper()
+		if status, _ := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/join", tok, []any{nil}); status != http.StatusOK {
+			t.Fatal("join failed")
+		}
+	}
+	grant := func(user id.ID, position, allow uint64) {
+		t.Helper()
+		role := id.New()
+		if err := e.Repo.PutRole(t.Context(), store.RoleRow{ID: role, CommunityID: cid, Name: "r", Position: position,
+			Allow: allow, Created: e.Clk.Now().Unix()}); err != nil {
+			t.Fatalf("PutRole: %v", err)
+		}
+		if err := e.Repo.PutMemberRole(t.Context(), cid, user, role); err != nil {
+			t.Fatalf("PutMemberRole: %v", err)
+		}
+	}
+
+	if bits, top := read(ownerTok); bits != uint64(api.PermAll) || top != 1<<31 {
+		t.Errorf("owner = [%d, %d], want [PermAll, 2147483648]", bits, top)
+	}
+
+	_, freshTok := e.NewUser("fresh")
+	join(freshTok)
+	if bits, top := read(freshTok); bits != uint64(api.DefaultEveryoneAllow) || top != 0 {
+		t.Errorf("fresh member = [%d, %d], want [everyone, 0]", bits, top)
+	}
+
+	modID, modTok := e.NewUser("mod")
+	join(modTok)
+	grant(modID, 5, uint64(api.PermKickMembers))
+	if bits, top := read(modTok); bits != uint64(api.DefaultEveryoneAllow|api.PermKickMembers) || top != 5 {
+		t.Errorf("moderator = [%d, %d], want [everyone|kick, 5]", bits, top)
+	}
+
+	adminID, adminTok := e.NewUser("admin")
+	join(adminTok)
+	grant(adminID, 3, uint64(api.PermAdministrator))
+	if bits, top := read(adminTok); bits != uint64(api.PermAll) || top != 3 {
+		t.Errorf("administrator = [%d, %d], want [PermAll, 3]", bits, top)
+	}
+
+	// @everyone with view denied resolves to nothing for a plain member.
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	everyone := roles[0]
+	everyone.Allow, everyone.Deny = 0, uint64(api.PermViewChannel)
+	if err := e.Repo.PutRole(t.Context(), everyone); err != nil {
+		t.Fatalf("PutRole everyone: %v", err)
+	}
+	if bits, top := read(freshTok); bits != 0 || top != 0 {
+		t.Errorf("view denied = [%d, %d], want [0, 0]", bits, top)
+	}
+
+	_, strangerTok := e.NewUser("stranger")
+	if status, _ := e.Do(http.MethodGet, path, strangerTok, nil); status != http.StatusNotFound {
+		t.Errorf("non-member = %d, want 404", status)
+	}
+	if status, _ := e.Do(http.MethodGet, "/v1/communities/"+id.New().String()+"/permissions", ownerTok, nil); status != http.StatusNotFound {
+		t.Errorf("unknown community = %d, want 404", status)
+	}
+}

@@ -84,6 +84,7 @@ func (c *Communities) Register(mux *server.Mux) {
 	mux.HandleFunc("PATCH /v1/communities/{id}", c.patch)
 	mux.HandleFunc("DELETE /v1/communities/{id}", c.delete)
 	mux.HandleFunc("GET /v1/communities/{id}/members", c.members)
+	mux.HandleFunc("GET /v1/communities/{id}/permissions", c.permissions)
 	mux.HandleFunc("DELETE /v1/communities/{id}/members/{user_id}", c.removeMember)
 	mux.HandleFunc("POST /v1/communities/{id}/join", c.join)
 	mux.HandleFunc("POST /v1/communities/{id}/leave", c.leave)
@@ -665,6 +666,41 @@ func (c *Communities) members(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
 		c.log.Error("encode members", "err", err)
+	}
+}
+
+// ownerTop is the Top a caller who owns the community reads: above every role
+// position (2^31), so a client compares it with a target's position unchanged.
+const ownerTop uint64 = 1 << 31
+
+type permissionsResp struct {
+	_    struct{} `cbor:",toarray"`
+	Bits uint64
+	Top  uint64
+}
+
+// permissions answers the caller's own community-wide permissions (no channel
+// overwrite) and the position of their highest role: 0 for @everyone alone and
+// ownerTop for the owner. A member only; anyone else gets 404.
+func (c *Communities) permissions(w http.ResponseWriter, r *http.Request) {
+	row, s, err := c.memberOnly(r)
+	if err != nil {
+		c.fail(w, r, "read permissions", err)
+		return
+	}
+	snap, err := LoadSnapshot(r.Context(), c.repo, row.ID, s.UserID, nil)
+	if err != nil {
+		c.fail(w, r, "read permissions", notFound(err))
+		return
+	}
+	resp := permissionsResp{Bits: uint64(snap.Resolve(s.UserID))}
+	if s.UserID == snap.Owner {
+		resp.Top = ownerTop
+	} else if top, held := snap.Highest(s.UserID); held {
+		resp.Top = top
+	}
+	if err := server.EncodeBody(w, http.StatusOK, resp); err != nil {
+		c.log.Error("encode permissions", "err", err)
 	}
 }
 

@@ -235,6 +235,7 @@ community answers `404` to everyone.
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
 | `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/permissions` | — | `[bits(uint), top(uint)]`: the caller's community-wide permissions (§ Permissions; no channel overwrite applied) and the position of the caller's highest role, `0` for `@everyone` alone and `2147483648` for the owner |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
 | `POST /v1/communities/{id}/leave` | `[]` | `204` |
@@ -245,6 +246,7 @@ community answers `404` to everyone.
   removed. `PATCH` needs `manage_community` (§ Permissions); `DELETE` is the owner's alone
   (`403 E_FORBIDDEN` for any other member). Removing a member is the **kick** of § Bans. Role
   grants are § Roles'.
+- Any member reads their own. A client uses it to offer only what the instance allows and still handles every refusal.
 - `leave` removes the caller's leaves from every `text` and `call` group of the community's
   channels, as a kick does (§ Bans). `DELETE` closes every such group after the community and its
   channels are tombstoned.
