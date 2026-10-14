@@ -233,3 +233,32 @@ describe('MessageRow', () => {
     await expectNoAxeViolations(container);
   });
 });
+
+describe('MessageRow mention colour dot', () => {
+  const parts = [
+    { kind: 'mention', label: '@mods', me: false, broadcast: false, color: 0x3498db },
+    { kind: 'text', text: ' ' },
+    { kind: 'mention', label: '@none', me: false, broadcast: false, color: null },
+    { kind: 'text', text: ' ' },
+    { kind: 'mention', label: '@zero', me: false, broadcast: false, color: 0 },
+    { kind: 'text', text: ' ' },
+    { kind: 'mention', label: '@ada', me: true, broadcast: false },
+  ] as const;
+
+  it('draws an aria-hidden dot in the colour before a coloured mention only, leaving its text unchanged', () => {
+    const { container } = render(<MessageRow author="mira" time="21:03" state="ok" body={parts} />);
+    const pills = [...container.querySelectorAll('.d-mention')];
+    expect(pills.map(p => p.textContent)).toEqual(['@mods', '@none', '@zero', '@ada']);
+    const dot = pills[0]!.querySelector('.d-mention__dot') as HTMLElement;
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveAttribute('aria-hidden', 'true');
+    expect(dot.style.getPropertyValue('--d-swatch')).toBe('#3498db');
+    expect(pills[0]!.firstElementChild).toBe(dot);
+    expect(container.querySelectorAll('.d-mention__dot')).toHaveLength(1);
+  });
+
+  it('has no serious axe violations with a dotted mention', async () => {
+    const { container } = render(<div className="d-root"><MessageRow author="mira" time="21:03" state="ok" body={parts} /></div>);
+    await expectNoAxeViolations(container);
+  });
+});

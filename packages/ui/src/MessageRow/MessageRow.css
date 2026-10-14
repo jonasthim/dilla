@@ -44,6 +44,8 @@
 .d-mention[data-me="true"]:not([data-broadcast]) { background: var(--mention); color: var(--mention-ink); }
 .d-mention[data-broadcast="true"] { background: transparent; box-shadow: inset 0 0 0 1px var(--mention); }
 .d-mention[data-broadcast="true"][data-me="true"] { font-weight: var(--weight-display); }
+/* The dot's fill is data (--d-swatch, set inline as #rrggbb); the text keeps its token colour for contrast. */
+.d-mention__dot { display: inline-block; width: 0.5rem; height: 0.5rem; margin-right: 0.25rem; background: var(--d-swatch); border-radius: var(--r-pill); }
 .d-message-row[data-mention="true"] { box-shadow: inset 2px 0 0 var(--mention); }
 .d-message-row[data-flash="true"] { animation: d-row-flash var(--duration-flash) ease-out; }
 @keyframes d-row-flash { from { background: var(--accent-soft); } to { background: transparent; } }

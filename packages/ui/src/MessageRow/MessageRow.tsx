@@ -1,11 +1,11 @@
-import { useId, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
+import { useId, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref } from 'react';
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
 import './MessageRow.css';
 
 /** A piece of a message body: plain text, or a mention shown as a pill whose text is its `@` name. */
-export type BodyPart = { kind: 'text'; text: string } | { kind: 'mention'; label: string; me: boolean; broadcast: boolean };
+export type BodyPart = { kind: 'text'; text: string } | { kind: 'mention'; label: string; me: boolean; broadcast: boolean; /** A role mention's colour, 0xRRGGBB. Null or 0: no dot. */ color?: number | null };
 
 export interface MessageRowProps {
   author: string;
@@ -44,7 +44,8 @@ function bodyChildren(body: string | readonly BodyPart[]): ReactNode {
   if (typeof body === 'string') return body;
   return body.map((part, i) => (part.kind === 'text'
     ? part.text
-    : <span key={i} className="d-mention" data-me={flag(part.me)} data-broadcast={flag(part.broadcast)}>{part.label}</span>));
+    : <span key={i} className="d-mention" data-me={flag(part.me)} data-broadcast={flag(part.broadcast)}>
+      {part.color ? <span className="d-mention__dot" aria-hidden="true" style={{ '--d-swatch': `#${(part.color & 0xffffff).toString(16).padStart(6, '0')}` } as CSSProperties} /> : null}{part.label}</span>));
 }
 
 function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['reply']>; tabIndex: number }) {
