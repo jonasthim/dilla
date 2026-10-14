@@ -29,6 +29,27 @@ describe('Select', () => {
     expect(p.onChange).toHaveBeenCalledExactlyOnceWith('b');
   });
 
+  it('the label is tied to the select by id: getByLabelText finds it and a click on the label focuses it', async () => {
+    const user = userEvent.setup();
+    render(<Select {...props()} />);
+    const select = screen.getByLabelText('Category');
+    expect(select.tagName).toBe('SELECT');
+    expect((screen.getByText('Category') as HTMLLabelElement).htmlFor).toBe(select.id);
+    await user.click(screen.getByText('Category'));
+    expect(select).toHaveFocus();
+  });
+
+  it('shows the value it is given and reports the option value, not its label, on change', async () => {
+    const user = userEvent.setup();
+    const p = props({ value: 'b' });
+    const { rerender } = render(<Select {...p} />);
+    expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue('b');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Category' }), 'alpha');
+    expect(p.onChange).toHaveBeenLastCalledWith('a');
+    rerender(<Select {...p} value="a" />);
+    expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue('a');
+  });
+
   it('can be disabled', () => {
     render(<Select {...props({ disabled: true })} />);
     expect(screen.getByRole('combobox', { name: 'Category' })).toBeDisabled();
