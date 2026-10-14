@@ -14,8 +14,11 @@ import (
 	"github.com/jonasthim/dilla/internal/exit"
 )
 
-// Version is bumped by the release process, not by the build.
-const Version = "0.0.0-dev"
+// Version is the release's tag without its leading v, stamped at link time by
+// release.yml (-ldflags "-X main.Version=<version>"). Every other build, ci.yml's
+// included, keeps 0.0.0-dev. It is a variable because the linker sets only a
+// package-level string variable; it ignores a constant without a word.
+var Version = "0.0.0-dev"
 
 type verb struct {
 	name    string

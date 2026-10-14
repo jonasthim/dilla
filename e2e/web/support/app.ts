@@ -424,14 +424,20 @@ export async function readRecoveryKey(page: Page): Promise<string[]> {
 }
 
 /** The whole onboarding with the pointer; returns what the person would have written down. */
+/** A new account's details: a random username, the given display name and the suite's password. */
+export function newAccount(display = 'web tester'): Account {
+  return { username: `w${randomInt(0, 0xffff_ffff).toString(16).padStart(8, '0')}`, display, password: 'e2e-password-1234', recoveryKey: [] };
+}
+
 export async function signUp(page: Page, invite: string, instanceName: string, display = 'web tester'): Promise<Account> {
-  const account: Account = {
-    username: `w${randomInt(0, 0xffff_ffff).toString(16).padStart(8, '0')}`,
-    display,
-    password: 'e2e-password-1234',
-    recoveryKey: [],
-  };
+  const account = newAccount(display);
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
+  return completeSignUp(page, account, instanceName);
+}
+
+/** The five onboarding steps from the first one (`Join {instance}`), however the page got there: the invite link's
+ *  landing page, or /welcome?invite=. Fills in `account` with what the person writes down. */
+export async function completeSignUp(page: Page, account: Account, instanceName: string): Promise<Account> {
   await expectHeading(page, COPY.connectTitle, { instance: instanceName });
   await nextButton(page).click();
   await expectHeading(page, COPY.identityTitle);

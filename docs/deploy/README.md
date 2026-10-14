@@ -408,7 +408,17 @@ Behind Pangolin, `--listen` is the address newt reaches in the container, and `-
 newt's own address as a `/32`. With newt in the same container, use
 `--listen 127.0.0.1:8080 --trusted-proxy 127.0.0.1/32`. Any host in the trusted range can set
 `X-Forwarded-For` and choose the address dillad rate-limits it by, so keep the range to the proxy
-itself. Then, in Pangolin:
+itself.
+
+`--trusted-proxy` is repeatable: give it once per newt host, each as its own `/32`, rather than one
+range that also covers other hosts. With two newt hosts, at 10.0.0.5 and 10.0.0.6:
+
+```sh
+link=$(sh install.sh --behind-proxy --domain chat.example.org --listen 10.0.0.20:8080 \
+  --trusted-proxy 10.0.0.5/32 --trusted-proxy 10.0.0.6/32 --public-ip 203.0.113.10)
+```
+
+Each one becomes an entry of `server.trusted_proxy_cidrs`. Then, in Pangolin:
 
 - Create an HTTPS resource for the domain that targets `http://<container address>:<listen port>`.
   Turn Pangolin SSO (resource authentication) off for it, because dilla signs its users in itself.

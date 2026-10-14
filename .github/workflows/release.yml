@@ -154,10 +154,24 @@ jobs:
         run: go test -tags webdist ./internal/web/...
         env:
           DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist
+      # The tag job's tag, its leading v dropped, is the binary's version (cmd/dillad main.Version); every other
+      # build keeps 0.0.0-dev. The tag job allows only [A-Za-z0-9.+_-] in it, so it is one word in the flags.
       - name: linux/amd64
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${TAG#v}" -o dist/dillad-linux-amd64 ./cmd/dillad
       - name: linux/arm64
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.Version=${TAG#v}" -o dist/dillad-linux-arm64 ./cmd/dillad
+      # The amd64 binary runs here and says its version. The arm64 one cannot run here, and -trimpath records no ldflags,
+      # so it is built by the same flags (the checker holds both lines) and must hold the version's text.
+      - name: The binaries carry the release's version
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          test "$(dist/dillad-linux-amd64 version | cut -d' ' -f1-2)" = "dillad ${TAG#v}"
+          grep -qaF -- "${TAG#v}" dist/dillad-linux-arm64
       - uses: actions/upload-artifact@v7
         with:
           name: dillad-binaries

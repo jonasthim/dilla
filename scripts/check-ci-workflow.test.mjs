@@ -1588,6 +1588,27 @@ test('a release setup-go without cache: false is reported', () => {
   assertReported(releaseProblems((t) => t.replace('          cache: false\n', '')), 'setup-go caches by default');
 });
 
+// v0.1.0-web3.1: the release stamps its tag (without the leading v) into dillad at link time; ci.yml's builds never do.
+test('a release build without the version stamp is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(' -X main.Version=${TAG#v}" -o dist/dillad-linux-arm64', '" -o dist/dillad-linux-arm64')), 'main.Version');
+});
+
+test('a release that does not check the stamped version is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}test "\$\(dist\/dillad-linux-amd64 version .*\n/, '')), 'dillad-linux-amd64 version');
+});
+
+test('a release build whose stamp does not come from the tag job is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/( {6}- name: linux\/arm64\n {8}env:\n {10}TAG: )\$\{\{ needs\.tag\.outputs\.tag \}\}/, '$1${{ github.ref_name }}')),
+    'TAG: ${{ needs.tag.outputs.tag }}');
+});
+
+test('a ci.yml build that stamps a version is reported', () => {
+  const stamped = GOOD.replace("go build -trimpath -ldflags='-s -w' ./cmd/dillad", "go build -trimpath -ldflags='-s -w -X main.Version=1.2.3' ./cmd/dillad");
+  assert.notEqual(stamped, GOOD);
+  const problems = checkWorkflow(fixture(stamped));
+  assert.ok(problems.some((p) => p.includes('main.Version')), problems.join('\n'));
+});
+
 test('the CLI checks release.yml too', () => {
   const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));

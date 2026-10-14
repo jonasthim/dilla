@@ -603,6 +603,8 @@ export function checkWorkflow(root) {
     for (const { re, what } of FORBIDDEN) {
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
+    // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
+    if (/-X\s*main\.Version/.test(line)) problems.push(`ci.yml:${i + 1}: stamps main.Version; ci builds keep 0.0.0-dev (release.yml stamps the tag)`);
   });
 
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
@@ -773,8 +775,11 @@ const RELEASE_STEPS = {
   ],
   'rust-wasi': REQUIRED_STEPS['rust-wasi'],
   'go-release': [
-    "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad",
-    "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad",
+    // v0.1.0-web3.1: the tag (without its leading v) is stamped into main.Version, and the stamp is checked on both binaries.
+    'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${TAG#v}" -o dist/dillad-linux-amd64 ./cmd/dillad',
+    'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.Version=${TAG#v}" -o dist/dillad-linux-arm64 ./cmd/dillad',
+    `test "$(dist/dillad-linux-amd64 version | cut -d' ' -f1-2)" = "dillad \${TAG#v}"`,
+    'grep -qaF -- "${TAG#v}" dist/dillad-linux-arm64',
     'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
     'name: dillad-binaries',
   ],
@@ -855,6 +860,12 @@ export function checkReleaseWorkflow(root) {
   }
   if ('go-release' in jobs) {
     const body = jobs['go-release'];
+    // Every step that stamps the version takes the tag from the tag job, through env (never a ref name of its own).
+    for (const step of jobSteps(body)) {
+      if (step.some((l) => l.includes('-X main.Version=')) && !step.some((l) => l.includes('TAG: ${{ needs.tag.outputs.tag }}'))) {
+        problems.push(`${file}: job "go-release" stamps main.Version from something other than TAG: \${{ needs.tag.outputs.tag }}`);
+      }
+    }
     const fetchAt = body.indexOf('name: dilla-web-dist');
     const guardAt = body.indexOf('content="placeholder"');
     const buildAt = body.indexOf('go build');
