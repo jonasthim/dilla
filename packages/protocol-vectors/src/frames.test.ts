@@ -9,7 +9,7 @@ describe('gateway frame vectors', () => {
 
   it('carries one accept case per opcode in the catalogue', () => {
     const ops = new Set(v.cases.map((c) => c.op));
-    for (const op of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20, 21, 32, 33, 48, 49, 50, 51, 52, 53]) {
+    for (const op of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20, 21, 32, 33, 48, 49, 50, 51, 52, 53, 54]) {
       expect(ops.has(op), `opcode ${op} has no case`).toBe(true);
     }
   });
@@ -38,6 +38,8 @@ describe('gateway frame vectors', () => {
       { name: 'call_ring state 1', op: 53, payload: [new Uint8Array(16).fill(0x0d), new Uint8Array(16).fill(0x0c), new Uint8Array(16).fill(0x09), 1, 1758659030] },
       { name: 'call_ring state 0', op: 53, payload: [new Uint8Array(16).fill(0x0d), new Uint8Array(16).fill(0x0c), new Uint8Array(16).fill(0x09), 0, 1758659030] },
       { name: 'call_ring state 2', op: 53, payload: [new Uint8Array(16).fill(0x0d), new Uint8Array(16).fill(0x0c), new Uint8Array(16).fill(0x09), 2, 1758659030] },
+      // op 54 community_changed (dilla-web-3.1): [community_id]
+      { name: 'community_changed', op: 54, payload: [new Uint8Array(16).fill(0x0e)] },
     ];
     for (const want of cases) {
       const found = v.cases.find(c => c.name === want.name);
@@ -82,5 +84,12 @@ describe('gateway frame vectors', () => {
       expect(found?.code).toBe('E_FRAME_TYPE');
       expect(decode(fromHex(found!.frame))).toEqual([53, 0, null, want.payload]);
     }
+  });
+
+  // op 54 is server-to-client as op 53 is: the corpus code is the instance decoder's verdict.
+  it('commits the community_changed refusal with the instance code E_FRAME_TYPE', () => {
+    const found = v.rejects.find(r => r.name === 'community_changed with 2 elements');
+    expect(found?.code).toBe('E_FRAME_TYPE');
+    expect(decode(fromHex(found!.frame))).toEqual([54, 0, null, [new Uint8Array(16).fill(0x0e), 1]]);
   });
 });

@@ -18,7 +18,7 @@ import {
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op, voiceStateOf, type Frame } from '../gateway/frames';
+import { Op, communityChangedOf, voiceStateOf, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -336,6 +336,8 @@ interface Target { communityId: string | null; dm: boolean; channel: { id: Id; k
 const EMPTY_NOTICES: NoticesState = { nextId: 1, items: [] };
 /** A gateway ticket is valid 30 seconds from its mint (protocol/02 § Gateway, 09 § Sessions endpoints). */
 const TICKET_TTL_S = 30n;
+/** A burst of op 54 community_changed (a server's starter channels, a reorder) costs one list read per server. */
+export const COMMUNITY_RELOAD_DEBOUNCE_MS = 250;
 
 export class Controller {
   private readonly parts: ControllerParts;
@@ -368,6 +370,8 @@ export class Controller {
   private sync: SyncEngine | null = null;
   private wasDown = false;
   private selected: string | null = null;
+  /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
+  private readonly communityReloads = new Map<string, number>();
   private readonly channels = new Map<string, KnownChannel>();
   private readonly dms = new Map<string, KnownDm>();
   private dmsLoading: Promise<void> | null = null;
@@ -928,7 +932,12 @@ export class Controller {
       onMembership: (g, status) => { this.onMembership(g, status); },
       onJoinAll: () => {},
       // Head ruling 37: a Welcome for a group this device does not expect is a DM another participant opened.
-      onUnexpectedWelcome: () => { void this.barrier.track(this.reloadDms().catch(() => {})); },
+      // The WB-walk belt beside op 54: the Welcome can be a new channel's group too, so the selected server's lists are
+      // read again (debounced with op 54's reads).
+      onUnexpectedWelcome: () => {
+        void this.barrier.track(this.reloadDms().catch(() => {}));
+        if (this.selected !== null) this.scheduleCommunityReload(this.selected);
+      },
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),
@@ -998,6 +1007,8 @@ export class Controller {
     } else if (e.type === 'frame' && (e.frame.op === Op.voiceState || e.frame.op === Op.callRing)) {
       if (e.frame.op === Op.voiceState) this.safely(() => { this.ownVoiceState(e.frame); });
       this.safely(() => { this.calls.onFrame(e.frame); });
+    } else if (e.type === 'frame' && e.frame.op === Op.communityChanged) {
+      this.safely(() => { this.scheduleCommunityReload(toHex(communityChangedOf(e.frame))); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
     }
@@ -1413,8 +1424,21 @@ export class Controller {
       name: channelName, topic: '', position, seq: 0n, textGroupId: null,
     } });
     this.publishChannels(communityId);
-    try { await this.loadCommunity(communityId); } catch { /* the row stays as created; the next ready reads the list */ }
+    // Not awaited (WB I1): the answer does not wait on a list read that may hang; the row is already published.
+    void this.barrier.track(this.loadCommunity(communityId).catch(() => { /* the row stays as created; the next ready reads the list */ }));
     return { channelId };
+  }
+
+  /** Op 54 community_changed, and the unexpected-Welcome belt: read a listed server's lists again after a short wait,
+   *  once for a burst. An unlisted id is ignored; a failed read is left to the next notice, focus or ready. */
+  private scheduleCommunityReload(communityId: string): void {
+    if (!this.listed(communityId) || this.communityReloads.has(communityId)) return;
+    const handle = this.deps.setTimeout(() => {
+      this.communityReloads.delete(communityId);
+      if (this.phase !== 'ready' || !this.listed(communityId)) return;
+      void this.barrier.track(this.loadCommunity(communityId).catch(() => undefined));
+    }, COMMUNITY_RELOAD_DEBOUNCE_MS);
+    this.communityReloads.set(communityId, handle);
   }
 
   /** POST /v1/communities/{id}/invites: the instance's link (shown and copied by the page), its code and its expiry. */
@@ -1912,6 +1936,8 @@ export class Controller {
    */
   private forgetAccount(): void {
     this.clearReauthTimer();
+    for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
+    this.communityReloads.clear();
     const communities = new Set<string>((this.slices.get('communities') ?? []).map((c) => c.id));
     for (const known of this.channels.values()) communities.add(known.communityId);
     const timelines = new Set([...this.open.keys(), ...this.pinsOpen, ...this.incomingTyping.keys(), ...this.typingOn]);

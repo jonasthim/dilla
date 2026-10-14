@@ -227,9 +227,10 @@ export class Gateway {
     if (this.phase === 'ready') {
       if (frame.op === Op.heartbeatAck) this.cancel('ackTimer');
       // The group frames, the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49), and the
-      // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33).
+      // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33), and the structure notice of
+      // web-3.1 (op 54).
       else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.typing
-        || frame.op === Op.voiceState || frame.op === Op.callRing) this.emit({ type: 'frame', frame });
+        || frame.op === Op.voiceState || frame.op === Op.callRing || frame.op === Op.communityChanged) this.emit({ type: 'frame', frame });
       else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);
     }
   }

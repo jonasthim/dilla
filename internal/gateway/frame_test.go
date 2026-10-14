@@ -340,3 +340,63 @@ func TestCallRingEncodesFiveElementsAndRoundTrips(t *testing.T) {
 		t.Fatalf("expires_ts = %d, want 1758659030", exp)
 	}
 }
+
+// Op 54 `community_changed` is server-to-client (dilla-web-3.1): a client that sends one is refused
+// at the opcode check with E_FRAME_TYPE. Attacker: a client forging the notice toward the instance
+// in the hope it is fanned out to the community's members; the instance alone produces it.
+func TestOp54FromAClientIsEFrameType(t *testing.T) {
+	cid := id.New()
+	for _, payload := range [][]any{{cid[:]}, {cid[:], uint64(1)}} {
+		raw, err := cborx.Marshal(payload)
+		if err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		frame, err := cborx.MarshalFrame(54, 0, nil, raw)
+		if err != nil {
+			t.Fatalf("MarshalFrame: %v", err)
+		}
+		var fe *FrameError
+		if _, err := Decode(frame, 16384); !errors.As(err, &fe) || fe.Code != "E_FRAME_TYPE" {
+			t.Fatalf("got %v, want E_FRAME_TYPE for a client op 54 with %d elements", err, len(payload))
+		}
+	}
+}
+
+// The server side of op 54: one element, ungrouped, non-replayable, and the encoded notice
+// round-trips with n = 0 and the community id.
+func TestCommunityChangedEncodesOneElementAndRoundTrips(t *testing.T) {
+	spec, ok := opSpecs[OpCommunityChanged]
+	if !ok || OpCommunityChanged != 54 {
+		t.Fatalf("OpCommunityChanged = %d, in catalogue %v; want 54 in the catalogue", OpCommunityChanged, ok)
+	}
+	if spec.elements != 1 || spec.fromClient || spec.grouped || spec.replayable {
+		t.Fatalf("opSpecs[54] = %+v, want {elements: 1} only", spec)
+	}
+	cid := id.New()
+	raw, err := CommunityChangedPayload(cid)
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	b, err := Encode(Frame{Op: OpCommunityChanged, Payload: raw}, 7)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	var elems []cbor.RawMessage
+	if err := cborx.Unmarshal(b, &elems); err != nil || len(elems) != 4 {
+		t.Fatalf("frame: %v, %d elements", err, len(elems))
+	}
+	if op, _ := rawUint(elems[0]); op != 54 {
+		t.Fatalf("op = %d, want 54", op)
+	}
+	if n, _ := rawUint(elems[1]); n != 0 {
+		t.Fatalf("n = %d, want 0 for an ephemeral frame", n)
+	}
+	var payload []cbor.RawMessage
+	if err := cborx.Unmarshal(elems[3], &payload); err != nil || len(payload) != 1 {
+		t.Fatalf("payload: %v, %d elements, want 1", err, len(payload))
+	}
+	var got id.ID
+	if err := cborx.Unmarshal(payload[0], &got); err != nil || got != cid {
+		t.Fatalf("community_id = %v (%v), want %v", got, err, cid)
+	}
+}

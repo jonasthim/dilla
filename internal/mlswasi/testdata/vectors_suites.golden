@@ -31,6 +31,7 @@ frames	call_ring state 0	frame
 frames	call_ring state 1	frame
 frames	call_ring state 2	frame
 frames	commit_ack	frame
+frames	community_changed	frame
 frames	error	frame
 frames	heartbeat	frame
 frames	heartbeat_ack	frame

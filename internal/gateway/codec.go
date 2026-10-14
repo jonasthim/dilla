@@ -116,6 +116,12 @@ func CallRingPayload(callID, channelID, userID id.ID, state, expires uint64) (cb
 	return payload(callID, channelID, userID, state, expires)
 }
 
+// CommunityChangedPayload is op 54 community_changed's `[community_id]` (dilla-web-3.1): the
+// community whose channels or settings changed. It names nothing else; a member re-reads.
+func CommunityChangedPayload(communityID id.ID) (cbor.RawMessage, error) {
+	return payload(communityID)
+}
+
 // The deterministic-CBOR subset has no boolean; flags travel as uint 0 or 1.
 func boolUint(b bool) uint64 {
 	if b {

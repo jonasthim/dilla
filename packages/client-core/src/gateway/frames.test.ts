@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { arr, CborError, decode, encode } from '../cbor';
 import { fromHex, toHex } from '../hex';
-import { callRingOf, decodeFrame, encodeFrame, frameOp, Op, voiceStateOf } from './frames';
+import { callRingOf, communityChangedOf, decodeFrame, DROPPABLE_OPS, encodeFrame, frameOp, Op, voiceStateOf } from './frames';
 
 interface FrameCase { name: string; op: number; n: number; group_id: string; payload: string; frame: string }
 interface FrameReject { name: string; frame: string; code: string }
@@ -32,6 +32,8 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   // the shape: the 5-element spec and the state <= 2 check (L-GW-33).
   'call_ring state 3': 'E_FRAME_SHAPE',
   'call_ring with 4 elements': 'E_FRAME_SHAPE',
+  // The instance answers E_FRAME_TYPE (op 54 is S->C); this client decodes op 54 and refuses two elements, not one.
+  'community_changed with 2 elements': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -46,9 +48,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 30 cases and 17 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(30);
-    expect(vectors.rejects).toHaveLength(17);
+  it('holds the 31 cases and 18 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(31);
+    expect(vectors.rejects).toHaveLength(18);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 
@@ -96,7 +98,7 @@ describe('frame shape', () => {
   it('pins the opcode numbers', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
       error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-      typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53 });
+      typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54 });
   });
 });
 
@@ -167,4 +169,18 @@ describe('typed voice and ring frames', () => {
     expect(frameOp(encode([53, 0, null]))).toBeNull();
     expect(frameOp(new Uint8Array([0xff]))).toBeNull();
   });
+});
+
+// dilla-web-3.1: op 54 community_changed [community_id]; a hostile or buggy instance's misshapen one is a shape error the
+// gateway drops (DROPPABLE_OPS), and communityChangedOf reads the id of a well-formed one.
+it('accepts community_changed with one id and refuses a short id, a second element and a group', () => {
+  const community = fid(9);
+  const frame = decodeFrame(encodeFrame(Op.communityChanged, 0, null, [community]));
+  expect(frame).toMatchObject({ op: 54, n: 0n, groupId: null });
+  expect(communityChangedOf(frame)).toEqual(community);
+  expect(() => decodeFrame(encodeFrame(Op.communityChanged, 0, null, [community.slice(1)]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.communityChanged, 0, null, [community, 1]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.communityChanged, 0, fid(1), [community]))).toThrow('E_FRAME_SHAPE');
+  expect(() => communityChangedOf({ op: Op.callRing, n: 0n, groupId: null, payload: [community] })).toThrow('E_FRAME_SHAPE');
+  expect(DROPPABLE_OPS.has(Op.communityChanged)).toBe(true);
 });

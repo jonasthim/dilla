@@ -11,6 +11,7 @@ import {
   type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
+import { Op } from '../gateway/frames';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { Instance, Routes } from '../http/routes';
@@ -4612,5 +4613,56 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     fresh.call(3, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'x' });
     fresh.call(4, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 60 });
     for (const id of [2, 3, 4]) expect(fresh.ret(id)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+  });
+
+  // WB I1: a hung list read after the create no longer holds the answer, so the dialog is never left busy by it.
+  it('createChannel answers once the row is published, without waiting for the list read after it', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const held = deferred<Awaited<ReturnType<typeof w.routes.listChannels>>>();
+    w.routes.listChannels.mockImplementationOnce(() => held.promise);
+    w.call(120, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'random' });
+    await vi.waitFor(() => expect(w.ret(120)).toMatchObject({ ok: true, value: { channelId: toHex(new Uint8Array(16).fill(0x60)) } }));
+    expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'random']);
+    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP },
+      w.state.newChannels[0].row]);
+    await settle();
+    expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'random']);
+  });
+
+  // dilla-web-3.1: op 54 community_changed. Another member made a channel; this open tab reads the list again, once for a
+  // burst of notices, and only for a server it lists.
+  it('community_changed reloads a listed server\'s channels once, after a short wait; an unknown server is ignored', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const before = w.routes.listChannels.mock.calls.length;
+    w.state.newChannels.push({ communityId: COMMUNITY, row: { id: new Uint8Array(16).fill(0x66), kind: 0, mode: 0, visibility: 0,
+      parentId: null, name: 'planering', topic: '', position: 1, seq: 0n, textGroupId: null } });
+    const changed = (community: Uint8Array): GatewayEvent => ({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [community] } });
+    w.gateway.emit(changed(COMMUNITY));
+    w.gateway.emit(changed(COMMUNITY));
+    w.gateway.emit(changed(new Uint8Array(16).fill(0xee)));
+    expect(w.routes.listChannels).toHaveBeenCalledTimes(before);
+    await vi.waitFor(() => expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'planering']));
+    await new Promise((resolve) => { setTimeout(resolve, 600); });
+    expect(w.routes.listChannels.mock.calls.slice(before).map((c) => toHex(c[0]))).toEqual([toHex(COMMUNITY)]);
+  });
+
+  // The cheap belt beside op 54: a Welcome this device did not expect can be a new channel's group, so the selected
+  // server's channels are read again too.
+  it('an unexpected Welcome also reads the selected server\'s channels again', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(121, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(121)).toMatchObject({ ok: true }));
+    await settle();
+    const before = w.routes.listChannels.mock.calls.length;
+    w.state.newChannels.push({ communityId: COMMUNITY, row: { id: new Uint8Array(16).fill(0x67), kind: 0, mode: 0, visibility: 0,
+      parentId: null, name: 'nytt', topic: '', position: 1, seq: 0n, textGroupId: null } });
+    w.sync.deps!.onUnexpectedWelcome(GROUP);
+    await vi.waitFor(() => expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'nytt']));
+    expect(w.routes.listChannels.mock.calls.slice(before).map((c) => toHex(c[0]))).toEqual([toHex(COMMUNITY)]);
   });
 });

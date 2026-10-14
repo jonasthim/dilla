@@ -32,10 +32,10 @@ fn each_suite_reports_the_expected_number_of_cases() {
     assert_eq!(run_identity().cases.len(), 8);
     // The gateway frame corpus: one case per opcode of protocol/02's catalogue plus the second
     // `mls.handshake` (instance-sent, `sender = null`), plus task-1's `typing_set` and
-    // `voice_self` cases, and web-3 task 1's three `call_ring` cases (op 53, states 1, 0 and 2),
-    // checked as one `frame` field each. Pinned exactly, for the same
-    // reason the reject suite is.
-    assert_eq!(run_frames().cases.len(), 30);
+    // `voice_self` cases, web-3 task 1's three `call_ring` cases (op 53, states 1, 0 and 2), and
+    // web-3.1's `community_changed` (op 54), checked as one `frame` field each. Pinned exactly, for
+    // the same reason the reject suite is.
+    assert_eq!(run_frames().cases.len(), 31);
     // protocol/04 § Attachments (web-2b task 1): four cases, `stored`, `blob_id` and `open` each,
     // plus `thumb` and `thumb_open` for the one with a thumbnail: 3 + 3 + 5 + 3
     assert_eq!(run_attachment().cases.len(), 14);

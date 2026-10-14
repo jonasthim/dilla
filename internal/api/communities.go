@@ -43,12 +43,22 @@ type Communities struct {
 	// calls cuts a kicked or departing user's connected call sessions after the commit
 	// (syncAfterMembership); nil touches no call.
 	calls *Calls
+
+	// notify tells the members, after the commit, that a PATCH changed the community (op 54);
+	// nil tells nobody.
+	notify *StructureNotifier
 }
 
 // WithCalls sets the call routes a kick or a leave cuts the user's live call sessions through, and
 // returns c. The composition root sets it whenever it runs an SFU.
 func (c *Communities) WithCalls(calls *Calls) *Communities {
 	c.calls = calls
+	return c
+}
+
+// WithNotifier sets where a community PATCH is announced to the members, and returns c.
+func (c *Communities) WithNotifier(n *StructureNotifier) *Communities {
+	c.notify = n
 	return c
 }
 
@@ -325,6 +335,7 @@ func (c *Communities) patch(w http.ResponseWriter, r *http.Request) {
 			c.fail(w, r, "patch community", err)
 			return
 		}
+		c.notify.Changed(afterCommit(r), row.ID)
 	}
 	if err := server.EncodeBody(w, http.StatusOK, []uint64{version}); err != nil {
 		c.log.Error("encode patch community", "err", err)

@@ -102,9 +102,12 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	// is not a way round the limit on guessing codes (task 5).
 	// A kick, a leave, a ban, a group-DM removal and a user disable cut the user's connected call
 	// sessions after their commit (dilla-media task 10).
+	// A channel's create, update and delete and a community PATCH tell every member's live
+	// connections (op 54 community_changed), so an open tab re-reads the channel list.
+	notify := api.NewStructureNotifier(p.gw, repo, log)
 	api.NewCommunities(repo, p.delivery, clk, log).
-		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).Register(m)
-	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls)
+		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).WithNotifier(notify).Register(m)
+	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify)
 	channels.Register(m)
 	channels.RegisterMembers(m)
 	api.NewRoles(repo, clk, cfg.Auth.WebAuthn.RPID, log).WithDS(p.delivery).WithCalls(tokens, calls).Register(m)

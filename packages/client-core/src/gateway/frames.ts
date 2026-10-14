@@ -11,13 +11,13 @@ export const Op = {
   hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7,
   reconnect: 8, error: 9, commitAck: 12, handshake: 16, commitNeeded: 17,
   epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-  typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53,
+  typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54,
 } as const;
 
 const SPECS: ReadonlyMap<number, { elements: number; grouped: boolean }> = new Map([
   [0, 9], [1, 5], [2, 4], [3, 9], [4, 3], [5, 2], [6, 2], [7, 1], [8, 2],
   [9, 3], [10, 1], [11, 1], [12, 1], [16, 5], [17, 4], [18, 2], [19, 6],
-  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5],
+  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1],
 ].map(([op, elements]) => [op, { elements, grouped: op === 12 || (op >= 16 && op <= 21) }]));
 
 function shape(): never {
@@ -47,6 +47,8 @@ export function decodeFrame(bytes: Uint8Array): Frame {
   if (op === 52n && (n !== 0n || !isId(payload[0]) || !flags(payload[1]))) shape();
   // op 53 call_ring (L-GW-33): [call_id, channel_id, user_id, state 0..2, expires_ts].
   if (op === 53n && (n !== 0n || !isId(payload[0]) || !isId(payload[1]) || !isId(payload[2]) || !ringState(payload[3]) || !uint(payload[4]))) shape();
+  // op 54 community_changed (dilla-web-3.1): [community_id].
+  if (op === 54n && (n !== 0n || !isId(payload[0]))) shape();
   return { op: Number(op), n, groupId, payload };
 }
 
@@ -58,8 +60,9 @@ const flags = (value: CborValue | undefined): boolean => typeof value === 'bigin
 const voiceFlags = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n && value <= 31n;
 
 /** The ops whose malformed frame the gateway drops without closing the socket: the server's ephemeral voice signals
- *  (L-GW-32, L-GW-33). A bad frame of any other op is still a protocol failure that closes it. */
-export const DROPPABLE_OPS: ReadonlySet<number> = new Set([Op.voiceState, Op.callRing]);
+ *  (L-GW-32, L-GW-33) and the structure notice (op 54). A bad frame of any other op is still a protocol failure that
+ *  closes it. */
+export const DROPPABLE_OPS: ReadonlySet<number> = new Set([Op.voiceState, Op.callRing, Op.communityChanged]);
 
 /** The op of a frame whose envelope is a four-element array with an op of at most 255, else null; nothing else is read. */
 export function frameOp(bytes: Uint8Array): number | null {
@@ -89,4 +92,11 @@ export function callRingOf(frame: Frame): CallRingFrame {
     || !uint(expires) || (expires as bigint) > BigInt(Number.MAX_SAFE_INTEGER)) shape();
   return { callId: call as Uint8Array, channelId: channel as Uint8Array, userId: user as Uint8Array, state: Number(state) as 0 | 1 | 2,
     expiresTs: Number(expires) };
+}
+
+/** op 54 [community_id], as decodeFrame checked it; any other frame is E_FRAME_SHAPE. */
+export function communityChangedOf(frame: Frame): Uint8Array {
+  const [community] = frame.payload;
+  if (frame.op !== Op.communityChanged || frame.payload.length !== 1 || !isId(community)) shape();
+  return community as Uint8Array;
 }

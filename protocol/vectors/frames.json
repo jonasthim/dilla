@@ -241,6 +241,14 @@
       "group_id": "",
       "payload": "85500d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d500c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c5009090909090909090909090909090909021a68d301d6",
       "frame": "84183500f685500d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d500c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c5009090909090909090909090909090909021a68d301d6"
+    },
+    {
+      "name": "community_changed",
+      "op": 54,
+      "n": 0,
+      "group_id": "",
+      "payload": "81500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+      "frame": "84183600f681500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
     }
   ],
   "rejects": [
@@ -327,6 +335,11 @@
     {
       "name": "call_ring with 4 elements",
       "frame": "84183500f684500d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d500c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c500909090909090909090909090909090901",
+      "code": "E_FRAME_TYPE"
+    },
+    {
+      "name": "community_changed with 2 elements",
+      "frame": "84183600f682500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e01",
       "code": "E_FRAME_TYPE"
     }
   ]
