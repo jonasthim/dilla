@@ -4,11 +4,21 @@ import { privacy } from './privacy.ts';
 import { admin } from './admin.ts';
 import { members } from './members.ts';
 import { moderation } from './moderation.ts';
+import { roles } from './roles.ts';
+import { perm } from './perm.ts';
+import { chperm } from './chperm.ts';
+import { mention } from './mention.ts';
+import { serverNotify } from './serverNotify.ts';
 export const en = {
   ...privacy,
   ...admin,
   ...members,
   ...moderation,
+  ...roles,
+  ...perm,
+  ...chperm,
+  ...mention,
+  ...serverNotify,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',

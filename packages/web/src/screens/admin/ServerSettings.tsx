@@ -11,7 +11,12 @@ import { InvitesSection } from './InvitesSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
 import type { Announce } from './shared.ts';
 
-export type AdminTab = 'overview' | 'channels' | 'invites' | 'bans' | 'danger';
+export type AdminTab =
+  | 'overview'
+  | 'channels'
+  | 'invites'
+  | 'bans'
+  | 'danger';
 
 export interface ServerSettingsProps {
   communityId: string;

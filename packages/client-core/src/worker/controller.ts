@@ -43,6 +43,7 @@ import { isTestHook, isToWorker, type Command, type FromWorker } from './protoco
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
+import { ROLES_VALIDATORS } from '../admin/roles';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -369,6 +370,7 @@ const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string'
 /** Per-feature synchronous checks (wave 1+): each returns an E_BAD_INPUT reason or null. */
 const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {
   ...ADMIN_VALIDATORS,
+  ...ROLES_VALIDATORS,
 };
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.
