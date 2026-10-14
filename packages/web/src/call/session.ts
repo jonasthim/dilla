@@ -54,6 +54,9 @@ export interface PageCallState {
   noise: 'on' | 'off';
   /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
   audioBlocked: boolean;
+  /** web3.4 V2: the remote audio tracks this device is subscribed to (expected: pending and attached) and those
+   *  attached, so playing (attached stays the same while deafened or paused holds a new track back). */
+  audio: { attached: number; expected: number };
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -470,7 +473,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
       noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-      audioBlocked: false,
+      audioBlocked: false, audio: { attached: 0, expected: 0 },
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -557,6 +560,14 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (!roster.has(identity) || gainFor(identity) <= 0) continue;
         if (attachAudio(t, identity)) pending.delete(t);
       }
+      countAudio();
+    };
+    /** web3.4 V2: state.audio follows `pending` and `playing`, said only on a change. A queued track is counted by the
+     *  applyGains that follows every queueAudio (onSubscribed, the sweep at connect). */
+    const countAudio = (): void => {
+      const attached = playing.size;
+      const expected = attached + pending.size;
+      if (state.audio.attached !== attached || state.audio.expected !== expected) set({ audio: { attached, expected } });
     };
     const attachAudio = (t: RemoteAudio, identity: string): boolean => {
       if (playing.has(t)) return true;
@@ -576,15 +587,18 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const t = track as RemoteAudio;
       pending.delete(t);
       const entry = playing.get(t);
-      if (entry === undefined) return;
-      playing.delete(t);
-      try { t.detach(entry.el); } catch { /* the element is removed all the same */ }
-      entry.el.remove();
+      if (entry !== undefined) {
+        playing.delete(t);
+        try { t.detach(entry.el); } catch { /* the element is removed all the same */ }
+        entry.el.remove();
+      }
+      countAudio();
     };
     /** Every attached or held-back track, or those of one participant. */
     const detachAudioOf = (identity?: string): void => {
       for (const [t, id] of [...pending]) if (identity === undefined || id === identity) pending.delete(t);
       for (const [t, entry] of [...playing]) if (identity === undefined || entry.identity === identity) detachAudio(t);
+      countAudio();
     };
     /** Review Focus 1: tracks subscribed before the listeners existed (while joinCall or the publish was in flight). */
     const sweepAudio = (): void => {

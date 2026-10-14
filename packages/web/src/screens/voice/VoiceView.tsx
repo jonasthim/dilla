@@ -438,6 +438,18 @@ export function ActiveVoiceList({ rows, onOpen }: { rows: readonly VoiceRowItem[
   );
 }
 
+/** web3.4 V2: how many of the remote audio tracks this device is sent it plays ("hearing 1 of 2": one held back, as while
+ *  deafened). Shown only while any is expected; a diagnostic line, so no status region of its own. The counts are on the
+ *  element for support and the e2e suite: a small line under the meter, after the mode line. */
+function HearingLine({ audio }: { audio: { attached: number; expected: number } | undefined }) {
+  if (audio === undefined || audio.expected <= 0) return null;
+  return (
+    <p className="dw-voice-dock__hearing" data-audio-attached={audio.attached} data-audio-expected={audio.expected}>
+      {t('voice.diag.tracks', { attached: audio.attached, expected: audio.expected })}
+    </p>
+  );
+}
+
 /** Product walk M7: push to talk in the dock names its key on a line of its own, or says no key is set, with a way to
  *  Settings → Voice. A stored key push to talk does not bind (an older rule's) counts as none, as Settings shows it. */
 function PttLine({ v }: { v: VoiceContext }) {
@@ -498,6 +510,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
         meter={<>
           <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
           {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
+          <HearingLine audio={call.state?.audio} />
         </>}
         onMute={call.toggleMute} onDeafen={call.toggleDeafen} onLeave={call.leave} />
     </div>
