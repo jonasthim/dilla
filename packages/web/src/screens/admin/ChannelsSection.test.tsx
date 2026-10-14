@@ -1,0 +1,214 @@
+import { describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { ChannelSummary } from '@dilla/client-core';
+import { CoreProvider } from '../../core/context.tsx';
+import { FakeClient, refusal } from '../../test/fake-client.ts';
+import { account } from '../../test/fixtures.ts';
+import { expectNoAxeViolations } from '../../test/setup.ts';
+import { en } from '../../strings/index.ts';
+import { ChannelsSection } from './ChannelsSection.tsx';
+import { ServerSettings } from './ServerSettings.tsx';
+
+const SERVER = 'a1'.repeat(16);
+const TALK = 'c1'.repeat(16);
+const MUSIC = 'c2'.repeat(16);
+const LOBBY = 'c3'.repeat(16);
+const DEV = 'c4'.repeat(16);
+const GENERAL = 'c5'.repeat(16);
+const RANDOM = 'c6'.repeat(16);
+
+const row = (id: string, kind: 0 | 1 | 2, name: string, parentId: string | null, position: number, topic = ''): ChannelSummary =>
+  ({ id, communityId: SERVER, kind, mode: 0, name, topic, parentId, position, group: 'active' });
+const CHANNELS: ChannelSummary[] = [
+  row(RANDOM, 0, 'random', null, 0),
+  row(TALK, 2, 'Talk', null, 0),
+  row(MUSIC, 2, 'Music', null, 1),
+  row(LOBBY, 0, 'lobby', TALK, 0, 'hello'),
+  row(DEV, 0, 'dev', TALK, 1),
+  row(GENERAL, 1, 'General voice', MUSIC, 0),
+];
+
+function setup(channels = CHANNELS) {
+  const fake = new FakeClient();
+  fake.set('account', account());
+  fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+  fake.set(`channels:${SERVER}`, channels);
+  const announce = vi.fn();
+  const user = userEvent.setup();
+  const view = render(<div className="d-root"><CoreProvider client={fake}>
+    <ChannelsSection communityId={SERVER} serverName="Midgard" announce={announce} />
+  </CoreProvider></div>);
+  return { fake, user, view, announce };
+}
+const btn = (name: string) => screen.getByRole('button', { name });
+
+describe('the channels section', () => {
+  it('lists channels under their category, uncategorised ones first', () => {
+    setup();
+    const headings = screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent);
+    expect(headings).toEqual([en['admin.channels.noCategory'], 'Talk', 'Music']);
+    const talk = screen.getByRole('list', { name: 'Talk' });
+    expect(within(talk).getAllByRole('listitem').map(li => li.querySelector('.dw-admin-name')?.textContent)).toEqual(['#lobby', '#dev']);
+  });
+  it('sends moveChannel for a move up and a move down, and announces it', async () => {
+    const { fake, user, announce } = setup();
+    await user.click(btn('move dev up'));
+    await user.click(btn('move lobby down'));
+    expect(fake.callsOf('moveChannel')).toEqual([
+      { m: 'moveChannel', channelId: DEV, direction: 'up' }, { m: 'moveChannel', channelId: LOBBY, direction: 'down' },
+    ]);
+    await waitFor(() => expect(announce).toHaveBeenCalledWith('dev moved.'));
+  });
+  it('cannot move the first of a group up or the last down', () => {
+    setup();
+    expect(btn('move lobby up')).toBeDisabled();
+    expect(btn('move dev down')).toBeDisabled();
+    expect(btn('move Talk up')).toBeDisabled();
+    expect(btn('move Music down')).toBeDisabled();
+    expect(btn('move Talk down')).toBeEnabled();
+  });
+  it('says a failed move with its code', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK' }));
+    await user.click(btn('move dev up'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not move dev (E_NETWORK). Try again.');
+  });
+  it('creates a category from the new category dialog', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.resolve({ channelId: 'd0'.repeat(16) });
+    await user.click(btn('new category'));
+    const dialog = await screen.findByRole('dialog', { name: 'New category in Midgard' });
+    await user.type(within(dialog).getByRole('textbox', { name: en['admin.category.name'] }), '  Games ');
+    await user.click(within(dialog).getByRole('button', { name: en['admin.category.submit'] }));
+    await waitFor(() => expect(fake.callsOf('createCategory')).toEqual([{ m: 'createCategory', communityId: SERVER, name: 'Games' }]));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New category in Midgard' })).toBeNull());
+  });
+  it('asks for a category name, and says a failed create with its code', async () => {
+    const { fake, user } = setup();
+    await user.click(btn('new category'));
+    const dialog = await screen.findByRole('dialog', { name: 'New category in Midgard' });
+    await user.click(within(dialog).getByRole('button', { name: en['admin.category.submit'] }));
+    expect(await within(dialog).findByText(en['admin.category.error.empty'])).toBeInTheDocument();
+    expect(fake.callsOf('createCategory')).toEqual([]);
+    fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK' }));
+    await user.type(within(dialog).getByRole('textbox', { name: en['admin.category.name'] }), 'Games');
+    await user.click(within(dialog).getByRole('button', { name: en['admin.category.submit'] }));
+    expect(await within(dialog).findByText('Could not add the category (E_NETWORK). Try again.')).toBeInTheDocument();
+  });
+  it('has no axe violations', async () => {
+    const { view } = setup();
+    await expectNoAxeViolations(view.container);
+  });
+});
+
+describe('the channel edit dialog', () => {
+  it('sends parent top when the channel is moved out of its category, and only the fields that changed', async () => {
+    const { fake, user } = setup();
+    await user.click(btn('edit lobby'));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit #lobby' });
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: en['admin.channel.category'] }), en['admin.channels.noCategory']);
+    await user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
+    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: LOBBY, name: null, topic: null, parent: 'top' }]));
+  });
+  it('sends keep for an unchanged category, the slug of a new name and a new topic', async () => {
+    const { fake, user } = setup();
+    await user.click(btn('edit lobby'));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit #lobby' });
+    const name = within(dialog).getByRole('textbox', { name: en['admin.channel.name'] });
+    await user.clear(name);
+    await user.type(name, 'Ship Talk');
+    const topic = within(dialog).getByRole('textbox', { name: en['admin.channel.topic'] });
+    await user.clear(topic);
+    await user.type(topic, 'new topic');
+    await user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
+    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: LOBBY, name: 'ship-talk', topic: 'new topic', parent: 'keep' }]));
+  });
+  it('moves a channel into another category by its id', async () => {
+    const { fake, user } = setup();
+    await user.click(btn('edit random'));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit #random' });
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: en['admin.channel.category'] }), 'Music');
+    await user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
+    await waitFor(() => expect(fake.callsOf('updateChannel')[0]?.parent).toBe(MUSIC));
+  });
+  it('edits a category by its name only, with no topic or category field', async () => {
+    const { fake, user } = setup();
+    await user.click(btn('edit Talk'));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit category Talk' });
+    expect(within(dialog).queryByRole('combobox')).toBeNull();
+    expect(within(dialog).queryByRole('textbox', { name: en['admin.channel.topic'] })).toBeNull();
+    const name = within(dialog).getByRole('textbox', { name: en['admin.channel.name'] });
+    await user.clear(name);
+    await user.type(name, 'Chat');
+    await user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
+    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: TALK, name: 'Chat', topic: null, parent: 'keep' }]));
+  });
+  it('titles a voice channel without the hash', async () => {
+    const { user } = setup();
+    await user.click(btn('edit General voice'));
+    expect(await screen.findByRole('dialog', { name: 'Edit General voice' })).toBeInTheDocument();
+  });
+  it('says refusals by their copy: empty name, 403, 404, 400', async () => {
+    const { fake, user } = setup();
+    await user.click(btn('edit lobby'));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit #lobby' });
+    const name = within(dialog).getByRole('textbox', { name: en['admin.channel.name'] });
+    const save = () => user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
+    await user.clear(name);
+    await save();
+    expect(await within(dialog).findByText(en['admin.channel.error.empty'])).toBeInTheDocument();
+    expect(fake.callsOf('updateChannel')).toEqual([]);
+    await user.type(name, 'x');
+    for (const [r, copy] of [
+      [refusal({ code: 'E_FORBIDDEN', status: 403 }), en['admin.channel.error.forbidden']],
+      [refusal({ code: 'E_NOT_FOUND', status: 404 }), en['admin.channel.error.gone']],
+      [refusal({ code: 'E_INVALID_REQUEST', status: 400 }), en['admin.channel.error.refused']],
+      [refusal({ code: 'E_NETWORK' }), 'Could not save the channel (E_NETWORK). Try again.'],
+    ] as const) {
+      fake.handler = () => Promise.reject(r);
+      await save();
+      expect(await within(dialog).findByText(copy)).toBeInTheDocument();
+    }
+  });
+});
+
+describe('the channel delete confirm', () => {
+  it.each([
+    ['delete lobby', 'Delete #lobby?', en['admin.channelDelete.body'], LOBBY],
+    ['delete General voice', 'Delete General voice?', en['admin.channelDelete.bodyVoice'], GENERAL],
+    ['delete Talk', 'Delete category Talk?', en['admin.channelDelete.bodyCategory'], TALK],
+  ] as const)('%s asks "%s" with the body of its kind, then deletes', async (button, title, body, id) => {
+    const { fake, user } = setup();
+    await user.click(btn(button));
+    const dialog = await screen.findByRole('dialog', { name: title });
+    expect(within(dialog).getByText(body)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: en['admin.cancel'] })).toHaveFocus();
+    await user.click(within(dialog).getByRole('button', { name: en['admin.channelDelete.confirm'] }));
+    await waitFor(() => expect(fake.callsOf('deleteChannel')).toEqual([{ m: 'deleteChannel', channelId: id }]));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: title })).toBeNull());
+  });
+  it('keeps the confirm open with a coded refusal', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK' }));
+    await user.click(btn('delete lobby'));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete #lobby?' });
+    await user.click(within(dialog).getByRole('button', { name: en['admin.channelDelete.confirm'] }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Could not delete (E_NETWORK). Try again.');
+  });
+});
+
+describe('the channels tab of ServerSettings', () => {
+  it('mounts the section for a person who manages channels', () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
+    fake.set(`channels:${SERVER}`, CHANNELS);
+    fake.set(`permissions:${SERVER}`, { top: 1, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false,
+      banMembers: false, createInvite: false, manageRoles: false, loaded: true });
+    render(<div className="d-root"><CoreProvider client={fake}>
+      <ServerSettings communityId={SERVER} tab="channels" onTab={vi.fn()} onClose={vi.fn()} />
+    </CoreProvider></div>);
+    expect(screen.getByRole('heading', { name: en['admin.channels.title'], level: 2 })).toBeInTheDocument();
+  });
+});

@@ -129,3 +129,13 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;
 }
+
+/* Server settings (flow 08) */
+.dw-admin-form { display: flex; flex-direction: column; gap: var(--group-gap); max-width: 32rem; }
+.dw-admin-group { display: flex; flex-direction: column; gap: var(--row-gap); }
+.dw-admin-grouphead, .dw-admin-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--row-gap); }
+.dw-admin-grouphead h3 { font-size: inherit; }
+.dw-admin-rows { list-style: none; margin: 0; padding: 0 0 0 var(--group-gap); display: flex; flex-direction: column; gap: var(--row-gap); }
+.dw-admin-name { min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+.dw-admin-controls { display: flex; flex-wrap: wrap; gap: var(--row-gap); }
+.dw-admin-error { color: var(--danger); }

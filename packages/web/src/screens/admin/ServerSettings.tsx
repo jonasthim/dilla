@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { SettingsFrame, SettingsNav } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
+import { ChannelsSection } from './ChannelsSection.tsx';
 import { DangerSection } from './DangerSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
 import type { Announce } from './shared.ts';
@@ -58,6 +59,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
       nav={<SettingsNav label={t('admin.nav')} items={tabs} activeId={active ?? ''} onSelect={id => onTab(id as AdminTab)} />}>
       <p className="d-sr-only" role="status">{status}</p>
       {active === 'overview' ? <OverviewSection {...common} /> : null}
+      {active === 'channels' ? <ChannelsSection {...common} /> : null}
       {active === 'danger' ? <DangerSection {...common} owner={access?.owner === true} onGone={onClose} /> : null}
     </SettingsFrame>
   );
