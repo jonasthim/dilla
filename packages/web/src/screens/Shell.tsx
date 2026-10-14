@@ -24,6 +24,7 @@ import {
 import { useCall } from './voice/useCall.tsx';
 import { ActiveVoiceList, DmCall, Dock, removedFromServer, speakingDevices, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { RingFlow } from './voice/Ring.tsx';
+import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
 import { ServerSettings, type AdminTab } from './admin/ServerSettings.tsx';
 import { useSounds } from './voice/useSounds.tsx';
@@ -178,8 +179,7 @@ export function Shell(): React.JSX.Element {
   const membersToggle = useMemo<RefObject<HTMLElement | null>>(
     () => ({ get current() { return document.querySelector<HTMLElement>('[data-members-toggle]'); } }), []);
   // The one polite announcer (always rendered); MemberPane and ServerSettings speak through it.
-  const [announcement, setAnnouncement] = useState('');
-  const announce = useCallback((text: string) => setAnnouncement(text), []);
+  const { text: announcement, announce } = useAnnouncer();
   const removals = useSlice('removals');
   const [dismissedRemovals, setDismissedRemovals] = useState<ReadonlySet<number>>(() => new Set());
   const seenRemovals = useRef<ReadonlySet<number>>(new Set());
@@ -918,7 +918,7 @@ export function Shell(): React.JSX.Element {
   ) : undefined;
 
   // The pane belongs to a server shown by a channel route; a DM route, voice stage or Settings has none beside it.
-  const asideShown = membersOpen && base.name === 'channel' && community !== null && voiceChannel === null;
+  const asideShown = membersOpen && base.name === 'channel' && community !== null && channel !== null && voiceChannel === null;
   return (
     <>
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
