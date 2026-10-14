@@ -229,6 +229,30 @@ describe('AppShell aside', () => {
     vi.restoreAllMocks();
   });
 
+  it('when the shell becomes an overlay while open, focus in the now-inert content moves into the drawer; back to a column it stays', () => {
+    let width = 1280;
+    let notify: () => void = () => {};
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(() => width);
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { notify = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    render(<ComposedShell shell={open()} />);
+    const send = screen.getByRole('button', { name: 'send' });
+    send.focus();
+    expect(send).toHaveFocus();
+    width = 500;
+    act(() => notify());
+    expect(screen.getByRole('button', { name: 'pane control' })).toHaveFocus();
+    width = 1300;
+    act(() => notify());
+    expect(screen.getByRole('button', { name: 'pane control' })).toHaveFocus();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it('has no serious axe violations with the aside open', async () => {
     const { container } = render(<div className="d-root"><ComposedShell shell={open()} /></div>);
     await expectNoAxeViolations(container);

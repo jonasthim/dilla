@@ -72,17 +72,22 @@ export function AppShell({
   const overlay = showAside && narrow;
 
   // The drawer takes focus on open and hands it back to its opener when it closes; a column does neither.
+  // It also runs when an open aside turns into the overlay (a resize), so focus left in now-inert content comes along.
+  const showRef = useRef(showAside);
+  showRef.current = showAside;
   useEffect(() => {
-    if (!showAside || !measure()) return;
+    if (!overlay || !measure()) return;
     const opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     const el = asideRef.current;
     (el?.querySelector<HTMLElement>(FOCUSABLE) ?? el)?.focus();
     return () => {
+      // Only a close hands focus back; turning into a column (still shown) leaves it where it is.
+      if (showRef.current) return;
       if (document.activeElement !== document.body && !el?.contains(document.activeElement)) return;
       const back = opener?.isConnected ? opener : asideReturnRef?.current;
       back?.focus();
     };
-  }, [showAside]);
+  }, [overlay]);
 
   // Escape anywhere closes the drawer, unless a control inside (an open menu) already took it.
   useEffect(() => {
