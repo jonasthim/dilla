@@ -106,6 +106,25 @@ func (d *callDS) ProposeRemoveDevice(_ context.Context, g, dev, _ id.ID) error {
 	return nil
 }
 
+// CloseIfAlone checks the members the way the delivery service does (ds.SoleLeaf), then closes.
+func (d *callDS) CloseIfAlone(ctx context.Context, g, dev id.ID) error {
+	row, err := d.repo.GetGroup(ctx, g)
+	if err != nil {
+		return err
+	}
+	if row.ClosedAt != nil {
+		return nil
+	}
+	members, err := d.repo.ListMembers(ctx, g)
+	if err != nil {
+		return err
+	}
+	if !ds.SoleLeaf(members, row.Epoch, dev) {
+		return fmt.Errorf("callDS: %w", ds.ErrNotAlone)
+	}
+	return d.Close(ctx, g)
+}
+
 func (d *callDS) Close(ctx context.Context, g id.ID) error {
 	d.mu.Lock()
 	d.closed = append(d.closed, g)

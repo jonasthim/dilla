@@ -453,3 +453,38 @@ func TestCloseMarksTheGroupClosed(t *testing.T) {
 		t.Fatal("closed_at is still NULL after Close")
 	}
 }
+
+// CloseIfAlone (web-3 task 10 fix, f10app I1) closes the group only while the caller's device is
+// its only current leaf, decided under the group lock: a one-leaf group of the caller closes; a
+// group with any other member stays open and the answer is ErrNotAlone; a device that holds no
+// leaf is never alone in it.
+func TestCloseIfAloneClosesOnlyAGroupWhoseOnlyLeafIsTheCallers(t *testing.T) {
+	h := newDSHarness(t)
+	reg, session := h.mustRegisterOneLeaf(t, "one-leaf-0")
+	if err := h.ds.CloseIfAlone(context.Background(), reg.GroupID, id.New()); !errors.Is(err, ds.ErrNotAlone) {
+		t.Fatalf("CloseIfAlone by a device with no leaf = %v, want ErrNotAlone", err)
+	}
+	if row, _ := h.repo.GetGroup(context.Background(), reg.GroupID); row.ClosedAt != nil {
+		t.Fatal("a device with no leaf closed the group")
+	}
+	if err := h.ds.CloseIfAlone(context.Background(), reg.GroupID, session.DeviceID); err != nil {
+		t.Fatalf("CloseIfAlone by the only leaf: %v", err)
+	}
+	if row, _ := h.repo.GetGroup(context.Background(), reg.GroupID); row.ClosedAt == nil {
+		t.Fatal("the only leaf's CloseIfAlone left the group open")
+	}
+	if err := h.ds.CloseIfAlone(context.Background(), reg.GroupID, session.DeviceID); err != nil {
+		t.Fatalf("CloseIfAlone of a closed group = %v, want nil (it is over already)", err)
+	}
+}
+
+func TestCloseIfAloneLeavesAGroupWithAnotherMemberOpen(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	if err := h.ds.CloseIfAlone(context.Background(), g.id, g.sessionOf(0).DeviceID); !errors.Is(err, ds.ErrNotAlone) {
+		t.Fatalf("CloseIfAlone with other members = %v, want ErrNotAlone", err)
+	}
+	if row, _ := h.repo.GetGroup(context.Background(), g.id); row.ClosedAt != nil {
+		t.Fatal("CloseIfAlone closed a group that has other members")
+	}
+}

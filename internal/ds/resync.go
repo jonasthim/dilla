@@ -108,7 +108,9 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 
 // guardResyncTarget refuses a resync — and a heal, which runs it at the restored epoch — by the
 // target of an outstanding non-void instance Remove: by the device the Remove recorded, or by the
-// leaf the device holds in mls_members.
+// leaf the device holds in mls_members. The refusal is 409 E_REMOVE_PENDING, "you are being removed"
+// (errRemoveTarget): its own code, so a call client that rejoins while its leave's Remove stands
+// waits for exactly this refusal and fails at once on any other 403 (the task 10 fix round).
 func (d *DS) guardResyncTarget(ctx context.Context, s Session, groupID id.ID, epoch uint64) error {
 	rows, err := d.opts.Store.ListProposals(ctx, groupID, epoch, false)
 	if err != nil {
@@ -123,10 +125,10 @@ func (d *DS) guardResyncTarget(ctx context.Context, s Session, groupID id.ID, ep
 			continue
 		}
 		if p.TargetDevice != nil && *p.TargetDevice == s.DeviceID {
-			return errForbidden("this device is the target of an outstanding Remove")
+			return errRemoveTarget()
 		}
 		if leafErr == nil && p.TargetLeaf != nil && *p.TargetLeaf == leaf {
-			return errForbidden("this device is the target of an outstanding Remove")
+			return errRemoveTarget()
 		}
 	}
 	return nil

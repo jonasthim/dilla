@@ -17,6 +17,7 @@ import (
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/sfu"
@@ -539,7 +540,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 // end is DELETE /v1/calls/{call_id}: 204 once the call is over, including when
 // it already was. Ending a call ends it for everyone, so the caller must be a
 // current leaf of the call's group — a participant, not merely someone who may
-// see the channel — whose user still holds connect.
+// see the channel — whose user still holds connect. With ?if_alone=1 it ends a
+// live call only while the caller's device is the call group's only current
+// leaf, decided under the group lock (409 E_CALL_NOT_ALONE otherwise): a person
+// who leaves believing they are alone never ends the call of a device that has
+// just joined (web-3 task 10 fix, f10app I1).
 func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	s, err := enrolledSession(r)
 	if err != nil {
@@ -547,6 +552,11 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	callID, err := server.PathID(r, "call_id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ifAlone, err := ifAloneParam(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -609,6 +619,15 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
 	}
+	// The conditional form closes the group first, under its lock and only while the caller is its
+	// only current leaf; endCall then finds it closed and finishes the end. A joiner whose commit
+	// comes after the close is refused for the closed group and registers a fresh one.
+	if ifAlone && !closed {
+		if err := h.closeIfAlone(r.Context(), group, s.DeviceID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
+	}
 	// protocol/09: DELETE ends the call for everyone — the room is closed, every participant still in
 	// it disconnected, and the call group closed, so the next call registers a fresh one. The next
 	// call keeps this call id (R9), so the sharing slots go with this one.
@@ -617,6 +636,43 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ifAloneParam reads DELETE /v1/calls/{call_id}'s one optional query parameter: absent, or
+// if_alone=1 exactly once.
+func ifAloneParam(r *http.Request) (bool, error) {
+	q := r.URL.Query()
+	if !q.Has("if_alone") {
+		return false, nil
+	}
+	if v := q["if_alone"]; len(v) != 1 || v[0] != "1" {
+		return false, server.Errorf(server.CodeInvalidRequest, "if_alone takes the one value 1")
+	}
+	return true, nil
+}
+
+// closeIfAlone closes the call's group while dev is its only current leaf: through the delivery
+// service, under the group lock, when the call events handed one over; on the store otherwise (no
+// commit lands there without a delivery service).
+func (h *Calls) closeIfAlone(ctx context.Context, group store.GroupRow, dev id.ID) error {
+	ctx = context.WithoutCancel(ctx)
+	var err error
+	if h.dsvc != nil {
+		err = h.dsvc.CloseIfAlone(ctx, group.GroupID, dev)
+	} else {
+		var members []store.MemberRow
+		if members, err = h.repo.ListMembers(ctx, group.GroupID); err == nil {
+			if !ds.SoleLeaf(members, group.Epoch, dev) {
+				err = ds.ErrNotAlone
+			} else {
+				err = h.repo.CloseGroup(ctx, group.GroupID, h.clk.Now().Unix())
+			}
+		}
+	}
+	if errors.Is(err, ds.ErrNotAlone) {
+		return server.Errorf(server.CodeCallNotAlone, "another device is in the call")
+	}
+	return err
 }
 
 // closeRoom closes an ended call's LiveKit room. The call is already over in the record, so a
