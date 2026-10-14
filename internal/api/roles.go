@@ -239,11 +239,6 @@ type createRoleReq struct {
 	Mentionable uint64
 }
 
-// create is POST /v1/communities/{id}/roles: 201 [role_id]. Four checks: the
-// actor holds PermManageRoles community-wide; the position is strictly below
-// the actor's highest role; position 0 is refused (it is @everyone's, and
-// Resolve grants it to every member); and allow and deny name only bits the
-// actor holds.
 type roleResp struct {
 	_           struct{} `cbor:",toarray"`
 	ID          id.ID
@@ -297,6 +292,11 @@ func (h *Roles) list(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// create is POST /v1/communities/{id}/roles: 201 [role_id]. Four checks: the
+// actor holds PermManageRoles community-wide; the position is strictly below
+// the actor's highest role; position 0 is refused (it is @everyone's, and
+// Resolve grants it to every member); and allow and deny name only bits the
+// actor holds.
 func (h *Roles) create(w http.ResponseWriter, r *http.Request) {
 	s, err := enrolledSession(r)
 	if err != nil {

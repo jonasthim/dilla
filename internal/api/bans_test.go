@@ -472,6 +472,47 @@ func TestBanListNamesEachAccount(t *testing.T) {
 	}
 }
 
+// A deleted account is tombstoned: it keeps its username (R36) and its display name is blanked, so
+// its ban row reads [username, ""]. Both are "" only when the account row itself is gone.
+func TestBanListNamesATombstonedAccountByUsernameOnly(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewBans(e.Repo, &recordingDS{}, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	banned, _ := e.NewUser("bertil")
+	user, err := e.Repo.GetUser(t.Context(), banned)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	owner := ownerOf(t, e, cid)
+	if err := e.Repo.PutBan(t.Context(), store.BanRow{CommunityID: cid, UserID: banned, ByUser: owner,
+		Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatalf("PutBan: %v", err)
+	}
+	if err := e.Repo.TombstoneUser(t.Context(), banned, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("TombstoneUser: %v", err)
+	}
+	status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/bans", ownerTok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET bans = %d", status)
+	}
+	var rows []struct {
+		_        struct{} `cbor:",toarray"`
+		UserID   id.ID
+		Reason   string
+		ByUser   id.ID
+		Created  int64
+		Expires  *int64
+		Username string
+		Display  string
+	}
+	mustUnmarshalBody(t, body, &rows)
+	if len(rows) != 1 || rows[0].UserID != banned {
+		t.Fatalf("bans = %+v, want the one tombstoned account", rows)
+	}
+	if rows[0].Username != user.Username || rows[0].Display != "" {
+		t.Fatalf("tombstoned account names = %q, %q, want %q, \"\"", rows[0].Username, rows[0].Display, user.Username)
+	}
+}
+
 // Who may ban, kick and read the list, and what a request may carry.
 func TestModerationGates(t *testing.T) {
 	e, cid, ownerTok := channelEnv(t)
