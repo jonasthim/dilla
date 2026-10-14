@@ -81,7 +81,7 @@ describe('AdminController: access', () => {
   it('publishes the permissions and roles of a server after its lists load', async () => {
     const w = world();
     w.routes.listRoles.mockResolvedValue([
-      { id: id16(0x31), name: 'mods', color: 0xff0000, position: 5, allow: 0n, deny: 0n, hoist: true, mentionable: false },
+      { id: id16(0x31), name: 'mods', color: 0xff0000, position: 5, allow: 0, deny: 0, hoist: true, mentionable: false },
     ] satisfies RoleRow[]);
     await toReady(w);
     await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)).toBeDefined());

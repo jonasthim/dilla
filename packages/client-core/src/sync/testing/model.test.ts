@@ -1518,7 +1518,7 @@ describe('ModelDs creates servers and channels as internal/api does', () => {
     expect(base.bits & (1n << 11n)).not.toBe(0n);   // CreateInvite
     expect(base.bits & (1n << 12n)).toBe(0n);       // KickMembers
     const roles = await ds.routesFor(PEER.device).listRoles(created.id);
-    expect(roles.map((r) => [r.name, r.position, r.allow])).toEqual([['@everyone', 0, base.bits]]);
+    expect(roles.map((r) => [r.name, r.position, r.allow])).toEqual([['@everyone', 0, Number(base.bits)]]);
     expect(await codeOf(ds.routesFor(THIRD.device).getPermissions(created.id))).toBe('E_NOT_FOUND');
     expect(await codeOf(ds.routesFor(THIRD.device).listRoles(created.id))).toBe('E_NOT_FOUND');
   });

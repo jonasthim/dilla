@@ -2637,7 +2637,7 @@ export class ModelDs {
         this.memberOf(d, communityId);
         const everyone = communityId.slice();
         everyone[0] = 0xc7;
-        return [{ id: everyone, name: '@everyone', color: 0, position: 0, allow: MODEL_EVERYONE_ALLOW, deny: 0n, hoist: false, mentionable: false }];
+        return [{ id: everyone, name: '@everyone', color: 0, position: 0, allow: Number(MODEL_EVERYONE_ALLOW), deny: 0, hoist: false, mentionable: false }];
       }),
       postGroup: (body) => this.call(d, 'postGroup', null, null, () => this.postGroup(d, body)),
       getGroupInfo: (id) =>
