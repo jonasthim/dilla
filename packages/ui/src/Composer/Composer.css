@@ -7,9 +7,10 @@
 .d-composer__box { display: flex; align-items: flex-end; gap: 0.5rem; padding: 0.375rem 0.375rem 0.375rem 0.75rem; background: var(--surface-2); border: 1px solid var(--edge); border-radius: var(--r-lg); transition: border-color var(--duration-fast); }
 .d-composer__box:focus-within { border-color: var(--accent); }
 .d-composer__input { flex: 1; min-width: 0; min-height: 1.75rem; max-height: 10rem; padding: 0.25rem 0; font: inherit; font-size: var(--text-base); line-height: var(--line-height); color: var(--fg); background: transparent; border: 0; resize: none; field-sizing: content; }
-/* Jonas, 2026-10-14: the textarea draws no ring; the box's accent border above shows focus (WCAG 2.4.7).
+/* Jonas, 2026-10-14: the textarea draws no visible ring; the box's accent border above shows focus (WCAG 2.4.7).
+   The outline stays, transparent, so Windows forced colors paints it in a system colour and focus still shows.
    At (0,3,0) this beats the global `.d-root :focus-visible` (0,2,0) whatever the stylesheet order. */
-.d-composer .d-composer__input:focus-visible { outline: none; }
+.d-composer .d-composer__input:focus-visible { outline: 2px solid transparent; }
 .d-composer__input::placeholder { color: var(--fg-3); }
 .d-composer[data-disabled="true"] .d-composer__input { color: var(--fg-3); cursor: not-allowed; }
 .d-composer__reason { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }

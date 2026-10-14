@@ -25,15 +25,16 @@ const config: TestRunnerConfig = {
     // row's inset bar, the pressed button's underline) cannot swallow it.
     // Tab once: if anything takes focus, its computed outline must be the
     // 2px solid accent ring.
-    // One exception (Jonas, 2026-10-14): the composer's textarea draws no ring; its box shows focus
-    // instead, its border turning the resolved --accent (WCAG 2.4.7 still holds).
+    // One exception (Jonas, 2026-10-14): the composer's textarea draws no visible ring; its box shows
+    // focus instead, its border turning the resolved --accent (WCAG 2.4.7 still holds). The textarea keeps
+    // a transparent outline, so under Windows forced colors it is painted and focus still shows.
     await page.keyboard.press('Tab');
     const focused = await page.evaluate(() => {
       const el = document.activeElement;
       if (!el || el === document.body || el === document.documentElement) return null;
       const s = getComputedStyle(el);
-      const box = el.matches('.d-composer__input') ? el.closest('.d-composer__box') : null;
-      let composer: { border: string; accent: string } | null = null;
+      const box = el.matches('textarea.d-composer__input') ? el.closest('.d-composer__box') : null;
+      let composer: { border: string; accent: string; outlineColor: string } | null = null;
       if (box) {
         // Settle the border-color transition so the value read is the focused one.
         for (const a of box.getAnimations()) a.finish();
@@ -44,16 +45,34 @@ const config: TestRunnerConfig = {
         probe.remove();
         const b = getComputedStyle(box);
         const sides = [b.borderTopColor, b.borderRightColor, b.borderBottomColor, b.borderLeftColor];
-        composer = { border: sides.every(c => c === sides[0]) ? sides[0] : sides.join(' / '), accent };
+        composer = { border: sides.every(c => c === sides[0]) ? sides[0] : sides.join(' / '), accent, outlineColor: s.outlineColor };
       }
       return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer };
     });
     if (focused?.composer) {
       const { composer } = focused;
-      if (focused.outlineStyle !== 'none' || composer.border !== composer.accent) {
+      const bad: string[] = [];
+      if (composer.outlineColor !== 'rgba(0, 0, 0, 0)') bad.push(`outline-color ${composer.outlineColor}, expected transparent rgba(0, 0, 0, 0)`);
+      if (composer.border !== composer.accent) bad.push(`box border-color ${composer.border}, expected --accent ${composer.accent}`);
+      // Forced colors paint the transparent outline in a system colour: the textarea must still have one.
+      await page.emulateMedia({ forcedColors: 'active' });
+      try {
+        const forced = await page.evaluate(() => {
+          const el = document.activeElement;
+          if (!el) return null;
+          const s = getComputedStyle(el);
+          return { style: s.outlineStyle, width: s.outlineWidth };
+        });
+        if (!forced || forced.style !== 'solid' || !(parseFloat(forced.width) >= 1)) {
+          bad.push(`under forced colors outline-style ${forced?.style} / width ${forced?.width}, expected solid / at least 1px`);
+        }
+      } finally {
+        await page.emulateMedia({ forcedColors: 'none' });
+      }
+      if (bad.length > 0) {
         throw new Error(
-          `${context.title} / ${context.name}: the focused composer textarea should show focus through its box, not a ring ` +
-          `(outline-style: ${focused.outlineStyle}, expected none; box border-color: ${composer.border}, expected --accent ${composer.accent})`,
+          `${context.title} / ${context.name}: the focused composer textarea should show focus through its box, ` +
+          `with only a transparent ring (${bad.join('; ')})`,
         );
       }
     } else if (focused && (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px')) {
