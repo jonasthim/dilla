@@ -67,7 +67,7 @@ If the server is not created, the name field says why:
 | "That name is too long. A server name is up to 255 bytes." | Shorten it. Letters such as å or ü take two bytes each, and an emoji four or more |
 | "A name cannot hold control characters such as tabs or line breaks." | Take them out |
 | "That name was refused. Try another." | The instance refused it; choose another |
-| "Could not start the server ({code}). Try again." | Press **Create** again. After E_NETWORK the server may have been made anyway: once it shows in your server list, **Create** with the same name carries on with that server instead of making a second one |
+| "Could not start the server ({code}). Try again." | Press **Create** again. After E_NETWORK the server may have been made anyway: the dialog reads your server list again, and if the server is there it carries on with it. **Create** with the same name reads the list again before it makes anything, so it never makes a second server |
 | "{server} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list." | The server exists. **Try again** adds only what is missing; the same message names the voice channel general, or both channels, when those are missing. Closing the dialog keeps the server as it is. If you closed the dialog while the channels were still being added and one of them failed, the next time you open "Start a server" it shows this message once, with **Try again** |
 
 ## Invite people
@@ -122,8 +122,8 @@ another.") and nothing is created.
 
 ![The new-channel dialog at 360 pixels wide](screenshots/create-channel-phone.png)
 
-The others in the server see a new channel when they come back to their dilla tab, when their connection comes
-back, or when they reload. The dialog says "Give the channel a name.", "That name is too long. A channel name is up
+The others in the server see a new channel within about a second, in any dilla tab they have open; a renamed
+server's new name shows the same way. The dialog says "Give the channel a name.", "That name is too long. A channel name is up
 to 100 bytes.", "A name cannot hold control characters such as tabs or line breaks.", "You cannot add channels to
 this server.", "That name was refused. Try another." or "Could not add the channel ({code}). Try again." when the
 channel was not added.

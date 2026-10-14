@@ -1430,14 +1430,19 @@ export class Controller {
     return { channelId };
   }
 
-  /** Op 54 community_changed, and the unexpected-Welcome belt: read a listed server's lists again after a short wait,
-   *  once for a burst. An unlisted id is ignored; a failed read is left to the next notice, focus or ready. */
+  /** Op 54 community_changed, and the unexpected-Welcome belt: read the server list (a renamed server's new name) and a
+   *  listed server's lists again after a short wait, once for a burst. An unlisted id is ignored; a failed read is left
+   *  to the next notice, focus or ready (a failed list read keeps the list and still reads the server's lists). */
   private scheduleCommunityReload(communityId: string): void {
     if (!this.listed(communityId) || this.communityReloads.has(communityId)) return;
     const handle = this.deps.setTimeout(() => {
       this.communityReloads.delete(communityId);
       if (this.phase !== 'ready' || !this.listed(communityId)) return;
-      void this.barrier.track(this.loadCommunity(communityId).catch(() => undefined));
+      void this.barrier.track((async () => {
+        try { await this.refreshCommunities(); } catch { /* the list stays as it was */ }
+        if (this.phase !== 'ready' || !this.listed(communityId)) return;
+        await this.loadCommunity(communityId);
+      })().catch(() => undefined));
     }, COMMUNITY_RELOAD_DEBOUNCE_MS);
     this.communityReloads.set(communityId, handle);
   }

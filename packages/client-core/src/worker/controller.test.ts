@@ -4650,6 +4650,24 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     expect(w.routes.listChannels.mock.calls.slice(before).map((c) => toHex(c[0]))).toEqual([toHex(COMMUNITY)]);
   });
 
+  // A renamed server: op 54 also reads the server list again (the same debounce, one read for a burst), so the rail's
+  // name follows without a reload.
+  it('community_changed reads the server list again too, once for a burst, so a new name shows', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const before = w.routes.listCommunities.mock.calls.length;
+    const list = w.routes.listCommunities.getMockImplementation()!;
+    w.routes.listCommunities.mockImplementation(async () => (await list()).map((c) => ({ ...c, name: c.name === 'friends' ? 'vänner' : c.name })));
+    const changed: GatewayEvent = { type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } };
+    w.gateway.emit(changed);
+    w.gateway.emit(changed);
+    expect(w.routes.listCommunities).toHaveBeenCalledTimes(before);
+    await vi.waitFor(() => expect(w.last<CommunitySummary[]>('communities')?.find((c) => c.id === toHex(COMMUNITY))?.name).toBe('vänner'));
+    await new Promise((resolve) => { setTimeout(resolve, 600); });
+    expect(w.routes.listCommunities).toHaveBeenCalledTimes(before + 1);
+  });
+
   // Lane B's lost createCommunity answer: the page asks for the server list again, with the socket still up, and finds
   // the server the lost answer made. Ready only; the list is published before the (empty) answer.
   it('refreshCommunities reads the server list again and publishes it before it answers null', async () => {

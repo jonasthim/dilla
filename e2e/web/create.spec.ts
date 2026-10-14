@@ -7,7 +7,7 @@
 // The create flow's controls are found by role and accessible name (flow 07's copy keys in en.ts) only.
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, expectShell,
+  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, expectAccessible, expectComposerReady, channelRow,
   messageRow, newAccount, openChannel, railItem, railNav, sendText, sidebarTab, signUp, tag, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -98,15 +98,27 @@ test('from an empty instance: start a server, invite a friend through a link, re
   // 3. The invite link, read from the dialog's field. The shell tries to copy it as the dialog opens; Firefox may refuse a
   // copy that a network round trip separated from the click, and the dialog then says so. Either way the link stands in
   // the field, which is what a person copies by hand, so the clipboard is never read here. An answer slower than a second is
-  // not copied by itself at all (flow 07, "invite: answer slow"), and the status stays empty.
+  // not copied by itself at all (flow 07, "invite: answer slow"): the status stays empty and the link waits in the field
+  // with an enabled "copy link". So the dialog must end in one of three states: copied, blocked, or (after the second in
+  // which a copy by itself would have spoken) the link with an enabled "copy link" and nothing said.
   await button(page, 'invite.open').click();
   const inviteDialog = page.getByRole('dialog', { name: copy('invite.title', { server: SERVER }), exact: true });
   const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
+  const copyLink = button(inviteDialog, 'invite.copy');
+  const inviteStatus = inviteDialog.getByRole('status');
+  const LINK = /^https?:\/\/[^/\s]+\/i\/[^/\s]+$/;
   await expect(linkField).toBeVisible({ timeout: WAIT });
-  const copiedOrBlocked = new RegExp(`^(${escapeRegExp(copy('invite.copied'))}|${escapeRegExp(copy('invite.blocked'))}|)$`);
-  await expect(inviteDialog.getByRole('status')).toHaveText(copiedOrBlocked, { timeout: WAIT });
+  const shownAt = Date.now();
+  await expect.poll(async () => {
+    const said = (await inviteStatus.textContent())?.trim() ?? '';
+    if (said === copy('invite.copied')) return 'copied';
+    if (said === copy('invite.blocked')) return 'blocked';
+    if (said === '' && Date.now() - shownAt > 1_500 && LINK.test(await linkField.inputValue()) && await copyLink.isEnabled()) return 'by hand';
+    return `not yet ("${said}")`;
+  }, { timeout: WAIT, message: 'the invite dialog says copied or blocked, or offers the link and an enabled copy link' })
+    .toMatch(/^(copied|blocked|by hand)$/);
   const link = await linkField.inputValue();
-  expect(link).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
+  expect(link).toMatch(LINK);
   await expectAccessible(page, 'the invite link');
   await page.keyboard.press('Escape');
   await expect(inviteDialog).toBeHidden();
@@ -163,8 +175,10 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}(, |$)`) }).click();
     await expect(dmRow(page, FRIEND, dmText)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // 7. The owner adds a text channel and both use it. The second person's tab learns of it when it reads the server
-    // again: the window coming back to the tab, a reconnect or, as here, a reload.
+    // 7. The owner adds a text channel and both use it. The second person's open tab, standing on the server, learns of
+    // it from op 54 community_changed within about a second: no reload, no focus, and well inside the 15 s focus throttle.
+    await railItem(page2, SERVER).click();
+    await expect(channelRow(page2, 'general')).toBeVisible({ timeout: WAIT });
     await sidebarTab(page, 'channels').click();
     await button(page, 'create.channel.open').click();
     const newChannel = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
@@ -176,8 +190,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await page.keyboard.press('Enter');
     await expect(newChannel).toBeHidden({ timeout: WAIT });
     await expectComposerReady(page, SECOND_CHANNEL);
-    await page2.reload();
-    await expectShell(page2);
+    await expect(channelRow(page2, SECOND_CHANNEL)).toBeVisible({ timeout: 5_000 });
     await openChannel(page2, SERVER, SECOND_CHANNEL);
     const inPlans = `the first words in #${SECOND_CHANNEL} ${tag()}`;
     await sendText(page, SECOND_CHANNEL, inPlans);

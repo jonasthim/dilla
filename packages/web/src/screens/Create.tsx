@@ -87,9 +87,10 @@ function leftovers(client: object): Map<string, { server: MadeServer; failure: U
  * A starter that fails after the dialog closed is kept by communityId for the page session and named, once, by the next
  * open (or at once, when the dialog was opened again meanwhile), with the same retry (WB m4).
  *
- * A create whose answer was lost (E_NETWORK) may still have made the server. A server this account owns, with exactly that
- * name, in the list now but not before the press, is that server: it is adopted and gets its starters, and a later press
- * with the same name looks again before it creates anything (WB m5). The worker reads the list again on every ready.
+ * A create whose answer was lost (E_NETWORK) may still have made the server, so the page has the worker read the server
+ * list again (refreshCommunities). A server this account owns, with exactly that name, in the list now but not before the
+ * press, is that server: it is adopted and gets its starters. A later press with the same name reads the list again
+ * before it creates anything, and a failed read sends no create, so a second press never makes a second server (WB m5).
  */
 export function CreateServerFlow(props: {
   open: boolean; onClose(): void; onServer(communityId: string): void; onDone(result: { communityId: string; channelId: string }): void;
@@ -193,14 +194,28 @@ export function CreateServerFlow(props: {
     // A press after a lost answer with the same name compares with the list from before that first press.
     const earlier = lost.current?.name === serverName ? lost.current.before : null;
     const before = earlier ?? new Set((client.get('communities') ?? []).map(c => c.id));
+    // The worker reads the instance's server list again (also with the socket up), then the list is searched.
+    const look = async (listedBefore: ReadonlySet<string>): Promise<string | null> => {
+      await client.call({ m: 'refreshCommunities' });
+      return adoptable(serverName, listedBefore);
+    };
     run(async mine => {
-      let communityId = earlier === null ? null : adoptable(serverName, earlier);
+      let communityId: string | null = null;
+      if (earlier !== null) {
+        // After a lost answer, nothing is created until the list has been read: a failed read sends no create.
+        try {
+          communityId = await look(earlier);
+        } catch (e) {
+          if (mine()) fail(t('create.server.error.other', { code: errorOf(e).code }));
+          return;
+        }
+      }
       if (communityId === null) {
         try {
           communityId = idIn(await client.call({ m: 'createCommunity', name: serverName }), 'communityId');
         } catch (e) {
           const code = errorOf(e).code;
-          communityId = code === 'E_NETWORK' ? adoptable(serverName, before) : null;
+          communityId = code === 'E_NETWORK' ? await look(before).catch(() => null) : null;
           if (communityId === null) {
             if (code === 'E_NETWORK') lost.current = { name: serverName, before };
             // The worker's E_BAD_INPUT here is its own name check (Task 1), so it reads as a refused name too.

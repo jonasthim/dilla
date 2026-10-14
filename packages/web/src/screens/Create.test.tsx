@@ -422,32 +422,74 @@ describe('CreateServerFlow', () => {
     const ours = { id: SERVER, name: 'Midgard', owner: ME.id };
     const starter = (c: { m: string; kind?: string }) => Promise.resolve({ channelId: c.kind === 'voice' ? VOICE : TEXT });
 
-    it('adopts the server when the list already holds it, and adds its starters', async () => {
-      const { fake, user, onServer, onDone } = lost();
+    /** The instance as the worker sees it with the socket up: a create may make the server and lose its answer; only
+     *  refreshCommunities (or a ready, which never comes here) publishes the instance's list. */
+    function instance(fake: FakeClient, opts: { makes: boolean; listFails?: () => boolean; createFails?: () => boolean }) {
+      const made: typeof ours[] = [];
+      const base = fake.get('communities') ?? [];
       fake.handler = c => {
         if (c.m === 'createCommunity') {
-          fake.set('communities', [...(fake.get('communities') ?? []), ours]);
-          return Promise.reject(refusal({ code: 'E_NETWORK' }));
+          const fails = opts.createFails?.() ?? true;
+          if (opts.makes || !fails) made.push(ours);
+          if (fails) return Promise.reject(refusal({ code: 'E_NETWORK' }));
+          fake.set('communities', [...base, ...made]);
+          return Promise.resolve({ communityId: SERVER });
+        }
+        if (c.m === 'refreshCommunities') {
+          if (opts.listFails?.() === true) return Promise.reject(refusal({ code: 'E_NETWORK' }));
+          fake.set('communities', [...base, ...made]);
+          return Promise.resolve(null);
         }
         return starter(c);
       };
+      return made;
+    }
+
+    it('reads the server list again after a lost answer and adopts the server it made, with the socket up', async () => {
+      const { fake, user, onServer, onDone } = lost();
+      instance(fake, { makes: true });
       await user.type(nameField('Server name'), 'Midgard{Enter}');
       await waitFor(() => expect(onDone).toHaveBeenCalledWith({ communityId: SERVER, channelId: TEXT }));
       expect(onServer).toHaveBeenCalledWith(SERVER);
-      expect(fake.callsOf('createCommunity')).toHaveLength(1);
-      expect(fake.callsOf('createChannel').map(c => c.kind)).toEqual(['text', 'voice']);
+      expect(fake.calls.map(c => c.m)).toEqual(['createCommunity', 'refreshCommunities', 'createChannel', 'createChannel']);
     });
 
-    it('says so when the list does not hold it yet; the next press adopts it once it is listed', async () => {
+    it('a second press reads the list again before it creates: never a second server', async () => {
       const { fake, user, onDone } = lost();
-      fake.handler = c => (c.m === 'createCommunity' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : starter(c));
+      let down = true;
+      instance(fake, { makes: true, listFails: () => down });
       await user.type(nameField('Server name'), 'Midgard{Enter}');
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Could not start the server (E_NETWORK). Try again.'));
-      // The worker's next ready reads the list again.
-      act(() => fake.set('communities', [...(fake.get('communities') ?? []), ours]));
+      down = false;
       await user.keyboard('{Enter}');
       await waitFor(() => expect(onDone).toHaveBeenCalledWith({ communityId: SERVER, channelId: TEXT }));
       expect(fake.callsOf('createCommunity')).toHaveLength(1);
+      expect(fake.callsOf('refreshCommunities')).toHaveLength(2);
+    });
+
+    it('a second press whose list read fails sends no create and says why', async () => {
+      const { fake, user, onDone } = lost();
+      instance(fake, { makes: true, listFails: () => true });
+      await user.type(nameField('Server name'), 'Midgard{Enter}');
+      const first = await screen.findByRole('alert');
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(screen.getByRole('alert')).not.toBe(first));
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not start the server (E_NETWORK). Try again.');
+      expect(fake.callsOf('createCommunity')).toHaveLength(1);
+      expect(onDone).not.toHaveBeenCalled();
+    });
+
+    it('when the lost create made nothing, the second press creates the server once', async () => {
+      const { fake, user, onDone } = lost();
+      let fails = true;
+      instance(fake, { makes: false, createFails: () => fails });
+      await user.type(nameField('Server name'), 'Midgard{Enter}');
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(E_NETWORK)'));
+      fails = false;
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(onDone).toHaveBeenCalledWith({ communityId: SERVER, channelId: TEXT }));
+      expect(fake.calls.map(c => c.m)).toEqual(['createCommunity', 'refreshCommunities', 'refreshCommunities', 'createCommunity',
+        'createChannel', 'createChannel']);
     });
 
     it('never adopts a server that was listed before the press, or one this account does not own', async () => {
