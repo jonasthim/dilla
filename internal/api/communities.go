@@ -477,8 +477,8 @@ func (c *Communities) join(w http.ResponseWriter, r *http.Request) {
 // first join with it takes that record instead of a second use, so a new person
 // costs an invite one use and "10 uses" means ten people. The record is taken
 // in the join's transaction, so the free join happens once; a revoked or
-// expired invite still admits nobody. Anyone else, the sign-up's own later
-// joins included, redeems as before.
+// expired invite still admits nobody. Anyone else, and the sign-up itself once
+// its record is taken, redeems as before.
 func (c *Communities) admitByInvite(ctx context.Context, repo store.Repository, row store.CommunityRow, userID id.ID, hashes [][]byte) error {
 	policy, err := ParseCommunityPolicy(row.PolicyJSON)
 	if err != nil {

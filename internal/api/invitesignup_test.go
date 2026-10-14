@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -102,5 +103,22 @@ func TestARevokedInviteRefusesTheSignUpsJoin(t *testing.T) {
 	}
 	if status, _ := join(e, cid, friendTok, code); status != http.StatusGone {
 		t.Fatalf("the sign-up's join with a revoked invite = %d, want 410", status)
+	}
+}
+
+// Nor does it outlive the invite's expiry: once the TTL has passed, the person
+// who signed up with the invite meets it expired like anyone else.
+func TestAnExpiredInviteRefusesTheSignUpsJoin(t *testing.T) {
+	e, cid, ownerTok := inviteEnv(t)
+	mountSignUp(e)
+	code := mintInvite(t, e, cid, ownerTok, 5, 3600)
+	friend, friendTok := signUpWith(t, e, code, "friend")
+
+	e.Clk.Advance(3601 * time.Second)
+	if status, _ := join(e, cid, friendTok, code); status != http.StatusGone {
+		t.Fatalf("the sign-up's join with an expired invite = %d, want 410", status)
+	}
+	if _, err := e.Repo.GetMember(t.Context(), cid, friend); err == nil {
+		t.Fatal("the refused join wrote a member row")
 	}
 }

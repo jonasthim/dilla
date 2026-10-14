@@ -10,7 +10,8 @@ import (
 )
 
 // memberPage is how many members one read of the notifier takes; the member route pages at 200.
-const memberPage = 200
+// A variable only so a test can lower it and reach the second page without 200 members.
+var memberPage int32 = 200
 
 // StructureNotifier tells a community's members that its structure changed: op 54
 // community_changed `[community_id]` (protocol/02 § Gateway frames) to every live connection of
@@ -50,7 +51,7 @@ func (n *StructureNotifier) Changed(ctx context.Context, cid id.ID) {
 		for _, m := range page {
 			n.gw.DeliverUser(m.UserID, f)
 		}
-		if len(page) < memberPage {
+		if len(page) < int(memberPage) {
 			return
 		}
 		after = page[len(page)-1].UserID

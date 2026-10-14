@@ -97,3 +97,34 @@ func TestEveryStructuralChangeTellsTheMembersOnce(t *testing.T) {
 		}
 	}
 }
+
+// The notifier reads the members a page at a time, and a member past the first page is told too.
+// The page is lowered to two so the third page is reached with five members.
+func TestAMemberPastTheFirstPageIsToldToo(t *testing.T) {
+	t.Cleanup(api.SetMemberPageForTest(2))
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	gw := &changedGW{seen: map[id.ID][]id.ID{}}
+	notify := api.NewStructureNotifier(gw, e.Repo, log)
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).WithNotifier(notify).Register(e.Mux)
+	api.NewChannels(e.Repo, e.DS, e.Clk, 10, log).WithNotifier(notify).Register(e.Mux)
+	owner, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	users := []id.ID{owner}
+	for _, name := range []string{"m1", "m2", "m3", "m4"} {
+		u, tok := e.NewUser(name)
+		if status, body := join(e, cid, tok, nil); status != http.StatusOK {
+			t.Fatalf("join %s = %d (%x)", name, status, body)
+		}
+		users = append(users, u)
+	}
+
+	if _, _, status := newChannel(t, e, cid, ownerTok, 0, 0, 0, "planering"); status != http.StatusCreated {
+		t.Fatalf("create = %d, want 201", status)
+	}
+	for _, u := range users {
+		if got := gw.count(u); got != 1 {
+			t.Fatalf("member %s was told %d times, want 1", u, got)
+		}
+	}
+}

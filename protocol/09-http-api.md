@@ -156,13 +156,14 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
   SHA-256 and the audit row (`invite.create`) names it by the first four bytes of that hash in
   hex. `url` is the instance's base URL followed by `/i/` and the code.
 - **One use per person.** `POST /v1/accounts` with a community invite spends one use, and the
-  instance records which account that use registered. That account's first `join` of the invite's
-  community with the same invite spends no second use: it consumes the record instead, in the
+  instance records which account that use registered. The first successful `join` by that account
+  that presents the same invite spends no second use: it consumes the record instead, in the
   join's transaction, so a new person costs an invite one use and `max_uses = 10` admits ten
-  people. The invite must still be unrevoked and unexpired (`410 E_INVITE_INVALID` otherwise). The
-  record is the instance's own, written by the sign-up; no request field claims it. Any other
-  account, and the same account's later joins (after a `leave`, say), spend a use as every join
-  does, so a used-up invite admits nobody who did not sign up with it. An invite without a
+  people. A join without the invite (of an open community, say) leaves the record in place. The
+  invite must still be unrevoked and unexpired (`410 E_INVITE_INVALID` otherwise). The record is
+  the instance's own, written by the sign-up; no request field claims it. Once it is consumed, a
+  join by that account with the invite (after a `leave`, say) spends a use as any other account's
+  join does, so a used-up invite admits nobody who did not sign up with it. An invite without a
   community is spent by the sign-up alone and leaves no record.
 - `DELETE` revokes: the caller must be a member of the invite's community and either its creator
   or hold `manage_community`. Revoking a revoked invite is a no-op that keeps the first time; an
