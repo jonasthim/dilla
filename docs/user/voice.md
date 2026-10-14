@@ -63,7 +63,8 @@ someone joins. You do not have to do anything.
 off everything you hear, and mutes you too ("Sound off."); pressed again, it turns it back on ("Sound on."). These
 buttons keep their names: while one is on it shows `[x]` before its name, and a screen reader says "pressed".
 
-This browser keeps your mute and deafen for your next call: if you were muted when you left, you join muted.
+This browser keeps your mute and deafen for your next call: if you were muted when you left, you join muted. If
+you join deafened, pressing **deafen** again turns your sound back on but leaves you muted; press **mute** to talk.
 
 Reloading the page, or closing it, leaves the call; the others see you leave. Press **join voice** (or **join call**)
 to come back.

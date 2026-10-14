@@ -16,7 +16,7 @@ machine their group can reach can host it.
 
 ## What works today
 
-As of web-3 (2026-10-XX).
+As of web-3 (2026-10-14).
 
 | Part | State |
 |---|---|
@@ -34,7 +34,7 @@ As of web-3 (2026-10-XX).
 
 ## What is not there yet
 
-As of web-3 (2026-10-XX), in the web client:
+As of web-3 (2026-10-14), in the web client:
 
 - A native app or phone client. The recovery key adds another browser with the account password; it does not
   restore messages sent before that browser joined.
