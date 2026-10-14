@@ -5,7 +5,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, ty
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  ActiveVoice, AudioMeter, Button, CallControls, CallStage, VoiceChannelRow, VoiceDock,
+  ActiveVoice, AudioMeter, Button, CallControls, CallStage, isPushToTalkKey, VoiceChannelRow, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
@@ -25,6 +25,8 @@ export interface VoiceContext {
   self: { id: string; username: string } | null;
   ownDevice: string | null;
   onCompare(userId: string): void;
+  /** Opens Settings → Voice (product walk M7: the dock's push to talk with no key set leads there). */
+  onVoiceSettings(): void;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -418,6 +420,19 @@ export function ActiveVoiceList({ rows, onOpen }: { rows: readonly VoiceRowItem[
   );
 }
 
+/** Product walk M7: push to talk in the dock names its key on a line of its own, or says no key is set, with a way to
+ *  Settings → Voice. A stored key push to talk does not bind (an older rule's) counts as none, as Settings shows it. */
+function PttLine({ v }: { v: VoiceContext }) {
+  const key = v.settings[SETTINGS.voicePttKey];
+  if (key !== undefined && isPushToTalkKey(key)) return <p className="dw-voice-dock__mode">{t('voice.dock.ptt', { key })}</p>;
+  return (
+    <p className="dw-voice-dock__mode">
+      <span>{t('voice.dock.pttNoKey')}</span>
+      <Button size="sm" variant="ghost" onClick={() => v.onVoiceSettings()}>{t('voice.dock.pttSetKey')}</Button>
+    </p>
+  );
+}
+
 /**
  * The dock above the user panel while this device is in voice (flow 06): where, the input meter, mute, deafen and leave,
  * and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
@@ -456,7 +471,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
           deafen: t('voice.deafen'), leave: t('voice.leave') }}
         meter={<>
           <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
-          {call.state?.mode === 'ptt' ? <p className="dw-voice-dock__mode">{t('settings.voice.ptt')}</p> : null}
+          {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
         </>}
         onMute={call.toggleMute} onDeafen={call.toggleDeafen} onLeave={call.leave} />
     </div>

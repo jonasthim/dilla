@@ -147,3 +147,32 @@ describe('Settings → Voice follows the call (product walk M1)', () => {
     await waitFor(() => expect(app.session.setNoise).toHaveBeenLastCalledWith('on'));
   });
 });
+
+describe('the dock says where and how (product walk M7, M8)', () => {
+  it('M7: push to talk names its key on a line of its own', async () => {
+    const app = await inHarbour({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });
+    void app;
+    const line = await waitFor(() => { const l = document.querySelector('.dw-voice-dock__mode'); expect(l).not.toBeNull(); return l!; });
+    expect(line).toHaveTextContent(t('voice.dock.ptt', { key: 'Pause' }));
+    expect(line.closest('.d-audio-meter')).toBeNull();
+  });
+
+  it('M7: push to talk with no key set says so and leads to Settings → Voice', async () => {
+    const app = await inHarbour({ settings: { 'voice.mode': 'ptt' } });
+    const line = await waitFor(() => { const l = document.querySelector('.dw-voice-dock__mode'); expect(l).not.toBeNull(); return l!; });
+    expect(line).toHaveTextContent(t('voice.dock.pttNoKey'));
+    await app.user.click(within(line as HTMLElement).getByRole('button', { name: t('voice.dock.pttSetKey') }));
+    await waitFor(() => expect(window.location.pathname).toBe('/settings/voice'));
+  });
+
+  it('M8: a DM call reads as the call with its person, in the dock and what is said', async () => {
+    const app = renderVoiceShell({ path: `/dm/${DM}` });
+    await app.user.click(await main().findByRole('button', { name: 'call' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    const where = t('call.where', { name: 'bob' });
+    await waitFor(() => expect(document.querySelector('.d-voice-dock__text')).toHaveTextContent(t('voice.dock.connected', { where })));
+    expect(dockStatus()).toHaveTextContent(t('voice.announce.joined', { where }));
+    await app.user.click(within(document.querySelector('.d-voice-dock') as HTMLElement).getByRole('button', { name: 'leave' }));
+    await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.announce.left', { where })));
+  });
+});

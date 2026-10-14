@@ -52,7 +52,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-voice-dock__paused { display: grid; gap: var(--row-gap); margin: 0.5rem 0.5rem 0; padding: 0.5rem 0.625rem; border-left: 0.1875rem solid var(--warn); color: var(--fg); font-size: var(--text-sm); }
 .dw-voice-dock__paused p { margin: 0; }
 .dw-voice-dock__paused .d-btn { justify-self: start; }
-.dw-voice-dock__mode { margin: 0.25rem 0 0; font-size: var(--text-xs); color: var(--fg-2); }
+/* Product walk M7: the input mode is a line of its own under the meter, never squeezed beside it. */
+.d-voice-dock .d-voice-dock__meter { flex-direction: column; align-items: stretch; gap: 0.25rem; }
+.dw-voice-dock__mode { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
+.dw-voice-dock__mode .d-btn { min-height: 2.5rem; }
 /* The phone toggle of a DM call (flow 06): only below 48rem. */
 .dw-dm-call__bar { display: none; }
 /* The voice channels under their heading, with join voice while a row is hovered or holds focus. */
@@ -65,6 +68,13 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-voice-section__item > .d-voice-row__people { grid-column: 1 / -1; }
 .dw-voice-section__join { grid-column: 2; grid-row: 1; align-self: center; min-height: 24px; opacity: 0; pointer-events: none; }
 .dw-voice-section__item:hover .dw-voice-section__join, .dw-voice-section__item:focus-within .dw-voice-section__join { opacity: 1; pointer-events: auto; }
+/* WB a11y m4 ruling (2026-10-14): the join keeps its own column (nothing reflows on hover), and the row's hover, current
+   and accent-bar highlight is painted on the item's first line across both columns, so it runs the sidebar's full width
+   with the join inside it, as the text rows' does. The row's own focus ring stays on the row button. */
+.dw-voice-section__item::before { content: ""; grid-column: 1 / -1; grid-row: 1; align-self: stretch; margin: var(--row-gap) 0; border-radius: var(--r-md); pointer-events: none; transition: background var(--duration-fast); }
+.dw-voice-section__item:hover::before { background: var(--surface-2); }
+.dw-voice-section__item:has(> .d-voice-row[aria-current="page"])::before { background: var(--surface-hi); box-shadow: inset 3px 0 0 var(--accent); }
+.dw-voice-section__item > .d-voice-row:hover, .dw-voice-section__item > .d-voice-row[aria-current="page"] { background: transparent; box-shadow: none; }
 /* The voice view fills the main pane; a DM's call stage sits above the log at 40 % of it, the log and composer below. */
 .dw-voice-stage { height: 100%; min-height: 0; overflow-y: auto; }
 .d-app-shell__content:has(> .dw-dm-call, > .dw-call-strip) { display: flex; flex-direction: column; }
@@ -94,11 +104,21 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
   /* Compact tiles keep the call controls in reach at 360 (review m10); the pause action is a 44 px target (I4). */
   .dw-voice-stage .d-call-stage__tiles { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
   .dw-voice-stage .d-call-tile { min-height: 0; padding: 0.5rem; }
-  .dw-voice-stage .d-call-stage__controls { position: sticky; bottom: 0; padding-block: 0.5rem; background: var(--bg); }
+  /* Product walk I5: at 360 the stage is in normal flow, its controls under the tiles; nothing floats over a tile. */
+  .dw-voice-stage .d-call-stage__controls { position: static; padding-block: 0.5rem; }
+  .dw-dm-call .d-call-stage__controls { position: static; }
   .dw-voice-dock__paused .d-btn { min-height: 2.75rem; }
-  /* The narrow sidebar (35dvh, AppShell) scrolls as one column: the list and the dock stack instead of overlapping. */
+  .dw-voice-dock__mode .d-btn { min-height: 2.75rem; }
+  /* The narrow sidebar (35dvh, AppShell) scrolls as one column: the list and the dock stack instead of overlapping.
+     Product walk I4: the dock is pinned to the bottom of that column, so mute, deafen and leave stay on screen while a
+     text channel is read; it is compact there (where and meter on one line, the three controls on the next). */
   .dw-sidebar { height: auto; }
   .dw-sidebar > .d-channel-list { flex: none; height: auto; }
+  .dw-sidebar > .dw-voice-dock { position: sticky; bottom: 0; z-index: 1; border-top: 1px solid var(--hairline); }
+  .dw-sidebar .d-voice-dock { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.375rem 0.75rem; padding: 0.5rem; border-radius: 0; }
+  .dw-sidebar .d-voice-dock__where { align-self: center; }
+  .dw-sidebar .d-voice-dock__controls { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .dw-sidebar .d-voice-dock__controls .d-voice-toolbar__control { padding: 0 0.375rem; white-space: nowrap; }
 }
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;

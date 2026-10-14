@@ -19,6 +19,22 @@ watchContexts(test);
 const ringNotes = async (page: Page) => (await notificationsSeen(page)).filter((n) => n.title === copy('call.ring.notifyTitle', { name: 'alice' }));
 const outgoing = (page: Page) => page.locator('.d-call-stage__outgoing');
 
+/** Product walk I4/I5: at phone width, what overlaps what, as words (empty when the layout is clean). */
+const phoneOverlaps = (page: Page) => page.evaluate(() => {
+  const box = (el: Element | null) => (el === null ? null : el.getBoundingClientRect());
+  const hit = (a: DOMRect | null, b: DOMRect | null) => a !== null && b !== null && a.width > 0 && b.width > 0
+    && a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+  const out: string[] = [];
+  const dock = box(document.querySelector('.d-voice-dock'));
+  if (dock === null || dock.top < 0 || dock.bottom > innerHeight + 1) out.push('dock off screen');
+  const sidebar = box(document.querySelector('.d-app-shell__sidebar'));
+  if (dock !== null && sidebar !== null && dock.bottom > sidebar.bottom + 1) out.push('dock cut by the sidebar');
+  if (hit(dock, box(document.querySelector('.d-channel-header')))) out.push('header over dock');
+  const bar = box(document.querySelector('.d-call-stage__controls'));
+  for (const tile of document.querySelectorAll('.d-call-tile')) if (hit(bar, tile.getBoundingClientRect())) out.push('toolbar over a tile');
+  return out;
+});
+
 test('answer: bob rings (banner, sound, one notification while hidden), answers, every ring artefact goes and both are ok', async ({ peerBrowser, browserName }) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
@@ -55,6 +71,10 @@ test('answer: bob rings (banner, sound, one notification while hidden), answers,
     await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     // Alice's stage: from "ringing bob" to the live call (no outgoing line once bob is in it).
     await expect(outgoing(alice.page)).toHaveCount(0, { timeout: WAIT });
+    // Product walk I5: the DM call at 360 px stacks without overlap: the dock is on screen and clear of the header, and
+    // the stage's toolbar sits under the tiles, never over one.
+    await bob.page.setViewportSize({ width: 360, height: 740 });
+    await expect.poll(() => phoneOverlaps(bob.page), POLL).toEqual([]);
   } finally {
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);

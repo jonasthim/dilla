@@ -241,7 +241,10 @@ export function Shell(): React.JSX.Element {
     ?? dms?.find(d => d.id === id)?.name ?? id.slice(0, 8), [railSlices, dms]);
   // After a leave the person asked for, focus goes to the voice row (or the DM's call button) the call came from.
   const [leftFrom, setLeftFrom] = useState<{ id: string } | null>(null);
-  const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf, onLeft: id => setLeftFrom({ id }),
+  // Product walk M8: {where} of a call names a DM's call as "the call with {name}", a voice channel by its name.
+  const callWhere = useCallback((id: string) => (dms?.some(d => d.id === id) === true ? t('call.where', { name: whereOf(id) }) : whereOf(id)),
+    [dms, whereOf]);
+  const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
     stageShown: id => id === (voiceChannel?.id ?? dm?.id) });
   useLayoutEffect(() => {
     if (leftFrom === null) return;
@@ -569,12 +572,13 @@ export function Shell(): React.JSX.Element {
     deafened: call.state?.deafened ?? false, settings: settings ?? {}, selfId: self?.id ?? null });
   // A ring is answered in its DM: the DM opens and its call is joined (leaving the current voice first, useCall's join).
   const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}}
-    inCallWhere={call.channelId === null ? null : whereOf(call.channelId)}
+    inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
     onOpen={id => navigate({ name: 'dm', channelId: id })}
     onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
   const voiceCtx: VoiceContext = {
     call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
+    onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
   };
 
   let main: ReactNode = null;
@@ -653,7 +657,7 @@ export function Shell(): React.JSX.Element {
         footer={onDms && community !== null ? <Button variant="ghost" onClick={() => setPickerOpen(true)}>{t('shell.dms.new')}</Button>
           : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
             onJoin={id => { openVoice(id); call.join(id); }} /> : undefined} />
-      <Dock v={voiceCtx} where={call.channelId === null ? '' : whereOf(call.channelId)}
+      <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
         stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
     </div>);
   }

@@ -5,7 +5,7 @@ import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
   VoicePeer, WAIT, audioRunning, copy, framesPass, heard, heardCount, joinVoice, noiseOff, onboard, pushToTalk, self,
-  sentCount, tile,
+  openText, sentCount, tile,
 } from './support/voice';
 
 watchContexts(test);
@@ -82,6 +82,16 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       expect(held, deltas).toBeGreaterThanOrEqual(WINDOW / 2);
       expect(idle, deltas).toBeLessThanOrEqual(WINDOW / 10);
       expect(after, deltas).toBeLessThanOrEqual(WINDOW / 10);
+    });
+
+    await test.step('product walk M7 and I4: the dock names the key, and at 360 px it stays on screen over a text channel', async () => {
+      const dock = alice.page.locator('.d-voice-dock');
+      await expect(alice.page.locator('.dw-voice-dock__mode')).toHaveText(copy('voice.dock.ptt', { key: 'Insert' }));
+      await alice.page.setViewportSize({ width: 360, height: 740 });
+      await openText(alice.page, peer.communityName, peer.textName);
+      await expect(dock).toBeInViewport({ ratio: 1 });
+      const [d, side] = await Promise.all([dock.boundingBox(), alice.page.locator('.d-app-shell__sidebar').boundingBox()]);
+      expect(d !== null && side !== null && d.y + d.height <= side.y + side.height + 1, 'the dock is not cut by the sidebar').toBe(true);
     });
   } finally {
     await peerBrowser.close(bob);

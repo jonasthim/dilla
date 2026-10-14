@@ -161,6 +161,8 @@ The sidebar sheet (opened with `☰`) holds the dock above the user panel while 
 
 **DM call on the phone.** The stage is full screen with a `messages` toggle that shows the log and composer in its place; the call strip stays under the header.
 
+Amended 2026-10-14 (product walk I4, I5): at 360 the dock is pinned to the bottom of the sidebar column (sticky), compact (where and the meter on one line, mute, deafen and leave on the next), so it stays on screen while a text channel is read. The stage of a voice channel or a DM call is in normal flow there: its controls sit under the tiles, never fixed or overlaid on a tile.
+
 Amended 2026-10-13 (task-9 review): the toggle is `voice.messages`, a pressed toggle (pressed while the log shows). The input mode follows Settings → Voice during a call: switching to push to talk closes the microphone at once, and the dock shows `settings.voice.ptt` while it is in force. The ring's desktop notification shows only while the tab is hidden, and closes when the tab shows again (the banner covers a visible tab).
 
 **Players on the phone.** A video takes the full card width at 16:9; audio is the native control bar at the card's width. Nothing scrolls horizontally at 360 CSS px.
@@ -230,6 +232,8 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.open='voice {name}'`, `voice.count='{n} in voice'`, `voice.join='join voice'`
 - `call.start='call'`, `call.join='join call'`
 - `voice.dock.region='voice controls'`, `voice.dock.connecting='connecting'`, `voice.dock.connected='in {where}'`, `voice.dock.reconnecting='reconnecting'`
+- `voice.dock.ptt='hold {key} to talk'`, `voice.dock.pttNoKey='push to talk: no key set'`, `voice.dock.pttSetKey='set a key'` (the dock's line while push to talk is in force, on its own line under the meter; `{key}` is the stored key as Settings shows it; `set a key` opens Settings → voice; added 2026-10-14, product walk M7, replacing `settings.voice.ptt` there)
+- `call.where='the call with {name}'` (`{where}` of a DM or group-DM call, with the DM's name; a voice channel's `{where}` is its name; added 2026-10-14, product walk M8)
 - `voice.mute='mute'`, `voice.deafen='deafen'`, `voice.leave='leave'`
 - `voice.cameraOn='camera'`, `voice.shareOn='share screen'`
 - `voice.controls.region='call controls'` (the stage's toolbar in a DM or group-DM call), `voice.controls.voice='voice channel controls'` (the stage's toolbar in a voice channel; added 2026-10-14, WB a11y m6: *call* names a DM call only, and the dock's toolbar is `voice.dock.region`)

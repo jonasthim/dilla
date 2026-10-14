@@ -46,8 +46,9 @@ level, **mute**, **deafen** and **leave**.
 ![Mira in #general while she stays in harbour: the dock "in harbour" with its meter and the buttons mute, deafen and
 leave](screenshots/voice-dock-desktop.png)
 
-At phone width the tiles take the full width, one above the other, every control is at least 44 by 44 pixels, and
-the dock sits with the channel list above the conversation.
+At phone width the tiles take the full width, one above the other, the call's buttons sit under them, every control
+is at least 44 by 44 pixels, and the dock stays pinned at the bottom of the channel list, above the conversation, so
+**mute**, **deafen** and **leave** are on screen while you read a text channel.
 
 ![The voice channel at 360 pixels wide](screenshots/voice-stage-phone.png)
 
@@ -81,7 +82,8 @@ search shortcuts.
    is not suggested.
 
 There is no key until you set one ("no key set"). Hold it to talk. It works only while the dilla tab is the active
-tab, never while you type in a text field, and the dock says "push to talk" while it is in force.
+tab, never while you type in a text field. While push to talk is in force the dock says "hold {key} to talk" (for
+example "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → voice.
 
 ![Settings → Voice: input device, output device, input mode (voice activity), noise suppression and the input
 level](screenshots/voice-settings-desktop.png)
@@ -113,7 +115,8 @@ there, and **join call** when someone is. Pressing **call** joins the call and r
 "ringing {name}" while it rings, "{name} declined." when someone declines, and "No answer." when every ring ended
 without an answer. If nobody answered, you leave the call by yourself 5 seconds later, and the strip keeps saying why.
 A call someone answered never ends by itself. There is no ringback tone. During the call the tiles sit above the conversation, which stays
-usable below them; at phone width, **messages** switches between the call and the conversation.
+usable below them; at phone width, **messages** switches between the call and the conversation. In a direct message's call the dock and what is said name it
+"the call with {name}": "in the call with {name}", "You joined the call with {name}."
 
 ![Ada is calling: the ring banner with answer and decline above Mira's #general](screenshots/call-ring-desktop.png)
 
