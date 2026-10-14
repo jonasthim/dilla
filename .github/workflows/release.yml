@@ -1,0 +1,207 @@
+name: release
+# A GitHub release for a v* tag: dillad for linux/amd64 and linux/arm64 with the real web client
+# embedded, the wasm32-wasip1 core, deploy/install.sh and SHA256SUMS over all of them. install.sh
+# downloads exactly these assets. No container image is built or pushed here.
+#
+# The attached install.sh has the tag stamped into DILLA_RELEASE_TAG, so it installs this release by
+# default: there is no "latest" (GitHub never serves a prerelease as latest, and every hyphenated tag
+# is a prerelease here).
+#
+# Only a tag on a commit of main is released: main is what ci.yml gates. Third-party actions are
+# pinned to commits and no job restores a build cache, because the release job publishes what
+# install.sh runs as root.
+#
+# workflow_dispatch builds the release for an existing tag that has none yet (say, after a failed
+# run): choose the tag itself as the ref in "Use workflow from" and type the same tag; the tag job
+# refuses a mismatch. A release that already exists is refused; delete it first to rebuild it.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the existing tag to release, e.g. v0.1.0 (run the workflow from that tag)
+        required: true
+        type: string
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: The release tag is the ref the workflow runs on, on a commit of main
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "release tags look like v1.2.3, got: $tag"; exit 1 ;;
+          esac
+          case "$tag" in
+            *[!A-Za-z0-9.+_-]*) echo "the tag holds a character a release tag must not: $tag"; exit 1 ;;
+          esac
+          test "$GITHUB_REF" = "refs/tags/$tag" || { echo "run the workflow from the tag $tag itself, not from $GITHUB_REF"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$tag points at $GITHUB_SHA, which is not on main; only main, which ci.yml gates, is released"; exit 1; }
+          case "$tag" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  web-build:
+    runs-on: ubuntu-latest
+    needs: [tag]
+    timeout-minutes: 15
+    # The same build as ci.yml's web-build, clang 23 pin included: the dist is what the binaries embed.
+    env:
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
+    steps:
+      - uses: actions/checkout@v7
+      - name: clang 23 for the wasm C build
+        run: |
+          test "$(lsb_release -cs)" = noble
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm-snapshot.asc"
+          gpg --dearmor -o "$RUNNER_TEMP/apt-llvm.gpg" "$RUNNER_TEMP/llvm-snapshot.asc"
+          primaries=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt-llvm.gpg" | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
+          test "$primaries" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 0644 "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          cmp "$RUNNER_TEMP/apt-llvm.gpg" /usr/share/keyrings/apt-llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
+          sudo apt-get update
+          apt-cache policy clang-23 llvm-23
+          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
+          for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
+          /usr/bin/clang-23 --version
+          /usr/bin/llvm-ar-23 --version
+      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/core-wasm
+      - run: npm run typecheck -w @dilla/client-core
+      - run: npm run typecheck -w @dilla/web
+      - run: npm run build -w @dilla/web
+      - run: go test -tags webdist ./internal/web/...
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist/
+          if-no-files-found: error
+
+  rust-wasi:
+    runs-on: ubuntu-latest
+    needs: [tag]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+        with:
+          targets: wasm32-wasip1
+      - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dilla-core-wasi
+          path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
+          if-no-files-found: error
+
+  go-release:
+    runs-on: ubuntu-latest
+    needs: [tag, web-build]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: rm -rf internal/web/dist
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-web-dist
+          path: internal/web/dist
+      - name: The binaries embed the real client, not the placeholder
+        run: |
+          test -f internal/web/dist/index.html
+          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
+      - name: the downloaded client passes the manifest check
+        run: go test -tags webdist ./internal/web/...
+        env:
+          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist
+      - name: linux/amd64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
+      - name: linux/arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dillad-binaries
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [tag, go-release, rust-wasi]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fetch the binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: dillad-binaries
+          path: release
+      - name: Fetch the wasi core
+        uses: actions/download-artifact@v8
+        with:
+          name: dilla-core-wasi
+          path: release
+      - name: Assets and SHA256SUMS
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          cp deploy/install.sh release/install.sh
+          sed -i "s/^DILLA_RELEASE_TAG=\"\"$/DILLA_RELEASE_TAG=\"$TAG\"/" release/install.sh
+          test "$(grep -c "^DILLA_RELEASE_TAG=\"$TAG\"$" release/install.sh)" -eq 1
+          cd release
+          for f in dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh; do test -s "$f"; done
+          test "$(ls | wc -l)" -eq 4
+          sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS
+          sha256sum -c --strict SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+          PRERELEASE: ${{ needs.tag.outputs.prerelease }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists; delete it first to rebuild it"; exit 1; fi
+          flags=""
+          if [ "$PRERELEASE" = true ]; then flags="--prerelease"; fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $flags \
+            release/dillad-linux-amd64 release/dillad-linux-arm64 release/dilla_core_wasi.wasm release/install.sh release/SHA256SUMS

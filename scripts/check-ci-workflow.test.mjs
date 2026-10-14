@@ -5,9 +5,12 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_WEB_JOBS, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkReleaseWorkflow, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
+const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
+const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
 // The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
 const GO_TEST = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
@@ -30,6 +33,7 @@ jobs:
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
+      - run: npm run test:install
   ui:
     runs-on: ubuntu-latest
     steps:
@@ -71,7 +75,7 @@ jobs:
   rust-wasm-node:
     runs-on: ubuntu-latest
     steps:
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
         with:
           targets: wasm32-unknown-unknown
           components: clippy
@@ -324,7 +328,7 @@ jobs:
   go-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.14.0
 
@@ -337,7 +341,7 @@ jobs:
   go-sqlc:
     runs-on: ubuntu-latest
     steps:
-      - uses: sqlc-dev/setup-sqlc@v5
+      - uses: sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5
         with:
           sqlc-version: '1.31.1'
       - run: sqlc diff
@@ -401,16 +405,16 @@ jobs:
         run: |
           test -f internal/web/dist/index.html
           if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - uses: docker/setup-buildx-action@v4.4.1
-      - uses: docker/login-action@v4.6.0
-      - uses: docker/metadata-action@v6.2.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: meta
         with:
           images: ghcr.io/\${{ github.repository }}/dillad
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
-      - uses: docker/build-push-action@v7.4.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -459,6 +463,8 @@ function fixture(body, gated = GATED) {
   const dir = mkdtempSync(join(tmpdir(), 'dilla-ci-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
+  // The CLI also checks release.yml.
+  writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
   for (const [pkg, name] of gated) {
     mkdirSync(join(dir, pkg), { recursive: true });
     writeFileSync(join(dir, pkg, `${name}_test.go`), gatedTest(name));
@@ -736,7 +742,8 @@ function runCli(root, cwd) {
 }
 
 test('the CLI honours a root argument passed from a different cwd', () => {
-  const root = fixture(GOOD);
+  // The real ci.yml: the CLI also checks release.yml, whose actions must be ci.yml's at the same versions.
+  const root = fixture(REAL_CI);
   const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
   assert.equal(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
@@ -757,10 +764,10 @@ test('a workflow without the image job is reported', () => {
 });
 
 for (const needle of [
-  'docker/setup-buildx-action@v4.4.1',
-  'docker/login-action@v4.6.0',
-  'docker/metadata-action@v6.2.0',
-  'docker/build-push-action@v7.4.0',
+  'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1',
+  'docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0',
+  'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0',
+  'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0',
   'platforms: linux/amd64,linux/arm64',
   'actions/checkout@v7',
   'actions/download-artifact@v8',
@@ -784,7 +791,7 @@ for (const needle of [
 
 test('setup-qemu-action anywhere in the workflow is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - uses: docker/setup-buildx-action@v4.4.1\n', '      - uses: docker/setup-qemu-action@v4\n      - uses: docker/setup-buildx-action@v4.4.1\n')),
+    fixture(GOOD.replace('      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n', '      - uses: docker/setup-qemu-action@v4\n      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n')),
   );
   assert.ok(problems.some((p) => p.includes('setup-qemu-action')), problems.join('\n'));
 });
@@ -1050,6 +1057,7 @@ for (const [job, needle] of [
   ['image', 'path: internal/web/dist'],
   ['image', 'content="placeholder"'],
   ['node', 'npm run test:manifest-writer'],
+  ['node', 'npm run test:install'],
   ['rust-wasm-node', 'npm run typecheck -w @dilla/core-wasm'],
   ['rust-wasm-node', 'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings'],
   ['rust-wasm-node', 'components: clippy'],
@@ -1456,4 +1464,134 @@ test('a wasm job added tomorrow without the pinned clang 23 is reported', () => 
 
 test('jobs that build no wasm need no clang 23', () => {
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
+});
+
+// install-release (2026-10-14): the release workflow, checked against the real ci.yml it must match.
+function releaseFixture(release) {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-release-'));
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), REAL_CI);
+  writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), release);
+  return dir;
+}
+
+function releaseProblems(edit) {
+  const edited = edit(REAL_RELEASE);
+  assert.notEqual(edited, REAL_RELEASE, 'the edit changed nothing; the fixture drifted from release.yml');
+  return checkReleaseWorkflow(releaseFixture(edited));
+}
+
+function assertReported(problems, needle) {
+  assert.ok(problems.some((p) => p.includes(needle)), `want a problem naming ${needle}:\n${problems.join('\n')}`);
+}
+
+test('the real release workflow passes every rule', () => {
+  assert.deepEqual(checkReleaseWorkflow(REPO_ROOT), []);
+});
+
+test('a release workflow without the release job is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/\n {2}release:\n[\s\S]*$/, '\n')), 'missing job "release"');
+});
+
+test('a release that no longer attaches install.sh is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install.sh');
+});
+
+test('SHA256SUMS that leaves an asset out is reported', () => {
+  assertReported(
+    releaseProblems((t) => t.replace('sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh > SHA256SUMS', 'sha256sum dillad-linux-amd64 dillad-linux-arm64 > SHA256SUMS')),
+    '> SHA256SUMS',
+  );
+});
+
+test('a release job without contents: write is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('    permissions:\n      contents: write\n', '')), 'contents: write');
+});
+
+test('contents: write on a build job is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n', '  rust-wasi:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n')), 'only the release job writes');
+});
+
+test('a container image in the release workflow is reported', () => {
+  assertReported(releaseProblems((t) => `${t}\n  image:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n`), 'container image');
+});
+
+test('a dispatch input expanded inside a script is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('tag="${INPUT_TAG:-$GITHUB_REF_NAME}"', 'tag="${{ inputs.tag }}"')), 'outside an env: key');
+});
+
+test('an action at a version ci.yml does not use is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@v7', '  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@main')), 'actions/checkout@main');
+});
+
+test('a tag job that no longer checks the ref is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}test "\$GITHUB_REF" = .*\n/, '')), 'refs/tags/$tag');
+});
+
+test('a release web-build without the clang 23 pin is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('      - name: clang 23 for the wasm C build\n', '      - name: clang for the wasm C build\n')), 'clang 23');
+});
+
+test('a release go-release that builds before the placeholder guard is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {6}- name: The binaries embed the real client[^\n]*\n {8}run: \|\n(?: {10}[^\n]*\n)+/, '')), 'refuse the placeholder');
+});
+
+test('a release go-release that does not wait for web-build is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('needs: [tag, web-build]', 'needs: [tag]')), '"web-build" in its needs');
+});
+
+test('|| true in the release workflow is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('sha256sum -c --strict SHA256SUMS', 'sha256sum -c --strict SHA256SUMS || true')), '|| true');
+});
+
+test('a release workflow that no longer runs on v* tags is reported', () => {
+  assertReported(releaseProblems((t) => t.replace("tags: ['v*']", "tags: ['*']")), "tags 'v*'");
+});
+
+test('a third-party action pinned by tag in the release workflow is reported', () => {
+  const problems = releaseProblems((t) => t.replace(/taiki-e\/install-action@[0-9a-f]{40} # v2/, 'taiki-e/install-action@' + 'v2'));
+  assertReported(problems, 'taiki-e/install-action@' + 'v2 is a third-party action not pinned');
+});
+
+test('a third-party action pinned by SHA but without its tag comment is reported', () => {
+  const problems = releaseProblems((t) => t.replace(/(dtolnay\/rust-toolchain@[0-9a-f]{40}) # 1\.98\.1/, '$1'));
+  assertReported(problems, 'not pinned to a 40-hex commit SHA');
+});
+
+test('every third-party action in release.yml is pinned to a commit', () => {
+  const thirdParty = REAL_RELEASE.split('\n').filter((l) => /uses:/.test(l) && !/uses:\s*actions\//.test(l));
+  assert.ok(thirdParty.length > 0);
+  for (const line of thirdParty) assert.match(line, /@[0-9a-f]{40} # \S+$/, line);
+});
+
+test('a release that attaches an unstamped install.sh is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}sed -i "s\/\^DILLA_RELEASE_TAG=.*\n/, '')), 'DILLA_RELEASE_TAG');
+});
+
+test('a release that does not check the stamp landed is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}test "\$\(grep -c "\^DILLA_RELEASE_TAG=.*\n/, '')), 'grep -c');
+});
+
+test('a release that does not refuse an existing release by name is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}if gh release view "\$TAG".*\n/, '')), 'gh release view');
+});
+
+test('a tag job that releases a commit off main is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(/ {10}git merge-base --is-ancestor .*\n/, '')), 'origin/main');
+});
+
+test('a build cache in the release workflow is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('          node-version-file: .nvmrc\n', '          node-version-file: .nvmrc\n          cache: npm\n')), 'build cache');
+});
+
+test('a release setup-go without cache: false is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('          cache: false\n', '')), 'setup-go caches by default');
+});
+
+test('the CLI checks release.yml too', () => {
+  const root = releaseFixture(REAL_RELEASE.replace('release/install.sh release/SHA256SUMS', 'release/SHA256SUMS'));
+  const cwd = mkdtempSync(join(tmpdir(), 'dilla-ci-cwd-'));
+  const result = runCli(root, cwd);
+  assert.equal(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.match(result.stderr, /release\.yml/);
 });

@@ -110,8 +110,8 @@ func TestTheImageIsDistrolessDebian13PinnedByDigest(t *testing.T) {
 func TestTheWorkflowBuildsMultiArchWithoutQEMU(t *testing.T) {
 	wf := read(t, "../.github/workflows/ci.yml")
 	for _, want := range []string{
-		"docker/build-push-action@v7",
-		"docker/setup-buildx-action@v4",
+		"docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7",
+		"docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4",
 		// The repository's house style, on every job of the existing workflow.
 		"actions/checkout@v7",
 		"platforms: linux/amd64,linux/arm64",

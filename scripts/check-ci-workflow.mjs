@@ -169,7 +169,8 @@ const REQUIRED_STEPS = {
   // `node` job (test:docs-check, test:brief-check, test:copy-check). This gate enforces that for
   // itself, so it cannot silently rot.
   // Task 26: exercise the manifest writer beside the other script gates.
-  node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer'],
+  // install-release: deploy/install.sh's own tests (and shellcheck, which the runner image carries).
+  node: ['npm run test:ci-check', 'npm run test:wasm-size-check', 'npm run test:manifest-writer', 'npm run test:install'],
   // Task 26/F16 (web-1), task 23 (web-2a), task 11 (web-2b): capture the seven story groups and three web-2b-only prefixes in all three themes.
   // Task 11 (web-2c, L-CI-22): the web-2c families at both viewports go up as a second artifact, both directories named.
   ui: [
@@ -271,12 +272,12 @@ const REQUIRED_STEPS = {
   'go-fts5-arm64': ['runs-on: ubuntu-24.04-arm', 'go test ./internal/store/sqlite/...'],
   // The five W2-W5 gates. Each entry is a string the job carries and no other step of that job
   // already contains, so a silently gutted job is caught.
-  'go-lint': ['golangci/golangci-lint-action@v9', 'version: v2.14.0'],
+  'go-lint': ['golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9', 'version: v2.14.0'],
   'go-vuln': [
     'golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...',
     '-scan package -tags dillapins ./internal/deps',
   ],
-  'go-sqlc': ['sqlc-dev/setup-sqlc@v5', "sqlc-version: '1.31.1'", 'sqlc diff', 'git diff --exit-code'],
+  'go-sqlc': ['sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5', "sqlc-version: '1.31.1'", 'sqlc diff', 'git diff --exit-code'],
   'go-postgres': [
     'postgres:18.6-alpine3.24',
     '--locale-provider=builtin --builtin-locale=C.UTF-8',
@@ -302,10 +303,10 @@ const REQUIRED_STEPS = {
     'name: dilla-web-dist',
     'path: internal/web/dist',
     'content="placeholder"',
-    'docker/setup-buildx-action@v4.4.1',
-    'docker/login-action@v4.6.0',
-    'docker/metadata-action@v6.2.0',
-    'docker/build-push-action@v7.4.0',
+    'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1',
+    'docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0',
+    'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0',
+    'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0',
     'platforms: linux/amd64,linux/arm64',
     'provenance: mode=max',
     'sbom: true',
@@ -394,7 +395,7 @@ function assertRaceGatedTestsRunWithoutRace(root, goJob, problems) {
  * fail-closed). The per-job REQUIRED_STEPS pin it for the jobs that exist today; this rule is the
  * one that covers a job added tomorrow. A step is its `- ` list item and every line indented deeper.
  */
-function assertEveryUploadFailsOnNoFiles(text, problems) {
+function assertEveryUploadFailsOnNoFiles(text, problems, file = 'ci.yml') {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (!/uses:\s*actions\/upload-artifact@/.test(lines[i])) continue;
@@ -406,17 +407,17 @@ function assertEveryUploadFailsOnNoFiles(text, problems) {
     while (end < lines.length && lines[end].trim() !== '' && !new RegExp(`^\\s{0,${indent}}\\S`).test(lines[end])) end++;
     const step = lines.slice(start, end).join('\n');
     if (!/if-no-files-found:\s*error/.test(step)) {
-      problems.push(`ci.yml:${i + 1}: actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed`);
+      problems.push(`${file}:${i + 1}: actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed`);
     }
   }
 }
 
 /** C16 / L-CI-05: also cover any wasm-pack build line added tomorrow. */
-function assertWasmPackUsesTheSizeProfile(text, problems) {
+function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
   text.split('\n').forEach((line, i) => {
     if (!line.includes('wasm-pack build')) return;
     if (!line.includes('--profile wasm-release') || / --release(?:\s|$)/.test(line)) {
-      problems.push(`ci.yml:${i + 1}: wasm-pack build must use --profile wasm-release, not --release (C16)`);
+      problems.push(`${file}:${i + 1}: wasm-pack build must use --profile wasm-release, not --release (C16)`);
     }
   });
 }
@@ -494,7 +495,7 @@ function stepItems(lines) {
   });
 }
 
-function assertWasmJobsUseClang23(text, jobs, problems) {
+function assertWasmJobsUseClang23(text, jobs, problems, file = 'ci.yml') {
   const canonicalEnv = new Set(WASM_CLANG_ENV_BLOCK.split('\n').slice(1));
   const wasmJobs = Object.entries(jobs).filter(([, body]) => WASM_JOB.test(body));
   const allowedEnvLines = new Set();
@@ -503,19 +504,19 @@ function assertWasmJobsUseClang23(text, jobs, problems) {
     const envAt = lines.indexOf('    env:');
     const envLines = envAt === -1 ? [] : lines.slice(envAt, lines.findIndex((l, i) => i > envAt && !/^ {6,}\S/.test(l)));
     if (lines.filter((l) => /^ {4}env:/.test(l)).length !== 1 || envLines.join('\n') !== WASM_CLANG_ENV_BLOCK) {
-      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`);
+      problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`);
     } else {
       for (let i = envAt + 1; i < envAt + envLines.length; i++) allowedEnvLines.add(`${name}:${i}`);
     }
     const steps = stepItems(lines);
     if (lines.filter((l) => /^ {4}steps:/.test(l)).length !== 1 || steps[0] !== '      - uses: actions/checkout@v7' || steps[1] !== WASM_CLANG_STEP) {
-      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`);
+      problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`);
     }
     if (steps.filter((s) => s === WASM_CLANG_STEP).length > 1) {
-      problems.push(`ci.yml: job "${name}" carries the clang 23 step more than once`);
+      problems.push(`${file}: job "${name}" carries the clang 23 step more than once`);
     }
     if (/GITHUB_ENV|GITHUB_PATH/.test(body)) {
-      problems.push(`ci.yml: job "${name}" builds for wasm32-unknown-unknown and writes GITHUB_ENV or GITHUB_PATH, which could replace the pinned compiler`);
+      problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown and writes GITHUB_ENV or GITHUB_PATH, which could replace the pinned compiler`);
     }
   }
   // Line by line over the whole file: a compiler variable anywhere else (workflow env, a step env, a flow
@@ -531,10 +532,10 @@ function assertWasmJobsUseClang23(text, jobs, problems) {
     }
     wasmLineOwner[i] = job === null ? null : `${job}:${jobLine}`;
     jobLine++;
-    if (YAML_INDIRECTION.test(line)) problems.push(`ci.yml:${i + 1}: YAML anchors, aliases and merge keys are not allowed: the checker could not see what they expand to`);
+    if (YAML_INDIRECTION.test(line)) problems.push(`${file}:${i + 1}: YAML anchors, aliases and merge keys are not allowed: the checker could not see what they expand to`);
     if (!CC_VARIABLE.test(line)) return;
     if (canonicalEnv.has(line) && allowedEnvLines.has(wasmLineOwner[i])) return;
-    problems.push(`ci.yml:${i + 1}: names a C toolchain variable outside the canonical clang 23 job env`);
+    problems.push(`${file}:${i + 1}: names a C toolchain variable outside the canonical clang 23 job env`);
   });
 }
 
@@ -748,8 +749,128 @@ export function checkWorkflow(root) {
   return problems;
 }
 
+/**
+ * The release workflow (install-release, 2026-10-14): a v* tag builds the assets deploy/install.sh downloads and
+ * checks. It builds what it ships, so it is held to ci.yml's rules for the same jobs (fail-closed lines, the clang
+ * 23 pin, the size profile, the placeholder guard), and it uses only actions ci.yml uses at the same versions. It
+ * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
+ */
+export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'go-release', 'release'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh'];
+const RELEASE_STEPS = {
+  tag: [
+    'test "$GITHUB_REF" = "refs/tags/$tag"',
+    'INPUT_TAG: ${{ inputs.tag }}',
+    '*-*) prerelease=true ;;',
+    // Only a commit on main, which ci.yml has gated, is released (review M6).
+    'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
+  ],
+  'web-build': [
+    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
+    'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
+    'npm run build -w @dilla/web',
+    'name: dilla-web-dist',
+  ],
+  'rust-wasi': REQUIRED_STEPS['rust-wasi'],
+  'go-release': [
+    "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad",
+    "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad",
+    'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
+    'name: dillad-binaries',
+  ],
+  release: [
+    'cp deploy/install.sh release/install.sh',
+    // install.sh downloads from the tag stamped into it (review I1): no "latest", which a prerelease never is.
+    `sed -i "s/^DILLA_RELEASE_TAG=\\"\\"$/DILLA_RELEASE_TAG=\\"$TAG\\"/" release/install.sh`,
+    'test "$(grep -c "^DILLA_RELEASE_TAG=\\"$TAG\\"$" release/install.sh)" -eq 1',
+    'gh release view "$TAG"',
+    `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
+    'sha256sum -c --strict SHA256SUMS',
+    'gh release create "$TAG" --verify-tag',
+    'flags="--prerelease"',
+    `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/SHA256SUMS`,
+  ],
+};
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi'] };
+
+export function checkReleaseWorkflow(root) {
+  const file = 'release.yml';
+  const text = readFileSync(join(root, '.github', 'workflows', file), 'utf8');
+  const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const problems = [];
+  const lines = text.split('\n');
+
+  lines.forEach((line, i) => {
+    for (const { re, what } of FORBIDDEN) {
+      if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — a release is fail-closed (R22)`);
+    }
+    // Workflow-injection: a dispatch input reaches a script only through an env: key.
+    if (/\$\{\{\s*(?:github\.event\.)?inputs\./.test(line) && !/^\s+[A-Z_]+: \$\{\{\s*(?:github\.event\.)?inputs\.[a-z_]+\s*\}\}\s*$/.test(line)) {
+      problems.push(`${file}:${i + 1}: a workflow_dispatch input is expanded outside an env: key; pass it through env to the script`);
+    }
+    const uses = /^\s*(?:- )?uses:\s*(\S+)/.exec(line);
+    if (uses && !new RegExp(`uses:\\s*${uses[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'm').test(ci)) {
+      problems.push(`${file}:${i + 1}: ${uses[1]} is not an action ci.yml uses at that version; pin actions as ci.yml does`);
+    }
+    // The release job publishes what install.sh runs as root: a third-party action is pinned to a
+    // commit, never to a tag its owner can move (install-release security scan, 2026-10-14).
+    if (uses && !uses[1].startsWith('actions/') && !/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}\s+#\s+\S+\s*$/.test(line.trim().replace(/^- /, '').replace(/^uses:\s*/, ''))) {
+      problems.push(`${file}:${i + 1}: ${uses[1]} is a third-party action not pinned to a 40-hex commit SHA with a "# <tag>" comment`);
+    }
+  });
+  if (!/^ {2}push:\n {4}tags: \['v\*'\]$/m.test(text)) problems.push(`${file}: must run on a push of tags 'v*'`);
+  if (!/^ {2}workflow_dispatch:\n {4}inputs:\n {6}tag:$/m.test(text)) problems.push(`${file}: must offer workflow_dispatch with a tag input`);
+  if (!/^permissions:\n {2}contents: read$/m.test(text)) problems.push(`${file}: the workflow-level token must be read-only (permissions: contents: read)`);
+  if (/docker\/|ghcr\.io|packages: write/.test(text)) problems.push(`${file}: builds or pushes a container image; the release carries only the native assets`);
+  // A tag run can restore a cache a branch run wrote, and the release embeds what it builds (review M7).
+  lines.forEach((line, i) => {
+    if (/^\s*cache:\s*(?!false\s*$)\S/.test(line) || /uses:\s*Swatinem\/rust-cache@/.test(line)) {
+      problems.push(`${file}:${i + 1}: a build cache in the release workflow; release builds start clean`);
+    }
+  });
+  for (const m of text.matchAll(/uses: actions\/setup-go@\S+\n((?: {8,}\S.*\n)*)/g)) {
+    if (!/^ {10}cache: false$/m.test(m[1])) problems.push(`${file}: actions/setup-go caches by default; set cache: false in the release workflow`);
+  }
+
+  const jobs = splitJobs(text);
+  for (const name of RELEASE_JOBS) {
+    if (!(name in jobs)) {
+      problems.push(`${file}: missing job "${name}"`);
+      continue;
+    }
+    for (const step of RELEASE_STEPS[name] ?? []) {
+      if (!jobSteps(jobs[name]).some((s) => s.some((l) => l.includes(step)))) problems.push(`${file}: job "${name}" is missing: ${step}`);
+    }
+    for (const need of RELEASE_NEEDS[name] ?? []) {
+      if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs[name])) {
+        problems.push(`${file}: job "${name}" must list "${need}" in its needs:`);
+      }
+    }
+  }
+  if ('release' in jobs && !/^ {4}permissions:\n {6}contents: write$/m.test(jobs.release)) {
+    problems.push(`${file}: job "release" needs permissions: contents: write for gh release create`);
+  }
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name !== 'release' && /contents: write/.test(body)) problems.push(`${file}: job "${name}" asks for contents: write; only the release job writes`);
+  }
+  if ('go-release' in jobs) {
+    const body = jobs['go-release'];
+    const fetchAt = body.indexOf('name: dilla-web-dist');
+    const guardAt = body.indexOf('content="placeholder"');
+    const buildAt = body.indexOf('go build');
+    if (!(fetchAt !== -1 && guardAt !== -1 && buildAt !== -1 && fetchAt < guardAt && guardAt < buildAt)) {
+      problems.push(`${file}: job "go-release" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
+    }
+  }
+  assertEveryUploadFailsOnNoFiles(text, problems, file);
+  assertWasmPackUsesTheSizeProfile(text, problems, file);
+  assertWasmJobsUseClang23(text, jobs, problems, file);
+  return problems;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const problems = checkWorkflow(process.argv[2] ?? process.cwd());
+  const root = process.argv[2] ?? process.cwd();
+  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }
