@@ -3,6 +3,7 @@
     "target": "ES2022", "lib": ["ES2022", "DOM", "DOM.Iterable"], "module": "ESNext", "moduleResolution": "Bundler",
     "jsx": "react-jsx", "strict": true, "noEmit": true, "isolatedModules": true, "skipLibCheck": true,
     "allowImportingTsExtensions": true,
+    "paths": { "@dilla/media": ["../media/src/index.ts"] },
     "types": ["vitest/globals", "@testing-library/jest-dom", "node"]
   },
   "include": ["src", "vite.config.ts", "vitest.config.ts"]

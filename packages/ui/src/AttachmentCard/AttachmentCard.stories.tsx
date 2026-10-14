@@ -2,6 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { waitFor } from 'storybook/test';
 import { AttachmentCard, type AttachmentCardProps } from './AttachmentCard.tsx';
 import { useDrawnImage } from '../internal/drawn-image.ts';
+import { useToneUrl } from '../MediaPlayer/MediaPlayer.stories.tsx';
+import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
 
 // Every string is L-COPY-03's, quoted (en.ts gains them in task 9).
 const meta = {
@@ -58,3 +60,30 @@ export const FileTooLarge: Story = {
   args: { kind: 'file', name: 'harbour-video.mov', size: '31.5 MB', w: null, h: null, openLabel: 'open harbour-video.mov', onOpen: undefined,
     saveLabel: 'save harbour-video.mov', onSave: () => {}, state: 'too-large', stateText: 'too large to open in a browser' },
 };
+
+// The players' strings are L-COPY-05's `media.*`, quoted.
+const PLAYER_LABELS = { play: 'play {name}', loading: 'loading', error: 'This browser cannot play this file.', save: 'save' };
+const player = (state: 'idle' | 'loading' | 'ready' | 'error'): NonNullable<AttachmentCardProps['player']> =>
+  ({ state, src: null, labels: PLAYER_LABELS, onPlay: () => {}, onError: () => {} });
+
+/** A ready player with a story-time tone behind a blob: URL (revoked on unmount). */
+function WithTone(props: AttachmentCardProps) {
+  const src = useToneUrl();
+  return <AttachmentCard {...props} player={props.player ? { ...props.player, src } : undefined} />;
+}
+
+const AUDIO = { kind: 'audio', name: 'harbour-voice.ogg', size: '210 KB', w: null, h: null, openLabel: 'open harbour-voice.ogg', onOpen: undefined,
+  saveLabel: 'save harbour-voice.ogg', onSave: () => {} } as const;
+const VIDEO = { kind: 'video', name: 'harbour-walk.webm', size: '12.4 MB', w: null, h: null, openLabel: 'open harbour-walk.webm', onOpen: undefined,
+  saveLabel: 'save harbour-walk.webm', onSave: () => {} } as const;
+
+// The player's and the card's buttons are 40/44 px voice-and-player controls (flow 06).
+const targets: Story['play'] = ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'AttachmentCard'); };
+
+export const AudioIdle: Story = { args: { ...AUDIO, player: player('idle') }, play: targets };
+export const AudioLoading: Story = { args: { ...AUDIO, player: player('loading') }, play: targets };
+export const AudioReady: Story = { args: { ...AUDIO, player: player('ready') }, render: args => <WithTone {...args} />, play: targets };
+export const VideoIdle: Story = { args: { ...VIDEO, player: player('idle') }, play: targets };
+export const VideoReady: Story = { args: { ...VIDEO, player: player('ready') }, render: args => <WithTone {...args} />, play: targets };
+/** The browser cannot decode it (or it is not what it claims): the error text and save, nothing plays. */
+export const VideoError: Story = { args: { ...VIDEO, player: player('error') }, play: targets };

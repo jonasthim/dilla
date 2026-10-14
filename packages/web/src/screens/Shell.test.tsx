@@ -205,6 +205,20 @@ it('says searching while the worker answers, then the scope’s empty text', asy
   await waitFor(() => expect(screen.getByRole('search')).toHaveTextContent('No results in this scope'));
 });
 
+// The docs shoot's shell-not-member image showed "(E_NOT_READY)" in the error banner: a typing signal the worker refuses
+// (the channel no longer viewable, or offline) is a hint that was not sent, never an error the person must read.
+it('a refused typing signal shows no error banner', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.handler = command => (command.m === 'typing' ? Promise.reject(refusal({ code: 'E_NOT_READY' })) : Promise.resolve(null));
+  } });
+  await user.type(composer(), 'anyone still here?');
+  await waitFor(() => expect(fake.callsOf('typing').length).toBeGreaterThan(0));
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByText(/E_NOT_READY/)).toBeNull();
+  expect(document.body).not.toHaveTextContent('E_NOT_READY');
+});
+
 it('renews typing while the draft keeps changing, within the server’s hold', async () => {
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
   try {
@@ -460,9 +474,11 @@ describe('selection', () => {
     expect(text).toContain('Midgard');
     expect(text).not.toContain('more');
     const at = (s: string) => text.indexOf(s);
-    expect(at('lounge')).toBeLessThan(at('general'));
     expect(at('general')).toBeLessThan(at('random'));
     expect(at('random')).toBeLessThan(at('lobby'));
+    // web-3: a voice channel sits under the voice heading after the text rows (flow 06).
+    expect(at('lobby')).toBeLessThan(at('lounge'));
+    expect(within(list).getByRole('heading', { name: 'voice' })).toBeInTheDocument();
     expect(within(list).getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
   it('switches channels and servers, closing what it leaves', async () => {
@@ -480,14 +496,23 @@ describe('selection', () => {
     expect(opens(fake).at(-1)).toEqual({ m: 'closeChannel', channelId: RAND });
   });
   it('shows an unsupported channel without opening it', () => {
-    const { fake } = setup(`/c/${A}/${VOICE}`);
+    const { fake } = setup(`/c/${A}/${READ}`);
     expect(screen.getByRole('heading', { name: 'This channel does not open here yet' })).toBeInTheDocument();
-    expect(screen.getByText('Voice channels arrive in a later version of the web client.')).toBeInTheDocument();
+    expect(screen.getByText('Channels this server can read arrive in a later version of the web client.')).toBeInTheDocument();
     expect(screen.queryByRole('log')).toBeNull();
-    expect(composer('lounge')).toHaveAttribute('aria-disabled', 'true');
+    expect(composer('lobby')).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByRole('button', { name: 'send' })).toBeDisabled();
     expect(screen.getByText('this channel does not open here yet')).toBeInTheDocument();
     expect(fake.callsOf('openChannel')).toEqual([]);
+  });
+  it('shows a voice channel as its voice view, with no timeline and no composer (web-3)', () => {
+    const { fake } = setup(`/c/${A}/${VOICE}`);
+    expect(within(screen.getByRole('main')).getByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getByText('Nobody is in voice yet.')).toBeInTheDocument();
+    expect(screen.queryByRole('log')).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(fake.callsOf('openChannel')).toEqual([]);
+    expect(fake.callsOf('loadVoice')).toEqual([{ m: 'loadVoice', communityId: A, channelId: null }]);
   });
   it('marks a readable channel in its header', () => {
     setup(`/c/${A}/${READ}`);
@@ -1071,6 +1096,12 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
     await user.tab();
     expect(screen.getByRole('tabpanel', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
+    // web-3: the voice rows are their own roving stop under the voice heading.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'voice lounge' }));
+    // Its join is the next stop (task-9 ruling: keyboard reachable).
+    await user.tab();
+    expect(document.activeElement).toHaveAccessibleName('join voice');
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
@@ -1195,6 +1226,32 @@ describe('direct messages', () => {
     expect(path()).toBe(`/dm/${DM}`);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+  // Product walk M12: the picker listed a removed member and missed one who joined after the page loaded.
+  it('reads the server\'s members again when the picker opens, and lists what that read says', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    const before = fake.callsOf('selectCommunity').length;
+    await user.click(screen.getByRole('button', { name: 'message someone' }));
+    expect(fake.callsOf('selectCommunity').slice(before)).toEqual([{ m: 'selectCommunity', communityId: A }]);
+    const dialog = screen.getByRole('dialog', { name: 'Message someone' });
+    act(() => fake.set(`members:${A}`, [{ userId: '5e'.repeat(16), username: 'sven', display: 'Sven', kind: 0, roleIds: [] }]));
+    expect(within(dialog).getByText('Sven')).toBeInTheDocument();
+    expect(within(dialog).queryByText('bob')).toBeNull();
+  });
+  // Fix round 3 (m4): the picker's refresh is a background read: its failure keeps the cached list and says nothing.
+  it('a failed member refresh on opening the picker shows no banner and keeps the list', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    fake.handler = c => (c.m === 'selectCommunity' ? Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 })) : Promise.resolve(null));
+    const before = fake.callsOf('selectCommunity').length;
+    await user.click(screen.getByRole('button', { name: 'message someone' }));
+    const dialog = screen.getByRole('dialog', { name: 'Message someone' });
+    await waitFor(() => expect(fake.callsOf('selectCommunity').length).toBeGreaterThan(before));
+    await act(async () => { await Promise.resolve(); });
+    expect(within(dialog).getByText('bob')).toBeInTheDocument();
+    expect(screen.queryByText(/That did not work/)).toBeNull();
+  });
+
   it('shows a refused DM in its dialog', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
     fake.handler = c => (c.m === 'openDm' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null));

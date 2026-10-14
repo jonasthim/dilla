@@ -15,6 +15,8 @@ export type SafetyCompareProps = {
     states?: Record<SafetyCompareProps['state'], string>;
     /** Shown in the blocks' place while the number is worked out. */
     loading?: string;
+    /** The disclosure the exact public key waits behind (product walk M11); the 12 blocks are the comparison. */
+    details?: string;
   };
   /** Why the number cannot be shown or the comparison could not be approved; Copy-table text, never a code. */
   error?: string | null;
@@ -66,7 +68,12 @@ export function SafetyCompare({ open, contactName, state, approvedUmk, groups, c
       <p className="d-safety-compare__identity">{contactName} · {labels.states?.[state] ?? state}</p>
       {state === 'first-seen' && <p>{labels.firstSeen.replace('{name}', contactName)}</p>}
       <p id={instructionsId} ref={instructionsRef}>{labels.instructions}</p>
-      {approvedUmk && <code className="d-safety-compare__key" data-public-umk>{approvedUmk}</code>}
+      {approvedUmk && (
+        <details className="d-safety-compare__details">
+          <summary className="d-safety-compare__summary">{labels.details ?? labels.title}</summary>
+          <code className="d-safety-compare__key" data-public-umk>{approvedUmk}</code>
+        </details>
+      )}
       {groups.length > 0
         ? <div className="d-safety-compare__groups" role="group" aria-label={labels.title}>{groups.map((group, index) => <code key={index} data-safety-group>{group}</code>)}</div>
         : error === null && labels.loading ? <p className="d-safety-compare__loading" role="status">{labels.loading}</p> : null}

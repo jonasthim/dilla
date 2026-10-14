@@ -261,12 +261,12 @@ func TestTheHandlerRoutesByItsFiveRules(t *testing.T) {
 	}
 }
 
-const permissions = "camera=(), microphone=(), display-capture=(), geolocation=()"
+const permissions = "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
 
 // cspExampleOrg is L-HTTP-10's policy, written out, for a request whose Host is example.org.
 const cspExampleOrg = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
 	"img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://example.org wss://example.org; " +
-	"worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; " +
+	"worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
 	"frame-ancestors 'none'"
 
 // Every file, whatever its extension, carries the same CSP: a dedicated worker takes its policy
@@ -324,7 +324,7 @@ func TestTheCSPNamesTheWebSocketOriginOnlyForAWellFormedHost(t *testing.T) {
 	h, _ := newSite(t)
 	const head = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
 		"img-src 'self' blob:; font-src 'self'; connect-src 'self'"
-	const tail = "; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; " +
+	const tail = "; worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; " +
 		"form-action 'none'; frame-ancestors 'none'"
 	for _, c := range []struct{ host, sources string }{
 		{"dilla.test", " ws://dilla.test wss://dilla.test"},
@@ -451,6 +451,35 @@ func TestFallbackLeavesEveryRouteOfTheMuxAlone(t *testing.T) {
 		}
 		if c.body != "" && rec.Body.String() != c.body {
 			t.Errorf("%s %s: body %q, want %q", c.method, c.target, rec.Body.String(), c.body)
+		}
+	}
+}
+
+// L-HTTP-102 (web-3): the page may ask for the camera, the microphone and a screen, on its own
+// origin only; nothing else is granted, and geolocation stays denied.
+func TestPermissionsPolicyGrantsMediaToSelf(t *testing.T) {
+	h, _ := newSite(t)
+	for _, target := range []string{"/", "/assets/app-1a2b.js", "/assets/core_bg-5e6f.wasm"} {
+		got := do(t, h, http.MethodGet, target, map[string]string{"Host": "example.org"}).Header().Get("Permissions-Policy")
+		if got != "camera=(self), microphone=(self), display-capture=(self), geolocation=()" {
+			t.Fatalf("GET %s Permissions-Policy = %q", target, got)
+		}
+	}
+}
+
+// L-HTTP-102, RV-5: media-src admits the page-minted blob: URLs of the attachment players and
+// nothing the instance serves; the rest of the policy is unchanged.
+func TestCSPMediaSrcIsBlobOnly(t *testing.T) {
+	h, _ := newSite(t)
+	csp := do(t, h, http.MethodGet, "/", map[string]string{"Host": "example.org"}).Header().Get("Content-Security-Policy")
+	for _, want := range []string{"; media-src blob:;", "connect-src 'self'", "worker-src 'self'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("the CSP lacks %q: %s", want, csp)
+		}
+	}
+	for _, never := range []string{"media-src 'self'", "media-src 'none'", "media-src blob: "} {
+		if strings.Contains(csp, never) {
+			t.Errorf("the CSP contains %q: %s", never, csp)
 		}
 	}
 }

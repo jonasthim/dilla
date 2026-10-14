@@ -80,6 +80,16 @@ pub fn client_js_error(e: &ClientError) -> JsError {
     JsError::new(&e.to_string())
 }
 
+/// The media epoch's CBOR (it carries the epoch's `base_key`) as a JavaScript-owned copy, made
+/// straight from `bytes`, which is then zero-filled in place. A `Box<[u8]>` return would leave
+/// wasm-bindgen's copy in freed linear memory un-zeroed; this leaves none (L-WASM-34).
+#[doc(hidden)]
+pub fn media_epoch_out(bytes: &mut [u8]) -> js_sys::Uint8Array {
+    let out = js_sys::Uint8Array::from(&bytes[..]);
+    zeroize::Zeroize::zeroize(bytes);
+    out
+}
+
 /// `fixed_arg` with its refusal mapped by `client_js_error`, out of line so that each export carries
 /// one call instead of its own copy of the mapping (wasm size).
 #[inline(never)]
@@ -401,6 +411,85 @@ impl CoreHandle {
             )
         })
         .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::call_group_create; CBOR [group_id, binding, group_info, ratchet_tree]; community_id null for a DM.
+    pub fn call_group_create(
+        &self,
+        group_id: &[u8],
+        community_id: Option<Vec<u8>>,
+        channel_id: &[u8],
+        policy_version: u64,
+        external_sender_pub: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let community_id = community_arg(community_id.as_deref()).map_err(owned_js_error)?;
+        let channel_id = js_fixed_arg::<16>("channel_id", channel_id)?;
+        let external_sender_pub = js_fixed_arg::<32>("external_sender_pub", external_sender_pub)?;
+        self.with_core(|c| {
+            c.call_group_create(
+                &group_id,
+                community_id.as_ref(),
+                &channel_id,
+                policy_version,
+                &external_sender_pub,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::call_group_join_external; CBOR [external_commit, group_info], unposted
+    /// until call_join_check passes; community_id null for a DM.
+    pub fn call_group_join_external(
+        &self,
+        group_id: &[u8],
+        community_id: Option<Vec<u8>>,
+        channel_id: &[u8],
+        policy_version: u64,
+        info_body: &[u8],
+        tree_body: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let community_id = community_arg(community_id.as_deref()).map_err(owned_js_error)?;
+        let channel_id = js_fixed_arg::<16>("channel_id", channel_id)?;
+        self.with_core(|c| {
+            c.call_group_join_external(
+                &group_id,
+                community_id.as_ref(),
+                &channel_id,
+                policy_version,
+                info_body,
+                tree_body,
+            )
+        })
+        .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::call_media_epoch; CBOR [epoch, base_key, own_leaf, [[leaf, device_id,
+    /// user_id]], code]. The core's buffer is zero-filled once copied out (`media_epoch_out`).
+    pub fn call_media_epoch(&self, group_id: &[u8]) -> Result<js_sys::Uint8Array, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let mut epoch = Zeroizing::new(self.with_core(|c| c.call_media_epoch(&group_id))?);
+        Ok(media_epoch_out(&mut epoch))
+    }
+    /// Calls ClientCore::call_join_check: the full call gate on a staged call group.
+    pub fn call_join_check(&self, group_id: &[u8]) -> Result<(), JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.call_join_check(&group_id))
+    }
+    /// Calls ClientCore::call_leave_proposal; CBOR [epoch, proposal].
+    pub fn call_leave_proposal(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.call_leave_proposal(&group_id))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::call_rotate; CBOR [epoch, commit, group_info, welcomes, null].
+    pub fn call_rotate(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.call_rotate(&group_id))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::call_group_forget.
+    pub fn call_group_forget(&self, group_id: &[u8]) -> Result<(), JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.call_group_forget(&group_id))
     }
     /// Calls ClientCore::group_joined.
     pub fn group_joined(&self, group_id: &[u8], seq: u64) -> Result<(), JsError> {

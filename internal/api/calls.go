@@ -17,6 +17,7 @@ import (
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
+	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/sfu"
@@ -224,10 +225,20 @@ type Calls struct {
 	leafProposed map[memberKey]time.Time
 	leafRemovals []leafRemoval
 
+	// ringer rings the other participants of a DM or group-DM call a start opens (web-3, L-GW-33);
+	// nil rings nobody.
+	ringer *Ringer
+
 	// startHook, set by a test only, runs at named points of start (startStage); endHook likewise at
 	// named points of endCall.
 	startHook func(stage string)
 	endHook   func(stage string)
+}
+
+// WithRinger sets the DM call ring and returns h.
+func (h *Calls) WithRinger(r *Ringer) *Calls {
+	h.ringer = r
+	return h
 }
 
 // RelayRevoker cuts a device from the TURN relay as of at; *server.RelayRevocations is one. Revoke
@@ -290,6 +301,8 @@ func (h *Calls) Register(mux *server.Mux) {
 	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
+	mux.HandleFunc("POST /v1/calls/{call_id}/decline", h.decline)
+	h.registerReads(mux)
 }
 
 // callResponse is `[call_id, group_id, livekit_url, token, ice_servers, caps]`.
@@ -301,6 +314,20 @@ type callResponse struct {
 	Token      string
 	ICEServers []iceServer
 	Caps       callCaps
+}
+
+// callRungResponse is callResponse with a seventh element, `rung([user_id])`: the users the start
+// rang. Only a start that opens a DM or group-DM call answers it (WB product walk I6), so the caller
+// shows "ringing" only for a ring that went out; any other start keeps the six elements.
+type callRungResponse struct {
+	_          struct{} `cbor:",toarray"`
+	CallID     id.ID
+	GroupID    id.ID
+	LiveKitURL string
+	Token      string
+	ICEServers []iceServer
+	Caps       callCaps
+	Rung       []id.ID
 }
 
 // callCaps is `[max_audio_bitrate_bps, max_share_bitrate_bps, vp9]` (DEV-26, MD-10).
@@ -510,10 +537,24 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.startStage("respond")
-	if err := server.EncodeBody(w, status, callResponse{
+	// L-GW-33: only a start that opens the call rings; a 200 start of a live call never does, and
+	// neither does a start that read the call not live but lost the race to open it (its row names
+	// another start's room; task-3 review M2).
+	var answer any = callResponse{
 		CallID: callID, GroupID: groupID, LiveKitURL: h.cfg.LiveKitURL, Token: token,
 		ICEServers: ice, Caps: h.caps(),
-	}); err != nil {
+	}
+	if status == http.StatusCreated && row.LivekitRoom == room && (ch.Kind == ChannelDM || ch.Kind == ChannelGroupDM) {
+		rung := h.ring(r.Context(), ch, row, s.UserID)
+		if rung == nil {
+			rung = []id.ID{}
+		}
+		answer = callRungResponse{
+			CallID: callID, GroupID: groupID, LiveKitURL: h.cfg.LiveKitURL, Token: token,
+			ICEServers: ice, Caps: h.caps(), Rung: rung,
+		}
+	}
+	if err := server.EncodeBody(w, status, answer); err != nil {
 		h.log.WarnContext(r.Context(), "write call response", "err", err)
 	}
 }
@@ -521,7 +562,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 // end is DELETE /v1/calls/{call_id}: 204 once the call is over, including when
 // it already was. Ending a call ends it for everyone, so the caller must be a
 // current leaf of the call's group — a participant, not merely someone who may
-// see the channel — whose user still holds connect.
+// see the channel — whose user still holds connect. With ?if_alone=1 it ends a
+// live call only while the caller's device is the call group's only current
+// leaf, decided under the group lock (409 E_CALL_NOT_ALONE otherwise): a person
+// who leaves believing they are alone never ends the call of a device that has
+// just joined (web-3 task 10 fix, f10app I1).
 func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	s, err := enrolledSession(r)
 	if err != nil {
@@ -529,6 +574,11 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	callID, err := server.PathID(r, "call_id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ifAlone, err := ifAloneParam(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -591,6 +641,15 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "your device published media that is not dilla-sframe/1 in this call"))
 		return
 	}
+	// The conditional form closes the group first, under its lock and only while the caller is its
+	// only current leaf; endCall then finds it closed and finishes the end. A joiner whose commit
+	// comes after the close is refused for the closed group and registers a fresh one.
+	if ifAlone && !closed {
+		if err := h.closeIfAlone(r.Context(), group, s.DeviceID); err != nil {
+			server.WriteError(w, err)
+			return
+		}
+	}
 	// protocol/09: DELETE ends the call for everyone — the room is closed, every participant still in
 	// it disconnected, and the call group closed, so the next call registers a fresh one. The next
 	// call keeps this call id (R9), so the sharing slots go with this one.
@@ -599,6 +658,43 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ifAloneParam reads DELETE /v1/calls/{call_id}'s one optional query parameter: absent, or
+// if_alone=1 exactly once.
+func ifAloneParam(r *http.Request) (bool, error) {
+	q := r.URL.Query()
+	if !q.Has("if_alone") {
+		return false, nil
+	}
+	if v := q["if_alone"]; len(v) != 1 || v[0] != "1" {
+		return false, server.Errorf(server.CodeInvalidRequest, "if_alone takes the one value 1")
+	}
+	return true, nil
+}
+
+// closeIfAlone closes the call's group while dev is its only current leaf: through the delivery
+// service, under the group lock, when the call events handed one over; on the store otherwise (no
+// commit lands there without a delivery service).
+func (h *Calls) closeIfAlone(ctx context.Context, group store.GroupRow, dev id.ID) error {
+	ctx = context.WithoutCancel(ctx)
+	var err error
+	if h.dsvc != nil {
+		err = h.dsvc.CloseIfAlone(ctx, group.GroupID, dev)
+	} else {
+		var members []store.MemberRow
+		if members, err = h.repo.ListMembers(ctx, group.GroupID); err == nil {
+			if !ds.SoleLeaf(members, group.Epoch, dev) {
+				err = ds.ErrNotAlone
+			} else {
+				err = h.repo.CloseGroup(ctx, group.GroupID, h.clk.Now().Unix())
+			}
+		}
+	}
+	if errors.Is(err, ds.ErrNotAlone) {
+		return server.Errorf(server.CodeCallNotAlone, "another device is in the call")
+	}
+	return err
 }
 
 // closeRoom closes an ended call's LiveKit room. The call is already over in the record, so a
@@ -650,6 +746,7 @@ func (h *Calls) endCall(ctx context.Context, callID id.ID, room string, reason s
 	if err != nil || !ended {
 		return err
 	}
+	h.ringer.End(callID)
 	h.dropRoom(ctx, row)
 	h.closeRoom(ctx, room)
 	if h.events != nil {

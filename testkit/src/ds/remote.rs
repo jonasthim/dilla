@@ -21,6 +21,7 @@ use super::{
     CommitRequest, CommitResult, DeliveryService, Device, DsError, ErrorExtras, Frame, GroupId,
     GroupInfoResp, HandshakeItem, HealRequest, KeyPackageResp, MessageItem, ProposalItem,
     RegisterRequest, RegisterResult, ResyncRequest, TreeResp, UploadResult, WelcomeItem,
+    group_id_of,
 };
 
 /// The gateway subprotocol `internal/gateway.Handler` negotiates.
@@ -78,6 +79,32 @@ pub struct HttpDs {
     accepted: u64,
     /// How many connections were dropped because a heartbeat went unacknowledged.
     missed_acks: u64,
+    /// Op 53 rings in arrival order, kept apart from the delivery-service frames until `take_rings` (web-3,
+    /// L-GW-33): a ring is never replayed, so a `drain` that dropped one would lose it for good.
+    rings: Vec<CallRing>,
+}
+
+/// At most this many unclaimed rings are kept; the oldest goes first. A test reads its rings within a few frames.
+const MAX_KEPT_RINGS: usize = 1024;
+
+/// One op 53 `call_ring` frame: `[call_id, channel_id, user_id, state, expires_ts]` (web-3, L-GW-33).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallRing {
+    pub call: [u8; 16],
+    pub channel: [u8; 16],
+    pub user: [u8; 16],
+    /// 1 ringing (`user` is the caller), 0 ring over, 2 declined (`user` is who declined).
+    pub state: u64,
+    pub expires: u64,
+}
+
+/// `GET /v1/channels/{id}/call` (web-3, L-HTTP-100): the call group a joiner takes (the live call's, else the
+/// channel's newest open one), the live call, and its participants as `(user, device, flags)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelCall {
+    pub group_id: Option<[u8; 16]>,
+    pub call_id: Option<[u8; 16]>,
+    pub participants: Vec<([u8; 16], [u8; 16], u64)>,
 }
 
 /// What `redeem_invite` returns: the identifiers the instance minted.
@@ -143,10 +170,12 @@ pub struct DmInfo {
     pub kind: u64,
     pub members: Vec<[u8; 16]>,
 }
-/// What a driver reads of `GET /v1/channels/{id}`: the id, the kind and the text group.
+/// What a driver reads of `GET /v1/channels/{id}`: the id, its community (none for a DM), the kind and the text
+/// group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelInfo {
     pub id: [u8; 16],
+    pub community_id: Option<[u8; 16]>,
     pub kind: u64,
     pub text_group_id: Option<[u8; 16]>,
 }
@@ -468,6 +497,8 @@ enum Inbound {
         target: [u8; 16],
         device: [u8; 16],
     },
+    /// Op 53 `call_ring` (web-3): kept for `take_rings`, never a delivery-service frame.
+    Ring(CallRing),
     /// Control frames the client has no use for (`resumed`) and the ops outside the delivery
     /// service (32 and above).
     Ignored,
@@ -652,6 +683,16 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
                 let _flags = d.uint()?;
                 Inbound::Signal { op, target, device }
             }
+            53 => {
+                expect(5)?;
+                Inbound::Ring(CallRing {
+                    call: d.bytes_exact::<16>()?,
+                    channel: d.bytes_exact::<16>()?,
+                    user: d.bytes_exact::<16>()?,
+                    state: d.uint()?,
+                    expires: d.uint()?,
+                })
+            }
             _ => {
                 for _ in 0..len {
                     d.skip()?;
@@ -801,7 +842,7 @@ fn decode_channel(bytes: &[u8]) -> Result<ChannelInfo, CborError> {
     decode_strict(bytes, |d| {
         d.array(12)?;
         let id = d.bytes_exact::<16>()?;
-        d.skip()?;
+        let community_id = d.opt_bytes_exact::<16>()?;
         let kind = d.uint()?;
         for _ in 3..11 {
             d.skip()?;
@@ -809,8 +850,29 @@ fn decode_channel(bytes: &[u8]) -> Result<ChannelInfo, CborError> {
         let text_group_id = d.opt_bytes_exact::<16>()?;
         Ok(ChannelInfo {
             id,
+            community_id,
             kind,
             text_group_id,
+        })
+    })
+}
+
+/// L-HTTP-100's `[group_id|null, call_id|null, [[user_id, device_id, flags]]]`.
+fn decode_channel_call(bytes: &[u8]) -> Result<ChannelCall, CborError> {
+    decode_strict(bytes, |d| {
+        d.array(3)?;
+        let group_id = d.opt_bytes_exact::<16>()?;
+        let call_id = d.opt_bytes_exact::<16>()?;
+        let n = array_or_null(d)?;
+        let mut participants = Vec::with_capacity(n.min(1024));
+        for _ in 0..n {
+            d.array(3)?;
+            participants.push((d.bytes_exact::<16>()?, d.bytes_exact::<16>()?, d.uint()?));
+        }
+        Ok(ChannelCall {
+            group_id,
+            call_id,
+            participants,
         })
     })
 }
@@ -969,6 +1031,56 @@ pub struct CallStarted {
     pub ice_servers: Vec<(Vec<String>, String, String)>,
     /// `[max_audio_bitrate_bps, max_share_bitrate_bps, vp9]`.
     pub caps: [u64; 3],
+    /// `201`: this start opened the call (and rang a DM's other participants, L-GW-33); `200`: it was live.
+    pub created: bool,
+}
+
+/// `POST /v1/channels/{id}/calls`'s answer: six elements, or seven for a start that opened a DM or
+/// group-DM call, whose seventh, `rung([user_id])`, lists the users the start rang (WB product walk
+/// I6). The testkit reads past it.
+fn decode_call_started(out: &[u8], created: bool) -> Result<CallStarted, CborError> {
+    decode_strict(out, |d| {
+        // Six elements, or seven for a start that opened a DM or group-DM call: the seventh,
+        // `rung`, lists the users the start rang (WB product walk I6); the testkit reads past it.
+        let len = d.array_len()?;
+        if len != 6 && len != 7 {
+            return Err(CborError::WrongArrayLen {
+                expected: 6,
+                actual: len,
+            });
+        }
+        let call_id = d.bytes_exact::<16>()?;
+        let group_id = d.bytes_exact::<16>()?;
+        let livekit_url = d.text()?.to_owned();
+        let token = d.text()?.to_owned();
+        let servers = array_or_null(d)?;
+        let mut ice_servers = Vec::with_capacity(servers);
+        for _ in 0..servers {
+            d.array(3)?;
+            let urls = (0..d.array_len()?)
+                .map(|_| d.text().map(str::to_owned))
+                .collect::<Result<Vec<_>, _>>()?;
+            let username = d.text()?.to_owned();
+            let credential = d.text()?.to_owned();
+            ice_servers.push((urls, username, credential));
+        }
+        d.array(3)?;
+        let caps = [d.uint()?, d.uint()?, d.uint()?];
+        if len == 7 {
+            for _ in 0..d.array_len()? {
+                d.bytes_exact::<16>()?;
+            }
+        }
+        Ok(CallStarted {
+            call_id,
+            group_id,
+            livekit_url,
+            token,
+            ice_servers,
+            caps,
+            created,
+        })
+    })
 }
 
 impl HttpDs {
@@ -995,6 +1107,7 @@ impl HttpDs {
             accepted: 0,
             missed_acks: 0,
             expires: 0,
+            rings: Vec::new(),
         }
     }
 
@@ -1054,6 +1167,7 @@ impl HttpDs {
             accepted: 0,
             missed_acks: 0,
             expires: 0,
+            rings: Vec::new(),
         };
         ds.open_socket()?;
         Ok(ds)
@@ -1157,6 +1271,7 @@ impl HttpDs {
                         }
                         Inbound::Frame(frame) => self.accept(frame),
                         Inbound::HeartbeatAck => self.acked(),
+                        Inbound::Ring(ring) => self.keep_ring(ring),
                         Inbound::Closing(reason) => return Err(DsError::Transport(reason)),
                         _ => {}
                     }
@@ -1199,34 +1314,55 @@ impl HttpDs {
             }
         });
         let path = format!("/v1/channels/{}/calls", hex::encode(channel));
-        self.post_decoded(&path, &body, |d| {
-            d.array(6)?;
-            let call_id = d.bytes_exact::<16>()?;
-            let group_id = d.bytes_exact::<16>()?;
-            let livekit_url = d.text()?.to_owned();
-            let token = d.text()?.to_owned();
-            let servers = array_or_null(d)?;
-            let mut ice_servers = Vec::with_capacity(servers);
-            for _ in 0..servers {
-                d.array(3)?;
-                let urls = (0..d.array_len()?)
-                    .map(|_| d.text().map(str::to_owned))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let username = d.text()?.to_owned();
-                let credential = d.text()?.to_owned();
-                ice_servers.push((urls, username, credential));
-            }
-            d.array(3)?;
-            let caps = [d.uint()?, d.uint()?, d.uint()?];
-            Ok(CallStarted {
-                call_id,
-                group_id,
-                livekit_url,
-                token,
-                ice_servers,
-                caps,
-            })
-        })
+        let (status, out) = call(
+            &self.agent,
+            "POST",
+            &self.url(&path),
+            Some(&self.token),
+            Some(("application/cbor", &body)),
+        )?;
+        check_status(status, &out)?;
+        decode_call_started(&out, status == 201)
+            .map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
+    }
+
+    /// `GET /v1/channels/{id}/call` (web-3, L-HTTP-100).
+    pub fn get_channel_call(&self, channel: &[u8; 16]) -> Result<ChannelCall, DsError> {
+        let path = format!("/v1/channels/{}/call", hex::encode(channel));
+        decode_channel_call(&get_with(&self.agent, &self.base, &self.token, &path)?)
+            .map_err(protocol)
+    }
+
+    /// `POST /v1/calls/{call_id}/decline [expires_ts]` (web-3, L-HTTP-104): `204`. It acts only on the ring whose
+    /// `expires_ts` equals the body's, so a decline of an earlier ring stops nothing.
+    pub fn decline_call(&self, call_id: &[u8; 16], expires_ts: u64) -> Result<(), DsError> {
+        let path = format!("/v1/calls/{}/decline", hex::encode(call_id));
+        self.post_status(
+            &path,
+            &encode(|e| {
+                e.array(1).uint(expires_ts);
+            }),
+        )
+    }
+
+    /// Every op 53 this connection received and no earlier call claimed, in arrival order. It reads up to a
+    /// heartbeat barrier first: the gateway writes one connection's frames in order, so a ring queued for this
+    /// device before the call (a start's ring, written before the start answers) is in the answer.
+    pub fn take_rings(&mut self) -> Result<Vec<CallRing>, DsError> {
+        if self.online && self.ws.is_none() {
+            self.open_socket()?;
+        }
+        if self.ws.is_some() {
+            self.barrier()?;
+        }
+        Ok(std::mem::take(&mut self.rings))
+    }
+
+    fn keep_ring(&mut self, ring: CallRing) {
+        if self.rings.len() >= MAX_KEPT_RINGS {
+            self.rings.remove(0);
+        }
+        self.rings.push(ring);
     }
 
     /// Takes the call's publisher lease for this device (`POST /v1/calls/{call_id}/share`, `204`):
@@ -1506,12 +1642,22 @@ impl HttpDs {
         community: &[u8; 16],
         name: &str,
     ) -> Result<([u8; 16], u64, u64), DsError> {
+        self.create_channel(community, 0, name)
+    }
+
+    /// POST /v1/communities/{id}/channels [kind, 0, 0, null, name, "", 0, 0]: kind 0 text, 1 voice.
+    pub fn create_channel(
+        &self,
+        community: &[u8; 16],
+        kind: u64,
+        name: &str,
+    ) -> Result<([u8; 16], u64, u64), DsError> {
         let path = format!("/v1/communities/{}/channels", hex::encode(community));
         self.post_decoded(
             &path,
             &encode(|e| {
                 e.array(8)
-                    .uint(0)
+                    .uint(kind)
                     .uint(0)
                     .uint(0)
                     .null()
@@ -1825,6 +1971,7 @@ impl HttpDs {
                         Inbound::Frame(frame) => self.accept(frame),
                         Inbound::Closing(reason) => self.socket_lost(format!("closing: {reason}")),
                         Inbound::HeartbeatAck => self.acked(),
+                        Inbound::Ring(ring) => self.keep_ring(ring),
                         Inbound::Hello { .. }
                         | Inbound::Ready
                         | Inbound::Ignored
@@ -1885,6 +2032,7 @@ impl HttpDs {
                             }
                         }
                         Inbound::Frame(frame) => self.accept(frame),
+                        Inbound::Ring(ring) => self.keep_ring(ring),
                         Inbound::Closing(reason) => {
                             self.ws = None;
                             return Err(DsError::Transport(reason));
@@ -2043,9 +2191,13 @@ impl DeliveryService for HttpDs {
     fn register_group(&mut self, r: RegisterRequest) -> Result<RegisterResult, DsError> {
         let binding = dilla_core::mls::DillaBinding::decode(&r.binding)
             .map_err(|_| DsError::BindingInvalid)?;
+        // Row 1's group_id is the GroupInfo's (the instance refuses any other). A group made with the target as its
+        // id names the target; a channel's second group (a DM's call group, web-3) names its own. Bytes that are no
+        // GroupInfo (a unit test's placeholder) fall back to the target, which the instance would refuse anyway.
+        let group_id = group_id_of(&r.group_info).unwrap_or_else(|| binding.target_id.to_vec());
         let body = encode(|e| {
             e.array(4)
-                .bytes(&binding.target_id)
+                .bytes(&group_id)
                 .bytes(&r.binding)
                 .bytes(&r.group_info)
                 .bytes(&r.ratchet_tree);
@@ -2531,6 +2683,43 @@ mod tests {
         assert!(decode_instance_document(&old).is_err());
     }
 
+    /// WB product walk I6: a DM start's seventh element, `rung`, is read past; six elements still
+    /// decode, and five or eight are refused.
+    #[test]
+    fn a_call_start_answer_has_six_or_seven_elements() {
+        let answer = |n: usize| {
+            cbor(|e| {
+                e.array(n)
+                    .bytes(&[1; 16])
+                    .bytes(&[2; 16])
+                    .text("ws://x")
+                    .text("t");
+                e.array(1)
+                    .array(3)
+                    .array(1)
+                    .text("turn:x")
+                    .text("u")
+                    .text("c");
+                e.array(3).uint(64_000).uint(2_500_000).uint(1);
+                if n >= 7 {
+                    e.array(1).bytes(&[3; 16]);
+                }
+                if n == 8 {
+                    e.uint(0);
+                }
+            })
+        };
+        for n in [6, 7] {
+            let got = decode_call_started(&answer(n), true).unwrap();
+            assert_eq!(
+                (got.call_id, got.group_id, got.caps),
+                ([1; 16], [2; 16], [64_000, 2_500_000, 1])
+            );
+            assert!(got.created);
+        }
+        assert!(decode_call_started(&answer(8), true).is_err());
+    }
+
     /// protocol/02's error array: the code, the detail and every extended position, whatever the
     /// status, so `expect_reject` sees the same thing against either delivery service.
     #[test]
@@ -2783,6 +2972,7 @@ mod tests {
             accepted: 0,
             missed_acks: 0,
             expires: 0,
+            rings: Vec::new(),
         }
     }
 
@@ -3434,6 +3624,7 @@ mod tests {
             decode_channel(&dm).unwrap(),
             ChannelInfo {
                 id: [0x06; 16],
+                community_id: None,
                 kind: 3,
                 text_group_id: Some([0x07; 16])
             }
@@ -3476,5 +3667,162 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// web-3 L-GW-33: op 53 `[call_id, channel_id, user_id, state, expires_ts]` decodes into a ring; any other
+    /// length is refused, as every other gateway frame of the wrong shape is.
+    #[test]
+    fn the_call_ring_frame_decodes_and_a_misshapen_one_is_refused() {
+        let ring = cbor(|e| {
+            e.array(4).uint(53).uint(0).null();
+            e.array(5)
+                .bytes(&[0x01; 16])
+                .bytes(&[0x02; 16])
+                .bytes(&[0x03; 16])
+                .uint(1)
+                .uint(1_800_000_030);
+        });
+        match decode_frame(&ring).unwrap() {
+            (0, Inbound::Ring(r)) => assert_eq!(
+                r,
+                CallRing {
+                    call: [0x01; 16],
+                    channel: [0x02; 16],
+                    user: [0x03; 16],
+                    state: 1,
+                    expires: 1_800_000_030,
+                }
+            ),
+            _ => panic!("op 53 is a ring"),
+        }
+        let short = cbor(|e| {
+            e.array(4).uint(53).uint(0).null();
+            e.array(4)
+                .bytes(&[0x01; 16])
+                .bytes(&[0x02; 16])
+                .bytes(&[0x03; 16])
+                .uint(1);
+        });
+        assert!(decode_frame(&short).is_err());
+    }
+
+    /// web-3 L-HTTP-100 and the community of `GET /v1/channels/{id}`, as the instance writes them: a nil Go slice
+    /// of participants arrives as null and is an empty list.
+    #[test]
+    fn the_web_3_call_answers_decode_as_the_instance_writes_them() {
+        let live = cbor(|e| {
+            e.array(3).bytes(&[0x04; 16]).bytes(&[0x05; 16]);
+            e.array(2);
+            e.array(3).bytes(&[0x01; 16]).bytes(&[0x02; 16]).uint(3);
+            e.array(3).bytes(&[0x01; 16]).bytes(&[0x09; 16]).uint(0);
+        });
+        assert_eq!(
+            decode_channel_call(&live).unwrap(),
+            ChannelCall {
+                group_id: Some([0x04; 16]),
+                call_id: Some([0x05; 16]),
+                participants: vec![([0x01; 16], [0x02; 16], 3), ([0x01; 16], [0x09; 16], 0)],
+            }
+        );
+        let idle = cbor(|e| {
+            e.array(3).null().null().null();
+        });
+        assert_eq!(
+            decode_channel_call(&idle).unwrap(),
+            ChannelCall {
+                group_id: None,
+                call_id: None,
+                participants: Vec::new(),
+            }
+        );
+        let voice = cbor(|e| {
+            e.array(12)
+                .bytes(&[0x06; 16])
+                .bytes(&[0x08; 16])
+                .uint(1)
+                .uint(0)
+                .uint(0)
+                .null()
+                .text("voice")
+                .text("")
+                .uint(0)
+                .uint(0)
+                .uint(0)
+                .null();
+        });
+        assert_eq!(
+            decode_channel(&voice).unwrap(),
+            ChannelInfo {
+                id: [0x06; 16],
+                community_id: Some([0x08; 16]),
+                kind: 1,
+                text_group_id: None
+            }
+        );
+    }
+
+    /// A ring a pump reads is kept beside the delivery-service frames, so a `drain` never loses it, and
+    /// `take_rings` reads up to a heartbeat barrier first: a ring queued before the barrier is in its answer.
+    #[test]
+    fn rings_survive_a_drain_and_take_rings_reads_up_to_a_barrier() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ring = |state: u64| {
+            encode(|e| {
+                e.array(4).uint(53).uint(0).null();
+                e.array(5)
+                    .bytes(&[0x01; 16])
+                    .bytes(&[0x02; 16])
+                    .bytes(&[0x03; 16])
+                    .uint(state)
+                    .uint(1_800_000_030);
+            })
+        };
+        let (sent, written) = std::sync::mpsc::channel();
+        let gateway = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            ws.send(Message::Binary(ring(1).into())).unwrap();
+            sent.send(()).unwrap();
+            // The first heartbeat: the second ring is queued before its ack, as the gateway's one writer would.
+            let mut beats = 0;
+            loop {
+                match ws.read() {
+                    Ok(Message::Binary(bytes))
+                        if bytes.first() == Some(&0x84) && bytes.get(1) == Some(&6) =>
+                    {
+                        beats += 1;
+                        if beats == 1 {
+                            ws.send(Message::Binary(ring(0).into())).unwrap();
+                        }
+                        ws.send(Message::Binary(heartbeat_ack().into())).unwrap();
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (mut socket, _) = tungstenite::client(format!("ws://{addr}/gateway"), stream).unwrap();
+        read_timeout(&mut socket, PUMP_WAIT).unwrap();
+        written.recv().unwrap();
+        let mut ds = connected(&format!("http://{addr}"), Some(socket));
+        // A drain reads the first ring off the socket and returns no delivery-service frame for it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ds.rings.is_empty() && Instant::now() < deadline {
+            assert!(ds.drain().unwrap().is_empty());
+        }
+        let rings = ds.take_rings().unwrap();
+        assert_eq!(
+            rings.iter().map(|r| r.state).collect::<Vec<_>>(),
+            vec![1, 0],
+            "the drained ring, then the one queued before the barrier's ack"
+        );
+        assert!(
+            ds.take_rings().unwrap().is_empty(),
+            "take_rings hands each ring out once"
+        );
+        drop(ds);
+        gateway.join().unwrap();
     }
 }

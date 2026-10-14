@@ -241,6 +241,25 @@ expect_425 send bob chat the re-issued Remove still holds the group
 	}
 }
 
+// An eviction is never superseded (the security review of e619526; re-added by the task 10 fix
+// round, f10app m5): the instance removes bob without his asking (a cut, the room sweep, the fork
+// watchdog), and his resync is refused while that Remove stands.
+func TestACallGroupEvictionIsNotSupersededByARejoin(t *testing.T) {
+	h := testkit.Start(t, testkit.Options{DataDir: t.TempDir()})
+	t.Cleanup(h.Stop)
+	const gid = "e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9"
+	runScript(t, h, `instance dilla
+client alice
+client bob
+group call kind=call target=`+gid+` community=none creator=alice
+join bob call via=external
+sync alice
+kick alice bob
+expect_reject E_REMOVE_PENDING resync bob call
+expect_425 send alice call the eviction still holds the call
+`)
+}
+
 func kindsAndEpochs(log []store.HandshakeRow) [][3]uint64 {
 	out := make([][3]uint64, 0, len(log))
 	for _, r := range log {

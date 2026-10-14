@@ -322,29 +322,39 @@ func sameTarget(a, b store.ProposalRow) bool {
 
 // deviceAtLeaf answers which device holds leaf in the group's current member set.
 func (d *DS) deviceAtLeaf(ctx context.Context, groupID id.ID, leaf uint32) (id.ID, bool, error) {
+	m, present, err := d.memberAtLeaf(ctx, groupID, leaf)
+	return m.DeviceID, present, err
+}
+
+// memberAtLeaf answers the membership that holds leaf in the group's current member set.
+func (d *DS) memberAtLeaf(ctx context.Context, groupID id.ID, leaf uint32) (store.MemberRow, bool, error) {
 	members, err := d.opts.Store.ListMembers(ctx, groupID)
 	if err != nil {
-		return id.ID{}, false, err
+		return store.MemberRow{}, false, err
 	}
 	for _, m := range members {
 		if m.LeafIndex == leaf && m.RemovedEpoch == nil {
-			return m.DeviceID, true, nil
+			return m, true, nil
 		}
 	}
-	return id.ID{}, false, nil
+	return store.MemberRow{}, false, nil
 }
 
-// removeStillTargets reports whether an instance Remove issued as old still names the device that
-// holds its leaf now. A Remove that recorded its device is re-issued only onto that device; one that
-// recorded none (written before devices were recorded) only within the epoch it was issued in, where
-// no commit can have moved anybody onto the leaf.
+// removeStillTargets reports whether an instance Remove issued as old still names the membership
+// that holds its leaf now. A Remove that recorded its device is re-issued only onto that device's
+// membership the Remove was issued for: one it took at or before the Remove's epoch (added_epoch,
+// as ProposeRemoveOfMember binds). The same device back at the same leaf by an own-leaf resync or an
+// external join holds a new membership from that commit's epoch, later than any Remove issued
+// before it, and a voided Remove is never re-aimed at it (the f10app review's re-drive card). One
+// that recorded no device (written before devices were recorded) is re-issued only within the epoch
+// it was issued in, where no commit can have moved anybody onto the leaf.
 func (d *DS) removeStillTargets(ctx context.Context, groupID id.ID, old store.ProposalRow) (bool, error) {
-	device, present, err := d.deviceAtLeaf(ctx, groupID, *old.TargetLeaf)
+	member, present, err := d.memberAtLeaf(ctx, groupID, *old.TargetLeaf)
 	if err != nil || !present {
 		return false, err
 	}
 	if old.TargetDevice != nil {
-		return device == *old.TargetDevice, nil
+		return member.DeviceID == *old.TargetDevice && member.AddedEpoch <= old.Epoch, nil
 	}
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if err != nil {

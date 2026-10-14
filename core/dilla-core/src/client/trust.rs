@@ -266,8 +266,27 @@ fn own_user_key(c: &rusqlite::Connection) -> Result<Option<OwnUserKey>, StorageE
         }))
 }
 
+/// The pin to write after a validated signed list under `key`, or `None` when the list changes
+/// nothing. While a change is pending, the cached list itself (`newer_than_cached` false: the
+/// anchor check makes a list no newer than the cached one that list, byte for byte) seen again
+/// through a leaf of the pinned key (one SSK cross-signed by both keys names both devices) is no
+/// later list back under the pinned key: it ends nothing and rebinds no cached key, so the changed
+/// key stays pending and verifiable. This is `next_pin`'s precondition, enforced here.
+fn pin_after_list(
+    prior: Option<Pin>,
+    key: &[u8; 32],
+    now: i64,
+    newer_than_cached: bool,
+) -> Option<Pin> {
+    if prior.is_some_and(|p| p.changed.is_some() && p.umk == *key) && !newer_than_cached {
+        return None;
+    }
+    Some(next_pin(prior, key, now))
+}
+
 /// The pin after a validated signed list under `key`. First sight pins it unverified; the pinned
-/// key keeps the pin (and ends a pending change: its newest list is the pinned key's again); any
+/// key keeps the pin (and ends a pending change: its newest list is the pinned key's again; only
+/// `pin_after_list` calls this, never for the pinned key's view of the list already cached); any
 /// other key becomes the one pending change and withdraws an earlier verification.
 fn next_pin(prior: Option<Pin>, key: &[u8; 32], now: i64) -> Pin {
     match prior {
@@ -570,6 +589,61 @@ fn member_blocks(
         }
     }
     Ok(out)
+}
+
+/// Step 2 of the call gate (L-CORE-50, ruling RV-1, fail closed): every current leaf of `group`
+/// but this device's own is judged by `leaf_verdict` against the cached signed list, so a call
+/// refuses a pending leaf (`E_DEVICE_LIST_STALE`), which text sending lets through: audio would
+/// reach the pending device. A leaf whose credential does not decode is `E_CREDENTIAL`. A hard
+/// verdict is answered before a pending one, so a pending leaf never hides a failed one (the join
+/// tolerates the pending answer alone).
+pub(super) fn call_leaves_verdict(
+    c: &rusqlite::Connection,
+    group: &DillaGroup,
+    group_id: &[u8; 16],
+    own_user: &[u8; 16],
+    own_device: &[u8; 16],
+) -> Result<Result<(), &'static str>, StorageError> {
+    let own_leaf = group.own_leaf_index().u32();
+    let mut pending = false;
+    for member in group.members() {
+        let index = member.index.u32();
+        let Ok(leaf) = extract_leaf(group_id, group, [0; 32], member) else {
+            return Ok(Err(E_CREDENTIAL));
+        };
+        if index == own_leaf
+            && leaf.credential.user_id.as_bytes() == own_user
+            && leaf.credential.device_id.as_bytes() == own_device
+        {
+            continue;
+        }
+        match leaf_verdict(c, &leaf)? {
+            Ok(()) => {}
+            Err(E_DEVICE_LIST_STALE) => pending = true,
+            Err(code) => return Ok(Err(code)),
+        }
+    }
+    Ok(if pending {
+        Err(E_DEVICE_LIST_STALE)
+    } else {
+        Ok(())
+    })
+}
+
+/// The send block of a group whose MLS state does not load: any stored verdict row of it, a
+/// changed-key one first (fail closed), as `send_block_code` answers for such a group.
+pub(super) fn stored_block(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+) -> Result<Option<&'static str>, StorageError> {
+    let code: Option<String> = c
+        .query_row(
+            "SELECT code FROM app_quarantine WHERE group_id=?1 ORDER BY code='E_UMK_CHANGED' DESC LIMIT 1",
+            [group_id.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(code.map(|code| block_code(&code)))
 }
 
 /// The stored verdict as the refusal `send_prepare` and `send_encrypt` answer with.
@@ -1011,19 +1085,13 @@ impl ClientCore {
                     .or(blocks.first().map(|(_, k)| *k));
                 Ok(code.map(|code| {
                     let mut holders = blocks.iter().filter(|(_, k)| *k == code);
-                    (code, own_user.is_some() && holders.all(|(u, _)| *u == own_user))
+                    (
+                        code,
+                        own_user.is_some() && holders.all(|(u, _)| *u == own_user),
+                    )
                 }))
             }),
-            None => self.read(|c| {
-                let code: Option<String> = c
-                    .query_row(
-                        "SELECT code FROM app_quarantine WHERE group_id=?1 ORDER BY code='E_UMK_CHANGED' DESC LIMIT 1",
-                        [group_id.as_slice()],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                Ok(code.map(|code| (block_code(&code), false)))
-            }),
+            None => self.read(|c| Ok(stored_block(c, group_id)?.map(|code| (code, false)))),
         }
     }
 
@@ -1151,21 +1219,27 @@ impl ClientCore {
     /// Calls `f` with each active group (state 2), from the cache or loaded from the store; at
     /// most 4,096 groups, ids bounded before any group state is loaded.
     fn each_active_group(&self, f: &mut GroupVisitor<'_>) -> Result<(), ClientError> {
-        self.each_active_group_or(f, None)
+        self.each_active_group_or(f, None, false)
     }
 
     /// `each_active_group`, except that with `unloadable` given, a group whose MLS state does not
     /// load is listed there instead of failing the walk.
+    ///
+    /// With `staged_calls`, a staged call group (state 1, kind 1: joined locally, its external
+    /// commit not yet posted) is walked too: `pending_leaves` lists its leaves so the worker can
+    /// refresh their lists before `call_join_check` lets it post the commit (ruling RV-1).
     fn each_active_group_or(
         &self,
         f: &mut GroupVisitor<'_>,
         mut unloadable: Option<&mut Vec<[u8; 16]>>,
+        staged_calls: bool,
     ) -> Result<(), ClientError> {
         let ids: Vec<[u8; 16]> = self.read(|c| {
             let mut stmt = c.prepare(
-                "SELECT group_id FROM app_groups WHERE state=2 ORDER BY group_id LIMIT 4097",
+                "SELECT group_id FROM app_groups WHERE state=2 OR (?1 AND state=1 AND kind=1) \
+                 ORDER BY group_id LIMIT 4097",
             )?;
-            stmt.query_map([], |r| r.get(0))?
+            stmt.query_map([staged_calls], |r| r.get(0))?
                 .collect::<Result<_, _>>()
                 .map_err(Into::into)
         })?;
@@ -1248,47 +1322,51 @@ impl ClientCore {
     /// Current tree leaves that need a signed-list refresh, without exporting credentials or keys.
     pub fn pending_leaves(&self) -> Result<Vec<u8>, ClientError> {
         let mut rows = Vec::new();
-        self.each_active_group(&mut |id, group| {
-            let id = *id;
-            let tree_hash = group.tree_hash(&self.provider, self.signer()?)?;
-            for member in group.members() {
-                if rows.len() == 4096 {
-                    return Err(failure(E_CORE_LIMIT));
+        self.each_active_group_or(
+            &mut |id, group| {
+                let id = *id;
+                let tree_hash = group.tree_hash(&self.provider, self.signer()?)?;
+                for member in group.members() {
+                    if rows.len() == 4096 {
+                        return Err(failure(E_CORE_LIMIT));
+                    }
+                    // The transition audit already marks an undecodable credential failed.
+                    // It cannot be a pending signed-list candidate, and must not prevent
+                    // refresh of the other decodable leaves in this group.
+                    let Ok(leaf) = extract_leaf(&id, group, tree_hash, member) else {
+                        continue;
+                    };
+                    let user: [u8; 16] = *leaf.credential.user_id.as_bytes();
+                    let (cached, changed): (u64, bool) = self.read(|c| {
+                        let version: Option<i64> = c
+                            .query_row(
+                                "SELECT version FROM app_device_lists WHERE user_id=?1",
+                                [user.as_slice()],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        let changed = read_pin(c, &user)?.is_some_and(|pin| pin.changed.is_some());
+                        Ok((version.unwrap_or(0).max(0) as u64, changed))
+                    })?;
+                    rows.push((
+                        id,
+                        leaf.leaf_index,
+                        user,
+                        cached,
+                        if changed {
+                            "changed"
+                        } else if cached == 0 {
+                            "unknown"
+                        } else {
+                            "ready-refresh"
+                        },
+                    ));
                 }
-                // The transition audit already marks an undecodable credential failed.
-                // It cannot be a pending signed-list candidate, and must not prevent
-                // refresh of the other decodable leaves in this group.
-                let Ok(leaf) = extract_leaf(&id, group, tree_hash, member) else {
-                    continue;
-                };
-                let user: [u8; 16] = *leaf.credential.user_id.as_bytes();
-                let (cached, changed): (u64, bool) = self.read(|c| {
-                    let version: Option<i64> = c
-                        .query_row(
-                            "SELECT version FROM app_device_lists WHERE user_id=?1",
-                            [user.as_slice()],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    let changed = read_pin(c, &user)?.is_some_and(|pin| pin.changed.is_some());
-                    Ok((version.unwrap_or(0).max(0) as u64, changed))
-                })?;
-                rows.push((
-                    id,
-                    leaf.leaf_index,
-                    user,
-                    cached,
-                    if changed {
-                        "changed"
-                    } else if cached == 0 {
-                        "unknown"
-                    } else {
-                        "ready-refresh"
-                    },
-                ));
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+            None,
+            true,
+        )?;
         let mut e = Encoder::new();
         e.array(rows.len());
         for (group, leaf, user, version, reason) in rows {
@@ -1443,7 +1521,12 @@ impl ClientCore {
         let (changed, quarantined) = self.write(|_, u| {
             u.with_conn(|c| {
                 let prior = read_pin(c, requested_user)?;
-                let pin = next_pin(prior, &validated.umk_pub, now);
+                let newer_than_cached = cached
+                    .as_ref()
+                    .is_none_or(|(version, ..)| validated.version > *version as u64);
+                let Some(pin) = pin_after_list(prior, &validated.umk_pub, now, newer_than_cached) else {
+                    return Ok((false, 0));
+                };
                 write_pin(c, requested_user, &pin)?;
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice()])?;
                 // First sight pins without changing anything displayed; a key change or its end does.
@@ -1500,6 +1583,7 @@ impl ClientCore {
                 Ok(())
             },
             Some(&mut unloadable),
+            false,
         )?;
         for id in &unloadable {
             blocks.extend(self.read(|c| stored_blocks(c, id))?);
@@ -1739,6 +1823,36 @@ mod tests {
             dsk_pub,
         };
         (leaf, list)
+    }
+
+    #[test]
+    fn the_pin_after_the_cached_list_seen_again_through_the_pinned_key_is_no_write() {
+        let old = [1u8; 32];
+        let new = [2u8; 32];
+        let pending = Pin {
+            umk: old,
+            first_seen: 5,
+            verified: false,
+            changed: Some(new),
+        };
+        // The cached list itself, through a leaf of the pinned key: nothing ends, nothing is written.
+        assert!(pin_after_list(Some(pending), &old, 9, false).is_none());
+        // A strictly newer list under the pinned key ends the change.
+        let ended = Pin {
+            changed: None,
+            ..pending
+        };
+        assert!(pin_after_list(Some(pending), &old, 9, true) == Some(ended));
+        // Through the changed key, or with no change pending, the pin follows next_pin.
+        assert!(pin_after_list(Some(pending), &new, 9, false) == Some(pending));
+        assert!(pin_after_list(Some(ended), &old, 9, false) == Some(ended));
+        let first = Pin {
+            umk: old,
+            first_seen: 9,
+            verified: false,
+            changed: None,
+        };
+        assert!(pin_after_list(None, &old, 9, false) == Some(first));
     }
 
     #[test]

@@ -38,7 +38,8 @@ export function checkDist(dir) {
     }
     if (!ALLOWED_EXTENSIONS.includes(ext)) problems.push(`${path}: extension ${ext || '(none)'} is not served`);
   }
-  if (wasm !== 1) problems.push(`expected exactly 1 .wasm file, found ${wasm}`);
+  // web-3 task 8: the core wasm (the core and media workers share it) and RNNoise's; check-entry-chunk.mjs names them.
+  if (wasm !== 2) problems.push(`expected exactly 2 .wasm files (the core and RNNoise), found ${wasm}`);
   return problems;
 }
 

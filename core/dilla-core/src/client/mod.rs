@@ -2,6 +2,7 @@
 //! Every structured value crossing the boundary is one deterministic CBOR item. Every state
 //! change runs inside exactly one `DillaStorage::unit`.
 
+mod calls;
 mod error;
 mod fold;
 mod groups;
@@ -99,23 +100,10 @@ impl ClientCore {
             return Ok(None);
         };
         let row = self.read(|c| groups::group_row(c, group_id))?;
-        if let Some(row) = row {
-            let binding = group.binding();
-            let matches = group.group_id().as_slice() == group_id
-                && row.kind == 0
-                && binding.kind == crate::mls::GroupKind::Text
-                && binding.target_id.as_slice() == row.target_id.as_slice()
-                && binding
-                    .community_id
-                    .as_ref()
-                    .map(|c| c.as_bytes().as_slice())
-                    == row.community_id.as_deref();
-            if !matches {
-                return Err(ClientError::new(
-                    E_CORE_STATE,
-                    "the stored group does not match its row; resync the group",
-                ));
-            }
+        if let Some(row) = row
+            && !matches_row(&group, group_id, &row)
+        {
+            return Err(mismatched());
         }
         Ok(Some(group))
     }
@@ -251,6 +239,30 @@ impl ClientCore {
     pub fn unload(&mut self) {
         self.groups.clear();
     }
+}
+
+/// Whether a loaded group is the one its row describes: its MLS group id, and its binding's kind
+/// (text or call), target and community, equal the row's.
+fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow) -> bool {
+    let binding = group.binding();
+    matches!(
+        binding.kind,
+        crate::mls::GroupKind::Text | crate::mls::GroupKind::Call
+    ) && group.group_id().as_slice() == group_id
+        && row.kind == groups::row_kind(binding.kind)
+        && binding.target_id.as_slice() == row.target_id.as_slice()
+        && binding
+            .community_id
+            .as_ref()
+            .map(|c| c.as_bytes().as_slice())
+            == row.community_id.as_deref()
+}
+
+fn mismatched() -> ClientError {
+    ClientError::new(
+        E_CORE_STATE,
+        "the stored group does not match its row; resync the group",
+    )
 }
 
 /// `open`'s mapping of the migration unit's storage errors: a `Codec` error carries its own

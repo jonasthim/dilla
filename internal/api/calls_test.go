@@ -21,7 +21,8 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
-// callResponse is POST /v1/channels/{id}/calls's six elements.
+// callResponse is POST /v1/channels/{id}/calls's six elements, and the seventh, rung, that a start
+// opening a DM or group-DM call carries (WB product walk I6; HasRung is false without it).
 type callResponse struct {
 	CallID     id.ID
 	GroupID    id.ID
@@ -29,14 +30,16 @@ type callResponse struct {
 	Token      string
 	ICE        [][]cbor.RawMessage
 	Caps       []uint64
+	Rung       []id.ID
+	HasRung    bool
 }
 
 func decodeCall(t *testing.T, body []byte) callResponse {
 	t.Helper()
 	var out []cbor.RawMessage
 	mustUnmarshalBody(t, body, &out)
-	if len(out) != 6 {
-		t.Fatalf("call response has %d elements, want 6: %x", len(out), body)
+	if len(out) != 6 && len(out) != 7 {
+		t.Fatalf("call response has %d elements, want 6 or 7: %x", len(out), body)
 	}
 	var r callResponse
 	mustUnmarshal(t, out[0], &r.CallID)
@@ -45,6 +48,10 @@ func decodeCall(t *testing.T, body []byte) callResponse {
 	mustUnmarshal(t, out[3], &r.Token)
 	mustUnmarshal(t, out[4], &r.ICE)
 	mustUnmarshal(t, out[5], &r.Caps)
+	if len(out) == 7 {
+		r.HasRung = true
+		mustUnmarshal(t, out[6], &r.Rung)
+	}
 	return r
 }
 

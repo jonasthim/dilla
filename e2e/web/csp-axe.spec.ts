@@ -7,12 +7,12 @@ import {
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
 
-const CSP = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://${HOST} wss://${HOST}; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+const CSP = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://${HOST} wss://${HOST}; worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 const COMMON = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
   'x-frame-options': 'DENY',
-  'permissions-policy': 'camera=(), microphone=(), display-capture=(), geolocation=()',
+  'permissions-policy': 'camera=(self), microphone=(self), display-capture=(self), geolocation=()',
 };
 const NEVER = ['cross-origin-opener-policy', 'cross-origin-embedder-policy', 'access-control-allow-origin', 'strict-transport-security'];
 const IMMUTABLE = 'public, max-age=31536000, immutable';
@@ -44,9 +44,12 @@ test('the host serves the built client with the headers, types, cache rules and 
   // Hashed assets are immutable, typed by extension, carry their ETag and the same CSP as the page.
   const js = manifest.files.find((f) => f.path.startsWith('assets/') && f.path.endsWith('.js'));
   if (!js) throw new Error('the manifest lists no assets/*.js');
+  // web-3 task 8: one core wasm (the core and media workers share it) and RNNoise's, as check-entry-chunk.mjs and
+  // internal/web/webdist_test.go count them; each is served as application/wasm.
   const wasm = manifest.files.filter((f) => f.path.endsWith('.wasm'));
-  expect(wasm.map((f) => f.path)).toEqual([expect.stringMatching(/^assets\/.+\.wasm$/)]);
-  for (const [file, type] of [[js, 'text/javascript; charset=utf-8'], [wasm[0], 'application/wasm']] as const) {
+  expect(wasm.map((f) => f.path).sort()).toEqual([expect.stringMatching(/^assets\/dilla_core_wasm_bg-[^/]+\.wasm$/),
+    expect.stringMatching(/^assets\/rnnoise-[^/]+\.wasm$/)]);
+  for (const [file, type] of [[js, 'text/javascript; charset=utf-8'], ...wasm.map((w) => [w, 'application/wasm'] as const)] as const) {
     const res = await request.get(`/${file.path}`);
     expect(res.status(), file.path).toBe(200);
     const h = res.headers();

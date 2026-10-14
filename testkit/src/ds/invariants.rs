@@ -26,6 +26,54 @@ mod tests {
         }
     }
 
+    /// Invariant 1 as the instance keeps it (lesson f): the group is stored under its GroupInfo's own id, which a
+    /// creator may choose apart from the target (a DM's call group beside its text group, web-3).
+    #[test]
+    fn register_group_stores_the_group_under_its_group_info_id() {
+        use crate::TestClient;
+        use dilla_core::identity::{Kind, Tier};
+        use dilla_core::ids::UserId;
+        use dilla_core::mls::DillaGroup;
+        use openmls::prelude::GroupId;
+        use tls_codec::Serialize as _;
+
+        let client = TestClient::new(
+            "a",
+            UserId::from_bytes([0x01; 16]),
+            Tier::Native,
+            Kind::User,
+            7,
+        )
+        .unwrap();
+        let group = DillaGroup::create(
+            client.provider(),
+            client.signer(),
+            client.credential(),
+            GroupId::from_slice(&[0x44; 16]),
+            binding(),
+            None,
+        )
+        .unwrap();
+        let group_info = group
+            .export_group_info(client.provider(), client.signer())
+            .unwrap()
+            .tls_serialize_detached()
+            .unwrap();
+        let mut ds = DsStub::new(config());
+        let registered = ds
+            .register_group(RegisterGroup {
+                binding: binding().encode(),
+                group_info,
+                ratchet_tree: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            registered.group_id,
+            vec![0x44; 16],
+            "the GroupInfo's id, not the target's"
+        );
+    }
+
     /// Invariant 1: a malformed binding is refused before anything is stored.
     #[test]
     fn register_group_refuses_a_malformed_binding() {

@@ -4,7 +4,7 @@ import { formatDay, formatTime } from '../strings/index.ts';
 import {
   authorName, badgeLabel, bodyParts, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
   mentionCandidates, mentionMembers, mentionOptions, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
-  stepChannel, sumBadges, unsupportedBody, visibleChannel,
+  stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, userName, joinFailureKey, micNoticeKey, isVoice,
 } from './shell-model.ts';
 
 const A = 'a1'.repeat(16);
@@ -235,5 +235,34 @@ describe('formatSize (L-COPY-03)', () => {
     [1_048_576, '1.0 MB'], [26_214_400, '25 MB'],
   ])('%d bytes read as %s', (bytes, text) => {
     expect(formatSize(bytes)).toBe(text);
+  });
+});
+
+describe('voice (flow 06)', () => {
+  const p = { userId: 'aa'.repeat(16), deviceId: 'bb'.repeat(16), name: 'bo', flags: 0, own: false, web: true, bot: false };
+  it('reads the voice_state flag bits', () => {
+    expect(participantView({ ...p, flags: 1 })).toMatchObject({ muted: false, deafened: false, video: false, screen: false, web: false, state: 'ok' });
+    expect(participantView({ ...p, flags: 1 | 2 | 4 | 8 | 16 }, 'not-heard', true))
+      .toMatchObject({ muted: true, deafened: true, video: true, screen: true, state: 'not-heard', speaking: true });
+  });
+  it('names a user by member, then trust row, then id', () => {
+    const id = 'cd'.repeat(16);
+    expect(userName(id, [{ userId: id, username: 'bob', display: 'Bob B', kind: 0, roleIds: [] }], [])).toBe('Bob B');
+    expect(userName(id, [], [{ userId: id, name: 'bob' }])).toBe('bob');
+    expect(userName(id, [], undefined)).toBe('cdcdcdcd');
+  });
+  it('maps refusals to copy by code only', () => {
+    expect(joinFailureKey('E_CALL_FULL')).toBe('voice.full');
+    expect(joinFailureKey('E_CALL_IN_OTHER_TAB')).toBe('voice.otherTab');
+    expect(joinFailureKey('E_ABORTED')).toBeNull();
+    expect(joinFailureKey('E_UMK_CHANGED')).toBeNull();
+    expect(joinFailureKey('E_NETWORK')).toBe('voice.failed');
+    expect(micNoticeKey('failed')).toBe('voice.micFailed');
+    expect(micNoticeKey('ok')).toBeNull();
+  });
+  it('opens a voice channel but not a readable one', () => {
+    expect(isVoice({ kind: 1, mode: 0 })).toBe(true);
+    expect(isVoice({ kind: 1, mode: 1 })).toBe(false);
+    expect(isVoice({ kind: 0, mode: 0 })).toBe(false);
   });
 });

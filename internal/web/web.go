@@ -23,9 +23,9 @@ import (
 const ManifestName = "dilla-manifest.json"
 const maxManifestBytes = 1 << 20
 const maxFileBytes = 64 << 20
-const permissionsPolicy = "camera=(), microphone=(), display-capture=(), geolocation=()"
+const permissionsPolicy = "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
 const cspHead = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self'"
-const cspTail = "; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+const cspTail = "; worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 //go:embed all:dist
 var dist embed.FS

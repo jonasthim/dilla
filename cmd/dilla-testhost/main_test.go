@@ -41,6 +41,48 @@ func TestWithoutTheNewFlagsTheHostKeepsThePlaceholderAndTheHarnessSeams(t *testi
 	}
 }
 
+// web-3 task 3: a host that serves a web client and runs an SFU hands the browser its own public
+// listener as the LiveKit URL (ws://, since the test host has no TLS); either flag alone keeps the
+// instance's default.
+func TestASFUHostWithAWebRootNamesItsListenerAsTheLiveKitURL(t *testing.T) {
+	dir := t.TempDir()
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-listen", "127.0.0.1:8481", "-sfu", "-web-root", dir}, "ws://127.0.0.1:8481"},
+		{[]string{"-listen", "127.0.0.1:8481", "-sfu"}, ""},
+		{[]string{"-listen", "127.0.0.1:8481", "-web-root", dir}, ""},
+	} {
+		o, err := parseFlags(c.args)
+		if err != nil {
+			t.Fatalf("parseFlags %v: %v", c.args, err)
+		}
+		if got := o.hostOptions("/data", "/core.wasm", "").LiveKitURL; got != c.want {
+			t.Errorf("%v: LiveKitURL = %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
+// Task-10 fix review N3: -sfu-departure-timeout reaches the host options; absent, it is zero (the
+// instance default).
+func TestTheSFUDepartureTimeoutFlagReachesTheHostOptions(t *testing.T) {
+	o, err := parseFlags([]string{"-sfu", "-sfu-departure-timeout", "60"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got := o.hostOptions("/data", "/core.wasm", "").SFUDepartureTimeout; got != 60 {
+		t.Fatalf("SFUDepartureTimeout = %d, want 60", got)
+	}
+	o, err = parseFlags([]string{"-sfu"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got := o.hostOptions("/data", "/core.wasm", "").SFUDepartureTimeout; got != 0 {
+		t.Fatalf("default SFUDepartureTimeout = %d, want 0", got)
+	}
+}
+
 func TestARelativeWebRootIsResolvedAgainstTheWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "dist"), 0o700); err != nil {

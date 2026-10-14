@@ -497,7 +497,20 @@ impl TestClient {
         binding: DillaBinding,
         external_senders: Option<ExternalSendersExtension>,
     ) -> Result<Vec<u8>, TestkitError> {
-        let group_id = GroupId::from_slice(&binding.target_id);
+        let target = binding.target_id;
+        self.create_group_as(ds, &target, binding, external_senders)
+    }
+
+    /// `create_group_with` under a group id of the caller's choosing rather than the target's: a channel holds a
+    /// second group beside its text group (a DM's call group, web-3), and a group id is unique on the instance.
+    pub fn create_group_as(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8; 16],
+        binding: DillaBinding,
+        external_senders: Option<ExternalSendersExtension>,
+    ) -> Result<Vec<u8>, TestkitError> {
+        let group_id = GroupId::from_slice(group_id);
         let group = DillaGroup::create(
             &self.provider,
             &self.signer,
@@ -888,6 +901,16 @@ impl TestClient {
                 }
             }
         }
+    }
+
+    /// Drops this client's state of `group_id` (web-3's `callGroupForget`): after its own Remove is proposed, a
+    /// leaver never processes the commit that removes it. Frames for a group it no longer holds are skipped.
+    pub fn forget(&mut self, group_id: &[u8]) -> Result<(), TestkitError> {
+        self.queued.remove(group_id);
+        if let Some(mut group) = self.groups.remove(group_id) {
+            group.delete(&self.provider)?;
+        }
+        Ok(())
     }
 
     /// Commits for the group's current epoch: a self-update, which also carries every proposal

@@ -5,7 +5,7 @@
  */
 import { readFileSync } from 'node:fs';
 
-export const WASM_MAX_BYTES = 3_450_000;
+export const WASM_MAX_BYTES = 3_500_000;
 export const WASM_MAX_NAME_SECTION = 4_096;
 
 const HEADER = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
@@ -54,7 +54,7 @@ export function checkWasm(bytes) {
   if (name.problem) return [name.problem];
   const problems = [];
   if (bytes.length > WASM_MAX_BYTES) {
-    problems.push(`wasm is ${bytes.length} bytes, above the 3450000-byte budget (web-2c D5)`);
+    problems.push(`wasm is ${bytes.length} bytes, above the 3500000-byte budget (web-3 decision 5)`);
   }
   if (name.size > WASM_MAX_NAME_SECTION) {
     problems.push(`name section is ${name.size} bytes, above the 4096-byte bound: build with --profile wasm-release (strip = true, C16)`);
@@ -79,7 +79,7 @@ if (import.meta.url === 'file://' + process.argv[1]) {
   const name = bytes.length >= HEADER.length && HEADER.every((b, i) => bytes[i] === b)
     ? nameSectionSize(bytes) : null;
   if (name && !name.problem) {
-    console.log(`${path}: ${bytes.length} bytes (budget 3450000), name section ${name.size} bytes (bound 4096)`);
+    console.log(`${path}: ${bytes.length} bytes (budget 3500000), name section ${name.size} bytes (bound 4096)`);
   }
   for (const problem of problems) console.error(`check-wasm-size: ${problem}`);
   process.exit(problems.length === 0 ? 0 : 1);

@@ -1272,69 +1272,6 @@ fn oversized_signed_history_is_rejected_before_decode() {
 
 // ---- Claude security review (sec-trust): regressions for T2-LAST-01..03 and leads (p)(q)(r). ----
 
-fn sec_entry(peer: &RawPeer) -> DeviceEntry {
-    DeviceEntry {
-        device_id: DeviceId::from_bytes(peer.device),
-        dsk_pub: peer.signer.public().try_into().unwrap(),
-        tier: Tier::Native,
-        added_at: NOW + 2,
-        revoked_at: None,
-    }
-}
-
-fn sec_next(prev: &DeviceList, entries: Vec<DeviceEntry>, ssk_seed: u8) -> DeviceList {
-    let unsigned = DeviceListUnsigned {
-        v: 1,
-        user_id: prev.unsigned.user_id,
-        version: prev.unsigned.version + 1,
-        prev_hash: prev.hash(),
-        entries,
-    };
-    DeviceList {
-        sig_ssk: SskSigner::from_bytes(&[ssk_seed; 32]).sign_device_list(&unsigned),
-        unsigned,
-    }
-}
-
-fn sec_history(lists: &[&DeviceList]) -> Vec<u8> {
-    let mut e = Encoder::new();
-    e.array(lists.len());
-    for list in lists {
-        e.array(4)
-            .uint(list.unsigned.version)
-            .bytes(&list.encode())
-            .bytes(&list.sig_ssk)
-            .bytes(&list.unsigned.prev_hash);
-    }
-    e.into_vec()
-}
-
-fn sec_ingest(
-    alice: &mut Core,
-    relay: &Relay,
-    user: &[u8; 16],
-    via: [u8; 16],
-    lists: &[&DeviceList],
-) -> (u64, u64, u64) {
-    let head = lists.last().unwrap().encode();
-    let answer = alice
-        .core
-        .device_list_ingest(
-            &GROUP,
-            relay.leaf_of(via),
-            user,
-            &sec_history(lists),
-            &head,
-            NOW + 3,
-        )
-        .expect("signed ingest");
-    decode_strict(&answer, |d| {
-        d.array(3)?;
-        Ok((d.uint()?, d.uint()?, d.uint()?))
-    })
-    .unwrap()
-}
-
 type SecState = ([u8; 32], u64, Option<[u8; 32]>);
 
 fn sec_state_of(alice: &Core, user: &[u8; 16]) -> Option<SecState> {
@@ -1373,19 +1310,6 @@ fn sec_send(alice: &mut Core) -> &'static str {
         Ok(_) => "OK",
         Err(e) => e.code,
     }
-}
-
-fn sec_cached_umk(alice: &Core, user: &[u8; 16]) -> [u8; 32] {
-    alice
-        .probe
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT umk_pub FROM app_device_lists WHERE user_id=?1",
-            [user.as_slice()],
-            |r| r.get(0),
-        )
-        .unwrap()
 }
 
 /// Alice's group with a fixture Bob whose UMK (seed 0xb2) and SSK (seed 0xf2) are known, so a
@@ -2538,4 +2462,48 @@ fn fixr_send_block_own_names_an_own_account_block() {
         Some("E_CREDENTIAL")
     );
     assert!(!alice.core.send_block_own(&GROUP).unwrap());
+}
+
+/// Task-10 concern 1, the other old-key paths: while Bob's key change is pending, his old-key
+/// device keeps sending and committing in the text group, and its list is refreshed. None of it
+/// (sync of its message, processing its commit, the list refresh, the send gate) ends the pending
+/// change or rebinds the cached list away from the changed key; the changed key stays verifiable.
+#[test]
+fn sec_old_key_traffic_and_refresh_never_end_a_pending_change() {
+    let (_, mut relay, mut alice, mut bob, v1) = sec_raw_bob();
+    let old_key = UmkSigner::from_bytes(&[0xb2; 32]).public();
+    let new_key = UmkSigner::from_bytes(&[0xd5; 32]).public();
+    let mut rotated = RawPeer::new_with_keys(0xb2, 0xd4, 0xd5, 0xf2);
+    let join = rotated.join_external(&mut relay);
+    bob.apply_commit(&relay, join);
+    alice.sync(&relay);
+    let v2 = sec_next(
+        &v1,
+        vec![v1.unsigned.entries[0].clone(), sec_entry(&rotated)],
+        0xf2,
+    );
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, rotated.device, &[&v1, &v2]);
+    assert_eq!(changed, 1);
+    let pending = Some((old_key, 0, Some(new_key)));
+    assert_eq!(sec_state_of(&alice, &bob.user), pending);
+
+    bob.send(&mut relay, "still the old device");
+    alice.sync(&relay);
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "a message");
+    let update = bob.self_update(&mut relay);
+    rotated.apply_commit(&relay, update);
+    alice.sync(&relay);
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "a commit");
+    assert_eq!(sec_send(&mut alice), "E_UMK_CHANGED");
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "the send gate");
+    let (_, changed, _) = sec_ingest(&mut alice, &relay, &bob.user, bob.device, &[&v2]);
+    assert_eq!(changed, 0);
+    assert_eq!(sec_state_of(&alice, &bob.user), pending, "the list refresh");
+    assert_eq!(sec_send(&mut alice), "E_UMK_CHANGED");
+
+    alice
+        .core
+        .trust_verify(&bob.user, &new_key)
+        .expect("the changed key stays verifiable");
+    assert_eq!(sec_state_of(&alice, &bob.user), Some((new_key, 1, None)));
 }

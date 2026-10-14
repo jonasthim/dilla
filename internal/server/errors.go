@@ -34,6 +34,10 @@ const (
 	// authorization failure or a server overload.
 	CodeCallFull        Code = "E_CALL_FULL"
 	CodeCallSharersFull Code = "E_CALL_SHARERS_FULL"
+	// CodeCallNotAlone is the conditional end's refusal (DELETE /v1/calls/{call_id}?if_alone=1): the
+	// caller's device is not the call group's only current leaf, so the call goes on and the caller
+	// just leaves. 409: it is the call's state, as "full" is.
+	CodeCallNotAlone Code = "E_CALL_NOT_ALONE"
 	// CodeRemovePending is a member's own Remove of a leaf the instance is already removing
 	// (protocol/02 invariant 6): the member is being removed, withdraws its proposal and does not
 	// retry.
@@ -108,7 +112,7 @@ func (e *Error) Status() int {
 		return http.StatusForbidden
 	case CodeNotFound:
 		return http.StatusNotFound
-	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull:
+	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone:
 		return http.StatusConflict
 	case CodePruned, CodeInviteInvalid:
 		return http.StatusGone

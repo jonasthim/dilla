@@ -18,7 +18,7 @@ export function testHostUrl(): string {
 }
 export function testkitBinary(): string { return process.env.DILLA_TESTKIT ?? join(REPO_ROOT, 'target', 'release', 'dilla-testkit'); }
 
-export interface PeerSetup { username: string; display: string; user_id: string; device_id: string; community_id: string; channel_id: string; channel_ids: string[]; invite_code: string }
+export interface PeerSetup { username: string; display: string; user_id: string; device_id: string; community_id: string; channel_id: string; channel_ids: string[]; invite_code: string; voice_channel_id: string | null }
 export interface PeerAttachment { index: number; blob_id: string; size: number; mime: string; name: string; thumb: boolean }
 /** A sync row; a row deleted before the peer held it has null identity fields. */
 export interface PeerReceived {
@@ -33,6 +33,13 @@ export interface PeerSync { epoch: number; members: number; received: PeerReceiv
 export interface PeerDm { channel_id: string; group_id: string; epoch: number; }
 export interface PeerOpenedDm { channel_id: string; group_id: string; epoch: number; created: boolean; }
 export interface PeerEnrolled { device_id: string; version: number; epoch: number; scopes: number[] }
+/** L-E2E-30: who a call verb acts as, the peer's acting device or the device `enrol` added to its account. */
+export type PeerActor = 'peer' | 'second';
+export interface PeerCallJoined { group: string; leaf: number }
+export interface PeerCallMembers { group: string; devices: string[] }
+export interface PeerCallStarted { call: string; created: boolean }
+export interface PeerCallRead { group: string | null; call: string | null; participants: { user: string; device: string; flags: number }[] }
+export interface PeerCallCheck { code: string | null; leaves: { leaf: number; user: string; outcome: string }[] }
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
 export class WebDriver {
@@ -70,7 +77,7 @@ export class WebDriver {
     const { id: _id, ok: _ok, ...fields } = answer;
     return fields as T;
   }
-  async setup(a: { community: string; channel: string; password?: string; channels?: number }): Promise<PeerSetup> { return this.strip(await this.request<PeerSetup & { id: number; ok: boolean }>('setup', a)); }
+  async setup(a: { community: string; channel: string; password?: string; channels?: number; voice?: boolean }): Promise<PeerSetup> { return this.strip(await this.request<PeerSetup & { id: number; ok: boolean }>('setup', a)); }
   async register(): Promise<{ group_id: string; epoch: number }> { return this.strip(await this.request<{ group_id: string; epoch: number; id: number; ok: boolean }>('register', {})); }
   async join(a: { community_id: string; channel_id: string; group_id: string; invite_code: string }): Promise<{ group_id: string; epoch: number }> { return this.strip(await this.request<{ group_id: string; epoch: number; id: number; ok: boolean }>('join', a)); }
   async send(body: string, channelId?: string, opts: PeerSendOptions = {}): Promise<{ seq: number; msg_id: string }> {
@@ -134,6 +141,39 @@ export class WebDriver {
     return this.strip(await this.request<{ status: number; id: number; ok: boolean }>('blob_status', {
       blob_id: a.blobId, ...(a.channelId === undefined ? {} : { channel_id: a.channelId }),
     }));
+  }
+  /** L-E2E-30 `call_join`: reads the channel's call group (L-HTTP-100) and joins it, or registers one; answers the actor's leaf. */
+  async callJoin(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallJoined> {
+    return this.strip(await this.request<PeerCallJoined & { id: number; ok: boolean }>('call_join', { actor, channel: channelId }));
+  }
+  /** L-E2E-30 `call_leave`: the actor proposes its own Remove from the call group and forgets it. */
+  async callLeave(channelId: string, actor: PeerActor = 'peer'): Promise<void> {
+    await this.request('call_leave', { actor, channel: channelId });
+  }
+  /** L-E2E-30 `call_members`: the actor's call-group roster after a sync that commits any outstanding Remove, sorted. */
+  async callMembers(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallMembers> {
+    return this.strip(await this.request<PeerCallMembers & { id: number; ok: boolean }>('call_members', { actor, channel: channelId }));
+  }
+  /** `call_read`: `GET /v1/channels/{id}/call` (L-HTTP-100) as the actor reads it: the open call group, the live call,
+   *  and who is in its room. */
+  async callRead(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallRead> {
+    return this.strip(await this.request<PeerCallRead & { id: number; ok: boolean }>('call_read', { actor, channel: channelId }));
+  }
+  /** L-E2E-30 `call_start`: `POST /v1/channels/{id}/calls`; `created` is a 201, which rings a DM's other participants. */
+  async callStart(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallStarted> {
+    return this.strip(await this.request<PeerCallStarted & { id: number; ok: boolean }>('call_start', { actor, channel: channelId }));
+  }
+  /** L-E2E-30 `call_decline`: declines with the expires_ts of the last op 53 state 1 the actor's gateway received (0 without one). */
+  async callDecline(callId: string, actor: PeerActor = 'peer'): Promise<void> {
+    await this.request('call_decline', { actor, call: callId });
+  }
+  /** `forge_device`: a second device of the peer whose signed-list entry carries the wrong tier; the instance admits its leaf, a validating client fails it (E_TIER_MISMATCH). It acts as actor 'second'. */
+  async forgeDevice(): Promise<{ device_id: string; version: number }> {
+    return this.strip(await this.request<{ device_id: string; version: number; id: number; ok: boolean }>('forge_device', {}));
+  }
+  /** `call_check`: the signed-list refresh a browser runs for the call group's pending leaves, then its send-block code (null when clear). */
+  async callCheck(channelId: string, actor: PeerActor = 'peer'): Promise<PeerCallCheck> {
+    return this.strip(await this.request<PeerCallCheck & { id: number; ok: boolean }>('call_check', { actor, channel: channelId }));
   }
   async close(): Promise<void> {
     this.child.stdin.end();

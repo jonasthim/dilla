@@ -6,6 +6,7 @@ export const privacy = {
   'privacy.copy': 'Copy number',
   'privacy.verify': 'All 12 blocks match',
   'privacy.instructions': 'Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself.',
+  'privacy.keyDetails': 'public key',
   'privacy.confirm': 'Yes, all 12 blocks match',
   'privacy.firstSeen': 'This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify.',
   'privacy.firstSeenLabel': 'First seen here — not verified',

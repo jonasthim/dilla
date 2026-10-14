@@ -29,7 +29,7 @@ const nav = () => screen.getByRole('navigation', { name: 'settings sections' });
 describe('Settings', () => {
   it('focuses every selected section heading', async () => {
     const { user } = setup('/settings/devices', null);
-    for (const [section, heading] of [['notifications', 'Notifications'], ['appearance', 'Appearance'], ['privacy', 'Privacy'], ['keyboard', 'Keyboard'], ['diagnostics', 'Diagnostics'], ['devices', 'Devices']]) {
+    for (const [section, heading] of [['notifications', 'Notifications'], ['appearance', 'Appearance'], ['voice', 'Voice'], ['privacy', 'Privacy'], ['keyboard', 'Keyboard'], ['diagnostics', 'Diagnostics'], ['devices', 'Devices']]) {
       await user.click(within(nav()).getByRole('button', { name: section }));
       expect(screen.getByRole('heading', { name: heading, level: 2 })).toHaveFocus();
     }
@@ -105,7 +105,7 @@ describe('Settings', () => {
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     expect(within(dialog).getByRole('heading', { level: 1, name: 'Settings' })).toHaveFocus();
     const items = within(nav()).getAllByRole('button');
-    expect(items).toEqual(['devices', 'notifications', 'appearance', 'privacy', 'keyboard', 'diagnostics'].map(name => within(nav()).getByRole('button', { name })));
+    expect(items).toEqual(['devices', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics'].map(name => within(nav()).getByRole('button', { name })));
     expect(within(nav()).getByRole('button', { name: 'devices' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'Devices' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close settings' })).toBeInTheDocument();
@@ -151,7 +151,7 @@ describe('Settings', () => {
     const { fake, user, view } = setup('/settings/devices', null, client => {
       client.set('trust', [{ userId, name: 'Ada', shared: true, umk, firstSeen: 1, verified: false, changedUmk: null }]);
     });
-    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['devices', 'notifications', 'appearance', 'privacy', 'keyboard', 'diagnostics']);
+    expect(within(nav()).getAllByRole('button').map(button => button.textContent)).toEqual(['devices', 'notifications', 'appearance', 'voice', 'privacy', 'keyboard', 'diagnostics']);
     await user.click(within(nav()).getByRole('button', { name: 'privacy' }));
     expect(screen.getByRole('heading', { name: 'Privacy' })).toBeInTheDocument();
     expect(screen.getByText('Ada')).toBeInTheDocument();

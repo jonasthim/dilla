@@ -492,3 +492,94 @@ test('a pause failure retains the old Web Lock and leaves the follower outside',
     expect((await slice<AccountState>(page, 'account'))?.error?.code).not.toBe('E_RELEASED');
   } finally { await other.page.close(); }
 });
+
+/** Task 4's native call verbs (L-E2E-30); this case runs on the combined tree, where the driver has them. */
+interface CallVerbs {
+  callJoin(channelId: string): Promise<{ group: string; leaf: number }>;
+  callMembers(channelId: string): Promise<{ group: string; devices: string[] }>;
+}
+
+// web-3 task 6 (CORE-E2E, combined tree only: it needs task 3's GET /v1/channels/{id}/call and task 4's call verbs). The
+// native peer registers the DM's call group; a real browser core joins it by external commit (the staged join checked by
+// call_join_check before it is posted), the SFU-less start's 501 maps to `failed`, the browser's self-Remove takes its
+// leaf out of the group, and no key byte ever reaches a slice (review M8).
+test('a real core joins a DM call group and maps the SFU-less 501 to failed after its self-Remove', async ({ page }) => {
+  test.setTimeout(CI ? 600_000 : 180_000);
+  const peer = await WebDriver.start(testHostUrl(), testkitEnv());
+  const verbs = peer as unknown as CallVerbs;
+  try {
+    const setup = await peer.setup({ community: 'call community', channel: 'general' });
+    await openHarness(page);
+    await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('needs-signup');
+    await ok(page, { m: 'signupBegin' });
+    const keys = (await slice<AccountState>(page, 'account'))!;
+    await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username: `join${Date.now() % 1_000_000}`, display: 'Joiner',
+      password: keys.instance!.passwordSignup ? 'join password 1' : null, recoveryKeyAcknowledged: true });
+    await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
+    const account = (await slice<AccountState>(page, 'account'))!;
+    const dm = await peer.openDm(account.user!.id);
+    // The instance only proposes the browser's device; the peer's sync_dm commits that Add, and its Welcome is what puts the
+    // DM into the browser's list (L-TS-22 rule 7), as badges.spec.ts does it.
+    await expect.poll(async () => (await peer.syncDm(dm.channel_id)).members, { timeout: WAIT }).toBe(2);
+    await expect.poll(async () => (await slice<{ id: string }[]>(page, 'dms'))?.some((d) => d.id === dm.channel_id) ?? false,
+      { timeout: WAIT }).toBe(true);
+    const peerCall = await verbs.callJoin(dm.channel_id);
+    expect(peerCall.leaf).toBe(0);
+    const answer = await call(page, { m: 'callJoin', channelId: dm.channel_id, vdec: '' });
+    expect(answer.ok).toBe(false);
+    if (!answer.ok) expect(answer.status).toBe(501);
+    const failed = (await slice<{ phase: string; error: { status: number } | null; epoch: string | null; code: string | null }>(page, 'call'))!;
+    expect(failed).toMatchObject({ phase: 'failed', error: { status: 501 }, epoch: null, code: null });
+    // The browser joined the peer's group (its device was a member) and its self-Remove took the leaf out again.
+    await expect.poll(async () => (await verbs.callMembers(dm.channel_id)).devices, { timeout: WAIT }).toEqual([setup.device_id]);
+    expect((await verbs.callMembers(dm.channel_id)).group).toBe(peerCall.group);
+    // No slice carries a key: no baseKey field and no ArrayBuffer anywhere.
+    for (const name of ['call', 'voice', 'rings', 'dms', 'sendBlocks', 'account', 'trust']) {
+      const value = await page.evaluate((n) => {
+        const v = (window as unknown as HarnessWindow).dilla.get(n);
+        const buffers = JSON.stringify(v, (_k, x: unknown) => (x instanceof ArrayBuffer || ArrayBuffer.isView(x) ? 'BUFFER' : x));
+        return buffers ?? '';
+      }, name);
+      expect(value, name).not.toMatch(/baseKey|BUFFER/);
+    }
+  } finally {
+    await peer.close();
+  }
+});
+
+// web-3 task 6b (CORE-E2E, combined tree only: it needs task 3's GET /v1/channels/{id}/call). A real browser core registers
+// a real call group for a DM on a test host with no SFU; the start's 501 maps to `failed` after the self-Remove, and a
+// second join is allowed again.
+test('a real core registers a DM call group and maps the SFU-less 501 to failed after its self-Remove', async ({ page }) => {
+  test.setTimeout(CI ? 600_000 : 180_000);
+  const peer = await WebDriver.start(testHostUrl(), testkitEnv());
+  try {
+    await peer.setup({ community: 'call community', channel: 'general' });
+    await openHarness(page);
+    await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('needs-signup');
+    await ok(page, { m: 'signupBegin' });
+    const keys = (await slice<AccountState>(page, 'account'))!;
+    await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username: `call${Date.now() % 1_000_000}`, display: 'Caller',
+      password: keys.instance!.passwordSignup ? 'call password 1' : null, recoveryKeyAcknowledged: true });
+    await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
+    const me = (await slice<AccountState>(page, 'account'))!.user!.id;
+    const dm = await peer.openDm(me);
+    // The peer's sync_dm commits the browser's Add; its Welcome puts the DM into the browser's list (L-TS-22 rule 7).
+    await expect.poll(async () => (await peer.syncDm(dm.channel_id)).members, { timeout: WAIT }).toBe(2);
+    await expect.poll(async () => (await slice<{ id: string }[]>(page, 'dms'))?.some((d) => d.id === dm.channel_id) ?? false,
+      { timeout: WAIT }).toBe(true);
+    await ok(page, { m: 'loadVoice', communityId: null, channelId: dm.channel_id });
+    const answer = await call(page, { m: 'callJoin', channelId: dm.channel_id, vdec: '' });
+    expect(answer.ok).toBe(false);
+    if (!answer.ok) expect(answer.status).toBe(501);
+    await expect.poll(async () => (await slice<{ phase: string }>(page, 'call'))?.phase, { timeout: WAIT }).toBe('failed');
+    const callSlice = (await slice<{ error: { status: number } | null; epoch: string | null; code: string | null }>(page, 'call'))!;
+    expect(callSlice).toMatchObject({ error: { status: 501 }, epoch: null, code: null });
+    // The forgotten group lets the next attempt start over (a fresh read, the same refusal), never E_CALL_ACTIVE.
+    const again = await call(page, { m: 'callJoin', channelId: dm.channel_id, vdec: '' });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.code).not.toBe('E_CALL_ACTIVE');
+  } finally {
+    await peer.close();
+  }
+});

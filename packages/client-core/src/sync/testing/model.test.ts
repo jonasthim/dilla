@@ -1333,3 +1333,103 @@ describe('trust send block (trust.rs leaf_verdict/send_block, messages.rs send_p
     expect(arr(at(built, 3))).toEqual([]);
   });
 });
+
+// web-3 task 6 (lesson f): ModelCore's call groups answer what client/calls.rs answers (core/dilla-core/tests/client_calls.rs).
+describe('ModelCore call groups (L-CORE-50..52)', () => {
+  const VOICE_CH = idOf(0xc5, 9);
+  const CALL = idOf(0x9c, 9);
+  const codeOf = (fn: () => unknown): string => {
+    try { fn(); } catch (e) { return (e as { code: string }).code; }
+    return 'ok';
+  };
+  /** A model that knows bob's list and joins bob's call group of VOICE_CH; `tree` adds leaves to the served tree. */
+  function joined(tree: { leafIndex: number; user: Id; device: Id; code?: string }[] = [], community: Id | null = COMMUNITY) {
+    const ds = new ModelDs();
+    ds.publishList(PEER.user, [{ device: PEER.device }]);
+    const row = ds.listRow(PEER.user)!;
+    const core = new ModelCore(ME);
+    core.trustList(PEER.user, row.version, row.blob);
+    core.setCallTree(CALL, [{ leafIndex: 0, user: PEER.user, device: PEER.device }, ...tree]);
+    const eg: ExpectedGroup = { groupId: CALL, communityId: community, channelId: VOICE_CH, policyVersion: 1n };
+    return { core, eg, info: encode([3, wire.info(CALL, 3n), bytes(32, 0), 4]), tree: encode([3, wire.tree(CALL, 3n), bytes(32, 0)]) };
+  }
+
+  it('creates a call group as kind 1 beside a text group of the same target; a second call group of the target is refused', () => {
+    const core = new ModelCore(ME);
+    core.groupCreate(idOf(0x9a, 1), null, VOICE_CH);
+    const body = arr(decode(core.callGroupCreate(CALL, null, VOICE_CH)), 4);
+    expect(arr(decode(bin(at(body, 1))))).toHaveLength(4);
+    expect(core.groupRow(CALL)).toMatchObject({ kind: 1, state: 0 });
+    expect(codeOf(() => core.callGroupCreate(CALL, null, VOICE_CH))).toBe('E_CORE_STATE');
+    expect(codeOf(() => core.callGroupCreate(idOf(0x9c, 10), null, VOICE_CH))).toBe('E_CORE_STATE');
+  });
+
+  it('joins staged, keys only once active, and the key is copied out and its bytes zero-filled', () => {
+    const { core, eg, info, tree } = joined();
+    core.callGroupJoinExternal(eg, info, tree);
+    expect(codeOf(() => core.callMediaEpoch(CALL))).toBe('E_CORE_STATE');
+    core.callJoinCheck(CALL);
+    core.groupJoined(CALL, 7n);
+    const m = core.callMediaEpoch(CALL);
+    expect(m.epoch).toBe(4n);
+    expect(toHex(new Uint8Array(m.baseKey))).toBe(core.lastBaseKeyHex(CALL));
+    expect(core.lastEpochBytes(CALL).every((b) => b === 0)).toBe(true);
+    expect(m.roster.map((r) => r.leaf)).toEqual([0, 1]);
+    expect(m.ownLeaf).toBe(1);
+    expect(m.code).toMatch(/^(\d{5} ){5}\d{5}$/);
+    expect(codeOf(() => core.callJoinCheck(CALL))).toBe('E_CORE_STATE');
+  });
+
+  it('refuses a join over a failed leaf and rolls it back (joining_a_call_group_that_already_holds_a_failed_leaf…)', () => {
+    const { core, eg, info, tree } = joined([{ leafIndex: 1, user: THIRD.user, device: THIRD.device, code: 'E_DEVICE_UNLISTED' }]);
+    expect(codeOf(() => core.callGroupJoinExternal(eg, info, tree))).toBe('E_DEVICE_UNLISTED');
+    expect(core.group(CALL)).toBeUndefined();
+    expect(core.pendingLeaves().filter((l) => toHex(l.groupId) === toHex(CALL))).toEqual([]);
+  });
+
+  it('tolerates a pending leaf at the join and refuses it at the check (a_staged_join_with_a_pending_leaf_posts_nothing_until_checked)', () => {
+    const { core, eg, info, tree } = joined([{ leafIndex: 1, user: THIRD.user, device: THIRD.device }]);
+    core.callGroupJoinExternal(eg, info, tree);
+    expect(codeOf(() => core.callJoinCheck(CALL))).toBe('E_DEVICE_LIST_STALE');
+    core.groupDiscard(CALL);
+    expect(core.group(CALL)).toBeUndefined();
+  });
+
+  it('refuses a DM call while the DM text group is blocked, and a call group whose community disagrees with it (E_BINDING)', () => {
+    const blocked = joined([], null);
+    const text = idOf(0x9a, 2);
+    blocked.core.seedGroup(text, 0, null, VOICE_CH);
+    blocked.core.blockGroup(text, 'E_UMK_CHANGED');
+    expect(codeOf(() => blocked.core.callGroupJoinExternal(blocked.eg, blocked.info, blocked.tree))).toBe('E_UMK_CHANGED');
+    const bound = joined([], COMMUNITY);
+    bound.core.seedGroup(text, 0, null, VOICE_CH);
+    expect(codeOf(() => bound.core.callGroupJoinExternal(bound.eg, bound.info, bound.tree))).toBe('E_BINDING');
+  });
+
+  it('no media key after a changed identity, nor while a leaf fails; skips messages and refuses sending', () => {
+    const { core, eg, info, tree } = joined();
+    core.callGroupJoinExternal(eg, info, tree);
+    core.groupJoined(CALL, 7n);
+    expect(codeOf(() => core.sendPrepare(CALL, textRequest('hello'), 1n))).toBe('E_CORE_INPUT');
+    core.changeIdentity(PEER.user);
+    expect(codeOf(() => core.callMediaEpoch(CALL))).toBe('E_UMK_CHANGED');
+    expect(codeOf(() => core.callMediaEpoch(idOf(0x9a, 77)))).toBe('E_CORE_NOT_FOUND');
+    core.seedGroup(idOf(0x9a, 3), 0, COMMUNITY, CHANNEL);
+    expect(codeOf(() => core.callMediaEpoch(idOf(0x9a, 3)))).toBe('E_CORE_INPUT');
+  });
+
+  it('leave, rotate and forget: the rotation withdraws the own Remove; a forgotten group answers E_CORE_STATE', () => {
+    const { core, eg, info, tree } = joined();
+    core.callGroupJoinExternal(eg, info, tree);
+    core.groupJoined(CALL, 7n);
+    expect(arr(decode(core.callLeaveProposal(CALL)), 2)[0]).toBe(4n);
+    expect(core.groupRow(CALL)?.proposalsPending).toBe(1);
+    const built = arr(decode(core.callRotate(CALL)), 5);
+    expect(arr(decode(bin(at(built, 1))), 5)[4]).toEqual([]);
+    core.commitConfirm(CALL);
+    core.callGroupForget(CALL);
+    expect(core.groupRow(CALL)?.state).toBe(4);
+    expect(codeOf(() => core.callMediaEpoch(CALL))).toBe('E_CORE_STATE');
+    expect(codeOf(() => core.callGroupForget(CALL))).toBe('ok');
+  });
+});

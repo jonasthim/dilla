@@ -10,3 +10,9 @@
 .d-safety-compare__confirm { display: flex; align-items: center; gap: .5rem; color: var(--fg); }
 .d-safety-compare__confirm input { min-width: 24px; min-height: 24px; }
 .d-safety-compare :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+.d-safety-compare__details { color: var(--fg-2); }
+.d-safety-compare__summary { display: inline-flex; align-items: center; min-height: 24px; cursor: pointer; list-style: none; }
+.d-safety-compare__summary::-webkit-details-marker { display: none; }
+.d-safety-compare__summary::before { content: "▸" / ""; margin-right: .375rem; }
+.d-safety-compare__details[open] .d-safety-compare__summary::before { content: "▾" / ""; }
+.d-safety-compare__details[open] .d-safety-compare__key { display: block; margin-top: .375rem; }

@@ -85,6 +85,20 @@ describe('DillaE2EEManager (interfaces.md c.4)', () => {
     expect(w.posted[0].msg.wasmUrl).toMatch(/\/wasm\/dilla_core_wasm_bg\.wasm$/);
   });
 
+  it('posts MEDIA_WASM_URL from wasm-url.ts, the one module a bundler aliases to the core wasm (decision 5)', async () => {
+    vi.resetModules();
+    vi.doMock('../src/wasm-url', () => ({ MEDIA_WASM_URL: 'https://alias.test/assets/dilla_core_wasm_bg-Abc123.wasm' }));
+    try {
+      const { DillaE2EEManager: Aliased } = await import('../src/manager');
+      const w = new FakeWorker();
+      new Aliased(w as unknown as Worker);
+      expect(w.posted[0].msg.wasmUrl).toBe('https://alias.test/assets/dilla_core_wasm_bg-Abc123.wasm');
+    } finally {
+      vi.doUnmock('../src/wasm-url');
+      vi.resetModules();
+    }
+  });
+
   it('installEpoch transfers a copy of the key, zeroes the caller’s key and resolves on epochInstalled', async () => {
     const { w, m } = setup();
     const k = keys();
@@ -277,6 +291,16 @@ describe('DillaE2EEManager (interfaces.md c.4)', () => {
     const data = { passedThrough: 0, currentEpoch: '5' } as unknown as DillaMediaStats;
     w.reply({ kind: 'stats', id: req.msg.id, data });
     await expect(p).resolves.toBe(data);
+  });
+
+  // WB security I1: a call held after a refused rekey drops every media key at once; the next epoch installs as usual.
+  it('clearKeys posts clearKeys, forgets the rosters, and a later epoch installs', async () => {
+    const { w, m } = setup();
+    await install(w, m, keys(5n));
+    m.clearKeys();
+    expect(w.last('clearKeys')).toBeDefined();
+    await install(w, m, keys(6n));
+    expect(w.last('installEpoch')?.msg.epoch).toBe(6n);
   });
 
   it('dispose posts clearKeys and removes every listener', () => {

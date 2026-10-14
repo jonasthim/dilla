@@ -23,26 +23,14 @@ describe('Button', () => {
     render(<Button pressed>Mute</Button>);
     expect(screen.getByRole('button', { name: 'Mute' })).toHaveAttribute('aria-pressed', 'true');
   });
-  it('signals pressed state without relying on colour alone', () => {
-    const { rerender } = render(
-      <Button pressed={false} pressedLabel="Unmute">Mute</Button>,
-    );
-    // Unpressed: label reads "Mute", decorative mark is the empty bracket.
+  // WB a11y I4 (ruling 2026-10-14): the WAI-ARIA toggle pattern. The label never changes; aria-pressed and the
+  // aria-hidden bracket mark carry the state, on top of the pressed colour.
+  it('signals pressed state without relying on colour alone, and keeps one label', () => {
+    const { rerender } = render(<Button pressed={false}>Mute</Button>);
     expect(screen.getByRole('button', { name: 'Mute' })).toHaveAttribute('aria-pressed', 'false');
-    const mark = screen.getByText('[ ]');
-    expect(mark).toHaveAttribute('aria-hidden', 'true');
-
-    rerender(<Button pressed pressedLabel="Unmute">Mute</Button>);
-    // Pressed: the accessible name and visible label both swap to
-    // "Unmute", and the decorative mark switches to the filled bracket —
-    // two non-colour cues on top of the colour change.
-    expect(screen.getByRole('button', { name: 'Unmute' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByText('Mute')).not.toBeInTheDocument();
-    expect(screen.getByText('[x]')).toHaveAttribute('aria-hidden', 'true');
-  });
-  it('still shows a non-colour mark when callers omit pressedLabel', () => {
-    render(<Button pressed>Mute</Button>);
-    expect(screen.getByRole('button', { name: 'Mute' })).toBeInTheDocument();
+    expect(screen.getByText('[ ]')).toHaveAttribute('aria-hidden', 'true');
+    rerender(<Button pressed>Mute</Button>);
+    expect(screen.getByRole('button', { name: 'Mute' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText('[x]')).toHaveAttribute('aria-hidden', 'true');
   });
   it('renders no pressed mark for a plain (non-toggle) button', () => {
@@ -63,7 +51,7 @@ describe('Button', () => {
   it('has no serious axe violations when pressed', async () => {
     const { container } = render(
       <div className="d-root">
-        <Button variant="danger" pressed pressedLabel="Unmute" keyHint="M">Mute</Button>
+        <Button variant="danger" pressed keyHint="M">Mute</Button>
       </div>,
     );
     await expectNoAxeViolations(container);

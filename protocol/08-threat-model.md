@@ -38,6 +38,21 @@ For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–
   accepted by a device still holding the old credential; that device must enrol again.
 - Verifiable reports: franking (`04-envelope-and-franking.md`).
 - Cryptographic device revocation: signed device lists (`03-identity.md`).
+- Call media keys follow the group's validation: a device derives no `base_key` for a `call`
+  group while any other leaf of it holds a failed, changed or pending verdict, or, for a DM's or
+  group DM's call, while that DM's `text` group is send-blocked (`01-groups.md`, "Calls"). Nor
+  does it go on sending under the previous epoch's key once a newer epoch is refused: from the
+  moment it applies the new epoch's commit it holds the call with no media under the previous
+  key until the current epoch's key is derived.
+- The browser key path: in a browser call, each epoch's `base_key` leaves the core worker only as
+  a transferred `ArrayBuffer` posted to the page that owns the call, which hands it, transferred
+  again, to that call's media worker and zero-fills its own copy after the hand-off. It is never in
+  a state slice, a command result, a log, storage, a URL or a `BroadcastChannel`.
+- Attachment players: an audio or video attachment of a listed type plays only on an explicit
+  play, from a `blob:` URL the page mints from the decrypted bytes and revokes when the player
+  goes away. Its bytes are sender-supplied and are decoded by the browser's media pipeline in the
+  page: the same exposure as a decrypted image, which the page's image decoder parses. No player
+  autoplays, and no decrypted attachment is kept in any store.
 
 Against adversary 4: forward secrecy and post-compromise security as above; recovery keys are never
 on devices except during signup or recovery.
@@ -49,6 +64,14 @@ Stated plainly in the product's documentation and onboarding:
 - The instance may add any **legitimate** user's devices to groups it controls (adversary 1). This
   is visible: members see "X joined" and the leaf in the tree, and a pinned-UMK mismatch is a loud
   alert. It is not silent, but it is possible.
+- A call's previous epoch key still reaches media until each client applies the commit that
+  ended it: a removed leaf can read what members send in that window (the commit's delivery and
+  each client's hand-over to its media path), and an instance that delays or withholds the commit
+  from a member stretches it for that member. The removed leaf is told nothing new by the commit
+  itself.
+- A call start's `rung` (`09` § Voice) is empty also when the instance's table of ringing calls is
+  full (4 096 calls, which takes at least 512 callers): any caller can then tell the instance is
+  under that load, though not who causes it or whom they call.
 - The instance may withhold newer device-list history on first sight. Trust on first use cannot
   prove that the served signed head is the newest, so first sight is not called verified.
 - A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in
@@ -87,6 +110,9 @@ Stated plainly in the product's documentation and onboarding:
   `{t:'released',instance,nonce}` notice. The next leader acquires that lock and reloads its own
   store. Neither notice carries a key, token, method arguments or content; a missing release
   leaves the follower in its other-tab state.
+  On a separate channel the leader also says whether it is in a call, `{t:'voice',instance,on}` with
+  `on` a boolean, on every change and when a follower asks `{t:'voice?',instance}`, so the follower
+  warns before a takeover ends that call (2026-10-14). It names no channel, person or key.
 - Metadata is visible to the instance: membership, presence, typing, who is in voice, message
   timestamps and sizes, attachment sizes, franking tags, and in a call each participant's audio
   level and speaking activity (the RTP audio-level header extension is outside SFrame, and a silent

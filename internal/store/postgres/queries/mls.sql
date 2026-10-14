@@ -30,6 +30,17 @@ SELECT * FROM mls_groups
 WHERE target_id = $1 AND kind = $2 AND closed_at IS NULL
 ORDER BY created, group_id;
 
+-- name: ListIdleCallGroups :many
+-- web-3 (L-HTTP-105, RV-2): the idle call-group close. The open call groups (kind 1) that no live
+-- voice session names and that were created at or before the cutoff, oldest first; the caller
+-- closes at most max_rows of them per pass.
+SELECT * FROM mls_groups g
+WHERE g.kind = 1 AND g.closed_at IS NULL AND g.created <= $1
+  AND NOT EXISTS (
+    SELECT 1 FROM voice_sessions v WHERE v.group_id = g.group_id AND v.ended IS NULL
+  )
+ORDER BY g.created, g.group_id LIMIT sqlc.arg(max_rows)::bigint;
+
 -- name: CloseGroup :exec
 UPDATE mls_groups SET closed_at = $1 WHERE group_id = $2;
 

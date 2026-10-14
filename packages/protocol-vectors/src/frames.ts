@@ -64,6 +64,11 @@ export function frameVectors() {
     frame('voice_state', 50, 0, null, [USER, DEVICE, GROUP, 3]),
     frame('typing_set on', 51, 0, null, [CHANNEL, 1]),
     frame('voice_self muted', 52, 0, null, [CALL, 1]),
+    // op 53 call_ring (S->C, web-3): [call_id, channel_id, user_id, state 0..2, expires_ts].
+    // State 1 rings (user_id is the caller), 0 ends a ring, 2 tells the caller who declined.
+    frame('call_ring state 1', 53, 0, null, [CALL, CHANNEL, USER, 1, 1758659030]),
+    frame('call_ring state 0', 53, 0, null, [CALL, CHANNEL, USER, 0, 1758659030]),
+    frame('call_ring state 2', 53, 0, null, [CALL, CHANNEL, USER, 2, 1758659030]),
   ];
 
   const rejects = [
@@ -92,6 +97,11 @@ export function frameVectors() {
     { name: 'typing_set channel id has 17 bytes', frame: hex(encode([51, 0, null, [new Uint8Array(17).fill(0x0c), 1]])), code: 'E_FRAME_SHAPE' },
     { name: 'voice_self flags 4', frame: hex(encode([52, 0, null, [CALL, 4]])), code: 'E_FRAME_SHAPE' },
     { name: 'typing_set has group_id', frame: hex(encode([51, 0, GROUP, [CHANNEL, 1]])), code: 'E_FRAME_SHAPE' },
+    // op 53 is server-to-client, so the instance refuses any client op 53 at the opcode check:
+    // the corpus code is the instance's, E_FRAME_TYPE, as for 'server opcode from a client'. A
+    // client decoder refuses both as E_FRAME_SHAPE (state above 2; four elements, not five).
+    { name: 'call_ring state 3', frame: hex(encode([53, 0, null, [CALL, CHANNEL, USER, 3, 1758659030]])), code: 'E_FRAME_TYPE' },
+    { name: 'call_ring with 4 elements', frame: hex(encode([53, 0, null, [CALL, CHANNEL, USER, 1]])), code: 'E_FRAME_TYPE' },
   ];
 
   return {

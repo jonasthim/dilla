@@ -7,7 +7,8 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
 use dilla_core_wasm::facade::{
-    client_js_error, community_arg, core_open, fixed_arg, login_arg, purpose_arg, role_ids_arg,
+    client_js_error, community_arg, core_open, fixed_arg, login_arg, media_epoch_out, purpose_arg,
+    role_ids_arg,
 };
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
@@ -273,7 +274,73 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-    assert_eq!(BROWSER_ABI_VERSION, 8);
+    assert_eq!(BROWSER_ABI_VERSION, 9);
+}
+
+/// L-WASM-34: `call_media_epoch` hands its CBOR to JavaScript as a copy made straight from the
+/// core's buffer, which is then zero-filled in place: no un-zeroed key bytes stay in linear memory.
+#[wasm_bindgen_test]
+fn the_media_epoch_crosses_as_a_copy_and_its_buffer_is_zeroed() {
+    let mut e = Encoder::new();
+    e.array(5)
+        .uint(7)
+        .bytes(&[0x5b; 16])
+        .uint(0)
+        .array(1)
+        .array(3)
+        .uint(1)
+        .bytes(&[0xb3; 16])
+        .bytes(&[0xb2; 16]);
+    e.text("00000 11111 22222 33333 44444 55555");
+    let mut buffer = e.into_vec();
+    let expected = buffer.clone();
+    let out = media_epoch_out(&mut buffer);
+    assert_eq!(
+        out.to_vec(),
+        expected,
+        "the copy is the core's CBOR, byte for byte"
+    );
+    assert!(
+        buffer.iter().all(|b| *b == 0),
+        "the core's buffer is zeroed"
+    );
+    let (epoch, key) = decode_strict(&out.to_vec(), |d| {
+        d.array(5)?;
+        let epoch = d.uint()?;
+        let key = d.bytes_exact::<16>()?;
+        d.skip()?;
+        d.skip()?;
+        d.text()?;
+        Ok((epoch, key))
+    })
+    .expect("[epoch, base_key, own_leaf, roster, code]");
+    assert_eq!((epoch, key), (7, [0x5b; 16]));
+}
+
+/// Review M6, a source pin: `CoreHandle::call_media_epoch` hands JavaScript the copy
+/// `media_epoch_out` makes from the core's `Zeroizing` buffer. A `Box<[u8]>` return would leave
+/// wasm-bindgen's copy of the key in freed linear memory, and the TypeScript type would not show it.
+#[wasm_bindgen_test]
+fn call_media_epoch_returns_the_copied_and_zeroed_buffer() {
+    let src = include_str!("../src/facade.rs");
+    let start = src
+        .find("pub fn call_media_epoch(")
+        .expect("CoreHandle::call_media_epoch");
+    let body = &src[start..];
+    let body = &body[..body.find("\n    }\n").expect("end of the method")];
+    assert!(
+        body.contains("-> Result<js_sys::Uint8Array, JsError>"),
+        "returns a JavaScript-owned copy, not Box<[u8]>:\n{body}"
+    );
+    assert!(
+        body.contains("Zeroizing::new(self.with_core(|c| c.call_media_epoch(&group_id))?)"),
+        "the core's buffer is Zeroizing:\n{body}"
+    );
+    assert!(
+        body.contains("Ok(media_epoch_out(&mut epoch))"),
+        "the copy is made by media_epoch_out, which zero-fills the buffer:\n{body}"
+    );
+    assert!(!body.contains("into_boxed_slice"), "no boxed copy:\n{body}");
 }
 
 /// The message a `JsError` carries across the boundary: what the media worker matches on.

@@ -28,6 +28,7 @@ package ds_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -64,7 +65,8 @@ func TestAResyncIsExemptFromTheFreeze(t *testing.T) {
 	}
 }
 
-// Guard 1: a resync by the target of an outstanding non-void Remove is E_FORBIDDEN.
+// Guard 1: a resync by the target of an outstanding non-void Remove is 409 E_REMOVE_PENDING ("you are being
+// removed"; its own code since the task 10 fix round, so a call client waits on exactly this refusal).
 func TestAResyncByTheTargetOfAnOutstandingRemoveIsForbidden(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.groupWithMembers(t, 2)
@@ -76,8 +78,52 @@ func TestAResyncByTheTargetOfAnOutstandingRemoveIsForbidden(t *testing.T) {
 		GroupInfo:      []byte{0x01},
 	})
 	var dsErr *ds.Error
-	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
-		t.Fatalf("got %v, want E_FORBIDDEN", err)
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_REMOVE_PENDING" || dsErr.Status != http.StatusConflict {
+		t.Fatalf("got %v, want 409 E_REMOVE_PENDING", err)
+	}
+}
+
+// Guard 1 holds in a call group too, also when the device's own leave preceded the instance's
+// Remove and its user is eligible (web-3 task 10, concern 2; the security review of e619526 and
+// dd88a47): a member Remove of the leaf proves nothing about why the instance removes it — any
+// device of the user may post one at any time of the epoch, before an eviction — so no exception
+// is made, and the rejoin is the client's to wait for (calls/join.ts).
+func TestACallGroupRejoinWhileItsOwnLeaveIsOutstandingIsForbidden(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.repo.markCall(g.id)
+	h.putMemberRemove(t, g.id, g.leafOf(1), 30)
+	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	_, err := h.ds.Resync(context.Background(), g.sessionOf(1), g.id, ds.ResyncRequest{
+		ExternalCommit: []byte{0x00},
+		GroupInfo:      []byte{0x01},
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_REMOVE_PENDING" || dsErr.Status != http.StatusConflict {
+		t.Fatalf("got %v, want 409 E_REMOVE_PENDING", err)
+	}
+}
+
+// …and never for an eviction either: an instance Remove the device did not ask for (the cut of a
+// device whose media was not dilla's, the room sweep's absent device, the fork watchdog's
+// committer) keeps the device out until a member commits it, while its user is eligible (the
+// security review of e619526; re-added by the task 10 fix round, f10app m5).
+func TestACallGroupRejoinByTheTargetOfAnEvictionIsForbidden(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.repo.markCall(g.id)
+	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	_, err := h.ds.Resync(context.Background(), g.sessionOf(1), g.id, ds.ResyncRequest{
+		ExternalCommit: []byte{0x00},
+		GroupInfo:      []byte{0x01},
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_REMOVE_PENDING" || dsErr.Status != http.StatusConflict {
+		t.Fatalf("got %v, want 409 E_REMOVE_PENDING: an eviction the device did not ask for is never superseded", err)
 	}
 }
 

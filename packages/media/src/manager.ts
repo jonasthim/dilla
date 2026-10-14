@@ -5,6 +5,7 @@ import type {
 } from 'livekit-client';
 import type { DillaBlockOptions, DillaMediaStats, DillaTransformOptions, FromWorker, SlotId, ToWorker } from './protocol';
 import { codecFromMime, isDeviceIdentity, kindMatchesSource, sourceToSlot } from './slots';
+import { MEDIA_WASM_URL } from './wasm-url';
 
 // livekit-client 2.22.3 event names as their string values, checked against the enums at compile time, so this
 // module needs no runtime import of livekit-client (it is also loaded by Node unit tests).
@@ -141,7 +142,7 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     worker.addEventListener('error', (e: Event) => this.failWorker(`worker error: ${(e as ErrorEvent).message ?? 'unknown'}`));
     worker.addEventListener('messageerror', () => this.failWorker('a worker message could not be deserialised'));
     this.initTimer = setTimeout(() => this.failWorker('the worker did not answer init'), opts?.initTimeoutMs ?? INIT_TIMEOUT_MS);
-    this.post({ kind: 'init', v: 1, logLevel: 'warn', wasmUrl: new URL('../wasm/dilla_core_wasm_bg.wasm', import.meta.url).href });
+    this.post({ kind: 'init', v: 1, logLevel: 'warn', wasmUrl: MEDIA_WASM_URL });
   }
 
   get isEnabled(): boolean {
@@ -291,6 +292,18 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     this.post({ kind: 'installEpoch', requestId, groupId: k.groupId, epoch: k.epoch, baseKey, selfLeaf: k.selfLeaf, roster: k.roster.map((r) => ({ leaf: r.leaf, deviceId: r.deviceId })) }, [baseKey.buffer]);
     await done;
     this.rosters.set(k.epoch, roster);
+    this.refreshRemoteStatus();
+  }
+
+  /**
+   * WB security I1 (web-3): every epoch's key goes at once, so nothing more is encrypted or decrypted under them (a call
+   * held after a refused rekey: a leaf the refused epoch's commit removed still holds the old key). The worker keeps its
+   * transforms; a later installEpoch starts the sender again at that newer epoch (N1 holds across the clear).
+   */
+  clearKeys(): void {
+    this.assertUsable();
+    this.post({ kind: 'clearKeys' });
+    this.rosters.clear();
     this.refreshRemoteStatus();
   }
 

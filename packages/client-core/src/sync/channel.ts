@@ -77,7 +77,7 @@ export async function resyncGroup(s: SyncInternals, g: Id, fromOpen: boolean): P
   if (!fromOpen && s.resyncTried.has(hex)) return false;
   const row = s.row(g); if (row === undefined) return false;
   s.resyncTried.add(hex);
-  s.deps.onMembership(g, 'resyncing');
+  s.reportMembership(g, 'resyncing');
   try {
     await externalJoin(s, { groupId: g, communityId: row.communityId, channelId: row.targetId, policyVersion: s.deps.instance.policyVersion }, { joins: 0 });
     return true;
@@ -86,7 +86,7 @@ export async function resyncGroup(s: SyncInternals, g: Id, fromOpen: boolean): P
     // an active row deletes its history), and the not-member report below is what the page shows.
     if (s.row(g)?.state === 1) s.deps.core.groupDiscard(g);
     const snap = s.snapshot(g); if (snap !== null) s.deps.onGroupChanged(g, snap);
-    s.deps.onMembership(g, 'not-member');
+    s.reportMembership(g, 'not-member');
     if (row.state === 2) failOutbox(s, g, codeOf(e));
     return false;
   }

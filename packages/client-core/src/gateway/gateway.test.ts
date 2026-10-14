@@ -355,6 +355,7 @@ describe('Gateway input checks', () => {
     expect(s.closedWith?.code).toBe(CLIENT_CLOSE.undecodable);
   });
 
+  // web-3 task 6: op 50 is emitted now (the test below it); the rest stays ignored.
   it('emits ops 16 to 21 and nothing else', async () => {
     const h = harness();
     const s = await connected(h);
@@ -368,7 +369,6 @@ describe('Gateway input checks', () => {
     ];
     const ignored = [
       encodeFrame(32, 7, null, [GROUP, 1, USER, new Uint8Array(0), new Uint8Array(32), 0, 0]),
-      encodeFrame(50, 0, null, [USER, DEVICE, GROUP, 1]),
       encodeFrame(Op.error, 0, null, [0, 'E_FRAME_SHAPE', 'x']),
       encodeFrame(63, 8, null, []),
     ];
@@ -387,6 +387,36 @@ describe('Gateway input checks', () => {
     s.receive(typing);
     expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame] : []))).toEqual([decodeFrame(typing)]);
     expect(s.closedWith).toBeNull();
+  });
+
+  // web-3 task 6 (L-GW-32, L-GW-33): voice_state and call_ring reach the worker once ready.
+  it('emits voice_state (op 50) and call_ring (op 53) once ready', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const voice = encodeFrame(Op.voiceState, 0, null, [USER, DEVICE, GROUP, 17]);
+    const ring = encodeFrame(Op.callRing, 0, null, [GROUP, GROUP, USER, 1, 1_700_000_030]);
+    s.receive(voice);
+    s.receive(ring);
+    expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame] : []))).toEqual([decodeFrame(voice), decodeFrame(ring)]);
+    expect(s.closedWith).toBeNull();
+  });
+
+  // Attacker: a hostile or buggy instance sending a ring of state 3, a four-element ring or a voice_state with a reserved
+  // flag bit. Each is dropped without acting on it, and without closing the socket (a malformed ephemeral frame must not
+  // cost the person their connection; L-GW-33).
+  it('drops a malformed op 53 or op 50 without disconnecting', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const before = h.events.length;
+    s.receive(encodeFrame(Op.callRing, 0, null, [GROUP, GROUP, USER, 3, 1_700_000_030]));
+    s.receive(encodeFrame(Op.callRing, 0, null, [GROUP, GROUP, USER, 1]));
+    s.receive(encodeFrame(Op.voiceState, 0, null, [USER, DEVICE, GROUP, 32]));
+    expect(h.events.slice(before)).toEqual([]);
+    expect(s.closedWith).toBeNull();
+    expect(h.gw.status).toBe('ready');
+    // A malformed frame of any other op still closes the socket as undecodable.
+    s.receive(encodeFrame(Op.typing, 0, null, [GROUP, USER, DEVICE, 2, 1]));
+    expect(s.closedWith?.code).toBe(CLIENT_CLOSE.undecodable);
   });
 });
 

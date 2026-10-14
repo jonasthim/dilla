@@ -7,6 +7,7 @@ import { Notifications } from './settings/Notifications.tsx';
 import { Privacy } from './settings/Privacy.tsx';
 import { Diagnostics } from './settings/Diagnostics.tsx';
 import { Keyboard } from './settings/Keyboard.tsx';
+import { Voice } from './settings/Voice.tsx';
 import { useSlice } from '../core/use-slice.ts';
 import { useCore } from '../core/context.tsx';
 import { errorOf } from '../core/errors.ts';
@@ -31,6 +32,7 @@ const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
   { id: 'devices', key: 'settings.nav.devices' },
   { id: 'notifications', key: 'settings.nav.notifications' },
   { id: 'appearance', key: 'settings.nav.appearance' },
+  { id: 'voice', key: 'settings.nav.voice' },
   { id: 'privacy', key: 'settings.nav.privacy' },
   { id: 'keyboard', key: 'settings.nav.keyboard' },
   { id: 'diagnostics', key: 'settings.nav.diagnostics' },
@@ -69,6 +71,17 @@ export function Settings(): React.JSX.Element {
     }).catch((e: unknown) => failCompare(record.userId, umk, compareError(errorOf(e).code, 'load')));
   };
   const section = route.name === 'settings' ? route.section : 'devices';
+  // A privacy route that names a contact (the voice pause banner's action, flow 06) opens that comparison once.
+  const compareUser = route.name === 'settings' ? route.compare ?? null : null;
+  const compared = useRef<string | null>(null);
+  useEffect(() => {
+    if (compareUser === null) { compared.current = null; return; }
+    if (compared.current === compareUser) return;
+    const record = records.find(row => row.userId === compareUser);
+    if (record === undefined) return;
+    compared.current = compareUser;
+    compare(record);
+  });
   const previousSection = useRef(section);
   useLayoutEffect(() => {
     if (route.name === 'settings' && previousSection.current !== section) document.querySelector<HTMLElement>('.d-settings-frame__body h2')?.focus();
@@ -79,7 +92,7 @@ export function Settings(): React.JSX.Element {
 
   const select = (id: string) => {
     switch (id) {
-      case 'devices': case 'notifications': case 'appearance': case 'privacy': case 'keyboard': case 'diagnostics':
+      case 'devices': case 'notifications': case 'appearance': case 'voice': case 'privacy': case 'keyboard': case 'diagnostics':
         if (id !== 'privacy') setComparison(null);
         navigate({ name: 'settings', section: id, from }, true);
         break;
@@ -93,6 +106,7 @@ export function Settings(): React.JSX.Element {
       nav={<SettingsNav label={t('settings.nav.label')} items={NAV.map(i => ({ id: i.id, label: t(i.key) }))}
         activeId={section} onSelect={select} />}>
       {section === 'devices' ? <Devices /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
+        : section === 'voice' ? <Voice />
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
           : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
             instanceName={account?.instance?.name ?? null} writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />}
@@ -103,7 +117,7 @@ export function Settings(): React.JSX.Element {
           && comparison.error !== 'privacy.keyMoved'}
         error={comparison?.error ? t(comparison.error) : null} docState="trust-compare"
         labels={{ title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('dialog.close'), loading: t('privacy.loading'),
-          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
+          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), details: t('privacy.keyDetails'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
           states: { 'first-seen': t('privacy.firstSeenLabel'), changed: t('privacy.changed'), verified: t('privacy.verifiedLabel'),
             unlisted: t('privacy.unlisted') } }}
         onCopy={() => { if (comparison?.number) void navigator.clipboard?.writeText(comparison.number); }}

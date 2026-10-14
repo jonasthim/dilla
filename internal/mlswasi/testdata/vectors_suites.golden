@@ -27,6 +27,9 @@ envelope	reaction add in a thread	length
 envelope	text message with a reply and one attachment	cbor
 envelope	text message with a reply and one attachment	commitment
 envelope	text message with a reply and one attachment	length
+frames	call_ring state 0	frame
+frames	call_ring state 1	frame
+frames	call_ring state 2	frame
 frames	commit_ack	frame
 frames	error	frame
 frames	heartbeat	frame

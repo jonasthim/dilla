@@ -109,6 +109,13 @@ func VoiceStatePayload(userID, deviceID, callID id.ID, flags uint64) (cbor.RawMe
 	return payload(userID, deviceID, callID, flags)
 }
 
+// CallRingPayload is op 53 call_ring's `[call_id, channel_id, user_id, state, expires_ts]` (web-3,
+// L-GW-33): state 1 ringing and 0 ring over name the caller, state 2 names the participant who
+// declined; expires_ts is the ring's end in unix seconds, the same in all three.
+func CallRingPayload(callID, channelID, userID id.ID, state, expires uint64) (cbor.RawMessage, error) {
+	return payload(callID, channelID, userID, state, expires)
+}
+
 // The deterministic-CBOR subset has no boolean; flags travel as uint 0 or 1.
 func boolUint(b bool) uint64 {
 	if b {

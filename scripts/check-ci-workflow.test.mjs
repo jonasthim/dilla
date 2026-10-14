@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_WEB_JOBS, checkWorkflow, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { BROWSER_WEB_JOBS, checkWorkflow, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEP, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 
@@ -48,6 +48,13 @@ jobs:
           path: |
             target/ui-screens/web-2c/desktop/**
             target/ui-screens/web-2c/phone/**
+          if-no-files-found: error
+      - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop voice- media-mediaplayer-- screens-voice--
+      - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone voice- media-mediaplayer-- screens-voice-- --viewport=360x740
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens-web-3
+          path: target/ui-screens/web-3/**
           if-no-files-found: error
   rust-native:
     runs-on: ubuntu-latest
@@ -173,7 +180,7 @@ jobs:
 
   chromium-web:
     runs-on: ubuntu-latest
-    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    timeout-minutes: ${BROWSER_WEB_JOBS['chromium-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -199,6 +206,9 @@ jobs:
       - run: npm run test:e2e:web:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: npm run test:e2e:voice:chromium -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -208,7 +218,7 @@ jobs:
 
   firefox-web:
     runs-on: ubuntu-latest
-    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    timeout-minutes: ${BROWSER_WEB_JOBS['firefox-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -234,6 +244,10 @@ jobs:
       - run: npm run test:e2e:web:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
+      - run: sh scripts/ci-audio-server.sh
+      - run: npm run test:e2e:voice:firefox -w @dilla/e2e
+        env:
+          DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -243,7 +257,7 @@ jobs:
 
   webkit-web:
     runs-on: ubuntu-latest
-    timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}
+    timeout-minutes: ${BROWSER_WEB_JOBS['webkit-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
       - uses: actions/download-artifact@v8
@@ -1009,8 +1023,10 @@ for (const [job, needle] of [
   ['web-build', 'path: packages/web/dist/'],
   ['web-build', 'name: dilla-core-harness'],
   ['web-build', 'path: packages/client-core/harness-dist/'],
-  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, { engine, core }]) => [
-    [job, `timeout-minutes: ${MIN_BROWSER_WEB_TIMEOUT}`],
+  ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, { engine, core, voice, timeout }]) => [
+    [job, `timeout-minutes: ${timeout}`],
+    ...(voice ? [[job, `npm run test:e2e:voice:${engine} -w @dilla/e2e`]] : []),
+    ...(voice && engine === 'firefox' ? [[job, 'sh scripts/ci-audio-server.sh']] : []),
     [job, 'name: dilla-core-wasi'],
     [job, 'path: internal/mlswasi/testdata'],
     [job, 'name: dilla-testkit'],
@@ -1072,6 +1088,66 @@ test('a workflow missing one engine job is reported, also when another job runs 
   const folded = checkWorkflow(fixture(GOOD.replace(firefox, '').replace(jobBody('chromium-web'), () => merged)));
   assert.ok(folded.some((p) => p.includes('missing job "firefox-web"')), folded.join('\n'));
   assert.ok(folded.some((p) => p.includes('"chromium-web"') && p.includes('test:e2e:web:chromium')), folded.join('\n'));
+});
+
+// Web-3 task 10: Firefox's voice suite runs after the audio server, as browser-media's does.
+test('firefox-web must start an audio server before the voice suite', () => {
+  const body = jobBody('firefox-web');
+  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
+  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
+  assert.ok(body.includes(audio) && body.includes(voice), 'fixture sanity: the audio server and the voice suite');
+  const late = body.replace(audio, '').replace(voice, voice + audio);
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => late)));
+  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
+});
+
+// Web-3 task 10 (review M10): the voice rules match steps, so a comment never satisfies them, and the voice step's own
+// env is required.
+for (const engine of ['chromium', 'firefox']) {
+  const job = `${engine}-web`;
+  const voice = `      - run: npm run test:e2e:voice:${engine} -w @dilla/e2e\n`;
+  test(`a ${job} voice step that is only a comment is reported`, () => {
+    const body = jobBody(job);
+    assert.ok(body.includes(voice), 'fixture sanity: the voice step');
+    const commented = body.replace(voice, `      # - run: npm run test:e2e:voice:${engine} -w @dilla/e2e\n`);
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => commented)));
+    assert.ok(problems.some((p) => p.includes(`"${job}" is missing: npm run test:e2e:voice:${engine}`)), problems.join('\n'));
+  });
+  test(`a ${job} voice step without its own DILLA_TESTKIT env is reported, though the web step has one`, () => {
+    const body = jobBody(job);
+    const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+    assert.ok(body.includes(voice + env), 'fixture sanity: the voice step and its env');
+    const bare = body.replace(voice + env, voice);
+    const problems = checkWorkflow(fixture(GOOD.replace(body, () => bare)));
+    assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes('without its own env')), problems.join('\n'));
+  });
+}
+
+test('a comment naming the audio server above the voice step does not stand in for the real step after it', () => {
+  const body = jobBody('firefox-web');
+  const audio = '      - run: sh scripts/ci-audio-server.sh\n';
+  const voice = '      - run: npm run test:e2e:voice:firefox -w @dilla/e2e\n';
+  const env = '        env:\n          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit\n';
+  assert.ok(body.includes(audio + voice + env), 'fixture sanity: the audio server, then the voice suite');
+  const sneaky = body.replace(audio + voice + env, `      # sh scripts/ci-audio-server.sh\n${voice}${env}${audio}`);
+  const problems = checkWorkflow(fixture(GOOD.replace(body, () => sneaky)));
+  assert.ok(problems.some((p) => p.includes('firefox-web') && p.includes('audio server') && p.includes('before')), problems.join('\n'));
+  const commentOnly = body.replace(audio, '      # - run: sh scripts/ci-audio-server.sh\n');
+  const missing = checkWorkflow(fixture(GOOD.replace(body, () => commentOnly)));
+  assert.ok(missing.some((p) => p.includes('"firefox-web"') && p.includes('ci-audio-server.sh')), missing.join('\n'));
+});
+
+test('jobSteps drops comment lines and keeps each step\'s own lines', () => {
+  const steps = jobSteps('    steps:\n      # - run: a\n      - run: b\n        env:\n          X: 1\n      # c\n      - uses: d\n');
+  assert.deepEqual(steps, [['run: b', 'env:', 'X: 1'], ['uses: d']]);
+});
+
+test('the voice budgets are derived from the measured voice minutes and stay under one runner\'s 45 minutes', () => {
+  for (const job of ['chromium-web', 'firefox-web']) {
+    const { timeout } = BROWSER_WEB_JOBS[job];
+    assert.ok(timeout >= MIN_BROWSER_WEB_TIMEOUT && timeout <= 45, `${job}: ${timeout}`);
+  }
+  assert.equal(BROWSER_WEB_JOBS['webkit-web'].voice, false);
 });
 
 test('two engine jobs uploading one artifact name are reported', () => {
@@ -1202,6 +1278,25 @@ test('web-2c captures, both paths and timeout are required independently', () =>
     const problems = checkWorkflow(fixture(workflow));
     assert.ok(problems.length > 0, `${name}: checker accepted a missing gate`);
     assert.match(problems.join('\n'), /web-2c|screenshot|browser-web|timeout/i, name);
+  }
+});
+
+// web-3 task 11: the voice, ring and media-player families at both viewports, uploaded from target/ui-screens/web-3.
+test('web-3 captures and the web-3 upload path are required independently', () => {
+  const desktop = 'node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop voice- media-mediaplayer-- screens-voice--';
+  const phone = 'node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone voice- media-mediaplayer-- screens-voice-- --viewport=360x740';
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), [], 'fixture sanity: GOOD passes');
+  const required = [
+    ['desktop step', GOOD.replace(`      - run: ${desktop}\n`, ''), desktop],
+    ['phone step', GOOD.replace(`      - run: ${phone}\n`, ''), phone],
+    ['narrowed prefixes', GOOD.replace(` voice- media-mediaplayer-- screens-voice--\n`, ' voice-\n'), desktop],
+    ['upload path', GOOD.replace('path: target/ui-screens/web-3/**', 'path: target/ui-screens/web-2c/**'), 'path: target/ui-screens/web-3/**'],
+    ['artifact name', GOOD.replace('name: ui-screens-web-3\n', 'name: ui-screens-web-2d\n'), 'name: ui-screens-web-3'],
+  ];
+  for (const [name, workflow, needle] of required) {
+    assert.notEqual(workflow, GOOD, `fixture sanity: ${name}`);
+    const problems = checkWorkflow(fixture(workflow));
+    assert.ok(problems.some((p) => p.includes('"ui"') && p.includes(needle)), `${name}: ${problems.join('\n')}`);
   }
 });
 

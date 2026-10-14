@@ -1,0 +1,94 @@
+// VOICE-E2E (web-3 task 10): two browsers join one voice channel through the real SFU and hear each other, verified
+// frame by frame as the other's device; and the media key never travels in a `ret` or a `slice` (decision 3).
+import type { Page } from '@playwright/test';
+import { expect, test } from './support/peer-browser';
+import { watchContexts } from './support/leaks';
+import {
+  VoicePeer, WAIT, audioRunning, heard, joinVoice, keyPath, onboard, openVoice, self, snapshotDevices, tile,
+} from './support/voice';
+
+watchContexts(test);
+
+/** Records every `data-voice-state` each tile of the stage takes, by the name it shows. */
+async function watchTiles(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { __dwTiles: string[] }).__dwTiles = seen;
+    const note = (el: Element) => {
+      const name = el.querySelector('.d-call-tile__name')?.textContent ?? '';
+      const entry = `${name}:${el.getAttribute('data-voice-state') ?? ''}`;
+      if (seen.at(-1) !== entry) seen.push(entry);
+    };
+    document.querySelectorAll('.d-call-tile:not([data-own])').forEach(note);
+    new MutationObserver((records) => {
+      for (const r of records) {
+        const target = r.target instanceof Element ? r.target : null;
+        if (target?.matches('.d-call-tile:not([data-own])')) note(target);
+        for (const n of r.addedNodes) {
+          if (!(n instanceof Element)) continue;
+          if (n.matches('.d-call-tile:not([data-own])')) note(n);
+          n.querySelectorAll('.d-call-tile:not([data-own])').forEach(note);
+        }
+      }
+    }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-voice-state'] });
+  });
+}
+const tileHistory = (page: Page) => page.evaluate(() => (window as unknown as { __dwTiles: string[] }).__dwTiles);
+
+test('two browsers join one voice channel, see each other ok and hear each other; no key in a ret or a slice', async ({ peerBrowser, browserName }) => {
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
+  try {
+    const s = await peer.setup();
+    await onboard(alice, peer, 'alice');
+    await onboard(bob, peer, 'bob');
+    await peer.seat(2); // no hello: a voice tile names a member the page loaded after it (task 10, concern 4)
+    const a = await self(alice.page);
+    const b = await self(bob.page);
+
+    await joinVoice(alice.page, peer.communityName, peer.voiceName);
+    await openVoice(bob.page, peer.communityName, peer.voiceName);
+    // Bob sees alice in voice from dillad's voice_state before he joins (the presence the UI shows, media card 23).
+    await expect.poll(() => snapshotDevices(bob.page, s.voice_channel_id), { timeout: WAIT }).toEqual([a.device]);
+    await watchTiles(alice.page);
+    await watchTiles(bob.page);
+    await joinVoice(bob.page, peer.communityName, peer.voiceName);
+
+    if (browserName === 'firefox') {
+      // Headless Firefox plays nothing without an audio server: every analyser and sound would read silent.
+      await audioRunning(alice.page);
+      await audioRunning(bob.page);
+    }
+    await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
+    await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
+    await heard(alice.page, b.device);
+    await heard(bob.page, a.device);
+    // Bob's tile passed through `connecting` on alice's stage before it was ok.
+    // Alice's page loaded the member list before bob joined the server: his tile names him once the worker has read it
+    // again (task 10, concern 4), so a state recorded before that is under his id's first 8 characters.
+    const history = (await tileHistory(alice.page)).map((e) => e.replace(`${b.user.slice(0, 8)}:`, 'bob:'));
+    expect(history.indexOf('bob:connecting'), history.join(' ')).toBeGreaterThanOrEqual(0);
+    expect(history.indexOf('bob:connecting')).toBeLessThan(history.indexOf('bob:ok'));
+
+    // `active voice` lists the live voice with both people in it, on both sides.
+    for (const p of [alice.page, bob.page]) {
+      const active = p.locator('.d-active-voice');
+      await expect(active).toContainText('alice', { timeout: WAIT });
+      await expect(active).toContainText('bob', { timeout: WAIT });
+    }
+
+    // The key path: both pages received their join keys as `callKeys` pushes (the recorder sees the core worker), and
+    // no `ret` or `slice` of any worker carried a 16-byte buffer or a `baseKey` field.
+    for (const p of [alice.page, bob.page]) {
+      const kp = await keyPath(p);
+      expect(kp.callKeys, 'callKeys pushes seen').toBeGreaterThan(0);
+      expect(kp.messages, 'ret and slice messages scanned').toBeGreaterThan(0);
+      expect(kp.findings).toEqual([]);
+    }
+  } finally {
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
+    await peer.close();
+  }
+});

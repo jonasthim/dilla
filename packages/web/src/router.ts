@@ -1,18 +1,23 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';
+export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'voice' | 'privacy' | 'keyboard' | 'diagnostics';
 export type SignInNotice = 'race' | 'evicted';
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }
   | { name: 'dm'; channelId: string }
-  | { name: 'settings'; section: SettingsSection; from: string | null };
+  | { name: 'settings'; section: SettingsSection; from: string | null;
+    /** Privacy only: the contact whose comparison opens at once (the voice pause banner's action, flow 06). */
+    compare?: string };
 
 /** The history-state key that carries a settings route's `from`: the path Settings was opened over. */
 export const SETTINGS_FROM = 'settingsFrom';
+/** The history-state key that carries a privacy route's `compare`: a 32-hex user id, nothing else. */
+export const SETTINGS_COMPARE = 'compareUser';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
-const SETTINGS_SECTION = /^\/settings\/(devices|notifications|appearance|privacy|keyboard|diagnostics)$/;
+const SETTINGS_SECTION = /^\/settings\/(devices|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
+const HEX32 = /^[0-9a-f]{32}$/;
 
 /**
  * The `from` a history state names: a same-origin path (one leading slash, never two) that is not itself a
@@ -24,6 +29,13 @@ function fromState(state: unknown): string | null {
   if (typeof from !== 'string') return null;
   if (!from.startsWith('/') || from.startsWith('//') || from.startsWith('/settings')) return null;
   return from;
+}
+
+/** The comparison a privacy route's history state asks for: a 32-hex user id, else nothing. */
+function compareState(state: unknown): { compare?: string } {
+  if (typeof state !== 'object' || state === null) return {};
+  const user = (state as Record<string, unknown>)[SETTINGS_COMPARE];
+  return typeof user === 'string' && HEX32.test(user) ? { compare: user } : {};
 }
 
 export function parseRoute(pathname: string, search: string, state: unknown = null): Route {
@@ -39,7 +51,10 @@ export function parseRoute(pathname: string, search: string, state: unknown = nu
   if (dm) return { name: 'dm', channelId: dm[1] };
   if (pathname === '/settings') return { name: 'settings', section: 'devices', from: fromState(state) };
   const section = SETTINGS_SECTION.exec(pathname);
-  if (section) return { name: 'settings', section: section[1] as SettingsSection, from: fromState(state) };
+  if (section) {
+    const name = section[1] as SettingsSection;
+    return { name: 'settings', section: name, from: fromState(state), ...(name === 'privacy' ? compareState(state) : {}) };
+  }
   return { name: 'root' };
 }
 
@@ -88,10 +103,11 @@ const snapshot = () => location.pathname + location.search;
 function navigate(route: Route, replace = false): void {
   const path = routePath(route);
   if (!replace && path === snapshot()) return;
-  let state: { [SETTINGS_FROM]: string | null } | null = null;
+  let state: { [SETTINGS_FROM]: string | null; [SETTINGS_COMPARE]?: string } | null = null;
   if (route.name === 'settings') {
     const current = parseRoute(location.pathname, location.search, history.state);
     state = { [SETTINGS_FROM]: current.name === 'settings' ? current.from : snapshot() };
+    if (route.section === 'privacy' && route.compare !== undefined && HEX32.test(route.compare)) state[SETTINGS_COMPARE] = route.compare;
   }
   if (replace) history.replaceState(state, '', path);
   else history.pushState(state, '', path);

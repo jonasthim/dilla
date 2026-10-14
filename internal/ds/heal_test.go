@@ -499,18 +499,20 @@ func TestTheTargetOfAnOutstandingRemoveAndAQuarantinedDeviceCannotHeal(t *testin
 	for _, c := range []struct {
 		name  string
 		setup func(t *testing.T, h *dsHarness, g *dsMessageGroup)
+		code  string
 		want  string
 	}{
+		// Guard 1's refusal is 409 E_REMOVE_PENDING, for a heal as for a resync (task 10 fix round).
 		{"the target of an outstanding Remove", func(t *testing.T, h *dsHarness, g *dsMessageGroup) {
 			if err := h.ds.ProposeRemove(context.Background(), g.id, 0, id.New()); err != nil {
 				t.Fatalf("ProposeRemove: %v", err)
 			}
-		}, "outstanding Remove"},
+		}, "E_REMOVE_PENDING", "outstanding Remove"},
 		{"a quarantined device", func(t *testing.T, h *dsHarness, g *dsMessageGroup) {
 			if err := h.repo.QuarantineDevice(context.Background(), g.device, h.clk.Now().Unix(), "fork quorum"); err != nil {
 				t.Fatalf("QuarantineDevice: %v", err)
 			}
-		}, "quarantined"},
+		}, "E_FORBIDDEN", "quarantined"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newDSHarness(t)
@@ -524,8 +526,8 @@ func TestTheTargetOfAnOutstandingRemoveAndAQuarantinedDeviceCannotHeal(t *testin
 				Tail:      h.commitTail(t, g, h.groupRow(t, g.id).Seq),
 			})
 			var dsErr *ds.Error
-			if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" || !strings.Contains(dsErr.Detail, c.want) {
-				t.Fatalf("the heal: got %v, want 403 E_FORBIDDEN naming %q", err, c.want)
+			if !errors.As(err, &dsErr) || dsErr.Code != c.code || !strings.Contains(dsErr.Detail, c.want) {
+				t.Fatalf("the heal: got %v, want %s naming %q", err, c.code, c.want)
 			}
 			if !h.epochUnknown(t, g.id) || h.groupRow(t, g.id).Epoch != g.Epoch() {
 				t.Fatal("a refused heal must leave the group epoch-unknown at its restored epoch")

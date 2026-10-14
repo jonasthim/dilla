@@ -1,0 +1,51 @@
+.d-call-tile {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.375rem;
+  min-width: 0; min-height: 8.5rem; padding: 0.75rem;
+  background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md);
+  text-align: center;
+}
+/* Speaking: the accent outline (a box-shadow, so it never reads as the focus ring) plus the word. */
+.d-call-tile[data-speaking="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+  .d-call-tile[data-speaking="true"] { animation: d-call-tile-pulse var(--duration-pulse) ease-in-out infinite; }
+}
+@keyframes d-call-tile-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--accent); }
+  50% { box-shadow: 0 0 0 3px var(--accent-soft); }
+}
+/* Product walk I2: the screen fills the tile, the camera sits over its lower right corner. I3: the own camera is mirrored. */
+.d-call-tile__media { position: relative; width: 100%; }
+.d-call-tile__video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: var(--bg); border-radius: var(--r-md); }
+.d-call-tile__inset { position: absolute; right: 0.375rem; bottom: 0.375rem; width: 28%; min-width: 4.5rem; aspect-ratio: 16 / 9; object-fit: cover; background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-md); }
+.d-call-tile [data-mirror="true"] { transform: scaleX(-1); }
+.d-call-tile__name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: var(--weight-label); color: var(--fg); }
+.d-call-tile__states { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem 0.625rem; min-height: 1.25rem; font-size: var(--text-sm); color: var(--fg-2); }
+.d-call-tile__state { white-space: nowrap; }
+.d-call-tile__glyph { margin-right: 0.25rem; }
+.d-call-tile__state[data-state="speaking"] { color: var(--accent); }
+.d-call-tile__state[data-state="unverified"] { color: var(--warn); }
+.d-call-tile__tag { padding: 0 0.25rem; font-size: var(--text-xs); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); text-transform: lowercase; }
+.d-call-tile__volume { display: grid; gap: 0.125rem; width: 100%; max-width: 14rem; font-size: var(--text-xs); color: var(--fg-2); }
+.d-call-tile__volume-row { display: flex; align-items: center; gap: 0.5rem; }
+.d-call-tile__volume-value { flex: 0 0 auto; min-width: 5ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
+/* The range is a voice control: its hit box is 40 px high on a desktop and 44 px on a phone (flow 06). Product walk M6:
+   drawn in Mesh (a hairline track filled with the accent up to the value, a square thumb, a tick at 100 %) in every
+   engine, rather than the browser's own control. */
+.d-call-tile__volume input {
+  flex: 1 1 auto; min-width: 0; min-height: 2.5rem; margin: 0; background: transparent; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+.d-call-tile__volume input::-webkit-slider-runnable-track {
+  height: 0.25rem; border-radius: 0;
+  background: linear-gradient(to right, transparent calc(50% - 1px), var(--fg-2) calc(50% - 1px), var(--fg-2) calc(50% + 1px), transparent calc(50% + 1px)) center / 100% 0.75rem no-repeat,
+    linear-gradient(to right, var(--accent) var(--d-volume, 50%), var(--edge) var(--d-volume, 50%));
+}
+.d-call-tile__volume input::-moz-range-track {
+  height: 0.25rem; border-radius: 0;
+  background: linear-gradient(to right, transparent calc(50% - 1px), var(--fg-2) calc(50% - 1px), var(--fg-2) calc(50% + 1px), transparent calc(50% + 1px)) center / 100% 0.75rem no-repeat,
+    linear-gradient(to right, var(--accent) var(--d-volume, 50%), var(--edge) var(--d-volume, 50%));
+}
+.d-call-tile__volume input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 0.75rem; height: 1rem; margin-top: -0.375rem; background: var(--fg); border: 1px solid var(--bg); border-radius: 0; }
+.d-call-tile__volume input::-moz-range-thumb { width: 0.75rem; height: 1rem; background: var(--fg); border: 1px solid var(--bg); border-radius: 0; }
+.d-call-tile__volume input:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+@media (max-width: 47.99rem) { .d-call-tile__volume input { min-height: 2.75rem; } }

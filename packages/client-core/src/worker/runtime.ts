@@ -42,11 +42,13 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
     WebSocket: (scope as DedicatedWorkerGlobalScope & typeof globalThis).WebSocket,
     locks: { request: async (name, opts, callback) => { await scope.navigator.locks.request(name, opts, callback); } },
     now: () => Date.now(),
+    monotonic: () => scope.performance.now(),
     random: () => Math.random(),
     setTimeout: (fn, ms) => scope.setTimeout(fn, ms),
     clearTimeout: (id) => { scope.clearTimeout(id); },
     sleep,
-    post: (message) => { scope.postMessage(message); },
+    // A callKeys push transfers its key buffer (L-TS-52): the post detaches it here, so no copy stays in the worker.
+    post: (message, transfer) => { scope.postMessage(message, transfer ?? []); },
     testHooks: options.testHooks,
     boot: async (instance) => {
       const mod = await loadCoreWasm();

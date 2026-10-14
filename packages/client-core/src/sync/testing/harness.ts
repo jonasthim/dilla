@@ -19,7 +19,7 @@ export interface Device {
   readonly engine: SyncEngine;
   readonly changes: { group: string; result: ApplyResult }[];
   readonly outboxChanges: string[];
-  readonly membership: { group: string; status: 'resyncing' | 'not-member' }[];
+  readonly membership: { group: string; status: 'resyncing' | 'not-member' | 'member' }[];
   readonly joinAll: JoinAllProgress[];
   readonly unexpected: string[];
   /** The msg id hex of every row beforeSend was called for, in call order. */

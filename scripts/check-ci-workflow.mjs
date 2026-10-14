@@ -70,17 +70,27 @@ export const NON_RACE_STEP =
  * its own share in minutes: Chromium and Firefox each run half of the web suite (W = 6.8 in web-2c task 10, so 3.4)
  * plus their half of the core-worker suite (C = 0.5, so 0.25): ceil(5 × 3.65) + 10 = 29 → 30. WebKit keeps web-1's
  * 3.0 allowance (signup and reload only): ceil(15) + 10 = 25 → 30. `core` says whether the job also runs the
- * core-worker suite of its engine (the core config has no WebKit project).
+ * core-worker suite of its engine (the core config has no WebKit project). `voice` says whether it also runs VOICE-E2E
+ * of its engine (web-3 task 10, playwright.voice.config.ts; WebKit is never launched for voice, DEV-29); Firefox's
+ * voice suite needs the PulseAudio null sink first (scripts/ci-audio-server.sh), or every AudioContext stays suspended.
+ * With the voice suite on top (VOICE_MINUTES, its local wall time per engine measured in web-3 task 10 on 2026-10-14:
+ * Chromium 109 s, Firefox 104 s): ceil(5 × (3.65 + 1.9)) + 10 = 38 and ceil(5 × (3.65 + 1.8)) + 10 = 38, each under
+ * the 45-minute cap of one runner, so no split.
  */
+export const VOICE_MINUTES = { chromium: 1.9, firefox: 1.8 };
+const budget = (share) => Math.max(30, Math.ceil(5 * share) + 10);
 export const BROWSER_WEB_JOBS = {
-  'chromium-web': { engine: 'chromium', timeout: 30, core: true },
-  'firefox-web': { engine: 'firefox', timeout: 30, core: true },
-  'webkit-web': { engine: 'webkit', timeout: 30, core: false },
+  'chromium-web': { engine: 'chromium', timeout: budget(3.65 + VOICE_MINUTES.chromium), core: true, voice: true },
+  'firefox-web': { engine: 'firefox', timeout: budget(3.65 + VOICE_MINUTES.firefox), core: true, voice: true },
+  'webkit-web': { engine: 'webkit', timeout: 30, core: false, voice: false },
 };
 export const MIN_BROWSER_WEB_TIMEOUT = 30;
 
+/** The testkit binary's env line, which every suite step that drives the native peer carries. */
+const TESTKIT_ENV = 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit';
+
 /** The steps every per-engine browser job must carry: the four downloads, its one engine, its suites, its own artifact. */
-function browserWebSteps({ engine, timeout, core }) {
+function browserWebSteps({ engine, timeout, core, voice }) {
   return [
     `timeout-minutes: ${timeout}`,
     'name: dilla-core-wasi',
@@ -93,7 +103,8 @@ function browserWebSteps({ engine, timeout, core }) {
     `npx playwright install --with-deps ${engine}`,
     ...(core ? [`npm run test:e2e:core:${engine} -w @dilla/e2e`] : []),
     `npm run test:e2e:web:${engine} -w @dilla/e2e`,
-    'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
+    // The voice legs (and Firefox's audio server) are checked as steps, not as substrings: checkVoiceSteps.
+    TESTKIT_ENV,
     'if: failure()',
     // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per engine.
     `name: browser-web-results-${engine}`,
@@ -106,6 +117,13 @@ const UI_PREFIXES_2C = 'trust-safetycompare-- trust-trustalert-- search-searchpa
 export const UI_SHOTS_2C = [
   `node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop ${UI_PREFIXES_2C}`,
   `node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone ${UI_PREFIXES_2C} --viewport=360x740`,
+];
+
+/** web-3 task 11: the voice, ring and media-player story families at both viewports, uploaded from target/ui-screens/web-3. */
+const UI_PREFIXES_3 = 'voice- media-mediaplayer-- screens-voice--';
+export const UI_SHOTS_3 = [
+  `node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop ${UI_PREFIXES_3}`,
+  `node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone ${UI_PREFIXES_3} --viewport=360x740`,
 ];
 
 /** One load-bearing command per job, so a silently gutted job is caught. */
@@ -157,6 +175,8 @@ const REQUIRED_STEPS = {
   ui: [
     'node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--', 'name: ui-screens', 'path: target/ui-screens/web-2b',
     'name: ui-screens-web-2c', 'target/ui-screens/web-2c/desktop/**', 'target/ui-screens/web-2c/phone/**',
+    // web-3 task 11: the voice families go up as a third artifact, from the web-3 directory.
+    'name: ui-screens-web-3', 'path: target/ui-screens/web-3/**',
   ],
   vectors: [
     'npm run vectors',
@@ -518,6 +538,42 @@ function assertWasmJobsUseClang23(text, jobs, problems) {
   });
 }
 
+/** A job body's steps: each `      - ` item's lines, trimmed, its first line without the dash (`run: …`, `uses: …`).
+ *  Comment lines are dropped, so no rule matched against steps is satisfied by a comment. */
+export function jobSteps(body) {
+  const steps = [];
+  for (const line of body.split('\n')) {
+    const t = line.trim();
+    if (t === '' || t.startsWith('#')) continue;
+    if (/^ {6}- \S/.test(line)) steps.push([t.slice(2)]);
+    else if (steps.length > 0 && /^ {8,}\S/.test(line)) steps[steps.length - 1].push(t);
+  }
+  return steps;
+}
+
+/**
+ * Web-3 task 10 (review M10): each voice leg is a `run:` step of its own whose `env` carries the testkit binary, and in
+ * Firefox an audio-server `run:` step comes before it (headless Firefox's AudioContext stays suspended without one, as
+ * in browser-media). Matched on steps, never on substrings, so a commented-out step or a comment naming the command
+ * satisfies nothing, and the voice step's own env is required, not the web step's.
+ */
+function checkVoiceSteps(jobs, problems) {
+  for (const [job, { engine, voice }] of Object.entries(BROWSER_WEB_JOBS)) {
+    if (!voice || !(job in jobs)) continue;
+    const steps = jobSteps(jobs[job]);
+    const command = `npm run test:e2e:voice:${engine} -w @dilla/e2e`;
+    const voiceAt = steps.findIndex((s) => s[0] === `run: ${command}`);
+    if (voiceAt < 0) problems.push(`ci.yml: job "${job}" is missing: ${command} (a run step of its own)`);
+    else if (!steps[voiceAt].includes(TESTKIT_ENV)) {
+      problems.push(`ci.yml: job "${job}" runs ${command} without its own env ${TESTKIT_ENV}`);
+    }
+    if (engine !== 'firefox') continue;
+    const audioAt = steps.findIndex((s) => s[0] === 'run: sh scripts/ci-audio-server.sh');
+    if (audioAt < 0) problems.push(`ci.yml: job "${job}" is missing: sh scripts/ci-audio-server.sh (a run step of its own)`);
+    else if (voiceAt >= 0 && audioAt > voiceAt) problems.push(`ci.yml: ${job} audio server must start before the voice suite`);
+  }
+}
+
 /** Splits the `jobs:` mapping into `{ name: body }` by two-space job keys. */
 function splitJobs(text) {
   const lines = text.split('\n');
@@ -575,6 +631,9 @@ export function checkWorkflow(root) {
     const runs = jobs.ui.split('\n').map((line) => line.trim());
     for (const command of UI_SHOTS_2C) {
       if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-2c screenshot step: ${command}`);
+    }
+    for (const command of UI_SHOTS_3) {
+      if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-3 screenshot step: ${command}`);
     }
   }
 
@@ -658,6 +717,8 @@ export function checkWorkflow(root) {
       }
     }
   }
+
+  checkVoiceSteps(jobs, problems);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [

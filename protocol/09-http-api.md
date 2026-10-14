@@ -203,7 +203,7 @@ With a registration array in element 3 it registers the device; either way the m
 | blobs | `PUT/GET/HEAD/DELETE /v1/channels/{cid}/blobs/{blob_id}` (raw octets, `201` new / `200` already present, `422 E_INVALID_REQUEST` on a hash mismatch, `507 E_STORAGE_FULL`), `DELETE /v1/admin/blobs/{blob_id}`, `POST /v1/channels/{cid}/blobs/{blob_id}/confirm` |
 | backups | `PUT /v1/backups/{kind}/{chunk_seq}` `[object(bstr)]` → `[blob_id, size]`, `GET /v1/backups`, `GET /v1/backups/{kind}/{chunk_seq}` → `[object, created]`, `DELETE` the same (`501` at wire 1); see § Backups |
 | reports | `POST /v1/reports` `[group_id, seq, envelope(bstr), k_f(bstr32)]`, `GET /v1/reports`, `PATCH /v1/reports/{id}` |
-| voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}` |
+| voice | `POST /v1/channels/{id}/calls` → `[call_id, group_id, livekit_url, token, ice_servers]`, `DELETE /v1/calls/{call_id}`, `GET /v1/channels/{id}/call` → `[group_id, call_id, participants]`, `GET /v1/communities/{id}/calls` → `[[channel_id, call_id, participants]]`, `POST /v1/calls/{call_id}/decline` `[expires_ts]` → `204` |
 | admin | `GET /v1/admin/diagnostics`, `GET /v1/admin/audit`, `POST /v1/admin/users/{id}/disable` |
 
 The blob delete rule: a `DELETE` on `/v1/channels/{cid}/blobs/{blob_id}` removes the **reference**,
@@ -680,12 +680,57 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 
 | Method and path | Request | Response | Permission |
 |---|---|---|---|
-| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**) | `connect`, and a current leaf of the call group |
+| `POST /v1/channels/{id}/calls` | `[]` or `[vdec(tstr)]` | `201 [call_id(bstr16), group_id(bstr16), livekit_url(tstr), token(tstr), ice_servers([[urls([tstr]), username(tstr), credential(tstr)]]), caps([max_audio_bitrate_bps(uint), max_share_bitrate_bps(uint), vp9(uint)])]` when the call is opened, `200` with the same body when it is already live; a `201` that opens a DM or group-DM call carries a seventh element, `rung([user_id(bstr16)])`, the users this start rang (see **Ringing**); `409 E_CALL_FULL`; `429 E_RATE_LIMITED` with `retry_after_ms` (a few milliseconds, transient) when the device was cut from the relay in the same millisecond or while the request was served; after the relay credential is minted, the refusal its gate would have given (`403 E_FORBIDDEN` barred, `403 E_LEAF_NOT_CURRENT`, `404 E_NOT_FOUND` without `view_channel`, `403 E_FORBIDDEN` without `connect`) when that changed while the request was served; `503 E_UNAVAILABLE` with `retry_after_ms` when the call ended as the request opened it (see **Ending**) | `connect`, and a current leaf of the call group |
 | `POST /v1/calls/{call_id}/share` | `[]` | `204` once the device holds a sharing slot and the SFU holds its new permission; `409 E_CALL_SHARERS_FULL`; `404 E_NOT_FOUND` when the call has ended or the device is not in its room; `403 E_FORBIDDEN` while the device's removal or demotion in the call is pending or the device is barred | `connect`, `video` or `screen_share`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}/share` | — | `204`, also when the device held no slot or the call has ended | `view_channel` |
 | `POST /v1/calls/{call_id}/stats` | `[candidate_type(uint), relay_protocol(uint\|null), rtt_ms(uint), fraction_lost_permille(uint), decrypt_failures(uint), frames_encrypted(uint)]` | `204`; `429 E_RATE_LIMITED` above one report per device per 5 s; `404 E_NOT_FOUND` once the call has ended; `403 E_FORBIDDEN` for a barred device; `400 E_INVALID_REQUEST` for `decrypt_failures` or `frames_encrypted` above 1048576 | `view_channel` and `connect`, and a current leaf of the call's group |
 | `DELETE /v1/calls/{call_id}` | — | `204`, also when the call has already ended or its call group is closed; `403 E_FORBIDDEN` for a barred device and for a device that is listen-only in the call's room for media that is not dilla's | `view_channel` and `connect`, and a current leaf of the call's group while that group is open |
+| `DELETE /v1/calls/{call_id}?if_alone=1` | — | as `DELETE /v1/calls/{call_id}`, but a live call ends only while the caller's device is the call group's only current leaf (no other member that is not removed), checked under the group lock that every commit takes; `409 E_CALL_NOT_ALONE` otherwise, and nothing ends; `400 E_INVALID_REQUEST` for any other value of `if_alone` | as `DELETE /v1/calls/{call_id}` |
+| `GET /v1/channels/{id}/call` | — | `200 [group_id(bstr16\|null), call_id(bstr16\|null), participants([[user_id(bstr16), device_id(bstr16), flags(uint)]])]`; `400 E_INVALID_REQUEST` for a text channel or a category | `view_channel`, or a participant of the DM or group DM |
+| `GET /v1/communities/{id}/calls` | — | `200 [[channel_id(bstr16), call_id(bstr16), participants]]`, the live calls of the voice channels the caller may view, sorted by `channel_id`, unpaginated; `404 E_NOT_FOUND` for a non-member | membership |
+| `POST /v1/calls/{call_id}/decline` | `[expires_ts(uint)]` | `204`, also when the user was no longer ringing or `expires_ts` names no ring; `400 E_INVALID_REQUEST` for a call of a community voice channel or a malformed body; `404 E_NOT_FOUND` for an unknown or ended call | a participant of the call's DM or group DM |
 
+- **Discovery and snapshot.** `GET /v1/channels/{id}/call` tells a client which call group to join
+  or register and who is in the channel's call. `group_id` is the live call's group; with no live
+  call, the channel's newest open `call` group; `null` when there is none, which means "register
+  one". `call_id` is the live call, or `null`. `participants` are the devices in the live call's
+  room with their current `voice_state` flags (`02` § Gateway frames), sorted by `user_id` then
+  `device_id`, at most `livekit.max_voice_participants`. A caller who may not view the channel, or
+  is no participant of the DM or group DM, gets `404 E_NOT_FOUND`; a text channel or a category is
+  `400 E_INVALID_REQUEST`. `GET /v1/communities/{id}/calls` gives the same `call_id` and
+  `participants` for every live call of a voice channel of the community that the caller may view,
+  sorted by `channel_id` and unpaginated; a non-member gets `404 E_NOT_FOUND`. Both are on the
+  `read` bucket. A client reads the snapshot first and then applies the `voice_state` frames it
+  received during the read, in order (`02` § Gateway frames).
+- **Ringing.** A start that **opens** a call (`201`) in a DM or group DM rings every other
+  participant who has no device in the call: each of that user's online devices receives
+  `call_ring` state 1 (`02` § Gateway frames, op 53) with `expires_ts` 30 seconds ahead. A `200`
+  start of a live call rings no one, and there is at most one ring per (call, user). A user's ring
+  stops — state 0 to every device of that user — at the first of: a device of that user is
+  admitted to the call's room, the call ends, 30 seconds pass on the instance clock, or the user
+  declines. `POST /v1/calls/{call_id}/decline` carries the `expires_ts` of the ring it answers,
+  because a call id is the channel id for every call of that channel: a late decline of an earlier
+  ring must not stop the next ring of the same DM or tell its caller "declined". The decline acts
+  only on the ring whose `expires_ts` equals the body's; any other value is `204` with no effect.
+  It stops that user's ring (state 0 to every device of the user) and sends state 2, naming the
+  decliner, to every device of the caller. It is idempotent and on the `write` bucket; only a
+  participant of the call's DM or group DM may call it (anyone else, an unknown call and an ended
+  call get `404 E_NOT_FOUND`), and a call of a community voice channel is `400 E_INVALID_REQUEST`.
+  **The pair bound.** Any user may open a DM with any account on the instance (§ DMs), and any
+  group-DM participant may add anyone, so the instance rings a given (caller user, recipient user)
+  pair at most once per 15 seconds and at most 20 times per rolling hour, across all channels. A
+  start beyond the bound still opens the call (`201`) but sends that recipient no `call_ring`, and
+  the instance logs one `INFO` line per suppressed pair per hour. The start's `rung` element names
+  exactly the users it rang, so a recipient the bound (or a cap below) held back is absent from it
+  and the caller's client never shows that recipient as ringing (added 2026-10-14). The bound is keyed by the pair
+  only, never by the recipient alone, so no third party can spend a recipient's budget and silence
+  honest callers. The state lives in memory, at most 65 536 pairs: a pair whose hour has passed is
+  dropped first, one caller user holds at most 1 024 live pairs (a new recipient beyond that is not
+  rung, for that caller only), and only a table full of live pairs evicts the oldest live pair. One
+  caller user has at most 8 calls ringing at once; a further start by that caller opens the call
+  but rings nobody. Every end of a call stops its rings, and of two starts that race to open the
+  same call only the one whose write opened it rings.
+  Rings reach only a device with an open gateway session; nothing is pushed to a closed client.
 - **The leaf gate.** A token is minted only for a device whose leaf is in the call group's
   **current epoch**: added at or before it and not removed. Any other device — a removed one, one
   whose leaf the instance records only from a later epoch, one with no leaf, or any device while
@@ -954,6 +999,19 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   immediately after by the background loop. When the instance cannot read the channel's live calls
   in the delete request, the room sweep ends them within its bound (the signalling proxy refuses
   every join of a deleted channel's call meanwhile). A restore ends every live call (`02` invariant 11).
+  **An idle call group is closed.** Every 60 seconds on the instance clock, the instance closes,
+  through the delivery service as an ending call does, each open `call` group that no live voice
+  session names and that was created at least 600 seconds ago: at most 1 024 groups per pass,
+  oldest first, the rest at the next pass. A live call's group is never closed this way; ending a
+  live call stays `DELETE /v1/calls/{call_id}` by a current leaf. A client that leaves a call it
+  believes it is alone in ends it with `?if_alone=1`, so a device whose external commit has just
+  landed keeps the call (`409 E_CALL_NOT_ALONE`); the unconditional form is unchanged. A closed group answers as above
+  (`403 E_LEAF_NOT_CURRENT` at a start), `GET /v1/channels/{id}/call` no longer names it, and the
+  next joiner registers a fresh call group. A start that read the group open and writes its call
+  after the close is ended at once and answers `503 E_UNAVAILABLE` with `retry_after_ms`; a start whose
+  call was written just before the close can instead answer `201` and see the call end at once. Either
+  way the client retries with a fresh `GET /v1/channels/{id}/call`. So a call group that a member poisoned with a
+  device no list names, and that no call keeps live, refuses honest joiners for at most 10 minutes.
 - **Leaving.** A device leaves a call by posting its self-Remove proposal to the call group (`01`
   § Joining) and only then disconnecting from the SFU. The instance learns of the leave from the
   SFU — under a millisecond after a graceful disconnect on loopback, and 20–22 seconds after a crash
@@ -1272,15 +1330,20 @@ Every `200` and every `304` of every file, whatever its extension, carries the s
     X-Content-Type-Options: nosniff
     Referrer-Policy: no-referrer
     X-Frame-Options: DENY
-    Permissions-Policy: camera=(), microphone=(), display-capture=(), geolocation=()
-    Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://HOST wss://HOST; worker-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+    Permissions-Policy: camera=(self), microphone=(self), display-capture=(self), geolocation=()
+    Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://HOST wss://HOST; worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 
 The policy is on every file, not only on HTML, because a dedicated worker loaded from a URL takes
 its policy from its own script response, not from the document that started it, and the client's
 worker holds its keys and does its network calls. The client renders the images it decrypted from
-`blob:` URLs it mints in the page, which is what `img-src blob:` admits; no camera, microphone,
-screen capture or media source is granted, and later changes widen these headers with their own
-row in `07`. `HOST` is the request's `Host` header when it is a host name or IPv4 address
+`blob:` URLs it mints in the page, which is what `img-src blob:` admits. The camera, the
+microphone and screen capture are granted to the instance's own origin only, for calls (§ Voice),
+and to no frame of another origin. `media-src blob:` admits the inline audio and video players,
+which play decrypted attachments from `blob:` URLs the page mints; call audio uses `srcObject`
+and WebAudio, which `media-src` does not govern, and the client's sounds are synthesised, so no
+other media source is admitted. The media worker and the noise-suppression worklet are same-origin
+files, which `worker-src 'self'` and `script-src 'self' 'wasm-unsafe-eval'` already admit. Later
+changes widen these headers with their own row in `07`. `HOST` is the request's `Host` header when it is a host name or IPv4 address
 of at most 253 characters, or a bracketed IPv6 literal, either with an optional port; for any other
 `Host` the two `ws` sources are left out. The client's own `404` and `405` answers carry only
 `X-Content-Type-Options: nosniff` from Go's `http.Error`; they carry no CSP, ETag, Cache-Control or

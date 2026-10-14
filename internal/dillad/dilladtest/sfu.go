@@ -39,6 +39,19 @@ func testSFUConfig(port, udpPort int, apiKey, secret string) sfu.Config {
 	return c
 }
 
+// sfuConfig is testSFUConfig with the host's own SFU options applied.
+func (o HostOptions) sfuConfig(port, udpPort int, apiKey, secret string) sfu.Config {
+	c := testSFUConfig(port, udpPort, apiKey, secret)
+	if o.SFUNoInternalIP {
+		c.AdvertiseInternalIP = false
+	}
+	c.TestAV1 = o.SFUEnableAV1
+	if o.SFUDepartureTimeout > 0 {
+		c.DepartureTimeout = o.SFUDepartureTimeout
+	}
+	return c
+}
+
 // newSFUSecret is a fresh 64-hex-character LiveKit API secret, well over the 32 characters
 // sfu.Config.YAML insists on.
 func newSFUSecret() (string, error) {

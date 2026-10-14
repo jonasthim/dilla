@@ -364,6 +364,10 @@ impl ClientCore {
             Ok((row, target))
         })?;
         let row = row.ok_or_else(not_found)?;
+        if row.kind != 0 {
+            // L-CORE-52: sending stays text-only; a call group carries no messages.
+            return Err(ClientError::new(E_CORE_INPUT, "not a text group"));
+        }
         if row.state != STATE_ACTIVE {
             return Err(ClientError::new(
                 E_CORE_STATE,

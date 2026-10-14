@@ -64,4 +64,18 @@ describe('AppShell', () => {
     const { container } = render(<div className="d-root"><ComposedShell banner /></div>);
     await expectNoAxeViolations(container);
   });
+
+  // web-3 (flow 06, task-9 ruling): the incoming-ring banner is the first thing in main; on a phone it is fixed to the top
+  // of the shell and the grid moves down by its height, so it never covers the stage controls.
+  it('puts the ring slot first in main, measures it and gives nothing without a ring', () => {
+    const { rerender } = render(<ComposedShell ring={<section aria-label="incoming calls"><button type="button">answer</button></section>} />);
+    const main = screen.getByRole('main');
+    const slot = main.firstElementChild as HTMLElement;
+    expect(slot).toHaveClass('d-app-shell__ring');
+    expect(within(slot).getByRole('button', { name: 'answer' })).toBeInTheDocument();
+    expect(within(main).getAllByRole('button')[0]).toHaveAccessibleName('answer');
+    rerender(<ComposedShell />);
+    expect(document.querySelector('.d-app-shell__ring')).toBeNull();
+    expect(document.querySelector<HTMLElement>('.d-app-shell')!.style.getPropertyValue('--d-ring-h')).toBe('0px');
+  });
 });

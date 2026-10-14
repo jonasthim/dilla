@@ -48,7 +48,7 @@ test('an encrypted v3 OPFS store reopens at v4 and searches with FTS5 absent', a
     'app_meta', 'app_outbox', 'app_outbox_by_group', 'app_pins', 'app_proposals', 'app_purges',
     'app_reactions', 'app_read_state', 'app_roles', 'app_settings',
   ] });
-  expect(await command(page, 'open')).toMatchObject({ abi: 8, phase: 2 });
+  expect(await command(page, 'open')).toMatchObject({ abi: 9, phase: 2 });
   const result = await command(page, 'search-fallback');
   expect(result).toMatchObject({ schema: 4, searchFts5: 0, hits: 1 });
   expect(String(result.snippet)).toContain('hello from the facade');

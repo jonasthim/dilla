@@ -1,0 +1,5 @@
+/* Twelve bars: lit in the accent, unlit as an outline in the edge colour (3:1 against the surface), so the level
+   reads without colour too. */
+.d-audio-meter { display: inline-flex; align-items: stretch; gap: 2px; height: 0.875rem; }
+.d-audio-meter__bar { display: block; width: 0.375rem; border: 1px solid var(--edge); border-radius: 1px; background: transparent; }
+.d-audio-meter__bar[data-on="true"] { background: var(--accent); border-color: var(--accent); }

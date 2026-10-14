@@ -23,7 +23,9 @@ export interface SyncDeps {
   onGroupChanged(groupId: Id, result: ApplyResult): void; onOutboxChanged(groupId: Id): void;
   onTrustChanged(): void;
   trackJob?(job: Promise<unknown>): void;
-  onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void;
+  /** 'member' (WB fix wave): a group reported not-member was read to the end again (the DS serves group reads to
+   *  current leaves only), so the device holds its leaf after all. A frame applied to the group proves no such thing. */
+  onMembership(groupId: Id, status: 'resyncing' | 'not-member' | 'member'): void;
   onJoinAll(progress: { done: number; total: number; failed: number }): void;
   /** A Welcome for an unexpected group; the controller reloads DMs. */
   onUnexpectedWelcome(groupId: Id): void;
@@ -63,6 +65,8 @@ export class SyncEngine implements SyncInternals {
   readonly resyncTried = new Set<string>();
   readonly quiet = new Set<string>();
   readonly unexpectedReported = new Set<string>();
+  /** Groups whose last membership report was not-member (WB fix wave): a confirmed catch-up withdraws it. */
+  private readonly lostReported = new Set<string>();
   private expectedList: ExpectedGroup[] = [];
   private readonly joinAll = new JoinAll(this, (p) => { this.deps.onJoinAll(p); });
   private readonly opened = new Map<string, ExpectedGroup>();
@@ -77,6 +81,11 @@ export class SyncEngine implements SyncInternals {
 
   constructor(readonly deps: SyncDeps) { this.queues = new SerialQueues((job) => deps.trackJob?.(job)); }
   stopped(): boolean { return this.isStopped; }
+  /** Every membership report goes through here, so the engine knows which groups it last reported not-member. */
+  reportMembership(g: Id, status: 'resyncing' | 'not-member' | 'member'): void {
+    if (status === 'not-member') this.lostReported.add(toHex(g)); else this.lostReported.delete(toHex(g));
+    this.deps.onMembership(g, status);
+  }
   start(): void {
     if (this.unsubscribe !== null || this.isStopped) return;
     this.unsubscribe = this.deps.gateway.subscribe((e) => { this.onEvent(e); });
@@ -144,7 +153,7 @@ export class SyncEngine implements SyncInternals {
         for (const g of this.deps.core.groups()) {
           if (g.state === 2) { this.requestCatchUp(g.groupId); this.requestDrain(g.groupId); }
           else if (g.state === 3 && !this.resyncTried.has(toHex(g.groupId))) {
-            this.queues.coalesce(key(g.groupId), 'resync', async () => { await resyncGroup(this, g.groupId, false); });
+            this.queues.coalesce(key(g.groupId), 'resync', async () => { await this.resync(g.groupId); });
           }
         }
         if (!this.isStopped) this.joinAll.request();
@@ -256,13 +265,17 @@ export class SyncEngine implements SyncInternals {
         if (this.row(g)?.state !== 2) return false;
         if (ms.count < SYNC.messagePage && hs.count < SYNC.handshakePage && !(hs.lastSeq !== null && hs.lastSeq > through)) break;
       }
+      // The DS answered every read of the group: this device holds its leaf, whatever an earlier refusal reported.
+      if (this.lostReported.has(toHex(g))) this.reportMembership(g, 'member');
       await this.cursorStep(g);
       return true;
     } catch (e) {
       if (e instanceof CoreError) this.reportCurrent(g);
       if ((this.membershipLost(g, e) || (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED'))
         && !this.resyncTried.has(toHex(g))) {
-        await resyncGroup(this, g, false);
+        await this.resync(g);
+      } else if (this.membershipLost(g, e)) {
+        this.relost(g);
       }
       return false;
     }
@@ -292,7 +305,7 @@ export class SyncEngine implements SyncInternals {
       if (id !== undefined) { this.cancelTimer(id); this.epochWait.delete(hex); this.requestDrain(g); }
       else if (!this.echoWait.has(hex) && this.deps.core.outbox(g).some((x) => x.state === 0)) this.requestDrain(g);
     }
-    if (r.state === 3 && !this.resyncTried.has(hex)) await resyncGroup(this, g, false);
+    if (r.state === 3 && !this.resyncTried.has(hex)) await this.resync(g);
     if (source !== 'commit' && r.state === 2) {
       if (r.proposalsPending > 0) this.armVolunteer(g); else this.disarmVolunteer(g);
     }
@@ -331,7 +344,10 @@ export class SyncEngine implements SyncInternals {
       this.disarmVolunteer(g); this.quiet.delete(toHex(g)); this.requestDrain(g);
       return true;
     } catch (e) {
-      if (built || e instanceof CoreError) {
+      // Re-review N-m4: only a commit this attempt built is aborted. A core refusal before the build (commit_build's "a
+      // commit is pending" while a call rotation's accepted commit awaits its echo) leaves that pending commit alone:
+      // aborting it would make its echo a stranger's commit and end the call as removed.
+      if (built) {
         try { this.deps.core.commitAbort(g); } catch { /* no pending state */ }
       }
       if (e instanceof DillaHttpError) {
@@ -345,12 +361,19 @@ export class SyncEngine implements SyncInternals {
           await this.catchUpNow(g, 'commit');
           if (e.status === 422) this.quiet.add(toHex(g));
         } else if (((e.status === 403 && e.code === 'E_LEAF_NOT_CURRENT') || this.membershipLost(g, e)) && !this.resyncTried.has(toHex(g))) {
-          await resyncGroup(this, g, false);
+          await this.resync(g);
+        } else if (this.membershipLost(g, e)) {
+          this.relost(g);
         }
       }
       this.requestDrain(g);
       return false;
     }
+  }
+  /** A 404 on a group whose resync was already tried (it is not tried again before the next ready): reported not-member
+   *  again unless that is still the last report, since nothing else would say it once a confirmed read withdrew it. */
+  private relost(g: Id): void {
+    if (!this.lostReported.has(toHex(g))) this.reportMembership(g, 'not-member');
   }
   private armVolunteer(g: Id): void {
     const hex = toHex(g); if (this.volunteer.has(hex) || this.quiet.has(hex)) return;
@@ -374,6 +397,21 @@ export class SyncEngine implements SyncInternals {
     for (const { frame } of ordered) await this.frameJob(frame);
     this.requestCatchUp(g); this.requestDrain(g);
   }
+  /**
+   * The engine's resync of a group whose state is lost. A call group (kind 1) is never re-joined here: its join is the
+   * call controller's alone (the gated join, L-TS-56 step 1), so a lost call group is reported as not-member and the call
+   * ends as removed (task 6 review M6).
+   */
+  private async resync(g: Id): Promise<boolean> {
+    if (this.row(g)?.kind === 1) {
+      this.resyncTried.add(toHex(g));
+      this.reportMembership(g, 'not-member');
+      return false;
+    }
+    return resyncGroup(this, g, false);
+  }
+  /** Runs a job on the group's lane, serialised with every apply, catch-up and commit of that group (review M7). */
+  runOnGroup<T>(g: Id, job: () => Promise<T>): Promise<T> { return this.queues.run(key(g), job); }
   async pollWelcomes(): Promise<void> { await this.queues.run('w', () => welcomeStep(this)).catch(() => undefined); }
   openChannel(ch: { communityId: Id | null; channelId: Id; textGroupId: Id | null }): Promise<{ groupId: Id; state: 0 | 1 | 2 | 3 | 4 }> {
     if (this.isStopped) return Promise.reject(new SyncError('E_SYNC_STOPPED'));

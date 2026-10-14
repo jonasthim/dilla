@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +58,10 @@ type CallEvents struct {
 	mu       sync.Mutex
 	rooms    map[string]*callRoom
 	proposed map[string]time.Time // room + "/" + device + "/" + session → the last Remove proposed for a leave
+	// self is the client-reported self-mute and self-deafen bits (voice_self's bits 0 and 1) per
+	// (call, device), stored by SetSelf for the voice snapshot (L-HTTP-100) and cleared when the
+	// device leaves the call, is evicted from it, or the call ends.
+	self map[announceKey]uint64
 
 	// amu guards the voice_state announcer's queue (voicestate.go): the latest flags per (call,
 	// device), whether its goroutine runs, and whether it is delivering a batch.
@@ -103,6 +109,93 @@ func (d *callDevice) flags() uint64 {
 }
 
 func (d *callDevice) sharing() bool { return d.flags()&(VoiceVideo|VoiceScreen) != 0 }
+
+// maxSelfFlags bounds the stored self flags, one entry per (call, device) a voice_self reached; one
+// beyond it is not stored (the snapshot then shows that device without its self bits, and its
+// voice_state frames still carry them).
+const maxSelfFlags = 65536
+
+// VoiceParticipant is one device in a live call's room as the voice snapshot names it (L-HTTP-100):
+// its user, the device, and its current voice_state flags — in the call, the self-mute and
+// self-deafen bits it reported, and video and screen while it publishes them.
+type VoiceParticipant struct {
+	User, Device id.ID
+	Flags        uint64
+}
+
+// SetSelf stores the self-mute and self-deafen bits (voice_self's client bits 0 and 1) dev reported
+// in call, after the gateway admitted the frame (VoiceSelfAudience: the device is in the call's live
+// room), while the call events hold the device in a room of the call. A voice_self that arrives
+// before the device's participant_joined is not stored (the snapshot then shows it without self
+// bits until its next voice_self); its voice_state frame still carries them. Other bits are ignored.
+func (c *CallEvents) SetSelf(call, dev id.ID, bits uint64) {
+	k := announceKey{call: call, dev: dev}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// A leave processed between the gateway's SFU check and this store must not be undone: a device
+	// the call events do not hold in a room of the call keeps no self flags (task-3 review M3).
+	if !c.inCallLocked(call, dev) {
+		delete(c.self, k)
+		return
+	}
+	if c.self == nil {
+		c.self = map[announceKey]uint64{}
+	}
+	if _, ok := c.self[k]; !ok && len(c.self) >= maxSelfFlags {
+		c.log.Warn("the self-flag store is full; this device's self flags are not stored", "device_id", dev.String())
+		return
+	}
+	c.self[k] = bits & 3
+}
+
+// inCallLocked reports whether dev is in a room of call as the call events saw it. c.mu is held.
+func (c *CallEvents) inCallLocked(call, dev id.ID) bool {
+	prefix := call.String() + "-"
+	for name, r := range c.rooms {
+		if strings.HasPrefix(name, prefix) && r.devices[dev] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// selfLocked is dev's stored self bits in call as voice_state bits 1 and 2. c.mu is held.
+func (c *CallEvents) selfLocked(call, dev id.ID) uint64 {
+	return c.self[announceKey{call: call, dev: dev}] << 1
+}
+
+// Participants is every device the call events saw in a room of call, with its flags, sorted by
+// user then device.
+func (c *CallEvents) Participants(call id.ID) []VoiceParticipant {
+	prefix := call.String() + "-"
+	return c.participants(call, func(room string) bool { return strings.HasPrefix(room, prefix) })
+}
+
+// participantsIn is Participants for one room of call: the live room the voice session names.
+func (c *CallEvents) participantsIn(call id.ID, room string) []VoiceParticipant {
+	return c.participants(call, func(r string) bool { return r == room })
+}
+
+func (c *CallEvents) participants(call id.ID, match func(room string) bool) []VoiceParticipant {
+	out := []VoiceParticipant{}
+	c.mu.Lock()
+	for name, r := range c.rooms {
+		if !match(name) {
+			continue
+		}
+		for dev, d := range r.devices {
+			out = append(out, VoiceParticipant{User: d.user, Device: dev, Flags: d.flags() | c.selfLocked(call, dev)})
+		}
+	}
+	c.mu.Unlock()
+	slices.SortFunc(out, func(a, b VoiceParticipant) int {
+		if n := bytes.Compare(a.User[:], b.User[:]); n != 0 {
+			return n
+		}
+		return bytes.Compare(a.Device[:], b.Device[:])
+	})
+	return out
+}
 
 // NewCallEvents builds the dispatcher over the same Calls the routes serve, and registers itself
 // with it: DELETE /v1/calls/{call_id} and a start that finds a stale group end the call through the
@@ -301,9 +394,12 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 	c.mu.Lock()
 	r := c.roomLocked(row.LivekitRoom)
 	r.devices[dev] = &callDevice{user: d.UserID, sid: sid, tracks: map[string]livekit.TrackSource{}, member: member}
+	flags := VoiceInCall | c.selfLocked(row.CallID, dev)
 	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	c.announce(ctx, ch, row.CallID, d.UserID, dev, VoiceInCall)
+	// A device of a rung user is in the room: that user's ring stops on every device (L-GW-33).
+	c.calls.ringer.Answered(row.CallID, d.UserID)
+	c.announce(ctx, ch, row.CallID, d.UserID, dev, flags)
 }
 
 // joinedAt is the time LiveKit reports p joined at, or zero.
@@ -419,6 +515,10 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 			// later session's own leave proposes its Remove.
 			otherSession = true
 		}
+	}
+	if !otherSession {
+		// The device is out of the call: its self flags go with the session (a rejoin starts clean).
+		delete(c.self, announceKey{call: row.CallID, dev: dev})
 	}
 	propose := !otherSession && now.Sub(c.proposed[key]) >= proposeWindow
 	if propose {
@@ -537,7 +637,7 @@ func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow
 	}
 	was := d.sharing()
 	change(d)
-	flags, stopped := d.flags(), was && !d.sharing()
+	flags, stopped := d.flags()|c.selfLocked(row.CallID, dev), was && !d.sharing()
 	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
 	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
@@ -589,6 +689,7 @@ func (c *CallEvents) Evict(ctx context.Context, groupID id.ID, removed []id.ID) 
 				delete(r.devices, dev)
 			}
 		}
+		delete(c.self, announceKey{call: row.CallID, dev: dev})
 		c.setGauge(c.liveLocked())
 		c.mu.Unlock()
 		if known && chErr == nil {
@@ -603,6 +704,11 @@ func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 	c.mu.Lock()
 	r := c.rooms[row.LivekitRoom]
 	delete(c.rooms, row.LivekitRoom)
+	for k := range c.self {
+		if k.call == row.CallID {
+			delete(c.self, k)
+		}
+	}
 	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
 	if r == nil || len(r.devices) == 0 {

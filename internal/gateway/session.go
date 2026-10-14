@@ -795,6 +795,9 @@ func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
 	// The callback proves live SFU membership. Bit zero is server-owned; client bits
 	// zero and one map only to the self-mute and self-deaf fields.
 	flags := uint64(1) | (bits << 1) | (roomFlags & ((1 << 3) | (1 << 4)))
+	if g.opts.VoiceSelfStored != nil {
+		g.opts.VoiceSelfStored(call, c.deviceID, bits)
+	}
 	p, err := VoiceStatePayload(c.userID, c.deviceID, call, flags)
 	if err != nil {
 		return

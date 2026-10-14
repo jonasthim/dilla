@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
 import { parseInvite } from './driver.ts';
 
-export interface HostConfig { port: number; control: number; webRoot: string | null }
+/** L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
+ *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
+export interface HostConfig { port: number; control: number; webRoot: string | null; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
@@ -15,6 +17,8 @@ export function hostArgs(c: HostConfig, dataDir: string): string[] {
   return ['-listen', `127.0.0.1:${c.port}`, '-control', `127.0.0.1:${c.control}`,
     '-core', WASI_CORE, '-log-level', 'warn', '-data-dir', dataDir, '-production-acl',
     ...(c.webRoot === null ? [] : ['-web-root', join(REPO_ROOT, c.webRoot)]),
+    ...(c.sfu === undefined ? [] : ['-sfu', '-sfu-port', String(c.sfu.port), '-sfu-udp-port', String(c.sfu.udpPort),
+      ...(c.sfu.departureTimeout === undefined ? [] : ['-sfu-departure-timeout', String(c.sfu.departureTimeout)])]),
   ];
 }
 
@@ -53,7 +57,8 @@ function stop(child: ChildProcess): Promise<void> {
 export default async function globalSetup(config: FullConfig): Promise<() => Promise<void>> {
   const c = config.metadata.dillaHost as HostConfig | undefined;
   if (!c || !Number.isInteger(c.port) || !Number.isInteger(c.control) ||
-      (c.webRoot !== null && typeof c.webRoot !== 'string')) {
+      (c.webRoot !== null && typeof c.webRoot !== 'string') ||
+      (c.sfu !== undefined && (!Number.isInteger(c.sfu.port) || !Number.isInteger(c.sfu.udpPort)))) {
     throw new Error('playwright config metadata.dillaHost is not a HostConfig');
   }
   if (!existsSync(WASI_CORE)) throw new Error(`${WASI_CORE} is missing: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked, then copy it there`);

@@ -130,3 +130,68 @@ describe('file cards', () => {
     expect(await screen.findByText('could not open (E_BLOB_HASH)')).toBeInTheDocument();
   });
 });
+
+describe('inline players (flow 06, L-UI-71, R9)', () => {
+  const media = (kind: 'audio' | 'video', name: string, mime: string) => file({ kind, name, mime, size: 40_000 });
+  it('an audio attachment plays on demand, and its blob URL is revoked on unmount', async () => {
+    const urls = stubBlobUrls();
+    try {
+      const fake = new FakeClient();
+      fake.handler = c => Promise.resolve(c.m === 'openAttachment' ? opened('voice.ogg', 'audio/ogg') : null);
+      const view = render(<CoreProvider client={fake}><AttachmentList channelId={GEN}
+        item={peerRow(P1, '7', 'listen', { attachments: [media('audio', 'voice.ogg', 'audio/ogg')] })} tabbable onOpenImage={() => undefined}
+        onError={() => undefined} /></CoreProvider>);
+      // Nothing is fetched before the click.
+      expect(fake.callsOf('openAttachment')).toEqual([]);
+      fireEvent.click(screen.getByRole('button', { name: 'play voice.ogg' }));
+      await waitFor(() => expect(document.querySelector('[data-media-state]')).toHaveAttribute('data-media-state', 'ready'));
+      expect(fake.callsOf('openAttachment')).toEqual([{ m: 'openAttachment', channelId: GEN, seq: '7', index: 0, thumb: false }]);
+      const audio = document.querySelector('audio');
+      expect(audio).toHaveAttribute('src', 'blob:test/1');
+      expect(audio).not.toHaveAttribute('autoplay');
+      view.unmount();
+      expect(urls.revoked).toEqual(['blob:test/1']);
+    } finally {
+      urls.restore();
+    }
+  });
+  it('a video that errors shows the error text and save', async () => {
+    const urls = stubBlobUrls();
+    const unhandled = vi.fn();
+    window.addEventListener('unhandledrejection', unhandled);
+    try {
+      const fake = new FakeClient();
+      fake.handler = c => Promise.resolve(c.m === 'openAttachment' ? opened('walk.webm', 'video/webm') : null);
+      render(<CoreProvider client={fake}><AttachmentList channelId={GEN}
+        item={peerRow(P1, '7', 'watch', { attachments: [media('video', 'walk.webm', 'video/webm')] })} tabbable onOpenImage={() => undefined}
+        onError={() => undefined} /></CoreProvider>);
+      fireEvent.click(screen.getByRole('button', { name: 'play walk.webm' }));
+      const video = await waitFor(() => { const v = document.querySelector('video'); expect(v).not.toBeNull(); return v!; });
+      expect(video).toHaveAttribute('playsinline');
+      fireEvent.error(video);
+      expect(await screen.findByText('This browser cannot play this file.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'save walk.webm' })).toHaveTextContent('save');
+      expect(document.querySelector('[data-media-state]')).toHaveAttribute('data-media-state', 'error');
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('unhandledrejection', unhandled);
+      urls.restore();
+    }
+  });
+  it('a blob that does not open shows the error state', async () => {
+    const fake = new FakeClient();
+    fake.handler = c => (c.m === 'openAttachment' ? Promise.reject(refusal({ code: 'E_BLOB_OPEN' })) : Promise.resolve(null));
+    render(<CoreProvider client={fake}><AttachmentList channelId={GEN}
+      item={peerRow(P1, '7', 'listen', { attachments: [media('audio', 'voice.ogg', 'audio/ogg')] })} tabbable onOpenImage={() => undefined}
+      onError={() => undefined} /></CoreProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'play voice.ogg' }));
+    expect(await screen.findByText('This browser cannot play this file.')).toBeInTheDocument();
+  });
+  it('a too-large audio file stays a file card without a player', () => {
+    render(<CoreProvider client={new FakeClient()}><AttachmentList channelId={GEN}
+      item={peerRow(P1, '7', 'big', { attachments: [file({ kind: 'audio', name: 'long.flac', tooLarge: true, size: 26_214_401 })] })}
+      tabbable onOpenImage={() => undefined} onError={() => undefined} /></CoreProvider>);
+    expect(screen.queryByRole('button', { name: 'play long.flac' })).toBeNull();
+  });
+});

@@ -21,6 +21,7 @@ This flow extends Flow 04's shell order: skip link → rail → channel list →
 | search stale | keep destination heading before closing palette | target absent/deleted/quarantined | `search.unavailable` |
 | other tab waiting | no conversation view | no matching release/lock yet | `tabs.wait` |
 | other tab failed or paused | retry, or the paused heading with `tabs.pausedDetail` and Use this tab | lock still owned or local pause failed | `tabs.failed` or `tabs.paused` |
+| other tab in a call (added 2026-10-14, product walk I7) | after Use this tab, the heading `tabs.voiceWarning` with `tabs.voiceKeep` (focused) and `tabs.voiceUse`; keep returns to Use this tab and takes nothing over | the tab holding dilla said, content-free on `dilla-voice:<instance>`, that its call slice is joining, in or paused | `tabs.voiceWarning` |
 
 First sight means first seen **here**, on this device. An instance may withhold newer signed lists, including on first sight; the first pin is not evidence that the list is current. An unknown history leaves the affected leaf pending and its message body unavailable. A validated Remove restores sending only in the group whose current tree no longer contains that leaf. The changed contact key stays unverified in other shared groups. A remote member can provoke repeated changed-key refusals, so a group-local Remove gives the honest sender a way to recover without approving that key.
 
@@ -150,6 +151,7 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.copy | Copy number | dialog button |
 | privacy.verify | All 12 blocks match | dialog final button |
 | privacy.instructions | Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself. | dialog instructions |
+| privacy.keyDetails | public key | the closed disclosure the person's exact public key sits behind; the 12 blocks are the comparison (added 2026-10-14, product walk M11) |
 | privacy.confirm | Yes, all 12 blocks match | dialog checkbox |
 | privacy.firstSeen | This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify. | under first-seen state on Privacy page and in dialog |
 | privacy.firstSeenLabel | First seen here — not verified | first-seen state label on Privacy page and in dialog |
@@ -192,6 +194,9 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | tabs.failed | Close the other tab, then try again. | failure status |
 | tabs.paused | This tab is paused | paused heading |
 | tabs.pausedDetail | dilla moved to another tab. This tab takes over when that one closes, or you can use it here now. | paused detail, above Use this tab |
+| tabs.voiceWarning | You are in a call in the other tab. Using this tab ends that call. | the other-tab heading after Use this tab while the tab holding dilla is in a voice channel or call (added 2026-10-14, product walk I7) |
+| tabs.voiceUse | Leave the call and use this tab | confirms the hand-over; the other tab's call ends |
+| tabs.voiceKeep | Keep the call | cancels; focus starts here; nothing is taken over |
 | boot.otherTab.status | dilla is open in another tab | other-tab heading |
 | typing.one | {name} is typing | conversation status |
 | typing.many | Several people are typing | conversation status |

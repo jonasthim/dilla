@@ -32,9 +32,10 @@ pub(super) struct GroupRow {
     pub max_epoch: i64,
 }
 impl GroupRow {
-    /// Whether the row is the text group of `channel` in `community`: a join never changes this.
-    fn bound_to(&self, community: Option<&[u8; 16]>, channel: &[u8; 16]) -> bool {
-        self.kind == 0
+    /// Whether the row is the group of `kind` (0 text, 1 call) of `channel` in `community`: a join
+    /// never changes this.
+    fn bound_to(&self, kind: i64, community: Option<&[u8; 16]>, channel: &[u8; 16]) -> bool {
+        self.kind == kind
             && self.community_id.as_deref() == community.map(|c| c.as_slice())
             && self.target_id.as_slice() == channel.as_slice()
     }
@@ -78,15 +79,18 @@ pub(super) fn group_row(
     .optional()
     .map_err(Into::into)
 }
-fn holder(
+/// The group of `kind` (0 text, 1 call) another id holds for `channel`, if any: a DM's text group
+/// and its call group share the DM's id as their target and never stand in for each other.
+pub(super) fn holder(
     c: &rusqlite::Connection,
     channel: &[u8; 16],
+    kind: i64,
     except: &[u8; 16],
-) -> Result<Option<Vec<u8>>, StorageError> {
+) -> Result<Option<[u8; 16]>, StorageError> {
     c.query_row(
         "SELECT group_id FROM app_groups \
-         WHERE target_id = ?1 AND kind = 0 AND state <> 4 AND group_id <> ?2",
-        params![channel.as_slice(), except.as_slice()],
+         WHERE target_id = ?1 AND kind = ?2 AND state <> 4 AND group_id <> ?3",
+        params![channel.as_slice(), kind, except.as_slice()],
         |r| r.get(0),
     )
     .optional()
@@ -97,16 +101,24 @@ fn binding(
     community: Option<&[u8; 16]>,
     channel: &[u8; 16],
     policy: u64,
+    kind: GroupKind,
 ) -> DillaBinding {
     DillaBinding {
         v: 1,
         instance_id: InstanceId::from_bytes(own.instance_id),
         community_id: community.map(|c| CommunityId::from_bytes(*c)),
         target_id: *channel,
-        kind: GroupKind::Text,
+        kind,
         policy_version: policy,
         e2ee_version: 1,
-        media_version: 0,
+        media_version: kind.media_version(),
+    }
+}
+/// The `app_groups.kind` of a text or call group.
+pub(super) fn row_kind(kind: GroupKind) -> i64 {
+    match kind {
+        GroupKind::Call => 1,
+        _ => 0,
     }
 }
 fn credential(own: &Own) -> CredentialWithKey {
@@ -278,6 +290,19 @@ impl ClientCore {
         policy: u64,
         external: &[u8; 32],
     ) -> Result<Vec<u8>, ClientError> {
+        self.group_create_kind(id, community, channel, policy, external, GroupKind::Text)
+    }
+
+    /// `group_create`'s body for a text or a call group (`call_group_create`).
+    pub(super) fn group_create_kind(
+        &mut self,
+        id: &[u8; 16],
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+        policy: u64,
+        external: &[u8; 32],
+        kind: GroupKind,
+    ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let row = self.read(|c| group_row(c, id))?;
         if let Some(r) = row {
@@ -286,13 +311,13 @@ impl ClientCore {
                 format!("group exists in state {}", r.state),
             ));
         }
-        if let Some(h) = self.read(|c| holder(c, channel, id))? {
+        if let Some(h) = self.read(|c| holder(c, channel, row_kind(kind), id))? {
             return Err(ClientError::new(
                 E_CORE_STATE,
                 format!("channel has group {}", hex(&h)),
             ));
         }
-        let bind = binding(&own, community, channel, policy);
+        let bind = binding(&own, community, channel, policy, kind);
         self.signer()?;
         let (g, info, tree) = self.write(|ctx, u| {
             let signer = ctx
@@ -314,11 +339,12 @@ impl ClientCore {
             in_unit(u, |c| {
                 c.execute(
                     "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) \
-                     VALUES(?1,0,?2,?3,0)",
+                     VALUES(?1,?4,?2,?3,0)",
                     params![
                         id.as_slice(),
                         community.map(|c| c.as_slice()),
-                        channel.as_slice()
+                        channel.as_slice(),
+                        row_kind(kind)
                     ],
                 )?;
                 Ok(())
@@ -410,6 +436,31 @@ impl ClientCore {
         info_body: &[u8],
         tree_body: &[u8],
     ) -> Result<Vec<u8>, ClientError> {
+        self.group_join_kind(
+            id,
+            community,
+            channel,
+            policy,
+            info_body,
+            tree_body,
+            GroupKind::Text,
+        )
+    }
+
+    /// `group_join_external`'s body for a text or a call group (`call_group_join_external`). A call
+    /// join runs the call gate on the joined tree inside the join's unit, right after the audit
+    /// (L-CORE-50): any verdict but a pending leaf rolls the whole unit back.
+    #[allow(clippy::too_many_arguments)] // The join's ABI plus the kind it is for.
+    pub(super) fn group_join_kind(
+        &mut self,
+        id: &[u8; 16],
+        community: Option<&[u8; 16]>,
+        channel: &[u8; 16],
+        policy: u64,
+        info_body: &[u8],
+        tree_body: &[u8],
+        kind: GroupKind,
+    ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let info = wire::decode_info_body(info_body)?;
         let tree_body = wire::decode_tree_body(tree_body)?;
@@ -437,11 +488,11 @@ impl ClientCore {
             return Err(state(r.state));
         }
         if let Some(r) = &r
-            && !r.bound_to(community, channel)
+            && !r.bound_to(row_kind(kind), community, channel)
         {
             return Err(rebound());
         }
-        if let Some(h) = self.read(|c| holder(c, channel, id))? {
+        if let Some(h) = self.read(|c| holder(c, channel, row_kind(kind), id))? {
             return Err(ClientError::new(
                 E_CORE_STATE,
                 format!("channel has group {}", hex(&h)),
@@ -455,7 +506,7 @@ impl ClientCore {
             // Not put back in the cache: it was taken unchecked; the next use reloads it.
             return Err(below_floor("GroupInfo"));
         }
-        let bind = binding(&own, community, channel, policy);
+        let bind = binding(&own, community, channel, policy, kind);
         let result = self.write(|ctx, u| {
             let signer = ctx
                 .signer
@@ -479,6 +530,11 @@ impl ClientCore {
                 &bind,
             )?;
             u.with_conn(|c| super::trust::audit_tree(c,&g,id,&own.user_id,&own.device_id,None,None))?;
+            if kind == GroupKind::Call {
+                // Ruling RV-1: a pending leaf is settled by `call_join_check` before the worker
+                // posts this commit; every other verdict refuses here, before a commit exists.
+                super::calls::join_gate(ctx.provider, u, &g, id, &own)?;
+            }
             let joined = checked("epoch", g.epoch())?;
             let commit = wire::tls(&commit)?;
             let exported = wire::tls(&g.export_group_info(ctx.provider, signer)?)?;
@@ -498,8 +554,8 @@ impl ClientCore {
                 } else {
                     c.execute(
                         "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,epoch) \
-                         VALUES(?1,0,?2,?3,1,?4)",
-                        params![id.as_slice(), community.map(|c| c.as_slice()), channel.as_slice(), joined],
+                         VALUES(?1,?5,?2,?3,1,?4)",
+                        params![id.as_slice(), community.map(|c| c.as_slice()), channel.as_slice(), joined, row_kind(kind)],
                     )?;
                 }
                 Ok(())
@@ -565,11 +621,11 @@ impl ClientCore {
                     outcome = 1;
                 } else if row
                     .as_ref()
-                    .is_some_and(|r| !r.bound_to(want.community_id.as_ref(), &want.channel_id))
+                    .is_some_and(|r| !r.bound_to(0, want.community_id.as_ref(), &want.channel_id))
                 {
                     outcome = 2;
                     reason = rebound().code;
-                } else if self.read(|c| holder(c, &want.channel_id, id))?.is_some() {
+                } else if self.read(|c| holder(c, &want.channel_id, 0, id))?.is_some() {
                     outcome = 2;
                     reason = E_CORE_STATE;
                 } else {
@@ -588,6 +644,7 @@ impl ClientCore {
                                 want.community_id.as_ref(),
                                 &want.channel_id,
                                 want.policy_version,
+                                GroupKind::Text,
                             );
                             let next = checked("commit_seq", item.commit_seq).and_then(|n| {
                                 n.checked_add(1).ok_or_else(|| {

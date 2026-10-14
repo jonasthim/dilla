@@ -28,6 +28,7 @@ function validDist() {
   put('assets/index-Def456.css', 'body{margin:0}\n');
   put('assets/entry-Ghi789.js', 'self.onmessage=null;\n');
   put('assets/dilla_core_wasm_bg-Jkl012.wasm', WASM);
+  put('assets/rnnoise-Mno345.wasm', WASM);
   put('favicon.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>\n');
 }
 
@@ -69,13 +70,16 @@ describe('checkDist', () => {
       'assets/index-AbC123.js.map: extension .map is not served',
     ]);
   });
-  it('wants exactly one wasm and an index.html', () => {
+  it('wants exactly two wasm files (the core and RNNoise, web-3 task 8) and an index.html', () => {
     put('assets/a.js', 'export {};\n');
-    expect(checkDist(dir)).toEqual(['index.html is missing', 'expected exactly 1 .wasm file, found 0']);
+    expect(checkDist(dir)).toEqual(['index.html is missing', 'expected exactly 2 .wasm files (the core and RNNoise), found 0']);
     put('index.html', INDEX);
     put('assets/one.wasm', WASM);
+    expect(checkDist(dir)).toEqual(['expected exactly 2 .wasm files (the core and RNNoise), found 1']);
     put('assets/two.wasm', WASM);
-    expect(checkDist(dir)).toEqual(['expected exactly 1 .wasm file, found 2']);
+    expect(checkDist(dir)).toEqual([]);
+    put('assets/three.wasm', WASM);
+    expect(checkDist(dir)).toEqual(['expected exactly 2 .wasm files (the core and RNNoise), found 3']);
   });
 });
 

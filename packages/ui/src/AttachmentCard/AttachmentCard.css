@@ -17,3 +17,10 @@
 /* A failed open: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-attachment-card[data-state="failed"] .d-attachment-card__state { color: var(--danger); }
 .d-attachment-card[data-state="failed"] .d-attachment-card__state::before { content: "✕ " / ""; }
+/* An audio or video card: the name and size, the inline player (at most 480 × 270 for a video), then save. */
+.d-attachment-card__media { display: grid; justify-items: start; gap: 0.375rem; width: min(100%, 31.5rem); min-width: 0; padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.d-attachment-card__media .d-attachment-card__meta { max-width: 100%; }
+.d-attachment-card__media .d-media-player { max-width: 100%; }
+/* The media card's save matches the player's buttons: 40 × 40 on a desktop, 44 × 44 on a phone (flow 06). */
+.d-attachment-card__media .d-attachment-card__media-save { height: auto; min-height: 2.5rem; min-width: 2.5rem; padding: 0 0.875rem; }
+@media (max-width: 47.99rem) { .d-attachment-card__media .d-attachment-card__media-save { min-height: 2.75rem; min-width: 2.75rem; } }

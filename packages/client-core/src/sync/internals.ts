@@ -8,6 +8,8 @@ export interface SyncInternals {
   readonly deps: SyncDeps;
   readonly queues: SerialQueues;
   stopped(): boolean;
+  /** Reports a membership change through deps.onMembership, keeping the engine's record of it. */
+  reportMembership(groupId: Id, status: 'resyncing' | 'not-member' | 'member'): void;
   row(groupId: Id): GroupInfo | undefined;
   snapshot(groupId: Id): ApplyResult | null;
   expected(): ExpectedGroup[];

@@ -96,7 +96,8 @@ describe('App', () => {
       // P6 / M-07: the paused tab says what happened and can take dilla back.
       expect(screen.getByText('dilla moved to another tab. This tab takes over when that one closes, or you can use it here now.')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Use this tab' })).toBeInTheDocument();
-      const forwarded = channels.filter(c => c.posted.length > 0);
+      // The voice-presence channel (product walk I7) is its own; the hand-over's channel forwards only the release.
+      const forwarded = channels.filter(c => c.name.startsWith('dilla-core:') && c.posted.length > 0);
       expect(forwarded.map(c => [c.name, c.posted, c.closed])).toEqual([[`dilla-core:${instance}`, [{ t: 'released', instance, nonce }], true]]);
     } finally { vi.unstubAllGlobals(); }
   });
@@ -145,6 +146,93 @@ describe('App', () => {
       });
       expect(fake.callsOf('resign')).toHaveLength(2);
     } finally { vi.unstubAllGlobals(); }
+  });
+  // Product walk I7: "Use this tab" ended the other tab's call without a word. The tab that holds dilla says, content-free,
+  // whether it is in a call; the waiting tab warns before taking over, and keeping the call takes nothing over.
+  describe('a call in the other tab (product walk I7)', () => {
+    const channels: VoiceChannel[] = [];
+    class VoiceChannel {
+      readonly listeners = new Set<(event: { data: unknown }) => void>();
+      readonly posted: unknown[] = [];
+      constructor(readonly name: string) { channels.push(this); }
+      postMessage(value: unknown): void {
+        this.posted.push(value);
+        for (const other of channels) if (other !== this && other.name === this.name) for (const cb of [...other.listeners]) cb({ data: value });
+      }
+      addEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.add(cb); }
+      removeEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.delete(cb); }
+      close(): void { this.listeners.clear(); }
+    }
+    const instance = 'ab'.repeat(16);
+
+    it('the waiting tab warns before ending the call, and keeping it takes nothing over', async () => {
+      channels.length = 0;
+      vi.stubGlobal('BroadcastChannel', VoiceChannel);
+      vi.mocked(requestHandover).mockClear();
+      try {
+        const fake = new FakeClient();
+        fake.set('account', account({ phase: 'other-tab' }));
+        fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [] });
+        const user = userEvent.setup();
+        render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+        const asked = channels.find(c => c.name === `dilla-voice:${instance}`)!;
+        expect(asked.posted).toEqual([{ t: 'voice?', instance }]);
+        // The tab that holds dilla answers: it is in a call.
+        act(() => { for (const cb of [...asked.listeners]) cb({ data: { t: 'voice', instance, on: true } }); });
+        await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+        expect(requestHandover).not.toHaveBeenCalled();
+        expect(screen.getByRole('status')).toHaveTextContent('You are in a call in the other tab. Using this tab ends that call.');
+        expect(screen.getByRole('button', { name: 'Keep the call' })).toHaveFocus();
+        await user.click(screen.getByRole('button', { name: 'Keep the call' }));
+        expect(requestHandover).not.toHaveBeenCalled();
+        // Fix round 3 (m3): focus returns to Use this tab, never to the page.
+        expect(screen.getByRole('button', { name: 'Use this tab' })).toHaveFocus();
+        await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+        await user.click(screen.getByRole('button', { name: 'Leave the call and use this tab' }));
+        expect(requestHandover).toHaveBeenCalledOnce();
+      } finally { vi.unstubAllGlobals(); }
+    });
+
+    // Fix round 3 (m6): with no call in the other tab, Use this tab takes over at once, with no question.
+    it('with no call in the other tab, Use this tab takes over at once', async () => {
+      channels.length = 0;
+      vi.stubGlobal('BroadcastChannel', VoiceChannel);
+      vi.mocked(requestHandover).mockClear();
+      try {
+        const fake = new FakeClient();
+        fake.set('account', account({ phase: 'other-tab' }));
+        fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [] });
+        const user = userEvent.setup();
+        render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+        const asked = channels.find(c => c.name === `dilla-voice:${instance}`)!;
+        act(() => { for (const cb of [...asked.listeners]) cb({ data: { t: 'voice', instance, on: false } }); });
+        await user.click(screen.getByRole('button', { name: 'Use this tab' }));
+        expect(requestHandover).toHaveBeenCalledOnce();
+        expect(screen.queryByText('You are in a call in the other tab. Using this tab ends that call.')).toBeNull();
+      } finally { vi.unstubAllGlobals(); }
+    });
+
+    it('the tab that holds dilla answers whether it is in a call, and says so when that changes', () => {
+      channels.length = 0;
+      vi.stubGlobal('BroadcastChannel', VoiceChannel);
+      try {
+        const fake = new FakeClient();
+        fake.set('account', account({ phase: 'ready' }));
+        fake.set('communities', []);
+        fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [] });
+        fake.set('call', { phase: 'in', channelId: 'cd'.repeat(16), callId: 'cd'.repeat(16), epoch: '1', code: null, error: null, roster: [],
+          outgoing: null, changedUser: null, rejoining: false });
+        render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+        const waiting = new VoiceChannel(`dilla-voice:${instance}`);
+        const heard: unknown[] = [];
+        waiting.addEventListener('message', e => { heard.push(e.data); });
+        act(() => waiting.postMessage({ t: 'voice?', instance }));
+        expect(heard).toEqual([{ t: 'voice', instance, on: true }]);
+        act(() => fake.set('call', { phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [],
+          outgoing: null, changedUser: null, rejoining: false }));
+        expect(heard.at(-1)).toEqual({ t: 'voice', instance, on: false });
+      } finally { vi.unstubAllGlobals(); }
+    });
   });
   it('starts the core once and shows the loading splash', () => {
     const fake = new FakeClient();

@@ -203,6 +203,10 @@ func (d *recordingDS) Close(_ context.Context, g id.ID) error {
 	return nil
 }
 
+// CloseIfAlone records like Close: no test that uses recordingDS ends a call conditionally (callDS
+// checks the members; internal/ds tests the rule under the lock).
+func (d *recordingDS) CloseIfAlone(ctx context.Context, g, _ id.ID) error { return d.Close(ctx, g) }
+
 func (d *recordingDS) removes() []struct {
 	Group id.ID
 	Leaf  uint32

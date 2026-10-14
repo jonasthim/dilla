@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, SidebarTabs,
-  StatusBar, StatusChunk,
+  StatusBar, StatusChunk, UnsupportedVoice,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
@@ -17,9 +17,13 @@ import { PinsButton } from './conversation/Pins.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
-  badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, mentionCandidates, mentionMembers, mergeMembers,
+  badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
   nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
+import { useCall } from './voice/useCall.tsx';
+import { ActiveVoiceList, DmCall, Dock, removedFromServer, speakingDevices, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { RingFlow } from './voice/Ring.tsx';
+import { useSounds } from './voice/useSounds.tsx';
 
 /**
  * Focuses the rail's settings button (task 17 names it by `aria-label`), where focus returns when Settings closes;
@@ -52,6 +56,8 @@ export function isChanged(row: TrustSummary): boolean {
 const HEX32 = /^[0-9a-f]{32}$/;
 // Renew an unchanged typing signal after 5 s: above the server's 3 s meter, inside its 10 s hold (L-HTTP-96).
 const TYPING_RENEW_MS = 5_000;
+/** No device speaking: the voice rows of calls this device is not in (product walk M3). */
+const NOBODY: ReadonlySet<string> = new Set();
 
 type SidebarTab = 'channels' | 'dms';
 
@@ -119,6 +125,9 @@ export function Shell(): React.JSX.Element {
   const restoreSearchFocus = useRef<HTMLElement | null>(null);
   const trust = useSlice('trust');
   const sendBlocks = useSlice('sendBlocks');
+  const callSlice = useSlice('call');
+  const voiceSlice = useSlice('voice');
+  const rings = useSlice('rings');
   // A send the core refused for a trust reason, until the next published gate says more (W-01).
   const [refusedSend, setRefusedSend] = useState<{ channelId: string; code: TrustBlock; gate: unknown } | null>(null);
 
@@ -158,11 +167,13 @@ export function Shell(): React.JSX.Element {
   const community = communities?.find(c => c.id === communityId) ?? null;
   const channel = ordered.find(c => c.id === channelId) ?? null;
   const dm = dmId === null ? null : dms?.find(d => d.id === dmId) ?? null;
-  const unsupported = channel !== null && isUnsupported(channel);
+  // A voice channel shows the voice view (web-3): no timeline, no composer.
+  const voiceChannel = channel !== null && isVoice(channel) ? channel : null;
+  const unsupported = channel !== null && voiceChannel === null && isUnsupported(channel);
   // What is open: an openable channel, else a listed DM. A channel that cannot open keeps no timeline.
-  const openId = channel !== null && !unsupported ? channel.id : dm !== null ? dm.id : null;
+  const openId = channel !== null && !unsupported && voiceChannel === null ? channel.id : dm !== null ? dm.id : null;
   // The channel or DM on screen, open or not: the composer, the draft and loadEarlier follow it.
-  const targetId = channel?.id ?? dm?.id ?? null;
+  const targetId = (voiceChannel === null ? channel?.id : undefined) ?? dm?.id ?? null;
   const timeline = useSlice(`timeline:${openId ?? ''}`);
   const typing = useSlice(`typing:${openId ?? ''}`) ?? [];
   const typingNames = [...new Map(typing.map(row => [row.userId, row.name])).values()];
@@ -224,6 +235,31 @@ export function Shell(): React.JSX.Element {
     ? selectFailure.error : null;
 
   const report = useCallback((e: unknown) => setCommandError(errorOf(e)), []);
+
+  // Voice (web-3, flow 06). The name of a channel or DM for {where}, from every loaded server and the DM list.
+  const whereOf = useCallback((id: string) => (railSlices.flat() as ChannelSummary[]).find(c => c.id === id)?.name
+    ?? dms?.find(d => d.id === id)?.name ?? id.slice(0, 8), [railSlices, dms]);
+  // After a leave the person asked for, focus goes to the voice row (or the DM's call button) the call came from.
+  const [leftFrom, setLeftFrom] = useState<{ id: string } | null>(null);
+  // Product walk M8: {where} of a call names a DM's call as "the call with {name}", a voice channel by its name.
+  const callWhere = useCallback((id: string) => (dms?.some(d => d.id === id) === true ? t('call.where', { name: whereOf(id) }) : whereOf(id)),
+    [dms, whereOf]);
+  const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
+    stageShown: id => id === (voiceChannel?.id ?? dm?.id) });
+  useLayoutEffect(() => {
+    if (leftFrom === null) return;
+    const name = whereOf(leftFrom.id);
+    // WB a11y m5: only the call's own row, or its own DM's call button; else the sidebar's active tab, where the dock was
+    // (never another DM's call button, never the page).
+    const target = document.querySelector<HTMLElement>(`button.d-voice-row[aria-label="${CSS.escape(t('voice.open', { name }))}"]`)
+      ?? (dm?.id === leftFrom.id ? document.querySelector<HTMLElement>('.dw-call-strip__start') : null)
+      ?? document.querySelector<HTMLElement>('.dw-sidebar [role="tab"][aria-selected="true"]');
+    target?.focus();
+    setLeftFrom(null);
+  }, [leftFrom, whereOf, dm?.id]);
+  // A typing signal is a hint: one the worker refuses (the channel is not viewable any more, or the socket is not online,
+  // E_NOT_READY) is simply not sent, never an error banner (the docs shoot's shell-not-member image showed one).
+  const typingRefused = useCallback(() => undefined, []);
   const typingSent = useRef<string | null>(null);
   const typingAt = useRef(0);
   useEffect(() => {
@@ -232,20 +268,20 @@ export function Shell(): React.JSX.Element {
       // The server holds a typing signal for 10 s and meters one per 3 s (L-HTTP-96): a draft still changing renews it.
       if (active !== null && Date.now() - typingAt.current >= TYPING_RENEW_MS) {
         typingAt.current = Date.now();
-        client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+        client.call({ m: 'typing', channelId: active, on: true }).catch(typingRefused);
       }
       return;
     }
-    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(typingRefused);
     typingSent.current = active;
     if (active !== null) {
       typingAt.current = Date.now();
-      client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+      client.call({ m: 'typing', channelId: active, on: true }).catch(typingRefused);
     }
-  }, [client, draft.channelId, draft.text, targetId, report]);
+  }, [client, draft.channelId, draft.text, targetId, typingRefused]);
   useEffect(() => () => {
-    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
-  }, [client, report]);
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(typingRefused);
+  }, [client, typingRefused]);
 
   const selectCommunity = useCallback((id: string) => {
     setSelectFailure(null);
@@ -289,11 +325,19 @@ export function Shell(): React.JSX.Element {
     navigate({ name: 'root' }, true);
   }, [overlay, dmId, dms, dm, navigate]);
 
-  // (3) Once per server change, the worker loads its channels and members.
+  // (3) Once per server change, the worker loads its channels and members, and who is in its voice channels (L-TS-50
+  // loadVoice; a refusal leaves the rows without people).
   const listed = community !== null;
   useEffect(() => {
-    if (listed && communityId !== null) selectCommunity(communityId);
-  }, [communityId, listed, selectCommunity]);
+    if (!listed || communityId === null) return;
+    selectCommunity(communityId);
+    client.call({ m: 'loadVoice', communityId, channelId: null }).catch(() => undefined);
+  }, [communityId, listed, selectCommunity, client]);
+  // (3b) An open DM: whether a call is live in it.
+  const dmOpen = dm?.id ?? null;
+  useEffect(() => {
+    if (dmOpen !== null) client.call({ m: 'loadVoice', communityId: null, channelId: dmOpen }).catch(() => undefined);
+  }, [dmOpen, client]);
 
   // (4) With the channels loaded, a channel route names a listed channel.
   useEffect(() => {
@@ -524,9 +568,27 @@ export function Shell(): React.JSX.Element {
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
   );
 
+  useSounds({ rings, room: call.channelId === null ? undefined : voiceSlice?.[call.channelId], inCall: call.channelId,
+    deafened: call.state?.deafened ?? false, settings: settings ?? {}, selfId: self?.id ?? null });
+  // A ring is answered in its DM: the DM opens and its call is joined (leaving the current voice first, useCall's join).
+  const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}}
+    inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
+    onOpen={id => navigate({ name: 'dm', channelId: id })}
+    onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
+  const voiceCtx: VoiceContext = {
+    call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
+    onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
+    onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
+  };
+
   let main: ReactNode = null;
   if (dm !== null) {
-    main = openError !== null ? openFailed(dm.id, openError) : log(t('shell.dm.log', { name: dm.name }));
+    main = openError !== null ? openFailed(dm.id, openError) : <>
+      <DmCall v={voiceCtx} channelId={dm.id} name={dm.name} />
+      {log(t('shell.dm.log', { name: dm.name }))}
+    </>;
+  } else if (voiceChannel !== null) {
+    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
   } else if (communities !== undefined && communities.length === 0 && communityId === null) {
     main = <EmptyState title={t('shell.noServer.title')} body={t('shell.noServer.body')}
       action={{ label: t('shell.noServer.action'), onAction: () => setJoinOpen(true) }} />;
@@ -547,6 +609,12 @@ export function Shell(): React.JSX.Element {
   const dmRows: ListRow[] = (dms ?? []).map(d => ({ id: d.id, name: d.name, kind: 'dm', readable: false, ...rowBadge(badges, settings, d.id) }));
   const channelCounts = sumBadges(channelRows);
   const dmCounts = sumBadges(dmRows);
+  // The voice channels sit under their own heading with their people (flow 06), not among the text rows.
+  const speakingNow = speakingDevices(call.state, account?.deviceId ?? null);
+  const voiceRows = ordered.filter(isVoice).map(c => ({ id: c.id, name: c.name, readable: false, current: c.id === channelId,
+    joined: call.channelId === c.id, room: voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
+    held: removedFromServer({ slice: callSlice }, c.id) }));
+  const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];
     const counts = sumBadges(list.filter(ch => ch.kind !== CATEGORY).map(ch => rowBadge(badges, settings, ch.id)));
@@ -570,21 +638,34 @@ export function Shell(): React.JSX.Element {
       content = <EmptyState title={t('shell.noServer.title')} body={t('shell.noServer.body')}
         action={{ label: t('shell.noServer.action'), onAction: () => setJoinOpen(true) }} />;
     }
-    sidebar = (
+    const voiceHere = !onDms && community !== null && content === undefined;
+    sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
-        tabs={<SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
-          { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
-          { id: 'dms', label: t('shell.tabs.dms'), count: dmCounts.unread, mentions: dmCounts.mentions },
-        ]} />}
-        channels={onDms ? dmRows : channelRows}
+        tabs={<>
+          <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
+            { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
+            { id: 'dms', label: t('shell.tabs.dms'), count: dmCounts.unread, mentions: dmCounts.mentions },
+          ]} />
+          {voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : null}
+        </>}
+        channels={onDms ? dmRows : channelRows.filter(row => !voiceRows.some(v => v.id === row.id))}
         activeId={onDms ? dmId : channelId}
         onSelect={id => navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id })}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
         content={content}
-        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => setPickerOpen(true)}>{t('shell.dms.new')}</Button> : undefined} />
-    );
+        // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
+        // Fix round 3 (m4): a background read: a failure keeps the cached list and raises no banner.
+        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => {
+          client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
+          setPickerOpen(true);
+        }}>{t('shell.dms.new')}</Button>
+          : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
+            onJoin={id => { openVoice(id); call.join(id); }} /> : undefined} />
+      <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
+        stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
+    </div>);
   }
 
   // A validated Remove of a changed leaf unblocked sending here only; the contact stays changed elsewhere (Flow 05).
@@ -618,7 +699,7 @@ export function Shell(): React.JSX.Element {
       onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report} />
   );
 
-  const header = channel !== null
+  const header = voiceChannel !== null ? null : channel !== null
     ? <ChannelHeader name={channel.name} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} />
@@ -729,7 +810,12 @@ export function Shell(): React.JSX.Element {
           settingsLabel={t('shell.rail.settings')} onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
           itemLabel={railLabel} />}
         sidebar={sidebar}
-        header={header}
+        ring={rings !== undefined && rings.length > 0 ? ringFlow : undefined}
+        header={<>
+          {/* Outlives the dock: "You left {where}.", and a block or removal said while the stage is not on screen. */}
+          <p className="d-sr-only dw-voice-lasting" role="status">{call.lasting}</p>
+          {header}
+        </>}
         composer={composer === null ? null : <>
           {/* One polite status above the composer, never while search covers the conversation (Flow 05). */}
           {typingNames.length > 0 && !searchOpen ? <TypingIndicator names={typingNames}
@@ -757,6 +843,8 @@ export function Shell(): React.JSX.Element {
         onClose={() => { restoreSearchFocus.current = searchOpener.current; searchOpener.current = null; setSearchOpen(false); }} />
       <JoinCommunity open={joinOpen} initialInvite={joinInvite ?? undefined} initialError={joinError ?? undefined}
         onClose={closeJoin} onJoined={onJoined} />
+      <UnsupportedVoice open={call.unsupported} labels={{ title: t('voice.unsupported.title'), body: t('voice.unsupported.body'),
+        close: t('voice.unsupported.close') }} onClose={call.closeUnsupported} />
       <DmPicker open={pickerOpen} members={dmCandidates(members, self?.id ?? null)} busy={pickerBusy} error={pickerError}
         onClose={closePicker} onPick={startDm} />
     </>

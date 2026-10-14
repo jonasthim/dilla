@@ -30,9 +30,9 @@ func builtDist() string {
 
 const wantCSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; " +
 	"font-src 'self'; connect-src 'self' ws://127.0.0.1:8463 wss://127.0.0.1:8463; worker-src 'self'; " +
-	"media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	"media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-const wantPermissions = "camera=(), microphone=(), display-capture=(), geolocation=()"
+const wantPermissions = "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
 
 type manifest struct {
 	V     int `json:"v"`
@@ -137,8 +137,20 @@ func TestBuiltClientIsServed(t *testing.T) {
 			}
 		}
 	}
-	if wasm != 1 {
-		t.Errorf("the build has %d wasm files, want 1", wasm)
+	// web-3 task 8: one core wasm (the core and media workers share it) and RNNoise's, as check-entry-chunk.mjs.
+	if wasm != 2 {
+		t.Errorf("the build has %d wasm files, want 2 (the core and RNNoise)", wasm)
+	}
+	for _, glob := range []string{"assets/dilla_core_wasm_bg-*.wasm", "assets/rnnoise-*.wasm"} {
+		n := 0
+		for _, f := range m.Files {
+			if ok, _ := path.Match(glob, f.Path); ok {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("the build has %d %s, want 1", n, glob)
+		}
 	}
 	if scripts < 2 {
 		t.Errorf("the build has %d scripts, want the entry and the core worker at least", scripts)

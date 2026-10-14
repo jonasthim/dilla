@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dilla network probe</title>
+    <style>
+      body { font-family: ui-monospace, monospace; margin: 1rem; max-width: 60rem; }
+      fieldset { border: 1px solid; padding: 0.5rem 1rem; margin-bottom: 1rem; }
+      label { display: block; margin: 0.25rem 0; }
+      button { font: inherit; margin-right: 0.5rem; padding: 0.25rem 0.75rem; min-height: 24px; }
+      table { border-collapse: collapse; }
+      th, td { border: 1px solid; padding: 0.1rem 0.5rem; text-align: right; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>dilla network probe</h1>
+      <p>Run <code>dilla-testkit netprobe start</code> on this machine, load its JSON, and press Start within 30 s.</p>
+      <fieldset>
+        <legend>run</legend>
+        <label>start JSON <input id="file" type="file" accept="application/json,.json" /></label>
+        <label>label <input id="label" type="text" value="probe" /></label>
+        <button id="start" type="button">Start</button>
+        <button id="silence" type="button" disabled>silence 45 s</button>
+        <button id="download" type="button" disabled>Download</button>
+      </fieldset>
+      <p id="status" role="status">no start JSON loaded</p>
+      <p id="pair">pair: none</p>
+      <table>
+        <caption>samples, one per second</caption>
+        <thead>
+          <tr><th scope="col">t (s)</th><th scope="col">rtt (ms)</th><th scope="col">received</th><th scope="col">lost</th><th scope="col">jitter (ms)</th><th scope="col">verified</th><th scope="col">drops</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </main>
+    <script type="module" src="/probe.ts"></script>
+  </body>
+</html>

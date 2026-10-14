@@ -32,7 +32,7 @@ export type TimelineItemState = 'ok' | 'pending' | 'failed' | 'cannot-read' | 'd
 export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; }
 export interface ReactionSummary { emoji: string; count: number; mine: boolean; }
 export interface AttachmentSummary { index: number; size: number; mime: string; name: string; w: number | null; h: number | null;
-  thumb: boolean; kind: 'image' | 'file'; tooLarge: boolean; }
+  thumb: boolean; kind: 'image' | 'audio' | 'video' | 'file'; tooLarge: boolean; }   // kind: attachmentKind (L-TS-58)
 export interface PendingAction { msgId: string; type: 1 | 2 | 3 | 4 | 5 | 6; state: 'pending' | 'failed'; reason: string; }   // msgId: the fold row's OWN outbox msg id (retrySend/discardSend take it); the target is the item it hangs on
 export interface TimelineItem {
   key: string;                                  // 'o<msg id hex>' for an outbox row and for a stored row of this device whose msgId is
@@ -88,13 +88,55 @@ export interface TypingState { userId: string; name: string; expiresAt: number }
 export interface BadgeState { unread: number; mentions: number; }
 export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number; }
 export interface NoticesState { nextId: number; items: Notice[]; }      // items ≤ 32, oldest first; ids increase for the worker's life
+// ---- web-3: calls, voice presence and rings (L-TS-51). A call's media key is never in a slice or a command result: it
+// reaches the page only as a `callKeys` push (L-TS-52).
+export type IceServerTuple = [urls: string[], username: string, credential: string];
+export interface CallKeys { groupId: string; epoch: string; baseKey: ArrayBuffer; selfLeaf: number;
+  roster: { leaf: number; deviceId: string; userId: string }[] }
+// No key bytes in a command result: the join epoch's CallKeys arrive as a `callKeys` push posted
+// immediately before this result's `ret` (same port, FIFO), carrying `epoch` below.
+export interface CallJoinResult { callId: string; groupId: string; livekitUrl: string; token: string;
+  iceServers: IceServerTuple[]; caps: [number, number, number]; epoch: string }
+export type CallStatsReport = [candidateType: number, relayProtocol: number | null, rttMs: number,
+  fractionLostPermille: number, decryptFailures: number, framesEncrypted: number];
+// 'paused' (RV-3, Jonas): a mid-call identity change (E_UMK_CHANGED); still in the group and the room, no keys sent or installed.
+// Also the hold of WB security I1: a new epoch the gate refused for any other reason (error: E_DEVICE_LIST_STALE or the
+// core's code, changedUser null); the page sends and plays nothing and drops its media keys until the next key arrives.
+export type CallPhase = 'idle' | 'joining' | 'in' | 'paused' | 'leaving' | 'blocked' | 'removed' | 'failed';
+export interface CallState { phase: CallPhase; channelId: string | null; callId: string | null; epoch: string | null;
+  code: string | null; error: WorkerError | null; roster: { userId: string; deviceId: string; leaf: number }[];
+  // User names; DM calls this device opened. notRung (WB product walk I6): participants the instance did not ring (its
+  // pair rule held the ring back, or a cap), so the caller is never told "ringing" for a ring nobody got.
+  outgoing: { ringing: string[]; declined: string[]; notRung: string[] } | null;
+  // Ruling I2 (2026-10-13): the 32-hex user id of the changed contact while the phase is paused (RV-3) or after an
+  // E_UMK_CHANGED join refusal (the first by user_id when several changed); null otherwise. Fills {name} in
+  // voice.paused and voice.blockedChanged, also when a refused join left `roster` empty.
+  changedUser: string | null;
+  // f10app m2: true while the join waits (at most 30 s) for this device's earlier Remove to be committed; the page says
+  // so in the dock's status region. False otherwise.
+  rejoining: boolean }
+export interface VoiceParticipant { userId: string; deviceId: string; name: string; flags: number; own: boolean; web: boolean; bot: boolean }
+export interface VoiceCall { callId: string; participants: VoiceParticipant[] }
+export type VoiceState = Record<string, VoiceCall>;   // channel id (hex) → its live call
+export interface Ring { callId: string; channelId: string; callerUser: string; callerName: string;
+  ringTs: number;               // op 53's expires_ts as received (seconds); callDecline echoes it
+  expiresAt: number;            // ms, min(expires_ts*1000, receivedAt + 30_000)
+  busy: boolean;                // this device is in another call: no sound, no notification
+  quiet: boolean }              // the DM is muted (mute.channel.<id>): no sound, no notification
+export type RingsState = Ring[];
+/** The initial values of the three web-3 slices (L-TS-51). */
+export const CALL_IDLE: CallState = { phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [], outgoing: null,
+  changedUser: null, rejoining: false };
+export const VOICE_EMPTY: VoiceState = {};
+export const RINGS_EMPTY: RingsState = [];
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
-  | `typing:${string}` | `pins:${string}` | `tray:${string}`;
+  | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
   [k: `typing:${string}`]: TypingState[];
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
-  trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState }
+  trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState;
+  call: CallState; voice: VoiceState; rings: RingsState }
 export const TIMELINE_PAGE = 100;

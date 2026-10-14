@@ -153,13 +153,13 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
 | `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST`, `E_REMOVE_PENDING` |
 | `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr)]` | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID` |
-| `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` (freeze-exempt, invariant 5) |
+| `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
 | `POST /v1/keypackages` | E or V | `[packages([bstr]), last_resort(bstr\|null)]` | `201 [count]` | `E_COMMIT_INVALID`, `E_TOO_LARGE` |
 | `GET /v1/devices/{device_id}/keypackage` | E | — | `[blob, last_resort(uint), kp_ref(bstr)]` | `E_NOT_FOUND`, `E_RATE_LIMITED` |
 | `GET /v1/groups/{id}/messages?from=&limit=` | E | — | `[[seq, epoch, uploader_device, blob\|null, commitment\|null, franking_tag, recv_ts, deleted(uint)]]` | `E_PRUNED` |
 | `GET /v1/groups/{id}/heal` | E | — | `[epoch, next_seq, generation, need_from_seq]` | `E_NOT_FOUND` |
-| `POST /v1/groups/{id}/heal` | E | `[group_info(bstr), tail([[seq,epoch,kind,sender,blob]]), ratchet_tree(bstr\|null)]` | `[epoch, next_seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN` |
+| `POST /v1/groups/{id}/heal` | E | `[group_info(bstr), tail([[seq,epoch,kind,sender,blob]]), ratchet_tree(bstr\|null)]` | `[epoch, next_seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` |
 | `GET /v1/welcomes?after=&limit=` | E or V | — | `[[welcome_id, group_id, epoch, commit_seq, blob, ratchet_tree, tree_hash]]` | — |
 | `DELETE /v1/welcomes/{welcome_id}` | E or V | — | `204` | `E_NOT_FOUND` |
 | `DELETE /v1/groups/{id}/messages/{seq}` | E | — | `204` | `E_NOT_FOUND`, `E_NOT_UPLOADER` |
@@ -314,6 +314,7 @@ dense on every device of its audience; `group_id` is null.
 | 50 | `voice_state` | S→C | `[user_id(bstr 16), device_id(bstr 16), call_id(bstr 16), flags(uint)]` |
 | 51 | `typing_set` | C→S | `[channel_id(bstr 16), typing(uint 0\|1)]` |
 | 52 | `voice_self` | C→S | `[call_id(bstr 16), flags(uint 0..3)]` |
+| 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
 
 All ephemeral frames have `n=0` and `group_id=null`; a client may put a `cid` only in the
 frame header, never in the payload. The server accepts `typing_set` only from a member currently
@@ -343,6 +344,42 @@ or group DM, its participants. `call_id` is the call's id. `flags` is a bit set:
 `flags` 0 means the device has left the call; when a call ends, every device still in it is sent
 one. Every other bit is reserved and 0. The SFU's reports can arrive late or not at all, so
 `voice_state` is advisory: it never decides who may join or publish.
+
+A client that shows who is in voice reads the snapshot first (`GET /v1/channels/{id}/call` or
+`GET /v1/communities/{id}/calls`, `09` § Voice) and then applies, in arrival order, the
+`voice_state` frames it received while the read was in flight. A frame for a device the snapshot
+does not list adds it; a frame with `flags` 0 removes it. Ops 50 and 52 are otherwise unchanged.
+
+`call_ring` is how a DM or group-DM call rings the other participants (`09` § Voice, "Ringing").
+The instance alone sends it; it is never persisted or replayed, and `group_id` is null and `n` 0.
+`state` is:
+
+| state | meaning | `user_id` |
+|---|---|---|
+| 1 | ringing | the caller |
+| 0 | ring over: answered by one of the recipient's devices, declined by the recipient, the call ended, or 30 seconds passed | the caller |
+| 2 | declined: sent to every device of the caller | the participant who declined |
+
+`expires_ts` is the unix second at which the ring ends: `now + 30` when the ring starts, repeated
+unchanged in that ring's state 0 and state 2 frames. It is a second on the instance's clock and
+the ring's identity (the decline echoes it); a client never compares it with its own clock, and
+times a ring's 30 seconds from the arrival of its state 1, which the instance sends once, as the
+ring starts. A start that **opens** a call (`201`) on a DM
+or group DM rings every other participant who has no device in the call, sending state 1 to each
+of that user's online devices; a `200` start of a live call rings no one, and there is at most one
+ring per (call, user). A user's ring stops (state 0 to every device of that user) at the first of:
+a device of that user is admitted to the call's room, the call ends, 30 seconds pass on the
+instance clock, or the user declines (`POST /v1/calls/{call_id}/decline`). A caller whose device
+leaves an otherwise empty room ends the call, which stops every ring.
+
+The instance rings a given (caller user, recipient user) pair at most once per 15 seconds and at
+most 20 times per rolling hour, across all channels. A start beyond the bound still opens the call
+but sends that recipient no `call_ring`. The bound is keyed by the pair only, never by the
+recipient alone, so no third party can spend a recipient's budget and silence honest callers.
+
+A client's decoder refuses a malformed `call_ring`, or one whose `state` is above 2, as
+`E_FRAME_SHAPE` and drops it without disconnecting. Sent by a client, any op 53 is `E_FRAME_TYPE`
+at the instance, as every S→C opcode is.
 
 Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
@@ -482,7 +519,7 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
    under invariant 4 without referencing it is deleted with that commit and never re-issued. `POST /v1/groups/{id}/resync` is exempt from this freeze: an own-leaf external
    commit is how a device that has fallen out of the epoch returns, and making it wait on a
    membership commit deadlocks exactly the device that cannot act. Two guards apply: the resync is
-   refused with `E_FORBIDDEN` when the resyncing device is the target of an outstanding non-void
+   refused with `409 E_REMOVE_PENDING` when the resyncing device is the target of an outstanding non-void
    instance Remove, and the instance re-issues its outstanding proposals for the new epoch
    immediately afterwards. A resync's new leaf, like a joiner's, must name the uploading device and
    user and carry that device's registered key as its `signature_key`, and the resync must remove
@@ -626,8 +663,8 @@ Each invariant has a chaos scenario in `dilla-testkit` named after it.
     replayed tail, must pass invariant 1's rule for the group's kind (`rule = "reseed"`). The
     reseed does not bound which devices the tree holds beyond that: the commits after the backup
     are already inside the uploaded tree. A device that is the target
-    of an outstanding non-void DS `Remove` at the restored epoch, or that is quarantined, cannot
-    heal (`403 E_FORBIDDEN`, as for a resync). The replay does not apply invariant 4's first clause
+    of an outstanding non-void DS `Remove` at the restored epoch (`409 E_REMOVE_PENDING`, as for a
+    resync), or that is quarantined (`403 E_FORBIDDEN`), cannot heal. The replay does not apply invariant 4's first clause
     or invariant 5 (the restored queue describes the backup's epoch); instead, after a heal that
     moves the epoch, the instance re-issues the restored epoch's outstanding DS proposals for the
     healed epoch when they still apply — a `Remove` whose recorded device still holds its leaf, onto
@@ -757,9 +794,10 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
-| 409 | `E_REMOVE_PENDING` | the instance is already removing this leaf (invariant 6); the member's own `Remove` of it is refused. Also, defensively, an uploaded proposal whose reference names an instance proposal or another sender's (no conforming client sends one; a member's re-upload of its own proposal is answered as the first) | you are being removed: withdraw the proposal, do not retry |
+| 409 | `E_REMOVE_PENDING` | the instance is already removing this leaf (invariant 6); the member's own `Remove` of it is refused. Also, defensively, an uploaded proposal whose reference names an instance proposal or another sender's (no conforming client sends one; a member's re-upload of its own proposal is answered as the first). Also a resync or a heal by the target of an outstanding non-void instance `Remove` (invariant 5's first guard) | you are being removed: withdraw the proposal, do not retry; a refused resync may be tried again once a member has committed the `Remove` (the device then holds no leaf and joins afresh) or the group has closed |
 | 409 | `E_CALL_FULL` | the call already has `livekit.max_voice_participants` devices | show "This call is full"; the user may retry later |
 | 409 | `E_CALL_SHARERS_FULL` | the call already has `livekit.max_publishers` devices sharing camera or screen | show that sharing is full; retry after a sharer stops |
+| 409 | `E_CALL_NOT_ALONE` | `DELETE /v1/calls/{call_id}?if_alone=1`: the caller's device is not the call group's only current leaf | the call goes on; just leave it |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
@@ -774,7 +812,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid
 but unknown one is `404 E_NOT_FOUND`.
 
-That is **29 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
+That is **30 rows**: this file's original eighteen plus `E_VERSION`, `E_PROVISIONAL_OUTSIDE_PAIRING`
 and `E_INTERNAL` (deviation ID12), plus the four Plan 2 consumes — `E_ENVELOPE_SHAPE`,
 `E_ENVELOPE_TYPE`, `E_ENVELOPE_LIMIT` and `E_CHANNEL_MODE` (deviation ID12 as amended; controller
 ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVersion`,
@@ -790,6 +828,8 @@ sender's), never a member's re-upload of its own proposal. `E_CALL_FULL` and
 task 10): the first answers the advisory participant count at token time, the second the publisher
 lease. `E_UNAVAILABLE` is a call route or the signalling proxy that could not take the call's
 serialisation within its bound (`09` § Voice). None of the last three is a delivery-service code.
+`E_CALL_NOT_ALONE` came with web-3: the conditional end of a call (`09` § Voice), refused unless
+the caller's device is the call group's only current leaf, decided under the group lock.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

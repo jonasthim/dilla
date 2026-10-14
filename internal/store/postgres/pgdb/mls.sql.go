@@ -699,6 +699,69 @@ func (q *Queries) ListHandshakes(ctx context.Context, arg ListHandshakesParams) 
 	return items, nil
 }
 
+const listIdleCallGroups = `-- name: ListIdleCallGroups :many
+SELECT group_id, binding, kind, community_id, target_id, call_id, ciphersuite, epoch, seq, group_info_blob, tree_hash, public_group_state, external_sender_key_id, e2ee_version, media_version, policy_version, epoch_unknown, heal_deadline, created, closed_at, pruned_below, handshakes_pruned_through FROM mls_groups g
+WHERE g.kind = 1 AND g.closed_at IS NULL AND g.created <= $1
+  AND NOT EXISTS (
+    SELECT 1 FROM voice_sessions v WHERE v.group_id = g.group_id AND v.ended IS NULL
+  )
+ORDER BY g.created, g.group_id LIMIT $2::bigint
+`
+
+type ListIdleCallGroupsParams struct {
+	Created int64
+	MaxRows int64
+}
+
+// web-3 (L-HTTP-105, RV-2): the idle call-group close. The open call groups (kind 1) that no live
+// voice session names and that were created at or before the cutoff, oldest first; the caller
+// closes at most max_rows of them per pass.
+func (q *Queries) ListIdleCallGroups(ctx context.Context, arg ListIdleCallGroupsParams) ([]MlsGroups, error) {
+	rows, err := q.db.QueryContext(ctx, listIdleCallGroups, arg.Created, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MlsGroups{}
+	for rows.Next() {
+		var i MlsGroups
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.Binding,
+			&i.Kind,
+			&i.CommunityID,
+			&i.TargetID,
+			&i.CallID,
+			&i.Ciphersuite,
+			&i.Epoch,
+			&i.Seq,
+			&i.GroupInfoBlob,
+			&i.TreeHash,
+			&i.PublicGroupState,
+			&i.ExternalSenderKeyID,
+			&i.E2eeVersion,
+			&i.MediaVersion,
+			&i.PolicyVersion,
+			&i.EpochUnknown,
+			&i.HealDeadline,
+			&i.Created,
+			&i.ClosedAt,
+			&i.PrunedBelow,
+			&i.HandshakesPrunedThrough,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveProposals = `-- name: ListLiveProposals :many
 SELECT group_id, ref, epoch, kind, target_leaf, target_device, key_package, origin, action_id, issued_at, ttl, void_at FROM mls_pending_proposals WHERE group_id = $1 AND epoch = $2 AND void_at IS NULL
 ORDER BY issued_at, ref

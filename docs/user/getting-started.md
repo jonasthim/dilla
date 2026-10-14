@@ -7,7 +7,9 @@ images and files), contacts and safety numbers, search, settings and a second ta
 yet. Every quoted line is the text the screen shows;
 `{instance}` stands for the instance's address and `{username}` for yours.
 
-If you run the instance yourself, start with the [operator guide](../deploy/README.md).
+If you run the instance yourself, start with the [operator guide](../deploy/README.md). For voice channels, calls
+in direct messages, camera and screen share, push to talk, sounds, and audio and video files, read
+[Voice, calls and media files](voice.md) next.
 
 ## 1. Open the invite
 
@@ -129,9 +131,10 @@ From left to right:
 - **The server rail.** One tile per server you are in, with its initials. The dashed **+** tile is "join a
   server": paste a server invite ("A server invite, as a code or a link.") and press **Join**. The last tile
   is "settings"; a number on a server tile counts its unread channels.
-- **The channel list.** The server's name and its channels. Text channels open here. Voice channels and
-  channels the server can read ("Readable by this server") are listed, and selecting one shows "This channel
-  does not open here yet". The "channels" and "direct messages" tabs switch the list; an unread channel has
+- **The channel list.** The server's name and its channels. Text channels open here. Voice channels are
+  listed under "voice" and open the voice channel ([Voice, calls and media files](voice.md)); while you are in
+  a call, its dock sits above your user panel. Channels the server can read ("Readable by this server") are
+  listed, and selecting one shows "This channel does not open here yet". The "channels" and "direct messages" tabs switch the list; an unread channel has
   a badge, and mentions have their own count. Opening a channel marks it read.
 - **The conversation.** The channel's name and topic at the top, the messages, and the message field
   ("message #general") with **send**. Each message shows the author's display name, a small `web` tag when it
@@ -158,6 +161,7 @@ At phone width the channel list sits above the conversation:
 | Arrow keys | Move within the server rail and the channel list, which are one Tab stop each |
 | Control+K (⌘+K on a Mac) | Opens search across everything this browser holds |
 | Control+/ | With a conversation open: opens search in this conversation (Control on a Mac too) |
+| Control/⌘+Shift+M, Control/⌘+Shift+D | In a call: mute or unmute, deafen or undeafen ([Voice, calls and media files](voice.md#mute-deafen-and-push-to-talk)) |
 
 The sidebar tabs are one more Tab stop. Arrow Left and Arrow Right switch between "channels" and "direct messages".
 Settings uses Arrow Up, Arrow Down, Home and End to move between sections; Escape closes it.
@@ -431,8 +435,10 @@ sent is removed by the instance after a while (after 24 hours, unless the instan
 you attached is no longer on the server when the message is sent (an upload left for more than a day), the
 message says so and offers only discard; attach the file again.
 
-PNG, JPEG, WebP and GIF images show as a small preview made by the sender's browser ("open {name}"). Every other
-file, audio, video and SVG included, shows as a card with its name, its size and **save**.
+PNG, JPEG, WebP and GIF images show as a small preview made by the sender's browser ("open {name}"). Audio and
+video files of the common types play in the conversation with **play {name}** ([Audio and video
+files](voice.md#audio-and-video-files)). Every other file, SVG included, shows as a card with its name, its size and
+**save**.
 
 ![saturday-map.png open full size, with Save and Close](screenshots/conversation-lightbox.png)
 
@@ -477,8 +483,9 @@ Verification belongs to this browser: a second browser of your account keeps its
 To verify someone:
 
 1. Open **Settings → privacy** on your device, and ask the other person to do the same on theirs.
-2. Press **Compare with {name}**. "Compare safety numbers" shows the person's public key and a number of 12 blocks
-   of five digits ("Working out the number…" while it is worked out).
+2. Press **Compare with {name}**. "Compare safety numbers" shows a number of 12 blocks of five digits ("Working out
+   the number…" while it is worked out). The person's exact public key is behind "public key", closed at first; the
+   12 blocks are what you compare.
 3. Read the 12 blocks to each other "in person or on a call you started yourself": a voice call that one of you
    started independently, not a link or a message the instance delivered. **Copy number** only copies it; copying
    approves nothing.
@@ -543,8 +550,8 @@ and this browser keeps it.
 
 ### Keyboard
 
-**Settings → keyboard** ("Keyboard") lists the two shortcuts: "Control/⌘+K" opens search, "Control+/" searches this
-conversation.
+**Settings → keyboard** ("Keyboard") lists the four shortcuts: "Control/⌘+K" opens search, "Control+/" searches this
+conversation, "Control/⌘+Shift+M" mutes or unmutes and "Control/⌘+Shift+D" deafens or undeafens in a call.
 There are no single-key shortcuts.
 
 ### Diagnostics
@@ -576,6 +583,10 @@ this tab**:
 3. If the first tab does not let go, the new one says "Close the other tab, then try again." and its button tries
    again (it is labelled **Use this tab** too).
 
+If the first tab is in a voice channel or a call, **Use this tab** asks first: "You are in a call in the other tab.
+Using this tab ends that call." **Keep the call** leaves everything as it is; **Leave the call and use this tab** moves
+the app here, and the call in the first tab ends.
+
 The paused tab shows nothing of your conversations. Its own **Use this tab** moves the app back to it the same way,
 and when the other tab closes it takes over by itself.
 
@@ -589,11 +600,11 @@ and when the other tab closes it takes over by itself.
 - No server, channel or invite can be created from the web client, and there are no roles, permissions or
   profile screens. A server invite has to come from someone who can make one through
   the instance's API, or from the host (`dillad admin invite create`).
-- Text channels and DMs only. No voice, camera or screen share (the server and the media layer support
-  encrypted calls; the web client has no call screens yet).
+- Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
+  files](voice.md#known-limits).
 - No threads, link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
   Only the latest version of an edited message is shown. A browser sends and opens files of at most 25 MB, and
-  plays no audio or video (such files are saved). Received link previews are not shown.
+  plays only the listed audio and video types. Received link previews are not shown.
 - Who may pin, unpin or mention everyone is not checked yet: anyone in a conversation can. The pins list names who
   pinned each message. Only the author can delete a message.
 - No presence. Notifications require an open tab and browser permission.
@@ -608,8 +619,8 @@ and when the other tab closes it takes over by itself.
   identity" warning in your conversations and must sign in again (section 6); it cannot be compared.
 - After a reload, Privacy forgets that a changed contact left a conversation (the contact still shows as changed
   until you compare), and the changed-identity alert opens Privacy rather than the comparison itself.
-- No voice or call screens, no Electron desktop app, no server-readable channels, and no settings shared between
-  your browsers (each keeps its own). A second tab never shows the first tab's conversations.
+- No Electron desktop app, no server-readable channels, and no settings shared between your browsers (each keeps
+  its own). A second tab never shows the first tab's conversations.
 - If the page is reloaded while the account is being created, the account is finished but the server the
   invite named is not joined; paste the invite into **Join a server**.
 - Tested with Chromium and Firefox, and with WebKit for sign-up and reload; Safari itself has not been
@@ -624,7 +635,10 @@ key, then username and password), and photographs the flows. For section 10 a na
 binary) makes the server "Bridge Watch", which mira joins, and later changes its identity key; Privacy, the comparison,
 the changed contact in the conversation, search, diagnostics and a second tab are shot at 1280×800 and at 360×740.
 The test peer has no display name of its own (the testkit driver cannot set one), so it shows as its username
-"peer…". The own-account warnings of section 7 need a device of mira's account that no browser can make, so they are
+"peer…". For [Voice, calls and media files](voice.md), ada calls mira in their direct message, björn shares an
+audio file, the three join the voice channel "harbour" with Chromium's fake microphone, and the test peer's changed
+identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too. The own-account
+warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and
 message is made up, and the accounts are deleted with the test host. The account has no second factor, so
 step 3 of the sign-in has no screenshot, and the two warnings of sections 6 and 7 that need a second
@@ -637,7 +651,8 @@ GO=/path/to/go npm run docs:shots -w @dilla/e2e
 
 It needs `internal/mlswasi/testdata/dilla_core_wasi.wasm`, `target/release/dilla-testkit` (`cargo build -p
 dilla-testkit --release --locked`, or `DILLA_TESTKIT=/path`) and Playwright's Chromium, uses
-127.0.0.1:8471 and 8472 (`node e2e/scripts/shoot-docs.mjs --port P --control C` picks others) and writes
+127.0.0.1:8471 and 8472 (`node e2e/scripts/shoot-docs.mjs --port P --control C` picks others), with the host's
+LiveKit on 7888 and 7890, and writes
 `docs/user/screenshots/*.png`.
 
 Chromium keeps sockets in its profile directories, so the script needs a short temporary directory: when

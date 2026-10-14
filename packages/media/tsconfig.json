@@ -12,6 +12,6 @@
     "allowJs": false,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "harness"],
+  "include": ["src", "test", "harness", "probe"],
   "exclude": ["src/worker", "node_modules", "wasm"]
 }

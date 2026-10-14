@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { arr, CborError, decode, encode } from '../cbor';
 import { fromHex, toHex } from '../hex';
-import { decodeFrame, encodeFrame, Op } from './frames';
+import { callRingOf, decodeFrame, encodeFrame, frameOp, Op, voiceStateOf } from './frames';
 
 interface FrameCase { name: string; op: number; n: number; group_id: string; payload: string; frame: string }
 interface FrameReject { name: string; frame: string; code: string }
@@ -28,6 +28,10 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'typing_set channel id has 17 bytes': 'E_FRAME_SHAPE',
   'voice_self flags 4': 'E_FRAME_SHAPE',
   'typing_set has group_id': 'E_FRAME_SHAPE',
+  // The instance answers both E_FRAME_TYPE (op 53 is S->C); this client decodes op 53 and refuses
+  // the shape: the 5-element spec and the state <= 2 check (L-GW-33).
+  'call_ring state 3': 'E_FRAME_SHAPE',
+  'call_ring with 4 elements': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -42,9 +46,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 27 cases and 15 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(27);
-    expect(vectors.rejects).toHaveLength(15);
+  it('holds the 30 cases and 17 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(30);
+    expect(vectors.rejects).toHaveLength(17);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 
@@ -92,7 +96,7 @@ describe('frame shape', () => {
   it('pins the opcode numbers', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
       error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-      typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52 });
+      typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53 });
   });
 });
 
@@ -110,4 +114,57 @@ it('encodes ungrouped client signals', () => {
   expect(decodeFrame(encodeFrame(Op.typingSet, 0, null, [channel, 1]))).toMatchObject({ op: 51, n: 0n, groupId: null });
   expect(decodeFrame(encodeFrame(Op.voiceSelf, 0, null, [channel, 3]))).toMatchObject({ op: 52, n: 0n, groupId: null });
   expect(() => decodeFrame(encodeFrame(Op.voiceSelf, 0, null, [channel, 4]))).toThrow('E_FRAME_SHAPE');
+});
+// Attacker: a hostile or buggy instance sending a ring the client cannot interpret; the decoder
+// refuses it as E_FRAME_SHAPE so the gateway drops it without acting on it (L-GW-33).
+it('accepts call_ring states 0..2 and refuses state 3, a short id and a missing element', () => {
+  const [call, channel, user] = [fid(5), fid(6), fid(7)];
+  for (const state of [0, 1, 2]) {
+    expect(decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, state, 1758659030]))).toMatchObject({ op: 53, n: 0n, groupId: null });
+  }
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 3, 1758659030]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel.slice(1), user, 1, 1758659030]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1]))).toThrow('E_FRAME_SHAPE');
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1, 'soon']))).toThrow('E_FRAME_SHAPE');
+  // L-GW-33: an ephemeral frame has n = 0.
+  expect(() => decodeFrame(encodeFrame(Op.callRing, 1, null, [call, channel, user, 1, 1758659030]))).toThrow('E_FRAME_SHAPE');
+});
+
+// web-3 task 6 (L-TS-55): the typed reads of ops 50 and 53 the worker acts on.
+describe('typed voice and ring frames', () => {
+  const [call, channel, user, device] = [fid(5), fid(6), fid(7), fid(8)];
+
+  it('op 50 decodes with every flag bit of 02 § voice_state (in_call, mute, deaf, video, screen)', () => {
+    for (const flags of [0, 1, 3, 7, 9, 17, 31]) {
+      const frame = decodeFrame(encodeFrame(Op.voiceState, 0, null, [user, device, call, flags]));
+      expect(voiceStateOf(frame)).toEqual({ userId: user, deviceId: device, callId: call, flags });
+    }
+  });
+
+  // Attacker: an instance sending a reserved flag bit; the decoder refuses it, and the gateway drops it (below).
+  it('op 50 refuses flags above 31 and a short id', () => {
+    expect(() => decodeFrame(encodeFrame(Op.voiceState, 0, null, [user, device, call, 32]))).toThrow('E_FRAME_SHAPE');
+    expect(() => decodeFrame(encodeFrame(Op.voiceState, 0, null, [user, device.slice(1), call, 1]))).toThrow('E_FRAME_SHAPE');
+  });
+
+  it('op 53 decodes to { callId, channelId, userId, state, expiresTs }', () => {
+    for (const state of [0, 1, 2] as const) {
+      const frame = decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, state, 1_700_000_030]));
+      expect(callRingOf(frame)).toEqual({ callId: call, channelId: channel, userId: user, state, expiresTs: 1_700_000_030 });
+    }
+  });
+
+  it('a typed read of a frame of another op, or an expiry past the safe integers, is a shape error', () => {
+    expect(() => callRingOf({ op: Op.voiceState, n: 0n, groupId: null, payload: [user, device, call, 1n] })).toThrow('E_FRAME_SHAPE');
+    expect(() => voiceStateOf({ op: Op.callRing, n: 0n, groupId: null, payload: [call, channel, user, 1n, 5n] })).toThrow('E_FRAME_SHAPE');
+    expect(() => callRingOf(decodeFrame(encodeFrame(Op.callRing, 0, null, [call, channel, user, 1, 2n ** 60n]))))
+      .toThrow('E_FRAME_SHAPE');
+  });
+
+  it('frameOp names the op of a frame whose payload does not decode, and null for a broken envelope', () => {
+    expect(frameOp(encodeFrame(Op.callRing, 0, null, [call, channel, user, 3, 1]))).toBe(53);
+    expect(frameOp(encodeFrame(Op.voiceState, 0, null, [user, device, call, 99]))).toBe(50);
+    expect(frameOp(encode([53, 0, null]))).toBeNull();
+    expect(frameOp(new Uint8Array([0xff]))).toBeNull();
+  });
 });

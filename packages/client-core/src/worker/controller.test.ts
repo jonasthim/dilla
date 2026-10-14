@@ -1161,6 +1161,30 @@ it('stops typing on lost membership and refuses typing until viewable and online
   expect(w.gateway.sendTyping.mock.calls.filter((args) => args[1] === true)).toHaveLength(1);
 });
 
+// WB product walk I1: the page's typing-off for the channel it just left reaches the worker after closeChannel; an off with
+// no signal on is a no-op that resolves (closeChannel, a membership loss or the link's end already sent it), never E_NOT_READY.
+it('a typing off for a channel with no signal on resolves and sends nothing', async () => {
+  const w = world();
+  await toReady(w);
+  await openGeneral(w);
+  w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+  w.call(981, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(981)).toMatchObject({ ok: true }));
+  w.call(982, { m: 'closeChannel', channelId: toHex(CHANNEL) });
+  await vi.waitFor(() => expect(w.ret(982)).toMatchObject({ ok: true }));
+  expect(w.gateway.sendTyping).toHaveBeenCalledTimes(2);
+  w.call(983, { m: 'typing', channelId: toHex(CHANNEL), on: false });
+  await vi.waitFor(() => expect(w.ret(983)).toMatchObject({ ok: true }));
+  expect(w.gateway.sendTyping).toHaveBeenCalledTimes(2);
+  // A channel never opened, and an off while offline, resolve the same way.
+  w.call(984, { m: 'typing', channelId: 'ab'.repeat(16), on: false });
+  await vi.waitFor(() => expect(w.ret(984)).toMatchObject({ ok: true }));
+  // An on for a closed channel is still refused.
+  w.call(985, { m: 'typing', channelId: toHex(CHANNEL), on: true });
+  await vi.waitFor(() => expect(w.ret(985)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } }));
+  expect(w.gateway.sendTyping).toHaveBeenCalledTimes(2);
+});
+
 it('ignores incoming typing frames after an open channel loses membership', async () => {
   const w = world();
   await toReady(w);
@@ -1503,6 +1527,26 @@ it('a socket re-establish timer armed before a resign never starts a socket afte
   } finally {
     vi.useRealTimers();
   }
+});
+
+// f10app m3: a timeline sender is authenticated by its group, so it still reads a member list whose first reads failed (only the
+// unauthenticated voice frames leave an unloaded list to its load).
+it('an unknown timeline sender reads the member list also when that list never loaded; a voice participant does not', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  // A community whose member list has not loaded here (no public command leaves one unloaded with its channels known, so
+  // the lookup is driven directly).
+  const unloaded = 'e'.repeat(32);
+  const lookUp = (w.controller as unknown as { lookUpUsers(c: string, u: string[], f: 'timeline' | 'voice'): void }).lookUpUsers
+    .bind(w.controller);
+  const before = w.routes.listMembers.mock.calls.length;
+  lookUp(unloaded, [toHex(STRANGER)], 'voice');
+  await settle();
+  expect(w.routes.listMembers.mock.calls.length).toBe(before);
+  lookUp(unloaded, [toHex(STRANGER)], 'timeline');
+  await vi.waitFor(() => expect(w.routes.listMembers.mock.calls.length).toBe(before + 1));
+  expect(toHex(w.routes.listMembers.mock.calls.at(-1)![0])).toBe(unloaded);
 });
 
 it('resign waits for the member lookup started by an unknown timeline sender', async () => {
@@ -1904,7 +1948,10 @@ describe('Controller in the ready phase', () => {
     expect(w.timeline()?.group).toBe('not-member');
   });
 
-  it('a refused resync of an active row shows not-member until a state-2 report clears it', async () => {
+  // The docs shoot's removal after a refused voice join (task-11 shots report, concern 3): a gateway frame applied to the
+  // group after the refused resync (state 2) proves nothing about this device's leaf. Not-member stays until the engine
+  // reports the membership confirmed (a catch-up the DS served) or a rejoin starts; the composer never reopens on a frame.
+  it('a refused resync of an active row shows not-member until the engine confirms the membership again', async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
@@ -1916,6 +1963,9 @@ describe('Controller in the ready phase', () => {
     expect(w.channels()?.[0]?.group).toBe('not-member');
     expect(w.timeline()?.group).toBe('not-member');
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    expect(w.channels()?.[0]?.group).toBe('not-member');
+    expect(w.timeline()?.group).toBe('not-member');
+    w.sync.deps!.onMembership(GROUP, 'member');
     expect(w.channels()?.[0]?.group).toBe('active');
     expect(w.timeline()?.group).toBe('active');
   });
@@ -1928,6 +1978,8 @@ describe('Controller in the ready phase', () => {
     w.sync.deps!.onMembership(GROUP, 'resyncing');
     w.sync.deps!.onMembership(GROUP, 'not-member');
     expect(w.channels()?.[0]?.group).toBe('not-member');
+    // The next ready resyncs again (a resync starts with its own report), and this time it joins.
+    w.sync.deps!.onMembership(GROUP, 'resyncing');
     w.state.groups = [textGroup(2)];
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
     expect(w.channels()?.[0]?.group).toBe('active');
@@ -4246,5 +4298,119 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(w.calls.filter((c) => /^(deleteGroupMessage|deleteBlob|core\.purgeDone)/.test(c))).toEqual([
       'deleteGroupMessage(9)', `deleteBlob(${toHex(B1).slice(0, 8)})`, 'core.purgeDone(9)',
     ]);
+  });
+});
+
+// L-TS-50 and L-TS-53 (web-3 task 1): the seven call commands are in the contract with their shape rules, and answer
+// E_UNAVAILABLE until task 6 implements them. Attacker: the owning page itself (a compromised or buggy page script);
+// a malformed command is refused E_BAD_INPUT before the worker makes any route call on its behalf.
+describe('call commands in the worker (task 6)', () => {
+  const HEXID = 'ab'.repeat(16);
+  const routeCalls = (w: World): number =>
+    Object.values(w.routes).reduce((n, f) => n + (vi.isMockFunction(f) ? f.mock.calls.length : 0), 0);
+
+  it('answers each well-formed call command with no call and no known channel, and names no changed user', async () => {
+    const w = world();
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the typed parameters give the double its call signature
+    const declineCall = vi.fn((_call: Uint8Array, _ts: number) => Promise.resolve());
+    Object.assign(w.routes, { declineCall });
+    await toReady(w);
+    await settle();
+    const before = routeCalls(w);
+    const commands = [
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,h264,vp9' },
+      { m: 'callJoin', channelId: HEXID, vdec: '' },
+      { m: 'callLeave', reason: 'user' }, { m: 'callLeave', reason: 'pagehide' }, { m: 'callLeave', reason: 'switch' },
+      { m: 'callShare', on: true }, { m: 'callShare', on: false },
+      { m: 'callRefresh' },
+      { m: 'callStats', report: [3, null, 40, 0, 0, 1_048_576] },
+      { m: 'callStats', report: [0, 2, 0, 1000, 7, 0] },
+      { m: 'loadVoice', communityId: HEXID, channelId: null },
+      { m: 'loadVoice', communityId: null, channelId: HEXID },
+      { m: 'callDecline', callId: HEXID, ringTs: 1_758_659_030 },
+      { m: 'callDecline', callId: HEXID, ringTs: 0 },
+    ] as const;
+    commands.forEach((command, i) => { w.call(7100 + i, command); });
+    await vi.waitFor(() => { for (let i = 0; i < commands.length; i++) expect(w.ret(7100 + i)).toBeDefined(); });
+    const expected: Record<string, string | null> = {
+      callJoin: 'E_BAD_INPUT', loadVoice: 'E_BAD_INPUT', callShare: 'E_NO_CALL', callRefresh: 'E_NO_CALL', callStats: 'E_NO_CALL',
+      callLeave: null, callDecline: null,
+    };
+    commands.forEach((command, i) => {
+      const code = expected[command.m];
+      expect(w.ret(7100 + i), JSON.stringify(command)).toMatchObject(code === null ? { ok: true, value: null } : { ok: false, error: { code, detail: '' } });
+    });
+    // Only the two declines reach the instance (L-HTTP-104: the ring timestamp as the body).
+    expect(routeCalls(w)).toBe(before + 2);
+    expect(declineCall.mock.calls.map((c) => [toHex(c[0]), c[1]])).toEqual([[HEXID, 1_758_659_030], [HEXID, 0]]);
+    // I2: no call refused for a changed contact here, so every call slice keeps changedUser null; the worker does post them.
+    const callSlices = w.posted.filter((p): p is SliceMessage => p.t === 'slice' && p.name === 'call');
+    expect(callSlices.length).toBeGreaterThan(0);
+    for (const s of callSlices) expect((s.value as { changedUser: unknown }).changedUser).toBeNull();
+  });
+
+  // Ruling I2 made to bite: a DM call refused for a changed contact names that contact in call.changedUser.
+  it('a DM call refused E_UMK_CHANGED names the changed contact, before any route call', async () => {
+    const w = world();
+    w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+    w.state.groups = [{ groupId: DM_GROUP, kind: 0, communityId: null, targetId: DM_CHANNEL, state: 2, epoch: 1n, nextSeq: 1n,
+      proposalsPending: 0, pendingCommit: false }];
+    await toReady(w);
+    await settle();
+    w.core.sendBlockCode.mockImplementation((g: Uint8Array) => (toHex(g) === toHex(DM_GROUP) ? 'E_UMK_CHANGED' : null));
+    w.core.pendingLeaves.mockReturnValue([{ groupId: DM_GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 1n, reason: 'changed' }]);
+    const before = routeCalls(w);
+    w.call(7200, { m: 'callJoin', channelId: toHex(DM_CHANNEL), vdec: '' });
+    await vi.waitFor(() => { expect(w.ret(7200)).toBeDefined(); });
+    expect(w.ret(7200)).toMatchObject({ ok: false, error: { code: 'E_UMK_CHANGED' } });
+    expect(routeCalls(w)).toBe(before);
+    expect(w.last<{ phase: string; changedUser: string | null }>('call')).toMatchObject({ phase: 'blocked', changedUser: toHex(STRANGER) });
+  });
+
+  it('refuses each malformed call command E_BAD_INPUT before any route call', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const before = routeCalls(w);
+    const bad: Record<string, unknown>[] = [
+      { m: 'callJoin', channelId: 'AB'.repeat(16), vdec: '' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,vp8' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,h264,vp9,vp8' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'VP8' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'av1' },
+      { m: 'callJoin', channelId: HEXID, vdec: 'vp8,' },
+      { m: 'callJoin', channelId: HEXID },
+      { m: 'callLeave', reason: 'bye' },
+      { m: 'callLeave' },
+      { m: 'callShare', on: 1 },
+      { m: 'callStats', report: [3, null, 40, 0, 0] },
+      { m: 'callStats', report: [3, null, 1_048_577, 0, 0, 0] },
+      { m: 'callStats', report: [null, 0, 40, 0, 0, 0] },
+      { m: 'callStats', report: [3, null, 40, -1, 0, 0] },
+      { m: 'callStats', report: [3, 1.5, 40, 0, 0, 0] },
+      { m: 'callStats', report: [3, null, 40, 0, 0, 0, 0] },
+      { m: 'callStats', report: 'x' },
+      { m: 'loadVoice', communityId: HEXID, channelId: HEXID },
+      { m: 'loadVoice', communityId: null, channelId: null },
+      { m: 'loadVoice', communityId: 'x', channelId: null },
+      { m: 'callDecline', callId: 'ab', ringTs: 1 },
+      { m: 'callDecline', callId: HEXID, ringTs: -1 },
+      { m: 'callDecline', callId: HEXID, ringTs: 1.5 },
+      { m: 'callDecline', callId: HEXID, ringTs: 2 ** 53 },
+      { m: 'callDecline', callId: HEXID, ringTs: '1' },
+    ];
+    bad.forEach((command, i) => { w.call(7200 + i, command); });
+    bad.forEach((command, i) => {
+      expect(w.ret(7200 + i), JSON.stringify(command)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    });
+    expect(routeCalls(w)).toBe(before);
+  });
+
+  it('lets the six call codes through sanitizeWorkerError', async () => {
+    const { sanitizeWorkerError } = await import('./controller');
+    for (const code of ['E_CALL_FULL', 'E_CALL_SHARERS_FULL', 'E_CALL_ACTIVE', 'E_REMOVE_PENDING', 'E_NO_CALL', 'E_DISCONNECTED']) {
+      const e = new DillaHttpError({ code, detail: 'secret detail', status: 409, retryAfterMs: null, extra: [] });
+      expect(sanitizeWorkerError(e)).toEqual({ code, detail: '', status: 409, retryAfterMs: null });
+    }
   });
 });

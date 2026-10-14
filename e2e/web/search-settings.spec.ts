@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { advanceClock, copy, expectAccessible, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, signUp, WAIT } from './support/app';
+import { advanceClock, composerBox, copy, expectAccessible, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, signUp, WAIT } from './support/app';
 import { test } from './support/second';
 
 test('native edit is searched by prefix and deleted text disappears after a positive result', async ({ page, peer, instanceName }) => {
@@ -91,6 +91,24 @@ test('typing is audience-scoped, expires by server time and is not replayed', as
   await expect(page.getByRole('status').filter({ hasText: /is typing/ })).toHaveCount(0, { timeout: WAIT });
   await page.reload();
   await expect(page.getByRole('status').filter({ hasText: /is typing/ })).toHaveCount(0);
+});
+
+// WB product walk I1: leaving a channel with an unsent draft is normal; no error banner, no refused typing signal.
+test('switching channel with an unsent draft shows no error banner', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup({ channels: 2 });
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  await peer.waitForDevices(2, setup.channel_id);
+  for (let i = 0; i < 3; i += 1) {
+    await composerBox(page, peer.channelName).click();
+    await page.keyboard.type('half a thought');
+    await openChannel(page, peer.communityName, peer.channelNames[1]);
+    await openChannel(page, peer.communityName, peer.channelName);
+  }
+  await page.waitForTimeout(500);
+  await expect(page.getByText(/E_NOT_READY|That did not work/)).toHaveCount(0);
 });
 
 test('desktop, phone and reflow keep controls accessible in three themes', async ({ page, peer, instanceName }) => {

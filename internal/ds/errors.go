@@ -85,6 +85,17 @@ func errRemovePending() *Error {
 	}
 }
 
+// errRemoveTarget is guard 1's refusal (resync.go guardResyncTarget): the device is the target of an
+// outstanding instance Remove. It is invariant 6's code — the device is being removed — so a client
+// waits until a member commits the Remove (or the group closes) and never re-adds itself before.
+func errRemoveTarget() *Error {
+	return &Error{
+		Code:   "E_REMOVE_PENDING",
+		Detail: "this device is the target of an outstanding Remove",
+		Status: http.StatusConflict,
+	}
+}
+
 func errGroupExists(detail string) *Error {
 	return &Error{Code: "E_GROUP_EXISTS", Detail: detail, Status: http.StatusConflict}
 }

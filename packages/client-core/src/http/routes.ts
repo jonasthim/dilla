@@ -38,6 +38,20 @@ export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
 export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; }
 export interface Limits { maxCiphertextBytes: number; keypackagesPerDevice: number; keypackageRefillThreshold: number;
   heartbeatMs: number; maxFrameBytes: number; }
+// ---- web-3 calls (L-HTTP-100..104, L-TS-55) ----
+/** The decode bounds of L-TS-55: participants of one call and calls of one community; beyond them E_CBOR_SHAPE. */
+export const CALL_PARTICIPANTS_MAX = 1024;
+export const COMMUNITY_CALLS_MAX = 4096;
+export interface CallParticipant { userId: Uint8Array; deviceId: Uint8Array; flags: number; }
+export interface ChannelCall { groupId: Uint8Array | null; callId: Uint8Array | null; participants: CallParticipant[]; }
+export interface CommunityCall { channelId: Uint8Array; callId: Uint8Array; participants: CallParticipant[]; }
+export type IceServer = [urls: string[], username: string, credential: string];
+export interface CallStarted { created: boolean; callId: Uint8Array; groupId: Uint8Array; livekitUrl: string; token: string;
+  iceServers: IceServer[]; caps: [number, number, number];
+  /** The users a start that opened a DM or group-DM call rang (the seventh element, WB product walk I6); null when the
+   *  answer has six elements (any other start, or an instance from before it). */
+  rung: Uint8Array[] | null; }
+export type CallStats = [number, number | null, number, number, number, number];
 
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
@@ -80,6 +94,23 @@ function page(raw: Uint8Array): { raw: Uint8Array; count: number; last: bigint |
 function compareBytes(a: Uint8Array, b: Uint8Array): number {
   for (let i = 0; i < 16; i++) if (a[i] !== b[i]) return a[i] - b[i];
   return 0;
+}
+/** A list of at most `max` elements; a longer one is E_CBOR_SHAPE (L-TS-55's decode bound). */
+function bounded(v: CborValue, max: number, what: string): CborValue[] {
+  const items = arr(v);
+  if (items.length > max) throw new CborError('E_CBOR_SHAPE', `${what}: more than ${String(max)}`);
+  return items;
+}
+function participants(v: CborValue): CallParticipant[] {
+  return bounded(v, CALL_PARTICIPANTS_MAX, 'participants').map((row) => {
+    const a = atLeast(row, 3);
+    const flags = u53(a[2]);
+    if (flags > 31) throw new CborError('E_CBOR_RANGE', 'voice flags above 31');
+    return { userId: bin(a[0], 16), deviceId: bin(a[1], 16), flags };
+  });
+}
+function callPath(callId: Uint8Array, rest = ''): string {
+  return `/v1/calls/${id('callId', callId)}${rest}`;
 }
 function memberRow(value: CborValue): MemberRow {
   const row = atLeast(value, 7);
@@ -326,5 +357,70 @@ export class Routes {
   }
   async deleteBlob(channelId: Uint8Array, blobId: Uint8Array): Promise<void> {
     await this.body('DELETE', blobPath(channelId, blobId), 'write', true, { ok: [204, 404] });
+  }
+
+  // ---- web-3 calls (L-HTTP-100..104, L-TS-55) ----
+
+  /** L-HTTP-100: the channel's call group (the live call's, else the newest open one, else null), its live call and who
+   *  is in it. */
+  async getChannelCall(channelId: Uint8Array): Promise<ChannelCall> {
+    const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}/call`, 'read', true)), 3);
+    return { groupId: opt(a[0], (v) => bin(v, 16)), callId: opt(a[1], (v) => bin(v, 16)), participants: participants(a[2]) };
+  }
+  /** L-HTTP-101: the live calls of the community's voice channels the caller may view. */
+  async getCommunityCalls(communityId: Uint8Array): Promise<CommunityCall[]> {
+    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/calls`, 'read', true);
+    return bounded(decode(raw), COMMUNITY_CALLS_MAX, 'calls').map((row) => {
+      const a = atLeast(row, 3);
+      return { channelId: bin(a[0], 16), callId: bin(a[1], 16), participants: participants(a[2]) };
+    });
+  }
+  /** POST /v1/channels/{id}/calls: 201 opens the call, 200 joins the live one; the body names the decoders, if any. */
+  async startCall(channelId: Uint8Array, vdec: string): Promise<CallStarted> {
+    const response = await this.http.request({ method: 'POST', path: `/v1/channels/${id('channelId', channelId)}/calls`,
+      bucket: 'write', idempotent: false, body: encode(vdec === '' ? [] : [vdec]), ok: [200, 201] });
+    const a = atLeast(decode(response.body), 6);
+    const caps = arr(a[5]);
+    if (caps.length !== 3) throw new CborError('E_CBOR_SHAPE', 'caps has three elements');
+    return { created: response.status === 201, callId: bin(a[0], 16), groupId: bin(a[1], 16), livekitUrl: str(a[2]), token: str(a[3]),
+      iceServers: arr(a[4]).map((server): IceServer => {
+        const s = atLeast(server, 3);
+        return [arr(s[0]).map(str), str(s[1]), str(s[2])];
+      }),
+      caps: [u53(caps[0]), u53(caps[1]), u53(caps[2])],
+      rung: a.length > 6 ? arr(a[6]).map((u) => bin(u, 16)) : null };
+  }
+  async shareCall(callId: Uint8Array): Promise<void> {
+    await this.body('POST', callPath(callId, '/share'), 'write', false, { body: encode([]), ok: [204] });
+  }
+  /** `DELETE /v1/calls/{call_id}?if_alone=1`: ends the call (its room and call group close) only while this device is the
+   *  call group's only current leaf, decided under the group lock; true once it has ended (204, also when it already
+   *  had), false when another device holds a leaf (409 E_CALL_NOT_ALONE: the call goes on). The client never sends the
+   *  unconditional form (web-3 task 10 fix, f10app I1). */
+  async endCallIfAlone(callId: Uint8Array): Promise<boolean> {
+    try {
+      await this.body('DELETE', callPath(callId, '?if_alone=1'), 'write', true, { ok: [204] });
+      return true;
+    } catch (e) {
+      if (e instanceof DillaHttpError && e.status === 409 && e.code === 'E_CALL_NOT_ALONE') return false;
+      throw e;
+    }
+  }
+  async unshareCall(callId: Uint8Array): Promise<void> {
+    await this.body('DELETE', callPath(callId, '/share'), 'write', true, { ok: [204] });
+  }
+  /** A 429 is not waited out: the worker drops that report (L-TS-56 step 6). */
+  async postCallStats(callId: Uint8Array, report: CallStats): Promise<void> {
+    await this.body('POST', callPath(callId, '/stats'), 'write', false, { body: encode(report), ok: [204], retry429: false });
+  }
+  /** L-HTTP-103: a core-built [epoch, proposal] body, unchanged. */
+  async postProposal(groupId: Uint8Array, body: Uint8Array): Promise<{ seq: bigint }> {
+    const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/proposal`, 'commit', false, { body })), 1);
+    return { seq: u64(a[0]) };
+  }
+  /** L-HTTP-104: the body echoes the ring's expires_ts, so a late decline never stops a later ring of the same DM. */
+  async declineCall(callId: Uint8Array, ringTs: number): Promise<void> {
+    if (!Number.isSafeInteger(ringTs) || ringTs < 0) throw new RangeError('E_ROUTE_INPUT: ringTs must be a non-negative integer');
+    await this.body('POST', callPath(callId, '/decline'), 'write', true, { body: encode([ringTs]), ok: [204] });
   }
 }

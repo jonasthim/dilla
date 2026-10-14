@@ -114,10 +114,7 @@ const empty = <MessageLog label={t('shell.log.label', { channel: 'general' })} e
 export const Conversation: Story = { render: () => <Screen main={conversation} /> };
 export const Joining: Story = { render: () => <Screen main={empty} reason={t('shell.composer.joining')} /> };
 export const NotMember: Story = { render: () => <Screen main={conversation} reason={t('shell.composer.notMember')} /> };
-export const VoiceChannel: Story = {
-  render: () => <Screen active="lounge" reason={t('shell.composer.unsupported')}
-    main={<EmptyState title={t('shell.unsupported.title')} body={t('shell.unsupported.voice')} />} />,
-};
+// A voice channel shows the voice view since web-3: Screens/Voice draws it.
 export const NoServer: Story = {
   render: () => <Screen servers={[]} active={null}
     main={<EmptyState title={t('shell.noServer.title')} body={t('shell.noServer.body')} action={{ label: t('shell.noServer.action'), onAction: noop }} />} />,

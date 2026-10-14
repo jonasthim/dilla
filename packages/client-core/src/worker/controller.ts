@@ -18,7 +18,7 @@ import {
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op } from '../gateway/frames';
+import { Op, voiceStateOf, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
@@ -38,17 +38,22 @@ import { LEAF_VERDICTS, SyncError } from '../sync/errors';
 import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerLike } from './leader';
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
+import { CallController, WAIT_LIST_MS } from '../calls/controller';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
   fetch: typeof fetch; WebSocket: typeof WebSocket; locks: LockManagerLike;
   now(): number;                                   // ms
+  /** A monotonic clock (ms, performance.now): elapsed-time bounds that a wall-clock step must not stretch or cut
+   *  (task-10 fix review N2). Defaults to now. */
+  monotonic?(): number;
   random(): number;
   setTimeout(fn: () => void, ms: number): number; clearTimeout(id: number): void;
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   boot(instance: Instance): Promise<BootOutcome>;
   resetDevice(instance: Instance): Promise<void>;  // removes the KEK record and the OPFS directory dilla/<instance hex>
-  post(message: FromWorker): void;
+  /** Posts to the own page; `transfer` moves buffers (a callKeys key, L-TS-52) instead of copying them. */
+  post(message: FromWorker, transfer?: Transferable[]): void;
   testHooks: boolean;
   parts?: Partial<ControllerParts>;                // unit tests and the core-worker harness only; src/worker/entry.ts passes none
   thumbs?: ThumbDeps | null;                       // unit tests only; absent: probed from the worker global (L-TS-35)
@@ -107,7 +112,8 @@ E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_L
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
-E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED`.split(/\s+/));
+E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
 export function sanitizeWorkerError(e: unknown): WorkerError {
@@ -157,6 +163,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
   'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
   'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
+  'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -172,6 +179,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   loadPins: ['channelId'], closePins: ['channelId'], attachFiles: ['channelId'], discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
   verifyContact: ['userId'], safetyNumber: ['userId'], typing: ['channelId'], voiceSelf: ['callId'],
+  callJoin: ['channelId'], callDecline: ['callId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
@@ -189,10 +197,27 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
     'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
+    'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
   ],
 };
 
 const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+
+/** L-TS-50: '' or one to three of vp8, h264 and vp9, comma-separated, none twice. */
+const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
+const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
+const STATS_MAX = 1_048_576;
+/** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
+ *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
+export const MEMBER_REREAD_MIN_MS = 5_000;
+/** WB client m5: resign waits at most this long for the call's leave before it releases the store. */
+export const RESIGN_LEAVE_MS = 2_000;
+export const VOICE_LOOKUPS_MAX = 256;
+const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= STATS_MAX;
+/** L-TS-53: six non-negative integers of at most 1,048,576; relayProtocol (element 1) may be null. */
+const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
+  && r.every((v: unknown, i) => statsField(v) || (i === 1 && v === null));
+const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string' && ID.test(v));
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.
  *  Every refusal here answers only the owning page's own malformed command (deps.post reaches only that page). */
@@ -259,6 +284,15 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'safetyNumber' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
   if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
   if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
+  if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
+  if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
+  if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
+    || (command.communityId === null) === (command.channelId === null))) return 'loadVoice needs exactly one id';
+  if (m === 'callDecline' && (typeof command.ringTs !== 'number' || !Number.isSafeInteger(command.ringTs) || command.ringTs < 0)) {
+    return 'ringTs is not a non-negative integer';
+  }
   if (m === 'resign' && (typeof command.nonce !== 'string' || !ID.test(command.nonce))) return 'nonce is not 32 lowercase hex';
   if (m === 'search') {
     if (command.scope !== 'all' && command.scope !== 'channel' && command.scope !== 'community') return 'invalid search scope';
@@ -330,6 +364,12 @@ export class Controller {
   private readonly notMember = new Set<string>();
   private readonly resyncing = new Set<string>();
   private readonly lookedUp = new Set<string>();
+  /** The member-list read running per community (lookUpUsers), and whether another is owed after it. */
+  private readonly memberReads = new Map<string, { again: boolean }>();
+  /** When the last voice-driven member-list read of a community ended (this worker's clock, ms): f10app m3. */
+  private readonly memberReadEnded = new Map<string, number>();
+  /** How many users voice_state frames have put in `lookedUp`, per community (bounded by VOICE_LOOKUPS_MAX). */
+  private readonly voiceLookups = new Map<string, number>();
   private readonly open = new Map<string, OpenChannel>();
   private readonly opening = new Map<string, { run: Promise<null>; entry: OpenChannel | null }>();
   /** One attachment tray per channel hex (L-TS-35); its descriptors live in worker memory only. */
@@ -367,6 +407,11 @@ export class Controller {
   private readonly incomingTyping = new Map<string, Map<string, number>>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
   private deviceCount = 0;
+  /** web-3: voice presence, calls and rings (L-TS-56). */
+  private readonly calls: CallController;
+  /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
+  private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
+  private readonly ownInCall = new Set<string>();
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -382,6 +427,68 @@ export class Controller {
       onGeneration: (generation) => { this.setConnection({ generation: generation.toString() }); },
     });
     this.routes = this.parts.routes(http);
+    this.calls = new CallController({
+      core: () => this.core,
+      routes: this.routes,
+      post: (message, transfer) => { deps.post(message, transfer); },
+      publish: (name, value) => { this.slices.set(name, value); },
+      errorOf: (e) => errorOf(e),
+      now: () => deps.now(),
+      monotonic: () => (deps.monotonic ?? deps.now)(),
+      setTimeout: (fn, ms) => deps.setTimeout(fn, ms),
+      clearTimeout: (id) => { deps.clearTimeout(id); },
+      randomId: () => crypto.getRandomValues(new Uint8Array(16)),
+      me: () => this.me,
+      instance: () => this.instance,
+      settings: () => this.core?.settings() ?? {},
+      nameOf: (user) => this.nameOf(user),
+      refreshLeaves: (g) => this.refreshCallLeaves(g),
+      serial: (g, job) => (this.sync === null ? job() : this.sync.runOnGroup(g, job)),
+      callEnded: (call) => {
+        if (this.lastVoiceSelf?.callId === call) this.lastVoiceSelf = null;
+        this.ownInCall.delete(call);
+      },
+      onCommitted: (g, result) => { this.onGroupChanged(g, result); },
+      afterJoin: (g) => {
+        // After the join's answer has been posted: the engine takes up frames it held while the group was staged.
+        const sync = this.sync;
+        deps.setTimeout(() => { if (this.sync === sync && sync !== null) void this.barrier.track(sync.activate(g)).catch(() => undefined); }, 0);
+      },
+      track: (job) => { void this.barrier.track(job).catch(() => undefined); },
+      participant: (user, device, flags, channel) => {
+        const own = this.me !== null && toHex(this.me.deviceId) === device;
+        // Web-3 task 10, concern 4: a participant no loaded member list has is looked up in the channel's community.
+        const community = this.channels.get(channel)?.communityId ?? null;
+        if (community !== null) this.lookUpUsers(community, [user], 'voice');
+        return { userId: user, deviceId: device, name: this.nameOf(user), flags, own, web: own, bot: this.isBot(user) };
+      },
+      voiceChannels: (community) => [...this.channels].filter(([, k]) => k.communityId === community && k.row.kind === 1).map(([id]) => id),
+      known: (channel) => this.channels.has(channel) || this.dms.has(channel),
+      callTarget: (channel) => {
+        const known = this.channels.get(channel);
+        if (known !== undefined) return known.row.kind === 1 ? { communityId: known.communityId, members: [] } : undefined;
+        const dm = this.dms.get(channel);
+        return dm === undefined ? undefined : { communityId: null, members: dm.members.map(toHex) };
+      },
+      communityListed: (community) => this.listed(community),
+    });
+  }
+
+  /** L-TS-56: the list refresh of a call group's pending leaves is the worker's trust refresh (no second one), bounded by
+   *  WAIT_LIST_MS for the whole batch; it never throws. */
+  private async refreshCallLeaves(groupId: Id): Promise<void> {
+    let timer: number | null = null;
+    const bound = new Promise<void>((resolve) => { timer = this.deps.setTimeout(resolve, WAIT_LIST_MS); });
+    try { await Promise.race([this.refreshGroupTrust(groupId), bound]); }
+    finally { if (timer !== null) this.deps.clearTimeout(timer); }
+  }
+
+  /** A bot account (member kind 1) in any loaded member list: the bot mark of a voice row. */
+  private isBot(userHex: string): boolean {
+    for (const community of this.slices.get('communities') ?? []) {
+      if (this.slices.get(`members:${community.id}`)?.some((m) => m.userId === userHex && m.kind === 1)) return true;
+    }
+    return false;
   }
 
   /** Requirement 12: a pending scope in phase 2 is a revocation; a wipe in progress mints nothing (head ruling 27).
@@ -493,6 +600,13 @@ export class Controller {
       case 'search': return this.search(command, searchId ?? this.searchGate.next());
       case 'typing': return this.typing(command.channelId, command.on);
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
+      case 'loadVoice': return this.calls.loadVoice(command.communityId, command.channelId);
+      case 'callJoin': return this.calls.join(command.channelId, command.vdec);
+      case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
+      case 'callShare': return this.calls.share(command.on);
+      case 'callRefresh': return this.calls.refresh();
+      case 'callStats': return this.calls.stats(command.report);
+      case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
       case 'resign': return this.resign(command.nonce);
     }
   }
@@ -748,6 +862,7 @@ export class Controller {
     this.slices.set('settings', core.settings());
     this.publishBadges();
     if (this.slices.get('notices') === undefined) this.slices.set('notices', this.noticesState);
+    this.calls.publishInitial();
     // (j) after a reload mid-ceremony the store records no username (head ruling 42): the account names it.
     let username = core.identity().username;
     if (username === '') username = (await this.routes.getAccountMe()).username;
@@ -826,6 +941,7 @@ export class Controller {
     if (this.revoked()) return;
     this.clearReauthTimer();
     this.typingOff();
+    this.calls.reset();
     this.sync?.stop();
     this.gateway?.stop();
     this.setAccount({ phase: 'revoked', recoveryKey: null });
@@ -852,6 +968,9 @@ export class Controller {
       this.onReady(e.info);
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {
       this.incomingTypingFrame(e.frame.payload);
+    } else if (e.type === 'frame' && (e.frame.op === Op.voiceState || e.frame.op === Op.callRing)) {
+      if (e.frame.op === Op.voiceState) this.safely(() => { this.ownVoiceState(e.frame); });
+      this.safely(() => { this.calls.onFrame(e.frame); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
     }
@@ -1254,6 +1373,8 @@ export class Controller {
     // Product P1: the trust slice names each contact and says whether a group is shared from these member lists; a list
     // that lands after it (every reload: the first ready refreshes trust before the communities load) republishes it.
     this.publishTrust();
+    // Web-3 task 10, concern 4: a voice participant the lists lacked is named now.
+    this.calls.membersChanged();
     // Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once.
     const core = this.core;
     const me = this.me;
@@ -1605,6 +1726,7 @@ export class Controller {
   }
 
   private async signOutRevoke(recoveryKey: string): Promise<null> {
+    await this.calls.shutdown();
     const me = this.requireMe();
     const core = this.requireCore();
     const signed = await this.revoke([me.deviceId], recoveryKey);
@@ -1642,6 +1764,8 @@ export class Controller {
   }
 
   private async forgetBrowser(): Promise<null> {
+    // L-TS-56 step 9: a wipe leaves the call first, while the session still works.
+    await this.calls.shutdown();
     const core = this.requireCore();
     const identity = core.identity();
     const deviceId = this.me?.deviceId ?? identity.deviceId;
@@ -1717,6 +1841,7 @@ export class Controller {
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
+    this.memberReadEnded.clear(); this.voiceLookups.clear();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
     this.searchGate.invalidate(); this.searchCursor = null;
@@ -1739,6 +1864,8 @@ export class Controller {
     this.slices.set('trust', []);
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
+    this.calls.reset();
+    this.lastVoiceSelf = null; this.ownInCall.clear();
     this.setConnection({ status: 'offline', generation: null });
   }
 
@@ -1877,19 +2004,61 @@ export class Controller {
 
   /** A sender who is not in the loaded member list re-runs listMembers once per unknown user (L-TS-09). */
   private lookUpMembers(communityId: string, items: readonly TimelineItem[]): void {
-    const known = new Set((this.slices.get(`members:${communityId}`) ?? []).map((m) => m.userId));
+    this.lookUpUsers(communityId, items.map((item) => item.senderUser).filter((u): u is string => u !== null), 'timeline');
+  }
+
+  /** Users the community's loaded member list lacks re-run listMembers, once per unknown user (L-TS-09): a timeline's
+   *  senders, and a voice call's participants (web-3 task 10, concern 4).
+   *
+   *  The two sources differ (f10app m3). A timeline sender is authenticated by its group, and also reads a list that has not
+   *  loaded (its first read failed) as before. A voice participant comes from the instance's unauthenticated voice_state
+   *  frames, so a flood of ever-new user ids is bounded: a list not loaded yet is left to its load, at most
+   *  VOICE_LOOKUPS_MAX users per community ever enter `lookedUp` from voice, and a voice-driven read starts no sooner
+   *  than MEMBER_REREAD_MIN_MS after the last one ended. Reads are coalesced per community either way: one running, at
+   *  most one more owed. */
+  private lookUpUsers(communityId: string, users: readonly string[], from: 'timeline' | 'voice'): void {
+    const loaded = this.slices.get(`members:${communityId}`);
+    if (loaded === undefined && from === 'voice') return;
+    const known = new Set((loaded ?? []).map((m) => m.userId));
     let unknown = false;
-    for (const item of items) {
-      const user = item.senderUser;
-      if (user === null || known.has(user) || this.lookedUp.has(user)) continue;
+    for (const user of users) {
+      if (known.has(user) || this.lookedUp.has(user)) continue;
+      if (from === 'voice') {
+        const n = this.voiceLookups.get(communityId) ?? 0;
+        if (n >= VOICE_LOOKUPS_MAX) continue;
+        this.voiceLookups.set(communityId, n + 1);
+      }
       this.lookedUp.add(user);
       unknown = true;
     }
     if (!unknown) return;
-    void this.barrier.track((async () => {
-      const rows = await this.routes.listMembers(fromHex(communityId));
-      if (this.listed(communityId)) this.publishMembers(communityId, rows);
-    })().catch(() => undefined));
+    const running = this.memberReads.get(communityId);
+    if (running !== undefined) { running.again = true; return; }
+    const read = { again: false };
+    this.memberReads.set(communityId, read);
+    // WB client m5: only the read itself is tracked by the barrier; the pacing sleep is not, so a hand-over's close never
+    // waits for it, and nothing is read once the barrier closed.
+    void (async () => {
+      try {
+        let paced = from === 'voice';
+        do {
+          read.again = false;
+          if (paced) {
+            const wait = (this.memberReadEnded.get(communityId) ?? -Infinity) + MEMBER_REREAD_MIN_MS - this.deps.now();
+            if (wait > 0) await new Promise<void>((resolve) => { this.deps.setTimeout(resolve, wait); });
+          }
+          if (this.barrier.isClosed()) return;
+          await this.barrier.track((async () => {
+            const rows = await this.routes.listMembers(fromHex(communityId));
+            this.memberReadEnded.set(communityId, this.deps.now());
+            if (this.listed(communityId)) this.publishMembers(communityId, rows);
+          })());
+          paced = true;
+        } while (read.again);
+      } finally {
+        this.memberReads.delete(communityId);
+      }
+    })().catch(() => undefined);
   }
 
   // ---- the sync engine's reports ----
@@ -1906,21 +2075,33 @@ export class Controller {
       for (const key of this.fetchedLeaves) if (key.startsWith(prefix)) this.fetchedLeaves.delete(key);
       if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     }
-    if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
+    // A state-2 apply ends a resync, never a not-member report: a frame applied to the group after a refused resync (the
+    // docs shoot's removal) proves nothing about this device's leaf. Not-member ends with a rejoin ('resyncing') or a
+    // catch-up the DS served ('member').
+    if (result.state === 2) this.resyncing.delete(hex);
     this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
     this.stopTypingIfUnviewable();
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.safely(() => { this.reportActivity(groupId, result); });
+    // web-3 (L-TS-56 step 2): a call group's new epoch is keyed through the core's gate, or pauses, blocks or removes.
+    this.safely(() => { if (this.calls.isCallGroup(groupId)) this.calls.onGroupChanged(groupId, result); });
     // Pre-flight ruling F6: an apply can adopt the own type-2 row (a catch-up) and so record a purge.
     this.runPurges();
   }
 
-  private onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void {
+  private onMembership(groupId: Id, status: 'resyncing' | 'not-member' | 'member'): void {
     const hex = toHex(groupId);
+    if (status === 'member') {
+      if (!this.notMember.delete(hex) && !this.resyncing.delete(hex)) return;
+      this.safely(() => { this.touchGroup(groupId); });
+      return;
+    }
     if (status === 'resyncing') { this.resyncing.add(hex); this.notMember.delete(hex); }
     else { this.notMember.add(hex); this.resyncing.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });
     this.stopTypingIfUnviewable();
+    // Review M6: a call group's lost membership ends the call here (the engine never resyncs a call group).
+    if (status === 'not-member') this.safely(() => { if (this.calls.isCallGroup(groupId)) this.calls.onMembershipLost(groupId); });
   }
 
   /** Refreshes the row of every known channel or DM bound to the group and the timeline of every such open one. */
@@ -1983,6 +2164,8 @@ export class Controller {
         this.trustRefreshAgain = false;
         await this.refreshTrustOnce();
       } while (this.trustRefreshAgain && this.phase === 'ready');
+      // web-3 (L-TS-56 step 2): after every trust refresh the call's epoch is read through the gate again.
+      this.safely(() => { this.calls.onTrust(); });
       return null;
     })().finally(() => { this.trustRefresh = null; });
     this.trustRefresh = run;
@@ -2150,6 +2333,8 @@ export class Controller {
       if (code !== null) blocks[channelId] = { code, own: this.core.sendBlockOwn(group.groupId) };
     }
     this.slices.set('sendBlocks', blocks);
+    // Integration cards: a ring of a DM blocked now ends; a blocked call whose channel block cleared goes idle.
+    this.safely(() => { this.calls.onSendBlocks(); });
   }
 
   private verifyContact(userId: string, umk: string): Promise<null> {
@@ -2207,6 +2392,9 @@ export class Controller {
   }
 
   private typing(channelId: string, on: boolean): Promise<null> {
+    // WB product walk I1: an off with no signal on is a no-op. The page's off for the channel it just left arrives after
+    // closeChannel (which sent the off already), as do the offs after a membership loss or the link's end.
+    if (!on && !this.typingOn.has(channelId)) return Promise.resolve(null);
     if (!this.open.has(channelId) || this.groupState(channelId) !== 'active'
       || this.phase !== 'ready' || this.connectionState.status !== 'online')
       throw new Refusal('E_NOT_READY', '');
@@ -2218,7 +2406,23 @@ export class Controller {
   private voiceSelf(callId: string, flags: number): Promise<null> {
     if (this.connectionState.status !== 'online') throw new Refusal('E_NOT_READY', '');
     this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
+    this.lastVoiceSelf = { callId, flags: flags as 0 | 1 | 2 | 3 };
     return Promise.resolve(null);
+  }
+
+  /** Task 3 review (controller ruling): the instance keeps a device's own mute and deafen flags only once the device is in
+   *  the call's room, so one sent before the join webhook is lost. When this device's own voice_state shows it joining a
+   *  call (in_call set, after not being in it), the last voice_self for that call is sent once more: once per join. */
+  private ownVoiceState(frame: Frame): void {
+    let f;
+    try { f = voiceStateOf(frame); } catch { return; }
+    if (this.me === null || toHex(f.deviceId) !== toHex(this.me.deviceId)) return;
+    const call = toHex(f.callId);
+    if ((f.flags & 1) === 0) { this.ownInCall.delete(call); return; }
+    if (this.ownInCall.has(call)) return;
+    this.ownInCall.add(call);
+    const last = this.lastVoiceSelf;
+    if (last !== null && last.callId === call && this.connectionState.status === 'online') this.gateway?.sendVoiceSelf(f.callId, last.flags);
   }
 
   private typingOff(): void {
@@ -2241,8 +2445,19 @@ export class Controller {
   }
 
   private async resign(nonce: string): Promise<{ released: true }> {
+    // WB client m5: the new tab waits 5 s for this release (handover.ts). A join in flight (its rejoin wait lasts up to
+    // 30 s) is cancelled first, so the barrier does not wait for it: its teardown sends the self-Remove.
+    this.calls.cancelJoin();
     await this.barrier.close();
     this.clearReauthTimer();
+    // L-TS-56 step 9: the call is left and the rings cleared before the store is released; the leave's round trips are
+    // bounded, since the instance removes the leaf when the call ends anyway.
+    let bound: number | null = null;
+    await Promise.race([
+      this.calls.shutdown(),
+      new Promise<void>((resolve) => { bound = this.deps.setTimeout(resolve, RESIGN_LEAVE_MS); }),
+    ]);
+    if (bound !== null) this.deps.clearTimeout(bound);
     try {
       this.typingOff();
       this.gateway?.stop();

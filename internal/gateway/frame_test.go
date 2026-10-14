@@ -267,3 +267,76 @@ func TestAnOpcodeThatOverflowsAByteIsAnUnknownOpcode(t *testing.T) {
 		t.Fatalf("got %v, want E_FRAME_TYPE — opcode 262 is not heartbeat (6)", err)
 	}
 }
+
+// Op 53 `call_ring` is server-to-client (L-GW-33): a client that sends one, of any shape, is
+// refused at the opcode check with E_FRAME_TYPE. Attacker: a client forging a ring frame toward
+// the instance in the hope it is relayed or acted on; the instance alone produces rings.
+func TestOp53FromAClientIsEFrameType(t *testing.T) {
+	call, channel, user := id.New(), id.New(), id.New()
+	for _, payload := range [][]any{
+		{call[:], channel[:], user[:], uint64(1), uint64(1758659030)},
+		{call[:], channel[:], user[:], uint64(3), uint64(1758659030)},
+		{call[:], channel[:], user[:], uint64(1)},
+	} {
+		raw, err := cborx.Marshal(payload)
+		if err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		frame, err := cborx.MarshalFrame(53, 0, nil, raw)
+		if err != nil {
+			t.Fatalf("MarshalFrame: %v", err)
+		}
+		var fe *FrameError
+		if _, err := Decode(frame, 16384); !errors.As(err, &fe) || fe.Code != "E_FRAME_TYPE" {
+			t.Fatalf("got %v, want E_FRAME_TYPE for a client op 53 with %d elements", err, len(payload))
+		}
+	}
+}
+
+// The server side of op 53: the catalogue knows it as a five-element, ungrouped, non-replayable
+// S->C frame, and an encoded ring round-trips with n = 0 whatever n is passed.
+func TestCallRingEncodesFiveElementsAndRoundTrips(t *testing.T) {
+	spec, ok := opSpecs[OpCallRing]
+	if !ok || OpCallRing != 53 {
+		t.Fatalf("OpCallRing = %d, in catalogue %v; want 53 in the catalogue", OpCallRing, ok)
+	}
+	if spec.elements != 5 || spec.fromClient || spec.grouped || spec.replayable {
+		t.Fatalf("opSpecs[53] = %+v, want {elements: 5} only", spec)
+	}
+	call, channel, user := id.New(), id.New(), id.New()
+	raw, err := cborx.Marshal([]any{call[:], channel[:], user[:], uint64(2), uint64(1758659030)})
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	b, err := Encode(Frame{Op: OpCallRing, Payload: raw}, 7)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	var elems []cbor.RawMessage
+	if err := cborx.Unmarshal(b, &elems); err != nil || len(elems) != 4 {
+		t.Fatalf("frame: %v, %d elements", err, len(elems))
+	}
+	if op, _ := rawUint(elems[0]); op != 53 {
+		t.Fatalf("op = %d, want 53", op)
+	}
+	if n, _ := rawUint(elems[1]); n != 0 {
+		t.Fatalf("n = %d, want 0 for an ephemeral frame", n)
+	}
+	if !isNull(elems[2]) {
+		t.Fatalf("group_id = %x, want null", elems[2])
+	}
+	var payload []cbor.RawMessage
+	if err := cborx.Unmarshal(elems[3], &payload); err != nil || len(payload) != 5 {
+		t.Fatalf("payload: %v, %d elements, want 5", err, len(payload))
+	}
+	var gotCall id.ID
+	if err := cborx.Unmarshal(payload[0], &gotCall); err != nil || gotCall != call {
+		t.Fatalf("call_id = %v (%v), want %v", gotCall, err, call)
+	}
+	if state, _ := rawUint(payload[3]); state != 2 {
+		t.Fatalf("state = %d, want 2", state)
+	}
+	if exp, _ := rawUint(payload[4]); exp != 1758659030 {
+		t.Fatalf("expires_ts = %d, want 1758659030", exp)
+	}
+}

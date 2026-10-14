@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/auth"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
@@ -45,7 +46,8 @@ func freePorts(t *testing.T) (tcp, udp int) {
 	return tcp, udp
 }
 
-func sfuHost(t *testing.T, withSFU bool) *Host {
+// corePath is the committed wasi core the hosts here run.
+func corePath(t *testing.T) string {
 	t.Helper()
 	core, err := filepath.Abs(filepath.Join("..", "..", "mlswasi", "testdata", "dilla_core_wasi.wasm"))
 	if err != nil {
@@ -56,6 +58,12 @@ func sfuHost(t *testing.T, withSFU bool) *Host {
 			"  cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked\n"+
 			"and copy it there: %v", core, err)
 	}
+	return core
+}
+
+func sfuHost(t *testing.T, withSFU bool) *Host {
+	t.Helper()
+	core := corePath(t)
 	tcp, udp := freePorts(t)
 	h, err := NewHost(context.Background(), HostOptions{
 		DataDir: t.TempDir(), CorePath: core, SFU: withSFU, SFUPort: tcp, SFUUDPPort: udp,
@@ -110,6 +118,41 @@ func TestTheHostServesMetricsToItsScrapeTokenOnly(t *testing.T) {
 	}
 }
 
+// Task-10 review M9: a webhook never reaches an instance that is shutting down. Close stops the SFU and its receiver
+// first and leaves no current instance; a Restore drops the current instance before it shuts the old one down, so a
+// restore that fails after the shutdown leaves none either (events in that window are dropped, not handed to a closed
+// repository).
+func TestNoWebhookReachesAnInstanceThatIsShuttingDown(t *testing.T) {
+	h := sfuHost(t, false)
+	if h.current.Load() == nil {
+		t.Fatal("a running host has no current instance")
+	}
+	path, err := h.snapshotPath("broken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not an archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Restore(t.Context(), "broken"); err == nil {
+		t.Fatal("a restore of a broken archive succeeded")
+	}
+	if h.current.Load() != nil {
+		t.Fatal("a restore that failed after the shutdown left the shut-down instance current")
+	}
+
+	closed := sfuHost(t, false)
+	if err := closed.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if closed.current.Load() != nil {
+		t.Fatal("a closed host still names a current instance")
+	}
+}
+
 // The YAML the harness SFU renders carries the two settings Firefox needs: node_ip on loopback
 // and advertise_internal_ip (G35 run A1), never sfu.DefaultConfig()'s AdvertiseInternalIP false.
 func TestTheTestSFUAdvertisesInternalAddresses(t *testing.T) {
@@ -127,6 +170,25 @@ func TestTheTestSFUAdvertisesInternalAddresses(t *testing.T) {
 	}
 	if !strings.Contains(yaml, "auto_create: false") {
 		t.Error("the test SFU auto-creates rooms")
+	}
+}
+
+// Task-10 fix review N3: a voice suite's host may give its rooms a longer departure timeout, so a
+// test that reloads a browser alone in a room is not raced by the room's own end on a slow runner;
+// zero keeps the instance default (20 s) that every other test sees.
+func TestTheHostOptionsSetTheTestSFUDepartureTimeout(t *testing.T) {
+	for _, c := range []struct {
+		opt  uint32
+		want string
+	}{{0, "  departure_timeout: 20\n"}, {60, "  departure_timeout: 60\n"}} {
+		cfg := HostOptions{SFUDepartureTimeout: c.opt}.sfuConfig(7880, 7882, "dilla", strings.Repeat("s", 64))
+		yaml, err := cfg.YAML()
+		if err != nil {
+			t.Fatalf("YAML: %v", err)
+		}
+		if !strings.Contains(yaml, c.want) {
+			t.Errorf("SFUDepartureTimeout %d: the YAML lacks %q:\n%s", c.opt, c.want, yaml)
+		}
 	}
 }
 
@@ -202,6 +264,99 @@ func TestTheDebugSFURoutesAreControlOnly(t *testing.T) {
 // TestAnInstanceWithoutAnSFUAnswersNotImplemented) mints a real LiveKit token for a current leaf.
 func TestAHostWithAnSFUMintsCallTokens(t *testing.T) {
 	h := sfuHost(t, true)
+	out, device, group := openCallOn(t, h)
+	token, ok := out[3].(string)
+	if !ok {
+		t.Fatalf("the call response's token is %#v", out[3])
+	}
+	v, err := auth.ParseAPIToken(token)
+	if err != nil {
+		t.Fatalf("the call token is not a LiveKit JWT: %v", err)
+	}
+	if v.Identity() != device.String() || v.APIKey() != h.cfg.LiveKit.APIKey {
+		t.Fatalf("token identity %q key %q, want %s and %q", v.Identity(), v.APIKey(), device, h.cfg.LiveKit.APIKey)
+	}
+	if b, _ := out[1].([]byte); id.ID(b) != group {
+		t.Fatalf("group_id = %x, want %s", out[1], group)
+	}
+	// Without an override the call response names the instance's own wss:// origin.
+	if out[2] != "wss://dilla.test" {
+		t.Fatalf("livekit_url = %#v, want wss://dilla.test", out[2])
+	}
+}
+
+// web-3 task 3: HostOptions.LiveKitURL replaces the call response's livekit_url, so a browser on
+// 127.0.0.1 reaches the host's /rtc over ws:// instead of the instance domain's wss:// URL.
+func TestLiveKitURLOverride(t *testing.T) {
+	tcp, udp := freePorts(t)
+	h, err := NewHost(context.Background(), HostOptions{
+		DataDir: t.TempDir(), CorePath: corePath(t), SFU: true, SFUPort: tcp, SFUUDPPort: udp,
+		LiveKitURL: "ws://127.0.0.1:8481",
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close(context.Background()) })
+	out, _, _ := openCallOn(t, h)
+	if out[2] != "ws://127.0.0.1:8481" {
+		t.Fatalf("livekit_url = %#v, want the override ws://127.0.0.1:8481", out[2])
+	}
+}
+
+// web-3 task 10: the in-process LiveKit posts its webhooks to the host's instance, as dillad's own
+// livekit.webhook_listen does (cmd/dillad/front.go). Without them the instance never learns who is in
+// a room: no voice_state reaches a client, the voice snapshot (L-HTTP-100) stays empty and an answered
+// ring never stops — everything the voice e2e waits on. A participant LiveKit admits to the call's
+// room with the call's own token is listed in GET /v1/channels/{id}/call.
+func TestTheHostSFUPostsItsWebhooksToTheInstance(t *testing.T) {
+	h := sfuHost(t, true)
+	if h.WebhookURL() == "" || !strings.HasPrefix(h.WebhookURL(), "http://127.0.0.1:") {
+		t.Fatalf("the host's LiveKit posts its webhooks to %q, want a loopback http:// URL", h.WebhookURL())
+	}
+	out, device, group := openCallOn(t, h)
+	token, ok := out[3].(string)
+	if !ok {
+		t.Fatalf("the call response's token is %#v", out[3])
+	}
+	g, err := h.Server().Repo().GetGroup(t.Context(), group)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	room, err := lksdk.ConnectToRoomWithToken(h.SFU().URL(), token, &lksdk.RoomCallback{}, lksdk.WithAutoSubscribe(false))
+	if err != nil {
+		t.Fatalf("connect to the call's room: %v", err)
+	}
+	t.Cleanup(room.Disconnect)
+
+	path := "/v1/channels/" + g.TargetID.String() + "/call"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, raw, err := h.AsDevice(t.Context(), device, http.MethodGet, path, nil)
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("GET %s = %d, %v", path, status, err)
+		}
+		var call []any
+		if err := cborx.Unmarshal(raw, &call); err != nil || len(call) != 3 {
+			t.Fatalf("decode %s: %v (%x)", path, err, raw)
+		}
+		if parts, _ := call[2].([]any); len(parts) == 1 {
+			row, _ := parts[0].([]any)
+			if b, _ := row[1].([]byte); len(row) == 3 && id.ID(b) == device {
+				return
+			}
+			t.Fatalf("participants = %#v, want only %s", parts, device)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the call's participants never listed the device LiveKit admitted (the instance got no participant_joined)")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// openCallOn seeds a caller with one device, a voice channel, its call group with the device a leaf
+// of its current epoch, and opens the call: the 201 body, the device and the group.
+func openCallOn(t *testing.T, h *Host) ([]any, id.ID, id.ID) {
+	t.Helper()
 	ctx := t.Context()
 
 	key := func() string {
@@ -268,21 +423,7 @@ func TestAHostWithAnSFUMintsCallTokens(t *testing.T) {
 		t.Fatalf("ReplaceMembers: %v", err)
 	}
 
-	out := call(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", []any{})
-	token, ok := out[3].(string)
-	if !ok {
-		t.Fatalf("the call response's token is %#v", out[3])
-	}
-	v, err := auth.ParseAPIToken(token)
-	if err != nil {
-		t.Fatalf("the call token is not a LiveKit JWT: %v", err)
-	}
-	if v.Identity() != device.String() || v.APIKey() != h.cfg.LiveKit.APIKey {
-		t.Fatalf("token identity %q key %q, want %s and %q", v.Identity(), v.APIKey(), device, h.cfg.LiveKit.APIKey)
-	}
-	if idOf(out[1]) != group.GroupID {
-		t.Fatalf("group_id = %x, want %s", out[1], group.GroupID)
-	}
+	return call(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", []any{}), device, group.GroupID
 }
 
 // A room POST /debug/sfu/token opened survives the call routes' room sweep, which deletes every room

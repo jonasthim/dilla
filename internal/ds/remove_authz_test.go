@@ -161,6 +161,22 @@ func TestAReDriveNeverRemovesADifferentDeviceAtAReusedLeaf(t *testing.T) {
 	voidedAt5(2, nil) // no recorded device
 	stillThere := h.memberSession(t, reg.GroupID, 3).DeviceID
 	action := voidedAt5(3, &stillThere)
+	// The device the Remove was for has held leaf 3 since before it was issued (the fixture's rows
+	// start at its registration epoch, 6; the re-drive binds to the membership by added_epoch).
+	members, err := h.repo.ListMembers(ctx, reg.GroupID)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	for i := range members {
+		if members[i].LeafIndex == 3 {
+			members[i].AddedEpoch = 5
+		}
+	}
+	if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+		return tx.ReplaceMembers(ctx, reg.GroupID, 6, members)
+	}); err != nil {
+		t.Fatalf("ReplaceMembers: %v", err)
+	}
 
 	if err := ds.RedriveCallRemovesForTest(h.ds, ctx, reg.GroupID, 5, 6); err != nil {
 		t.Fatalf("re-drive: %v", err)
@@ -172,6 +188,75 @@ func TestAReDriveNeverRemovesADifferentDeviceAtAReusedLeaf(t *testing.T) {
 	}
 	got := h.instanceRemovesOf(t, reg.GroupID, 3)
 	if len(got) != 1 || got[0].ActionID != action || got[0].TargetDevice == nil || *got[0].TargetDevice != stillThere {
+		t.Fatalf("leaf 3: %+v, want one re-driven Remove with its action id and device", got)
+	}
+}
+
+// The F9 re-drive is bound to the membership, as ProposeRemoveOfMember is (f10app review, the
+// re-drive card): a voided instance Remove issued at epoch 5 for a device that has since rejoined
+// the call group at the SAME leaf — an own-leaf resync, which OpenMLS puts in the leftmost blank
+// leaf, usually the old index — is not re-aimed at the new membership. The new membership started
+// at the resync's epoch (added_epoch 6, replaceMembersTx), after the Remove was issued; the one the
+// Remove was for held the leaf from epoch 5 or earlier. The fixture cannot commit, so the resync's
+// result is written as the store holds it after one.
+func TestAReDriveNeverRemovesTheNewMembershipOfADeviceThatRejoinedAtItsLeaf(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	h.repo.markCall(reg.GroupID)
+	setAdded := func(leaf uint32, added uint64) id.ID {
+		t.Helper()
+		members, err := h.repo.ListMembers(ctx, reg.GroupID)
+		if err != nil {
+			t.Fatalf("ListMembers: %v", err)
+		}
+		var dev id.ID
+		for i := range members {
+			if members[i].LeafIndex == leaf {
+				members[i].AddedEpoch = added
+				dev = members[i].DeviceID
+			}
+		}
+		if err := h.repo.Tx(ctx, func(tx store.Repository) error {
+			return tx.ReplaceMembers(ctx, reg.GroupID, 6, members)
+		}); err != nil {
+			t.Fatalf("ReplaceMembers: %v", err)
+		}
+		return dev
+	}
+	voidedAt5 := func(leaf uint32, device id.ID) id.ID {
+		t.Helper()
+		ref, action := id.New(), id.New()
+		if err := h.repo.PutProposal(ctx, store.ProposalRow{
+			GroupID: reg.GroupID, Ref: ref[:], Epoch: 5, Kind: uint8(mlswasi.ProposalRemove),
+			TargetLeaf: &leaf, TargetDevice: &device, Origin: 0, ActionID: action,
+			IssuedAt: h.clk.Now().Add(-time.Minute).Unix(), TTL: 30,
+		}); err != nil {
+			t.Fatalf("PutProposal: %v", err)
+		}
+		if err := h.repo.VoidProposal(ctx, reg.GroupID, ref[:], h.clk.Now().Unix()); err != nil {
+			t.Fatalf("VoidProposal: %v", err)
+		}
+		return action
+	}
+	rejoined := setAdded(1, 6) // left, and came back at leaf 1 by the resync that made epoch 6
+	stayed := setAdded(3, 4)   // has held leaf 3 since epoch 4: the membership the Remove was for
+	voidedAt5(1, rejoined)
+	action := voidedAt5(3, stayed)
+
+	if err := ds.RedriveCallRemovesForTest(h.ds, ctx, reg.GroupID, 5, 6); err != nil {
+		t.Fatalf("re-drive: %v", err)
+	}
+	if got := h.instanceRemovesOf(t, reg.GroupID, 1); len(got) != 0 {
+		t.Fatalf("leaf 1: %d Removes re-driven onto the device's new membership, want 0: %+v", len(got), got)
+	}
+	if rows, _ := h.repo.ListProposals(ctx, reg.GroupID, 5, true); slices.ContainsFunc(rows, func(r store.ProposalRow) bool {
+		return r.TargetLeaf != nil && *r.TargetLeaf == 1
+	}) {
+		t.Fatal("leaf 1's voided Remove is still stored: the action is satisfied and must be dropped")
+	}
+	got := h.instanceRemovesOf(t, reg.GroupID, 3)
+	if len(got) != 1 || got[0].ActionID != action || got[0].TargetDevice == nil || *got[0].TargetDevice != stayed {
 		t.Fatalf("leaf 3: %+v, want one re-driven Remove with its action id and device", got)
 	}
 }
