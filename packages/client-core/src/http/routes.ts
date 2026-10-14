@@ -341,14 +341,14 @@ export class Routes {
   }
   async getBackup(kind: 0 | 1): Promise<BackupObject | null> {
     const response = await this.http.request({ method: 'GET', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'read',
-      idempotent: true, ok: [200, 404] });
+      idempotent: true, ok: [200, 404], timeoutMs: null });
     if (response.status === 404) return null;
     const a = atLeast(decode(response.body), 2);
     return { object: bin(a[0]), created: u64(a[1]) };
   }
   async putBackup(kind: 0 | 1, object: Uint8Array): Promise<BackupStored> {
     const response = await this.http.request({ method: 'PUT', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'write',
-      idempotent: true, body: encode([object]) });
+      idempotent: true, body: encode([object]), timeoutMs: null });
     const a = atLeast(decode(response.body), 2);
     return { blobId: bin(a[0], 32), size: u53(a[1]), created: response.status === 201 };
   }
@@ -408,7 +408,7 @@ export class Routes {
   }
   async putBlob(channelId: Uint8Array, blobId: Uint8Array, stored: Uint8Array): Promise<{ created: boolean; size: number }> {
     const response = await this.http.request({ method: 'PUT', path: blobPath(channelId, blobId), body: stored,
-      contentType: 'application/octet-stream', bucket: 'upload', idempotent: true, ok: [200, 201] });
+      contentType: 'application/octet-stream', bucket: 'upload', idempotent: true, ok: [200, 201], timeoutMs: null });
     const a = atLeast(decode(response.body), 2);
     return { created: response.status === 201, size: u53(a[1]) };
   }
@@ -417,7 +417,7 @@ export class Routes {
   }
   async getBlob(channelId: Uint8Array, blobId: Uint8Array, maxBytes?: number): Promise<Uint8Array | null> {
     const response = await this.http.request({ method: 'GET', path: blobPath(channelId, blobId),
-      bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: maxBytes });
+      bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: maxBytes, timeoutMs: null });
     return response.status === 404 ? null : response.body;
   }
   async deleteBlob(channelId: Uint8Array, blobId: Uint8Array): Promise<void> {

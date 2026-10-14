@@ -823,6 +823,20 @@ describe('Routes: web-2b deletes and blobs', () => {
     expect(t.seen[0].init.body).toBe(STORED);
   });
 
+  // WB I1: the 30 s per-attempt timeout is for small requests; a blob or backup transfer may take longer on a slow link,
+  // so those four opt out, and nothing else does.
+  it('blob and backup transfers opt out of the per-attempt timeout; a create does not', async () => {
+    const { t, http, routes } = setup();
+    t.replies.push(cborReply(201, [BLOB_ID, 5]), bytesReply(200, STORED), cborReply(201, [new Uint8Array(32), 9]),
+      cborReply(200, [new Uint8Array(4), 1]), cborReply(201, [CHANNEL, 0, 0]));
+    await routes.putBlob(CHANNEL, BLOB_ID, STORED);
+    await routes.getBlob(CHANNEL, BLOB_ID);
+    await routes.putBackup(0, new Uint8Array(4));
+    await routes.getBackup(0);
+    await routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 0 });
+    expect(http.requests.map((r) => r.timeoutMs)).toEqual([null, null, null, null, undefined]);
+  });
+
   it('confirmBlob sends neither a body nor a content type', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
