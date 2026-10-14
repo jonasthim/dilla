@@ -16,7 +16,7 @@ export interface HttpRequest {
   ok?: readonly number[];
   retry429?: boolean;
   signal?: AbortSignal;
-  /** The per-attempt timeout; null opts out (a blob or backup transfer, which may outlast it on a slow link). */
+  /** The per-attempt timeout; null opts out (a blob transfer, which may outlast it on a slow link). */
   timeoutMs?: number | null;
 }
 export interface HttpResponse { status: number; body: Uint8Array; }

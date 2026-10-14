@@ -519,6 +519,7 @@ export const en = {
   'create.server.error.long': 'That name is too long. A server name is up to 255 bytes.',
   'create.server.error.refused': 'That name was refused. Try another.',
   'create.server.error.other': 'Could not start the server ({code}). Try again.',
+  'create.server.error.ambiguous': 'More than one new server of yours is named {name}. Open the one you meant from the server list.',
   'create.server.partial': '{name} is ready, but its channels were not added ({code}). Try again, or close this and add them from the channel list.',
   'create.server.partialText': '{name} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list.',
   'create.server.partialVoice': '{name} is ready, but its voice channel general was not added ({code}). Try again, or close this and add it from the channel list.',

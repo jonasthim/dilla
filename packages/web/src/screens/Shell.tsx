@@ -56,7 +56,7 @@ export function isChanged(row: TrustSummary): boolean {
 }
 const HEX32 = /^[0-9a-f]{32}$/;
 /** Flow 07: the selected server's lists are read again when the window comes back, at most this often, so a channel another
- *  member added shows without a reload (the instance sends no event for it). */
+ *  member added shows without a reload even when its op 54 community_changed was missed (this is the fallback to op 54). */
 export const LIST_REFRESH_MS = 15_000;
 // Renew an unchanged typing signal after 5 s: above the server's 3 s meter, inside its 10 s hold (L-HTTP-96).
 const TYPING_RENEW_MS = 5_000;
@@ -348,7 +348,8 @@ export function Shell(): React.JSX.Element {
   // (3a) Flow 07: the selected server's lists again when the window comes back, at most once per LIST_REFRESH_MS (counting the
   // load above). A background read: a failure keeps the lists and raises no banner, as the picker's re-read does. A return
   // inside the window is not dropped: it schedules one trailing read at the window's end (WB m1), which a hidden page skips
-  // (its next return reads). The instance pushes no event for a new channel yet; this stays as the fallback once it does.
+  // (its next return reads). The instance's op 54 community_changed is what announces a new channel; this re-read is the
+  // fallback for a frame missed while the socket was down or the tab asleep.
   const listedAt = useRef(0);
   useEffect(() => {
     if (!listed || communityId === null) return;

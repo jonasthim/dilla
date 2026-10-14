@@ -177,11 +177,12 @@ export function CreateServerFlow(props: {
     void work(() => session.current === at).finally(() => { running.current = false; setBusy(false); });
   };
 
-  /** The id of a server this account owns, named exactly `serverName`, listed now and not in `before`; else null. */
-  const adoptable = (serverName: string, before: ReadonlySet<string>): string | null => {
+  /** The ids of the servers this account owns, named exactly `serverName`, listed now and not in `before`. Only a single
+   *  one is adopted: two or more cannot be told apart (another tab pressed too, say), so none is. */
+  const adoptable = (serverName: string, before: ReadonlySet<string>): string[] => {
     const me = client.get('account')?.user?.id;
-    if (me === undefined) return null;
-    return (client.get('communities') ?? []).find(c => c.name === serverName && c.owner === me && !before.has(c.id))?.id ?? null;
+    if (me === undefined) return [];
+    return (client.get('communities') ?? []).filter(c => c.name === serverName && c.owner === me && !before.has(c.id)).map(c => c.id);
   };
 
   const submit = () => {
@@ -195,27 +196,37 @@ export function CreateServerFlow(props: {
     const earlier = lost.current?.name === serverName ? lost.current.before : null;
     const before = earlier ?? new Set((client.get('communities') ?? []).map(c => c.id));
     // The worker reads the instance's server list again (also with the socket up), then the list is searched.
-    const look = async (listedBefore: ReadonlySet<string>): Promise<string | null> => {
+    const look = async (listedBefore: ReadonlySet<string>): Promise<string[]> => {
       await client.call({ m: 'refreshCommunities' });
       return adoptable(serverName, listedBefore);
     };
     run(async mine => {
       let communityId: string | null = null;
       if (earlier !== null) {
-        // After a lost answer, nothing is created until the list has been read: a failed read sends no create.
+        // After a lost answer, nothing is created until the list has been read: a failed read sends no create, and
+        // neither does an ambiguous one.
+        let found: string[];
         try {
-          communityId = await look(earlier);
+          found = await look(earlier);
         } catch (e) {
           if (mine()) fail(t('create.server.error.other', { code: errorOf(e).code }));
           return;
         }
+        if (found.length > 1) { if (mine()) fail(t('create.server.error.ambiguous', { name: serverName })); return; }
+        communityId = found[0] ?? null;
       }
       if (communityId === null) {
         try {
           communityId = idIn(await client.call({ m: 'createCommunity', name: serverName }), 'communityId');
         } catch (e) {
           const code = errorOf(e).code;
-          communityId = code === 'E_NETWORK' ? await look(before).catch(() => null) : null;
+          const found = code === 'E_NETWORK' ? await look(before).catch(() => []) : [];
+          if (found.length > 1) {
+            lost.current = { name: serverName, before };
+            if (mine()) fail(t('create.server.error.ambiguous', { name: serverName }));
+            return;
+          }
+          communityId = found[0] ?? null;
           if (communityId === null) {
             if (code === 'E_NETWORK') lost.current = { name: serverName, before };
             // The worker's E_BAD_INPUT here is its own name check (Task 1), so it reads as a refused name too.

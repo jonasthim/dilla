@@ -508,6 +508,33 @@ describe('CreateServerFlow', () => {
       await waitFor(() => expect(fake.callsOf('createCommunity')).toHaveLength(2));
       expect(fake.callsOf('createChannel')).toEqual([]);
     });
+
+    // Final re-review m6: adoption is only for an unambiguous match. Two new servers this account owns with that exact
+    // name (another tab pressed too, say) cannot be told apart, so neither is adopted, the dialog says so, and no further
+    // create is sent, on this press or the next.
+    it('adopts nothing when two new servers of this account carry the name, and sends no second create', async () => {
+      const { fake, user, onServer, onDone } = lost();
+      const twin = { id: 'f2'.repeat(16), name: 'Midgard', owner: ME.id };
+      const base = fake.get('communities') ?? [];
+      fake.handler = c => {
+        if (c.m === 'createCommunity') return Promise.reject(refusal({ code: 'E_NETWORK' }));
+        if (c.m === 'refreshCommunities') {
+          fake.set('communities', [...base, ours, twin]);
+          return Promise.resolve(null);
+        }
+        return starter(c);
+      };
+      await user.type(nameField('Server name'), 'Midgard{Enter}');
+      const first = await screen.findByRole('alert');
+      expect(first).toHaveTextContent('More than one new server of yours is named Midgard. Open the one you meant from the server list.');
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(fake.callsOf('refreshCommunities')).toHaveLength(2));
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('More than one new server of yours is named Midgard.'));
+      expect(fake.callsOf('createCommunity')).toHaveLength(1);
+      expect(fake.callsOf('createChannel')).toEqual([]);
+      expect(onServer).not.toHaveBeenCalled();
+      expect(onDone).not.toHaveBeenCalled();
+    });
   });
 
   it('has no serious axe violations when idle', async () => {

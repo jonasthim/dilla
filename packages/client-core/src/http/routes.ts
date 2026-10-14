@@ -9,6 +9,9 @@ export const MEMBERS_PAGE = 200;
 export const HANDSHAKES_MAX = 512;
 export const MESSAGES_MAX = 256;
 export const WELCOMES_PAGE = 64;
+// A backup is capped (protocol/09: 256 B kind 0, about 1 MiB kind 1) and sits on the sign-up, sign-in and revoke
+// paths, so it gets a longer per-attempt bound than the 30 s default rather than none. Blobs stay unbounded.
+const BACKUP_TIMEOUT_MS = 120_000;
 
 export interface Instance { instanceId: Uint8Array; generation: bigint; name: string; registrationMode: 0 | 1 | 2;
   authMethods: number[]; policyVersion: bigint; externalSenderPub: Uint8Array; }
@@ -348,14 +351,14 @@ export class Routes {
   }
   async getBackup(kind: 0 | 1): Promise<BackupObject | null> {
     const response = await this.http.request({ method: 'GET', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'read',
-      idempotent: true, ok: [200, 404], timeoutMs: null });
+      idempotent: true, ok: [200, 404], timeoutMs: BACKUP_TIMEOUT_MS });
     if (response.status === 404) return null;
     const a = atLeast(decode(response.body), 2);
     return { object: bin(a[0]), created: u64(a[1]) };
   }
   async putBackup(kind: 0 | 1, object: Uint8Array): Promise<BackupStored> {
     const response = await this.http.request({ method: 'PUT', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'write',
-      idempotent: true, body: encode([object]), timeoutMs: null });
+      idempotent: true, body: encode([object]), timeoutMs: BACKUP_TIMEOUT_MS });
     const a = atLeast(decode(response.body), 2);
     return { blobId: bin(a[0], 32), size: u53(a[1]), created: response.status === 201 };
   }

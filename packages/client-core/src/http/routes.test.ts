@@ -838,9 +838,10 @@ describe('Routes: web-2b deletes and blobs', () => {
     expect(t.seen[0].init.body).toBe(STORED);
   });
 
-  // WB I1: the 30 s per-attempt timeout is for small requests; a blob or backup transfer may take longer on a slow link,
-  // so those four opt out, and nothing else does.
-  it('blob and backup transfers opt out of the per-attempt timeout; a create does not', async () => {
+  // WB I1: the 30 s per-attempt timeout is for small requests; a blob transfer may take longer on a slow link, so the
+  // two blob calls opt out. A backup is capped (256 B kind 0, about 1 MiB kind 1) and sits on the sign-up, sign-in
+  // and revoke paths, so it gets a longer 120 s bound rather than none. Everything else keeps the default.
+  it('blob transfers opt out of the per-attempt timeout; backups get 120 s; a create keeps the default', async () => {
     const { t, http, routes } = setup();
     t.replies.push(cborReply(201, [BLOB_ID, 5]), bytesReply(200, STORED), cborReply(201, [new Uint8Array(32), 9]),
       cborReply(200, [new Uint8Array(4), 1]), cborReply(201, [CHANNEL, 0, 0]));
@@ -849,7 +850,7 @@ describe('Routes: web-2b deletes and blobs', () => {
     await routes.putBackup(0, new Uint8Array(4));
     await routes.getBackup(0);
     await routes.createChannel(COMMUNITY, { kind: 'text', name: 'x', position: 0 });
-    expect(http.requests.map((r) => r.timeoutMs)).toEqual([null, null, null, null, undefined]);
+    expect(http.requests.map((r) => r.timeoutMs)).toEqual([null, null, 120_000, 120_000, undefined]);
   });
 
   it('confirmBlob sends neither a body nor a content type', async () => {
