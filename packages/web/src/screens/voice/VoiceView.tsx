@@ -289,7 +289,7 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
   return (
     <>
       <div ref={stripRef} className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
-        data-call-phase={v.slice?.channelId === channelId ? v.slice.phase : inThisCall ? 'joining' : 'idle'}
+        data-call-phase={inThisCall ? undefined : v.slice?.channelId === channelId ? v.slice.phase : 'idle'}
         data-empty={inThisCall && notice === null ? 'true' : undefined}>
         <StripNotice notice={notice} refObj={noticeRef} />
         {inThisCall || held ? null : (
