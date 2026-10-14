@@ -399,6 +399,68 @@ func createRole(t *testing.T, e *env, cid id.ID, tok, name string, position uint
 	return out[0]
 }
 
+func TestMembersReadTheRolesList(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	type roleRow struct {
+		_           struct{} `cbor:",toarray"`
+		ID          id.ID
+		Name        string
+		Color       uint64
+		Position    uint64
+		Allow       uint64
+		Deny        uint64
+		Hoist       uint64
+		Mentionable uint64
+	}
+	list := func(tok string) []roleRow {
+		t.Helper()
+		status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/roles", tok, nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET roles = %d (%x)", status, body)
+		}
+		var rows []roleRow
+		mustUnmarshal(t, body, &rows)
+		return rows
+	}
+
+	// A plain member reads the list; a new community has only @everyone.
+	_, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil || len(roles) != 1 {
+		t.Fatalf("ListRoles = %v, %v", roles, err)
+	}
+	everyone := roles[0]
+	rows := list(memberTok)
+	want := roleRow{ID: everyone.ID, Name: "@everyone", Allow: uint64(api.DefaultEveryoneAllow)}
+	if len(rows) != 1 || rows[0] != want {
+		t.Fatalf("new community roles = %+v, want [%+v]", rows, want)
+	}
+
+	// A role at position 3 follows @everyone.
+	three := createRole(t, e, cid, ownerTok, "three", 3, api.PermPinMessages)
+	rows = list(memberTok)
+	if len(rows) != 2 || rows[0].ID != everyone.ID || rows[1].ID != three || rows[1].Position != 3 || rows[1].Name != "three" {
+		t.Fatalf("roles after create = %+v", rows)
+	}
+
+	// A stored bit outside the vocabulary is cleared in the answer.
+	if err := e.Repo.PutRole(t.Context(), store.RoleRow{ID: three, CommunityID: cid, Name: "three", Position: 3,
+		Allow: uint64(api.PermPinMessages) | 1<<40, Deny: 1 << 41, Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatalf("PutRole: %v", err)
+	}
+	rows = list(ownerTok)
+	if rows[1].Allow != uint64(api.PermPinMessages) || rows[1].Deny != 0 {
+		t.Fatalf("masked row = %+v, want allow=PermPinMessages deny=0", rows[1])
+	}
+
+	_, strangerTok := e.NewUser("stranger")
+	if status, _ := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/roles", strangerTok, nil); status != http.StatusNotFound {
+		t.Errorf("non-member = %d, want 404", status)
+	}
+}
+
 // joinCommunity joins cid as tok.
 func joinCommunity(t *testing.T, e *env, cid id.ID, tok string) {
 	t.Helper()

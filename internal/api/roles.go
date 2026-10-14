@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -86,6 +87,7 @@ func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, c
 }
 
 func (h *Roles) Register(mux *server.Mux) {
+	mux.HandleFunc("GET /v1/communities/{id}/roles", h.list)
 	mux.HandleFunc("POST /v1/communities/{id}/roles", h.create)
 	mux.HandleFunc("PATCH /v1/roles/{id}", h.patch)
 	mux.HandleFunc("DELETE /v1/roles/{id}", h.delete)
@@ -233,6 +235,59 @@ type createRoleReq struct {
 // the actor's highest role; position 0 is refused (it is @everyone's, and
 // Resolve grants it to every member); and allow and deny name only bits the
 // actor holds.
+type roleResp struct {
+	_           struct{} `cbor:",toarray"`
+	ID          id.ID
+	Name        string
+	Color       uint64
+	Position    uint64
+	Allow       uint64
+	Deny        uint64
+	Hoist       uint64
+	Mentionable uint64
+}
+
+// list answers every role of the community, @everyone first (position 0), then
+// by position and role_id. Any member may read it; a non-member is 404. Bits
+// outside the vocabulary are cleared, as the resolver ignores them.
+func (h *Roles) list(w http.ResponseWriter, r *http.Request) {
+	s, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	cid, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if _, err := h.repo.GetCommunity(r.Context(), cid); err != nil {
+		h.fail(w, r, "list roles", notFound(err))
+		return
+	}
+	if _, err := h.repo.GetMember(r.Context(), cid, s.UserID); err != nil {
+		h.fail(w, r, "list roles", notFound(err))
+		return
+	}
+	rows, err := h.repo.ListRoles(r.Context(), cid)
+	if err != nil {
+		h.fail(w, r, "list roles", err)
+		return
+	}
+	slices.SortFunc(rows, byPositionThenID)
+	out := make([]roleResp, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, roleResp{
+			ID: row.ID, Name: row.Name, Color: row.Color, Position: row.Position,
+			Allow: row.Allow & uint64(PermAll), Deny: row.Deny & uint64(PermAll),
+			Hoist: uint64(row.Hoist), Mentionable: uint64(row.Mentionable),
+		})
+	}
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		h.log.Error("encode roles", "err", err)
+	}
+}
+
 func (h *Roles) create(w http.ResponseWriter, r *http.Request) {
 	s, err := enrolledSession(r)
 	if err != nil {

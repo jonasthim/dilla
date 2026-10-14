@@ -350,10 +350,12 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 ### Roles
 
 Every route below is `E`, and every one needs `manage_roles` community-wide (for an overwrite, in
-that channel); a caller who is not a member of the community answers `404 E_NOT_FOUND`.
+that channel), except `GET`, which any member may read; a caller who is not a member of the
+community answers `404 E_NOT_FOUND`.
 
 | Method and path | Request | Response |
 |---|---|---|
+| `GET /v1/communities/{id}/roles` | — | `[[role_id(bstr16), name(tstr), color(uint), position(uint), allow(uint), deny(uint), hoist(uint), mentionable(uint)]]`: every role ordered by `position` then `role_id`, `@everyone` first; bits outside § Permissions are cleared |
 | `POST /v1/communities/{id}/roles` | `[name(tstr), color(uint), position(uint), allow(uint), deny(uint), hoist(uint), mentionable(uint)]` | `201 [role_id(bstr16)]` |
 | `PATCH /v1/roles/{id}` | the same seven fields, each `\|null`; null leaves a field alone | `204` |
 | `DELETE /v1/roles/{id}` | — | `204` |
