@@ -490,7 +490,7 @@ describe('App settings and notifications', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
   function ready(fake: FakeClient) {
     fake.set('account', account({ phase: 'ready' }));
-    fake.set('communities', [{ id: C, name: 'Midgard' }]);
+    fake.set('communities', [{ id: C, name: 'Midgard', owner: 'ee'.repeat(16) }]);
     fake.set(`channels:${C}`, []);
     fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }] satisfies DmSummary[]);
     fake.set('settings', {});

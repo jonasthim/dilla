@@ -256,6 +256,8 @@ const COMMUNITY = new Uint8Array(16).fill(0xc0);
 const CHANNEL = new Uint8Array(16).fill(0xc1);
 const GROUP = new Uint8Array(16).fill(0xc2);
 const STRANGER = new Uint8Array(16).fill(0x5a);
+const NEW_COMMUNITY = new Uint8Array(16).fill(0x5c);
+const ROLE_EVERYONE = new Uint8Array(16).fill(0x5d);
 const INSTANCE: Instance = {
   instanceId: INSTANCE_ID, generation: 7n, name: 'dilla.test', registrationMode: 0, authMethods: [0],
   policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(2),
@@ -335,6 +337,9 @@ function world(opts: {
     session: null as SessionRecord | null, listPublished: null as boolean | null,
     outbox: [] as OutboxRow[], pins: [] as PinRow[], purges: [] as PurgeRow[], roleIds: [] as Uint8Array[],
     descriptors: new Map<string, AttachmentDescriptor>(), blobs: new Map<string, Uint8Array>(),
+    // v0.1.0-web3.1: the servers and channels this account created, as the instance would list them after the create.
+    created: [] as { id: Uint8Array; name: string }[],
+    newChannels: [] as { communityId: Uint8Array; row: Awaited<ReturnType<Routes['listChannels']>>[number] }[],
   };
   /* eslint-disable @typescript-eslint/no-unused-vars -- the typed parameters give the doubles their call signatures */
   const core = {
@@ -410,10 +415,31 @@ function world(opts: {
     })),
     getInvite: vi.fn((_code: string) => Promise.resolve({ communityId: null as Uint8Array | null, communityName: null as string | null, expires: 0n })),
     joinCommunity: vi.fn((_id: Uint8Array, _invite: string) => { state.joined = true; return Promise.resolve(); }),
-    listCommunities: vi.fn(() => { calls.push('listCommunities'); return Promise.resolve(state.joined ? [{ id: COMMUNITY, name: 'friends', owner: USER, policyVersion: 1n }] : []); }),
-    listChannels: vi.fn((_id: Uint8Array) => { calls.push('listChannels'); return Promise.resolve([{
-      id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP,
-    }]); }),
+    listCommunities: vi.fn(() => { calls.push('listCommunities'); return Promise.resolve([
+      ...(state.joined ? [{ id: COMMUNITY, name: 'friends', owner: USER, policyVersion: 1n }] : []),
+      ...state.created.map((c) => ({ id: c.id, name: c.name, owner: USER, policyVersion: 1n })),
+    ]); }),
+    listChannels: vi.fn((id: Uint8Array) => { calls.push('listChannels'); return Promise.resolve([
+      ...(toHex(id) === toHex(COMMUNITY) ? [{
+        id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP,
+      }] : []),
+      ...state.newChannels.filter((c) => toHex(c.communityId) === toHex(id)).map((c) => c.row),
+    ]); }),
+    createCommunity: vi.fn((name: string) => {
+      calls.push('createCommunity');
+      state.created.push({ id: NEW_COMMUNITY, name });
+      return Promise.resolve({ id: NEW_COMMUNITY, roleEveryone: ROLE_EVERYONE, policyVersion: 1n });
+    }),
+    createChannel: vi.fn((communityId: Uint8Array, c: { kind: 'text' | 'voice'; name: string; position: number }) => {
+      calls.push('createChannel');
+      const id = new Uint8Array(16).fill(0x60 + state.newChannels.length);
+      state.newChannels.push({ communityId, row: { id, kind: c.kind === 'voice' ? 1 : 0, mode: 0, visibility: 0, parentId: null,
+        name: c.name, topic: '', position: c.position, seq: 0n, textGroupId: null } });
+      return Promise.resolve({ id, mode: 0, visibility: 0 });
+    }),
+    createInvite: vi.fn((_communityId: Uint8Array, _invite: { maxUses: number; ttlSeconds: number }) => Promise.resolve({
+      inviteId: new Uint8Array(16).fill(0x71), code: 'AB12CD34', url: 'https://dilla.test/i/AB12CD34', expires: NOW_S + 604_800n,
+    })),
     listMembers: vi.fn((_id: Uint8Array) => {
       calls.push('listMembers');
       return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: state.roleIds }]);
@@ -2116,7 +2142,7 @@ describe('Controller in the ready phase', () => {
     const listedAt = w.posted.findIndex((m) => m.t === 'slice' && m.name === 'communities' && (m.value as CommunitySummary[]).length === 1);
     expect(listedAt).toBeGreaterThan(-1);
     expect(listedAt).toBeLessThan(retAt);
-    expect(w.last<CommunitySummary[]>('communities')).toEqual([{ id: toHex(COMMUNITY), name: 'friends' }]);
+    expect(w.last<CommunitySummary[]>('communities')).toEqual([{ id: toHex(COMMUNITY), name: 'friends', owner: toHex(USER) }]);
   });
 
   it('a refused join is not a failed signup', async () => {
@@ -4412,5 +4438,154 @@ describe('call commands in the worker (task 6)', () => {
       const e = new DillaHttpError({ code, detail: 'secret detail', status: 409, retryAfterMs: null, extra: [] });
       expect(sanitizeWorkerError(e)).toEqual({ code, detail: '', status: 409, retryAfterMs: null });
     }
+  });
+});
+
+// v0.1.0-web3.1: a fresh instance is usable from the web client alone. The three create commands go through the same
+// input checks, phase gate and refusal codes as every other command, and the state a page selects next is published
+// before the command answers.
+describe('Controller create flow (createCommunity, createChannel, createInvite)', () => {
+  const sliceAt = (w: World, name: string, pred: (v: unknown) => boolean): number =>
+    w.posted.findIndex((m) => m.t === 'slice' && m.name === name && pred(m.value));
+  const retAt = (w: World, id: number): number => w.posted.findIndex((m) => m.t === 'ret' && m.id === id);
+
+  it('createCommunity posts the name, lists the new server with its owner before it answers, and answers its id', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(80, { m: 'createCommunity', name: 'Midgard Crew' });
+    await vi.waitFor(() => expect(w.ret(80)).toBeDefined());
+    expect(w.ret(80)).toEqual({ t: 'ret', id: 80, ok: true, value: { communityId: toHex(NEW_COMMUNITY) } });
+    expect(w.routes.createCommunity).toHaveBeenCalledWith('Midgard Crew');
+    expect(w.last<CommunitySummary[]>('communities')).toContainEqual({ id: toHex(NEW_COMMUNITY), name: 'Midgard Crew', owner: toHex(USER) });
+    const listed = sliceAt(w, 'communities', (v) => (v as CommunitySummary[]).some((c) => c.id === toHex(NEW_COMMUNITY)));
+    expect(listed).toBeGreaterThan(-1);
+    expect(listed).toBeLessThan(retAt(w, 80));
+  });
+
+  it('a server created while the list cannot be read is listed all the same, owned by this account', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.listCommunities.mockImplementationOnce(() => Promise.reject(refusal(503, 'E_UNAVAILABLE', 1000)));
+    w.call(81, { m: 'createCommunity', name: 'Valhalla' });
+    await vi.waitFor(() => expect(w.ret(81)).toMatchObject({ ok: true, value: { communityId: toHex(NEW_COMMUNITY) } }));
+    expect(w.last<CommunitySummary[]>('communities')).toEqual([
+      { id: toHex(COMMUNITY), name: 'friends', owner: toHex(USER) },
+      { id: toHex(NEW_COMMUNITY), name: 'Valhalla', owner: toHex(USER) },
+    ]);
+    // So the page's next command, the starter channel, is accepted for it.
+    w.call(82, { m: 'createChannel', communityId: toHex(NEW_COMMUNITY), kind: 'text', name: 'general' });
+    await vi.waitFor(() => expect(w.ret(82)).toMatchObject({ ok: true }));
+  });
+
+  it('createChannel posts the kind and name at the next position and lists the channel before it answers', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(83, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'voice', name: 'lounge' });
+    await vi.waitFor(() => expect(w.ret(83)).toBeDefined());
+    const channelId = toHex(new Uint8Array(16).fill(0x60));
+    expect(w.ret(83)).toEqual({ t: 'ret', id: 83, ok: true, value: { channelId } });
+    // general holds position 0, so the new channel goes after it.
+    expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'voice', name: 'lounge', position: 1 });
+    expect(w.channels()?.find((c) => c.id === channelId)).toMatchObject({ kind: 1, mode: 0, name: 'lounge', position: 1, communityId: toHex(COMMUNITY) });
+    const listed = sliceAt(w, `channels:${toHex(COMMUNITY)}`, (v) => (v as ChannelSummary[]).some((c) => c.id === channelId));
+    expect(listed).toBeGreaterThan(-1);
+    expect(listed).toBeLessThan(retAt(w, 83));
+  });
+
+  it('the starter channels of a new server go to positions 0 and 1', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(84, { m: 'createCommunity', name: 'Midgard Crew' });
+    await vi.waitFor(() => expect(w.ret(84)).toMatchObject({ ok: true }));
+    w.call(85, { m: 'createChannel', communityId: toHex(NEW_COMMUNITY), kind: 'text', name: 'general' });
+    await vi.waitFor(() => expect(w.ret(85)).toMatchObject({ ok: true }));
+    w.call(86, { m: 'createChannel', communityId: toHex(NEW_COMMUNITY), kind: 'voice', name: 'general' });
+    await vi.waitFor(() => expect(w.ret(86)).toMatchObject({ ok: true }));
+    expect(w.routes.createChannel.mock.calls.map((c) => c[1])).toEqual([
+      { kind: 'text', name: 'general', position: 0 }, { kind: 'voice', name: 'general', position: 1 },
+    ]);
+    expect(w.last<ChannelSummary[]>(`channels:${toHex(NEW_COMMUNITY)}`)?.map((c) => [c.name, c.kind])).toEqual([['general', 0], ['general', 1]]);
+  });
+
+  it('a list read that began before a channel was created does not hide that channel; it is read again', async () => {
+    const w = world();
+    await toReady(w);
+    const held = deferred<Awaited<ReturnType<typeof w.routes.listChannels>>>();
+    w.routes.listChannels.mockImplementationOnce(() => held.promise);
+    w.call(87, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.routes.listChannels).toHaveBeenCalledTimes(2));
+    w.call(88, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'random' });
+    await vi.waitFor(() => expect(w.ret(88)).toMatchObject({ ok: true }));
+    const channelId = toHex(new Uint8Array(16).fill(0x60));
+    // The stale answer: the list as it was before the create.
+    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP }]);
+    await vi.waitFor(() => expect(w.ret(87)).toMatchObject({ ok: true }));
+    await settle();
+    expect(w.channels()?.map((c) => c.id)).toContain(channelId);
+  });
+
+  it('createInvite passes the uses and the lifetime and answers the link, the code and the expiry', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(89, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 604_800 });
+    await vi.waitFor(() => expect(w.ret(89)).toBeDefined());
+    expect(w.routes.createInvite).toHaveBeenCalledWith(COMMUNITY, { maxUses: 10, ttlSeconds: 604_800 });
+    expect(w.ret(89)).toEqual({ t: 'ret', id: 89, ok: true,
+      value: { url: 'https://dilla.test/i/AB12CD34', code: 'AB12CD34', expires: Number(NOW_S + 604_800n) } });
+  });
+
+  it('a refused create crosses with its code and status; an unknown server is refused before any request', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.createChannel.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_FORBIDDEN')));
+    w.call(90, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'random' });
+    await vi.waitFor(() => expect(w.ret(90)).toBeDefined());
+    expect(w.ret(90)).toEqual({ t: 'ret', id: 90, ok: false, error: { code: 'E_FORBIDDEN', detail: '', status: 403, retryAfterMs: null } });
+    w.routes.createInvite.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_FORBIDDEN')));
+    w.call(91, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 604_800 });
+    await vi.waitFor(() => expect(w.ret(91)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN', status: 403 } }));
+    w.routes.createCommunity.mockImplementationOnce(() => Promise.reject(refusal(400, 'E_INVALID_REQUEST')));
+    w.call(92, { m: 'createCommunity', name: 'x' });
+    await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: false, error: { code: 'E_INVALID_REQUEST', status: 400 } }));
+    const unknown = 'ab'.repeat(16);
+    w.call(93, { m: 'createChannel', communityId: unknown, kind: 'text', name: 'random' });
+    w.call(94, { m: 'createInvite', communityId: unknown, maxUses: 10, ttlSeconds: 604_800 });
+    await vi.waitFor(() => expect(w.ret(94)).toBeDefined());
+    expect(w.ret(93)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.ret(94)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.routes.createChannel).toHaveBeenCalledTimes(1);
+    expect(w.routes.createInvite).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses malformed create commands as E_BAD_INPUT, and every create outside the ready phase as E_NOT_READY', async () => {
+    const w = world();
+    await toReady(w);
+    const bad: [number, Record<string, unknown>][] = [
+      [100, { m: 'createCommunity', name: '' }],
+      [101, { m: 'createCommunity', name: '   ' }],
+      [102, { m: 'createCommunity', name: 'x'.repeat(256) }],
+      [103, { m: 'createCommunity', name: 'bell\u0007' }],
+      [104, { m: 'createCommunity', name: 7 }],
+      [105, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'category', name: 'x' }],
+      [106, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'x'.repeat(101) }],
+      [107, { m: 'createChannel', communityId: 'C0'.repeat(16), kind: 'text', name: 'x' }],
+      [108, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: ' ' }],
+      [109, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 0, ttlSeconds: 60 }],
+      [110, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 30 * 24 * 3600 + 1 }],
+      [111, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: '10', ttlSeconds: 60 }],
+    ];
+    for (const [id, command] of bad) w.call(id, command);
+    for (const [id] of bad) expect(w.ret(id), String(id)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
+    expect(w.routes.createCommunity).not.toHaveBeenCalled();
+    expect(w.routes.createChannel).not.toHaveBeenCalled();
+    expect(w.routes.createInvite).not.toHaveBeenCalled();
+
+    const fresh = world({ phase: 0 });
+    fresh.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(fresh.account()?.phase).toBe('needs-signup'));
+    fresh.call(2, { m: 'createCommunity', name: 'Midgard' });
+    fresh.call(3, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'x' });
+    fresh.call(4, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 60 });
+    for (const id of [2, 3, 4]) expect(fresh.ret(id)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
   });
 });

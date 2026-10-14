@@ -65,7 +65,7 @@ function harness(over: { visible?: boolean; onScreen?: string | null } = {}) {
   Note.made = [];
   Note.permission = 'granted';
   const fake = new FakeClient();
-  fake.set('communities', [{ id: A, name: 'Midgard' }]);
+  fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, [ch(GEN, 'general'), ch(RAND, 'random')]);
   fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }]);
   fake.set('settings', {});

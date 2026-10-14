@@ -24,7 +24,11 @@ export interface AccountState {
 export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null; }
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;
   reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
-export interface CommunitySummary { id: string; name: string; }
+/** owner: the 32-hex user id of the server's owner (GET /v1/communities element 2). The owner holds every permission; the
+ *  instance serves no role bits, so it is the one permission fact a page has (v0.1.0-web3.1: who may add a channel). */
+export interface CommunitySummary { id: string; name: string; owner: string; }
+/** The answer of createInvite: the instance's invite link, its code and its expiry (unix seconds). */
+export interface InviteCreatedResult { url: string; code: string; expires: number; }
 export type ChannelGroupState = 'none' | 'joining' | 'active' | 'resync' | 'not-member' | 'unsupported';
 export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 | 2; mode: 0 | 1; name: string; topic: string; parentId: string | null; position: number; group: ChannelGroupState; }
 export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[]; }   // roleIds: hex of member-row element 3, in order

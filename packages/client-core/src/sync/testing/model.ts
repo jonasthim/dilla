@@ -37,7 +37,7 @@ import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
-import type { Routes } from '../../http/routes';
+import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, nameProblem, type Routes } from '../../http/routes';
 import { mentionsMe } from '../../state/mentions';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from '../../testing/fake-list';
 
@@ -2030,7 +2030,10 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
   | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall'
-  | 'endCallIfAlone';
+  | 'endCallIfAlone'
+  // v0.1.0-web3.1: the create flow (internal/api communities.go, channels.go, invites.go), so a suite creates its server
+  // and its channels through the client path.
+  | 'listCommunities' | 'createCommunity' | 'createChannel' | 'createInvite';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** fail: throw before acting; lose: act, then throw a network error; before/after: run fn around acting; gate: wait first. */
 export type Injection = { fail: Error } | { lose: true } | { before: () => void } | { after: () => void } | { gate: Promise<void> };
@@ -2164,7 +2167,10 @@ export class ModelDs {
   /** `${group hex}/${device hex}` of leaves a kick took: getProposals answers 404 E_NOT_FOUND too (requireMember). */
   private readonly removed = new Set<string>();
   private readonly groups = new Map<string, DsGroup>();
-  private readonly channels = new Map<string, { communityId: Id; channelId: Id }>();
+  /** A created channel carries its kind, name and position; a seeded one (addChannel) is listed as `channel-<i>`. */
+  private readonly channels = new Map<string, { communityId: Id; channelId: Id; created?: { kind: 0 | 1; name: string; position: number } }>();
+  /** Created servers: community hex → its name, its owner's and its members' user hexes. */
+  private readonly communities = new Map<string, { id: Id; name: string; owner: string; members: Set<string> }>();
   private readonly owners = new Map<string, string>();
   private readonly devices = new Map<string, Id>();
   private readonly users = new Map<string, Id>();
@@ -2188,6 +2194,10 @@ export class ModelDs {
 
   addChannel(communityId: Id, channelId: Id): void {
     this.channels.set(toHex(channelId), { communityId, channelId });
+  }
+  /** `user` joins a created server (POST /v1/communities/{id}/join as the instance admits it). */
+  addMember(communityId: Id, user: Id): void {
+    this.communities.get(toHex(communityId))?.members.add(toHex(user));
   }
   own(user: Id, device: Id): void {
     this.owners.set(toHex(device), toHex(user));
@@ -2565,6 +2575,17 @@ export class ModelDs {
     const d = toHex(dev);
     return {
       listChannels: (communityId) => this.call(d, 'listChannels', null, null, () => this.channelRows(communityId)),
+      listCommunities: () => this.call(d, 'listCommunities', null, null, () => [...this.communities.values()]
+        .filter((c) => c.members.has(this.owners.get(d) ?? ''))
+        .map((c) => ({ id: c.id, name: c.name, owner: this.users.get(c.owner)!, policyVersion: 1n }))),
+      createCommunity: (name) => this.call(d, 'createCommunity', null, null, () => this.createCommunity(d, name)),
+      createChannel: (communityId, channel) => this.call(d, 'createChannel', null, null, () => this.createChannel(d, communityId, channel)),
+      createInvite: (communityId) => this.call(d, 'createInvite', null, null, () => {
+        this.memberOf(d, communityId);
+        this.counter += 1;
+        const code = `MODEL${String(this.counter)}`;
+        return { inviteId: idOf(0x1e, this.counter), code, url: `https://model.test/i/${code}`, expires: this.clockS + 604_800n };
+      }),
       postGroup: (body) => this.call(d, 'postGroup', null, null, () => this.postGroup(d, body)),
       getGroupInfo: (id) =>
         this.call(d, 'getGroupInfo', id, null, () => {
@@ -2712,6 +2733,36 @@ export class ModelDs {
     return out;
   }
 
+  /** POST /v1/communities: the caller owns the new server and is its first member (communities.go create). */
+  private createCommunity(d: string, name: string): { id: Id; roleEveryone: Id; policyVersion: bigint } {
+    const owner = this.owners.get(d);
+    if (owner === undefined || nameProblem(name, COMMUNITY_NAME_MAX_BYTES) !== null) throw httpError(400, 'E_INVALID_REQUEST');
+    this.counter += 1;
+    const id = idOf(0xc8, this.counter);
+    this.communities.set(toHex(id), { id, name, owner, members: new Set([owner]) });
+    return { id, roleEveryone: idOf(0xc7, this.counter), policyVersion: 1n };
+  }
+  /** A created server the caller is a member of; 404 otherwise, so a non-member does not learn that it exists. */
+  private memberOf(d: string, communityId: Id): { owner: string } {
+    const c = this.communities.get(toHex(communityId));
+    if (c === undefined || !c.members.has(this.owners.get(d) ?? '')) throw httpError(404, 'E_NOT_FOUND');
+    return c;
+  }
+  /** POST /v1/communities/{id}/channels: only the owner holds ManageChannels (no role grants it in the model); a voice
+   *  channel is also a channel calls may start in. */
+  private createChannel(d: string, communityId: Id, channel: { kind: 'text' | 'voice'; name: string; position: number }):
+    { id: Id; mode: number; visibility: number } {
+    const c = this.memberOf(d, communityId);
+    if (c.owner !== this.owners.get(d)) throw httpError(403, 'E_FORBIDDEN');
+    if (nameProblem(channel.name, CHANNEL_NAME_MAX_BYTES) !== null) throw httpError(400, 'E_INVALID_REQUEST');
+    this.counter += 1;
+    const channelId = idOf(0xcb, this.counter);
+    const kind = channel.kind === 'voice' ? 1 : 0;
+    this.channels.set(toHex(channelId), { communityId, channelId, created: { kind, name: channel.name, position: channel.position } });
+    if (kind === 1) this.voiceChannels.set(toHex(channelId), communityId);
+    return { id: channelId, mode: 0, visibility: 0 };
+  }
+
   private channelRows(communityId: Uint8Array): {
     id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null; name: string; topic: string;
     position: number; seq: bigint; textGroupId: Uint8Array | null;
@@ -2719,8 +2770,9 @@ export class ModelDs {
     return [...this.channels.values()]
       .filter((c) => same(c.communityId, communityId))
       .map((c, i) => ({
-        id: c.channelId, kind: 0, mode: 0, visibility: 0, parentId: null, name: `channel-${String(i)}`, topic: '', position: i,
-        seq: 1n, textGroupId: this.openGroupOf(c.channelId)?.id ?? null,
+        id: c.channelId, kind: c.created?.kind ?? 0, mode: 0, visibility: 0, parentId: null, name: c.created?.name ?? `channel-${String(i)}`,
+        topic: '', position: c.created?.position ?? i, seq: 1n,
+        textGroupId: c.created?.kind === 1 ? null : this.openGroupOf(c.channelId)?.id ?? null,
       }));
   }
 

@@ -52,6 +52,18 @@ export interface CallStarted { created: boolean; callId: Uint8Array; groupId: Ui
    *  answer has six elements (any other start, or an instance from before it). */
   rung: Uint8Array[] | null; }
 export type CallStats = [number, number | null, number, number, number, number];
+// ---- v0.1.0-web3.1: create a server, a channel and an invite ----
+/** The instance's own bounds (internal/api): maxCommunityNameBytes, maxChannelNameBytes, maxInviteUses, maxInviteTTL. */
+export const COMMUNITY_NAME_MAX_BYTES = 255;
+export const CHANNEL_NAME_MAX_BYTES = 100;
+export const INVITE_USES_MAX = 1000;
+export const INVITE_TTL_MAX_S = 30 * 24 * 3600;
+/** The largest position the instance stores (maxChannelPosition). */
+const CHANNEL_POSITION_MAX = 2 ** 31 - 1;
+export interface CommunityCreated { id: Uint8Array; roleEveryone: Uint8Array; policyVersion: bigint; }
+export interface ChannelCreated { id: Uint8Array; mode: number; visibility: number; }
+export interface InviteCreated { inviteId: Uint8Array; code: string; url: string; expires: bigint; }
+export type NewChannelKind = 'text' | 'voice';
 
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
@@ -108,6 +120,33 @@ function participants(v: CborValue): CallParticipant[] {
     if (flags > 31) throw new CborError('E_CBOR_RANGE', 'voice flags above 31');
     return { userId: bin(a[0], 16), deviceId: bin(a[1], 16), flags };
   });
+}
+const UTF8 = new TextEncoder();
+const CONTROL = /\p{Cc}/u;
+/** A name as the instance checks it (validCommunityName, validChannelText): 1..max UTF-8 bytes, no control character. */
+export function nameProblem(v: unknown, maxBytes: number): string | null {
+  if (typeof v !== 'string') return 'is not a string';
+  const bytes = UTF8.encode(v).length;
+  if (bytes < 1 || bytes > maxBytes) return `must be 1..${String(maxBytes)} bytes`;
+  if (CONTROL.test(v)) return 'contains a control character';
+  return null;
+}
+function checkedName(field: string, v: string, maxBytes: number): string {
+  const problem = nameProblem(v, maxBytes);
+  if (problem !== null) throw new RangeError(`E_ROUTE_INPUT: ${field} ${problem}`);
+  return v;
+}
+function between(field: string, v: number, min: number, max: number): number {
+  if (!Number.isSafeInteger(v) || v < min || v > max) throw new RangeError(`E_ROUTE_INPUT: ${field} must be ${String(min)}..${String(max)}`);
+  return v;
+}
+/** An invite link as the instance answers it: an absolute http(s) URL (it is shown and copied, never followed here). */
+function inviteUrl(v: CborValue): string {
+  const s = str(v);
+  let protocol = '';
+  try { protocol = new URL(s).protocol; } catch { /* not a URL */ }
+  if (protocol !== 'https:' && protocol !== 'http:') throw new CborError('E_CBOR_RANGE', 'the invite url is not an http(s) URL');
+  return s;
 }
 function callPath(callId: Uint8Array, rest = ''): string {
   return `/v1/calls/${id('callId', callId)}${rest}`;
@@ -179,6 +218,32 @@ export class Routes {
   }
   async joinCommunity(communityId: Uint8Array, invite: string | null): Promise<void> {
     await this.body('POST', `/v1/communities/${id('communityId', communityId)}/join`, 'none', true, { body: encode([invite]) });
+  }
+  /** POST /v1/communities: [name, policy, min_account_age_seconds, require_mod_2fa] with the instance's defaults (an empty
+   *  policy is "{}"); the caller becomes its owner and first member. */
+  async createCommunity(communityName: string): Promise<CommunityCreated> {
+    const body = encode([checkedName('name', communityName, COMMUNITY_NAME_MAX_BYTES), new Uint8Array(0), 0, 0]);
+    const a = atLeast(decode(await this.body('POST', '/v1/communities', 'write', false, { body })), 3);
+    return { id: bin(a[0], 16), roleEveryone: bin(a[1], 16), policyVersion: u64(a[2]) };
+  }
+  /** POST /v1/communities/{id}/channels: [kind, mode, visibility, parent_id, name, topic, position, slowmode_seconds] for a
+   *  top-level channel in mode 0 (the server cannot read it) and visibility 0, with no topic and no slow mode. */
+  async createChannel(communityId: Uint8Array, channel: { kind: NewChannelKind; name: string; position: number }): Promise<ChannelCreated> {
+    const kind = channel.kind === 'text' ? 0 : channel.kind === 'voice' ? 1 : -1;
+    if (kind < 0) throw new RangeError('E_ROUTE_INPUT: kind must be text or voice');
+    const body = encode([kind, 0, 0, null, checkedName('name', channel.name, CHANNEL_NAME_MAX_BYTES), '',
+      between('position', channel.position, 0, CHANNEL_POSITION_MAX), 0]);
+    const raw = await this.body('POST', `/v1/communities/${id('communityId', communityId)}/channels`, 'write', false, { body });
+    const a = atLeast(decode(raw), 3);
+    return { id: bin(a[0], 16), mode: u53(a[1]), visibility: u53(a[2]) };
+  }
+  /** POST /v1/communities/{id}/invites: [max_uses, ttl_seconds, grants_admin 0]; the answer's url is the instance's own
+   *  invite link (`<base>/i/<code>`), which the join dialog and the invite landing page both accept. */
+  async createInvite(communityId: Uint8Array, invite: { maxUses: number; ttlSeconds: number }): Promise<InviteCreated> {
+    const body = encode([between('maxUses', invite.maxUses, 1, INVITE_USES_MAX), between('ttlSeconds', invite.ttlSeconds, 1, INVITE_TTL_MAX_S), 0]);
+    const raw = await this.body('POST', `/v1/communities/${id('communityId', communityId)}/invites`, 'write', false, { body });
+    const a = atLeast(decode(raw), 4);
+    return { inviteId: bin(a[0], 16), code: str(a[1]), url: inviteUrl(a[2]), expires: u64(a[3]) };
   }
   async listChannels(communityId: Uint8Array): Promise<ChannelRow[]> {
     const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/channels`, 'read', true);

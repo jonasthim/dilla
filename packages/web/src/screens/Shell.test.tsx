@@ -45,12 +45,12 @@ function timeline(over: Partial<TimelineState> = {}): TimelineState {
   return { channelId: GEN, group: 'active', items: [], hasEarlier: false, ...over };
 }
 // `state` is the history entry's state (task 23 carries a refused join in it, pre-flight ruling (g)).
-function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string }[]; state?: unknown; before?(fake: FakeClient): void } = {}) {
+function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string; owner: string }[]; state?: unknown; before?(fake: FakeClient): void } = {}) {
   window.history.replaceState(opts.state ?? null, '', path);
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
-  fake.set('communities', opts.communities ?? [{ id: A, name: 'Midgard' }, { id: B, name: 'Valhalla' }]);
+  fake.set('communities', opts.communities ?? [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }, { id: B, name: 'Valhalla', owner: 'ee'.repeat(16) }]);
   if (opts.channels !== false) fake.set(`channels:${A}`, CHANNELS);
   fake.set(`members:${A}`, MEMBERS);
   opts.before?.(fake);
@@ -548,7 +548,7 @@ function setupWith(handler: FakeClient['handler']) {
   fake.handler = handler;
   fake.set('account', account());
   fake.set('connection', { status: 'online', generation: '7' });
-  fake.set('communities', [{ id: A, name: 'Midgard' }, { id: B, name: 'Valhalla' }]);
+  fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }, { id: B, name: 'Valhalla', owner: 'ee'.repeat(16) }]);
   fake.set(`members:${A}`, MEMBERS);
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
@@ -952,7 +952,7 @@ describe('servers and the join dialog', () => {
     await user.click(screen.getByRole('button', { name: 'Join' }));
     expect(path()).toBe(`/c/${NEW}`);
     expect(fake.callsOf('selectCommunity').map(c => c.communityId)).toEqual([A]);
-    act(() => fake.set('communities', [{ id: A, name: 'Midgard' }, { id: B, name: 'Valhalla' }, { id: NEW, name: 'Asgard' }]));
+    act(() => fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }, { id: B, name: 'Valhalla', owner: 'ee'.repeat(16) }, { id: NEW, name: 'Asgard', owner: 'ee'.repeat(16) }]));
     expect(path()).toBe(`/c/${NEW}`);
     expect(fake.callsOf('selectCommunity').map(c => c.communityId)).toEqual([A, NEW]);
   });

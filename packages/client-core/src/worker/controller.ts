@@ -22,7 +22,10 @@ import { Op, voiceStateOf, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
-import { Routes, type ChannelRow, type Instance, type Limits, type MemberRow } from '../http/routes';
+import {
+  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow, type Instance,
+  type Limits, type MemberRow, type NewChannelKind,
+} from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { isSettingKey, isSettingValue } from '../state/settings';
@@ -30,8 +33,8 @@ import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
-  type DeviceSummary, type DmSummary, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem, type TrustSummary,
-  type SendBlocksState, type WorkerError,
+  type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem,
+  type TrustSummary, type SendBlocksState, type WorkerError,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -158,6 +161,7 @@ function coreInput(e: unknown, details: ReadonlySet<string>): boolean {
 type Method = Command['m'];
 const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'start', 'signupBegin', 'signupSubmit', 'signupReset', 'resetDevice', 'joinCommunity', 'selectCommunity',
+  'createCommunity', 'createChannel', 'createInvite',
   'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
@@ -172,7 +176,7 @@ const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
 const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
-  selectCommunity: ['communityId'], openChannel: ['channelId'], closeChannel: ['channelId'], loadEarlier: ['channelId'],
+  selectCommunity: ['communityId'], createChannel: ['communityId'], createInvite: ['communityId'], openChannel: ['channelId'], closeChannel: ['channelId'], loadEarlier: ['channelId'],
   send: ['channelId'], retrySend: ['msgId'], discardSend: ['msgId'],
   revokeDevice: ['deviceId'], markRead: ['channelId'], openDm: ['userId'],
   editMessage: ['channelId', 'msgId'], deleteMessage: ['channelId', 'msgId'], react: ['channelId', 'msgId'], pin: ['channelId', 'msgId'],
@@ -193,7 +197,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'signin-totp': ['signInTotp', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
   'ready': [
-    'joinCommunity', 'selectCommunity', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
+    'joinCommunity', 'selectCommunity', 'createCommunity', 'createChannel', 'createInvite', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
     'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
@@ -229,6 +233,24 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof value !== 'string' || !ID.test(value)) return `${field} is not 32 lowercase hex`;
   }
   if (m === 'joinCommunity' && blank(command.invite)) return 'invite is empty';
+  if (m === 'createCommunity') {
+    const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, COMMUNITY_NAME_MAX_BYTES);
+    if (problem !== null) return `name ${problem}`;
+  }
+  if (m === 'createChannel') {
+    if (command.kind !== 'text' && command.kind !== 'voice') return 'kind is not text or voice';
+    const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, CHANNEL_NAME_MAX_BYTES);
+    if (problem !== null) return `name ${problem}`;
+  }
+  if (m === 'createInvite') {
+    const { maxUses, ttlSeconds } = command;
+    if (typeof maxUses !== 'number' || !Number.isSafeInteger(maxUses) || maxUses < 1 || maxUses > INVITE_USES_MAX) {
+      return `maxUses is not an integer 1..${String(INVITE_USES_MAX)}`;
+    }
+    if (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > INVITE_TTL_MAX_S) {
+      return `ttlSeconds is not an integer 1..${String(INVITE_TTL_MAX_S)}`;
+    }
+  }
   if (m === 'send') {
     const { replyTo, attachments } = command;
     if (replyTo !== undefined && replyTo !== null && (typeof replyTo !== 'string' || !ID.test(replyTo))) return 'replyTo is not 32 lowercase hex';
@@ -378,6 +400,8 @@ export class Controller {
   private readonly pinsOpen = new Set<string>();
   /** community hex → the own role hexes last applied to the core, used only to skip a redundant ownRolesSet. */
   private readonly roles = new Map<string, string[]>();
+  /** community hex → how many channels this device created there: a list read overtaken by a create is read again. */
+  private readonly structureRev = new Map<string, number>();
   private purging: Promise<void> | null = null;
   private purgeAgain = false;
   private trustRefresh: Promise<null> | null = null;
@@ -567,6 +591,9 @@ export class Controller {
       case 'resetDevice': return this.resetDevice();
       case 'joinCommunity': return this.joinCommunity(command.invite);
       case 'selectCommunity': return this.selectCommunity(command.communityId);
+      case 'createCommunity': return this.createCommunity(command.name);
+      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name);
+      case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);
@@ -1308,7 +1335,7 @@ export class Controller {
   private async refreshCommunities(): Promise<void> {
     const rows = await this.routes.listCommunities();
     if (this.storeCleared) return;
-    const list = rows.map((r) => ({ id: toHex(r.id), name: r.name }));
+    const list = rows.map((r) => ({ id: toHex(r.id), name: r.name, owner: toHex(r.owner) }));
     this.slices.set('communities', list);
     // Pre-flight ruling 1(vi): a community that is no longer listed loses its selection and its slices.
     const gone = new Set<string>();
@@ -1351,11 +1378,65 @@ export class Controller {
     return null;
   }
 
-  /** The channel and member lists of one community; join-all then expects its groups (requirement 18). */
+  // ---- the create flow (v0.1.0-web3.1) ----
+
+  /** POST /v1/communities. The new server is listed before the answer, also when the list read after the create fails
+   *  (as a server this account owns), so the page can select it and add its starter channels at once. */
+  private async createCommunity(communityName: string): Promise<{ communityId: string }> {
+    const created = await this.routes.createCommunity(communityName);
+    const communityId = toHex(created.id);
+    // As joinPath: the server exists; a failed refresh of the list does not undo that.
+    try { await this.refreshCommunities(); } catch { /* listed below; the next ready refreshes it */ }
+    if (!this.storeCleared && !this.listed(communityId) && this.me !== null) {
+      this.slices.set('communities', [...(this.slices.get('communities') ?? []),
+        { id: communityId, name: communityName, owner: toHex(this.me.userId) }]);
+    }
+    return { communityId };
+  }
+
+  /** POST /v1/communities/{id}/channels at the position after the server's last channel. The channel is published as
+   *  created before the answer, then the server's lists are read again; a text channel's group is registered by the
+   *  first device that opens it (sync/channel.ts), a voice channel's call group at its first call. */
+  private async createChannel(communityId: string, kind: NewChannelKind, channelName: string): Promise<{ channelId: string }> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    let position = 0;
+    for (const known of this.channels.values()) {
+      if (known.communityId === communityId) position = Math.max(position, known.row.position + 1);
+    }
+    const created = await this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position });
+    // A list read that began before this create answers without the channel: loadCommunity reads again (structureRev).
+    this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1);
+    const channelId = toHex(created.id);
+    if (this.storeCleared || !this.listed(communityId)) return { channelId };
+    this.channels.set(channelId, { communityId, row: {
+      id: created.id, kind: kind === 'voice' ? 1 : 0, mode: created.mode, visibility: created.visibility, parentId: null,
+      name: channelName, topic: '', position, seq: 0n, textGroupId: null,
+    } });
+    this.publishChannels(communityId);
+    try { await this.loadCommunity(communityId); } catch { /* the row stays as created; the next ready reads the list */ }
+    return { channelId };
+  }
+
+  /** POST /v1/communities/{id}/invites: the instance's link (shown and copied by the page), its code and its expiry. */
+  private async createInvite(communityId: string, maxUses: number, ttlSeconds: number): Promise<InviteCreatedResult> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    const invite = await this.routes.createInvite(fromHex(communityId), { maxUses, ttlSeconds });
+    return { url: invite.url, code: invite.code, expires: Number(invite.expires) };
+  }
+
+  /** The channel and member lists of one community; join-all then expects its groups (requirement 18). A read that a
+   *  createChannel of the same community overtook is read again, so it never replaces the list with one that lacks the
+   *  created channel. */
   private async loadCommunity(communityId: string): Promise<void> {
     const id = fromHex(communityId);
-    const rows = await this.routes.listChannels(id);
-    const members = await this.routes.listMembers(id);
+    let rows: Awaited<ReturnType<Routes['listChannels']>>;
+    let members: MemberRow[];
+    for (;;) {
+      const rev = this.structureRev.get(communityId) ?? 0;
+      rows = await this.routes.listChannels(id);
+      members = await this.routes.listMembers(id);
+      if ((this.structureRev.get(communityId) ?? 0) === rev) break;
+    }
     if (this.storeCleared || !this.listed(communityId)) return;
     for (const [channelId, known] of this.channels) if (known.communityId === communityId) this.channels.delete(channelId);
     for (const row of rows) this.channels.set(toHex(row.id), { communityId, row });

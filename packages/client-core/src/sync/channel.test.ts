@@ -401,3 +401,31 @@ describe('opening a channel (rule 6)', () => {
       expect(d.core.group(r.groupId)).toMatchObject({ state: 2, communityId: null });
     });
   });
+
+// v0.1.0-web3.1, the brief's check that a new channel needs no client work beyond the create: a text channel created
+// through the client path has no group until the first device that opens it registers one (postGroup with the core's
+// groupCreate); a member who opens it later joins that group by external commit.
+describe('a channel created through the client path', () => {
+  it('is registered by its first opener and joined by external commit by the next member', async () => {
+    ds.own(ME.user, ME.device);
+    ds.own(PEER.user, PEER.device);
+    const routes = ds.routesFor(ME.device);
+    const server = await routes.createCommunity('Midgard Crew');
+    ds.addMember(server.id, PEER.user);
+    const { id: channelId } = await routes.createChannel(server.id, { kind: 'text', name: 'general', position: 0 });
+    expect((await routes.listChannels(server.id))[0]?.textGroupId).toBeNull();
+
+    const first = await d.engine.openChannel({ communityId: server.id, channelId, textGroupId: null });
+    expect(first.state).toBe(2);
+    expect(ds.callsOf(ME.device, 'postGroup')).toHaveLength(1);
+    const listed = (await ds.routesFor(PEER.device).listChannels(server.id))[0];
+    expect(listed?.textGroupId).toEqual(first.groupId);
+
+    const peer = device(ds, clock, PEER);
+    const second = await peer.engine.openChannel({ communityId: server.id, channelId, textGroupId: listed?.textGroupId ?? null });
+    expect(second).toEqual({ groupId: first.groupId, state: 2 });
+    expect(ds.callsOf(PEER.device, 'postGroup')).toHaveLength(0);
+    expect(ds.callsOf(PEER.device, 'postResync')).toHaveLength(1);
+    expect(ds.view(first.groupId).members.sort()).toEqual([toHex(ME.device), toHex(PEER.device)].sort());
+  });
+});
