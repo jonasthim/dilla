@@ -71,4 +71,16 @@ describe('InviteLink', () => {
       unmount();
     }
   });
+
+  it('puts an extra action in the footer beside close, and none when there is no extra', async () => {
+    const user = userEvent.setup();
+    const onExtra = vi.fn();
+    const { rerender } = render(<InviteLink {...props({ extra: <button type="button" onClick={onExtra}>more options</button> })} />);
+    const footer = screen.getByRole('dialog', { name: labels.title }).querySelector('.d-dialog__footer') as HTMLElement;
+    expect(footer).toContainElement(screen.getByRole('button', { name: 'more options' }));
+    await user.click(screen.getByRole('button', { name: 'more options' }));
+    expect(onExtra).toHaveBeenCalledTimes(1);
+    rerender(<InviteLink {...props()} />);
+    expect(screen.queryByRole('button', { name: 'more options' })).toBeNull();
+  });
 });
