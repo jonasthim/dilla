@@ -174,6 +174,37 @@ describe('CommunityRail', () => {
     expect(screen.queryByRole('button', { name: 'settings' })).toBeNull();
   });
 
+  // v0.1.0-web3.1, flow 07: a fresh instance starts here. "new server" ends the server list (after join, before settings);
+  // both action tiles carry a visible caption that their accessible names contain (WCAG 2.5.3).
+  it('ends the list with join, then new server, each captioned, inside the one tab stop', async () => {
+    const user = userEvent.setup();
+    const p = props({ createLabel: 'new server', createCaption: 'new', joinCaption: 'join', onCreate: vi.fn(),
+      settingsLabel: 'settings', onSettings: vi.fn() });
+    render(wrapped(p));
+    const all = within(screen.getByRole('navigation', { name: 'servers' })).getAllByRole('button');
+    expect(all.slice(-3)).toEqual([btn('join a server'), btn('new server'), btn('settings')]);
+    expect(within(btn('new server')).getByText('new')).toHaveAttribute('aria-hidden', 'true');
+    expect(within(btn('join a server')).getByText('join')).toHaveAttribute('aria-hidden', 'true');
+    await user.tab();
+    await user.tab();
+    await user.keyboard('{End}{ArrowUp}');
+    expect(btn('new server')).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(p.onCreate).toHaveBeenCalledTimes(1);
+    expect(p.onJoin).not.toHaveBeenCalled();
+  });
+
+  it('draws no new-server tile unless both its label and its handler are given', () => {
+    render(wrapped(props({ createLabel: 'new server' })));
+    expect(screen.queryByRole('button', { name: 'new server' })).toBeNull();
+  });
+
+  it('has no serious axe violations with the captioned action tiles', async () => {
+    const { container } = render(<div className="d-root"><CommunityRail {...props({ items: [], activeId: null, createLabel: 'new server',
+      createCaption: 'new', joinCaption: 'join', onCreate: () => {}, settingsLabel: 'settings', onSettings: () => {} })} /></div>);
+    await expectNoAxeViolations(container);
+  });
+
   it('has no serious axe violations with badges and the settings button', async () => {
     const { container } = render(<div className="d-root"><CommunityRail {...props({ items: BADGED, itemLabel, settingsLabel: 'settings', onSettings: () => {} })} /></div>);
     await expectNoAxeViolations(container);

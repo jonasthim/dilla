@@ -1,0 +1,89 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CreateServer, type CreateServerProps } from './CreateServer.tsx';
+import meta, { Partial as PartialStory } from './CreateServer.stories.tsx';
+import { expectNoAxeViolations } from '../test/setup.ts';
+
+const labels: CreateServerProps['labels'] = meta.args.labels;
+
+function props(over: Partial<CreateServerProps> = {}): CreateServerProps {
+  return { open: true, name: '', onName: vi.fn(), error: null, busy: false, partial: null, labels,
+    onSubmit: vi.fn(), onRetry: vi.fn(), onClose: vi.fn(), ...over };
+}
+
+afterEach(() => { delete document.documentElement.dataset.theme; });
+
+describe('CreateServer', () => {
+  it('is a dialog named by its title with one labelled field, where focus starts', () => {
+    render(<CreateServer {...props()} />);
+    const dialog = screen.getByRole('dialog', { name: labels.title });
+    expect(dialog).toHaveTextContent(labels.body);
+    const field = screen.getByRole('textbox', { name: labels.name });
+    expect(field).toHaveFocus();
+    expect(field).toHaveAccessibleDescription(labels.hint);
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+  });
+
+  it('reports typing, and submits with Enter in the field and with the footer button', async () => {
+    const user = userEvent.setup();
+    const p = props({ name: 'Midgard' });
+    render(<CreateServer {...p} />);
+    await user.type(screen.getByRole('textbox', { name: labels.name }), 'x');
+    expect(p.onName).toHaveBeenLastCalledWith('Midgardx');
+    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('button', { name: labels.submit }));
+    expect(p.onSubmit).toHaveBeenCalledTimes(2);
+    expect(p.onRetry).not.toHaveBeenCalled();
+  });
+
+  it('shows a refusal as the field’s alert and description', () => {
+    render(<CreateServer {...props({ error: 'Give the server a name.' })} />);
+    const field = screen.getByRole('textbox', { name: labels.name });
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(`${labels.hint} Give the server a name.`);
+    expect(screen.getByRole('alert')).toHaveTextContent('Give the server a name.');
+  });
+
+  it('while busy says so on an aria-disabled submit and submits nothing more', async () => {
+    const user = userEvent.setup();
+    const p = props({ name: 'Midgard', busy: true });
+    render(<CreateServer {...p} />);
+    const submit = screen.getByRole('button', { name: labels.busy });
+    expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await user.click(submit);
+    await user.type(screen.getByRole('textbox', { name: labels.name }), '{Enter}');
+    expect(p.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('after a partial create shows the notice in place of the field, and its submit retries', async () => {
+    const user = userEvent.setup();
+    const p = props({ partial: PartialStory.args.partial });
+    render(<CreateServer {...p} />);
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent(PartialStory.args.partial);
+    await user.click(screen.getByRole('button', { name: labels.retry }));
+    expect(p.onRetry).toHaveBeenCalledTimes(1);
+    expect(p.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('Escape and the close button call onClose; a closed dialog shows nothing', async () => {
+    const user = userEvent.setup();
+    const p = props();
+    const { rerender } = render(<CreateServer {...p} />);
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: new RegExp(labels.close) }));
+    expect(p.onClose).toHaveBeenCalledTimes(2);
+    rerender(<CreateServer {...p} open={false} />);
+    expect(screen.queryByText(labels.body)).toBeNull();
+  });
+
+  it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, idle, refused and partial', async theme => {
+    document.documentElement.dataset.theme = theme;
+    for (const over of [{}, { error: 'Give the server a name.' }, { partial: PartialStory.args.partial }]) {
+      const { container, unmount } = render(<div className="d-root"><CreateServer {...props(over)} /></div>);
+      await expectNoAxeViolations(container);
+      unmount();
+    }
+  });
+});

@@ -1092,6 +1092,9 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'skip to messages' }));
     await user.tab();
     expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
+    // Flow 07: the server's actions stand under its name, before the tabs (a member who does not own it: the invite only).
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'invite link' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
     await user.tab();

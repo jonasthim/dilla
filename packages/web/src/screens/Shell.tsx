@@ -11,6 +11,7 @@ import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, readJoinError, useRoute } from '../router.ts';
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
+import { CreateChannelFlow, CreateServerFlow, InviteFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
@@ -54,6 +55,9 @@ export function isChanged(row: TrustSummary): boolean {
   return row.changedUmk !== null || row.blocked === 'E_UMK_CHANGED';
 }
 const HEX32 = /^[0-9a-f]{32}$/;
+/** Flow 07: the selected server's lists are read again when the window comes back, at most this often, so a channel another
+ *  member added shows without a reload (the instance sends no event for it). */
+export const LIST_REFRESH_MS = 15_000;
 // Renew an unchanged typing signal after 5 s: above the server's 3 s meter, inside its 10 s hold (L-HTTP-96).
 const TYPING_RENEW_MS = 5_000;
 /** No device speaking: the voice rows of calls this device is not in (product walk M3). */
@@ -158,6 +162,13 @@ export function Shell(): React.JSX.Element {
   const [loadingEarlier, setLoadingEarlier] = useState<string | null>(null);
   // The composer is controlled: the text of the channel or DM it was typed in.
   const [draft, setDraft] = useState<{ channelId: string | null; text: string }>({ channelId: null, text: '' });
+  // Flow 07: start a server, add a channel, copy an invite link.
+  const [createOpen, setCreateOpen] = useState(false);
+  const [channelOpen, setChannelOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const createFlowOpen = createOpen || channelOpen || inviteOpen;
+  // The text channel a create just opened: its composer takes focus once it is on screen (after the dialog handed focus back).
+  const pendingFocus = useRef<string | null>(null);
   // The DM picker (requirement 5).
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
@@ -204,7 +215,7 @@ export function Shell(): React.JSX.Element {
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.isComposing || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
       // M-01: never under another modal (pins, lightbox, any open dialog), and never again while search is open.
-      if (overlay || joinOpen || pickerOpen || searchOpen || document.querySelector('dialog[open]') !== null) return;
+      if (overlay || joinOpen || pickerOpen || createFlowOpen || searchOpen || document.querySelector('dialog[open]') !== null) return;
       if (event.key.toLowerCase() === 'k') { event.preventDefault(); startSearch('all'); }
       else if (event.ctrlKey && !event.metaKey && event.key === '/' && targetId !== null) {
         event.preventDefault(); startSearch('channel');
@@ -212,7 +223,7 @@ export function Shell(): React.JSX.Element {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overlay, joinOpen, pickerOpen, searchOpen, targetId]);
+  }, [overlay, joinOpen, pickerOpen, createFlowOpen, searchOpen, targetId]);
   useEffect(() => {
     if (searchOpen) return;
     const opener = restoreSearchFocus.current;
@@ -333,6 +344,25 @@ export function Shell(): React.JSX.Element {
     selectCommunity(communityId);
     client.call({ m: 'loadVoice', communityId, channelId: null }).catch(() => undefined);
   }, [communityId, listed, selectCommunity, client]);
+  // (3a) Flow 07: the selected server's lists again when the window comes back, at most once per LIST_REFRESH_MS (counting the
+  // load above). A background read: a failure keeps the lists and raises no banner, as the picker's re-read does.
+  const listedAt = useRef(0);
+  useEffect(() => {
+    if (!listed || communityId === null) return;
+    listedAt.current = Date.now();
+    const id = communityId;
+    const refresh = () => {
+      if (document.visibilityState === 'hidden' || Date.now() - listedAt.current < LIST_REFRESH_MS) return;
+      listedAt.current = Date.now();
+      client.call({ m: 'selectCommunity', communityId: id }).catch(() => undefined);
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [communityId, listed, client]);
   // (3b) An open DM: whether a call is live in it.
   const dmOpen = dm?.id ?? null;
   useEffect(() => {
@@ -404,7 +434,7 @@ export function Shell(): React.JSX.Element {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return;
-      if (overlay || joinOpen || pickerOpen || !channelRoute || communityId === null) return;
+      if (overlay || joinOpen || pickerOpen || createFlowOpen || !channelRoute || communityId === null) return;
       const next = stepChannel(ordered, channelId, e.key === 'ArrowUp' ? -1 : 1);
       if (next === null) return;
       e.preventDefault();
@@ -412,7 +442,7 @@ export function Shell(): React.JSX.Element {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [ordered, channelId, communityId, channelRoute, overlay, joinOpen, pickerOpen, navigate]);
+  }, [ordered, channelId, communityId, channelRoute, overlay, joinOpen, pickerOpen, createFlowOpen, navigate]);
 
   // A11Y-DESIGN-01: the log is keyed by its channel or DM and by its first slice, so it mounts with the rows it
   // holds and a polite log announces only rows added later. A log that held focus hands it on to its successor.
@@ -482,6 +512,17 @@ export function Shell(): React.JSX.Element {
     pickedDm.current = false;
     focusComposer();
   }, [pickerOpen]);
+
+  // Flow 07: a created text channel's composer takes focus once it is on screen. No dependency list: it may appear several
+  // renders after the create answered.
+  useEffect(() => {
+    const want = pendingFocus.current;
+    if (want === null || targetId !== want) return;
+    const box = document.querySelector<HTMLTextAreaElement>('.d-composer textarea');
+    if (box === null || createFlowOpen) return;
+    box.focus();
+    pendingFocus.current = null;
+  });
 
   const closeJoin = () => { setJoinOpen(false); setJoinInvite(null); setJoinError(null); };
   const onJoined = (id: string) => {
@@ -581,6 +622,11 @@ export function Shell(): React.JSX.Element {
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
   };
 
+  // Flow 07: with no server, the one way in is to start one or to join one.
+  const noServerState = <EmptyState title={t('shell.noServer.title')} body={t('shell.noServer.body')}
+    action={{ label: t('shell.noServer.create'), onAction: () => setCreateOpen(true) }}
+    secondary={{ label: t('shell.noServer.action'), onAction: () => setJoinOpen(true) }} />;
+
   let main: ReactNode = null;
   if (dm !== null) {
     main = openError !== null ? openFailed(dm.id, openError) : <>
@@ -590,8 +636,7 @@ export function Shell(): React.JSX.Element {
   } else if (voiceChannel !== null) {
     main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
   } else if (communities !== undefined && communities.length === 0 && communityId === null) {
-    main = <EmptyState title={t('shell.noServer.title')} body={t('shell.noServer.body')}
-      action={{ label: t('shell.noServer.action'), onAction: () => setJoinOpen(true) }} />;
+    main = noServerState;
   } else if (community !== null && channels !== undefined && ordered.length === 0) {
     main = <EmptyState title={t('shell.noChannel.title')} body={t('shell.noChannel.body')} />;
   } else if (channel !== null && unsupported) {
@@ -626,7 +671,8 @@ export function Shell(): React.JSX.Element {
   // DMs tab stays reachable (A11Y-DESIGN-02).
   let sidebar: ReactNode = null;
   const hasDms = (dms?.length ?? 0) > 0 || dmId !== null;
-  if (community !== null || hasDms) {
+  // Flow 07: with no server the sidebar still stands, on the DMs tab, so its picker can say why it is empty.
+  if (community !== null || hasDms || noServer) {
     const onDms = tab === 'dms';
     const serverId = community?.id ?? null;
     let content: ReactNode;
@@ -635,13 +681,21 @@ export function Shell(): React.JSX.Element {
       content = <EmptyState title={community.name} body={t('shell.sidebar.loadError', { code: selectError.code })}
         action={{ label: t('shell.sidebar.retry'), onAction: () => { refocus.current = 'channels'; selectCommunity(id); } }} />;
     } else if (!onDms && community === null) {
-      content = <EmptyState title={t('shell.noServer.title')} body={t('shell.noServer.body')}
-        action={{ label: t('shell.noServer.action'), onAction: () => setJoinOpen(true) }} />;
+      content = noServerState;
     }
     const voiceHere = !onDms && community !== null && content === undefined;
+    // Flow 07: the server's actions. The instance serves no role bits, so the one permission fact here is ownership: the
+    // owner holds ManageChannels; every member holds CreateInvite by default (@everyone), and a refusal is said in the dialog.
+    const owner = community !== null && self !== null && community.owner === self.id;
+    const actions = voiceHere ? <>
+      {owner ? <Button className="dw-new-channel" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
+        {t('create.channel.button')}</Button> : null}
+      <Button onClick={() => setInviteOpen(true)}>{t('invite.open')}</Button>
+    </> : undefined;
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
+        actions={actions} actionsLabel={t('create.actions')}
         tabs={<>
           <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
             { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
@@ -657,8 +711,8 @@ export function Shell(): React.JSX.Element {
         content={content}
         // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
         // Fix round 3 (m4): a background read: a failure keeps the cached list and raises no banner.
-        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => {
-          client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
+        footer={onDms ? <Button variant="ghost" onClick={() => {
+          if (community !== null) client.call({ m: 'selectCommunity', communityId: community.id }).catch(() => undefined);
           setPickerOpen(true);
         }}>{t('shell.dms.new')}</Button>
           : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
@@ -765,6 +819,7 @@ export function Shell(): React.JSX.Element {
     return true;
   };
 
+  const pickerMembers = dmCandidates(members, self?.id ?? null);
   const status = connection?.status ?? 'connecting';
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
   const offline = connection?.status === 'offline';
@@ -806,7 +861,8 @@ export function Shell(): React.JSX.Element {
         skipLabel={t('shell.skip')}
         rail={<CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
-          joinLabel={t('shell.rail.join')} onJoin={() => setJoinOpen(true)}
+          joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}
+          createLabel={t('create.rail.newLabel')} createCaption={t('create.rail.new')} onCreate={() => setCreateOpen(true)}
           settingsLabel={t('shell.rail.settings')} onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
           itemLabel={railLabel} />}
         sidebar={sidebar}
@@ -845,8 +901,23 @@ export function Shell(): React.JSX.Element {
         onClose={closeJoin} onJoined={onJoined} />
       <UnsupportedVoice open={call.unsupported} labels={{ title: t('voice.unsupported.title'), body: t('voice.unsupported.body'),
         close: t('voice.unsupported.close') }} onClose={call.closeUnsupported} />
-      <DmPicker open={pickerOpen} members={dmCandidates(members, self?.id ?? null)} busy={pickerBusy} error={pickerError}
+      <DmPicker open={pickerOpen} members={pickerMembers} busy={pickerBusy} error={pickerError}
+        body={t(noServer ? 'shell.dms.noServer' : pickerMembers.length === 0 ? 'shell.dms.alone' : 'shell.dms.newBody')}
         onClose={closePicker} onPick={startDm} />
+      <CreateServerFlow open={createOpen} onClose={() => setCreateOpen(false)}
+        onServer={id => { setJoined(id); navigate({ name: 'channel', communityId: id, channelId: null }); }}
+        onDone={({ communityId: id, channelId: general }) => {
+          pendingFocus.current = general;
+          setCreateOpen(false);
+          navigate({ name: 'channel', communityId: id, channelId: general }, true);
+        }} />
+      <CreateChannelFlow open={channelOpen} community={community} onClose={() => setChannelOpen(false)}
+        onDone={(id, kind) => {
+          if (kind === 'text') pendingFocus.current = id;
+          setChannelOpen(false);
+          if (community !== null) navigate({ name: 'channel', communityId: community.id, channelId: id });
+        }} />
+      <InviteFlow open={inviteOpen} community={community} onClose={() => setInviteOpen(false)} />
     </>
   );
 }
@@ -854,14 +925,16 @@ export function Shell(): React.JSX.Element {
 /** The DM picker (requirement 5): the server's members, one "message" button each, the refusal inside the dialog. */
 function DmPicker(p: {
   open: boolean; members: readonly { userId: string; username: string; display: string }[]; busy: boolean; error: UiError | null;
+  /** Who can be picked, or why no one can (flow 07: no server yet, or no one else in it). */
+  body: string;
   onClose: () => void; onPick: (userId: string) => void;
 }): React.JSX.Element {
   const idBase = useId();
   return (
     <Dialog open={p.open} title={t('shell.dms.newTitle')} closeLabel={t('dialog.close')} onClose={p.onClose}>
       {p.error !== null ? <Banner tone="danger">{t('shell.banner.commandError', { code: p.error.code })}</Banner> : null}
-      <p>{t('shell.dms.newBody')}</p>
-      <ul className="dw-dm-picker">
+      <p>{p.body}</p>
+      {p.members.length === 0 ? null : <ul className="dw-dm-picker">
         {p.members.map(m => {
           const nameId = `${idBase}-${m.userId}`;
           return (
@@ -872,7 +945,7 @@ function DmPicker(p: {
             </li>
           );
         })}
-      </ul>
+      </ul>}
     </Dialog>
   );
 }

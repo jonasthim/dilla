@@ -25,6 +25,19 @@ describe('EmptyState', () => {
     expect(onAction).toHaveBeenCalledTimes(1);
   });
 
+  it('puts a secondary action after the primary, as a quieter button', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    const onSecondary = vi.fn();
+    render(<EmptyState title={TITLE} body={BODY} action={{ label: 'Start a server', onAction }}
+      secondary={{ label: 'Join a server', onAction: onSecondary }} />);
+    const buttons = screen.getAllByRole('button');
+    expect(buttons.map(b => [b.textContent, b.getAttribute('data-variant')])).toEqual([['Start a server', 'accent'], ['Join a server', 'default']]);
+    await user.click(buttons[1]);
+    expect(onSecondary).toHaveBeenCalledTimes(1);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><EmptyState title={TITLE} body={BODY} action={{ label: 'join a server', onAction: () => {} }} /></div>);
     await expectNoAxeViolations(container);

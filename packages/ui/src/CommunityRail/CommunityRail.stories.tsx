@@ -14,3 +14,8 @@ export const NoneActive: Story = { args: { activeId: null } };
 export const Empty: Story = { args: { items: [], activeId: null } };
 export const Badges: Story = { args: { items: [{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 120, mentions: 2 }] } };
 export const WithSettings: Story = { args: { settingsLabel: 'settings', onSettings: () => {} } };
+// Flow 07: the captioned action tiles; a fresh instance shows them alone.
+export const WithCreate: Story = { args: { joinCaption: 'join', createLabel: 'new server', createCaption: 'new', onCreate: () => {},
+  settingsLabel: 'settings', onSettings: () => {} } };
+export const FreshInstance: Story = { args: { items: [], activeId: null, joinCaption: 'join', createLabel: 'new server', createCaption: 'new',
+  onCreate: () => {}, settingsLabel: 'settings', onSettings: () => {} } };
