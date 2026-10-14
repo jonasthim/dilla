@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
 import './ConfirmDialog.css';
@@ -34,17 +34,26 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   // After Dialog's own open effect (a child's effects run first): a field or Cancel holds focus, not the dialog.
+  const cancelButton = () => bodyRef.current?.closest('dialog')?.querySelector<HTMLElement>('.d-dialog__footer button');
   useEffect(() => {
     if (!open) return;
-    const field = bodyRef.current?.querySelector<HTMLElement>('input:not([type="hidden"]), select, textarea');
-    const cancel = bodyRef.current?.closest('dialog')?.querySelector<HTMLElement>('.d-dialog__footer button');
-    (field ?? cancel)?.focus();
+    const field = bodyRef.current?.querySelector<HTMLElement>(
+      'input:not([type="hidden"]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]):not([readonly])');
+    (field ?? cancelButton())?.focus();
   }, [open]);
+  // The confirm button was disabled while busy, so focus may have been lost; a refusal puts it on Cancel (never on the
+  // destructive button), next to the alert.
+  const wasBusy = useRef(false);
+  useEffect(() => {
+    if (open && wasBusy.current && !busy && error !== null) cancelButton()?.focus();
+    wasBusy.current = busy;
+  }, [busy]);
+  const bodyId = `${useId()}-body`;
   return (
-    <Dialog open={open} title={title} closeLabel={cancelLabel} onClose={onClose}
+    <Dialog open={open} title={title} closeLabel={cancelLabel} onClose={onClose} describedBy={bodyId}
       footer={<Button variant={tone} type="button" disabled={!canConfirm || busy} onClick={onConfirm}>{busy ? busyLabel : confirmLabel}</Button>}>
       <div ref={bodyRef} className="d-confirm-dialog">
-        <p className="d-confirm-dialog__body">{body}</p>
+        <p id={bodyId} className="d-confirm-dialog__body">{body}</p>
         {children}
         {error !== null ? <p key={attempt} className="d-confirm-dialog__error" role="alert">{error}</p> : null}
       </div>

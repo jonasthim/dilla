@@ -38,6 +38,35 @@ describe('ConfirmDialog', () => {
     expect(screen.getByRole('combobox', { name: 'who' })).toHaveFocus();
   });
 
+  it('skips disabled and read-only fields when it looks for the first field', () => {
+    render(<ConfirmDialog {...props()}><input aria-label="off" disabled /><input aria-label="ro" readOnly /><input aria-label="real" /></ConfirmDialog>);
+    expect(screen.getByRole('textbox', { name: 'real' })).toHaveFocus();
+  });
+
+  it('with only disabled fields, focus goes to Cancel', () => {
+    render(<ConfirmDialog {...props()}><input aria-label="off" disabled /></ConfirmDialog>);
+    expect(screen.getByRole('button', { name: 'cancel' })).toHaveFocus();
+  });
+
+  it('the dialog is described by the body', () => {
+    render(<ConfirmDialog {...props()} />);
+    expect(screen.getByRole('dialog', { name: 'Ban Astrid?' })).toHaveAccessibleDescription('Astrid cannot join again until you unban them.');
+  });
+
+  it('when a busy run ends with an error, focus moves to Cancel; without an error it stays where it was', () => {
+    const p = props();
+    const { rerender } = render(<ConfirmDialog {...p}><input aria-label="reason" /></ConfirmDialog>);
+    expect(screen.getByRole('textbox', { name: 'reason' })).toHaveFocus();
+    rerender(<ConfirmDialog {...p} busy><input aria-label="reason" /></ConfirmDialog>);
+    rerender(<ConfirmDialog {...p} busy={false} error="You cannot ban this member."><input aria-label="reason" /></ConfirmDialog>);
+    expect(screen.getByRole('button', { name: 'cancel' })).toHaveFocus();
+    // A busy run that ends without an error (the caller closes the dialog) moves nothing.
+    screen.getByRole('textbox', { name: 'reason' }).focus();
+    rerender(<ConfirmDialog {...p} busy error={null}><input aria-label="reason" /></ConfirmDialog>);
+    rerender(<ConfirmDialog {...p} busy={false} error={null}><input aria-label="reason" /></ConfirmDialog>);
+    expect(screen.getByRole('textbox', { name: 'reason' })).toHaveFocus();
+  });
+
   it('confirm calls onConfirm; cancel and Escape call onClose', async () => {
     const user = userEvent.setup();
     const p = props();
