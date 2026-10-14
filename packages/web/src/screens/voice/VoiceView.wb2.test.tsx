@@ -166,6 +166,46 @@ describe('Settings → Voice follows the call (product walk M1)', () => {
     await waitFor(() => expect(dockStatus()).toHaveTextContent(t('voice.outputFailed')));
     expect(app.session.leave).not.toHaveBeenCalled();
   });
+
+  it('V1 fix 1: a refusal that arrives after the person chose another device again is not said (A → B → A)', async () => {
+    const app = await inHarbour({ settings: { 'voice.output': 'spk' } });
+    let refuse: (e: Error) => void = () => undefined;
+    app.session.setOutput.mockImplementationOnce(() => new Promise<void>((_ok, no) => { refuse = no; }));
+    app.client.publish('settings', { 'voice.output': 'headset' });
+    await waitFor(() => expect(app.session.setOutput).toHaveBeenCalledWith('headset'));
+    app.client.publish('settings', { 'voice.output': 'spk' });
+    await waitFor(() => expect(app.session.setOutput).toHaveBeenLastCalledWith('spk'));
+    await act(async () => { refuse(new Error('NotFoundError')); await Promise.resolve(); });
+    await act(() => new Promise(r => setTimeout(r, 150)));
+    expect(dockStatus()).not.toHaveTextContent(t('voice.outputFailed'));
+  });
+
+  it('V1 fix 1: after a refusal the device in force is the one before, so going back moves nothing and the refused one is tried again', async () => {
+    const app = await inHarbour({ settings: { 'voice.output': 'spk' } });
+    app.session.setOutput.mockRejectedValueOnce(new Error('NotFoundError'));
+    app.client.publish('settings', { 'voice.output': 'headset' });
+    await waitFor(() => expect(dockStatus()).toHaveTextContent(t('voice.outputFailed')));
+    // 'spk' still plays: choosing it is no move at all.
+    app.client.publish('settings', { 'voice.output': 'spk' });
+    await act(() => new Promise(r => setTimeout(r, 50)));
+    expect(app.session.setOutput).toHaveBeenCalledTimes(1);
+    // Choosing the refused device again tries it again.
+    app.client.publish('settings', { 'voice.output': 'headset' });
+    await waitFor(() => expect(app.session.setOutput).toHaveBeenCalledTimes(2));
+    expect(app.session.setOutput).toHaveBeenLastCalledWith('headset');
+  });
+
+  it('V1 fix 1: an output chosen while the call is still starting is applied once the call is up', async () => {
+    const app = renderVoiceShell({ settings: { 'voice.output': 'spk' } });
+    const release = app.holdStart();
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.module.startPageCall).toHaveBeenCalledTimes(1));
+    app.client.publish('settings', { 'voice.output': 'headset' });
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.setOutput).toHaveBeenCalledWith('headset'));
+    expect(app.session.setOutput).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the dock says where and how (product walk M7, M8)', () => {

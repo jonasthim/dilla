@@ -438,11 +438,13 @@ export function ActiveVoiceList({ rows, onOpen }: { rows: readonly VoiceRowItem[
   );
 }
 
-/** web3.4 V2: how many of the remote audio tracks this device is sent it plays ("hearing 1 of 2": one held back, as while
- *  deafened). Shown only while any is expected; a diagnostic line, so no status region of its own. The counts are on the
- *  element for support and the e2e suite: a small line under the meter, after the mode line. */
-function HearingLine({ audio }: { audio: { attached: number; expected: number } | undefined }) {
-  if (audio === undefined || audio.expected <= 0) return null;
+/** web3.4 V2: how many of the remote audio tracks this device is sent it plays ("hearing 1 of 2": one held back, as for a
+ *  person whose volume is 0). Shown only while any is expected, and never while deafened or paused; a diagnostic line, so
+ *  no status region of its own. The counts are on the element for support and the e2e suite: a small line under the
+ *  meter, after the mode line. */
+function HearingLine({ audio, silent }: { audio: { attached: number; expected: number } | undefined; silent: boolean }) {
+  // Fix round 1: deafened or paused nothing plays, whatever is attached, so no line says it is heard.
+  if (audio === undefined || audio.expected <= 0 || silent) return null;
   return (
     <p className="dw-voice-dock__hearing" data-audio-attached={audio.attached} data-audio-expected={audio.expected}>
       {t('voice.diag.tracks', { attached: audio.attached, expected: audio.expected })}
@@ -510,7 +512,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
         meter={<>
           <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
           {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
-          <HearingLine audio={call.state?.audio} />
+          <HearingLine audio={call.state?.audio} silent={call.state?.deafened === true || call.state?.paused === true} />
         </>}
         onMute={call.toggleMute} onDeafen={call.toggleDeafen} onLeave={call.leave} />
     </div>

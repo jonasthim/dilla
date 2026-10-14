@@ -509,6 +509,21 @@ describe('web3.4 V2: the dock says how many it hears', () => {
     act(() => app.session.update({ audio: { attached: 0, expected: 0 } }));
     await waitFor(() => expect(line()).toBeNull());
   });
+
+  it('fix 1: no hearing line while deafened or paused (nothing plays then); it returns after', async () => {
+    const app = await inVoice();
+    const shown = () => screen.queryByText(t('voice.diag.tracks', { attached: 2, expected: 2 }));
+    act(() => app.session.update({ audio: { attached: 2, expected: 2 } }));
+    await waitFor(() => expect(shown()).not.toBeNull());
+    act(() => app.session.update({ deafened: true, muted: true }));
+    await waitFor(() => expect(shown()).toBeNull());
+    act(() => app.session.update({ deafened: false }));
+    await waitFor(() => expect(shown()).not.toBeNull());
+    act(() => app.session.update({ paused: true }));
+    await waitFor(() => expect(shown()).toBeNull());
+    act(() => app.session.update({ paused: false }));
+    await waitFor(() => expect(shown()).not.toBeNull());
+  });
 });
 
 describe('web3.3 fix round 2: the call context is made in the press (Minor 1); the hold joins the join announcement (Nit 3)', () => {

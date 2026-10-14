@@ -172,8 +172,10 @@ export function useCall(o: UseCallOptions): CallView {
   /** The current hold (WB security I1) already dropped the session's media keys. */
   const keysDropped = useRef(false);
   const module = useRef<VoiceModule | null>(null);
-  /** web3.4 V1: the output device the session plays to: the one it started with, then each one Settings moved it to. */
+  /** web3.4 V1: the output device the session is asked to play to: the one it started with, then each one Settings moved
+   *  it to. `outputPlaying` is the last one the session took (fix round 1): a refusal falls back to it. */
   const outputInForce = useRef('');
+  const outputPlaying = useRef('');
   // The join button the unsupported dialog was opened from: focus returns there when it closes (flow 06).
   const opener = useRef<HTMLElement | null>(null);
   const live = useRef(o);
@@ -291,6 +293,7 @@ export function useCall(o: UseCallOptions): CallView {
         const callDeps = mod.browserDeps(client);
         const target = { channelId: id, vdec: mod.localDecodeList() };
         outputInForce.current = settings[SETTINGS.voiceOutput] ?? '';
+        outputPlaying.current = outputInForce.current;
         const opts: Parameters<VoiceModule['startPageCall']>[2] = {
           instanceId: client.get('account')?.instance?.id ?? '',
           input: settings[SETTINGS.voiceInput] ?? '',
@@ -553,12 +556,21 @@ export function useCall(o: UseCallOptions): CallView {
     session.setNoise(wantedNoise).catch(() => undefined);
   }, [session, wantedNoise]);
   // web3.4 V1: the output device follows Settings → Voice during the call too. A device the browser refuses is said
-  // once; the sound goes on where it played before.
+  // once; the sound goes on where it played before. Fix round 1: a refusal of a device the person has since moved away
+  // from is not said, and a refusal puts the device that still plays back in force, so choosing the refused one again
+  // tries it again.
   const wantedOutput = o.settings[SETTINGS.voiceOutput] ?? '';
   useEffect(() => {
     if (session === null || outputInForce.current === wantedOutput) return;
     outputInForce.current = wantedOutput;
-    session.setOutput(wantedOutput).catch(() => { if (sessionRef.current === session) announce(t('voice.outputFailed')); });
+    const id = wantedOutput;
+    session.setOutput(id).then(() => {
+      if (sessionRef.current === session) outputPlaying.current = id;
+    }, () => {
+      if (sessionRef.current !== session || (live.current.settings[SETTINGS.voiceOutput] ?? '') !== id) return;
+      outputInForce.current = outputPlaying.current;
+      announce(t('voice.outputFailed'));
+    });
   }, [session, wantedOutput, announce]);
   // Push to talk (decision 2): only in ptt mode with a key that is one non-text key on its own; a stored key that is
   // not (an older rule saved KeyV) binds nothing, and Settings shows it as unset.
