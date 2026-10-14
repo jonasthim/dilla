@@ -10,7 +10,7 @@ import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, Dia
 import { SyncError } from '../sync/errors';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
-import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, type SliceMessage } from './world';
+import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
   it('start reads the instance, waits as other-tab while another tab holds the lock, and boots when it is released', async () => {
@@ -1360,11 +1360,6 @@ it('publishes only bounded diagnostics and code-only errors', async () => {
   expect(JSON.stringify(w.posted)).not.toContain('session-token');
   expect(JSON.stringify(w.posted)).not.toContain('SECRET busy');
 });
-
-async function toReady(w: World): Promise<void> {
-  w.call(1, { m: 'start' });
-  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
-}
 
 it('refreshTrust fetches a pending leaf once and re-renders already open timelines after ingestion', async () => {
   const w = world();

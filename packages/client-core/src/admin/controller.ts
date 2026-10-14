@@ -71,6 +71,7 @@ export const ADMIN_VALIDATORS: Record<AdminMethod, ((c: Record<string, unknown>)
     if (c.name !== null) { const p = nameOf(c.name, CHANNEL_NAME_MAX_BYTES); if (p !== null) return p; }
     if (c.topic !== null && (typeof c.topic !== 'string' || UTF8.encode(c.topic).length > TOPIC_MAX_BYTES)) return 'topic is too long';
     if (c.parent !== 'keep' && c.parent !== 'top' && !(typeof c.parent === 'string' && ID.test(c.parent))) return 'parent is not keep, top or 32 lowercase hex';
+    if (c.name === null && c.topic === null && c.parent === 'keep') return 'nothing to change';
     return null;
   },
   moveChannel: (c) => (c.direction === 'up' || c.direction === 'down' ? null : 'direction is not up or down'),
@@ -117,7 +118,7 @@ export class AdminController {
     this.deps.publish(`bans:${communityId}`, []);
     this.deps.publish(`invites:${communityId}`, []);
     // A slice has no "absent" value: a server the caller left reads as no access at all.
-    this.deps.publish(`permissions:${communityId}`, accessOf(0n, 0, false));
+    this.deps.publish(`permissions:${communityId}`, { ...accessOf(0n, 0, false), loaded: false });
   }
 
   // ---- the server ----
@@ -161,6 +162,8 @@ export class AdminController {
 
   async transferOwnership(communityId: string, userId: string): Promise<null> {
     await this.guarded(communityId, () => this.deps.routes.transferOwnership(fromHex(communityId), fromHex(userId)));
+    // The owner flag of the access comes from the community list: read it first, so the access read below sees the new owner.
+    await this.deps.refreshCommunities().catch(() => undefined);
     await this.afterModeration(communityId);
     return null;
   }
@@ -196,8 +199,9 @@ export class AdminController {
     return null;
   }
 
-  /** Swaps positions with the neighbour inside the same parent; the first (or last) channel moving past the end sends
-   *  nothing. Only the two channels that change are patched. */
+  /** Moves a channel one step inside its parent. Positions that are strictly increasing trade between the mover and its
+   *  neighbour (two patches). With a tie anywhere in the run, the run is renumbered densely 0..n-1 in the new display
+   *  order, and only the channels whose position changes are patched. Whatever happens, the lists are read again. */
   async moveChannel(channelId: string, direction: 'up' | 'down'): Promise<null> {
     const { communityId, row } = this.known(channelId);
     const parent = row.parentId === null ? null : toHex(row.parentId);
@@ -205,18 +209,31 @@ export class AdminController {
       .filter((c) => (c.row.parentId === null ? null : toHex(c.row.parentId)) === parent && (c.row.kind === 2) === (row.kind === 2))
       .sort((a, b) => a.row.position - b.row.position || (a.id < b.id ? -1 : 1));
     const at = siblings.findIndex((c) => c.id === channelId);
-    const other = siblings[direction === 'up' ? at - 1 : at + 1] as { id: string; row: ChannelRow } | undefined;
+    const to = direction === 'up' ? at - 1 : at + 1;
+    const other = siblings[to] as { id: string; row: ChannelRow } | undefined;
     if (other === undefined) return null;
-    const swap = other.row.position !== row.position;
-    // Two siblings that share a position cannot trade: the mover steps one past its neighbour instead.
-    const moved = swap ? other.row.position : Math.max(0, other.row.position + (direction === 'up' ? -1 : 1));
-    await this.guarded(communityId, async () => {
-      await this.deps.routes.patchChannel(row.id, { position: moved });
-      if (swap) await this.deps.routes.patchChannel(other.row.id, { position: row.position });
-    });
+    const strict = siblings.every((c, i) => i === 0 || c.row.position > (siblings[i - 1] as { row: ChannelRow }).row.position);
+    let changes: { row: ChannelRow; position: number }[];
+    if (strict) {
+      changes = [{ row, position: other.row.position }, { row: other.row, position: row.position }];
+    } else {
+      const order = siblings.slice();
+      order[at] = other;
+      order[to] = siblings[at];
+      changes = order.map((c, i) => ({ row: c.row, position: i })).filter((c) => c.row.position !== c.position);
+    }
+    try {
+      await this.guarded(communityId, async () => {
+        for (const change of changes) await this.deps.routes.patchChannel(change.row.id, { position: change.position });
+      });
+    } catch (e) {
+      // Some of the patches may have gone through: what the instance holds decides, not the list the page had.
+      this.deps.structureChanged(communityId);
+      this.reload(communityId);
+      throw e;
+    }
     this.deps.structureChanged(communityId);
-    this.deps.setChannel(communityId, { ...row, position: moved });
-    if (swap) this.deps.setChannel(communityId, { ...other.row, position: row.position });
+    for (const change of changes) this.deps.setChannel(communityId, { ...change.row, position: change.position });
     this.deps.publishChannels(communityId);
     this.reload(communityId);
     return null;
@@ -242,6 +259,7 @@ export class AdminController {
       await this.guarded(communityId, () => this.deps.routes.kickMember(fromHex(communityId), fromHex(userId)));
     } catch (e) {
       if (statusOf(e) === 404) await this.deps.reloadMembers(communityId).catch(() => undefined);
+      else await this.staleMembers(communityId, e);
       throw e;
     }
     await this.afterModeration(communityId);
@@ -251,7 +269,12 @@ export class AdminController {
   async banMember(communityId: string, userId: string, reason: string, seconds: number | null): Promise<null> {
     this.requireListed(communityId);
     const expires = seconds === null ? null : BigInt(Math.floor(this.deps.now() / 1000) + seconds);
-    await this.guarded(communityId, () => this.deps.routes.putBan(fromHex(communityId), fromHex(userId), { reason, expires }));
+    try {
+      await this.guarded(communityId, () => this.deps.routes.putBan(fromHex(communityId), fromHex(userId), { reason, expires }));
+    } catch (e) {
+      await this.staleMembers(communityId, e);
+      throw e;
+    }
     await this.afterModeration(communityId);
     if (this.deps.get(`bans:${communityId}`) !== undefined) await this.loadBans(communityId).catch(() => undefined);
     return null;
@@ -266,7 +289,7 @@ export class AdminController {
       if (statusOf(e) !== 404) throw e;
     }
     await this.afterModeration(communityId);
-    await this.loadBans(communityId);
+    await this.loadBans(communityId).catch(() => undefined);
     return null;
   }
 
@@ -304,7 +327,7 @@ export class AdminController {
     } catch (e) {
       if (statusOf(e) !== 404) throw e;
     }
-    await this.loadInvites(communityId);
+    await this.loadInvites(communityId).catch(() => undefined);
     return null;
   }
 
@@ -337,6 +360,12 @@ export class AdminController {
   private async afterModeration(communityId: string): Promise<void> {
     await Promise.all([this.deps.reloadMembers(communityId).catch(() => undefined), this.loadAccess(communityId)]);
     if (this.deps.get('communities')?.some((c) => c.id === communityId) === true) this.track(this.deps.refreshCommunities());
+  }
+
+  /** A 403 on a member command: the access the page holds is stale (guarded reads the permissions and roles again), and
+   *  so may be the member list it acted on. */
+  private async staleMembers(communityId: string, e: unknown): Promise<void> {
+    if (statusOf(e) === 403) await this.deps.reloadMembers(communityId).catch(() => undefined);
   }
 
   private drop(communityId: string): void {

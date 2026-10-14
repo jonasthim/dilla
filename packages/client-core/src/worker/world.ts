@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { expect, vi } from 'vitest';
 import type { BootOutcome } from '../account/boot';
 import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
@@ -461,3 +461,9 @@ export function world(opts: {
   };
 }
 export type World = ReturnType<typeof world>;
+
+/** Starts the worker of a world and waits until its account is ready. */
+export async function toReady(w: World): Promise<void> {
+  w.call(1, { m: 'start' });
+  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
+}

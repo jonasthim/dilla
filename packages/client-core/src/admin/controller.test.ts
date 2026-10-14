@@ -5,14 +5,10 @@ import type { GatewayEvent } from '../gateway/gateway';
 import { toHex } from '../hex';
 import type { BanRow, InviteRow, RoleRow } from '../http/routes';
 import type { BanSummary, ChannelSummary, CommunityAccess, InviteSummary, RemovalNotice, RoleSummary } from '../state/types';
-import { CHANNEL, COMMUNITY, STRANGER, USER, refusal, world, type World } from '../worker/world';
+import { CHANNEL, COMMUNITY, STRANGER, USER, refusal, toReady, world, type World } from '../worker/world';
 
 const CID = toHex(COMMUNITY);
 const STRANGER_HEX = toHex(STRANGER);
-const toReady = async (w: World): Promise<void> => {
-  w.call(1, { m: 'start' });
-  await vi.waitFor(() => expect(w.account()?.phase).toBe('ready'));
-};
 let next = 5000;
 /** Sends one command and returns its ret once it has answered. */
 async function run(w: World, command: Record<string, unknown>): Promise<unknown> {
@@ -46,6 +42,7 @@ describe('AdminController: input checks', () => {
     ['too long topic', { m: 'updateChannel', channelId, name: null, topic: 'x'.repeat(1025), parent: 'keep' }],
     ['a parent that is not keep, top or an id', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'bogus' }],
     ['an upper-case parent id', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'A'.repeat(32) }],
+    ['an update that changes nothing', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'keep' }],
     ['a direction that is not up or down', { m: 'moveChannel', channelId, direction: 'left' }],
     ['a ban shorter than an hour', { m: 'banMember', communityId: CID, userId: STRANGER_HEX, reason: '', seconds: 3599 }],
     ['a ban longer than a century', { m: 'banMember', communityId: CID, userId: STRANGER_HEX, reason: '', seconds: 3_153_600_001 }],
@@ -90,7 +87,7 @@ describe('AdminController: access', () => {
     await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)).toBeDefined());
     expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
       top: 2 ** 31, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true, createInvite: true,
-      manageRoles: true,
+      manageRoles: true, loaded: true,
     });
     expect(w.last<RoleSummary[]>(`roles:${CID}`)).toEqual([
       { id: toHex(id16(0x31)), name: 'mods', color: 0xff0000, position: 5, hoist: true, mentionable: false },
@@ -309,7 +306,7 @@ describe('AdminController: server and channel edits', () => {
     expect(w.last<unknown[]>(`roles:${CID}`)).toEqual([]);
     expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
       top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
-      manageRoles: false,
+      manageRoles: false, loaded: false,
     });
   });
 
@@ -406,6 +403,125 @@ describe('AdminController: server and channel edits', () => {
     w.routes.deleteChannel.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN'));
     expect(await run(w, { m: 'deleteChannel', channelId: toHex(CHANNEL) })).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } });
     await vi.waitFor(() => expect(w.routes.getPermissions.mock.calls.length).toBe(perms + 1));
+  });
+});
+
+describe('AdminController: fix round 1', () => {
+  const positions = (list: ChannelSummary[]): [string, number][] => list.map((c) => [c.id.slice(0, 2), c.position]);
+  const patched = (w: World): [string, unknown][] => w.routes.patchChannel.mock.calls.map(([id, patch]) => [toHex(id).slice(0, 2), patch]);
+
+  it('transferOwnership publishes the new owner: owner false and every owner-only flag false', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)?.owner).toBe(true));
+    w.routes.transferOwnership.mockImplementationOnce(() => {
+      w.routes.listCommunities.mockResolvedValue([{ id: COMMUNITY, name: 'friends', owner: STRANGER, policyVersion: 1n }]);
+      w.routes.getPermissions.mockResolvedValue({ bits: 0n, top: 0 });
+      return Promise.resolve();
+    });
+    expect(await run(w, { m: 'transferOwnership', communityId: CID, userId: STRANGER_HEX })).toMatchObject({ ok: true, value: null });
+    await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
+      top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
+      manageRoles: false, loaded: true,
+    }));
+  });
+
+  it('transferOwnership still succeeds when the community list cannot be read again', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.listCommunities.mockRejectedValue(refusal(500, 'E_INTERNAL'));
+    expect(await run(w, { m: 'transferOwnership', communityId: CID, userId: STRANGER_HEX })).toMatchObject({ ok: true, value: null });
+  });
+
+  it('moveChannel on a tie at the top renumbers the run: [a0,b0], b up gives b0,a1', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([channelRow(0xa1, 0), channelRow(0xb1, 0)]);
+    await toReady(w);
+    expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xb1)), direction: 'up' })).toMatchObject({ ok: true, value: null });
+    expect(patched(w)).toEqual([['a1', { position: 1 }]]);
+    expect(shownBeforeRet<ChannelSummary[]>(w, `channels:${CID}`,
+      (l) => JSON.stringify(positions(l)) === JSON.stringify([['a1', 1], ['b1', 0]]))).toBe(true);
+  });
+
+  it('moveChannel on a tie in the middle renumbers the run densely and patches only what changes', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([channelRow(0xa1, 0), channelRow(0xb1, 1), channelRow(0xc1, 1), channelRow(0xd1, 2)]);
+    await toReady(w);
+    await run(w, { m: 'moveChannel', channelId: toHex(id16(0xc1)), direction: 'up' });
+    expect(patched(w)).toEqual([['b1', { position: 2 }], ['d1', { position: 3 }]]);
+    expect(shownBeforeRet<ChannelSummary[]>(w, `channels:${CID}`,
+      (l) => JSON.stringify(positions(l)) === JSON.stringify([['a1', 0], ['b1', 2], ['c1', 1], ['d1', 3]]))).toBe(true);
+  });
+
+  it('moveChannel down onto a tie renumbers the run', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([channelRow(0xa1, 0), channelRow(0xb1, 1), channelRow(0xc1, 1)]);
+    await toReady(w);
+    await run(w, { m: 'moveChannel', channelId: toHex(id16(0xb1)), direction: 'down' });
+    expect(patched(w)).toEqual([['b1', { position: 2 }]]);
+  });
+
+  it('moveChannel renumbers when a tie sits elsewhere in the run, not beside the neighbour', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([channelRow(0xa1, 0), channelRow(0xb1, 1), channelRow(0xc1, 2), channelRow(0xd1, 2)]);
+    await toReady(w);
+    await run(w, { m: 'moveChannel', channelId: toHex(id16(0xa1)), direction: 'down' });
+    expect(patched(w)).toEqual([['b1', { position: 0 }], ['a1', { position: 1 }], ['d1', { position: 3 }]]);
+  });
+
+  it('moveChannel reloads the community and surfaces the error when a later PATCH fails', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([channelRow(0xa1, 0), channelRow(0xb1, 0), channelRow(0xc1, 1)]);
+    await toReady(w);
+    const reads = w.routes.listChannels.mock.calls.length;
+    w.routes.patchChannel.mockResolvedValueOnce(undefined).mockRejectedValueOnce(refusal(500, 'E_INTERNAL'));
+    expect(await run(w, { m: 'moveChannel', channelId: toHex(id16(0xb1)), direction: 'up' })).toMatchObject({
+      ok: false, error: { code: 'E_INTERNAL' },
+    });
+    expect(w.routes.patchChannel).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(w.routes.listChannels.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  it('a 403 on kick reads the members and the roles again as well as the permissions', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.routes.getPermissions).toHaveBeenCalled());
+    const members = w.routes.listMembers.mock.calls.length;
+    const roles = w.routes.listRoles.mock.calls.length;
+    w.routes.kickMember.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN'));
+    expect(await run(w, { m: 'kickMember', communityId: CID, userId: STRANGER_HEX })).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } });
+    await vi.waitFor(() => expect(w.routes.listMembers.mock.calls.length).toBe(members + 1));
+    await vi.waitFor(() => expect(w.routes.listRoles.mock.calls.length).toBe(roles + 1));
+  });
+
+  it('a 403 on ban reads the members and the roles again as well as the permissions', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.routes.getPermissions).toHaveBeenCalled());
+    const members = w.routes.listMembers.mock.calls.length;
+    const roles = w.routes.listRoles.mock.calls.length;
+    w.routes.putBan.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN'));
+    expect(await run(w, { m: 'banMember', communityId: CID, userId: STRANGER_HEX, reason: '', seconds: null })).toMatchObject({
+      ok: false, error: { code: 'E_FORBIDDEN' },
+    });
+    await vi.waitFor(() => expect(w.routes.listMembers.mock.calls.length).toBe(members + 1));
+    await vi.waitFor(() => expect(w.routes.listRoles.mock.calls.length).toBe(roles + 1));
+  });
+
+  it('unban succeeds when the ban list cannot be read again after the DELETE', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.listBans.mockRejectedValue(refusal(500, 'E_INTERNAL'));
+    expect(await run(w, { m: 'unbanMember', communityId: CID, userId: STRANGER_HEX })).toMatchObject({ ok: true, value: null });
+    expect(w.routes.deleteBan).toHaveBeenCalledWith(COMMUNITY, STRANGER);
+  });
+
+  it('revokeInvite succeeds when the invite list cannot be read again after the DELETE', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.listInvites.mockRejectedValue(refusal(500, 'E_INTERNAL'));
+    expect(await run(w, { m: 'revokeInvite', communityId: CID, inviteId: toHex(id16(0x71)) })).toMatchObject({ ok: true, value: null });
+    expect(w.routes.revokeInvite).toHaveBeenCalledWith(id16(0x71));
   });
 });
 

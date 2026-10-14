@@ -134,8 +134,10 @@ export const CALL_IDLE: CallState = { phase: 'idle', channelId: null, callId: nu
 export const VOICE_EMPTY: VoiceState = {};
 export const RINGS_EMPTY: RingsState = [];
 /** What the caller may do in one server (GET /v1/communities/{id}/permissions); `top` is their rank, 0..2^31. */
+/** `loaded` is false for a server whose access has not been read (or that is gone): the page shows a loading state, not
+ *  "no rights". */
 export interface CommunityAccess { top: number; owner: boolean; manageCommunity: boolean; manageChannels: boolean;
-  kickMembers: boolean; banMembers: boolean; createInvite: boolean; manageRoles: boolean }
+  kickMembers: boolean; banMembers: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean }
 export interface RoleSummary { id: string; name: string; color: number; position: number; hoist: boolean; mentionable: boolean }
 /** One ban; `name` is the display name, else the username, else ''. */
 export interface BanSummary { userId: string; name: string; reason: string; byUser: string; created: number; expires: number | null }
