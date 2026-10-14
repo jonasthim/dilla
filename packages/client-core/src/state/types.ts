@@ -107,7 +107,10 @@ export interface CallState { phase: CallPhase; channelId: string | null; callId:
   // Ruling I2 (2026-10-13): the 32-hex user id of the changed contact while the phase is paused (RV-3) or after an
   // E_UMK_CHANGED join refusal (the first by user_id when several changed); null otherwise. Fills {name} in
   // voice.paused and voice.blockedChanged, also when a refused join left `roster` empty.
-  changedUser: string | null }
+  changedUser: string | null;
+  // f10app m2: true while the join waits (at most 30 s) for this device's earlier Remove to be committed; the page says
+  // so in the dock's status region. False otherwise.
+  rejoining: boolean }
 export interface VoiceParticipant { userId: string; deviceId: string; name: string; flags: number; own: boolean; web: boolean; bot: boolean }
 export interface VoiceCall { callId: string; participants: VoiceParticipant[] }
 export type VoiceState = Record<string, VoiceCall>;   // channel id (hex) → its live call
@@ -119,7 +122,7 @@ export interface Ring { callId: string; channelId: string; callerUser: string; c
 export type RingsState = Ring[];
 /** The initial values of the three web-3 slices (L-TS-51). */
 export const CALL_IDLE: CallState = { phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [], outgoing: null,
-  changedUser: null };
+  changedUser: null, rejoining: false };
 export const VOICE_EMPTY: VoiceState = {};
 export const RINGS_EMPTY: RingsState = [];
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`

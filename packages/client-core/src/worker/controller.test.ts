@@ -1505,6 +1505,26 @@ it('a socket re-establish timer armed before a resign never starts a socket afte
   }
 });
 
+// f10app m3: a timeline sender is authenticated by its group, so it still reads a member list whose first reads failed (only the
+// unauthenticated voice frames leave an unloaded list to its load).
+it('an unknown timeline sender reads the member list also when that list never loaded; a voice participant does not', async () => {
+  const w = world();
+  await toReady(w);
+  await settle();
+  // A community whose member list has not loaded here (no public command leaves one unloaded with its channels known, so
+  // the lookup is driven directly).
+  const unloaded = 'e'.repeat(32);
+  const lookUp = (w.controller as unknown as { lookUpUsers(c: string, u: string[], f: 'timeline' | 'voice'): void }).lookUpUsers
+    .bind(w.controller);
+  const before = w.routes.listMembers.mock.calls.length;
+  lookUp(unloaded, [toHex(STRANGER)], 'voice');
+  await settle();
+  expect(w.routes.listMembers.mock.calls.length).toBe(before);
+  lookUp(unloaded, [toHex(STRANGER)], 'timeline');
+  await vi.waitFor(() => expect(w.routes.listMembers.mock.calls.length).toBe(before + 1));
+  expect(toHex(w.routes.listMembers.mock.calls.at(-1)![0])).toBe(unloaded);
+});
+
 it('resign waits for the member lookup started by an unknown timeline sender', async () => {
   const w = world();
   await toReady(w);

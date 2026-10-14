@@ -204,6 +204,10 @@ const blank = (value: unknown): boolean => typeof value !== 'string' || value.tr
 const VDEC = /^(vp8|h264|vp9)(,(vp8|h264|vp9)){0,2}$/;
 const validVdec = (v: unknown): boolean => typeof v === 'string' && (v === '' || (VDEC.test(v) && new Set(v.split(',')).size === v.split(',').length));
 const STATS_MAX = 1_048_576;
+/** f10app m3: a voice-driven member-list re-read of a community starts no sooner than this after the last one ended, and
+ *  at most this many users per community enter the looked-up set from voice_state frames (the instance's, unauthenticated). */
+export const MEMBER_REREAD_MIN_MS = 5_000;
+export const VOICE_LOOKUPS_MAX = 256;
 const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= STATS_MAX;
 /** L-TS-53: six non-negative integers of at most 1,048,576; relayProtocol (element 1) may be null. */
 const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
@@ -357,6 +361,10 @@ export class Controller {
   private readonly lookedUp = new Set<string>();
   /** The member-list read running per community (lookUpUsers), and whether another is owed after it. */
   private readonly memberReads = new Map<string, { again: boolean }>();
+  /** When the last voice-driven member-list read of a community ended (this worker's clock, ms): f10app m3. */
+  private readonly memberReadEnded = new Map<string, number>();
+  /** How many users voice_state frames have put in `lookedUp`, per community (bounded by VOICE_LOOKUPS_MAX). */
+  private readonly voiceLookups = new Map<string, number>();
   private readonly open = new Map<string, OpenChannel>();
   private readonly opening = new Map<string, { run: Promise<null>; entry: OpenChannel | null }>();
   /** One attachment tray per channel hex (L-TS-35); its descriptors live in worker memory only. */
@@ -445,7 +453,7 @@ export class Controller {
         const own = this.me !== null && toHex(this.me.deviceId) === device;
         // Web-3 task 10, concern 4: a participant no loaded member list has is looked up in the channel's community.
         const community = this.channels.get(channel)?.communityId ?? null;
-        if (community !== null) this.lookUpUsers(community, [user]);
+        if (community !== null) this.lookUpUsers(community, [user], 'voice');
         return { userId: user, deviceId: device, name: this.nameOf(user), flags, own, web: own, bot: this.isBot(user) };
       },
       voiceChannels: (community) => [...this.channels].filter(([, k]) => k.communityId === community && k.row.kind === 1).map(([id]) => id),
@@ -1827,6 +1835,7 @@ export class Controller {
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
+    this.memberReadEnded.clear(); this.voiceLookups.clear();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
     this.searchGate.invalidate(); this.searchCursor = null;
@@ -1989,34 +1998,51 @@ export class Controller {
 
   /** A sender who is not in the loaded member list re-runs listMembers once per unknown user (L-TS-09). */
   private lookUpMembers(communityId: string, items: readonly TimelineItem[]): void {
-    this.lookUpUsers(communityId, items.map((item) => item.senderUser).filter((u): u is string => u !== null));
+    this.lookUpUsers(communityId, items.map((item) => item.senderUser).filter((u): u is string => u !== null), 'timeline');
   }
 
   /** Users the community's loaded member list lacks re-run listMembers, once per unknown user (L-TS-09): a timeline's
-   *  senders, and a voice call's participants (web-3 task 10, concern 4). A list not loaded yet is left to its load. */
-  private lookUpUsers(communityId: string, users: readonly string[]): void {
+   *  senders, and a voice call's participants (web-3 task 10, concern 4).
+   *
+   *  The two sources differ (f10app m3). A timeline sender is authenticated by its group, and also reads a list that has not
+   *  loaded (its first read failed) as before. A voice participant comes from the instance's unauthenticated voice_state
+   *  frames, so a flood of ever-new user ids is bounded: a list not loaded yet is left to its load, at most
+   *  VOICE_LOOKUPS_MAX users per community ever enter `lookedUp` from voice, and a voice-driven read starts no sooner
+   *  than MEMBER_REREAD_MIN_MS after the last one ended. Reads are coalesced per community either way: one running, at
+   *  most one more owed. */
+  private lookUpUsers(communityId: string, users: readonly string[], from: 'timeline' | 'voice'): void {
     const loaded = this.slices.get(`members:${communityId}`);
-    if (loaded === undefined) return;
-    const known = new Set(loaded.map((m) => m.userId));
+    if (loaded === undefined && from === 'voice') return;
+    const known = new Set((loaded ?? []).map((m) => m.userId));
     let unknown = false;
     for (const user of users) {
       if (known.has(user) || this.lookedUp.has(user)) continue;
+      if (from === 'voice') {
+        const n = this.voiceLookups.get(communityId) ?? 0;
+        if (n >= VOICE_LOOKUPS_MAX) continue;
+        this.voiceLookups.set(communityId, n + 1);
+      }
       this.lookedUp.add(user);
       unknown = true;
     }
     if (!unknown) return;
-    // One read per community at a time: users found unknown while it runs are covered by one more read after it (a flood
-    // of voice_state frames for new users costs two reads, not one each).
     const running = this.memberReads.get(communityId);
     if (running !== undefined) { running.again = true; return; }
     const read = { again: false };
     this.memberReads.set(communityId, read);
     void this.barrier.track((async () => {
       try {
+        let paced = from === 'voice';
         do {
           read.again = false;
+          if (paced) {
+            const wait = (this.memberReadEnded.get(communityId) ?? -Infinity) + MEMBER_REREAD_MIN_MS - this.deps.now();
+            if (wait > 0) await new Promise<void>((resolve) => { this.deps.setTimeout(resolve, wait); });
+          }
           const rows = await this.routes.listMembers(fromHex(communityId));
+          this.memberReadEnded.set(communityId, this.deps.now());
           if (this.listed(communityId)) this.publishMembers(communityId, rows);
+          paced = true;
         } while (read.again);
       } finally {
         this.memberReads.delete(communityId);

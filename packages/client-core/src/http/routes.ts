@@ -389,9 +389,18 @@ export class Routes {
   async shareCall(callId: Uint8Array): Promise<void> {
     await this.body('POST', callPath(callId, '/share'), 'write', false, { body: encode([]), ok: [204] });
   }
-  /** `DELETE /v1/calls/{call_id}`: ends the call for everyone (its room and call group close); 204 also once it has ended. */
-  async endCall(callId: Uint8Array): Promise<void> {
-    await this.body('DELETE', callPath(callId), 'write', true, { ok: [204] });
+  /** `DELETE /v1/calls/{call_id}?if_alone=1`: ends the call (its room and call group close) only while this device is the
+   *  call group's only current leaf, decided under the group lock; true once it has ended (204, also when it already
+   *  had), false when another device holds a leaf (409 E_CALL_NOT_ALONE: the call goes on). The client never sends the
+   *  unconditional form (web-3 task 10 fix, f10app I1). */
+  async endCallIfAlone(callId: Uint8Array): Promise<boolean> {
+    try {
+      await this.body('DELETE', callPath(callId, '?if_alone=1'), 'write', true, { ok: [204] });
+      return true;
+    } catch (e) {
+      if (e instanceof DillaHttpError && e.status === 409 && e.code === 'E_CALL_NOT_ALONE') return false;
+      throw e;
+    }
   }
   async unshareCall(callId: Uint8Array): Promise<void> {
     await this.body('DELETE', callPath(callId, '/share'), 'write', true, { ok: [204] });

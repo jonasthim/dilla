@@ -97,9 +97,9 @@ describe('connectCore', () => {
 // I2 (controller ruling, 2026-10-13): CallState names the changed contact in `changedUser` (32-hex user id or null), so
 // the page can fill {name} in voice.paused and voice.blockedChanged even when a refused join left `roster` empty.
 describe('the call slice', () => {
-  it('starts with no changed user', () => {
+  it('starts with no changed user and no rejoin wait', () => {
     expect(CALL_IDLE).toEqual({ phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [],
-      outgoing: null, changedUser: null });
+      outgoing: null, changedUser: null, rejoining: false });
   });
 
   it('reaches the page with changedUser intact', () => {

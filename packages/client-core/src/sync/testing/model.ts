@@ -2030,7 +2030,7 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
   | 'getChannelCall' | 'getCommunityCalls' | 'startCall' | 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal' | 'declineCall'
-  | 'endCall';
+  | 'endCallIfAlone';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** fail: throw before acting; lose: act, then throw a network error; before/after: run fn around acting; gate: wait first. */
 export type Injection = { fail: Error } | { lose: true } | { before: () => void } | { after: () => void } | { gate: Promise<void> };
@@ -2152,6 +2152,9 @@ export class ModelDs {
   readonly cursors = new Map<string, readonly [bigint, bigint]>();
   /** Device hexes whose external commits are refused with 403 E_FORBIDDEN. */
   readonly denyJoin = new Set<string>();
+  /** Device hexes that are the target of an outstanding instance Remove: their resync is refused with 409
+   *  E_REMOVE_PENDING (R25's guard 1) until a member commits it. */
+  readonly removeTarget = new Set<string>();
   /**
    * Device hexes the community's ACL does not admit (a kicked user's devices until the user joins
    * again): getGroupInfo, getGroupTree and postResync answer 404 E_NOT_FOUND, as the delivery
@@ -2668,13 +2671,16 @@ export class ModelDs {
       startCall: (channelId) => this.call(d, 'startCall', null, null, () => this.startCall(d, channelId)),
       shareCall: (callId) => this.call(d, 'shareCall', null, null, () => { this.liveCall(callId); }),
       unshareCall: () => this.call(d, 'unshareCall', null, null, () => undefined),
-      // L-HTTP-102's DELETE: a current leaf of the call's open group ends it for everyone; 204 once it has ended.
-      endCall: (callId) => this.call(d, 'endCall', null, null, () => {
+      // L-HTTP-102's conditional DELETE (?if_alone=1): a current leaf of the call's open group ends it only while it is the
+      // group's only member (409 E_CALL_NOT_ALONE otherwise, false); true once it has ended.
+      endCallIfAlone: (callId) => this.call(d, 'endCallIfAlone', null, null, () => {
         const call = [...this.liveCalls.values()].find((c) => same(c.callId, callId));
-        if (call === undefined) return;
+        if (call === undefined) return true;
         const g = this.groups.get(toHex(call.groupId));
         if (g !== undefined && !g.closed && !g.members.has(d)) throw httpError(403, 'E_LEAF_NOT_CURRENT');
+        if (g !== undefined && !g.closed && g.members.size !== 1) return false;
         this.endCall(call.channelId);
+        return true;
       }),
       postCallStats: (callId) => this.call(d, 'postCallStats', null, null, () => { this.liveCall(callId); }),
       postProposal: (id, body) => this.call(d, 'postProposal', id, null, () => this.postProposal(d, id, body)),
@@ -2785,6 +2791,7 @@ export class ModelDs {
     const g = this.must(id);
     if (this.aclDeny.has(toHex(dev))) throw httpError(404, 'E_NOT_FOUND');
     if (this.denyJoin.has(toHex(dev))) throw httpError(403, 'E_FORBIDDEN');
+    if (this.removeTarget.has(toHex(dev))) throw httpError(409, 'E_REMOVE_PENDING');
     if (this.unlisted(toHex(dev))) throw httpError(422, 'E_COMMIT_INVALID', null, ['external_joiner']);
     const v = arr(decode(body), 2);
     const commit = bin(at(v, 0));

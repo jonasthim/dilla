@@ -19,19 +19,25 @@ export interface JoinDeps {
   refreshLeaves(groupId: Id): Promise<void>;
   /** Resolves after `ms` on the worker's clock (the rejoin's wait for its own Remove). */
   wait(ms: number): Promise<void>;
+  /** The worker's clock (ms): the rejoin's wait is bounded by elapsed time, not by a count of its steps. */
+  now(): number;
   /** True once the join was cancelled (a leave, sign-out or revocation): a wait stops there. */
   cancelled(): boolean;
+  /** The join has begun waiting for this device's earlier Remove (the page says so in its status region). */
+  rejoining(): void;
 }
 
 /**
  * A rejoin while this device's own Remove is still outstanding (web-3 task 10, concern 2): the instance refuses the
- * resync of a Remove's target (403 E_FORBIDDEN, R25's guard 1, kept whole), so the join waits and reads the call again
- * until another member has committed the Remove (the device then joins afresh) or the call has ended and its group closed
- * (the device registers a fresh one): REJOIN_STEP_MS apart, for at most REJOIN_WAIT_MS, which outlasts the room's
- * departure timeout (20 s) and its webhook. A person alone ends the call as they leave (controller.leaveLive), so only a
- * leave that could not (a page that went away) waits here that long.
+ * resync of a Remove's target with 409 E_REMOVE_PENDING (R25's guard 1, kept whole; its own code since the fix round,
+ * so every other refusal, a 403 included, fails at once), and the join waits until another member has committed the
+ * Remove (the device then joins afresh) or the call has ended and its group closed (the device registers a fresh one).
+ * Each step, REJOIN_STEP_MS apart, reads the call and the group's GroupInfo (two requests: at most one a second) and
+ * tries the join again only when either has changed; the wait ends REJOIN_WAIT_MS after the first refusal, on the
+ * worker's clock, which outlasts the room's departure timeout (20 s) and its webhook. A person alone ends the call as
+ * they leave (controller.leaveLive), so only a leave that could not (a page that went away) waits here that long.
  */
-export const REJOIN_STEP_MS = 1_000;
+export const REJOIN_STEP_MS = 2_000;
 export const REJOIN_WAIT_MS = 30_000;
 
 export interface JoinTarget { channelId: Id; communityId: Id | null; vdec: string }
@@ -68,7 +74,7 @@ export async function joinCall(d: JoinDeps, t: JoinTarget): Promise<Joined> {
 
 async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | null }): Promise<Joined> {
   let reread = { exists: true, closed: true };
-  let waited = 0;
+  let waitSince: number | null = null;
   let read: ChannelCall = await d.routes.getChannelCall(t.channelId);
   seen.read = read;
   for (;;) {
@@ -95,14 +101,13 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
       d.core.groupRegistered(groupId, nextSeq);
     } else {
       groupId = read.groupId;
+      const tried: { info: Uint8Array | null } = { info: null };
       try {
-        await joinExisting(d, t, groupId);
+        await joinExisting(d, t, groupId, tried);
       } catch (e) {
-        if (!(e instanceof JoinRefused && isHttp(e.cause, 403, 'E_FORBIDDEN')) || waited >= REJOIN_WAIT_MS || d.cancelled()) throw e;
-        await d.wait(REJOIN_STEP_MS);
-        waited += REJOIN_STEP_MS;
-        if (d.cancelled()) throw e;
-        read = await d.routes.getChannelCall(t.channelId);
+        if (!(e instanceof JoinRefused && isHttp(e.cause, 409, 'E_REMOVE_PENDING')) || tried.info === null || d.cancelled()) throw e;
+        if (waitSince === null) { waitSince = d.now(); d.rejoining(); }
+        read = await waitForRemove(d, t, e, waitSince, groupId, tried.info);
         continue;
       }
     }
@@ -125,10 +130,28 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
   }
 }
 
+/** The rejoin's wait (REJOIN_WAIT_MS from `since`): each step reads the call, and while it still names the refused
+ *  group, its GroupInfo; it answers the call read once either has changed (the call ended or moved on, or a commit
+ *  landed: perhaps the Remove), and throws `refusal` once the bound has passed or the join is cancelled. */
+async function waitForRemove(d: JoinDeps, t: JoinTarget, refusal: JoinRefused, since: number, groupId: Id,
+  info: Uint8Array): Promise<ChannelCall> {
+  for (;;) {
+    const left = since + REJOIN_WAIT_MS - d.now();
+    if (left <= 0 || d.cancelled()) throw refusal;
+    await d.wait(Math.min(REJOIN_STEP_MS, left));
+    if (d.cancelled()) throw refusal;
+    const read = await d.routes.getChannelCall(t.channelId);
+    if (read.groupId === null || toHex(read.groupId) !== toHex(groupId)) return read;
+    if (toHex(await d.routes.getGroupInfo(groupId)) !== toHex(info)) return read;
+  }
+}
+
 /** The external join: a hard verdict refuses at the core's join and nothing is posted; a pending leaf is settled by one
- *  bounded list refresh, and the commit is posted only after call_join_check passes (RV-1). */
-async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id): Promise<void> {
+ *  bounded list refresh, and the commit is posted only after call_join_check passes (RV-1). `tried.info` is the
+ *  GroupInfo the commit was built on (the rejoin's wait compares it). */
+async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id, tried: { info: Uint8Array | null }): Promise<void> {
   const info = await d.routes.getGroupInfo(groupId);
+  tried.info = info;
   const tree = await d.routes.getGroupTree(groupId);
   const eg: ExpectedGroup = { groupId, communityId: t.communityId, channelId: t.channelId, policyVersion: d.policyVersion };
   let body: Uint8Array;

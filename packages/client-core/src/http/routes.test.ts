@@ -843,12 +843,17 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect(t.seen[2].body).toEqual(encode([3, null, 40, 0, 0, 1_048_576]));
   });
 
-  it('endCall is DELETE /v1/calls/{call_id}, idempotent, 204', async () => {
+  it('endCallIfAlone is DELETE /v1/calls/{call_id}?if_alone=1, idempotent: 204 ended, 409 E_CALL_NOT_ALONE not', async () => {
     const { t, http, routes } = setup();
     t.replies.push(noContent());
-    await routes.endCall(CALL);
-    expect(`${t.seen[0].method} ${new URL(t.seen[0].url).pathname}`).toBe(`DELETE /v1/calls/${hex(CALL)}`);
+    expect(await routes.endCallIfAlone(CALL)).toBe(true);
+    const url = new URL(t.seen[0].url);
+    expect(`${t.seen[0].method} ${url.pathname}${url.search}`).toBe(`DELETE /v1/calls/${hex(CALL)}?if_alone=1`);
     expect(http.requests[0].idempotent).toBe(true);
+    t.replies.push(refusal(409, 'E_CALL_NOT_ALONE', ''));
+    expect(await routes.endCallIfAlone(CALL)).toBe(false);
+    t.replies.push(refusal(403, 'E_FORBIDDEN', ''));
+    await expect(routes.endCallIfAlone(CALL)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
   });
 
   it('a 429 on the stats route is not waited out', async () => {

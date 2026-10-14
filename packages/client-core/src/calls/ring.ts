@@ -54,6 +54,9 @@ export class Rings {
     if (this.deps.blocked(channel)) { this.remove(channel); return; }
     const existing = this.rings.findIndex((r) => r.channelId === channel);
     if (existing < 0 && this.rings.length >= RINGS_MAX) return;
+    // f10app m8: the same ring again (its call and expires_ts unchanged) keeps its first arrival's 30 s and its timer.
+    const same = existing >= 0 && this.rings[existing].callId === toHex(f.callId) && this.rings[existing].ringTs === f.expiresTs;
+    if (same) return;
     const now = this.deps.now();
     const ring: Ring = {
       // Web-3 task 10, concern 5: expires_ts is a second on the instance's clock, never compared with this page's (a page

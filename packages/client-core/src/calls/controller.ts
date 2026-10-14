@@ -21,7 +21,7 @@ export const CALL_ROTATE_RETRY_MS = 60_000;
 export const WAIT_LIST_MS = 10_000;
 
 export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal'
-  | 'declineCall' | 'postCommit' | 'endCall'>;
+  | 'declineCall' | 'postCommit' | 'endCallIfAlone'>;
 
 /** What the call controller reads from, and publishes through, the worker's composition root. */
 export interface CallDeps {
@@ -165,7 +165,11 @@ export class CallController {
         core, routes: this.deps.routes, policyVersion: instance.policyVersion, externalSenderPub: instance.externalSenderPub,
         randomId: () => this.deps.randomId(), refreshLeaves: (g) => this.deps.refreshLeaves(g),
         wait: (ms) => new Promise<void>((resolve) => { this.deps.setTimeout(resolve, ms); }),
+        now: () => this.deps.now(),
         cancelled: () => token.cancelled !== null,
+        rejoining: () => {
+          if (token.cancelled === null && this.joining === token && this.state.phase === 'joining') this.setState({ ...this.state, rejoining: true });
+        },
       }, { channelId, communityId: target.communityId === null ? null : fromHex(target.communityId), vdec });
     } catch (e) {
       const cause = e instanceof JoinRefused ? e.cause : e;
@@ -289,7 +293,7 @@ export class CallController {
     live.rosterDevices = media.roster.map((r) => toHex(r.deviceId));
     this.setState({ phase: 'in', channelId: live.channel, callId: toHex(live.callId), epoch: media.epoch.toString(), code: media.code,
       error: null, roster: media.roster.map((r) => ({ userId: toHex(r.userId), deviceId: toHex(r.deviceId), leaf: r.leaf })),
-      outgoing: this.outgoingNames(live), changedUser: null });
+      outgoing: this.outgoingNames(live), changedUser: null, rejoining: false });
   }
 
   // ---- step 4: the leave ----
@@ -324,9 +328,13 @@ export class CallController {
     if (!blocked) this.setState({ ...this.state, phase: 'leaving' });
     // Web-3 task 10, concern 2: nobody can commit the Remove of the only leaf, and the instance refuses this device's
     // resync while that Remove stands (guard 1), so a person alone in the call ends it as they leave, while still its
-    // leaf: its room and group close, and a rejoin registers a fresh group at once.
-    if (!blocked && await this.alone(live)) {
-      try { await this.deps.routes.endCall(live.callId); } catch { /* the room's departure timeout ends it instead */ }
+    // leaf: its room and group close, and a rejoin registers a fresh group at once. A blocked leave too (f10app m7): a
+    // blocked device is still a current leaf, and ending a call it is alone in exposes nothing. The end is the
+    // conditional form only (f10app I1): the instance ends the call only while this device is its group's only current
+    // leaf, so a device that has just joined (its commit landed, not yet keyed here nor in the room) keeps its call;
+    // then (409) this device just leaves.
+    if (await this.alone(live)) {
+      try { await this.deps.routes.endCallIfAlone(live.callId); } catch { /* the room's departure timeout ends it instead */ }
     }
     await this.leaveGroup(live.groupId);
     if (this.live === live) this.live = null;

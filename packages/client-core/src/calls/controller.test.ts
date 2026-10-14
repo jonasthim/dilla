@@ -32,7 +32,7 @@ const LABELS: Record<string, string> = {
   getChannelCall: 'GET channel call', getCommunityCalls: 'GET community calls', postGroup: 'POST group', getGroupInfo: 'GET group info',
   getGroupTree: 'GET group tree', postResync: 'POST resync', startCall: 'POST calls', postProposal: 'POST proposal', postCommit: 'POST commit',
   declineCall: 'POST decline', getDeviceList: 'GET device list', shareCall: 'POST share', unshareCall: 'DELETE share', postCallStats: 'POST stats',
-  endCall: 'DELETE call',
+  endCallIfAlone: 'DELETE call', listMembers: 'GET members',
 };
 
 interface Posted { message: FromWorker; transfer: Transferable[] }
@@ -257,6 +257,48 @@ describe('voice presence (L-GW-32, L-TS-56 step 7)', () => {
       LATE.length = 0;
       NAMES.delete(toHex(late.user));
     }
+  });
+
+  // f10app m3. Attacker: the instance, voice_state's only sender, streams frames for ever-new user ids to make the worker
+  // re-read the member list back to back and grow its looked-up set without bound.
+  const flood = (w: World, from: number, n: number): void => {
+    for (let i = from; i < from + n; i++) w.gateway.push(voiceFrame({ user: idOf(0xe6, i + 1), device: idOf(0xd6, i + 1) }, VOICE, 1));
+  };
+  const memberReads = (w: World): number => w.server.routes().filter((r) => r === 'GET members').length;
+
+  it('voice-driven member reads are paced: the read owed after a flood waits 5 s after the last one ended', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    flood(w, 0, 10);
+    await settled(w);
+    expect(memberReads(w)).toBe(1);
+    flood(w, 10, 10);
+    await settled(w);
+    await w.clock.advance(4_000);
+    await settled(w);
+    expect(memberReads(w)).toBe(1);
+    await w.clock.advance(1_000);
+    await settled(w);
+    expect(memberReads(w)).toBe(2);
+  });
+
+  it('at most VOICE_LOOKUPS_MAX users a community are looked up from voice frames; beyond it a flood reads nothing', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    const quiet = async (): Promise<void> => { for (let i = 0; i < 4; i++) { await settled(w); await w.clock.advance(6_000); } await settled(w); };
+    flood(w, 0, 200);
+    await quiet();
+    const under = memberReads(w);
+    expect(under).toBeGreaterThan(0);
+    // 56 more users fit under the bound (256): they are looked up.
+    flood(w, 200, 100);
+    await quiet();
+    const atBound = memberReads(w);
+    expect(atBound).toBeGreaterThan(under);
+    // Beyond it, a flood of new users reads nothing more.
+    flood(w, 300, 300);
+    await quiet();
+    expect(memberReads(w)).toBe(atBound);
   });
 
   it('loadVoice applies frames received during the snapshot read after it, in order', async () => {
@@ -837,6 +879,24 @@ describe('rings (L-TS-56 step 8)', () => {
     expect(w.slice('rings')).toEqual([]);
   });
 
+  // f10app m8: a repeated state 1 of the same ring (the same call and expires_ts) is that ring again, not a new 30 s.
+  it('a repeated ring frame with the same expires_ts keeps the ring\'s first 30 s; a new expires_ts starts its own', async () => {
+    const w = await harness({ dm: true });
+    const receivedAt = w.clock.now();
+    w.gateway.push(ring(1, { expires: 1_700_000_030 }));
+    await w.clock.advance(20_000);
+    w.gateway.push(ring(1, { expires: 1_700_000_030 }));
+    expect(w.slice('rings')[0]).toMatchObject({ expiresAt: receivedAt + 30_000 });
+    await w.clock.advance(10_000);
+    expect(w.slice('rings')).toEqual([]);
+    // A later ring of the same DM (another expires_ts) is a new ring, with its own 30 s.
+    w.gateway.push(ring(1, { expires: 1_700_000_090 }));
+    await w.clock.advance(20_000);
+    w.gateway.push(ring(1, { expires: 1_700_000_120 }));
+    await w.clock.advance(10_000);
+    expect(w.slice('rings')).toHaveLength(1);
+  });
+
   it('joining the DM call clears its ring', async () => {
     const w = await harness({ dm: true });
     w.gateway.push(ring(1));
@@ -862,50 +922,145 @@ const keyZeroed = (w: World): boolean => {
 // of the call group without its self-Remove (except a revoked device, which can send nothing and forgets locally).
 // Web-3 task 10, concern 2: a quick rejoin while this device's own Remove is outstanding. The instance keeps R25's guard 1
 // whole (a Remove's target may not resync), so the client ends a call it is alone in as it leaves, and a rejoin refused
-// with 403 E_FORBIDDEN waits, bounded, until another member has committed the Remove or the call has ended.
-describe('a rejoin while the own Remove is outstanding (task 10, concern 2)', () => {
-  it('a person alone in the call ends it as they leave, and the rejoin registers a fresh call group at once', async () => {
+// with 409 E_REMOVE_PENDING waits, bounded, until another member has committed the Remove or the call has ended.
+describe('a rejoin while the own Remove is outstanding (task 10, concern 2, and its fix round)', () => {
+  /** Runs the clock in steps until the command answers or `ms` has passed. */
+  async function runFor(w: World, id: number, ms: number, step = 1_000): Promise<void> {
+    for (let t = 0; t < ms && w.ret(id) === undefined; t += step) { await settle(); await w.clock.advance(step); }
+    await settle();
+  }
+  const resyncs = (w: World): number => w.server.routes().filter((r) => r === 'POST resync').length;
+
+  it('a person alone in the call ends it as they leave (the conditional end), and the rejoin registers a fresh call group at once', async () => {
     const w = await harness({ voiceChannel: true });
     const first = await w.call(JOIN(w)) as CallJoinResult;
     await settled(w);
     w.server.reset();
     await w.call({ m: 'callLeave', reason: 'user' });
-    expect(w.server.requests.map((r) => r.route)).toContain('DELETE call');
+    expect(w.server.routes()).toContain('DELETE call');
     const again = await w.call(JOIN(w)) as CallJoinResult;
     expect(again.groupId).not.toBe(first.groupId);
     expect(w.slice('call')).toMatchObject({ phase: 'in' });
   });
 
-  it('a leave from a call that holds another device does not end it', async () => {
+  it('a leave from a call whose keyed roster holds another device does not end it', async () => {
     const w = await joined();
     await w.call({ m: 'callLeave', reason: 'user' });
-    expect(w.server.requests.map((r) => r.route)).not.toContain('DELETE call');
+    expect(w.server.routes()).not.toContain('DELETE call');
   });
 
-  it('a rejoin refused because its own Remove stands waits and joins once the Remove is committed', async () => {
+  // m4: the room-snapshot branch of alone(): the roster keyed here holds only this device, but the room shows another.
+  it('a leave whose roster holds only this device but whose room shows another does not end the call', async () => {
+    const w = await harness({ voiceChannel: true });
+    await w.call(JOIN(w));
+    await settled(w);
+    w.ds.voice(VOICE, PEER, 1);
+    await settled(w);
+    w.server.reset();
+    await w.call({ m: 'callLeave', reason: 'user' });
+    expect(w.server.routes()).toContain('GET channel call');
+    expect(w.server.routes()).not.toContain('DELETE call');
+  });
+
+  // I1: a device whose external commit has landed, not yet keyed here nor in the room: the instance keeps the call
+  // (409 E_CALL_NOT_ALONE) and this device just leaves.
+  it('a leave beside a device that has just joined sends only the conditional end, and the call goes on', async () => {
+    const w = await harness({ voiceChannel: true });
+    const first = await w.call(JOIN(w)) as CallJoinResult;
+    await settled(w);
+    w.ds.join(fromHex(first.groupId), PEER.device);
+    w.server.reset();
+    await w.call({ m: 'callLeave', reason: 'user' });
+    expect(w.server.routes()).toContain('DELETE call');
+    expect(w.slice('call')).toMatchObject({ phase: 'idle' });
+    const still = await w.ds.routesFor(PEER.device).getChannelCall(VOICE);
+    expect(still.callId).not.toBeNull();
+    expect(toHex(still.groupId ?? new Uint8Array(16))).toBe(first.groupId);
+  });
+
+  // m7: a blocked leave by a person alone ends the call too (still a current leaf; ending exposes nothing).
+  it('a blocked leave by a person alone ends the call with the conditional end', async () => {
+    const w = await harness({ voiceChannel: true });
+    const first = await w.call(JOIN(w)) as CallJoinResult;
+    await settled(w);
+    w.server.reset();
+    w.model.addFailedLeaf(fromHex(first.groupId), 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(fromHex(first.groupId));
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked' });
+    expect(w.server.routes()).toContain('DELETE call');
+    expect((await w.ds.routesFor(PEER.device).getChannelCall(VOICE)).callId).toBeNull();
+  });
+
+  it('a rejoin refused because its own Remove stands (409 E_REMOVE_PENDING) waits, says so, and joins once the Remove is committed', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.ds.removeTarget.add(toHex(ME.device));
+    const id = w.send(JOIN(w));
+    await runFor(w, id, 7_000);
+    expect(w.ret(id)).toBeUndefined();
+    expect(w.slice('call')).toMatchObject({ phase: 'joining', rejoining: true });
+    // Nothing changed at the instance: the join is not tried again, and each step is two reads (at most one a second).
+    expect(resyncs(w)).toBe(1);
+    expect(w.server.routes().filter((r) => r === 'GET channel call' || r === 'GET group info').length).toBeLessThanOrEqual(2 + 7);
+    // Bob commits the Remove: the group moves on, and the join is tried again and lands.
+    w.ds.removeTarget.delete(toHex(ME.device));
+    w.ds.peerCommit(w.callGroup, PEER);
+    await runFor(w, id, 6_000);
+    expect(w.ret(id)).toMatchObject({ ok: true });
+    expect(resyncs(w)).toBe(2);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', rejoining: false });
+  });
+
+  it('any other refusal of the rejoin fails at once (a 403 is not waited out)', async () => {
     const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
     w.ds.denyJoin.add(toHex(ME.device));
     const id = w.send(JOIN(w));
-    for (let i = 0; i < 5; i++) { await settle(); await w.clock.advance(1_000); }
+    await runFor(w, id, 1_000);
+    expect(w.ret(id)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } });
+    expect(resyncs(w)).toBe(1);
+    expect(w.slice('call')).toMatchObject({ phase: 'failed', rejoining: false });
+  });
+
+  it('the wait is bounded by 30 s of elapsed time: still waiting at 29 s, failed by 31 s', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.ds.removeTarget.add(toHex(ME.device));
+    const id = w.send(JOIN(w));
+    await runFor(w, id, 29_000);
     expect(w.ret(id)).toBeUndefined();
     expect(w.slice('call')).toMatchObject({ phase: 'joining' });
-    // Bob commits the Remove: the instance answers the resync again.
-    w.ds.denyJoin.delete(toHex(ME.device));
-    for (let i = 0; i < 10 && w.ret(id) === undefined; i++) { await settle(); await w.clock.advance(1_000); }
-    expect(w.ret(id)).toMatchObject({ ok: true });
-    expect(w.slice('call')).toMatchObject({ phase: 'in' });
-  });
-
-  it('the wait is bounded: a Remove nobody commits fails the join after 30 s', async () => {
-    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
-    w.ds.denyJoin.add(toHex(ME.device));
-    const id = w.send(JOIN(w));
-    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) { await settle(); await w.clock.advance(1_000); }
-    expect(w.ret(id)).toMatchObject({ ok: false });
+    await runFor(w, id, 2_000);
+    expect(w.ret(id)).toMatchObject({ ok: false, error: { code: 'E_REMOVE_PENDING' } });
     expect(w.slice('call')).toMatchObject({ phase: 'failed' });
   });
-});
 
+  it('the bound is elapsed time, not a count of steps: slow reads do not stretch it', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.ds.removeTarget.add(toHex(ME.device));
+    const id = w.send(JOIN(w));
+    await runFor(w, id, 3_000);
+    // Each later call read takes 4 s of the worker's clock.
+    for (let i = 0; i < 20; i++) w.ds.inject('getChannelCall', { before: () => { void w.clock.advance(4_000); } });
+    await runFor(w, id, 31_000);
+    expect(w.ret(id)).toMatchObject({ ok: false, error: { code: 'E_REMOVE_PENDING' } });
+    expect(w.server.routes().filter((r) => r === 'GET channel call').length).toBeLessThan(10);
+  });
+
+  it('a leave during the wait stops it: no read and no resync after the leave', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.ds.removeTarget.add(toHex(ME.device));
+    const id = w.send(JOIN(w));
+    await runFor(w, id, 3_000);
+    expect(w.slice('call')).toMatchObject({ phase: 'joining', rejoining: true });
+    const leave = w.send({ m: 'callLeave', reason: 'user' });
+    await settle();
+    const before = w.server.routes().length;
+    await runFor(w, id, 10_000);
+    expect(w.ret(id)).toMatchObject({ ok: false, error: { code: 'E_NO_CALL' } });
+    expect(w.ret(leave)).toMatchObject({ ok: true });
+    expect(w.server.routes().slice(before).filter((r) => r === 'GET channel call' || r === 'GET group info' || r === 'POST resync')).toEqual([]);
+    expect(w.slice('call')).toMatchObject({ phase: 'idle', rejoining: false });
+  });
+});
 describe('a join cancelled while it runs (review I1)', () => {
   async function joining(): Promise<{ w: World; join: number; release: () => void }> {
     const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
@@ -1267,7 +1422,7 @@ describe('a send block that comes or goes (integration cards)', () => {
     await w.call({ m: 'refreshTrust' });
     expect(w.slice('sendBlocks')).toEqual({});
     expect(w.slice('call')).toEqual({ phase: 'idle', channelId: null, callId: null, epoch: null, code: null, error: null, roster: [],
-      outgoing: null, changedUser: null });
+      outgoing: null, changedUser: null, rejoining: false });
     expect(await codeOf(w.call({ m: 'callJoin', channelId: w.dm, vdec: '' }))).toBe('ok');
   });
 
