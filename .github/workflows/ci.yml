@@ -77,6 +77,16 @@ jobs:
             target/ui-screens/web-2c/desktop/**
             target/ui-screens/web-2c/phone/**
           if-no-files-found: error
+      # web-3 task 11: every story of the voice, ring and media-player families (Voice/, Media/MediaPlayer and
+      # Screens/Voice) in the three themes, at 1280×800 and at an actual 360×740 browser viewport, uploaded as one
+      # artifact from target/ui-screens/web-3. Each prefix matches only web-3 stories, so a missing family fails here.
+      - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop voice- media-mediaplayer-- screens-voice--
+      - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone voice- media-mediaplayer-- screens-voice-- --viewport=360x740
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens-web-3
+          path: target/ui-screens/web-3/**
+          if-no-files-found: error
   rust-wasm-node:
     runs-on: ubuntu-latest
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:

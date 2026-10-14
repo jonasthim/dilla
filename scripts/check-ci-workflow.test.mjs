@@ -49,6 +49,13 @@ jobs:
             target/ui-screens/web-2c/desktop/**
             target/ui-screens/web-2c/phone/**
           if-no-files-found: error
+      - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop voice- media-mediaplayer-- screens-voice--
+      - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone voice- media-mediaplayer-- screens-voice-- --viewport=360x740
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-screens-web-3
+          path: target/ui-screens/web-3/**
+          if-no-files-found: error
   rust-native:
     runs-on: ubuntu-latest
     steps:
@@ -1271,6 +1278,25 @@ test('web-2c captures, both paths and timeout are required independently', () =>
     const problems = checkWorkflow(fixture(workflow));
     assert.ok(problems.length > 0, `${name}: checker accepted a missing gate`);
     assert.match(problems.join('\n'), /web-2c|screenshot|browser-web|timeout/i, name);
+  }
+});
+
+// web-3 task 11: the voice, ring and media-player families at both viewports, uploaded from target/ui-screens/web-3.
+test('web-3 captures and the web-3 upload path are required independently', () => {
+  const desktop = 'node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop voice- media-mediaplayer-- screens-voice--';
+  const phone = 'node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone voice- media-mediaplayer-- screens-voice-- --viewport=360x740';
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), [], 'fixture sanity: GOOD passes');
+  const required = [
+    ['desktop step', GOOD.replace(`      - run: ${desktop}\n`, ''), desktop],
+    ['phone step', GOOD.replace(`      - run: ${phone}\n`, ''), phone],
+    ['narrowed prefixes', GOOD.replace(` voice- media-mediaplayer-- screens-voice--\n`, ' voice-\n'), desktop],
+    ['upload path', GOOD.replace('path: target/ui-screens/web-3/**', 'path: target/ui-screens/web-2c/**'), 'path: target/ui-screens/web-3/**'],
+    ['artifact name', GOOD.replace('name: ui-screens-web-3\n', 'name: ui-screens-web-2d\n'), 'name: ui-screens-web-3'],
+  ];
+  for (const [name, workflow, needle] of required) {
+    assert.notEqual(workflow, GOOD, `fixture sanity: ${name}`);
+    const problems = checkWorkflow(fixture(workflow));
+    assert.ok(problems.some((p) => p.includes('"ui"') && p.includes(needle)), `${name}: ${problems.join('\n')}`);
   }
 });
 

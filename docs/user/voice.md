@@ -29,11 +29,14 @@ the call has a tile with their name and their state:
 | "camera on", "sharing screen" | Their camera or their screen shows in the tile |
 | "unverified stream" | Something arrives in their name that is not one of the call's devices; nothing of it is shown or played |
 
+A tile with no state word is someone you hear who is quiet right now.
+
 Each tile has "volume for {name}": it changes how loud that person is for you only.
 
 **leave**, in the dock or under the tiles, leaves the call ("You left {where}."). If you were the only one left in
-the call, leaving ends it. If you join again right after leaving, it can show "Rejoining…" for up to 30 seconds while
-the instance finishes your earlier leave.
+the call, leaving ends it. If you join again right after leaving, the dock can stay at "connecting" for up to 30
+seconds while the instance finishes your earlier leave; a screen reader hears "Rejoining {where}. This can take up to
+30 seconds."
 
 You can keep talking while you read: open any text channel and the dock stays above your user panel, with the input
 level, **mute**, **deafen** and **leave**.
@@ -76,7 +79,7 @@ search shortcuts.
 There is no key until you set one ("no key set"). Hold it to talk. It works only while the dilla tab is the active
 tab, never while you type in a text field, and the dock says "push to talk" while it is in force.
 
-![Settings → Voice: input device, output device, input mode, push-to-talk key, noise suppression and the input
+![Settings → Voice: input device, output device, input mode (voice activity), noise suppression and the input
 level](screenshots/voice-settings-desktop.png)
 
 Settings → voice also holds:

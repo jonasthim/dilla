@@ -119,6 +119,13 @@ export const UI_SHOTS_2C = [
   `node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone ${UI_PREFIXES_2C} --viewport=360x740`,
 ];
 
+/** web-3 task 11: the voice, ring and media-player story families at both viewports, uploaded from target/ui-screens/web-3. */
+const UI_PREFIXES_3 = 'voice- media-mediaplayer-- screens-voice--';
+export const UI_SHOTS_3 = [
+  `node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop ${UI_PREFIXES_3}`,
+  `node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone ${UI_PREFIXES_3} --viewport=360x740`,
+];
+
 /** One load-bearing command per job, so a silently gutted job is caught. */
 const REQUIRED_STEPS = {
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
@@ -168,6 +175,8 @@ const REQUIRED_STEPS = {
   ui: [
     'node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--', 'name: ui-screens', 'path: target/ui-screens/web-2b',
     'name: ui-screens-web-2c', 'target/ui-screens/web-2c/desktop/**', 'target/ui-screens/web-2c/phone/**',
+    // web-3 task 11: the voice families go up as a third artifact, from the web-3 directory.
+    'name: ui-screens-web-3', 'path: target/ui-screens/web-3/**',
   ],
   vectors: [
     'npm run vectors',
@@ -622,6 +631,9 @@ export function checkWorkflow(root) {
     const runs = jobs.ui.split('\n').map((line) => line.trim());
     for (const command of UI_SHOTS_2C) {
       if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-2c screenshot step: ${command}`);
+    }
+    for (const command of UI_SHOTS_3) {
+      if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-3 screenshot step: ${command}`);
     }
   }
 
