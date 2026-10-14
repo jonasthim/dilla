@@ -230,6 +230,16 @@ checks every device again.
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the dock | The connection dropped; the call comes back by itself |
 
+### You see people speaking but hear nothing
+
+If you see people speaking but hear nothing, press **turn on audio**. Your browser paused call audio until you press
+something on the page. The dock then says "Your browser paused call audio." with **turn on audio** under it, above
+**mute**, **deafen** and **leave**; one press starts the call's sound and the line goes. Nothing else about the call changes. This happens
+mostly when joining took a long time after you pressed **join voice**, or in a browser with a strict autoplay rule.
+
+Before v0.1.0-web3.3, the web client played no call audio at all: people saw each other speaking but heard nothing.
+Update the instance if that is what you hear.
+
 ## Known limits
 
 - Voice only in a browser tab: no desktop app yet, and voice is not supported in Safari.
