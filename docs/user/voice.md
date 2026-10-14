@@ -232,13 +232,15 @@ checks every device again.
 
 ### You see people speaking but hear nothing
 
-If you see people speaking but hear nothing, press **turn on audio**. Your browser paused call audio until you press
-something on the page. The dock then says "Your browser paused call audio." with **turn on audio** under it, above
-**mute**, **deafen** and **leave**; one press starts the call's sound and the line goes. Nothing else about the call changes. This happens
-mostly when joining took a long time after you pressed **join voice**, or in a browser with a strict autoplay rule.
+If the dock says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
+you press something on the page. The line and its button sit above **mute**, **deafen** and **leave**; one press
+starts the call's sound and the line goes. Nothing else about the call changes. This happens mostly when joining took
+a long time after you pressed **join voice**.
 
-Before v0.1.0-web3.3, the web client played no call audio at all: people saw each other speaking but heard nothing.
-Update the instance if that is what you hear.
+If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
+volume.
+
+If you hear no one on any call, ask whoever runs your instance to update it to v0.1.0-web3.3 or later.
 
 ## Known limits
 
