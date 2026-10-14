@@ -54,9 +54,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-sidebar > .d-channel-list { flex: 1 1 auto; min-height: 0; }
 .dw-voice-dock { flex: 0 0 auto; background: var(--bg-2); border-right: 1px solid var(--hairline); }
-.dw-voice-dock__paused { display: grid; gap: var(--row-gap); margin: 0.5rem 0.5rem 0; padding: 0.5rem 0.625rem; border-left: 0.1875rem solid var(--warn); color: var(--fg); font-size: var(--text-sm); }
-.dw-voice-dock__paused p { margin: 0; }
-.dw-voice-dock__paused .d-btn { justify-self: start; }
+.dw-voice-dock__paused, .dw-voice-dock__audio { display: grid; gap: var(--row-gap); margin: 0.5rem 0.5rem 0; padding: 0.5rem 0.625rem; border-left: 0.1875rem solid var(--warn); color: var(--fg); font-size: var(--text-sm); }
+.dw-voice-dock__paused p, .dw-voice-dock__audio p { margin: 0; }
+.dw-voice-dock__paused .d-btn, .dw-voice-dock__audio .d-btn { justify-self: start; }
 /* Product walk M7: the input mode is a line of its own under the meter, never squeezed beside it. */
 .d-voice-dock .d-voice-dock__meter { flex-direction: column; align-items: stretch; gap: 0.25rem; }
 .dw-voice-dock__mode { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
@@ -112,7 +112,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
   /* Product walk I5: at 360 the stage is in normal flow, its controls under the tiles; nothing floats over a tile. */
   .dw-voice-stage .d-call-stage__controls { position: static; padding-block: 0.5rem; }
   .dw-dm-call .d-call-stage__controls { position: static; }
-  .dw-voice-dock__paused .d-btn { min-height: 2.75rem; }
+  .dw-voice-dock__paused .d-btn, .dw-voice-dock__audio .d-btn { min-height: 2.75rem; }
   .dw-voice-dock__mode .d-btn { min-height: 2.75rem; }
   /* The narrow sidebar (35dvh, AppShell) scrolls as one column: the list and the dock stack instead of overlapping.
      Product walk I4: the dock is pinned to the bottom of that column, so mute, deafen and leave stay on screen while a

@@ -49,11 +49,13 @@ function installRecorders(): void {
     blobs: { created: string[]; revoked: string[] };
     hidden: boolean;
     ringChannels: Set<string>;
+    remoteTracks: Set<string>;
+    remoteAnalysers: AnalyserNode[];
   };
   const w = window as unknown as { __dw?: Rec; __dwSetHidden?: (h: boolean) => void };
   if (w.__dw !== undefined) return;
   const rec: Rec = { slices: {}, keyPath: { messages: 0, callKeys: 0, findings: [] }, contexts: [], tones: [], ringTimers: new Set(),
-    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set() };
+    blobs: { created: [], revoked: [] }, hidden: false, ringChannels: new Set(), remoteTracks: new Set(), remoteAnalysers: [] };
   w.__dw = rec;
 
   // The key path (plan task 10, "Key path in a real browser"): no `ret` or `slice` message between the page and a
@@ -119,6 +121,40 @@ function installRecorders(): void {
     }
     Object.defineProperty(window, name, { value: RecordedContext, configurable: true, writable: true });
   }
+  // web3.3: sound, not only decryption. Every track a peer connection receives is recorded by id; a WebAudio source made
+  // from a stream (or from an element whose srcObject) that holds one is tapped by an AnalyserNode as well, so `audible`
+  // (voice.ts) reads whether a remote call track reaches the page's audio graph with a signal in it. The media worker's
+  // counters (`heard`) stay green even when nothing plays the decrypted track.
+  const NativePC = window.RTCPeerConnection as typeof RTCPeerConnection | undefined;
+  if (NativePC !== undefined) {
+    class RecordedPC extends NativePC {
+      constructor(config?: RTCConfiguration) {
+        super(config);
+        this.addEventListener('track', (ev) => { rec.remoteTracks.add((ev as RTCTrackEvent).track.id); });
+      }
+    }
+    Object.defineProperty(window, 'RTCPeerConnection', { value: RecordedPC, configurable: true, writable: true });
+  }
+  const tap = (ctx: BaseAudioContext, node: AudioNode, stream: unknown): void => {
+    if (!(stream instanceof MediaStream) || !stream.getAudioTracks().some((t) => rec.remoteTracks.has(t.id))) return;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    node.connect(analyser);
+    rec.remoteAnalysers.push(analyser);
+  };
+  // createMediaStreamSource and createMediaElementSource live on AudioContext (an OfflineAudioContext has neither).
+  const createStreamSource = AudioContext.prototype.createMediaStreamSource;
+  AudioContext.prototype.createMediaStreamSource = function (this: AudioContext, stream: MediaStream) {
+    const node = createStreamSource.call(this, stream);
+    tap(this, node, stream);
+    return node;
+  };
+  const createElementSource = AudioContext.prototype.createMediaElementSource;
+  AudioContext.prototype.createMediaElementSource = function (this: AudioContext, element: HTMLMediaElement) {
+    const node = createElementSource.call(this, element);
+    tap(this, node, element.srcObject);
+    return node;
+  };
   const createOscillator = BaseAudioContext.prototype.createOscillator;
   BaseAudioContext.prototype.createOscillator = function (this: BaseAudioContext) {
     const osc = createOscillator.call(this);

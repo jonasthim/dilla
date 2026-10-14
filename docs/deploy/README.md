@@ -7,8 +7,11 @@ container image, a systemd unit, set up by hand or by the install script, and a 
 helper), the TLS modes, and the backup and restore runbook.
 
 `dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
-directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay, UDP
-reachability and the blob tree, and prints one line per check. Run it after every change.
+directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay and the
+blob tree, and prints one line per check. By default its `udp` leg reads WARN "not probed": dillad
+runs no reflector, so the leg never proves the UDP forward, which can only be checked from outside.
+With `doctor.udp_probe = false` the leg reads OK "skipped", and with `livekit.enabled = false` OK
+with no media port to reach. Run it after every change.
 
 ## 1. The TLS modes
 
@@ -135,6 +138,19 @@ entryPoints:
 
 and publish `7882:7882/udp` on the `gerbil` service. The 30-second value is pending the founder-path
 measurement (follow-up card 6); the instance itself still publishes only 443/tcp and 7882/udp.
+A UDP entry point that already exists without a `timeout` also falls back to Traefik's 3-second
+default, so give it `timeout: 30s` as well.
+
+- **The `udp` leg of `dillad doctor` never proves the forward.** By default it reads WARN
+  "not probed", with or without the forward: dillad runs no reflector, so it cannot see the forward
+  from inside. `ss -ulpn` on the Pangolin host should show a socket on `:7882` (the docker-proxy
+  socket for gerbil's published port), but what settles it is the SFU's log line during a call:
+  `participant active … connectionType: udp`.
+- **Give the raw UDP resource exactly one target:** the node the container runs on. With one target
+  per site, as HTTP resources have, the stream reaches the SFU from several source addresses and
+  ICE re-validates without end.
+- **Recreating `traefik` and `gerbil` drops every tunnel.** The public hostnames then answer 404
+  (not 502) for about 20 seconds until the tunnels recover. Do it when nobody is in a call.
 
 ### LiveKit
 
@@ -365,8 +381,10 @@ What it does, in order:
    0700. Then it checks the file with dillad's own config check (`dillad doctor`'s `config` leg)
    and refuses to start a file dillad would refuse.
 6. It runs `systemctl enable --now dilla` and then `dillad doctor`, whose report goes to stderr.
-   The `clock`, `certificate`, `turn` and `udp` legs need DNS, the proxy or the UDP forward, so
-   they are shown as pending, not as a failed install. Any other red leg fails the install.
+   The `clock`, `certificate` and `turn` legs need DNS or the proxy, so they are shown as pending,
+   not as a failed install. The `udp` leg reads WARN "not probed" by default and never proves the
+   UDP forward, because dillad cannot see it from inside; check the forward from outside instead.
+   Any other red leg fails the install.
 7. It prints the next steps on stderr (the DNS record and forwards for `--public`; the Pangolin
    resource and the UDP forward for `--behind-proxy`). Then it prints the bootstrap invite link
    alone on stdout.
@@ -430,8 +448,10 @@ Each one becomes an entry of `server.trusted_proxy_cidrs`. Then, in Pangolin:
   strips `Upgrade` or `Connection`.
 - Add the raw UDP forward for 7882 described in
   [Behind a WireGuard tunnel (Pangolin)](#behind-a-wireguard-tunnel-pangolin-mtu-and-udp-7882):
-  a Traefik UDP entry point with a 30-second timeout, `7882:7882/udp` published on `gerbil`, and a
-  route to the container's 7882/udp.
+  a Traefik UDP entry point with a 30-second timeout (an existing one without a `timeout` falls
+  back to 3 seconds), `7882:7882/udp` published on `gerbil`, and a raw UDP resource with exactly
+  one target: the container's 7882/udp on the node it runs on. The same section says how to check
+  the forward (doctor's `udp` leg never proves it) and when not to recreate `traefik` and `gerbil`.
 
 TURN is off in this mode (see [the `behind_proxy` TURN consequence](#the-behind_proxy-turn-consequence)),
 so a member on a network that blocks UDP cannot join calls.

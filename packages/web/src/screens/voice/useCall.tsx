@@ -24,6 +24,11 @@ export type VoiceModule = Pick<CallModule, 'startPageCall' | 'isVoiceSupported' 
 export interface VoiceDeps {
   load(): Promise<VoiceModule>;
   createSounds(): Sounds;
+  /** web3.3 fix round 2 (Minor 1): the call’s AudioContext, made synchronously in the join’s press so the browser lets it
+   *  run (browsers start an AudioContext made outside a user gesture suspended, as after the module load and a switch’s
+   *  leave). A new AudioContext by
+   *  default; null where the browser has none. */
+  createCallContext?(): AudioContext | null;
 }
 
 let audio: AudioContext | null = null;
@@ -36,7 +41,19 @@ function soundContext(): AudioContext | null {
   return audio;
 }
 
-export const VoiceDepsContext = createContext<VoiceDeps>({ load: loadCallModule, createSounds: () => createSounds(soundContext) });
+function callContext(): AudioContext | null {
+  const Ctor = (globalThis as { AudioContext?: typeof AudioContext }).AudioContext;
+  if (Ctor === undefined) return null;
+  try { return new Ctor(); } catch { return null; }
+}
+/** Closes a call context this hook made but never handed to a session (the session closes the ones it was given). */
+function closeContext(ctx: AudioContext | null | undefined): void {
+  if (ctx == null) return;
+  try { void Promise.resolve(ctx.close()).catch(() => undefined); } catch { /* already closed */ }
+}
+
+export const VoiceDepsContext = createContext<VoiceDeps>({ load: loadCallModule, createSounds: () => createSounds(soundContext),
+  createCallContext: callContext });
 
 /** A transient notice of a start or a control (micDenied and the like are read from the session's state instead). `text`,
  *  when set, is the notice's words already filled (the outgoing ring's last line, product walk I6). */
@@ -102,6 +119,8 @@ export interface CallView {
   toggleCamera: () => void;
   toggleShare: () => void;
   setVolume: (userId: string, volume: number) => void;
+  /** web3.3: the "turn on audio" press while the browser holds call audio back (state.audioBlocked). */
+  startAudio: () => void;
 }
 
 export interface UseCallOptions {
@@ -144,7 +163,8 @@ export function useCall(o: UseCallOptions): CallView {
   const startAbort = useRef<AbortController | null>(null);
   /** WB client I1: a join (or a ring's answer) of another channel asked for while a start ran: it starts once that one
    *  has been cancelled. */
-  const queuedJoin = useRef<string | null>(null);
+  /** The join that waits for a cancelled start to end, with the call context made in its own press. */
+  const queuedJoin = useRef<{ id: string; ctx: AudioContext | null } | null>(null);
   /** WB client m1: the leave in flight; a join waits for it, so leave-then-join is not refused as a call in progress. */
   const leaving = useRef<Promise<unknown> | null>(null);
   const mounted = useRef(true);
@@ -193,9 +213,18 @@ export function useCall(o: UseCallOptions): CallView {
     setSession(next);
     setState(next.state);
     setChannelId(id);
+    // web3.3 review M1: the browser holding call audio back is said once, in the dock’s status region, on each change
+    // from playing to held back (a call that starts held back says it with the join).
+    let audioBlocked = next.state.audioBlocked;
+    // Fix round 2 (Nit 3): a hold that arrives in the same tick as the join’s announcement joins it, never replaces it.
+    const joined = t('voice.announce.joined', { where: live.current.whereOf(id) });
+    let joinTick = true;
+    setTimeout(() => { joinTick = false; }, 0);
     unsubscribe.current = next.subscribe(() => {
       if (sessionRef.current !== next) return;
       setState(next.state);
+      if (next.state.audioBlocked && !audioBlocked) announce(joinTick ? `${joined} ${t('voice.audioBlocked')}` : t('voice.audioBlocked'));
+      audioBlocked = next.state.audioBlocked;
       // The room ended on its own (the session already left; a person's own leave detaches first, so it never gets
       // here). WB client I3: say why, in the stage's notice and, off the stage, where it outlives the dock.
       if (next.state.phase === 'ended') {
@@ -205,17 +234,24 @@ export function useCall(o: UseCallOptions): CallView {
         if (!live.current.stageShown(id)) setLasting(t(key));
       }
     });
-    announce(t('voice.announce.joined', { where: live.current.whereOf(id) }));
+    announce(audioBlocked ? `${joined} ${t('voice.audioBlocked')}` : joined);
   }, [announce, detach]);
 
-  const join = useCallback((id: string) => {
-    if (channelRef.current === id && (starting.current || sessionRef.current !== null)) return;
+  /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). */
+  const join = useCallback((id: string, made?: AudioContext | null) => {
+    if (channelRef.current === id && (starting.current || sessionRef.current !== null)) { closeContext(made); return; }
+    // web3.3 fix round 2 (Minor 1): the call’s AudioContext is made here, synchronously in the press, before any await
+    // (the leave in flight, the module load, a switch’s leave); the session it is handed to closes it on every way out,
+    // and every path below that never hands it over (unsupported, cancelled, superseded, a failed load) closes it here.
+    const ctx = made !== undefined ? made : (deps.createCallContext?.() ?? null);
     if (starting.current) {
       // WB client I1: another channel (a ring's answer) while a start runs: that start is cancelled and this one follows.
-      queuedJoin.current = id;
+      closeContext(queuedJoin.current?.ctx);
+      queuedJoin.current = { id, ctx };
       startAbort.current?.abort();
       return;
     }
+    let handed = false;
     starting.current = true;
     const from = document.activeElement;
     const abort = new AbortController();
@@ -249,7 +285,10 @@ export function useCall(o: UseCallOptions): CallView {
         setChannelId(id);
         setJoining(true);
         const settings = client.get('settings') ?? {};
-        const next = await mod.startPageCall(mod.browserDeps(client), { channelId: id, vdec: mod.localDecodeList() }, {
+        // The start's arguments are built before the context counts as handed: a throw while building them closes it below.
+        const callDeps = mod.browserDeps(client);
+        const target = { channelId: id, vdec: mod.localDecodeList() };
+        const opts: Parameters<VoiceModule['startPageCall']>[2] = {
           instanceId: client.get('account')?.instance?.id ?? '',
           input: settings[SETTINGS.voiceInput] ?? '',
           output: settings[SETTINGS.voiceOutput] ?? '',
@@ -259,7 +298,10 @@ export function useCall(o: UseCallOptions): CallView {
           signal: abort.signal,
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
           self: settings[SETTINGS.voiceSelf] === 'deafened' ? 'deafened' : settings[SETTINGS.voiceSelf] === 'muted' ? 'muted' : null,
-        });
+          ...(ctx !== null ? { audioContext: ctx } : {}),
+        };
+        handed = true;
+        const next = await mod.startPageCall(callDeps, target, opts);
         // The shell unmounted while the start was pending: nobody drives this call, so it ends at once.
         if (!mounted.current) { void next.leave('user'); return; }
         attach(next, id);
@@ -271,17 +313,21 @@ export function useCall(o: UseCallOptions): CallView {
         const key = abort.signal.aborted ? null : joinFailureKey(errorOf(e).code);
         if (key !== null) setNotice({ channelId: id, key });
       } finally {
+        if (!handed) closeContext(ctx);
         if (startAbort.current === abort) startAbort.current = null;
         starting.current = false;
         setJoining(false);
         const next = queuedJoin.current;
         queuedJoin.current = null;
-        if (next !== null && mounted.current) joinRef.current(next);
+        if (next !== null && mounted.current) joinRef.current(next.id, next.ctx);
+        else closeContext(next?.ctx);
       }
     })();
   }, [deps, client, attach, detach]);
   const joinRef = useRef(join);
   joinRef.current = join;
+  /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
+  const joinOnly = useCallback((id: string) => join(id), [join]);
 
   const leave = useCallback((after?: CallNotice) => {
     const current = sessionRef.current;
@@ -289,6 +335,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (current === null && starting.current) {
       // WB client I1: a leave while the start runs cancels it (the microphone prompt and the rejoin wait included); the
       // shell returns to where it was, and nothing is said of a failure.
+      closeContext(queuedJoin.current?.ctx);
       queuedJoin.current = null;
       startAbort.current?.abort();
       channelRef.current = null;
@@ -344,6 +391,10 @@ export function useCall(o: UseCallOptions): CallView {
     sessionRef.current?.setVolume(userId, volume);
     client.call({ m: 'setSetting', key: SETTINGS.voiceVolume(userId), value: String(volume) }).catch(() => undefined);
   }, [client]);
+  const startAudio = useCallback(() => {
+    // The press is the user activation the browser asks for; a refusal leaves the line on offer (the session never throws).
+    sessionRef.current?.startAudio().catch(() => undefined);
+  }, []);
 
   const closeUnsupported = useCallback(() => {
     setUnsupported(false);
@@ -526,6 +577,6 @@ export function useCall(o: UseCallOptions): CallView {
     channelId, joining, session, state, announcement, lasting, announce, notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume,
+    join: joinOnly, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
   };
 }

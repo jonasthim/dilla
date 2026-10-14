@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-14 ("web-3.1"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-14 ("web-3.3"): starting a server, inviting people and adding
 channels, signing up, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), contacts and safety numbers, search, settings and a second tab, and what the client cannot do

@@ -481,12 +481,13 @@ doctor_and_report() {
 	log "running dillad doctor"
 	run_doctor
 	printf '%s\n' "$DOCTOR_OUT" | sed 's/^/  /' >&2
-	# Legs that need DNS for the domain, outbound HTTPS, the proxy or the UDP
-	# forward: red until those exist, which is expected on a fresh install.
-	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && ($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "udp") { printf "%s ", $2 }')"
-	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "udp") { printf "%s ", $2 }')"
+	# Legs that need DNS for the domain, outbound HTTPS or the proxy: red until
+	# those exist, which is expected on a fresh install. The udp leg is never red:
+	# it reads WARN "not probed" by default and cannot prove the forward.
+	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && ($2 == "clock" || $2 == "certificate" || $2 == "turn") { printf "%s ", $2 }')"
+	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn") { printf "%s ", $2 }')"
 	if [ -n "$PENDING" ]; then
-		log "doctor: these checks need DNS, the network, the proxy or UDP $UDP_PORT set up first, and fail until DNS and the forwards exist: $PENDING"
+		log "doctor: these checks need DNS, the network or the proxy set up first, and fail until DNS and the proxy are in place: $PENDING"
 		log "        run the doctor again once they are: runuser -u dillad -- /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml"
 	fi
 	if [ -n "$BROKEN" ]; then
@@ -689,7 +690,8 @@ if [ "$MODE" = behind-proxy ]; then
 	log "     middleware that strips Upgrade or Connection)."
 	log "  2. the raw UDP forward for media, $UDP_PORT/udp to this host: a Traefik UDP entry point"
 	log "     udp-$UDP_PORT on \":$UDP_PORT/udp\" with udp.timeout 30s, $UDP_PORT:$UDP_PORT/udp published on"
-	log "     the gerbil service, and a UDP route to this host's $UDP_PORT/udp. The tunnel MTU stays 1280."
+	log "     the gerbil service, and a raw UDP resource with exactly one target, this host's $UDP_PORT/udp."
+	log "     The tunnel MTU stays 1280."
 	log "     See docs/deploy/README.md, \"Behind a WireGuard tunnel (Pangolin)\"."
 	if [ -z "$NODE_IP" ] && [ -z "$PUBLIC_IP" ]; then
 		log "  3. livekit.node_ip is empty: set it in /etc/dilla/dilla.toml to the public address clients"

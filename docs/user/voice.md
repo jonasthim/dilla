@@ -1,7 +1,7 @@
 # Voice, calls and media files
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
-camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.1".
+camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.3".
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -98,8 +98,9 @@ level](screenshots/voice-settings-desktop.png)
 
 Settings → voice also holds:
 
-- **input device** and **output device**, or "system default". A browser that cannot choose where sound plays says
-  "This browser plays voice on the system default device."
+- **input device** and **output device**, or "system default". Choosing the output device works in Chrome and Edge;
+  Firefox plays call sound on the system default device. A browser that cannot choose where sound plays says "This
+  browser plays voice on the system default device."
 - **noise suppression**, on by default: it removes steady background noise from your microphone. Switching it during
   a call applies at once.
 - **input level**: a meter of what your microphone hears.
@@ -229,6 +230,19 @@ checks every device again.
 | "The connection to voice was lost. Join again to continue." | The connection dropped and did not come back; press **join voice** again |
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the dock | The connection dropped; the call comes back by itself |
+
+### You see people speaking but hear nothing
+
+If the dock says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
+you press something on the page. The line and its button sit above **mute**, **deafen** and **leave**; one press
+starts the call's sound and the line goes. Nothing else about the call changes. This happens when the browser did not
+let the call start its sound, for example when the browser or your system suspended audio, or a stricter autoplay
+setting in the browser held it back.
+
+If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
+volume.
+
+If you hear no one on any call, ask whoever runs your instance to update it to v0.1.0-web3.3 or later.
 
 ## Known limits
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
   A, BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
@@ -455,4 +455,102 @@ describe('review round 1', () => {
     expect(box).toHaveAttribute('data-view', 'messages');
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
   });
+});
+
+describe('web3.3: the browser holds call audio back', () => {
+  it('the dock offers "turn on audio" with its hint; a key press starts audio; the line goes once audio plays', async () => {
+    const app = await inVoice();
+    const turnOn = () => screen.queryByRole('button', { name: t('voice.audioStart') });
+    expect(turnOn()).toBeNull();
+    expect(screen.queryByText(t('voice.audioBlocked'))).toBeNull();
+    act(() => app.session.update({ audioBlocked: true }));
+    const button = await screen.findByRole('button', { name: t('voice.audioStart') });
+    expect(button).toHaveAccessibleDescription(t('voice.audioBlocked'));
+    // Beside the call controls: in the dock, which shows wherever the person is while in a call.
+    expect(button.closest('.dw-voice-dock')).not.toBeNull();
+    // Review M1: the line is no status region of its own; the dock’s one status region says it, once per change.
+    const line = document.querySelector('.dw-voice-dock__audio')!;
+    expect(line.closest('[role="status"]')).toBeNull();
+    const said = () => [...document.querySelectorAll('[role="status"]')].filter(r => r.textContent === t('voice.audioBlocked'));
+    await waitFor(() => expect(said()).toHaveLength(1));
+    expect(said()[0].closest('.dw-voice-dock')).not.toBeNull();
+    // Said on the false→true change only: a later announcement is not overwritten by an update that keeps it blocked.
+    await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
+    await waitFor(() => expect(said()).toHaveLength(0));
+    act(() => app.session.update({ level: 3 }));
+    expect(said()).toHaveLength(0);
+    button.focus();
+    await app.user.keyboard('{Enter}');
+    expect(app.session.startAudio).toHaveBeenCalledTimes(1);
+    act(() => app.session.update({ audioBlocked: false }));
+    await waitFor(() => expect(turnOn()).toBeNull());
+    expect(screen.queryByText(t('voice.audioBlocked'))).toBeNull();
+  });
+});
+
+describe('web3.3 fix round 2: the call context is made in the press (Minor 1); the hold joins the join announcement (Nit 3)', () => {
+  it('makes the call’s AudioContext synchronously in the join press and hands that one to the session', async () => {
+    const app = renderVoiceShell();
+    const button = await main().findByRole('button', { name: 'join voice' });
+    fireEvent.click(button);
+    // Nothing of the join was awaited yet: the leave in flight, the module load and a switch’s leave all come after.
+    expect(app.callContexts).toHaveLength(1);
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.startedWith).toEqual([app.callContexts[0]]);
+    expect(app.callContexts[0].closed).toBe(false);
+  });
+
+  it('closes the context when the browser cannot do voice, and never starts a call', async () => {
+    const app = renderVoiceShell({ supported: false });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    expect(await screen.findByRole('dialog', { name: 'Voice does not work in this browser' })).toBeInTheDocument();
+    expect(app.callContexts).toHaveLength(1);
+    expect(app.callContexts[0].closed).toBe(true);
+    expect(app.startedWith).toEqual([]);
+  });
+
+  it('closes the context when the call module fails to load', async () => {
+    const app = renderVoiceShell({ loadFails: true });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.callContexts[0]?.closed).toBe(true));
+    expect(app.startedWith).toEqual([]);
+  });
+
+  it('closes the context when building the start’s arguments throws before the session gets it', async () => {
+    const app = renderVoiceShell();
+    app.module.browserDeps = () => { throw new Error('E_INTERNAL'); };
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.callContexts[0]?.closed).toBe(true));
+    expect(app.startedWith).toEqual([]);
+  });
+
+  it('closes the context of a join cancelled by another before it started; the next join brings its own', async () => {
+    const app = await inVoice();
+    let release: () => void = () => undefined;
+    app.session.leaveGate = new Promise<void>(resolve => { release = resolve; });
+    await app.user.click(screen.getByRole('button', { name: 'voice music' }));
+    await waitFor(() => expect(window.location.pathname).toContain(MUSIC));
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.log).toContain('leave:switch'));
+    // While the switch’s leave runs, the person picks general again: the music join is superseded before it started.
+    await app.user.click(screen.getByRole('button', { name: 'voice general' }));
+    await waitFor(() => expect(window.location.pathname).toContain(GENV));
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    expect(app.callContexts).toHaveLength(3);
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(2));
+    expect(app.callContexts[1].closed).toBe(true);
+    expect(app.startedWith).toEqual([app.callContexts[0], app.callContexts[2]]);
+    expect(app.callContexts[2].closed).toBe(false);
+  });
+
+  for (const when of ['at-start', 'same-tick'] as const) {
+    it(`a hold ${when === 'at-start' ? 'the call starts in' : 'that arrives in the same tick as the join'} is said with "You joined", not instead of it`, async () => {
+      const app = renderVoiceShell({ audioBlocked: when });
+      await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+      await waitFor(() => expect(app.sessions).toHaveLength(1));
+      const said = () => [...document.querySelectorAll('.dw-voice-dock [role="status"]')].map(r => r.textContent ?? '');
+      await waitFor(() => expect(said().some(s => /^You joined /.test(s) && s.endsWith(` ${t('voice.audioBlocked')}`))).toBe(true));
+    });
+  }
 });
