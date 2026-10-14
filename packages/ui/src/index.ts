@@ -119,3 +119,5 @@ export { CreateChannel } from './CreateChannel/CreateChannel.tsx';
 export type { CreateChannelProps, NewChannelKind } from './CreateChannel/CreateChannel.tsx';
 export { InviteLink } from './InviteLink/InviteLink.tsx';
 export type { InviteLinkProps } from './InviteLink/InviteLink.tsx';
+export { ActionMenu } from './ActionMenu/ActionMenu.tsx';
+export type { ActionMenuProps, ActionMenuItem } from './ActionMenu/ActionMenu.tsx';
