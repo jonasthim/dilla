@@ -44,7 +44,8 @@ const button = (scope: Page | Locator, key: string, vars?: Record<string, string
   scope.getByRole('button', { name: copy(key, vars), exact: true });
 const dialogOf = (page: Page, key: string, vars?: Record<string, string>) =>
   page.getByRole('dialog', { name: copy(key, vars), exact: true });
-const membersRegion = (page: Page, server: string) => page.getByRole('region', { name: copy('members.region', { server }), exact: true });
+// The member list is the shell's aside, named "members of {server}" (the list inside takes no second name: final fix M5).
+const membersRegion = (page: Page, server: string) => page.getByRole('complementary', { name: copy('members.region', { server }), exact: true });
 const memberRow = (page: Page, server: string, name: string) =>
   membersRegion(page, server).getByRole('listitem').filter({ hasText: name });
 /** The text of a copy key with one variable left open: a regexp that matches any value for it. */
@@ -64,9 +65,11 @@ async function openSettings(page: Page): Promise<Locator> {
 }
 const navItem = (dialog: Locator, key: string) =>
   dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy(key), exact: true });
+/** Escape closes the dialog and focus goes back to "server settings" (final fix I1), never to the page. */
 async function closeSettings(page: Page): Promise<void> {
   await page.keyboard.press('Escape');
   await expect(dialogOf(page, 'admin.title')).toBeHidden();
+  await expect(button(page, 'admin.open')).toBeFocused();
 }
 /** Opens the member's action menu from its row and picks `item`. */
 async function memberAction(page: Page, server: string, name: string, item: string): Promise<void> {
