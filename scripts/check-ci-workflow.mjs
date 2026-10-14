@@ -766,6 +766,8 @@ const RELEASE_STEPS = {
     '*-*) prerelease=true ;;',
     // Only a commit on main, which ci.yml has gated, is released (review M6).
     'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
+    // v0.1.0-web3.1: the version go-release stamps into dillad is the validated tag without its leading v.
+    'echo "version=${tag#v}" >> "$GITHUB_OUTPUT"',
   ],
   'web-build': [
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
@@ -775,11 +777,11 @@ const RELEASE_STEPS = {
   ],
   'rust-wasi': REQUIRED_STEPS['rust-wasi'],
   'go-release': [
-    // v0.1.0-web3.1: the tag (without its leading v) is stamped into main.Version, and the stamp is checked on both binaries.
-    'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${TAG#v}" -o dist/dillad-linux-amd64 ./cmd/dillad',
-    'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.Version=${TAG#v}" -o dist/dillad-linux-arm64 ./cmd/dillad',
-    `test "$(dist/dillad-linux-amd64 version | cut -d' ' -f1-2)" = "dillad \${TAG#v}"`,
-    'grep -qaF -- "${TAG#v}" dist/dillad-linux-arm64',
+    // v0.1.0-web3.1: the tag job's version is stamped into main.Version, and the stamp is checked on both binaries.
+    'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillad-linux-amd64 ./cmd/dillad',
+    'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillad-linux-arm64 ./cmd/dillad',
+    `test "$(dist/dillad-linux-amd64 version | cut -d' ' -f1-2)" = "dillad $VERSION"`,
+    'grep -qaF -- "$VERSION" dist/dillad-linux-arm64',
     'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
     'name: dillad-binaries',
   ],
@@ -796,6 +798,7 @@ const RELEASE_STEPS = {
     `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/SHA256SUMS`,
   ],
 };
+const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
 const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi'] };
 
 export function checkReleaseWorkflow(root) {
@@ -858,12 +861,19 @@ export function checkReleaseWorkflow(root) {
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'release' && /contents: write/.test(body)) problems.push(`${file}: job "${name}" asks for contents: write; only the release job writes`);
   }
+  if ('tag' in jobs && !/^ {6}version: \$\{\{ steps\.tag\.outputs\.version \}\}$/m.test(jobs.tag)) {
+    problems.push(`${file}: job "tag" must output version: \${{ steps.tag.outputs.version }}`);
+  }
   if ('go-release' in jobs) {
     const body = jobs['go-release'];
-    // Every step that stamps the version takes the tag from the tag job, through env (never a ref name of its own).
+    // v0.1.0-web3.1: every release go build stamps main.Version, and every step that uses the version takes it from
+    // the tag job through its own env (never a ref name of its own, never an expression inside the script).
     for (const step of jobSteps(body)) {
-      if (step.some((l) => l.includes('-X main.Version=')) && !step.some((l) => l.includes('TAG: ${{ needs.tag.outputs.tag }}'))) {
-        problems.push(`${file}: job "go-release" stamps main.Version from something other than TAG: \${{ needs.tag.outputs.tag }}`);
+      if (step.some((l) => /\bgo build\b/.test(l) && !l.includes('-X main.Version=${VERSION}'))) {
+        problems.push(`${file}: job "go-release" has a go build without -X main.Version=\${VERSION}; a release binary says its version`);
+      }
+      if (step.some((l) => /main\.Version|\$\{?VERSION\b/.test(l)) && !step.includes(RELEASE_VERSION_ENV)) {
+        problems.push(`${file}: job "go-release" uses the version without its own env ${RELEASE_VERSION_ENV}`);
       }
     }
     const fetchAt = body.indexOf('name: dilla-web-dist');
