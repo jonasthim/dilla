@@ -140,5 +140,6 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `invite.copied='Invite link copied.'`, `invite.blocked='This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself.'`
 - `invite.limits='It can be used {uses} times and expires in {days} days. Anyone who has it can join {server}.'`
 - `invite.retry='Try again'`, `invite.error.forbidden='You cannot invite people to this server.'`, `invite.error.other='Could not make an invite link ({code}).'`
+- `invite.options='more options'`
 
 An invite is spent once by each person who joins with it, whether they sign up through it or already have an account. So with `INVITE_MAX_USES=10`, one link brings in up to ten people.
