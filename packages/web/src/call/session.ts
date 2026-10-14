@@ -408,7 +408,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     let ended = false;
     const volumes: Volumes = { ...opts.volumes };
-    let mutedBeforeDeafen = false;
+    // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
+    // the microphone muted (privacy-safe), never opens it after a reload.
+    let mutedBeforeDeafen = opts.self === 'deafened';
     let verified = new Set<string>();
     const timers = new Set<unknown>();
     const later = (fn: () => void, ms: number): unknown => {
@@ -853,7 +855,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         set({ mode: next });
         applyMic();
       },
-      async setNoise(next) {
+      // Fix round 3 (m2): one switch at a time (the camera and screen lane), so a quick on-then-off never leaves a
+      // processor set after the setting says off.
+      setNoise: (next) => inLane(async () => {
         if (ended || next === state.noise) return;
         set({ noise: next });
         const track = micPub?.track;
@@ -861,10 +865,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           await startNoise();
         } else if (processor !== null) {
           processor = null;
+          // Fix round 3 (I-1): the push-to-talk gate decides before the processor goes, so the raw microphone LiveKit
+          // swaps in stays muted with the key up (a processor built for push to talk held the track open itself).
+          applyMic();
           await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
         }
         applyMic();
-      },
+      }),
       leave,
     };
   } catch (err) {

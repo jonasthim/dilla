@@ -1020,9 +1020,9 @@ describe('product walk M5: the own mute and deafen kept across a reload', () => 
     expect(f.localTracks[0].muted).toBe(true);
     expect(bob.gains.microphone).toBe(0);
     expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
-    // Undeafening returns to live: the start was not muted on its own.
+    // Undeafening keeps the microphone muted (fix round 3, m1: the kept mute is never lost to a reload).
     call.setDeafened(false);
-    expect(call.state).toMatchObject({ muted: false, deafened: false });
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
   });
 });
 
@@ -1041,5 +1041,55 @@ describe('re-review N-m1: a drop never takes the key that ends the hold', () => 
     expect(f.manager.clearKeys).not.toHaveBeenCalled();
     call.dropKeys(2n);
     expect(f.manager.clearKeys).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('fix round 3 (wb-fix2-review-client I-1, m1, m2)', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+
+  it('I-1: noise off under push to talk keeps the microphone muted with the key up, before the processor stops', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, mode: 'ptt', noise: 'on' });
+    open.push(call);
+    const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void> };
+    // RNNoise built for push to talk gates the audio itself: the track is unmuted, the worklet holds it closed.
+    expect(mic.muted).toBe(false);
+    const order: string[] = [];
+    const mute = mic.mute.bind(mic);
+    mic.mute = () => { order.push('mute'); mute(); };
+    mic.stopProcessor = vi.fn(async () => { order.push(`stop (muted ${String(mic.muted)})`); });
+    await call.setNoise('off');
+    expect(order).toEqual(['mute', 'stop (muted true)']);
+    expect(mic.muted).toBe(true);
+  });
+
+  it('m1: a call started deafened stays muted when undeafened (the kept mute is not lost)', async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'deafened' });
+    open.push(call);
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+  });
+
+  it('m2: noise on then off before the processor is set leaves no processor running', async () => {
+    const f = fakes();
+    let finish: () => void = () => undefined;
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off' });
+    open.push(call);
+    const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void>; setProcessor: ReturnType<typeof vi.fn> };
+    mic.setProcessor = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    mic.stopProcessor = vi.fn(async () => undefined);
+    const on = call.setNoise('on');
+    const off = call.setNoise('off');
+    await flush();
+    finish();
+    await on;
+    await off;
+    expect(call.state.noise).toBe('off');
+    expect(mic.setProcessor).toHaveBeenCalledTimes(1);
+    expect(mic.stopProcessor).toHaveBeenCalledTimes(1);
   });
 });
