@@ -36,7 +36,7 @@ async function watchTiles(page: Page): Promise<void> {
 const tileHistory = (page: Page) => page.evaluate(() => (window as unknown as { __dwTiles: string[] }).__dwTiles);
 
 test('two browsers join one voice channel, see each other ok and hear each other; no key in a ret or a slice', async ({ peerBrowser, browserName }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {

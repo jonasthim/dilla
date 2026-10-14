@@ -60,7 +60,7 @@ async function recordWebm(page: Page): Promise<Buffer> {
 }
 
 test('bob plays alice\'s webm and WAV inline; a truncated file shows the error and save; every blob: URL is revoked after', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {

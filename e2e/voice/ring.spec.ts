@@ -9,7 +9,7 @@ import { watchContexts } from './support/leaks';
 import {
   POLL, VoicePeer, WAIT, advanceClock, audioRunning, changedSeen, connected, copy, dmPair, framesPass, introduce,
   joinVoice, noiseOff, sentCount,
-  notificationsSeen, onboard, openDm, ringChannelsSeen, ringPings, ringTimerLive, rings, self, setHidden, slice, stripButton, tile,
+  notificationsSeen, onboard, openDm, ringChannelsSeen, ringPings, ringTimerLive, rings, self, setHidden, slice, stripButton, tile, tones,
 } from './support/voice';
 import { dmComposer, dmLog } from '../web/support/app';
 
@@ -20,7 +20,7 @@ const ringNotes = async (page: Page) => (await notificationsSeen(page)).filter((
 const outgoing = (page: Page) => page.locator('.d-call-stage__outgoing');
 
 test('answer: bob rings (banner, sound, one notification while hidden), answers, every ring artefact goes and both are ok', async ({ peerBrowser, browserName }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
@@ -35,7 +35,10 @@ test('answer: bob rings (banner, sound, one notification while hidden), answers,
     await expect(ring).toHaveAttribute('data-ring', 'incoming');
     await expect(ring.getByRole('alert')).toHaveText(copy('call.ring.incoming', { name: 'alice' }));
     if (browserName === 'firefox') await audioRunning(bob.page);
-    await expect.poll(() => ringPings(bob.page), POLL).toBeGreaterThan(0);
+    // A ping on a running context (task-10 review M2): Firefox's first ping finds its context suspended and is silent
+    // (report concern 6), so a ping counts only once its context runs.
+    await expect.poll(async () => (await tones(bob.page)).some((t) => t.hz === 1000 && t.state === 'running'),
+      { ...POLL, message: 'a ring ping on a running AudioContext' }).toBe(true);
     await expect.poll(() => ringTimerLive(bob.page), POLL).toBe(true);
     await expect.poll(async () => (await ringNotes(bob.page)).length, POLL).toBe(1);
     expect((await ringNotes(bob.page))[0].closed).toBe(false);
@@ -60,7 +63,7 @@ test('answer: bob rings (banner, sound, one notification while hidden), answers,
 });
 
 test('decline: alice sees "bob declined." and bob\'s banner goes', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
@@ -80,28 +83,8 @@ test('decline: alice sees "bob declined." and bob\'s banner goes', async ({ peer
   }
 });
 
-test('timeout: the ring ends when the instance\'s 30 s pass (op 53 state 0), waited for, never timed', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
-  const alice = await peerBrowser.open('alice');
-  const bob = await peerBrowser.open('bob');
-  try {
-    await dmPair(alice, bob, peer);
-    await stripButton(alice.page, 'call.start').click();
-    await connected(alice.page);
-    await expect(rings(bob.page)).toHaveCount(1, { timeout: WAIT });
-    // The instance's ring lasts 30 s on its own clock (R5): move it past them; the end reaches bob as state 0.
-    await advanceClock(31);
-    await expect(rings(bob.page)).toHaveCount(0, { timeout: WAIT });
-    await expect.poll(() => ringTimerLive(bob.page), POLL).toBe(false);
-  } finally {
-    await peerBrowser.close(bob);
-    await peerBrowser.close(alice);
-    await peer.close();
-  }
-});
-
 test('busy: a ring while bob is in voice shows the busy text, with no ring sound and no notification', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
@@ -111,6 +94,7 @@ test('busy: a ring while bob is in voice shows the busy text, with no ring sound
     await joinVoice(bob.page, peer.communityName, peer.voiceName);
     await setHidden(bob.page, true);
     const pings = await ringPings(bob.page);
+    const notesBefore = (await notificationsSeen(bob.page)).length;
     await stripButton(alice.page, 'call.start').click();
     await connected(alice.page);
     const ring = rings(bob.page);
@@ -122,7 +106,8 @@ test('busy: a ring while bob is in voice shows the busy text, with no ring sound
     await framesPass(bob.page, await sentCount(bob.page), 150);
     expect(await ringPings(bob.page)).toBe(pings);
     expect(await ringTimerLive(bob.page)).toBe(false);
-    expect(await ringNotes(bob.page)).toEqual([]);
+    // No notification of any title (task-10 review M1): a busy variant or a wrongly named one would show here too.
+    expect((await notificationsSeen(bob.page)).slice(notesBefore)).toEqual([]);
     await setHidden(bob.page, false);
   } finally {
     await peerBrowser.close(bob);
@@ -132,8 +117,8 @@ test('busy: a ring while bob is in voice shows the busy text, with no ring sound
 });
 
 test('blocked DM: a ring of a DM whose contact\'s identity changed never shows; a trusted typing and ring after it do', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
-  const other = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const other = peerBrowser.track(await VoicePeer.start());
   const bob = await peerBrowser.open('bob');
   try {
     const s = await peer.setup();
@@ -180,6 +165,28 @@ test('blocked DM: a ring of a DM whose contact\'s identity changed never shows; 
   } finally {
     await peerBrowser.close(bob);
     await other.close();
+    await peer.close();
+  }
+});
+
+// Last in the suite's order on purpose: it moves the instance clock for good, and no native peer may join a call after
+// that (voice.ts, M6).
+test('timeout: the ring ends when the instance\'s 30 s pass (op 53 state 0), waited for, never timed', async ({ peerBrowser }) => {
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice');
+  const bob = await peerBrowser.open('bob');
+  try {
+    await dmPair(alice, bob, peer);
+    await stripButton(alice.page, 'call.start').click();
+    await connected(alice.page);
+    await expect(rings(bob.page)).toHaveCount(1, { timeout: WAIT });
+    // The instance's ring lasts 30 s on its own clock (R5): move it past them; the end reaches bob as state 0.
+    await advanceClock(31);
+    await expect(rings(bob.page)).toHaveCount(0, { timeout: WAIT });
+    await expect.poll(() => ringTimerLive(bob.page), POLL).toBe(false);
+  } finally {
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
     await peer.close();
   }
 });

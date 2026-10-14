@@ -14,7 +14,7 @@ watchContexts(test);
 const WINDOW = 100;
 
 test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; push to talk sends only while held', async ({ peerBrowser, browserName }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {

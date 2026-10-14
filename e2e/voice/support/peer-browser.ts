@@ -6,8 +6,15 @@
 //   switch that reports the page as hidden (a ring notifies only while the tab is hidden, flow 06);
 // - the project's media permissions (Chromium) and fake devices (both engines, from the config).
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
-import { test as base, expect, type Browser, type BrowserContext, type Page, type Worker } from '@playwright/test';
+import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Page, type Worker } from '@playwright/test';
 import { copy, recordNotifications } from '../../web/support/app';
+
+/** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
+export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
+
+/** A console line that reports a Content-Security-Policy refusal, in either engine's wording (Chromium: "Refused to …";
+ *  Firefox: "Content-Security-Policy: The page’s settings blocked …"), never Firefox's notes on ignored sources. */
+const CSP_LINE = /Refused to |Content.Security.Policy: The page.s settings blocked/;
 
 /** Console lines Chromium prints for a response the client answers or retries by design (as the web suite, E2E-CI-01). */
 const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server responded with a status of (401|404|409|410|429|503) \(/;
@@ -179,8 +186,15 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const workers: Worker[] = [];
+  // A worker's own securitypolicyviolation listener is installed by an evaluate that runs after the worker has started
+  // (Playwright has no init script for workers), so a violation in its first tick (wasm instantiation, an early fetch)
+  // can be missed by it (task-10 review M8). The worker's console is watched from the moment Playwright reports the
+  // worker, and a CSP refusal line there fails the test too.
   const watchWorker = (wk: Worker): void => {
     workers.push(wk);
+    wk.on('console', (m: ConsoleMessage) => {
+      if (CSP_LINE.test(m.text())) consoleErrors.push(`worker ${wk.url()}: ${m.text()}`);
+    });
     void wk.evaluate(() => {
       const g = self as unknown as { __dillaCsp?: unknown[] };
       g.__dillaCsp = [];
@@ -232,6 +246,10 @@ export interface PeerBrowsers {
   open(name: string, opts?: { viewport?: { width: number; height: number } }): Promise<Person>;
   /** Leaves the call through the app's own leave, waits for the media worker to end, then closes the context. */
   close(person: Person): Promise<void>;
+  /** Hands a native peer (anything with an idempotent close) to the fixture, which closes it after the people, whatever
+   *  threw before (task-10 review M5): a peer started before a browser failed to open, or left behind by a close that
+   *  threw, never outlives its test. Answers the peer. */
+  track<T extends { close(): Promise<void> }>(peer: T): T;
   readonly guard: Guard;
 }
 
@@ -241,11 +259,11 @@ export async function leaveIfInCall(page: Page): Promise<void> {
   const dock = page.locator('.dw-voice-dock');
   if (await dock.count() > 0) {
     // A leave acts on an attached session: wait out `connecting` first.
-    await expect(dock.locator('.d-voice-dock')).not.toHaveAttribute('data-phase', 'connecting', { timeout: 30_000 });
+    await expect(dock.locator('.d-voice-dock')).not.toHaveAttribute('data-phase', 'connecting', { timeout: WAIT });
     await dock.getByRole('button', { name: copy('voice.leave'), exact: true }).click();
-    await expect(dock).toHaveCount(0, { timeout: 30_000 });
+    await expect(dock).toHaveCount(0, { timeout: WAIT });
   }
-  await expect.poll(() => mediaWorkers(page).length, { timeout: 30_000, message: 'the media worker ends after the leave' }).toBe(0);
+  await expect.poll(() => mediaWorkers(page).length, { timeout: WAIT, message: 'the media worker ends after the leave' }).toBe(0);
 }
 
 /** The page's E2EE media workers (`dilla-media-worker`, packages/media/src/manager.ts): every dedicated worker but the
@@ -267,9 +285,14 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
   peerBrowser: async ({ browser, baseURL, permissions, viewport }, use, testInfo) => {
     const guard = newGuard(testInfo.project.name);
     const open: Person[] = [];
+    const peers: { close(): Promise<void> }[] = [];
     const leaveFailures: string[] = [];
     const people: PeerBrowsers = {
       guard,
+      track(peer) {
+        peers.push(peer);
+        return peer;
+      },
       async open(name, opts) {
         const context = await openContext(browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
         await guard.attach(context);
@@ -299,8 +322,12 @@ export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
     try {
       await use(people);
     } finally {
-      // The net under each spec's own `finally`: whatever is still open is left and closed.
-      for (const person of [...open].reverse()) await people.close(person).catch(() => undefined);
+      // The net under each spec's own `finally`: whatever is still open is left and closed, then every native peer.
+      try {
+        for (const person of [...open].reverse()) await people.close(person).catch(() => undefined);
+      } finally {
+        for (const peer of [...peers].reverse()) await peer.close().catch(() => undefined);
+      }
     }
     await guard.collectWorkers();
     expect(leaveFailures, 'a leave through the app, then the media worker ended, before each context closed').toEqual([]);

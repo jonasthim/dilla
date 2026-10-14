@@ -13,7 +13,7 @@ import { attachInput, dmComposer, dmLog, trayEntries } from '../web/support/app'
 watchContexts(test);
 
 test('the ring, the call, a player and Settings → Voice pass axe in three themes and at 360×740, with no CSP violation', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
@@ -36,11 +36,16 @@ test('the ring, the call, a player and Settings → Voice pass axe in three them
       await stripButton(alice.page, 'call.start').click();
       await connected(alice.page);
       await expect(rings(bob.page)).toHaveCount(1, { timeout: WAIT });
-      await axeEverywhere(bob.page, 'ring banner');
+      // Alice's stage first, then bob's banner, then the answer at once (task-10 review M7): bob's ring ends locally 30 s
+      // after it arrived, and eight axe passes on a loaded runner can outlast that; the ring is re-read before the answer
+      // so a timing loss reads as one.
       await axeEverywhere(alice.page, 'call stage while ringing');
+      await axeEverywhere(bob.page, 'ring banner');
     });
 
     await test.step('the call stage and the dock', async () => {
+      await expect(rings(bob.page), 'bob\'s ring is still on screen after the axe passes (its 30 s run from its arrival)')
+        .toHaveCount(1);
       await rings(bob.page).getByRole('button', { name: copy('call.ring.answer'), exact: true }).click();
       await connected(bob.page);
       await expect(stage(bob.page)).toBeVisible();

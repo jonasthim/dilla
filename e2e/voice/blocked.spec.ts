@@ -9,8 +9,8 @@
 // DM: a blocked DM call leaves the DM's composer as the text group has it.
 // Attackers: (a) and (c) a contact's identity replaced by an instance or account takeover (rotate_umk); (b) a device
 // the instance admits but the owner's signed device list does not vouch for (a forged tier, forge_device).
-import type { Page } from '@playwright/test';
-import { expect, test } from './support/peer-browser';
+import type { BrowserContext, Page } from '@playwright/test';
+import { expect, mediaWorkers, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
   POLL, VoicePeer, WAIT, callSlice, changedSeen, connected, copy, dock, framesPass, heard, heardCount, introduce, joinVoice, noiseOff,
@@ -25,8 +25,37 @@ function notice(page: Page, text: string) {
   return page.locator('.dw-voice-stage, .dw-call-strip').getByText(text, { exact: true });
 }
 
-test('(a) a changed contact in the call group refuses the join before anything is posted; the room never sees the browser', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+/** Every call-path write a context sends from now on (its pages and their workers): a call group's registration or
+ *  external commit, a call start (task-10 review M11). */
+const CALL_WRITE = /^\/v1\/(groups|groups\/[0-9a-f]{32}\/resync|channels\/[0-9a-f]{32}\/calls)$/;
+function callWrites(context: BrowserContext): string[] {
+  const seen: string[] = [];
+  context.on('request', (r) => {
+    const path = new URL(r.url()).pathname;
+    if (r.method() === 'POST' && CALL_WRITE.test(path)) seen.push(`POST ${path}`);
+  });
+  return seen;
+}
+
+/** Frames `listener` authenticated from `device` while `speaker` encrypts a fixed number of its own frames (its frame
+ *  clock, never a sleep), after a settle window for frames already in flight. The listener's media workers must be the
+ *  same ones before and after, and answer both reads (heardCount throws otherwise): a worker that died or restarted never
+ *  reads as "nothing heard" (task-10 review I3). */
+async function heardOver(listener: Page, speaker: Page, device: string): Promise<number> {
+  await framesPass(speaker, await sentCount(speaker), 10);
+  const workers = mediaWorkers(listener);
+  expect(workers.length, 'the listener runs a media worker').toBeGreaterThan(0);
+  const h0 = await heardCount(listener, device);
+  await framesPass(speaker, await sentCount(speaker), 25);
+  const h1 = await heardCount(listener, device);
+  const after = mediaWorkers(listener);
+  expect(after.length === workers.length && after.every((w, i) => w === workers[i]), 'the same media workers before and after the sample')
+    .toBe(true);
+  return h1 - h0;
+}
+
+test('(a) a changed contact in the call group refuses the join before any call write is sent; the room never sees the browser', async ({ peerBrowser }) => {
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
@@ -43,9 +72,12 @@ test('(a) a changed contact in the call group refuses the join before anything i
     await changedSeen(alice.page, s.user_id);
     await peer.callJoin(call);
     await openVoice(alice.page, peer.communityName, peer.voiceName);
+    const aliceWrites = callWrites(alice.context);
     await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked', { timeout: WAIT });
     expect((await callSlice(alice.page))?.error?.code).toBe('E_UMK_CHANGED');
+    // Nothing of the join left the browser: no registration, no external commit, no call start.
+    expect(aliceWrites, 'call writes alice sent for the refused join').toEqual([]);
     // The native peer holds a leaf of the group but never enters the room: the core's refusal names it from the call
     // tree, so the notice names the changed contact (task 10, concern 3).
     const name = peerName(s);
@@ -74,8 +106,13 @@ test('(a) a changed contact in the call group refuses the join before anything i
     await onboard(bob, peer, 'bob');
     await introduce(peer, [bob], 2);
     const b = await self(bob.page);
+    const bobWrites = callWrites(bob.context);
     await joinVoice(bob.page, peer.communityName, peer.voiceName);
     await peer.waitForCallMembers(call, (d) => d.includes(b.device), 'lists bob');
+    // The recorder sees a join's writes (worker requests included): bob's external commit and his call start.
+    expect(bobWrites.some((w) => w.endsWith('/resync')), `bob's call writes ${JSON.stringify(bobWrites)}`).toBe(true);
+    expect(bobWrites.some((w) => w.endsWith('/calls')), `bob's call writes ${JSON.stringify(bobWrites)}`).toBe(true);
+    expect(aliceWrites, 'call writes alice sent at any time').toEqual([]);
     await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).toContain(b.device);
     const members = (await peer.callMembers(call)).devices;
     const room = (await peer.callRead(call)).participants.map((p) => p.device);
@@ -90,7 +127,7 @@ test('(a) a changed contact in the call group refuses the join before anything i
 });
 
 test('(b) a device that fails the signed-list check joins mid-call: alice leaves, her dock goes and so does her leaf', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   try {
     const s = await peer.setup({ password: 'peer-password-1234' });
@@ -117,7 +154,7 @@ test('(b) a device that fails the signed-list check joins mid-call: alice leaves
 });
 
 test('(c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3)', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
@@ -137,17 +174,14 @@ test('(c) a contact whose identity changes mid-call pauses the call for each bro
     await heard(alice.page, b.device);
     await heard(bob.page, a.device);
 
-    // The peer's identity is replaced and its new device joins the call. Ordered so that the change reaches the call as
-    // the new key's leaf: the old device's leaf is gone from the call group (its leave, committed by both browsers)
-    // before the rotation, and both browsers' text group shows the new key before the new device joins the call group.
-    // (While an old-key leaf of a changing contact is still in the call group, a list refresh through it fails the call
-    // with E_CREDENTIAL instead of pausing it, about one run in two: task 10 report, concern 1.)
-    // (The peer first takes in both joins: a leave proposed at an older epoch is refused.)
+    // Positive control for the pause's frame check below: while nothing is paused, the same sample sees frames.
     await peer.waitForCallMembers(call, (d) => d.includes(a.device) && d.includes(b.device), 'lists alice and bob');
-    await peer.callLeave(call);
-    for (const p of [alice.page, bob.page]) {
-      await expect.poll(async () => (await callSlice(p))?.roster.map((r) => r.deviceId).sort(), POLL).toEqual([a.device, b.device].sort());
-    }
+    expect(await heardOver(alice.page, bob.page, b.device), 'frames alice verified from bob before the pause').toBeGreaterThan(0);
+    expect(await heardOver(bob.page, alice.page, a.device), 'frames bob verified from alice before the pause').toBeGreaterThan(0);
+
+    // The peer's identity is replaced while its old device is still in the call group (the plan's RV-3 order: an
+    // attacker does not first remove the old leaf), and its new device rejoins. A list refresh through the old-key leaf
+    // no longer ends the pending change (51135d9), so the call pauses rather than failing with E_CREDENTIAL.
     await peer.sync();
     await peer.rotateUmk();
     await changedSeen(alice.page, s.user_id);
@@ -163,14 +197,8 @@ test('(c) a contact whose identity changes mid-call pauses the call for each bro
 
     // Nothing is heard while paused. Each side's own frames are the clock (a muted sender still encodes); after a settle
     // window for frames already in flight, neither counter moves for a fixed number of them.
-    const still = async (listener: Page, speaker: Page, device: string) => {
-      await framesPass(speaker, await sentCount(speaker), 10);
-      const h0 = await heardCount(listener, device);
-      await framesPass(speaker, await sentCount(speaker), 25);
-      return (await heardCount(listener, device)) - h0;
-    };
-    expect(await still(alice.page, bob.page, b.device), 'frames alice verified from bob while paused').toBe(0);
-    expect(await still(bob.page, alice.page, a.device), 'frames bob verified from alice while paused').toBe(0);
+    expect(await heardOver(alice.page, bob.page, b.device), 'frames alice verified from bob while paused').toBe(0);
+    expect(await heardOver(bob.page, alice.page, a.device), 'frames bob verified from alice while paused').toBe(0);
 
     await test.step('alice compares and verifies the peer: her call resumes', async () => {
       await stage(alice.page).getByRole('button', { name: copy('voice.pausedAction'), exact: true }).click();
@@ -204,7 +232,7 @@ test('(c) a contact whose identity changes mid-call pauses the call for each bro
 });
 
 test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   try {
     await peer.setup({ password: 'peer-password-1234' });

@@ -5,8 +5,8 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, callSlice, copy, dock, expectShellReady, heard, joinVoice, onboard, self, snapshotDevices,
-  stage, tile, voiceRow,
+  POLL, VoicePeer, WAIT, callSlice, connected, copy, dock, expectShellReady, heard, joinVoice, onboard, openVoice, self,
+  snapshotDevices, stage, tile, voiceRow,
 } from './support/voice';
 
 watchContexts(test);
@@ -19,7 +19,7 @@ async function roster(page: Page): Promise<{ epoch: number; devices: { deviceId:
 const rosterDevices = async (page: Page) => (await roster(page)).devices.map((d) => d.deviceId).sort();
 
 test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and leave returns focus to the voice row', async ({ peerBrowser }) => {
-  const peer = await VoicePeer.start();
+  const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
   try {
@@ -45,7 +45,7 @@ test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and lea
       await expect.poll(() => snapshotDevices(bob.page, call), { timeout: WAIT }).toEqual([b.device]);
     });
 
-    await test.step('alice rejoins at once with a fresh leaf, her Remove committed or not yet (task 10, concern 2)', async () => {
+    await test.step('alice rejoins at once with a fresh leaf, her Remove committed or not yet (task 10, concern 2; the wait itself is proven below)', async () => {
       await expectShellReady(alice.page);
       // No wait for bob to commit the Remove her leave caused: a resync refused while it stands waits for the commit.
       await joinVoice(alice.page, peer.communityName, peer.voiceName);
@@ -79,6 +79,55 @@ test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and lea
     });
   } finally {
     await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
+    await peer.close();
+  }
+});
+
+// Concern 2's wait itself (task-10 fix round, f10app m6): the other member holds its sync, so the Remove that alice's
+// reload caused is still outstanding when she rejoins. The instance refuses her resync (409 E_REMOVE_PENDING, guard 1);
+// her join waits, says so in the dock's status region, and lands in the same call group once the member commits the
+// Remove. The member is the native peer, which commits only when told to; it holds a leaf of the call group and never
+// enters the room.
+test('a rejoin whose Remove nobody has committed yet waits, says so, and joins the same call once it is committed', async ({ peerBrowser }) => {
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice');
+  try {
+    const s = await peer.setup();
+    await onboard(alice, peer, 'alice');
+    await peer.seat(1);
+    const a = await self(alice.page);
+    const call = s.voice_channel_id;
+    const joined = await peer.callJoin(call);
+    await joinVoice(alice.page, peer.communityName, peer.voiceName);
+    await peer.waitForCallMembers(call, (d) => d.includes(a.device), 'lists alice');
+    await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).toEqual([a.device]);
+
+    await alice.page.reload();
+    await expectShellReady(alice.page);
+    // The room saw her leave (its participant_left made the instance propose the Remove of her leaf); the peer has not
+    // synced since, so nobody has committed it.
+    await expect.poll(async () => (await peer.callRead(call)).participants.length, POLL).toBe(0);
+    await openVoice(alice.page, peer.communityName, peer.voiceName);
+    await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+    await expect.poll(async () => {
+      const c = await callSlice(alice.page);
+      return c?.phase === 'joining' && c.rejoining;
+    }, { ...POLL, message: 'alice\'s join waits for the Remove (call.rejoining)' }).toBe(true);
+    await expect(dock(alice.page).locator('[role="status"]'))
+      .toHaveText(copy('voice.announce.rejoining', { where: peer.voiceName }), { timeout: WAIT });
+
+    // The peer syncs and commits the Remove: alice's wait sees the group move on and her join lands in it.
+    await expect.poll(async () => {
+      await peer.sync();
+      await peer.callMembers(call);
+      return (await callSlice(alice.page))?.phase;
+    }, { ...POLL, message: 'alice is in once the peer committed her Remove' }).toBe('in');
+    await connected(alice.page);
+    expect((await callSlice(alice.page))?.roster.map((r) => r.deviceId).sort()).toEqual([a.device, s.device_id].sort());
+    expect((await peer.callRead(call)).group, 'the call group the peer joined is still the call\'s').toBe(joined.group);
+    expect((await callSlice(alice.page))?.rejoining).toBe(false);
+  } finally {
     await peerBrowser.close(alice);
     await peer.close();
   }

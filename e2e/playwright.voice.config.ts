@@ -19,6 +19,10 @@ export default defineConfig({
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
   metadata: { dillaHost },
   fullyParallel: false,
+  // One worker, in file order: the instance clock is frozen (the test host's fake clock), and only that keeps the room
+  // sweep and the 30 s admission window from cutting a native peer that holds a call-group leaf outside the room
+  // (blocked.spec). ring.spec's last test moves the clock for good; voice.ts refuses a native peer's call join after
+  // that in this worker process, so a new spec, a shard or a reorder fails by name (task-10 review M6).
   workers: 1,
   retries: 0,
   forbidOnly: !!process.env.CI,

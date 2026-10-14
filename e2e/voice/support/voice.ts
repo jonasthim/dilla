@@ -13,14 +13,21 @@ import {
   channelsNav, closeSettings, copy, dmComposer, dmsNav, escapeRegExp, expectAccessible, expectShell, instanceInvite, messageRow, namedRow,
   openSettings, railItem, railNav, sendText, sidebarTab, signUp, type Account, type SettingsSection,
 } from '../../web/support/app';
-import { mediaWorkers, type Person } from './peer-browser';
+import { WAIT, mediaWorkers, type Person } from './peer-browser';
 
-export { closeSettings, copy, instanceInvite };
+export { WAIT, closeSettings, copy, instanceInvite };
 /** The shell is up again (after a reload): the rail shows and no onboarding step does. */
 export async function expectShellReady(page: Page): Promise<void> { await expectShell(page); }
-/** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). */
-export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 export const POLL = { timeout: WAIT, intervals: [100, 250, 500, 1000] };
+
+/**
+ * The instance clock's one invariant (task-10 review M6). The test host's fake clock is frozen, which is what keeps the
+ * room sweep's absence timer and the 30 s admission window still while a native peer holds a call-group leaf it never
+ * takes into the room. `advanceClock` moves it for good (no reset), so a native peer must never join a call after it
+ * moved in this worker process (workers: 1 shares it across spec files). A run that breaks this — a new spec, a shard,
+ * a reorder — fails here, by name, instead of being swept at random.
+ */
+let instanceClockMoved: string | null = null;
 
 // ---------------------------------------------------------------------------------------------------
 // The native peer: a web-driver process against the voice host (8481), one per role in a test.
@@ -28,6 +35,7 @@ export const POLL = { timeout: WAIT, intervals: [100, 250, 500, 1000] };
 export class VoicePeer {
   communityName = '';
   setupAnswer: PeerSetup | null = null;
+  private closed = false;
   private constructor(readonly driver: WebDriver, readonly seed: number) {}
 
   static async start(): Promise<VoicePeer> {
@@ -55,7 +63,12 @@ export class VoicePeer {
     return this.setupAnswer;
   }
   register(): Promise<{ group_id: string; epoch: number }> { return this.driver.register(); }
-  callJoin(channel: string, actor: PeerActor = 'peer'): Promise<PeerCallJoined> { return this.driver.callJoin(channel, actor); }
+  callJoin(channel: string, actor: PeerActor = 'peer'): Promise<PeerCallJoined> {
+    if (instanceClockMoved !== null) {
+      throw new Error(`a native peer joins a call after the instance clock moved (${instanceClockMoved}): see M6 in voice.ts`);
+    }
+    return this.driver.callJoin(channel, actor);
+  }
   callLeave(channel: string, actor: PeerActor = 'peer'): Promise<void> { return this.driver.callLeave(channel, actor); }
   callMembers(channel: string, actor: PeerActor = 'peer'): Promise<PeerCallMembers> { return this.driver.callMembers(channel, actor); }
   callStart(channel: string, actor: PeerActor = 'peer'): Promise<PeerCallStarted> { return this.driver.callStart(channel, actor); }
@@ -71,7 +84,12 @@ export class VoicePeer {
   async syncDmMembers(channelId: string): Promise<number> { return (await this.driver.syncDm(channelId)).members; }
   sync(channel?: string): Promise<{ members: number }> { return this.driver.sync(channel); }
   async devices(channel?: string): Promise<string[]> { return (await this.driver.members(channel)).devices; }
-  close(): Promise<void> { return this.driver.close(); }
+  /** Closes the driver process once; the peerBrowser fixture closes every tracked peer again, harmlessly. */
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.driver.close();
+  }
 
   /** Syncs until the text group's roster holds `count` devices (the peer commits the browsers' Adds). */
   async waitForDevices(count: number, channel?: string): Promise<string[]> {
@@ -222,8 +240,9 @@ export function stripButton(page: Page, key: 'call.start' | 'call.join'): Locato
 /** The incoming rings on screen (L-UI-70), each with `data-ring` `incoming` or `busy`. */
 export function rings(page: Page): Locator { return page.locator('.d-ring-banner__ring'); }
 
-/** Moves the instance clock `seconds` forward (POST /debug/clock). */
+/** Moves the instance clock `seconds` forward (POST /debug/clock), for good: no native peer joins a call after it. */
 export async function advanceClock(seconds: number): Promise<void> {
+  instanceClockMoved = `+${seconds} s`;
   const control = process.env.DILLA_TESTKIT_CONTROL;
   const res = await fetch(`${control}/debug/clock`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds }),
@@ -395,14 +414,19 @@ export async function blobs(page: Page): Promise<{ created: string[]; revoked: s
   return page.evaluate(() => (window as unknown as { __dw: Recorded }).__dw.blobs);
 }
 
-/** Frames the media worker authenticated and bound to `deviceHex` (`__dillaMediaStats.verified`, N6); 0 without a worker. */
+/** Frames the media worker authenticated and bound to `deviceHex` (`__dillaMediaStats.verified`, N6). It throws when no
+ *  media worker answers (none running, or every read failed), so "no worker" never reads as "0 frames" (task-10 review
+ *  I3); a poll retries a throw. */
 export async function heardCount(page: Page, deviceHex: string): Promise<number> {
-  let n = 0;
+  let n: number | null = null;
   for (const wk of mediaWorkers(page)) {
-    const v = await wk.evaluate((d) => (globalThis as unknown as { __dillaMediaStats?: { verified: Record<string, number> } })
-      .__dillaMediaStats?.verified?.[d] ?? 0, deviceHex).catch(() => 0);
-    n = Math.max(n, v);
+    const v = await wk.evaluate((d) => {
+      const s = (globalThis as unknown as { __dillaMediaStats?: { verified: Record<string, number> } }).__dillaMediaStats;
+      return s === undefined ? null : s.verified?.[d] ?? 0;
+    }, deviceHex).catch(() => null);
+    if (v !== null) n = Math.max(n ?? 0, v);
   }
+  if (n === null) throw new Error(`no media worker answered for frames of ${deviceHex}`);
   return n;
 }
 /** `heard`: waits until this page's media worker has verified frames of `deviceHex`. */
