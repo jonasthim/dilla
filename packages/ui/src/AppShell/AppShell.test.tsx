@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ComposedShell } from './AppShell.fixture.tsx';
@@ -147,6 +147,86 @@ describe('AppShell aside', () => {
     await user.keyboard('{Escape}');
     expect(onAsideClose).not.toHaveBeenCalled();
     width.mockRestore();
+  });
+
+  // Fix round 1: the overlay drawer is modal.
+  const blockers = (c: HTMLElement) =>
+    ['.d-app-shell__rail', '.d-app-shell__sidebar', '.d-app-shell__main', '.d-app-shell__status'].map(s => c.querySelector(s) as HTMLElement);
+
+  it('as an overlay the rest of the shell is inert and a backdrop sits behind the drawer; closed, neither', () => {
+    const { container, rerender } = render(<ComposedShell shell={open()} />);
+    for (const el of blockers(container)) expect(el).toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__backdrop')).not.toBeNull();
+    rerender(<ComposedShell shell={open({ asideOpen: false })} />);
+    for (const el of blockers(container)) expect(el).not.toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__backdrop')).toBeNull();
+  });
+
+  it('as a column nothing is inert and there is no backdrop', () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1280);
+    const { container } = render(<ComposedShell shell={open()} />);
+    for (const el of blockers(container)) expect(el).not.toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__backdrop')).toBeNull();
+    width.mockRestore();
+  });
+
+  it('a click on the backdrop calls onAsideClose', async () => {
+    const user = userEvent.setup();
+    const onAsideClose = vi.fn();
+    const { container } = render(<ComposedShell shell={open({ onAsideClose })} />);
+    await user.click(container.querySelector('.d-app-shell__backdrop') as HTMLElement);
+    expect(onAsideClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape anywhere in the document closes the overlay', () => {
+    const onAsideClose = vi.fn();
+    render(<ComposedShell shell={open({ onAsideClose })} />);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onAsideClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('an Escape the aside already handled (defaultPrevented) does not close the drawer', () => {
+    const onAsideClose = vi.fn();
+    const handled = <button type="button" onKeyDown={e => { if (e.key === 'Escape') e.preventDefault(); }}>menu</button>;
+    render(<ComposedShell shell={open({ onAsideClose, aside: handled })} />);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'menu' }), { key: 'Escape' });
+    expect(onAsideClose).not.toHaveBeenCalled();
+  });
+
+  it('when the opener was body, focus goes back to the toggle given by asideReturnRef', () => {
+    const toggle = document.createElement('button');
+    document.body.appendChild(toggle);
+    const ref = { current: toggle };
+    const { rerender } = render(<ComposedShell shell={open({ asideOpen: false, asideReturnRef: ref })} />);
+    (document.activeElement as HTMLElement | null)?.blur();
+    rerender(<ComposedShell shell={open({ asideReturnRef: ref })} />);
+    rerender(<ComposedShell shell={open({ asideOpen: false, asideReturnRef: ref })} />);
+    expect(toggle).toHaveFocus();
+    toggle.remove();
+  });
+
+  it('follows the live width: crossing 64rem while open adds or removes inert and the backdrop', () => {
+    let width = 1280;
+    let notify: () => void = () => {};
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(() => width);
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { notify = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const { container } = render(<ComposedShell shell={open()} />);
+    expect(container.querySelector('.d-app-shell__main')).not.toHaveAttribute('inert');
+    width = 500;
+    act(() => notify());
+    expect(container.querySelector('.d-app-shell__main')).toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__backdrop')).not.toBeNull();
+    width = 1300;
+    act(() => notify());
+    expect(container.querySelector('.d-app-shell__main')).not.toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__backdrop')).toBeNull();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('has no serious axe violations with the aside open', async () => {
