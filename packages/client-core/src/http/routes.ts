@@ -68,6 +68,24 @@ export interface ChannelCreated { id: Uint8Array; mode: number; visibility: numb
 export interface InviteCreated { inviteId: Uint8Array; code: string; url: string; expires: bigint; }
 export type NewChannelKind = 'text' | 'voice';
 
+// ---- wave 1: server admin and moderation (flow 08) ----
+/** The instance's own bounds (internal/api): the owner's rank, roles per community, bans, invites, a topic and a ban reason. */
+export const OWNER_TOP = 2 ** 31;
+export const ROLES_MAX = 250;
+export const BANS_MAX = 10_000;
+export const INVITES_MAX = 10_000;
+export const TOPIC_MAX_BYTES = 1024;
+export const BAN_REASON_MAX_BYTES = 512;
+/** GET /v1/communities/{id}/permissions: the caller's resolved community-wide bits and rank (0..OWNER_TOP). */
+export interface PermissionsRow { bits: bigint; top: number }
+export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: bigint; deny: bigint;
+  hoist: boolean; mentionable: boolean }
+export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array; created: bigint; expires: bigint | null;
+  username: string; display: string }
+export interface InviteRow { id: Uint8Array; communityId: Uint8Array | null; createdBy: Uint8Array | null; maxUses: number;
+  uses: number; created: bigint; expires: bigint; revokedAt: bigint | null }
+export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Array | 'top'; position?: number }
+
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
   return toHex(v);
@@ -164,6 +182,35 @@ function memberRow(value: CborValue): MemberRow {
   const row = atLeast(value, 7);
   return { userId: bin(row[0], 16), nick: str(row[2]), roleIds: row[3] === null ? [] : arr(row[3]).map((v) => bin(v, 16)),
     username: str(row[4]), display: str(row[5]), kind: oneOf(row[6], [0, 1]) };
+}
+
+/** Free text as the instance checks it (validChannelText, multiline): at most `maxBytes` UTF-8 bytes; newline and tab pass,
+ *  every other control character does not. An empty text is allowed (a cleared topic, a ban with no reason). */
+function checkedText(field: string, v: string, maxBytes: number): string {
+  if (typeof v !== 'string') throw new RangeError(`E_ROUTE_INPUT: ${field} is not a string`);
+  if (UTF8.encode(v).length > maxBytes) throw new RangeError(`E_ROUTE_INPUT: ${field} must be at most ${String(maxBytes)} bytes`);
+  for (const ch of v) if (ch !== '\n' && ch !== '\t' && CONTROL.test(ch)) throw new RangeError(`E_ROUTE_INPUT: ${field} contains a control character`);
+  return v;
+}
+function flag(v: CborValue): boolean {
+  const n = u53(v);
+  if (n > 1) throw new CborError('E_CBOR_RANGE', 'expected 0 or 1, got ' + String(n));
+  return n === 1;
+}
+function roleRow(value: CborValue): RoleRow {
+  const a = atLeast(value, 8);
+  return { id: bin(a[0], 16), name: str(a[1]), color: u53(a[2]), position: u53(a[3]), allow: u64(a[4]), deny: u64(a[5]),
+    hoist: flag(a[6]), mentionable: flag(a[7]) };
+}
+function banRow(value: CborValue): BanRow {
+  const a = atLeast(value, 5);
+  return { userId: bin(a[0], 16), reason: str(a[1]), byUser: bin(a[2], 16), created: u64(a[3]), expires: opt(a[4], u64),
+    username: a.length > 5 ? str(a[5]) : '', display: a.length > 6 ? str(a[6]) : '' };
+}
+function inviteRow(value: CborValue): InviteRow {
+  const a = atLeast(value, 9);
+  return { id: bin(a[0], 16), communityId: opt(a[1], (v) => bin(v, 16)), createdBy: opt(a[2], (v) => bin(v, 16)),
+    maxUses: u53(a[4]), uses: u53(a[5]), created: u64(a[6]), expires: u64(a[7]), revokedAt: opt(a[8], u64) };
 }
 
 export class Routes {
@@ -278,6 +325,78 @@ export class Routes {
       if (after && compareBytes(last, after) <= 0) throw new CborError('E_CBOR_SHAPE', 'members page did not advance');
       after = last;
     }
+  }
+  // ---- wave 1: server admin and moderation (flow 08) ----
+  /** GET /v1/communities/{id}/permissions: [bits, top]; top beyond 0..OWNER_TOP is E_CBOR_RANGE. */
+  async getPermissions(communityId: Uint8Array): Promise<PermissionsRow> {
+    const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/permissions`, 'read', true)), 2);
+    const top = u53(a[1]);
+    if (top > OWNER_TOP) throw new CborError('E_CBOR_RANGE', 'rank above ' + String(OWNER_TOP));
+    return { bits: u64(a[0]), top };
+  }
+  /** GET /v1/communities/{id}/roles: [[id, name, color, position, allow, deny, hoist, mentionable]], at most ROLES_MAX. */
+  async listRoles(communityId: Uint8Array): Promise<RoleRow[]> {
+    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/roles`, 'read', true);
+    return bounded(decode(raw), ROLES_MAX, 'roles').map(roleRow);
+  }
+  /** PATCH /v1/communities/{id}: [name, policy, min_account_age, require_mod_2fa] with only the name set; answers [policy_version]. */
+  async patchCommunity(communityId: Uint8Array, patch: { name: string }): Promise<bigint> {
+    const body = encode([checkedName('name', patch.name, COMMUNITY_NAME_MAX_BYTES), null, null, null]);
+    const a = atLeast(decode(await this.body('PATCH', `/v1/communities/${id('communityId', communityId)}`, 'write', true, { body })), 1);
+    return u64(a[0]);
+  }
+  async deleteCommunity(communityId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}`, 'write', true);
+  }
+  async leaveCommunity(communityId: Uint8Array): Promise<void> {
+    await this.body('POST', `/v1/communities/${id('communityId', communityId)}/leave`, 'write', false, { body: encode([]) });
+  }
+  /** POST /v1/communities/{id}/owner: [user_id]; the owner hands the server to another member. */
+  async transferOwnership(communityId: Uint8Array, userId: Uint8Array): Promise<void> {
+    await this.body('POST', `/v1/communities/${id('communityId', communityId)}/owner`, 'write', false, { body: encode([bin(userId, 16)]) });
+  }
+  /** POST /v1/communities/{id}/channels with kind 2 (a category): [2, 0, 0, null, name, '', position, 0]. */
+  async createCategory(communityId: Uint8Array, category: { name: string; position: number }): Promise<ChannelCreated> {
+    const body = encode([2, 0, 0, null, checkedName('name', category.name, CHANNEL_NAME_MAX_BYTES), '',
+      between('position', category.position, 0, CHANNEL_POSITION_MAX), 0]);
+    const a = atLeast(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/channels`, 'write', false, { body })), 3);
+    return { id: bin(a[0], 16), mode: u53(a[1]), visibility: u53(a[2]) };
+  }
+  /** PATCH /v1/channels/{id}: [name, topic, mode, visibility, parent_id, position, slowmode], null leaves a field alone and
+   *  parent 'top' (sixteen zero bytes) moves the channel out of its category. */
+  async patchChannel(channelId: Uint8Array, patch: ChannelPatch): Promise<void> {
+    const parent = patch.parent === undefined ? null : patch.parent === 'top' ? new Uint8Array(16) : bin(patch.parent, 16);
+    const body = encode([patch.name === undefined ? null : checkedName('name', patch.name, CHANNEL_NAME_MAX_BYTES),
+      patch.topic === undefined ? null : checkedText('topic', patch.topic, TOPIC_MAX_BYTES), null, null, parent,
+      patch.position === undefined ? null : between('position', patch.position, 0, CHANNEL_POSITION_MAX), null]);
+    await this.body('PATCH', `/v1/channels/${id('channelId', channelId)}`, 'write', true, { body });
+  }
+  async deleteChannel(channelId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/channels/${id('channelId', channelId)}`, 'write', true);
+  }
+  async kickMember(communityId: Uint8Array, userId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}`, 'write', true);
+  }
+  /** PUT /v1/communities/{id}/bans/{user}: [reason, expires|null]. */
+  async putBan(communityId: Uint8Array, userId: Uint8Array, ban: { reason: string; expires: bigint | null }): Promise<void> {
+    const body = encode([checkedText('reason', ban.reason, BAN_REASON_MAX_BYTES), ban.expires]);
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bans/${id('userId', userId)}`, 'write', true, { body });
+  }
+  async deleteBan(communityId: Uint8Array, userId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/bans/${id('userId', userId)}`, 'write', true);
+  }
+  /** GET /v1/communities/{id}/bans: [[user_id, reason, by_user, created, expires|null, username, display]]; the last two
+   *  are absent from an older instance and read as ''. */
+  async listBans(communityId: Uint8Array): Promise<BanRow[]> {
+    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/bans`, 'read', true);
+    return bounded(decode(raw), BANS_MAX, 'bans').map(banRow);
+  }
+  async listInvites(communityId: Uint8Array): Promise<InviteRow[]> {
+    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/invites`, 'read', true);
+    return bounded(decode(raw), INVITES_MAX, 'invites').map(inviteRow);
+  }
+  async revokeInvite(inviteId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/invites/${id('inviteId', inviteId)}`, 'write', true);
   }
   async postGroup(body: Uint8Array): Promise<{ nextSeq: bigint }> {
     const a = atLeast(decode(await this.body('POST', '/v1/groups', 'write', false, { body })), 2);
