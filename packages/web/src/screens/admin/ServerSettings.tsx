@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { SettingsFrame, SettingsNav } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
+import { BansSection } from './BansSection.tsx';
 import { ChannelsSection } from './ChannelsSection.tsx';
 import { DangerSection } from './DangerSection.tsx';
 import { InvitesSection } from './InvitesSection.tsx';
@@ -62,6 +63,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
       {active === 'overview' ? <OverviewSection {...common} /> : null}
       {active === 'channels' ? <ChannelsSection {...common} /> : null}
       {active === 'invites' ? <InvitesSection {...common} /> : null}
+      {active === 'bans' ? <BansSection {...common} /> : null}
       {active === 'danger' ? <DangerSection {...common} owner={access?.owner === true} onGone={onClose} /> : null}
     </SettingsFrame>
   );

@@ -22,7 +22,7 @@ const INVITES: InviteSummary[] = [
   { id: INV2, createdBy: null, maxUses: 1, uses: 0, created: 1_800_000_000, expires: EXPIRES + 86_400 },
 ];
 
-function setup(invites: InviteSummary[] | undefined = INVITES, handler?: (command: Command) => Promise<unknown>) {
+function setup(invites: InviteSummary[] | null = INVITES, handler?: (command: Command) => Promise<unknown>) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: ME.id }]);
@@ -30,7 +30,7 @@ function setup(invites: InviteSummary[] | undefined = INVITES, handler?: (comman
     { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
     { userId: BOB, username: 'bob', display: 'Bob B', kind: 0, roleIds: [] },
   ]);
-  if (invites !== undefined) fake.set(`invites:${SERVER}`, invites);
+  if (invites !== null) fake.set(`invites:${SERVER}`, invites);
   fake.handler = handler ?? (command => Promise.resolve(command.m === 'createInvite'
     ? { url: 'https://dilla.test/join/abc', code: 'abc', expires: EXPIRES } : null));
   const announce = vi.fn();
@@ -107,7 +107,7 @@ describe('the invites section', () => {
     expect(announce).not.toHaveBeenCalled();
   });
   it('says a failed list read with its code, and reads again on retry', async () => {
-    const { fake, user } = setup(undefined, command => (command.m === 'loadInvites' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null)));
+    const { fake, user } = setup(null, command => (command.m === 'loadInvites' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null)));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the invite links (E_NETWORK).');
     await user.click(screen.getByRole('button', { name: en['invite.retry'] }));
     await waitFor(() => expect(fake.callsOf('loadInvites')).toHaveLength(2));
