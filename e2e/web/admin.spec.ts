@@ -81,22 +81,6 @@ async function joinWith(page: Page, link: string): Promise<Locator> {
   await button(dialog, 'join.submit').click();
   return dialog;
 }
-/**
- * Opens #lobby in the rejoined server. FINDING (reported to the controller): in the tab that was removed and joined again
- * (kick, ban lifted, leave) the rejoined channel's composer sometimes stays disabled for the whole 30 s wait with no reason
- * shown; a reload of the tab fixes it. The walk goes on after one reload, and each hit is attached to the test as a
- * `fixme` annotation so the report shows it.
- */
-async function reopenLobby(page: Page, when: string, testInfo: { annotations: { type: string; description?: string }[] }): Promise<void> {
-  try {
-    await openChannel(page, RENAMED, 'lobby');
-  } catch {
-    console.log('FINDING composer not ready ' + when);
-    testInfo.annotations.push({ type: 'fixme', description: `composer of #lobby not ready ${when} until the tab was reloaded` });
-    await page.reload();
-    await openChannel(page, RENAMED, 'lobby');
-  }
-}
 const noticeOf = (page: Page, server: string) => page.getByText(copy('removed.notice', { server }), { exact: true }).first();
 
 test('a server run from an empty instance: members, rename, channel edit, kick, ban, unban, leave, hand over and delete', async ({
@@ -189,7 +173,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await expect(join).toBeHidden({ timeout: WAIT });
     await expect(railItem(page2, RENAMED)).toBeVisible({ timeout: WAIT });
     await expect(memberRow(page, RENAMED, FRIEND)).toBeVisible({ timeout: WAIT });
-    await reopenLobby(page2, 'after a kick and a join with the same link', testInfo);
+    await openChannel(page2, RENAMED, 'lobby');
 
     // 8. Ada bans Björn with the reason "spam" for 1 day; he sees the notice again.
     await memberAction(page, RENAMED, FRIEND, 'members.menu.ban');
@@ -226,7 +210,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     const again = await joinWith(page2, link);
     await expect(again).toBeHidden({ timeout: WAIT });
     await expect(railItem(page2, RENAMED)).toBeVisible({ timeout: WAIT });
-    await reopenLobby(page2, 'after the ban was lifted', testInfo);
+    await openChannel(page2, RENAMED, 'lobby');
     await expect(memberRow(page, RENAMED, FRIEND)).toBeVisible({ timeout: WAIT });
 
     // 12. Björn's menu for Ada lists only message and compare; his settings show only invites and the leave tab.
@@ -253,7 +237,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     const third = await joinWith(page2, link);
     await expect(third).toBeHidden({ timeout: WAIT });
     await expect(railItem(page2, RENAMED)).toBeVisible({ timeout: WAIT });
-    await reopenLobby(page2, 'after leaving and joining again', testInfo);
+    await openChannel(page2, RENAMED, 'lobby');
     await expect(memberRow(page, RENAMED, FRIEND)).toBeVisible({ timeout: WAIT });
     settings = await openSettings(page);
     await navItem(settings, 'admin.nav.delete').click();
