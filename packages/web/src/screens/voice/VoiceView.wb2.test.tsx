@@ -193,3 +193,23 @@ describe('removed from the server while in voice (product walk I8)', () => {
     expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
   });
 });
+
+describe('mute is kept across a reload (product walk M5)', () => {
+  it('mute and deafen are kept per browser, and the next call starts in them', async () => {
+    const app = await inHarbour();
+    await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
+    await waitFor(() => expect(app.client.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: 'voice.self', value: 'muted' }));
+    await app.user.keyboard('{Control>}{Shift>}D{/Shift}{/Control}');
+    await waitFor(() => expect(app.client.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: 'voice.self', value: 'deafened' }));
+    await app.user.keyboard('{Control>}{Shift>}D{/Shift}{/Control}');
+    await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
+    await waitFor(() => expect(app.client.callsOf('setSetting').at(-1)).toEqual({ m: 'setSetting', key: 'voice.self', value: null }));
+  });
+
+  it('a call started after a reload starts muted when this browser was muted', async () => {
+    const app = renderVoiceShell({ settings: { 'voice.self': 'muted' } });
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.module.startPageCall).toHaveBeenCalled());
+    expect(vi.mocked(app.module.startPageCall).mock.calls[0][2]).toMatchObject({ self: 'muted' });
+  });
+});

@@ -257,6 +257,8 @@ export function useCall(o: UseCallOptions): CallView {
           noise: settings[SETTINGS.voiceNoise] === 'off' ? 'off' : 'on',
           volumes: mod.volumesFromSettings(settings),
           signal: abort.signal,
+          // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
+          self: settings[SETTINGS.voiceSelf] === 'deafened' ? 'deafened' : settings[SETTINGS.voiceSelf] === 'muted' ? 'muted' : null,
         });
         // The shell unmounted while the start was pending: nobody drives this call, so it ends at once.
         if (!mounted.current) { void next.leave('user'); return; }
@@ -304,20 +306,27 @@ export function useCall(o: UseCallOptions): CallView {
     leaving.current = done;
   }, [detach]);
 
+  /** Product walk M5: the own mute and deafen are kept per browser (a device-local setting), for the next call. */
+  const keepSelf = useCallback((s: PageCall) => {
+    const value = s.state.deafened ? 'deafened' : s.state.muted ? 'muted' : null;
+    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).catch(() => undefined);
+  }, [client]);
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
     if (s === null) return;
     const on = !s.state.muted;
     s.setMuted(on);
+    keepSelf(s);
     announce(t(on ? 'voice.announce.muted' : 'voice.announce.unmuted'));
-  }, [announce]);
+  }, [announce, keepSelf]);
   const toggleDeafen = useCallback(() => {
     const s = sessionRef.current;
     if (s === null) return;
     const on = !s.state.deafened;
     s.setDeafened(on);
+    keepSelf(s);
     announce(t(on ? 'voice.announce.deafened' : 'voice.announce.undeafened'));
-  }, [announce]);
+  }, [announce, keepSelf]);
   const shareRefused = useCallback((e: unknown) => {
     const id = channelRef.current;
     const code = errorOf(e).code;

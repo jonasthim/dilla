@@ -100,6 +100,8 @@ describe('voice and sound settings (L-TS-54)', () => {
       [SETTINGS.voiceVolume(ID), ['0', '10', '100', '110', '200'], ['05', '15', '210', '-10', '100.0', '']],
       [SETTINGS.soundVoice, ['on', 'off'], ['0', '1']],
       [SETTINGS.soundRing, ['on', 'off'], ['0', 'quiet']],
+      // Product walk M5: the own mute and deafen kept across a reload.
+      [SETTINGS.voiceSelf, ['muted', 'deafened'], ['', 'on', 'live', '1']],
     ];
     for (const [key, good, bad] of cases) {
       expect(isSettingKey(key), key).toBe(true);

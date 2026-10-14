@@ -995,3 +995,33 @@ describe('the product walk fixes', () => {
     expect(call.state.noise).toBe('on');
   });
 });
+
+describe('product walk M5: the own mute and deafen kept across a reload', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+
+  it('a start muted sends nothing from the microphone and says so to the others at once', async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'muted' });
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+    expect(f.localTracks[0].muted).toBe(true);
+    // The microphone track was already off when it was published: no frame goes out before the mute lands.
+    expect((f.room.localParticipant.publishTrack.mock.calls[0][0] as unknown as { enabled?: boolean }).enabled).toBe(false);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+  });
+
+  it('a start deafened plays nothing and is muted too', async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'deafened' });
+    open.push(call);
+    const bob = f.addRemote(BOB_DEV);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    expect(f.localTracks[0].muted).toBe(true);
+    expect(bob.gains.microphone).toBe(0);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
+    // Undeafening returns to live: the start was not muted on its own.
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: false, deafened: false });
+  });
+});

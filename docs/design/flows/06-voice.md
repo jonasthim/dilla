@@ -183,6 +183,8 @@ Amended 2026-10-13 (task-9 review): the toggle is `voice.messages`, a pressed to
 | ring banner | Tab from the main landmark's start | `call.ring.answer`, then `call.ring.decline`, before any other control of the main landmark |
 | attachment player | Enter/Space on `media.play`, then the browser's native controls | the native player |
 
+Amended 2026-10-14 (product walk M5; controller ruling): mute and deafen are kept per browser in the device-local setting `voice.self` (`muted` or `deafened`, absent when live), written on each toggle; a call starts in the kept state with the microphone track already off, and says it to the others (`voice_self`) at once. A reload or a closed tab leaves the call.
+
 There is no single-key shortcut (decision 1, WCAG 2.1.4): mute and deafen need Control/⌘ and Shift. The push-to-talk key has no default and acts only while dilla is the active tab (decision 2). These shortcuts do not interrupt IME composition. The settings rows show `keyboard.mute` and `keyboard.deafen`, each followed by `keyboard.muteAction` / `keyboard.deafenAction`, as `keyboard.searchAll` is followed by its action. The dock's and the stage's mute and deafen buttons carry `aria-keyshortcuts` (`Control+Shift+M Meta+Shift+M`, `Control+Shift+D Meta+Shift+D`).
 
 Amended 2026-10-13 (controller rulings on the task-7 review, M4 and M9):

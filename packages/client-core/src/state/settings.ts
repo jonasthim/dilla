@@ -15,6 +15,8 @@ export const SETTINGS = {
   voicePttKey: 'voice.pttKey',                               // a KeyboardEvent.code; absent = no key (decision 2)
   voiceNoise: 'voice.noise',                                 // 'on' (default) | 'off'
   voiceVolume: (hex: string) => `voice.volume.${hex}`,       // per user: '0'..'200' in steps of 10; absent = '100'
+  // Product walk M5: this browser's own mute and deafen, kept across a reload: 'muted' | 'deafened'; absent = neither.
+  voiceSelf: 'voice.self',
   soundVoice: 'sound.voice',                                 // join and leave sounds: 'on' (default) | 'off'
   soundRing: 'sound.ring',                                   // the ring: 'on' (default) | 'off'
 } as const;
@@ -37,7 +39,7 @@ const ON_OFF: readonly string[] = ['on', 'off'];
 const FIXED_KEYS: ReadonlySet<string> = new Set([
   SETTINGS.notifyDefault, SETTINGS.density, SETTINGS.reduceMotion, SETTINGS.searchScope,
   SETTINGS.voiceInput, SETTINGS.voiceOutput, SETTINGS.voiceMode, SETTINGS.voicePttKey, SETTINGS.voiceNoise,
-  SETTINGS.soundVoice, SETTINGS.soundRing,
+  SETTINGS.soundVoice, SETTINGS.soundRing, SETTINGS.voiceSelf,
 ]);
 
 export function isSettingKey(key: string): boolean {
@@ -57,6 +59,7 @@ export function isSettingValue(key: string, value: string): boolean {
   if (key === SETTINGS.searchScope) return value === 'channel' || value === 'community' || value === 'all';
   if (key === SETTINGS.voiceInput || key === SETTINGS.voiceOutput) return DEVICE_ID.test(value);
   if (key === SETTINGS.voiceMode) return value === 'vad' || value === 'ptt';
+  if (key === SETTINGS.voiceSelf) return value === 'muted' || value === 'deafened';
   if (key === SETTINGS.voicePttKey) return PTT_KEY.test(value);
   if (key === SETTINGS.voiceNoise || key === SETTINGS.soundVoice || key === SETTINGS.soundRing) return ON_OFF.includes(value);
   if (key.startsWith(VOICE_VOLUME)) return VOLUME.test(value);

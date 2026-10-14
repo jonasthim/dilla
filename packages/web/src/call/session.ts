@@ -117,6 +117,9 @@ export interface PageCallOptions {
   /** WB client I1: aborting ends a start that has not connected yet, the microphone prompt included: callLeave is
    *  posted at once (the worker cancels its join), the microphone is stopped, and the start rejects with E_ABORTED. */
   signal?: AbortSignal;
+  /** Product walk M5: this browser's own mute or deafen kept from its last call; the call starts in it, so a reload never
+   *  reopens a microphone the person had muted. */
+  self?: 'muted' | 'deafened' | null;
 }
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
@@ -393,7 +396,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let state: PageCallState = {
       phase: 'connecting', muted: false, deafened: false, camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
-      noise: opts.noise,
+      noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -482,6 +485,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     if ('track' in mic) {
       micTrack = mic.track;
+      // Product walk M5: a start muted sends no frame before the mute lands (LiveKit's unmute enables it again).
+      if (state.muted) mic.track.enabled = false;
       try {
         micPub = await local.publishTrack(mic.track, micOptions(caps));
       } catch {
@@ -762,6 +767,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     opts.signal?.removeEventListener('abort', onAbort);
     applyGains();
     state = { ...state, phase: 'connected', tiles: tiles() };
+    // Product walk M5: a call started muted or deafened says so to the others at once.
+    if (state.muted || state.deafened) sendSelf();
     later(poll, TILE_POLL_MS);
     later(statsTick, STATS_EVERY_MS);
     scheduleIce(firstIce);
