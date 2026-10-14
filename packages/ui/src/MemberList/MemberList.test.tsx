@@ -33,6 +33,18 @@ describe('MemberList', () => {
     expect(within(lists[1]!).getAllByRole('listitem')).toHaveLength(2);
   });
 
+  // Final fix M5: inside a landmark that already carries the name (the shell's aside), the list takes none of its own.
+  it('with a label it is a region of that name; without one an unnamed container, not a region', () => {
+    const { container, rerender } = render(<MemberList {...props()} />);
+    expect(screen.getByRole('region', { name: 'members' })).toHaveClass('d-member-list');
+    rerender(<MemberList {...props({ label: undefined })} />);
+    expect(screen.queryByRole('region')).toBeNull();
+    const root = container.querySelector('.d-member-list');
+    expect(root?.tagName).toBe('DIV');
+    expect(root).not.toHaveAttribute('aria-label');
+    expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(2);
+  });
+
   it('shows the name and the tags of each row', () => {
     render(<MemberList {...props()} />);
     const row = screen.getByText('Astrid').closest('li')!;

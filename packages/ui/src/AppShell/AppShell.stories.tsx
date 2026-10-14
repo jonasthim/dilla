@@ -16,8 +16,16 @@ const members = (
       { id: 'members', title: 'members', members: [{ id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }] }] },
     ]} />
 );
-const withAside = { aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {} };
+const withAside = { aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' };
 export const AsideWide: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div> };
 export const AsideMedium: Story = { render: () => <div style={{ width: 900, ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={withAside} /></div> };
+// Final fix I2: the drawer's close button, at the top of the overlay (a column has none).
+export const AsideNarrowClose: Story = {
+  render: () => <div style={{ width: 360, ['--d-shell-h' as string]: '740px' }}><ComposedShell shell={withAside} /></div>,
+  play: ({ canvasElement }) => {
+    const close = canvasElement.querySelector<HTMLButtonElement>('.d-app-shell__aside-head button');
+    if (close === null) throw new Error('the overlay drawer has no close button');
+  },
+};
 export const AsideNarrow: Story = { render: () => <div style={{ width: 360, ['--d-shell-h' as string]: '740px' }}><ComposedShell shell={withAside} /></div> };
 export const Offline: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell banner /></div> };

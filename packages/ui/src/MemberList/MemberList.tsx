@@ -5,7 +5,8 @@ import './MemberList.css';
 export interface MemberListMember { id: string; name: string; tags: readonly string[]; actionsLabel: string; actions: readonly ActionMenuItem[] }
 export interface MemberListGroup { id: string; title: string; members: readonly MemberListMember[] }
 export interface MemberListProps {
-  label: string;
+  /** The region's name. Left out inside a landmark that already names the list (the shell's aside): a plain container. */
+  label?: string;
   groups: readonly MemberListGroup[];
   loading: boolean;
   loadingLabel: string;
@@ -39,8 +40,9 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
     setMenu({ id: m.id, at: null });
   };
 
+  const Root = label === undefined ? 'div' : 'section';
   return (
-    <section className="d-member-list" aria-label={label}>
+    <Root className="d-member-list" aria-label={label}>
       {loading ? (
         <p className="d-member-list__note" role="status">{loadingLabel}</p>
       ) : shown.length === 0 ? (
@@ -63,6 +65,6 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
           </ul>
         </div>
       ))}
-    </section>
+    </Root>
   );
 }

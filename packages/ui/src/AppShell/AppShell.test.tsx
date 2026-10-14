@@ -253,6 +253,27 @@ describe('AppShell aside', () => {
     vi.restoreAllMocks();
   });
 
+  // Final fix I2: the drawer has a visible close control at its top; a column needs none.
+  it('as an overlay with asideCloseLabel, a close button sits first in the drawer and calls onAsideClose', async () => {
+    const user = userEvent.setup();
+    const onAsideClose = vi.fn();
+    render(<ComposedShell shell={open({ onAsideClose, asideCloseLabel: 'close members' })} />);
+    const side = screen.getByRole('complementary', { name: 'members' });
+    const close = within(side).getByRole('button', { name: 'close members' });
+    expect(within(side).getAllByRole('button')[0]).toBe(close);
+    await user.click(close);
+    expect(onAsideClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('as a column there is no close button, also with asideCloseLabel', () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1280);
+    render(<ComposedShell shell={open({ asideCloseLabel: 'close members' })} />);
+    const side = screen.getByRole('complementary', { name: 'members' });
+    expect(within(side).queryByRole('button', { name: 'close members' })).toBeNull();
+    expect(within(side).getByRole('button', { name: 'pane control' })).toBeInTheDocument();
+    width.mockRestore();
+  });
+
   it('has no serious axe violations with the aside open', async () => {
     const { container } = render(<div className="d-root"><ComposedShell shell={open()} /></div>);
     await expectNoAxeViolations(container);

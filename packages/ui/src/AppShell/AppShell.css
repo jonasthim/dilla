@@ -11,5 +11,7 @@
 /* web3.4: the aside is an overlay drawer from the right of the shell (its containing block: the shell is a size
    container). From 64rem of shell width base.css makes it a fourth grid column. */
 .d-app-shell__aside { position: absolute; top: 0; right: 0; bottom: 0; z-index: 25; width: min(20rem, 100%); overflow-y: auto; background: var(--surface); border-left: 1px solid var(--hairline); box-shadow: var(--shadow-2); }
+/* Final fix I2: the drawer's close button, at its top and to the right (the side the drawer came from). */
+.d-app-shell__aside-head { display: flex; justify-content: flex-end; padding: 0.75rem 0.75rem 0; }
 /* The modal drawer's backdrop: behind the aside, over the (inert) shell. A column has none. */
 .d-app-shell__backdrop { position: absolute; inset: 0; z-index: 24; background: rgba(0, 0, 0, 0.5); }

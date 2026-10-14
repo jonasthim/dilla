@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react';
+import { Button } from '../Button/Button.tsx';
 import './AppShell.css';
 
 export interface AppShellProps {
@@ -26,6 +27,8 @@ export interface AppShellProps {
   asideLabel?: string;
   asideOpen?: boolean;
   onAsideClose?(): void;
+  /** The drawer's close button (final fix I2): shown at its top only as the overlay, where it calls `onAsideClose`. */
+  asideCloseLabel?: string;
   /** The control that opens the aside: focus goes back to it when the drawer closes and the opener was `body`. */
   asideReturnRef?: RefObject<HTMLElement | null>;
 }
@@ -40,7 +43,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
  * keyboard map: skip link → banner → rail → sidebar → main → status bar.
  */
 export function AppShell({
-  skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideReturnRef,
+  skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
 }: AppShellProps) {
   const mainId = useId();
   const mainRef = useRef<HTMLElement>(null);
@@ -133,7 +136,14 @@ export function AppShell({
           {composer}
         </main>
         {overlay ? <div className="d-app-shell__backdrop" aria-hidden="true" onClick={() => onAsideClose?.()} /> : null}
-        {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside">{aside}</aside> : null}
+        {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside">
+          {overlay && asideCloseLabel !== undefined ? (
+            <div className="d-app-shell__aside-head">
+              <Button variant="ghost" size="sm" onClick={() => onAsideClose?.()}>{asideCloseLabel}</Button>
+            </div>
+          ) : null}
+          {aside}
+        </aside> : null}
         <div className="d-app-shell__status" inert={overlay || undefined}>{statusBar}</div>
       </div>
     </div>
