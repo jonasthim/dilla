@@ -1,23 +1,13 @@
 // Who may do what to whom in a server. The client's gate is advisory: the instance decides every request again.
 import { OWNER_TOP } from '../http/routes';
+import { PERM } from './perm';
 import type { CommunityAccess, RoleSummary } from '../state/types';
-
-/** The permission bits of internal/api/perm.go (Perm*), the ones moderation reads. */
-export const PERM = {
-  createInvite: 1n << 11n,
-  kickMembers: 1n << 12n,
-  banMembers: 1n << 13n,
-  manageChannels: 1n << 14n,
-  manageRoles: 1n << 15n,
-  manageCommunity: 1n << 16n,
-  administrator: 1n << 20n,
-} as const;
 
 /** What a member may do community-wide, from the resolved bits and rank of GET /v1/communities/{id}/permissions. The owner
  *  and an administrator hold every permission. */
 export function accessOf(bits: bigint, top: number, owner: boolean): CommunityAccess {
-  const all = owner || (bits & PERM.administrator) !== 0n;
-  const has = (bit: bigint): boolean => all || (bits & bit) !== 0n;
+  const all = owner || (bits & BigInt(PERM.administrator)) !== 0n;
+  const has = (bit: number): boolean => all || (bits & BigInt(bit)) !== 0n;
   return { top, owner, manageCommunity: has(PERM.manageCommunity), manageChannels: has(PERM.manageChannels),
     kickMembers: has(PERM.kickMembers), banMembers: has(PERM.banMembers), createInvite: has(PERM.createInvite),
     manageRoles: has(PERM.manageRoles), loaded: true };

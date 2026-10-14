@@ -1,0 +1,103 @@
+// The permission resolver of internal/api/perm.go, ported line for line. Checked against protocol/vectors/permissions.json.
+// The client's answer is advisory: the instance decides every request again.
+import { PERM_ALL } from '../http/routes';
+
+/** The 24 permission bits of internal/api/perm.go (Perm*), as numbers (bit 23 fits in 32). */
+export const PERM = {
+  viewChannel: 1 << 0, sendMessages: 1 << 1, manageMessages: 1 << 2, pinMessages: 1 << 3, attachFiles: 1 << 4,
+  addReactions: 1 << 5, readHistory: 1 << 6, connect: 1 << 7, speak: 1 << 8, video: 1 << 9, screenShare: 1 << 10,
+  createInvite: 1 << 11, kickMembers: 1 << 12, banMembers: 1 << 13, manageChannels: 1 << 14, manageRoles: 1 << 15,
+  manageCommunity: 1 << 16, viewAuditLog: 1 << 17, mentionEveryone: 1 << 18, bypassSlowmode: 1 << 19,
+  administrator: 1 << 20, muteMembers: 1 << 21, moveMembers: 1 << 22, manageNicknames: 1 << 23,
+} as const;
+
+/** The bits a channel overwrite can neither grant nor remove (perm.go communityBits). */
+export const COMMUNITY_BITS = PERM.kickMembers | PERM.banMembers | PERM.manageCommunity | PERM.manageRoles
+  | PERM.viewAuditLog | PERM.administrator | PERM.manageNicknames;
+
+/** The bit of each copy key (`perm.<key>`). */
+export const PERM_BY_KEY = {
+  view: PERM.viewChannel, send: PERM.sendMessages, manageMessages: PERM.manageMessages, pin: PERM.pinMessages,
+  attach: PERM.attachFiles, react: PERM.addReactions, history: PERM.readHistory, connect: PERM.connect, speak: PERM.speak,
+  video: PERM.video, screen: PERM.screenShare, invite: PERM.createInvite, kick: PERM.kickMembers, ban: PERM.banMembers,
+  manageChannels: PERM.manageChannels, manageRoles: PERM.manageRoles, manageServer: PERM.manageCommunity,
+  auditLog: PERM.viewAuditLog, everyone: PERM.mentionEveryone, slowmode: PERM.bypassSlowmode, admin: PERM.administrator,
+  mute: PERM.muteMembers, move: PERM.moveMembers, nicknames: PERM.manageNicknames,
+} as const;
+export type PermKey = keyof typeof PERM_BY_KEY;
+
+export const PERM_GROUPS: readonly { id: 'general' | 'members' | 'text' | 'voice'; keys: readonly PermKey[] }[] = [
+  { id: 'general', keys: ['view', 'manageChannels', 'manageRoles', 'manageServer', 'invite', 'auditLog', 'admin'] },
+  { id: 'members', keys: ['kick', 'ban', 'nicknames'] },
+  { id: 'text', keys: ['send', 'attach', 'react', 'history', 'pin', 'everyone', 'manageMessages', 'slowmode'] },
+  { id: 'voice', keys: ['connect', 'speak', 'video', 'screen', 'mute', 'move'] },
+];
+
+export interface PermRole { id: string; position: number; allow: number; deny: number }
+export interface PermOverwrite { kind: 0 | 1; targetId: string; allow: number; deny: number }
+export interface PermMember { userId: string; roleIds: readonly string[] }
+export interface PermInput { owner: string; everyoneId: string; roles: readonly PermRole[]; held: readonly string[] }
+
+/** Position, then id (lower-case hex compares as the bytes do). */
+function byPositionThenId(a: PermRole, b: PermRole): number {
+  return a.position - b.position || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** Deny first, then allow: an allow on the same bit wins (perm.go `&^= deny`, `|= allow`). */
+function apply(bits: number, allow: number, deny: number): number {
+  return ((bits & ~(deny & PERM_ALL)) | (allow & PERM_ALL)) & PERM_ALL;
+}
+
+function finish(bits: number): number {
+  if ((bits & PERM.administrator) !== 0) return PERM_ALL;
+  if ((bits & PERM.viewChannel) === 0) return 0;
+  return bits;
+}
+
+function heldRoles(input: PermInput): PermRole[] {
+  const held = new Set(input.held);
+  return input.roles.filter((r) => r.id === input.everyoneId || held.has(r.id)).sort(byPositionThenId);
+}
+
+/** perm.go Resolve: the owner short-circuit, @everyone, then each held role in ascending position. */
+export function resolveCommunity(input: PermInput, userId: string): number {
+  if (userId === input.owner) return PERM_ALL;
+  let bits = 0;
+  for (const r of heldRoles(input)) bits = apply(bits, r.allow, r.deny);
+  return finish(bits);
+}
+
+/** perm.go ResolveChannel: the overwrites of the held roles in ascending role position, then the user's own, then the
+ *  community-scoped bits restored from the base. An overwrite counts only for its own kind and target. */
+export function resolveChannel(input: PermInput, overwrites: readonly PermOverwrite[], userId: string): number {
+  const base = resolveCommunity(input, userId);
+  if (base === PERM_ALL || base === 0) return base;
+  let bits = base;
+  for (const r of heldRoles(input)) {
+    for (const o of overwrites) {
+      if (o.kind !== 0 || o.targetId !== r.id) continue;
+      bits = apply(bits, o.allow, o.deny);
+    }
+  }
+  for (const o of overwrites) {
+    if (o.kind !== 1 || o.targetId !== userId) continue;
+    bits = apply(bits, o.allow, o.deny);
+  }
+  bits = (bits & ~COMMUNITY_BITS) | (base & COMMUNITY_BITS);
+  return finish(bits);
+}
+
+/** The bits `userId` holds in a channel, or null when the user is not in `members` (unknown: the caller keeps today's
+ *  behaviour). The owner holds everything. */
+export function channelBitsOf(s: { owner: string; everyoneId: string; roles: readonly PermRole[]; members: readonly PermMember[];
+  overwrites: readonly PermOverwrite[] }, userId: string): number | null {
+  if (userId === s.owner) return PERM_ALL;
+  const member = s.members.find((m) => m.userId === userId);
+  if (!member) return null;
+  return resolveChannel({ owner: s.owner, everyoneId: s.everyoneId, roles: s.roles, held: member.roleIds }, s.overwrites, userId);
+}
+
+/** A channel is private when @everyone's overwrite denies viewing it. */
+export function isPrivate(overwrites: readonly PermOverwrite[], everyoneId: string): boolean {
+  return overwrites.some((o) => o.kind === 0 && o.targetId === everyoneId && (o.deny & PERM.viewChannel) !== 0);
+}
