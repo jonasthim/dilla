@@ -127,6 +127,12 @@ init)
   api_secret_file = '$dir/livekit.secret'
 EOF
 	chmod 0600 "$dir/dilla.toml"
+	if [ -n "${FAKE_INIT_BAD:-}" ]; then
+		# A layout install.sh does not know: no livekit.udp_port.
+		grep -v 'udp_port' "$dir/dilla.toml" >"$dir/dilla.toml.x"
+		cat "$dir/dilla.toml.x" >"$dir/dilla.toml"
+		rm -f "$dir/dilla.toml.x"
+	fi
 	echo "dillad init: wrote $dir/dilla.toml"
 	echo "bootstrap invite (valid 24 hours, one use): https://$domain/i/SECRETINVITECODE"
 	echo "this link is printed once and is not stored anywhere; the database holds only its SHA-256"
@@ -170,8 +176,8 @@ run() {
 	fi
 	: >"$LOG"
 	RC=0
-	env PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" FAKE_LOG="$LOG" \
-		sh "$INSTALL" "$@" >"$TMP/out" 2>"$TMP/err" || RC=$?
+	env PATH="${EXTRA_PATH:+$EXTRA_PATH:}$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" FAKE_LOG="$LOG" \
+		sh "${RUN_SCRIPT:-$INSTALL}" "$@" >"$TMP/out" 2>"$TMP/err" || RC=$?
 	OUT="$(cat "$TMP/out")"
 	ERR="$(cat "$TMP/err")"
 }
@@ -204,7 +210,8 @@ expect_refusal() { # NAME NEEDLE
 	fi
 }
 
-PROXY_ARGS="--behind-proxy --domain chat.example.org --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.0/24 --trusted-proxy=10.0.1.7/32"
+PROXY_BASE="--behind-proxy --domain chat.example.org --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.0/24 --trusted-proxy=10.0.1.7/32"
+PROXY_ARGS="$PROXY_BASE --node-ip 203.0.113.10"
 PUBLIC_ARGS="--public --domain chat.example.org --public-ip 203.0.113.10 --agree-tos"
 URL="--release-url file://$REL"
 
@@ -261,7 +268,7 @@ run $PUBLIC_ARGS --udp-port 70000
 expect_refusal "a --udp-port out of range is refused" "--udp-port"
 
 # shellcheck disable=SC2086
-run $PUBLIC_ARGS --check-args
+run $PUBLIC_ARGS --version v1.2.3 --check-args
 if expect_rc "--check-args accepts a valid public install" 0 && [ -z "$OUT" ] && [ ! -e "$ROOT/usr" ] && [ ! -s "$LOG" ]; then
 	pass "--check-args validates and touches nothing"
 else
@@ -462,10 +469,13 @@ if [ -z "$TOML_PROBLEMS" ]; then pass "public: dilla.toml keeps acme_tls_alpn an
 '
 fi
 
-# behind-proxy without --public-ip or --node-ip: no address in the file, a warning.
+# behind-proxy without --public-ip or --node-ip is refused (M3) ...
+run $PROXY_BASE $URL
+expect_refusal "behind-proxy without --public-ip, --node-ip or --no-media-ip is refused" "--node-ip"
+
+# ... unless --no-media-ip says so: no address in the file, and a warning.
 seed_root
-# shellcheck disable=SC2086
-KEEP_ROOT=1 run $PROXY_ARGS $URL
+KEEP_ROOT=1 run $PROXY_BASE --no-media-ip $URL
 T="$ROOT/etc/dilla/dilla.toml"
 TOML_PROBLEMS=""
 want_toml instance public_ip "''"
@@ -525,6 +535,110 @@ if [ "$RC" -eq 0 ] && cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" && ! has "$(ca
 	pass "an offline install with --sums needs no network"
 else
 	fail "an offline install with --sums needs no network" "rc $RC" "stderr: $ERR"
+fi
+
+# ------------------------------------------- security review, 2026-10-14 ----
+# C1: a downloaded SHA256SUMS that is empty must refuse, never fall back to "unverified".
+EMPTY="$TMP/empty-sums"
+make_release "$EMPTY"
+: >"$EMPTY/SHA256SUMS"
+run $PUBLIC_ARGS --release-url "file://$EMPTY"
+expect_refusal "an empty downloaded SHA256SUMS is refused" "SHA256SUMS"
+if [ -e "$ROOT/usr" ] || [ -e "$ROOT/var/lib/dillad" ]; then
+	fail "an empty SHA256SUMS installs nothing" "$(find "$ROOT" | sed -n '1,10p')"
+else
+	pass "an empty SHA256SUMS installs nothing"
+fi
+
+# C1: one local file plus one download, no --sums: the download is still checked.
+MIXED="$TMP/mixed"
+make_release "$MIXED"
+printf 'x' >>"$MIXED/dilla_core_wasi.wasm"
+run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --insecure-skip-verify --release-url "file://$MIXED"
+expect_refusal "a downloaded core is checked even when the binary is local" "checksum"
+
+# I1: no "latest". An unstamped copy (the one in git) needs --version or --release-url.
+if [ "$(grep -c '^DILLA_RELEASE_TAG=""$' "$INSTALL")" = 1 ]; then
+	pass "install.sh carries exactly one DILLA_RELEASE_TAG placeholder for release.yml to stamp"
+else
+	fail "install.sh carries exactly one DILLA_RELEASE_TAG placeholder for release.yml to stamp"
+fi
+run $PUBLIC_ARGS
+expect_refusal "an unstamped install.sh without --version or --release-url is refused" "--version"
+run $PUBLIC_ARGS --version latest
+expect_refusal "--version latest is refused" "--version"
+
+# A curl that records the URL it was asked for and fails, so nothing leaves the box.
+CURLSTUB="$TMP/curlstub"
+mkdir -p "$CURLSTUB"
+printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\necho "curl $last" >>"%s"\nexit 22\n' "$LOG" >"$CURLSTUB/curl"
+chmod 0755 "$CURLSTUB/curl"
+mkdir -p "$TMP/stamped"
+sed 's/^DILLA_RELEASE_TAG=""$/DILLA_RELEASE_TAG="v9.9.9-test"/' "$INSTALL" >"$TMP/stamped/install.sh"
+seed_root
+EXTRA_PATH="$CURLSTUB" RUN_SCRIPT="$TMP/stamped/install.sh" KEEP_ROOT=1 run $PUBLIC_ARGS
+if [ "$RC" -ne 0 ] && has "$(cat "$LOG")" "curl https://github.com/jonasthim/dilla/releases/download/v9.9.9-test/dillad-linux-amd64"; then
+	pass "a stamped install.sh downloads from its own tag by default"
+else
+	fail "a stamped install.sh downloads from its own tag by default" "log: $(cat "$LOG")" "stderr: $ERR"
+fi
+seed_root
+EXTRA_PATH="$CURLSTUB" KEEP_ROOT=1 run $PUBLIC_ARGS --version v1.2.3
+if has "$(cat "$LOG")" "curl https://github.com/jonasthim/dilla/releases/download/v1.2.3/dillad-linux-amd64"; then
+	pass "--version TAG downloads from releases/download/TAG"
+else
+	fail "--version TAG downloads from releases/download/TAG" "log: $(cat "$LOG")" "stderr: $ERR"
+fi
+
+# M1: local files without --sums are refused unless --insecure-skip-verify.
+run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm"
+expect_refusal "local --binary and --core without --sums are refused" "--sums"
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm" --insecure-skip-verify
+if [ "$RC" -eq 0 ] && has "$ERR" "unverified"; then
+	pass "--insecure-skip-verify installs local files with a warning"
+else
+	fail "--insecure-skip-verify installs local files with a warning" "rc $RC" "stderr: $ERR"
+fi
+
+# M2: a failure after init still prints the link once, and says how to start over.
+seed_root
+FAKE_INIT_BAD=1 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+if [ "$RC" -ne 0 ] && [ "$OUT" = "https://chat.example.org/i/SECRETINVITECODE" ] && has "$ERR" "rm -rf"; then
+	pass "a failure after init prints the link and the way to start over"
+else
+	fail "a failure after init prints the link and the way to start over" "rc $RC" "out: $OUT" "stderr: $ERR"
+fi
+
+# M4: values dillad would refuse are refused before anything is installed.
+run $PUBLIC_ARGS --udp-port 07882 $URL
+expect_refusal "a --udp-port with a leading zero is refused" "--udp-port"
+run $PUBLIC_ARGS --node-ip 1.2.3.4.5 $URL
+expect_refusal "a --node-ip that is no address is refused" "--node-ip"
+run --public --domain chat.example.org --public-ip 256.1.1.1 --agree-tos $URL
+expect_refusal "an IPv4 octet over 255 is refused" "--public-ip"
+run $PROXY_BASE --node-ip 203.0.113.10 --trusted-proxy 10.0.0.0/33 $URL
+expect_refusal "an IPv4 prefix longer than 32 is refused" "--trusted-proxy"
+
+# M4: the edited dilla.toml is checked before the unit is enabled.
+printf 'FAIL  config       instance.public_ip: bad\n' >"$TMP/doctor-config"
+seed_root
+FAKE_DOCTOR="$TMP/doctor-config" FAKE_DOCTOR_EXIT=69 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+if [ "$RC" -ne 0 ] && ! has "$(cat "$LOG")" "enable --now" && [ "$OUT" = "https://chat.example.org/i/SECRETINVITECODE" ]; then
+	pass "a dilla.toml the config check refuses is never started, and the link is printed"
+else
+	fail "a dilla.toml the config check refuses is never started, and the link is printed" "rc $RC" "log: $(cat "$LOG")" "stderr: $ERR"
+fi
+
+# M5: an upgrade whose restart fails puts the previous binary and core back.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade"
+STUB_SYSTEMCTL_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+if [ "$RC" -ne 0 ] && cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" && cmp -s "$ROOT/usr/local/bin/dilla_core_wasi.wasm" "$REL/dilla_core_wasi.wasm" && has "$ERR" "rolled back"; then
+	pass "a failed upgrade restart rolls the binary and the core back"
+else
+	fail "a failed upgrade restart rolls the binary and the core back" "rc $RC" "stderr: $ERR"
 fi
 
 # --------------------------------------------------- the real dillad init ----

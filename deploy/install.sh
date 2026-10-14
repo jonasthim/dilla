@@ -2,14 +2,19 @@
 # Installs dillad on a Debian 13 host, LXC container or VM, as the systemd
 # service of docs/deploy/README.md §3, without Docker. Run it as root.
 #
+# Take this file from a release (releases/download/<tag>/install.sh): the
+# release stamps its own tag into DILLA_RELEASE_TAG below, so it installs that
+# release by default. A copy straight from git is unstamped and needs
+# --version <tag> or --release-url <url>.
+#
 #   behind a TLS-terminating proxy (Pangolin, Traefik, Caddy, nginx):
 #     sh install.sh --behind-proxy --domain chat.example.org \
-#       --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.0/24
+#       --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.5/32 --public-ip 203.0.113.10
 #   reachable from the internet on 443/tcp itself:
 #     sh install.sh --public --domain chat.example.org \
 #       --public-ip 203.0.113.10 --agree-tos
 #   a newer release over an installed instance:
-#     sh install.sh --upgrade
+#     sh install.sh --upgrade --version <tag>
 #
 # stdout carries exactly one thing: the bootstrap invite link, printed once at
 # the end of a first install, so `link=$(sh install.sh ...)` captures it and
@@ -22,17 +27,42 @@
 # directory with stubs for useradd, chown, systemctl and runuser.
 set -eu
 
+# The release this copy installs by default. release.yml rewrites this exact
+# line to the tag it publishes; leave it empty in git.
+DILLA_RELEASE_TAG=""
+
+LINK=""
+LINK_PRINTED=0
+POST_INIT=0
+WORK=""
+
 log() { printf 'install: %s\n' "$*" >&2; }
 die() {
 	log "error: $*"
+	if [ "$POST_INIT" -eq 1 ]; then
+		log "the instance is half-installed: init ran, so its invite link is printed below, once."
+		log "to start over: systemctl disable --now dilla; rm -rf /var/lib/dillad /etc/dilla/dilla.toml; then run install.sh again"
+	fi
 	exit 1
 }
 
+# On any exit after init, the link is printed once: init consumed it, and the
+# database holds only its hash.
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+on_exit() {
+	[ -z "$WORK" ] || rm -rf "$WORK"
+	if [ -n "$LINK" ] && [ "$LINK_PRINTED" -eq 0 ]; then
+		LINK_PRINTED=1
+		printf '%s\n' "$LINK"
+	fi
+}
+trap on_exit EXIT
+
 usage() {
 	cat >&2 <<'USAGE'
-usage: install.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-proxy CIDR... [options]
+usage: install.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-proxy CIDR... (--public-ip IP | --node-ip IP | --no-media-ip) [options]
        install.sh --public --domain NAME --public-ip IP --agree-tos [options]
-       install.sh --upgrade [--version TAG] [--release-url URL] [--binary FILE] [--core FILE] [--sums FILE]
+       install.sh --upgrade [--version TAG] [--release-url URL] [--binary FILE --core FILE --sums FILE]
 
 Installs dillad as the systemd service `dilla`: the user dillad, /usr/local/bin/dillad
 with dilla_core_wasi.wasm beside it, /var/lib/dillad (0700) and /etc/dilla/dilla.toml
@@ -43,24 +73,30 @@ modes (exactly one):
                          TURN stays off
     --domain NAME        the public DNS name of the instance (instance.domain)
     --listen ADDR:PORT   the plain HTTP listener the proxy reaches (server.plain_listen)
-    --trusted-proxy CIDR the proxy's address range; repeatable (server.trusted_proxy_cidrs)
-    --public-ip IP       optional: the address clients reach UDP --udp-port on
-                         (instance.public_ip, and livekit.node_ip unless --node-ip)
+    --trusted-proxy CIDR the proxy's own address, as narrow as you can (a /32);
+                         repeatable (server.trusted_proxy_cidrs)
+    --public-ip IP       the address clients send UDP --udp-port to (with Pangolin, the
+                         Pangolin server's): instance.public_ip, and livekit.node_ip
+                         unless --node-ip
+    --no-media-ip        install without either; calls cannot reach the SFU from
+                         outside this host until livekit.node_ip is set
   --public               dillad terminates TLS on 443/tcp (tls.mode = "acme_tls_alpn")
     --domain NAME        the public DNS name of the instance (instance.domain)
     --public-ip IP       the address clients reach the instance on (instance.public_ip)
     --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
   --upgrade              replace the binary and the core of an installed instance,
-                         restart it and run doctor; never touches the config or the data
+                         restart it and run doctor; never touches the config or the data,
+                         and puts the previous binary and core back if the restart fails
 
 options:
-  --version TAG          the release to install (default: latest)
+  --version TAG          the release to install, e.g. v0.1.0 (default: the tag this copy
+                         was released with; a copy from git has none)
   --release-url URL      where the release assets are downloaded from (default:
-                         https://github.com/jonasthim/dilla/releases/latest/download,
-                         or .../releases/download/TAG with --version TAG)
+                         https://github.com/jonasthim/dilla/releases/download/TAG)
   --binary FILE          use this dillad binary instead of downloading one
   --core FILE            use this dilla_core_wasi.wasm instead of downloading one
-  --sums FILE            check --binary and --core against this SHA256SUMS
+  --sums FILE            the SHA256SUMS to check --binary and --core (and any download) against
+  --insecure-skip-verify install local --binary/--core without a --sums check
   --udp-port N           LiveKit's media port (livekit.udp_port, default 7882)
   --node-ip IP           the address LiveKit advertises for media (livekit.node_ip)
   --check-args           validate the arguments and exit without changing anything
@@ -76,11 +112,13 @@ PUBLIC_IP=""
 AGREE_TOS=0
 LISTEN=""
 TRUSTED=""
-VERSION="latest"
+VERSION=""
 RELEASE_URL=""
 BINARY=""
 CORE=""
 SUMS=""
+INSECURE=0
+NO_MEDIA_IP=0
 UDP_PORT="7882"
 NODE_IP=""
 SET_MODE_FLAGS=""
@@ -104,7 +142,7 @@ while [ "$#" -gt 0 ]; do
 		flag="${flag%%=*}"
 		shift
 		;;
-	--behind-proxy | --public | --agree-tos | --upgrade | --check-args | -h | --help)
+	--behind-proxy | --public | --agree-tos | --upgrade | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
 		shift
 		;;
 	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --sums)
@@ -132,6 +170,11 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--upgrade) UPGRADE=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
+	--insecure-skip-verify) INSECURE=1 ;;
+	--no-media-ip)
+		NO_MEDIA_IP=1
+		saw "$flag"
+		;;
 	--domain)
 		DOMAIN="$value"
 		saw "$flag"
@@ -177,34 +220,59 @@ while [ "$#" -gt 0 ]; do
 done
 
 # ------------------------------------------------------------ validation ----
-# Every value that reaches dilla.toml is checked against a strict character set
-# first: the file is edited as text, and a quote or a newline in a value would
-# be TOML injection.
-valid_ip() {
-	case "$1" in
-	'' | *[!0-9A-Fa-f.:]*) return 1 ;;
-	*.* | *:*) return 0 ;;
-	*) return 1 ;;
-	esac
-}
-valid_port() {
+# Every value that reaches dilla.toml is checked against what dillad itself
+# accepts, and against a strict character set: the file is edited as text, and
+# a quote or a newline in a value would be TOML injection.
+
+# A decimal number without leading zeros (TOML refuses 07882), at most $2.
+valid_uint() {
 	case "$1" in
 	'' | *[!0-9]*) return 1 ;;
+	0) ;;
+	0*) return 1 ;;
 	esac
-	[ "${#1}" -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+	[ "${#1}" -le 6 ] && [ "$1" -le "$2" ]
 }
+valid_ipv4() {
+	case "$1" in
+	*[!0-9.]* | .* | *. | *..*) return 1 ;;
+	esac
+	old_ifs="$IFS"
+	IFS=.
+	# shellcheck disable=SC2086 # split on the dots
+	set -- $1
+	IFS="$old_ifs"
+	[ "$#" -eq 4 ] || return 1
+	for octet in "$@"; do
+		valid_uint "$octet" 255 || return 1
+	done
+}
+valid_ipv6() {
+	case "$1" in
+	'' | *[!0-9A-Fa-f:.]* | *:::*) return 1 ;;
+	*:*:*) ;;
+	*) return 1 ;;
+	esac
+	colons="$(printf '%s' "$1" | tr -cd ':')"
+	[ "${#colons}" -le 7 ] || return 1
+	case "$1" in
+	*::*::*) return 1 ;;
+	*.*) valid_ipv4 "${1##*:}" ;;
+	esac
+}
+valid_ip() { valid_ipv4 "$1" || valid_ipv6 "$1"; }
+valid_port() { valid_uint "$1" 65535 && [ "$1" -ge 1 ]; }
 valid_cidr() {
 	case "$1" in
-	'' | *[!0-9A-Fa-f.:/]* | */*/*) return 1 ;;
+	*/*/* | */) return 1 ;;
 	*/*) ;;
 	*) return 1 ;;
 	esac
-	valid_ip "${1%/*}" || return 1
-	bits="${1#*/}"
-	case "$bits" in
-	'' | *[!0-9]*) return 1 ;;
-	esac
-	[ "${#bits}" -le 3 ] && [ "$bits" -le 128 ]
+	if valid_ipv4 "${1%/*}"; then
+		valid_uint "${1#*/}" 32
+	else
+		valid_ipv6 "${1%/*}" && valid_uint "${1#*/}" 128
+	fi
 }
 valid_listen() {
 	case "$1" in
@@ -230,33 +298,52 @@ else
 		die "choose a mode: --behind-proxy or --public (or --upgrade for an installed instance)"
 	}
 	valid_domain "$DOMAIN" || die "--domain must be a DNS name such as chat.example.org, got \"$DOMAIN\""
-	valid_port "$UDP_PORT" || die "--udp-port must be a port number 1-65535, got \"$UDP_PORT\""
-	[ -z "$NODE_IP" ] || valid_ip "$NODE_IP" || die "--node-ip must be an IPv4 or IPv6 literal, got \"$NODE_IP\""
-	[ -z "$PUBLIC_IP" ] || valid_ip "$PUBLIC_IP" || die "--public-ip must be an IPv4 or IPv6 literal, got \"$PUBLIC_IP\""
+	valid_port "$UDP_PORT" || die "--udp-port must be a port number 1-65535 without leading zeros, got \"$UDP_PORT\""
+	[ -z "$NODE_IP" ] || valid_ip "$NODE_IP" || die "--node-ip must be an IPv4 or IPv6 address, got \"$NODE_IP\""
+	[ -z "$PUBLIC_IP" ] || valid_ip "$PUBLIC_IP" || die "--public-ip must be an IPv4 or IPv6 address, got \"$PUBLIC_IP\""
 	if [ "$MODE" = behind-proxy ]; then
 		[ -n "$LISTEN" ] || die "--behind-proxy needs --listen ADDR:PORT, the plain HTTP listener the proxy reaches"
 		valid_listen "$LISTEN" || die "--listen must be ADDR:PORT such as 0.0.0.0:8080, got \"$LISTEN\""
 		[ -n "$TRUSTED" ] || die "--behind-proxy needs at least one --trusted-proxy CIDR: dillad trusts X-Forwarded-For only from it"
 		for cidr in $TRUSTED; do
-			valid_cidr "$cidr" || die "--trusted-proxy must be a CIDR such as 10.0.0.0/24, got \"$cidr\""
+			valid_cidr "$cidr" || die "--trusted-proxy must be a CIDR such as 10.0.0.5/32, got \"$cidr\""
 		done
 		[ "$AGREE_TOS" -eq 0 ] || die "--agree-tos is for --public: behind a proxy dillad requests no certificate"
+		if [ -z "$PUBLIC_IP" ] && [ -z "$NODE_IP" ] && [ "$NO_MEDIA_IP" -eq 0 ]; then
+			die "--behind-proxy needs --public-ip or --node-ip, the address clients send UDP $UDP_PORT to (with Pangolin, the Pangolin server's); without one, calls cannot reach the SFU from outside this host. Pass --no-media-ip to install without it anyway"
+		fi
 	else
 		[ -z "$LISTEN" ] || die "--listen is for --behind-proxy; --public serves on 443"
 		[ -z "$TRUSTED" ] || die "--trusted-proxy is for --behind-proxy; a direct listener must not honour X-Forwarded-For"
+		[ "$NO_MEDIA_IP" -eq 0 ] || die "--no-media-ip is for --behind-proxy; --public needs --public-ip"
 		[ -n "$PUBLIC_IP" ] || die "--public needs --public-ip, the address clients reach the instance on"
 		[ "$AGREE_TOS" -eq 1 ] || die "--public needs --agree-tos: tls.agreed records your acceptance of the ACME CA's subscriber agreement, and this script has no standing to accept it for you"
 	fi
 fi
-case "$VERSION" in
-'' | *[!A-Za-z0-9.+_-]*) die "--version must be a release tag such as v1.0.0 or latest, got \"$VERSION\"" ;;
-esac
-if [ -z "$RELEASE_URL" ]; then
-	if [ "$VERSION" = latest ]; then
-		RELEASE_URL="https://github.com/jonasthim/dilla/releases/latest/download"
-	else
-		RELEASE_URL="https://github.com/jonasthim/dilla/releases/download/$VERSION"
-	fi
+
+# Where the binary and the core come from, and how they are checked. A file
+# that is downloaded is always checked; a local file is checked against
+# --sums, or installed unchecked only with --insecure-skip-verify.
+DOWNLOAD=0
+[ -n "$BINARY" ] || DOWNLOAD=1
+[ -n "$CORE" ] || DOWNLOAD=1
+if [ -n "$BINARY$CORE" ] && [ -z "$SUMS" ] && [ "$INSECURE" -eq 0 ]; then
+	die "--binary and --core are checked against a SHA256SUMS: pass --sums FILE, or --insecure-skip-verify to install them unchecked"
+fi
+
+[ -n "$VERSION" ] || VERSION="$DILLA_RELEASE_TAG"
+if [ -n "$VERSION" ]; then
+	case "$VERSION" in
+	v[0-9]*) ;;
+	*) die "--version must be a release tag such as v0.1.0, got \"$VERSION\"" ;;
+	esac
+	case "$VERSION" in
+	*[!A-Za-z0-9.+_-]*) die "--version must be a release tag such as v0.1.0, got \"$VERSION\"" ;;
+	esac
+fi
+if [ -z "$RELEASE_URL" ] && [ "$DOWNLOAD" -eq 1 ]; then
+	[ -n "$VERSION" ] || die "this install.sh is not from a release, so it has no default version: pass --version <tag> (see https://github.com/jonasthim/dilla/releases) or --release-url <url>"
+	RELEASE_URL="https://github.com/jonasthim/dilla/releases/download/$VERSION"
 fi
 
 [ "$CHECK_ARGS" -eq 0 ] || exit 0
@@ -295,7 +382,6 @@ elif [ "$INSTALLED" -eq 1 ]; then
 fi
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 # ------------------------------------------------------------- artefacts ----
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -324,52 +410,59 @@ fetch() { # URL OUT
 	fi
 }
 
-DOWNLOAD=0
-[ -n "$BINARY" ] || DOWNLOAD=1
-[ -n "$CORE" ] || DOWNLOAD=1
 if [ "$DOWNLOAD" -eq 1 ]; then
 	ensure_download_tools
 fi
 
+# CHECK holds the names that must match SHA256SUMS; UNCHECKED the local files
+# that --insecure-skip-verify lets through.
+CHECK=""
+UNCHECKED=""
 if [ -n "$BINARY" ]; then
 	[ -s "$BINARY" ] || die "the dillad binary $BINARY is missing or empty"
 	cp "$BINARY" "$WORK/$BIN_NAME"
+	if [ -n "$SUMS" ]; then CHECK="$CHECK $BIN_NAME"; else UNCHECKED="$UNCHECKED $BIN_NAME"; fi
 else
 	log "downloading $BIN_NAME from $RELEASE_URL"
 	fetch "$RELEASE_URL/$BIN_NAME" "$WORK/$BIN_NAME"
+	CHECK="$CHECK $BIN_NAME"
 fi
 if [ -n "$CORE" ]; then
 	[ -s "$CORE" ] || die "the wasi core $CORE is missing or empty"
 	cp "$CORE" "$WORK/$CORE_NAME"
+	if [ -n "$SUMS" ]; then CHECK="$CHECK $CORE_NAME"; else UNCHECKED="$UNCHECKED $CORE_NAME"; fi
 else
 	log "downloading $CORE_NAME from $RELEASE_URL"
 	fetch "$RELEASE_URL/$CORE_NAME" "$WORK/$CORE_NAME"
+	CHECK="$CHECK $CORE_NAME"
 fi
 
-# Downloaded files are always checked against the release's SHA256SUMS; local
-# files are checked when --sums names a SHA256SUMS for them.
-if [ -n "$SUMS" ]; then
-	[ -s "$SUMS" ] || die "--sums $SUMS is missing or empty"
-	cp "$SUMS" "$WORK/SHA256SUMS"
-elif [ "$DOWNLOAD" -eq 1 ]; then
-	log "downloading SHA256SUMS from $RELEASE_URL"
-	fetch "$RELEASE_URL/SHA256SUMS" "$WORK/SHA256SUMS"
-fi
-if [ -s "$WORK/SHA256SUMS" ]; then
+if [ -n "$CHECK" ]; then
+	if [ -n "$SUMS" ]; then
+		[ -f "$SUMS" ] || die "--sums $SUMS does not exist"
+		cp "$SUMS" "$WORK/SHA256SUMS"
+	else
+		log "downloading SHA256SUMS from $RELEASE_URL"
+		fetch "$RELEASE_URL/SHA256SUMS" "$WORK/SHA256SUMS"
+	fi
+	# An empty or short SHA256SUMS refuses: verification is decided by where the
+	# files came from, never by what the SHA256SUMS file happens to hold.
+	[ -s "$WORK/SHA256SUMS" ] || die "SHA256SUMS is empty; refusing to install unverified files"
 	# Exactly one line per asset, by exact name, so a SHA256SUMS that leaves one
 	# out cannot pass for both.
 	: >"$WORK/check.sums"
-	for name in "$BIN_NAME" "$CORE_NAME"; do
+	for name in $CHECK; do
 		awk -v n="$name" '($2 == n || $2 == "*" n) && $1 ~ /^[0-9a-f]+$/ && length($1) == 64' "$WORK/SHA256SUMS" >"$WORK/line"
 		[ "$(wc -l <"$WORK/line")" -eq 1 ] || die "SHA256SUMS does not hold exactly one SHA-256 line for $name; refusing to install unverified files"
 		cat "$WORK/line" >>"$WORK/check.sums"
 	done
 	if ! (cd "$WORK" && sha256sum -c --strict --quiet check.sums) >&2; then
-		die "checksum mismatch: the downloaded files do not match SHA256SUMS; nothing was installed"
+		die "checksum mismatch: the files do not match SHA256SUMS; nothing was installed"
 	fi
-	log "verified $BIN_NAME and $CORE_NAME against SHA256SUMS"
-else
-	log "warning: no SHA256SUMS for the local --binary and --core; they are installed unverified (pass --sums to check them)"
+	log "verified$CHECK against SHA256SUMS"
+fi
+if [ -n "$UNCHECKED" ]; then
+	log "warning: --insecure-skip-verify: installing$UNCHECKED unverified"
 fi
 
 # Installs a file next to its destination and renames it over, so a running
@@ -379,10 +472,14 @@ put() { # SRC DEST MODE
 	mv -f "$2.new" "$2"
 }
 
-doctor_and_report() {
-	log "running dillad doctor"
+run_doctor() {
 	DOCTOR_RC=0
 	DOCTOR_OUT="$(runuser -u dillad -- "$BIN_DIR/dillad" doctor --config="$CONF" 2>&1)" || DOCTOR_RC=$?
+}
+
+doctor_and_report() {
+	log "running dillad doctor"
+	run_doctor
 	printf '%s\n' "$DOCTOR_OUT" | sed 's/^/  /' >&2
 	# Legs that need DNS for the domain, outbound HTTPS, the proxy or the UDP
 	# forward: red until those exist, which is expected on a fresh install.
@@ -406,12 +503,24 @@ doctor_and_report() {
 # ---------------------------------------------------------------- upgrade ----
 if [ "$UPGRADE" -eq 1 ]; then
 	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME"
+	# The previous pair stays beside the new one, for the rollback below and by hand.
+	cp -p "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"
+	cp -p "$BIN_DIR/$CORE_NAME" "$BIN_DIR/$CORE_NAME.prev"
 	put "$WORK/$BIN_NAME" "$BIN_DIR/dillad" 0755
 	put "$WORK/$CORE_NAME" "$BIN_DIR/$CORE_NAME" 0644
 	log "restarting dilla"
-	systemctl restart dilla >&2 || die "dilla did not restart; read its log with: journalctl -o cat -u dilla"
+	if ! systemctl restart dilla >&2; then
+		log "error: dilla did not restart with the new binary; putting the previous binary and core back"
+		put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
+		put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
+		if systemctl restart dilla >&2; then
+			die "the upgrade failed and was rolled back; the previous release is running. Read why with: journalctl -o cat -u dilla"
+		fi
+		die "the upgrade failed and was rolled back, but dilla did not start with the previous binary either; read its log with: journalctl -o cat -u dilla"
+	fi
 	doctor_and_report || exit 1
-	log "upgrade done"
+	log "upgrade done; the previous binary and core are kept as $BIN_DIR/dillad.prev and $CORE_NAME.prev"
+	log "an upgrade does not rewrite /etc/systemd/system/dilla.service; compare it with the release's deploy/dilla.service"
 	exit 0
 fi
 
@@ -501,6 +610,7 @@ LINK="$(printf '%s\n' "$INIT_OUT" | sed -n 's|^bootstrap invite.*: \(https://[^ 
 # Everything init printed except the link itself, which has one destination.
 printf '%s\n' "$INIT_OUT" | grep -v '^bootstrap invite' >&2 || :
 [ -n "$LINK" ] || die "dillad init did not print a bootstrap invite link"
+POST_INIT=1
 
 # toml_set TABLE KEY VALUE: replaces the value of KEY in [TABLE] of the file
 # init wrote. VALUE is TOML text; its characters were validated above.
@@ -516,7 +626,7 @@ toml_set() {
 		}
 		{ print }
 		END { if (!found) exit 3 }
-	' "$DATA_DIR/dilla.toml" >"$WORK/dilla.toml" || die "dilla.toml has no $2 in [$1]; this dillad's init writes a layout this script does not know"
+	' "$DATA_DIR/dilla.toml" >"$WORK/dilla.toml" || die "dilla.toml has no $2 in [$1]; this dillad's init writes a layout this install.sh does not know (use the install.sh of the same release)"
 	cat "$WORK/dilla.toml" >"$DATA_DIR/dilla.toml"
 }
 
@@ -550,6 +660,15 @@ rm -f "$DATA_DIR/dilla.toml"
 chown -R dillad:dillad "$DATA_DIR"
 chmod 0700 "$DATA_DIR"
 
+# The edited file passes dillad's own config check (strict decoding plus
+# Validate) before the unit is enabled, so a bad value never reaches a start loop.
+log "checking dilla.toml"
+run_doctor
+if ! printf '%s\n' "$DOCTOR_OUT" | grep -q '^OK  *config '; then
+	printf '%s\n' "$DOCTOR_OUT" | grep '^FAIL  *config ' >&2 || printf '%s\n' "$DOCTOR_OUT" | sed 's/^/  /' >&2
+	die "dillad refuses the edited /etc/dilla/dilla.toml; the service was not started"
+fi
+
 log "starting the service"
 STATUS=0
 if systemctl daemon-reload >&2 && systemctl enable --now dilla >&2; then
@@ -577,6 +696,8 @@ if [ "$MODE" = behind-proxy ]; then
 		log "     send $UDP_PORT/udp to (the Pangolin server's), then systemctl restart dilla. Until"
 		log "     then calls cannot reach the SFU from outside this host."
 	fi
+	log "  Only the proxy's own address belongs in --trusted-proxy: any host in that range can set"
+	log "  X-Forwarded-For and pick the address dillad rate-limits it by."
 	log "  TURN is off (tls.mode = behind_proxy): a member behind a UDP-blocking network cannot join calls."
 else
 	log ""
@@ -590,5 +711,6 @@ log "the bootstrap invite link is the line on stdout; it is valid for 24 hours, 
 
 # The link is printed once, even when the service failed to start: the invite
 # stays valid for 24 hours and cannot be shown again.
+LINK_PRINTED=1
 printf '%s\n' "$LINK"
 exit "$STATUS"

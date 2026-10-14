@@ -30,7 +30,9 @@ required (default mode):
 behind a TLS-terminating proxy:
   --behind-proxy       install.sh --behind-proxy: tls.mode = "behind_proxy", TURN off
   --listen ADDR:PORT   the plain HTTP listener the proxy reaches
-  --trusted-proxy CIDR the proxy's address range; repeatable
+  --trusted-proxy CIDR the proxy's own address (a /32); repeatable
+  --public-ip IP       the address clients send UDP 7882 to (or --node-ip IP,
+                       or --no-media-ip to install without one)
 
 container options:
   --ctid N             container id (default: the next free id)
@@ -40,12 +42,14 @@ container options:
   --template-storage N storage that holds the Debian template (default: local)
 
 passed to install.sh:
-  --version TAG        the release to install (default: latest)
+  --version TAG        the release to install (default: the tag stamped into the
+                       install.sh beside this script; a copy from git has none)
   --release-url URL    where dillad-linux-<arch>, dilla_core_wasi.wasm and
-                       SHA256SUMS are downloaded from (default: the latest release)
+                       SHA256SUMS are downloaded from (default: releases/download/TAG)
   --binary PATH        use this dillad binary instead of downloading one
   --core PATH          use this dilla_core_wasi.wasm instead of downloading one
   --sums PATH          check --binary and --core against this SHA256SUMS
+  --insecure-skip-verify  install local --binary/--core without a --sums check
   --udp-port N         LiveKit's media port (default 7882)
   --node-ip IP         the address LiveKit advertises for media
 USAGE
@@ -74,7 +78,7 @@ while [ "$#" -gt 0 ]; do
 		flag="${flag%%=*}"
 		shift
 		;;
-	--agree-tos | --behind-proxy | -h | --help)
+	--agree-tos | --behind-proxy | --insecure-skip-verify | --no-media-ip | -h | --help)
 		shift
 		;;
 	--*)
@@ -97,7 +101,7 @@ while [ "$#" -gt 0 ]; do
 	--core) CORE="$value" ;;
 	--sums) SUMS="$value" ;;
 	--behind-proxy) BEHIND_PROXY=1 ;;
-	--agree-tos) INSTALL_ARGS+=(--agree-tos) ;;
+	--agree-tos | --insecure-skip-verify | --no-media-ip) INSTALL_ARGS+=("$flag") ;;
 	--release-url)
 		RELEASE_URL="${value%/}"
 		INSTALL_ARGS+=("--release-url=$RELEASE_URL")
@@ -132,9 +136,33 @@ SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 INSTALLER="$SCRIPT_DIR/install.sh"
 [ -f "$INSTALLER" ] || die "install.sh is not next to this script ($INSTALLER)"
 
-# install.sh validates the mode's arguments here, before a container exists.
-"$BASH" "$INSTALLER" "$MODE_ARG" "${INSTALL_ARGS[@]}" --check-args ||
+# Local files are pushed to these paths in the container.
+FILE_ARGS=()
+[ -z "$BINARY" ] || FILE_ARGS+=(--binary=/root/dilla-install/dillad)
+[ -z "$CORE" ] || FILE_ARGS+=(--core=/root/dilla-install/dilla_core_wasi.wasm)
+[ -z "$SUMS" ] || FILE_ARGS+=(--sums=/root/dilla-install/SHA256SUMS)
+
+# install.sh validates the arguments here, before a container exists.
+"$BASH" "$INSTALLER" "$MODE_ARG" "${INSTALL_ARGS[@]}" "${FILE_ARGS[@]}" --check-args ||
 	die "install.sh refused the arguments above; nothing was created"
+
+# The tag a release stamped into install.sh, unless --version overrides it.
+VERSION=""
+while IFS= read -r line; do
+	case "$line" in
+	DILLA_RELEASE_TAG=\"*\")
+		VERSION="${line#DILLA_RELEASE_TAG=\"}"
+		VERSION="${VERSION%\"}"
+		;;
+	esac
+done <"$INSTALLER"
+UDP_PORT=7882
+for a in "${INSTALL_ARGS[@]}"; do
+	case "$a" in
+	--version=*) VERSION="${a#--version=}" ;;
+	--udp-port=*) UDP_PORT="${a#--udp-port=}" ;;
+	esac
+done
 
 if [ -z "$CTID" ]; then
 	if command -v pvesh >/dev/null 2>&1; then
@@ -156,10 +184,8 @@ done
 # Whatever is not local is downloaded inside the container; a release URL that
 # does not answer fails here, before a container exists.
 if [ -z "$BINARY" ] || [ -z "$CORE" ]; then
-	probe="${RELEASE_URL:-https://github.com/jonasthim/dilla/releases/latest/download}"
-	for a in "${INSTALL_ARGS[@]}"; do
-		case "$a" in --version=latest) ;; --version=*) [ -n "$RELEASE_URL" ] || probe="https://github.com/jonasthim/dilla/releases/download/${a#--version=}" ;; esac
-	done
+	# install.sh --check-args has refused a download with neither a version nor a URL.
+	probe="${RELEASE_URL:-https://github.com/jonasthim/dilla/releases/download/$VERSION}"
 	log "checking $probe/SHA256SUMS"
 	curl -fsSL -o /dev/null "$probe/SHA256SUMS" >&2 || die "the release at $probe does not answer; nothing was created"
 fi
@@ -186,6 +212,13 @@ pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" \
 	--net0 "name=eth0,bridge=$BRIDGE,ip=dhcp" \
 	--onboot 1 \
 	--ostype debian >&2
+# From here on a failure leaves a container behind; say how to remove it.
+CREATED_OK=0
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+on_exit() {
+	[ "$CREATED_OK" -eq 1 ] || log "container $CTID was created but the install did not finish; to remove it: pct stop $CTID; pct destroy $CTID"
+}
+trap on_exit EXIT
 log "starting container $CTID"
 pct start "$CTID" >&2
 pct exec "$CTID" -- systemctl is-system-running --wait >/dev/null 2>&1 || true
@@ -193,19 +226,9 @@ pct exec "$CTID" -- systemctl is-system-running --wait >/dev/null 2>&1 || true
 log "pushing install.sh into the container"
 pct exec "$CTID" -- install -d -m 0700 /root/dilla-install >&2
 pct push "$CTID" "$INSTALLER" /root/dilla-install/install.sh --perms 0700 >&2
-FILE_ARGS=()
-if [ -n "$BINARY" ]; then
-	pct push "$CTID" "$BINARY" /root/dilla-install/dillad --perms 0755 >&2
-	FILE_ARGS+=(--binary=/root/dilla-install/dillad)
-fi
-if [ -n "$CORE" ]; then
-	pct push "$CTID" "$CORE" /root/dilla-install/dilla_core_wasi.wasm --perms 0644 >&2
-	FILE_ARGS+=(--core=/root/dilla-install/dilla_core_wasi.wasm)
-fi
-if [ -n "$SUMS" ]; then
-	pct push "$CTID" "$SUMS" /root/dilla-install/SHA256SUMS --perms 0644 >&2
-	FILE_ARGS+=(--sums=/root/dilla-install/SHA256SUMS)
-fi
+[ -z "$BINARY" ] || pct push "$CTID" "$BINARY" /root/dilla-install/dillad --perms 0755 >&2
+[ -z "$CORE" ] || pct push "$CTID" "$CORE" /root/dilla-install/dilla_core_wasi.wasm --perms 0644 >&2
+[ -z "$SUMS" ] || pct push "$CTID" "$SUMS" /root/dilla-install/SHA256SUMS --perms 0644 >&2
 
 log "running install.sh in container $CTID"
 STATUS=0
@@ -217,9 +240,15 @@ printf '%s\n' "$OUT" | grep -v '^https://' >&2 || true
 pct exec "$CTID" -- rm -rf /root/dilla-install >&2 || log "warning: could not remove /root/dilla-install from the container"
 
 if [ "$STATUS" -ne 0 ]; then
-	log "error: install.sh failed (exit $STATUS); read the service log with: pct exec $CTID -- journalctl -o cat -u dilla"
+	log "error: install.sh failed (exit $STATUS); its own error is in the lines above. If the service was installed, its log is: pct exec $CTID -- journalctl -o cat -u dilla"
+else
+	CREATED_OK=1
 fi
-log "forward 443/tcp (or your proxy's route) and 7882/udp from the host to container $CTID; a NATed container keeps turn.relay_ip = \"auto\""
+if [ "$BEHIND_PROXY" -eq 1 ]; then
+	log "route your proxy to container $CTID's --listen port, and forward $UDP_PORT/udp to it"
+else
+	log "forward 443/tcp and $UDP_PORT/udp from the host to container $CTID; a NATed container keeps turn.relay_ip = \"auto\""
+fi
 # The link is printed once and is stored nowhere: the database holds only its
 # SHA-256. It is printed even when the install failed, because the invite stays
 # valid for 24 hours and cannot be shown again.

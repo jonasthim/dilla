@@ -55,7 +55,7 @@ func TestTheProxmoxHelperRefusesAnExistingContainer(t *testing.T) {
 	bin := t.TempDir()
 	writeStub(t, bin, bash, "id", "echo 0")
 	writeStub(t, bin, bash, "pct", "exit 0") // `pct status 101` succeeds: the CTID is taken
-	cmd := exec.CommandContext(t.Context(), bash, "proxmox-lxc.sh", "--ctid=101", "--domain=chat.example.org", "--public-ip=192.0.2.10", "--agree-tos")
+	cmd := exec.CommandContext(t.Context(), bash, "proxmox-lxc.sh", "--ctid=101", "--domain=chat.example.org", "--public-ip=192.0.2.10", "--agree-tos", "--version=v0.1.0")
 	cmd.Env = []string{"PATH=" + bin}
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -113,7 +113,7 @@ esac`)
 		}
 	}
 	cmd := exec.CommandContext(t.Context(), bash, "proxmox-lxc.sh", "--domain=chat.example.org", "--public-ip=192.0.2.10",
-		"--agree-tos", "--binary="+binary, "--core="+core)
+		"--agree-tos", "--insecure-skip-verify", "--binary="+binary, "--core="+core)
 	cmd.Env = []string{"PATH=" + bin}
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -132,7 +132,7 @@ esac`)
 	}
 	for _, want := range []string{
 		"pct push 4242 " + filepath.Join(mustAbs(t, "."), "install.sh") + " /root/dilla-install/install.sh",
-		"pct exec 4242 -- sh /root/dilla-install/install.sh --public --domain=chat.example.org --public-ip=192.0.2.10 --agree-tos --binary=/root/dilla-install/dillad --core=/root/dilla-install/dilla_core_wasi.wasm",
+		"pct exec 4242 -- sh /root/dilla-install/install.sh --public --domain=chat.example.org --public-ip=192.0.2.10 --agree-tos --insecure-skip-verify --binary=/root/dilla-install/dillad --core=/root/dilla-install/dilla_core_wasi.wasm",
 	} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("pct was never called as %q; calls:\n%s", want, log)
