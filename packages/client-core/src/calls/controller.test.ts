@@ -1637,6 +1637,19 @@ describe('a hand-over is not held up by call work (wb-client m5)', () => {
   });
 });
 
+describe('a room that ended on its own (wb-client I3)', () => {
+  it("callLeave 'lost' leaves as a person's leave and ends in phase removed with E_DISCONNECTED", async () => {
+    const w = await joined();
+    expect(await w.call({ m: 'callLeave', reason: 'lost' })).toBeNull();
+    expect(w.server.routes()).toContain('POST proposal');
+    expect(w.model.group(w.callGroup)?.state).toBe(4);
+    expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, error: { code: 'E_DISCONNECTED' } });
+    // A join is offered again from there.
+    await w.call(JOIN(w));
+    expect(w.slice('call').phase).toBe('in');
+  });
+});
+
 describe('a ring follows whether this device is busy (wb-client m6)', () => {
   it('a ring that arrived during a call is no longer busy once the call is left, and busy again in the next', async () => {
     const w = await joined({ dm: true });

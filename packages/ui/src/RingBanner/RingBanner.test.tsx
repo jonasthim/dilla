@@ -35,6 +35,18 @@ describe('RingBanner', () => {
     expect(region.querySelector('[data-ring="busy"]')).not.toBeNull();
   });
 
+  // WB a11y m3: declining (or answering) one of two rings removes only its row; focus goes to the next ring's answer,
+  // never to the page.
+  it('a ring that goes while focus is in it hands focus to the next ring\'s answer', async () => {
+    const a = { callId: 'a', text: 'ada is calling', busy: false };
+    const b = { callId: 'b', text: 'bo is calling', busy: false };
+    const { rerender } = render(<RingBanner rings={[a, b]} labels={ringLabels} onAnswer={() => {}} onDecline={() => {}} />);
+    within(screen.getAllByRole('listitem')[0]).getByRole('button', { name: 'decline' }).focus();
+    rerender(<RingBanner rings={[b]} labels={ringLabels} onAnswer={() => {}} onDecline={() => {}} />);
+    expect(screen.getByRole('button', { name: 'answer' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'answer' })).toHaveAccessibleDescription('bo is calling');
+  });
+
   it('keeps an alert node across rerenders, so it is announced once, and renders nothing without rings', () => {
     const ring = { callId: 'c', text: 'bob is calling', busy: false };
     const { rerender, container } = render(<RingBanner rings={[ring]} labels={ringLabels} onAnswer={() => {}} onDecline={() => {}} />);

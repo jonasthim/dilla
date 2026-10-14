@@ -9,7 +9,7 @@ const dock: VoiceDockProps = {
   phase: 'connected', where: 'harbour', muted: false, deafened: false, announcement: '',
   labels: {
     region: 'voice controls', connecting: 'connecting', connected: 'in {where}', reconnecting: 'reconnecting', paused: 'paused in {where}',
-    mute: 'mute', unmute: 'unmute', deafen: 'deafen', undeafen: 'undeafen', leave: 'leave',
+    mute: 'mute', deafen: 'deafen', leave: 'leave',
   },
   onMute: () => {}, onDeafen: () => {}, onLeave: () => {},
 };
@@ -41,7 +41,7 @@ describe('VoiceDock', () => {
     expect(within(bar).getByRole('button', { name: 'deafen' })).toHaveFocus();
   });
 
-  it('says where it is per phase, and the toggles say what they do next', async () => {
+  it('says where it is per phase, and the toggles keep their labels (WB a11y I4)', async () => {
     const onMute = vi.fn();
     const onDeafen = vi.fn();
     const onLeave = vi.fn();
@@ -53,8 +53,9 @@ describe('VoiceDock', () => {
     expect([onMute.mock.calls.length, onDeafen.mock.calls.length, onLeave.mock.calls.length]).toEqual([1, 1, 1]);
     rerender(<VoiceDock {...dock} phase="paused" muted deafened />);
     expect(screen.getByText('paused in harbour')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'unmute' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'undeafen' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'deafen' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('unmute')).toBeNull();
     rerender(<VoiceDock {...dock} phase="connecting" />);
     expect(screen.getByText('connecting')).toBeInTheDocument();
     rerender(<VoiceDock {...dock} phase="reconnecting" />);
@@ -63,7 +64,7 @@ describe('VoiceDock', () => {
 
   it('mute and deafen are pressed toggles that carry their shortcuts (M4, M5)', () => {
     render(<VoiceDock {...dock} muted />);
-    const mute = screen.getByRole('button', { name: 'unmute' });
+    const mute = screen.getByRole('button', { name: 'mute' });
     expect(mute).toHaveAttribute('aria-pressed', 'true');
     expect(mute).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
     expect(screen.getByRole('button', { name: 'deafen' })).toHaveAttribute('aria-pressed', 'false');

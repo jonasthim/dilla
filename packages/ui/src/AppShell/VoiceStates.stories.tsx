@@ -50,24 +50,23 @@ const tile = (view: VoiceParticipantView, own = false): CallTileProps => ({
 const STAGE_LABELS = { code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') };
 const CODE = '123451234512345123451234512345';
 
-function controls(p: { paused?: boolean; busy?: boolean } = {}) {
+function controls(p: { paused?: boolean; busy?: boolean; dm?: boolean } = {}) {
   return (
     <CallControls muted={false} deafened={false} camera={false} sharing={false} canCamera={p.paused !== true} canShare={p.paused !== true}
       busy={p.busy === true}
-      labels={{ region: t('voice.controls.region'), mute: t('voice.mute'), unmute: t('voice.unmute'), deafen: t('voice.deafen'),
-        undeafen: t('voice.undeafen'), cameraOn: t('voice.cameraOn'), cameraOff: t('voice.cameraOff'), shareOn: t('voice.shareOn'),
-        shareOff: t('voice.shareOff'), leave: t('voice.leave') }}
+      labels={{ region: t(p.dm === true ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave') }}
       onMute={noop} onDeafen={noop} onCamera={noop} onShare={noop} onLeave={noop} />
   );
 }
 
-function dock(phase: 'connected' | 'paused') {
+function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', announcement = '') {
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
-      <VoiceDock phase={phase} where="harbour" muted={false} deafened={false} announcement=""
+      <VoiceDock phase={phase} where="harbour" muted={false} deafened={false} announcement={announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
-          reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'), unmute: t('voice.unmute'),
-          deafen: t('voice.deafen'), undeafen: t('voice.undeafen'), leave: t('voice.leave') }}
+          reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
+          deafen: t('voice.deafen'), leave: t('voice.leave') }}
         meter={<AudioMeter level={6} label={t('settings.voice.level')} />} onMute={noop} onDeafen={noop} onLeave={noop} />
     </div>
   );
@@ -81,7 +80,7 @@ const ring = (busy: boolean) => (
 );
 
 function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paused?: boolean; tab?: 'channels' | 'dms'; composer?: ReactNode;
-  ring?: ReactNode }) {
+  ring?: ReactNode; dock?: ReactNode }) {
   const tab = p.tab ?? 'channels';
   const live = [{ id: 'harbour', name: 'harbour', current: tab === 'channels', joined: p.joined === true, participants: [ADA, BO, HELPER] }];
   return (
@@ -112,7 +111,7 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
                 </ul>
               </section>
             ) : <Button variant="ghost">{t('shell.dms.new')}</Button>} />
-          {p.joined === true ? dock(p.paused === true ? 'paused' : 'connected') : null}
+          {p.joined === true ? p.dock ?? dock(p.paused === true ? 'paused' : 'connected') : null}
         </div>}
         header={p.header ?? null}
         composer={p.composer ?? null}
@@ -128,12 +127,12 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
   );
 }
 
-const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgoing?: string; title?: string; joined?: boolean; paused?: boolean }) => (
+const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgoing?: string; title?: string; joined?: boolean; paused?: boolean; dm?: boolean }) => (
   <div className="dw-voice-stage" data-doc-state={p.notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage'}>
     <CallStage title={p.title ?? t('voice.open', { name: 'harbour' })}
       tiles={p.joined === false ? [tile(ADA), tile(BO), tile(HELPER)] : [tile(person('you'), true), tile(ADA), tile(BO), tile(HELPER)]}
       code={p.code ?? null} notice={p.notice ?? null} outgoing={p.outgoing !== undefined ? { text: p.outgoing } : null}
-      controls={p.joined === false ? <Button variant="accent">{t('voice.join')}</Button> : controls({ paused: p.paused })} labels={STAGE_LABELS} />
+      controls={p.joined === false ? <Button variant="accent">{t('voice.join')}</Button> : controls({ paused: p.paused, dm: p.dm })} labels={STAGE_LABELS} />
   </div>
 );
 
@@ -177,10 +176,40 @@ export const DmCallRinging: Story = {
   render: () => <Screen tab="dms" joined header={<ChannelHeader kind="dm" name="bob" />} composer={composer}
     main={<><div className="dw-dm-call" data-view="stage">
       <div className="dw-dm-call__bar"><Button pressed={false}>{t('voice.messages')}</Button></div>
-      {stage({ title: 'bob', outgoing: t('call.outgoing.ringing', { names: 'bob' }), code: null })}
+      {stage({ title: 'bob', outgoing: t('call.outgoing.ringing', { names: 'bob' }), code: null, dm: true })}
     </div><div className="dw-conversation">{dmLog}</div></>} />,
 };
 export const DmIncomingRing: Story = {
   render: () => <Screen tab="dms" ring={ring(false)} header={<ChannelHeader kind="dm" name="bob" />} composer={composer}
     main={<><div className="dw-call-strip"><Button className="dw-call-strip__start">{t('call.start')}</Button></div>{dmLog}</>} />,
 };
+
+// WB a11y m8: the rest of flow 06's states as screens.
+const infoNotice = (key: Parameters<typeof t>[0]): CallStageNotice => ({ kind: 'info', text: t(key), action: null, focusOnce: false });
+/** A failed join: the stage shows the notice and the join button again. */
+export const JoinFailed: Story = { render: () => <Screen main={stage({ joined: false, notice: infoNotice('voice.failed') })} /> };
+/** The connection was lost (WB client I3): the notice where the stage was, the join offered again. */
+export const Disconnected: Story = { render: () => <Screen main={stage({ joined: false, notice: infoNotice('voice.disconnected') })} /> };
+/** The hold after a refused rekey (WB security I1). */
+export const Held: Story = {
+  render: () => <Screen joined paused main={stage({ paused: true, notice: { kind: 'paused', text: t('voice.held'), focusOnce: false, action: null } })} />,
+};
+/** Reconnecting: the dock says so; the tiles keep their last state. */
+export const Reconnecting: Story = { render: () => <Screen joined dock={dock('reconnecting')} main={stage({ code: CODE })} /> };
+/** Rejoining: the dock stays at connecting and its status says why, once. */
+export const Rejoining: Story = {
+  render: () => <Screen joined dock={dock('connecting', t('voice.announce.rejoining', { where: 'harbour' }))} main={stage({ code: null })} />,
+};
+/** The phone DM call with `messages` pressed: the log and composer in the stage's place (flow 06 § 360×740). */
+export const DmCallMessages: Story = {
+  render: () => <Screen tab="dms" joined header={<ChannelHeader kind="dm" name="bob" />} composer={composer}
+    main={<><div className="dw-dm-call" data-view="messages">
+      <div className="dw-dm-call__bar"><Button pressed>{t('voice.messages')}</Button></div>
+      {stage({ title: 'bob', code: null, dm: true })}
+    </div><div className="dw-conversation">{dmLog}</div></>} />,
+};
+/** An info notice at 360 CSS px. */
+export const InfoPhone: Story = {
+  render: () => <div style={{ width: 360 }}><Screen main={stage({ joined: false, notice: infoNotice('voice.full') })} /></div>,
+};
+

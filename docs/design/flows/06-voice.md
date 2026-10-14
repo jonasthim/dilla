@@ -20,6 +20,7 @@ The media key never appears in this flow: the browser derives it in the core wor
 | paused mid-call (RV-3) | banner `voice.paused` on the stage and the dock with its `voice.pausedAction` button; dock says `voice.dock.paused`; tiles show no media, only names and state words; camera and share buttons `aria-disabled` | `call.phase` paused, `call.error.code` E_UMK_CHANGED, `call.changedUser` the changed contact, still in the group and the room, no keys posted | the banner (`role="status"`; focus moves to its button once); `voice.resumed` when it ends |
 | held mid-call (added 2026-10-14, WB security I1) | banner `voice.held` on the stage and the dock, no action; otherwise as paused; the page drops its media keys | `call.phase` paused, `call.error.code` other than E_UMK_CHANGED (E_DEVICE_LIST_STALE, or the core's code for any other refusal of a new epoch), `call.changedUser` null; no key posted until the current epoch's | the banner (`role="status"`); `voice.resumed` when it ends |
 | removed | `voice.removed`; the dock goes away | `call.phase` removed | the notice |
+| connection lost or call ended (added 2026-10-14, WB client I3) | `voice.disconnected` when LiveKit's connection ended and its reconnect gave up, `voice.ended` when the room was closed (the call ended for everyone), `voice.removed` when the instance removed this device from the room; the dock and the stage's controls go away | the page posts `callLeave` with reason `lost`; `call.phase` removed with `call.error.code` E_DISCONNECTED | the notice, in the stage's region when the stage shows, else in the status region that outlives the dock |
 | full | `voice.full` (or `voice.sharersFull` when the camera or share is refused) | `call.error.code` E_CALL_FULL / E_CALL_SHARERS_FULL | the notice |
 | failed | `voice.failed` with the join button available again | `call.phase` failed (also E_DEVICE_LIST_STALE after one refresh, RV-1) | the notice |
 | microphone denied | `voice.micDenied`; joined listen-only | `getUserMedia` NotAllowedError | the notice |
@@ -172,7 +173,7 @@ Amended 2026-10-13 (task-9 review): the toggle is `voice.messages`, a pressed to
 | into a toolbar | Tab | the toolbar's last-focused control, then out on the next Tab |
 | `voice.code` disclosure | Enter/Space | opens or closes; Escape closes and returns focus to it |
 | unsupported dialog | Escape | closes; focus returns to the join button |
-| push-to-talk capture prompt (`settings.voice.pttPrompt`) | one non-text key on its own: F13–F24, Pause, ScrollLock or Insert | that key is saved; any other key, and any key held with Control, Alt, ⌘, Shift or AltGr, is refused with `settings.voice.pttRefused` and the capture goes on; Escape cancels; Tab leaves and cancels |
+| push-to-talk capture prompt (`settings.voice.pttPrompt`) | one non-text key on its own: F13–F24, Pause, ScrollLock or Insert (accepted, but not suggested: it is the screen readers' modifier key) | that key is saved; any other key, and any key held with Control, Alt, ⌘, Shift or AltGr, is refused with `settings.voice.pttRefused` and the capture goes on; Escape cancels; Tab leaves and cancels |
 | ring banner | Tab from the main landmark's start | `call.ring.answer`, then `call.ring.decline`, before any other control of the main landmark |
 | attachment player | Enter/Space on `media.play`, then the browser's native controls | the native player |
 
@@ -196,6 +197,10 @@ Amended 2026-10-13 (controller ruling on the task-8b review, I2; supersedes the 
 | pause ends | unchanged | `voice.resumed`, once, in the dock's status region |
 | a ring starts or ends | unchanged: a ring never moves focus | `role="alert"` once at start |
 | the unsupported dialog closes | the join button | none |
+| join starts (added 2026-10-14, WB a11y I1) | the first stage control at once, focusable while `aria-disabled`; the stage is the same element while joining, joined and not joined | none until `voice.announce.joined` |
+| the stage or the DM strip swaps under focus: a failed join, a removal, the end of the call or a lost connection (added 2026-10-14, WB a11y I1) | the notice that says why (or its action), else the join (or call) button | the notice |
+| a ring of two or more is declined or answered (added 2026-10-14, WB a11y m3) | the next ring's `call.ring.answer`, else the main landmark | none |
+| leave from the dock while the call's row or strip is not on screen (added 2026-10-14, WB a11y m5) | the call's own voice row or DM call button when shown, else the sidebar's channel list | `voice.announce.left` |
 
 ## Announcements
 
@@ -222,9 +227,11 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.open='voice {name}'`, `voice.count='{n} in voice'`, `voice.join='join voice'`
 - `call.start='call'`, `call.join='join call'`
 - `voice.dock.region='voice controls'`, `voice.dock.connecting='connecting'`, `voice.dock.connected='in {where}'`, `voice.dock.reconnecting='reconnecting'`
-- `voice.mute='mute'`, `voice.unmute='unmute'`, `voice.deafen='deafen'`, `voice.undeafen='undeafen'`, `voice.leave='leave'`
-- `voice.cameraOn='camera'`, `voice.cameraOff='stop camera'`, `voice.shareOn='share screen'`, `voice.shareOff='stop sharing'`
-- `voice.controls.region='call controls'`
+- `voice.mute='mute'`, `voice.deafen='deafen'`, `voice.leave='leave'`
+- `voice.cameraOn='camera'`, `voice.shareOn='share screen'`
+- `voice.controls.region='call controls'` (the stage's toolbar in a DM or group-DM call), `voice.controls.voice='voice channel controls'` (the stage's toolbar in a voice channel; added 2026-10-14, WB a11y m6: *call* names a DM call only, and the dock's toolbar is `voice.dock.region`)
+
+Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and share screen are toggles with one visible label each (`voice.mute`, `voice.deafen`, `voice.cameraOn`, `voice.shareOn`), `aria-pressed` and the aria-hidden `[x]` mark; the label never swaps (the WAI-ARIA toggle pattern; WCAG 2.5.3 and 4.1.2). `voice.unmute`, `voice.undeafen`, `voice.cameraOff` and `voice.shareOff` are gone.
 
 *Participant states:*
 - `voice.state.speaking='speaking'`, `voice.state.muted='muted'`, `voice.state.deafened='deafened'`
@@ -256,6 +263,8 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `voice.resumed='The call continues.'` (announced once in the dock's status region when the pause ends)
 - `voice.dock.paused='paused in {where}'`
 - `voice.removed='You were removed from voice.'`
+- `voice.disconnected='The connection to voice was lost. Join again to continue.'` (the room's connection ended on its own and LiveKit's reconnect gave up; added 2026-10-14, WB client I3)
+- `voice.ended='Voice ended for everyone.'` (the room was closed under this device: the call ended for everyone; added 2026-10-14, WB client I3)
 - `voice.full='This voice is full.'`
 - `voice.sharersFull='Too many people are sharing. Try again when someone stops.'`
 - `voice.failed='Could not join voice. Try again.'`
@@ -285,7 +294,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `settings.voice.mode='input mode'`, `settings.voice.vad='voice activity'`, `settings.voice.ptt='push to talk'`
 - `settings.voice.pttKey='push-to-talk key'`, `settings.voice.pttNone='no key set'`, `settings.voice.pttSet='set key'`
 - `settings.voice.pttPrompt='Press the key to use. Escape cancels. It works only while dilla is the active tab.'`
-- `settings.voice.pttRefused='That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock, Insert or F13 to F24.'` (added 2026-10-13, task-7 review M9; reworded 2026-10-13, task-8b review I2)
+- `settings.voice.pttRefused='That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.'` (added 2026-10-13, task-7 review M9; reworded 2026-10-13, task-8b review I2; 2026-10-14, WB a11y m2: Insert is no longer suggested, since NVDA and JAWS use it as their modifier key; it is still accepted)
 - `settings.voice.noise='noise suppression'`, `settings.voice.level='input level'`
 - `settings.notify.sounds='sounds'`, `settings.sound.voice='join and leave sounds'`, `settings.sound.ring='ring for calls'`
 

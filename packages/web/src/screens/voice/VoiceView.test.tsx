@@ -16,7 +16,7 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
   await app.user.click(await main().findByRole('button', { name: 'join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
-  await main().findByRole('toolbar', { name: 'call controls' });
+  await main().findByRole('toolbar', { name: 'voice channel controls' });
   return app;
 }
 
@@ -123,7 +123,7 @@ describe('voice in the shell', () => {
     const opts = vi.mocked(app.module.startPageCall).mock.calls[0][2];
     expect(opts).toMatchObject({ mode: 'ptt', noise: 'off', input: '', output: '' });
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
-    await waitFor(() => expect(main().getByRole('toolbar', { name: 'call controls' }).querySelector('button')).toHaveFocus());
+    await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
     expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
     expect(screen.getByText('in general')).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'leave' }));
@@ -181,12 +181,16 @@ describe('the session follows the call slice', () => {
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('blocked'));
     expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
   });
-  it('an unmount while the start is pending leaves the session when it resolves', async () => {
+  // WB client I1: the start is cancelled at once (the worker told with callLeave); no session is made for nobody.
+  it('an unmount while the start is pending cancels the start and tells the worker', async () => {
     const { app, release } = await start();
     app.view.unmount();
     release();
-    await waitFor(() => expect(app.sessions).toHaveLength(1));
-    await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
+    await waitFor(() => expect(app.log).toContain(`aborted:${GENV}`));
+    // The abort's own callLeave, and the follow-up leave a next join would wait for.
+    expect(app.client.callsOf('callLeave').length).toBeGreaterThan(0);
+    expect(app.client.callsOf('callLeave').every(c => c.reason === 'user')).toBe(true);
+    expect(app.sessions).toHaveLength(0);
   });
   it('an unmount in voice leaves the session and never unpauses it', async () => {
     const app = await inVoice();
@@ -252,7 +256,7 @@ describe('review round 1', () => {
   const toLobby = async (app: ReturnType<typeof renderVoiceShell>) => {
     window.history.pushState(null, '', `/c/${A}/${TEXT}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
-    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'call controls' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
     void app;
   };
 
@@ -263,7 +267,7 @@ describe('review round 1', () => {
     app.client.publish('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('blocked'));
     expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
-    expect(screen.queryByRole('toolbar', { name: 'call controls' })).toBeNull();
+    expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull();
     expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
   });
 

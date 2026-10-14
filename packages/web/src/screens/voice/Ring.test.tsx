@@ -12,7 +12,7 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
   await app.user.click(await main().findByRole('button', { name: 'join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
-  await main().findByRole('toolbar', { name: 'call controls' });
+  await main().findByRole('toolbar', { name: 'voice channel controls' });
   return app;
 }
 

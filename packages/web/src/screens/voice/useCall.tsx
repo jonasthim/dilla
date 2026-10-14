@@ -86,8 +86,11 @@ export interface UseCallOptions {
   stageShown(channelId: string): boolean;
 }
 
-const CODE_M = 'KeyM';
-const CODE_D = 'KeyD';
+/** The mute and deafen shortcut letters (WB a11y m1: matched on the letter the key types, so AZERTY's M is M). */
+const KEY_M = 'm';
+const KEY_D = 'd';
+/** A session that ended on its own: the notice that says why (WB client I3; flow 06 § States). */
+const END_NOTICE: Record<string, StringKey> = { E_CALL_ENDED: 'voice.ended', E_REMOVED: 'voice.removed' };
 
 export function useCall(o: UseCallOptions): CallView {
   const deps = useContext(VoiceDepsContext);
@@ -107,6 +110,13 @@ export function useCall(o: UseCallOptions): CallView {
   const channelRef = useRef<string | null>(null);
   const unsubscribe = useRef<(() => void) | null>(null);
   const starting = useRef(false);
+  /** WB client I1: the start in progress can be cancelled (a leave during it, or a join of another channel). */
+  const startAbort = useRef<AbortController | null>(null);
+  /** WB client I1: a join (or a ring's answer) of another channel asked for while a start ran: it starts once that one
+   *  has been cancelled. */
+  const queuedJoin = useRef<string | null>(null);
+  /** WB client m1: the leave in flight; a join waits for it, so leave-then-join is not refused as a call in progress. */
+  const leaving = useRef<Promise<unknown> | null>(null);
   const mounted = useRef(true);
   const paused = useRef(false);
   /** The current hold (WB security I1) already dropped the session's media keys. */
@@ -117,7 +127,17 @@ export function useCall(o: UseCallOptions): CallView {
   const live = useRef(o);
   live.current = o;
 
-  const announce = useCallback((text: string) => setAnnouncement(text), []);
+  // WB a11y I3: the same text again (a second "You joined harbour.") is said again: the region is emptied first and the
+  // text set a moment later, since setting identical text changes nothing a screen reader hears.
+  const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const announce = useCallback((text: string) => {
+    if (announceTimer.current !== null) { clearTimeout(announceTimer.current); announceTimer.current = null; }
+    setAnnouncement(prev => {
+      if (prev !== text || text === '') return text;
+      announceTimer.current = setTimeout(() => { announceTimer.current = null; setAnnouncement(text); }, 100);
+      return '';
+    });
+  }, []);
 
   /** Forgets the session (its leave is the caller's); nothing of it is used after this. */
   const detach = useCallback(() => {
@@ -130,6 +150,8 @@ export function useCall(o: UseCallOptions): CallView {
     setSession(null);
     setState(null);
     setChannelId(null);
+    // WB a11y I3: the dock's region goes with the dock; a later dock starts empty, so its first announcement is heard.
+    setAnnouncement('');
   }, []);
 
   const attach = useCallback((next: PageCall, id: string) => {
@@ -141,19 +163,34 @@ export function useCall(o: UseCallOptions): CallView {
     unsubscribe.current = next.subscribe(() => {
       if (sessionRef.current !== next) return;
       setState(next.state);
-      // The room ended on its own (the session already left): nothing to drive any more.
-      if (next.state.phase === 'ended') detach();
+      // The room ended on its own (the session already left; a person's own leave detaches first, so it never gets
+      // here). WB client I3: say why, in the stage's notice and, off the stage, where it outlives the dock.
+      if (next.state.phase === 'ended') {
+        const key = END_NOTICE[next.state.error ?? ''] ?? 'voice.disconnected';
+        detach();
+        setNotice({ channelId: id, key });
+        if (!live.current.stageShown(id)) setLasting(t(key));
+      }
     });
-    stageFocus.current = true;
     announce(t('voice.announce.joined', { where: live.current.whereOf(id) }));
   }, [announce, detach]);
 
   const join = useCallback((id: string) => {
-    if (starting.current || channelRef.current === id) return;
+    if (channelRef.current === id && (starting.current || sessionRef.current !== null)) return;
+    if (starting.current) {
+      // WB client I1: another channel (a ring's answer) while a start runs: that start is cancelled and this one follows.
+      queuedJoin.current = id;
+      startAbort.current?.abort();
+      return;
+    }
     starting.current = true;
     const from = document.activeElement;
+    const abort = new AbortController();
+    startAbort.current = abort;
     void (async () => {
       try {
+        // WB client m1: a leave still in flight (the worker refuses a join while it runs) is waited for first.
+        await leaving.current?.catch(() => undefined);
         const mod = await deps.load();
         module.current = mod;
         if (!mod.isVoiceSupported().ok) {
@@ -167,8 +204,14 @@ export function useCall(o: UseCallOptions): CallView {
           detach();
           await previous.leave('switch');
         }
+        if (abort.signal.aborted) return;
         setNotice(null);
         setBlockedMidCall(null);
+        // WB a11y I3: what was said for the last call is not said for this one; a second identical text is heard again.
+        setLasting('');
+        setAnnouncement('');
+        // Flow 06 § Focus rules: the join moves focus to the stage's first control as soon as it shows (WB a11y I1).
+        stageFocus.current = true;
         channelRef.current = id;
         setChannelId(id);
         setJoining(true);
@@ -180,30 +223,51 @@ export function useCall(o: UseCallOptions): CallView {
           mode: settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad',
           noise: settings[SETTINGS.voiceNoise] === 'off' ? 'off' : 'on',
           volumes: mod.volumesFromSettings(settings),
+          signal: abort.signal,
         });
         // The shell unmounted while the start was pending: nobody drives this call, so it ends at once.
         if (!mounted.current) { void next.leave('user'); return; }
         attach(next, id);
       } catch (e) {
         if (sessionRef.current === null) { channelRef.current = null; setChannelId(null); }
-        const key = joinFailureKey(errorOf(e).code);
+        // A start the person cancelled says nothing (WB client I1). The worker's side of it (its join cancelled, its
+        // self-Remove sent) is awaited by the next join through a leave of its own, which answers once that is done.
+        if (abort.signal.aborted) leaving.current = client.call({ m: 'callLeave', reason: 'user' }).catch(() => undefined);
+        const key = abort.signal.aborted ? null : joinFailureKey(errorOf(e).code);
         if (key !== null) setNotice({ channelId: id, key });
       } finally {
+        if (startAbort.current === abort) startAbort.current = null;
         starting.current = false;
         setJoining(false);
+        const next = queuedJoin.current;
+        queuedJoin.current = null;
+        if (next !== null && mounted.current) joinRef.current(next);
       }
     })();
   }, [deps, client, attach, detach]);
+  const joinRef = useRef(join);
+  joinRef.current = join;
 
   const leave = useCallback(() => {
     const current = sessionRef.current;
     const id = channelRef.current;
+    if (current === null && starting.current) {
+      // WB client I1: a leave while the start runs cancels it (the microphone prompt and the rejoin wait included); the
+      // shell returns to where it was, and nothing is said of a failure.
+      queuedJoin.current = null;
+      startAbort.current?.abort();
+      channelRef.current = null;
+      setChannelId(null);
+      return;
+    }
     if (current === null || id === null) return;
     detach();
-    void current.leave('user').finally(() => {
+    const done = current.leave('user').finally(() => {
+      if (leaving.current === done) leaving.current = null;
       setLasting(t('voice.announce.left', { where: live.current.whereOf(id) }));
       live.current.onLeft(id);
     });
+    leaving.current = done;
   }, [detach]);
 
   const toggleMute = useCallback(() => {
@@ -264,7 +328,8 @@ export function useCall(o: UseCallOptions): CallView {
       if (inDock && id !== null) live.current.onLeft(id);
     }
     try {
-      s.leave(reason).catch(() => undefined);
+      const done = s.leave(reason).catch(() => undefined).finally(() => { if (leaving.current === done) leaving.current = null; });
+      leaving.current = done;
     } catch {
       // The session's leave closes its key relay first; nothing more can be done from here.
     }
@@ -328,9 +393,11 @@ export function useCall(o: UseCallOptions): CallView {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229) return;
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
-      const code = e.code !== '' ? e.code : `Key${e.key.toUpperCase()}`;
-      if (code === CODE_M) { e.preventDefault(); toggleMute(); }
-      else if (code === CODE_D) { e.preventDefault(); toggleDeafen(); }
+      // WB a11y m1: the letter the key types (AZERTY's M is code Semicolon; Dvorak's physical M types another letter), as
+      // Control/⌘+K matches e.key; the physical key only when the key types no letter at all.
+      const letter = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : e.code === 'KeyM' ? KEY_M : e.code === 'KeyD' ? KEY_D : '';
+      if (letter === KEY_M) { e.preventDefault(); toggleMute(); }
+      else if (letter === KEY_D) { e.preventDefault(); toggleDeafen(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -361,6 +428,8 @@ export function useCall(o: UseCallOptions): CallView {
       mounted.current = false;
       const s = sessionRef.current;
       unsubscribe.current?.();
+      startAbort.current?.abort();
+      if (announceTimer.current !== null) clearTimeout(announceTimer.current);
       if (s !== null) void s.leave('user');
     };
   }, []);

@@ -19,7 +19,7 @@ export interface VoiceDockProps {
     reconnecting: string;
     /** `voice.dock.paused`, with `{where}`. */
     paused: string;
-    mute: string; unmute: string; deafen: string; undeafen: string; leave: string;
+    mute: string; deafen: string; leave: string;
   };
   /** Optional: the input meter (an `AudioMeter`), shown under the status line. */
   meter?: ReactNode;
@@ -43,8 +43,8 @@ export function VoiceDock({ phase, where, muted, deafened, announcement, labels,
     paused: labels.paused.replaceAll('{where}', where),
   }[phase];
   const controls: ToolbarControl[] = [
-    { id: 'mute', label: labels.mute, onLabel: labels.unmute, on: muted, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
-    { id: 'deafen', label: labels.deafen, onLabel: labels.undeafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
+    { id: 'mute', label: labels.mute, on: muted, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
+    { id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
     { id: 'leave', label: labels.leave, danger: true, onAction: onLeave },
   ];
   return (

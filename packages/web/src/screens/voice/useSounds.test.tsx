@@ -19,7 +19,7 @@ async function inCall(o: VoiceHarnessOptions = {}) {
   await app.user.click(await main().findByRole('button', { name: 'join voice' }));
   await waitFor(() => expect(app.sessions).toHaveLength(1));
   app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
-  await main().findByRole('toolbar', { name: 'call controls' });
+  await main().findByRole('toolbar', { name: 'voice channel controls' });
   return app;
 }
 
@@ -76,7 +76,7 @@ describe('join and leave sounds (flow 06 § Sounds, R2, R4)', () => {
     const app = renderVoiceShell({ voice: {} });
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
-    await main().findByRole('toolbar', { name: 'call controls' });
+    await main().findByRole('toolbar', { name: 'voice channel controls' });
     app.client.publish('voice', room(BOB_IN, ME_IN));
     expect(app.sounds.played).toEqual([]);
     app.client.publish('voice', room(BOB_IN, ME_IN, CAROL_IN));

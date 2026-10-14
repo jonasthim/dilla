@@ -321,7 +321,9 @@ export class CallController {
 
   // ---- step 4: the leave ----
 
-  async leave(blocked = false): Promise<null> {
+  /** `lost` (WB client I3): the page's room ended on its own; the call ends in phase removed (E_DISCONNECTED), so the
+   *  page and every other reader see a defined end rather than a silent idle. */
+  async leave(blocked = false, lost = false): Promise<null> {
     // Review I1: a join in flight is cancelled and this answers once it has torn down (its self-Remove sent).
     const joining = this.joining;
     if (joining !== null && this.live === null) {
@@ -339,12 +341,12 @@ export class CallController {
     // A leave already running (the worker's own blocked leave, or an earlier callLeave): wait for it, never a second
     // self-Remove, and its outcome stands.
     if (live.leaveRun !== null) { await live.leaveRun; return null; }
-    live.leaveRun = this.leaveLive(live, blocked);
+    live.leaveRun = this.leaveLive(live, blocked, lost);
     await live.leaveRun;
     return null;
   }
 
-  private async leaveLive(live: Live, blocked: boolean): Promise<void> {
+  private async leaveLive(live: Live, blocked: boolean, lost = false): Promise<void> {
     // Never a rotation after this point: call_rotate would cancel the posted self-Remove (task 5, progress note).
     live.leaving = true;
     this.stopRotation();
@@ -362,7 +364,9 @@ export class CallController {
     await this.leaveGroup(live.groupId);
     if (this.live === live) this.live = null;
     this.deps.callEnded(toHex(live.callId));
-    this.setState(blocked ? { ...this.state, phase: 'blocked' } : { ...CALL_IDLE });
+    this.setState(blocked ? { ...this.state, phase: 'blocked' }
+      : lost ? { ...CALL_IDLE, phase: 'removed', channelId: live.channel, error: this.deps.errorOf(new CallRefusal('E_DISCONNECTED', '')) }
+        : { ...CALL_IDLE });
   }
 
   /** Whether this device is the call's only one: the last keyed roster holds no other leaf, and the room's snapshot read

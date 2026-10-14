@@ -51,7 +51,9 @@ export type Command =
   // web-3 (L-TS-50). The page never sends callJoin directly: startPageCall (L-WEB-50) sends it after subscribing to
   // onCallKeys. "Answer" is callJoin with the DM's channel id. vdec: '' or up to three of vp8, h264, vp9, no repeats.
   | { m: 'callJoin'; channelId: string; vdec: string }                                   // → CallJoinResult (no key bytes)
-  | { m: 'callLeave'; reason: 'user' | 'pagehide' | 'switch' }                          // → null
+  // 'lost' (WB client I3): the page's room ended on its own (its connection gave up, or the room closed); the worker
+  // leaves as for 'user' and ends in phase removed with E_DISCONNECTED rather than a silent idle.
+  | { m: 'callLeave'; reason: 'user' | 'pagehide' | 'switch' | 'lost' }                  // → null
   | { m: 'callShare'; on: boolean }                                                      // → null
   | { m: 'callRefresh' }                                                                 // → { token, iceServers }
   | { m: 'callStats'; report: CallStatsReport }                                          // → null

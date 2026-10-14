@@ -98,7 +98,14 @@ export function VoiceSettings({
   useEffect(() => { if (capturing) captureRef.current?.focus(); }, [capturing]);
 
   const [refused, setRefused] = useState(false);
-  useEffect(() => { if (!capturing) setRefused(false); }, [capturing]);
+  // WB a11y m7: a second refused key empties the region for a moment, so its text is said again.
+  const [blank, setBlank] = useState(false);
+  useEffect(() => { if (!capturing) { setRefused(false); setBlank(false); } }, [capturing]);
+  useEffect(() => {
+    if (!blank) return;
+    const timer = setTimeout(() => setBlank(false), 100);
+    return () => clearTimeout(timer);
+  }, [blank]);
 
   const onCaptureKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (!capturing || e.key === 'Tab') return;
@@ -106,7 +113,11 @@ export function VoiceSettings({
     e.stopPropagation();
     if (e.key === 'Escape') { onCaptureKey('cancel'); return; }
     if (MODIFIERS.has(e.key)) return;
-    if (typesOrOperates(e)) { setRefused(true); return; }
+    if (typesOrOperates(e)) {
+      if (refused) setBlank(true);
+      setRefused(true);
+      return;
+    }
     onCaptureKey({ code: e.code !== '' ? e.code : e.key, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, shift: e.shiftKey });
   };
 
@@ -135,7 +146,7 @@ export function VoiceSettings({
           </span>
         </SettingsRow>
       ) : null}
-      <p id={`${id}-prompt`} className="d-voice-settings__prompt" role="status">{capturing ? (refused ? labels.pttRefused : labels.pttPrompt) : null}</p>
+      <p id={`${id}-prompt`} className="d-voice-settings__prompt" role="status">{capturing && !blank ? (refused ? labels.pttRefused : labels.pttPrompt) : null}</p>
       <SettingsRow id={`${id}-noise`} label={labels.noise}>
         <Toggle id={`${id}-noise-switch`} label={labels.noise} checked={noise} onChange={onNoise} />
       </SettingsRow>

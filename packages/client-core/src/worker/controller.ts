@@ -113,7 +113,7 @@ E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN 
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL`.split(/\s+/));
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
 export function sanitizeWorkerError(e: unknown): WorkerError {
@@ -285,7 +285,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
   if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
   if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
-  if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch') return 'invalid leave reason';
+  if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
   if (m === 'callStats' && !validReport(command.report)) return 'invalid call stats report';
   if (m === 'loadVoice' && (!optionalId(command.communityId) || !optionalId(command.channelId)
@@ -602,7 +602,7 @@ export class Controller {
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
       case 'loadVoice': return this.calls.loadVoice(command.communityId, command.channelId);
       case 'callJoin': return this.calls.join(command.channelId, command.vdec);
-      case 'callLeave': return this.calls.leave();
+      case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
       case 'callShare': return this.calls.share(command.on);
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);

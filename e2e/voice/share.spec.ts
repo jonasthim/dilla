@@ -24,28 +24,31 @@ test('a screen share and a camera reach the other browser verified, and stop', a
     const seen = tile(bob.page, 'alice');
     await expect(seen).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     await heard(bob.page, a.device);
-    const controls = alice.page.getByRole('toolbar', { name: copy('voice.controls.region'), exact: true });
+    const controls = alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true });
     const word = (key: string) => seen.locator(`.d-call-tile__state[data-state="${key}"]`);
     const video = seen.locator('video.d-call-tile__video');
 
     await test.step('share the screen after a click, then stop', async () => {
-      await controls.getByRole('button', { name: copy('voice.shareOn'), exact: true }).click();
-      await expect(controls.getByRole('button', { name: copy('voice.shareOff'), exact: true })).toBeVisible({ timeout: WAIT });
+      const share = controls.getByRole('button', { name: copy('voice.shareOn'), exact: true });
+      await share.click();
+      await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
       await expect(word('screen')).toBeVisible({ timeout: WAIT });
       // Only a verified stream is shown (L-UI-61…69): the tile renders the video once bob verified alice's frames.
       await expect(seen).toHaveAttribute('data-media', 'true', { timeout: WAIT });
       await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: WAIT }).toBeGreaterThan(0);
-      await controls.getByRole('button', { name: copy('voice.shareOff'), exact: true }).click();
+      await share.click();
       await expect(word('screen')).toHaveCount(0, { timeout: WAIT });
       await expect(seen).not.toHaveAttribute('data-media', 'true', { timeout: WAIT });
     });
 
     await test.step('camera on, then off', async () => {
-      await controls.getByRole('button', { name: copy('voice.cameraOn'), exact: true }).click();
+      const camera = controls.getByRole('button', { name: copy('voice.cameraOn'), exact: true });
+      await camera.click();
       await expect(word('video')).toBeVisible({ timeout: WAIT });
       await expect(seen).toHaveAttribute('data-media', 'true', { timeout: WAIT });
       await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: WAIT }).toBeGreaterThan(0);
-      await controls.getByRole('button', { name: copy('voice.cameraOff'), exact: true }).click();
+      await expect(camera).toHaveAttribute('aria-pressed', 'true');
+      await camera.click();
       await expect(word('video')).toHaveCount(0, { timeout: WAIT });
       await expect(seen).not.toHaveAttribute('data-media', 'true', { timeout: WAIT });
     });

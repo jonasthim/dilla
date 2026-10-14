@@ -37,8 +37,9 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       await expect(word('muted')).toHaveCount(0);
       await alice.page.keyboard.press('Control+Shift+M');
       await expect(word('muted')).toBeVisible({ timeout: WAIT });
+      // WB a11y I4: the toggle keeps its label; aria-pressed says it is on.
       await expect(alice.page.getByRole('toolbar', { name: copy('voice.dock.region'), exact: true })
-        .getByRole('button', { name: copy('voice.unmute'), exact: true })).toBeVisible();
+        .getByRole('button', { name: copy('voice.mute'), exact: true })).toHaveAttribute('aria-pressed', 'true');
       await alice.page.keyboard.press('Control+Shift+M');
       await expect(word('muted')).toHaveCount(0, { timeout: WAIT });
     });

@@ -1,7 +1,7 @@
 // The shell's voice surfaces (web-3 task 9, flow 06): the voice view of a voice channel route, the DM call strip and
 // its stage, the sidebar's voice section and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
@@ -130,25 +130,62 @@ function joinHeld(v: VoiceContext, channelId: string): boolean {
   return !callGroupOnly;
 }
 
-/** Moves focus to the stage's first control once per join (flow 06 § Focus rules: join and answer). */
-function useStageFocus(ref: React.RefObject<HTMLDivElement | null>, call: CallView) {
-  // No dependency list: the join attaches in any render after the stage mounted.
+/**
+ * Moves focus to the stage's first control once per join (flow 06 § Focus rules: join and answer): as soon as the
+ * controls show (WB a11y I1: at join start, while they are still aria-disabled, so focus never falls to the page).
+ */
+function useStageFocus(ref: RefObject<HTMLDivElement | null>, call: CallView, joined: boolean) {
+  // No dependency list: a join may start in any render after the stage mounted.
   useLayoutEffect(() => {
-    if (call.session === null) return;
+    if (!joined) return;
     const first = ref.current?.querySelector<HTMLButtonElement>('[role="toolbar"] button');
     if (first !== null && first !== undefined && call.takeStageFocus()) first.focus();
   });
 }
 
-function Controls({ v, paused }: { v: VoiceContext; paused: boolean }) {
+/**
+ * WB a11y I1: keeps focus inside a voice surface when the surface swaps under it (a join starts, a join fails, the call
+ * is removed or ends, the connection is lost). When the focused control went away with the swap (focus fell to the
+ * page) and focus was inside one of `roots` before, `pick()` names where it goes now.
+ */
+function useFocusRescue(roots: readonly RefObject<HTMLElement | null>[], mode: string, pick: () => HTMLElement | null | undefined) {
+  const inside = useRef(false);
+  const live = useRef({ roots, pick });
+  live.current = { roots, pick };
+  useEffect(() => {
+    const onIn = (e: FocusEvent) => {
+      const target = e.target;
+      inside.current = target instanceof Node && live.current.roots.some(r => r.current?.contains(target) === true);
+    };
+    document.addEventListener('focusin', onIn);
+    return () => document.removeEventListener('focusin', onIn);
+  }, []);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (!inside.current || (active !== null && active !== document.body && active.isConnected)) return;
+    live.current.pick()?.focus();
+  }, [mode]);
+}
+
+/** Where focus goes in a stage that swapped under it: its first control in a call, else the notice (or its action),
+ *  else the join button. */
+function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | null {
+  if (root === null) return null;
+  if (joined) return root.querySelector<HTMLElement>('[role="toolbar"] button');
+  return root.querySelector<HTMLElement>('.d-call-stage__notice-action, .d-call-stage__notice[tabindex]')
+    ?? root.querySelector<HTMLElement>('.dw-voice-join');
+}
+
+function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
   const s = v.call.state;
   const canShare = typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+  // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
+  // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
       canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null}
-      labels={{ region: t('voice.controls.region'), mute: t('voice.mute'), unmute: t('voice.unmute'), deafen: t('voice.deafen'),
-        undeafen: t('voice.undeafen'), cameraOn: t('voice.cameraOn'), cameraOff: t('voice.cameraOff'), shareOn: t('voice.shareOn'),
-        shareOff: t('voice.shareOff'), leave: t('voice.leave') }}
+      labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave') }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
       onLeave={v.call.leave} />
   );
@@ -156,51 +193,60 @@ function Controls({ v, paused }: { v: VoiceContext; paused: boolean }) {
 
 const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') });
 
-/** The stage of the call this device is in (or is joining) for `channelId`. */
-function InCallStage({ v, channelId, title, outgoing }: { v: VoiceContext; channelId: string; title: string; outgoing: { text: string } | null }) {
+/**
+ * The stage of a voice channel or a DM call, whether this device is in its call, joining it or not (WB a11y I1, I2):
+ * one element and one CallStage instance throughout, so its notice region is never remounted with its text (that
+ * would not be announced) and focus can be kept inside it when the controls swap for the join button or back.
+ */
+function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channelId: string; title: string; outgoing: { text: string } | null; dm: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
-  useStageFocus(ref, v.call);
+  const joined = v.call.channelId === channelId;
+  useStageFocus(ref, v.call, joined);
+  useFocusRescue([ref], joined ? 'joined' : 'idle', () => stageTarget(ref.current, joined));
   const notice = stageNotice(v, channelId);
-  const paused = v.slice?.channelId === channelId && v.slice.phase === 'paused';
-  const code = v.slice?.channelId === channelId && v.slice.phase === 'in' ? v.slice.code : null;
+  const mine = v.slice?.channelId === channelId;
+  const paused = joined && mine && v.slice?.phase === 'paused';
+  const code = joined && mine && v.slice?.phase === 'in' ? v.slice.code : null;
   // CallStage focused the pause action in its own effect (children run first): the pause has had its one focus move.
   const { pauseFocusPending, markPauseFocused } = v.call;
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
+  const held = !joined && joinHeld(v, channelId);
+  const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
   return (
-    <div ref={ref} className="dw-voice-stage" data-doc-state="voice-stage" data-call-phase={v.slice?.channelId === channelId ? v.slice.phase : 'joining'}>
-      <CallStage title={title} tiles={callTiles(v, channelId)} code={code} notice={notice} outgoing={outgoing}
-        controls={<Controls v={v} paused={paused} />} labels={STAGE_LABELS()} />
+    <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
+      data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
+      <CallStage title={title} tiles={joined ? callTiles(v, channelId) : roomTiles(v, channelId)} code={code} notice={notice}
+        outgoing={joined ? outgoing : null}
+        controls={joined ? <Controls v={v} paused={paused} dm={dm} />
+          : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.call.join(channelId)}>{t('voice.join')}</Button>}
+        labels={STAGE_LABELS()} />
     </div>
   );
 }
 
 /** The voice view of a voice channel route (`/c/<community>/<voice channel>`). */
 export function VoiceView({ v, channelId, name }: { v: VoiceContext; channelId: string; name: string }): React.JSX.Element {
-  const title = t('voice.open', { name });
-  if (v.call.channelId === channelId) return <InCallStage v={v} channelId={channelId} title={title} outgoing={null} />;
-  const notice = stageNotice(v, channelId);
-  const held = joinHeld(v, channelId);
-  const blocked = notice?.kind === 'blocked';
-  return (
-    <div className="dw-voice-stage" data-doc-state={blocked ? 'voice-blocked' : 'voice-stage'}
-      data-call-phase={v.slice?.channelId === channelId ? v.slice.phase : 'idle'}>
-      <CallStage title={title} tiles={roomTiles(v, channelId)} code={null} notice={notice} outgoing={null}
-        controls={held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.call.join(channelId)}>{t('voice.join')}</Button>}
-        labels={STAGE_LABELS()} />
-    </div>
-  );
+  return <Stage v={v} channelId={channelId} title={t('voice.open', { name })} outgoing={null} dm={false} />;
 }
 
-/** A notice outside a stage (the DM strip): role=status, focus moves to it once per text when asked. */
-function StripNotice({ notice }: { notice: CallStageNotice }) {
-  const ref = useRef<HTMLParagraphElement>(null);
+/**
+ * The DM strip's notice: a `role="status"` that is always rendered (empty without a notice), so a notice that appears
+ * is announced (WB a11y I2); focus moves to it once per text when asked.
+ */
+function StripNotice({ notice, refObj }: { notice: CallStageNotice | null; refObj: RefObject<HTMLParagraphElement | null> }) {
   const focused = useRef<string | null>(null);
+  const text = notice?.text ?? null;
+  const focusOnce = notice?.focusOnce ?? false;
   useEffect(() => {
-    if (!notice.focusOnce || focused.current === notice.text) return;
-    focused.current = notice.text;
-    ref.current?.focus();
-  }, [notice.text, notice.focusOnce]);
-  return <p ref={ref} className="dw-call-strip__notice" role="status" tabIndex={-1} data-kind={notice.kind}>{notice.text}</p>;
+    if (text === null) { focused.current = null; return; }
+    if (!focusOnce || focused.current === text) return;
+    focused.current = text;
+    refObj.current?.focus();
+  }, [text, focusOnce, refObj]);
+  return (
+    <p ref={refObj} className="dw-call-strip__notice" role="status" tabIndex={notice === null ? undefined : -1}
+      data-kind={notice?.kind} data-empty={notice === null ? 'true' : undefined}>{text}</p>
+  );
 }
 
 /**
@@ -228,27 +274,37 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
   // On a phone the stage fills the pane and `messages` swaps it for the log and composer (flow 06 § 360×740, review I7);
   // the toggle shows only there (app.css).
   const [view, setView] = useState<'stage' | 'messages'>('stage');
-  if (inThisCall) {
-    return (
-      <div className="dw-dm-call" data-view={view}>
-        <div className="dw-dm-call__bar">
-          <Button size="md" pressed={view === 'messages'} onClick={() => setView(view === 'messages' ? 'stage' : 'messages')}>{t('voice.messages')}</Button>
-        </div>
-        <InCallStage v={v} channelId={channelId} title={name} outgoing={text === null ? null : { text }} />
-      </div>
-    );
-  }
+  const stripRef = useRef<HTMLDivElement>(null);
+  const callRef = useRef<HTMLDivElement>(null);
+  const noticeRef = useRef<HTMLParagraphElement>(null);
   const live = (v.voice?.[channelId]?.participants.length ?? 0) > 0;
-  const notice = stageNotice(v, channelId);
+  const notice = inThisCall ? null : stageNotice(v, channelId);
   const held = joinHeld(v, channelId);
+  // WB a11y I1: a failed call, a removal or an end swaps the stage for the strip under focus; focus goes to the notice
+  // that says why, else the call button (the stage's own focus rule covers the join).
+  useFocusRescue([stripRef, callRef], inThisCall ? 'joined' : 'idle', () => (inThisCall ? null
+    : notice !== null ? noticeRef.current : stripRef.current?.querySelector<HTMLElement>('.dw-call-strip__start')));
+  // The strip is always the first element, in a call too (empty and collapsed there), so its status region is never
+  // mounted with its text (WB a11y I2).
   return (
-    <div className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
-      data-call-phase={v.slice?.channelId === channelId ? v.slice.phase : 'idle'}>
-      {notice !== null ? <StripNotice notice={notice} /> : null}
-      {held ? null : (
-        <Button className="dw-call-strip__start" onClick={() => v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
-      )}
-    </div>
+    <>
+      <div ref={stripRef} className="dw-call-strip" data-doc-state={notice?.kind === 'blocked' ? 'voice-blocked' : undefined}
+        data-call-phase={v.slice?.channelId === channelId ? v.slice.phase : inThisCall ? 'joining' : 'idle'}
+        data-empty={inThisCall && notice === null ? 'true' : undefined}>
+        <StripNotice notice={notice} refObj={noticeRef} />
+        {inThisCall || held ? null : (
+          <Button className="dw-call-strip__start" onClick={() => v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
+        )}
+      </div>
+      {inThisCall ? (
+        <div ref={callRef} className="dw-dm-call" data-view={view}>
+          <div className="dw-dm-call__bar">
+            <Button size="md" pressed={view === 'messages'} onClick={() => setView(view === 'messages' ? 'stage' : 'messages')}>{t('voice.messages')}</Button>
+          </div>
+          <Stage v={v} channelId={channelId} title={name} outgoing={text === null ? null : { text }} dm />
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -330,18 +386,28 @@ export function VoiceSection({ rows, onOpen, onJoin }: { rows: readonly VoiceRow
       {/* role="list": Safari drops a list's semantics under list-style: none. */}
       {/* eslint-disable-next-line jsx-a11y/no-redundant-roles */}
       <ul role="list" ref={list} className="dw-voice-section__list">
-        {rows.map(r => (
-          <li key={r.id} className="dw-voice-section__item" data-joined={r.joined ? 'true' : undefined}>
-            <VoiceChannelRow name={r.name} current={r.current} joined={r.joined} readable={r.readable}
-              participants={(r.room?.participants ?? []).map(p => participantView(p))} labels={labels} onOpen={() => onOpen(r.id)} />
-            {r.joined ? null : (
-              <button type="button" className="d-btn dw-voice-section__join" data-variant="ghost" data-size="sm" tabIndex={-1}
-                aria-label={t('voice.join')} onClick={() => onJoin(r.id)}><span className="d-btn__label">{t('voice.join')}</span></button>
-            )}
-          </li>
-        ))}
+        {rows.map(r => <VoiceSectionItem key={r.id} r={r} labels={labels} onOpen={onOpen} onJoin={onJoin} />)}
       </ul>
     </section>
+  );
+}
+
+/** One row of the voice section with its join button, which has its own place in the row's line (WB a11y m4: it never
+ *  covers the row's count or focus ring) and is described by the channel's name, so a list of buttons tells them apart. */
+function VoiceSectionItem({ r, labels, onOpen, onJoin }: { r: VoiceRowItem; labels: ReturnType<typeof rowLabels>; onOpen: (id: string) => void; onJoin: (id: string) => void }) {
+  const nameId = useId();
+  return (
+    <li className="dw-voice-section__item" data-joined={r.joined ? 'true' : undefined}>
+      <VoiceChannelRow name={r.name} current={r.current} joined={r.joined} readable={r.readable}
+        participants={(r.room?.participants ?? []).map(p => participantView(p))} labels={labels} onOpen={() => onOpen(r.id)} />
+      {r.joined ? null : (
+        <>
+          <span id={nameId} hidden>{r.name}</span>
+          <button type="button" className="d-btn dw-voice-section__join" data-variant="ghost" data-size="sm" tabIndex={-1}
+            aria-describedby={nameId} onClick={() => onJoin(r.id)}><span className="d-btn__label">{t('voice.join')}</span></button>
+        </>
+      )}
+    </li>
   );
 }
 
@@ -393,8 +459,8 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
-          reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'), unmute: t('voice.unmute'),
-          deafen: t('voice.deafen'), undeafen: t('voice.undeafen'), leave: t('voice.leave') }}
+          reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
+          deafen: t('voice.deafen'), leave: t('voice.leave') }}
         meter={<>
           <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
           {call.state?.mode === 'ptt' ? <p className="dw-voice-dock__mode">{t('settings.voice.ptt')}</p> : null}

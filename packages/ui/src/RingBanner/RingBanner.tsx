@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, useLayoutEffect, useRef } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './RingBanner.css';
 
@@ -12,8 +12,19 @@ export interface RingBannerProps {
 
 function Ring({ ring, labels, onAnswer, onDecline }: { ring: RingBannerProps['rings'][number] } & Omit<RingBannerProps, 'rings'>) {
   const textId = useId();
+  const ref = useRef<HTMLLIElement>(null);
+  // WB a11y m3: a ring that goes while focus is on its buttons hands focus to the next ring's answer. Its cleanup runs
+  // before React removes the row, so focus never falls to the page; the banner itself going is the shell's to handle.
+  useLayoutEffect(() => {
+    const li = ref.current;
+    return () => {
+      if (li === null || !li.contains(document.activeElement)) return;
+      const next = Array.from(li.closest('ul')?.querySelectorAll<HTMLButtonElement>('.d-ring-banner__answer') ?? []).find(b => !li.contains(b));
+      next?.focus();
+    };
+  }, []);
   return (
-    <li className="d-ring-banner__ring" data-ring={ring.busy ? 'busy' : 'incoming'}>
+    <li ref={ref} className="d-ring-banner__ring" data-ring={ring.busy ? 'busy' : 'incoming'}>
       <span className="d-ring-banner__glyph" aria-hidden="true">◉</span>
       <p id={textId} role="alert" className="d-ring-banner__text">{ring.text}</p>
       <span className="d-ring-banner__actions">

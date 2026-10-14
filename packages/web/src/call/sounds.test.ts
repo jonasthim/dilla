@@ -121,3 +121,32 @@ describe('sounds (L-WEB-52)', () => {
     expect(() => { s.startRing(); vi.advanceTimersByTime(4_000); s.stopRing(); s.dispose(); }).not.toThrow();
   });
 });
+
+// WB client m4 (plan :456): a context that starts or falls suspended gets one resume() attempt when a sound wants it, and
+// one more at the next pointerdown (a user gesture); sounds still play only while it runs.
+describe('a suspended sound context (WB client m4)', () => {
+  it('is resumed once when a sound wants it, once more at the next pointerdown, and plays once running', async () => {
+    const ticks = async () => { for (let i = 0; i < 3; i++) await Promise.resolve(); };
+    const ctx = fakeAudioContext();
+    let state = 'suspended';
+    Object.defineProperty(ctx, 'state', { get: () => state });
+    const resume = vi.fn(() => Promise.resolve());
+    Object.assign(ctx, { resume });
+    const s = createSounds(() => ctx);
+    s.play('join');
+    s.play('leave');
+    s.startRing();
+    s.stopRing();
+    await ticks();
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(ctx.oscillators).toHaveLength(0);
+    window.dispatchEvent(new Event('pointerdown'));
+    window.dispatchEvent(new Event('pointerdown'));
+    await ticks();
+    expect(resume).toHaveBeenCalledTimes(2);
+    state = 'running';
+    s.play('join');
+    expect(ctx.oscillators).toHaveLength(2);
+    s.dispose();
+  });
+});

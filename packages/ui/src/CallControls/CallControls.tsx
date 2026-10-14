@@ -42,10 +42,10 @@ export const VOICE_SHORTCUTS = { mute: 'Control+Shift+M Meta+Shift+M', deafen: '
 
 /**
  * One control of a voice toolbar. A toggle (`on` given) is the Button primitive's toggle: `aria-pressed`, the `[x]`
- * mark and the pressed style, with `onLabel` shown while on (mute / unmute). An inert control is aria-disabled.
+ * mark and the pressed style, under one label in both states (WB a11y I4). An inert control is aria-disabled.
  */
 export interface ToolbarControl {
-  id: string; label: string; on?: boolean; onLabel?: string; inert?: boolean; danger?: boolean;
+  id: string; label: string; on?: boolean; inert?: boolean; danger?: boolean;
   /** `aria-keyshortcuts`, e.g. VOICE_SHORTCUTS.mute. */
   keys?: string;
   onAction(): void;
@@ -59,7 +59,7 @@ export function VoiceToolbar({ label, controls, className }: { label: string; co
       className={['d-voice-toolbar', className].filter(Boolean).join(' ')} onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
       {controls.map((c, i) => (
         <Button key={c.id} variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
-          pressed={c.on} pressedLabel={c.onLabel} aria-keyshortcuts={c.keys}
+          pressed={c.on} aria-keyshortcuts={c.keys}
           aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
           onClick={() => { if (c.inert !== true) c.onAction(); }}>
           {c.label}
@@ -77,27 +77,23 @@ export interface CallControlsProps {
   canShare: boolean;
   /** True while joining: every control is aria-disabled. */
   busy: boolean;
-  labels: {
-    region: string; mute: string; unmute: string; deafen: string; undeafen: string;
-    cameraOn: string; cameraOff: string; shareOn: string; shareOff: string; leave: string;
-  };
+  labels: { region: string; mute: string; deafen: string; camera: string; share: string; leave: string };
   onMute(): void; onDeafen(): void; onCamera(): void; onShare(): void; onLeave(): void;
 }
 
 /**
- * The call stage's controls (`role="toolbar"`, `voice.controls.region`): mute, deafen, camera, share screen and
- * leave. The toggles are the Button primitive's: `aria-pressed`, the label of what it does next (mute / unmute) and
- * the `[x]` mark, never colour alone. Mute and deafen carry their shortcuts. Busy (joining) makes every control
- * aria-disabled; it stays focusable.
+ * The call stage's controls (`role="toolbar"`): mute, deafen, camera, share screen and leave. The toggles are the
+ * Button primitive's: one label, `aria-pressed` and the `[x]` mark, never colour alone (WB a11y I4). Mute and deafen
+ * carry their shortcuts. Busy (joining) makes every control aria-disabled; it stays focusable.
  */
 export function CallControls({
   muted, deafened, camera, sharing, canCamera, canShare, busy, labels, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
   const controls: ToolbarControl[] = [
-    { id: 'mute', label: labels.mute, onLabel: labels.unmute, on: muted, inert: busy, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
-    { id: 'deafen', label: labels.deafen, onLabel: labels.undeafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
-    { id: 'camera', label: labels.cameraOn, onLabel: labels.cameraOff, on: camera, inert: busy || !canCamera, onAction: onCamera },
-    { id: 'share', label: labels.shareOn, onLabel: labels.shareOff, on: sharing, inert: busy || !canShare, onAction: onShare },
+    { id: 'mute', label: labels.mute, on: muted, inert: busy, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
+    { id: 'deafen', label: labels.deafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
+    { id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, onAction: onCamera },
+    { id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, onAction: onShare },
     { id: 'leave', label: labels.leave, inert: busy, danger: true, onAction: onLeave },
   ];
   return <VoiceToolbar label={labels.region} controls={controls} className="d-call-controls" />;

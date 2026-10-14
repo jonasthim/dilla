@@ -10,7 +10,7 @@ const meta = {
     phase: 'connected', where: 'harbour', muted: false, deafened: false, announcement: '',
     labels: {
       region: 'voice controls', connecting: 'connecting', connected: 'in {where}', reconnecting: 'reconnecting', paused: 'paused in {where}',
-      mute: 'mute', unmute: 'unmute', deafen: 'deafen', undeafen: 'undeafen', leave: 'leave',
+      mute: 'mute', deafen: 'deafen', leave: 'leave',
     },
     onMute: () => {}, onDeafen: () => {}, onLeave: () => {},
   },
@@ -30,3 +30,7 @@ export const MutedAndDeafened: Story = { args: { muted: true, deafened: true, an
 export const Paused: Story = { args: { phase: 'paused' } };
 /** A DM call: `{where}` is the DM's name, and the outgoing ring is announced through the dock's status region. */
 export const DmRinging: Story = { args: { where: 'ada', announcement: 'ringing ada' } };
+/** Rejoining (WB a11y m8): the dock stays at connecting while the join waits for its earlier Remove; the status region
+ *  says so once (`voice.announce.rejoining`). */
+export const Rejoining: Story = { args: { phase: 'connecting', announcement: 'Rejoining harbour. This can take up to 30 seconds.' } };
+

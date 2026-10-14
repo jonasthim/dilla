@@ -23,8 +23,8 @@ const meta = {
   args: {
     muted: false, deafened: false, camera: false, sharing: false, canCamera: true, canShare: true, busy: false,
     labels: {
-      region: 'call controls', mute: 'mute', unmute: 'unmute', deafen: 'deafen', undeafen: 'undeafen', cameraOn: 'camera',
-      cameraOff: 'stop camera', shareOn: 'share screen', shareOff: 'stop sharing', leave: 'leave',
+      region: 'call controls', mute: 'mute', deafen: 'deafen', camera: 'camera',
+      share: 'share screen', leave: 'leave',
     },
     onMute: () => {}, onDeafen: () => {}, onCamera: () => {}, onShare: () => {}, onLeave: () => {},
   },

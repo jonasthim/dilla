@@ -248,7 +248,16 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     browserDeps: bridge => ({ bridge } as unknown as ReturnType<VoiceModule['browserDeps']>),
     startPageCall: vi.fn<VoiceModule['startPageCall']>(async (deps, target, opts) => {
       await deps.bridge.call({ m: 'callJoin', channelId: target.channelId, vdec: target.vdec });
-      await startGate;
+      // As the real session: the page's abort ends a start that has not connected yet (WB client I1).
+      await new Promise<void>((resolve, reject) => {
+        void startGate.then(resolve);
+        const onAbort = () => {
+          log.push(`aborted:${target.channelId}`);
+          void deps.bridge.call({ m: 'callLeave', reason: 'user' });
+          reject(Object.assign(new Error('E_ABORTED'), { code: 'E_ABORTED' }));
+        };
+        if (opts.signal?.aborted === true) onAbort(); else opts.signal?.addEventListener('abort', onAbort, { once: true });
+      });
       const session = new FakeSession(log, deps.bridge);
       // As the real session: it starts in the mode it was started with.
       session.state = { ...session.state, mode: opts.mode };

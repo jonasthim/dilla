@@ -44,10 +44,15 @@ export interface PageCallState {
   tiles: PageCallTile[];
   /** The local input level, 0..12. */
   level: number;
-  /** An E_ code, or null. */
+  /**
+   * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
+   * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
+   * E_DISCONNECTED (the connection ended and LiveKit's reconnect gave up).
+   */
   error: string | null;
 }
-export type LeaveReason = 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed';
+/** 'lost' (WB client I3): the room ended on its own; media stops first and the worker hears callLeave 'lost'. */
+export type LeaveReason = 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed' | 'lost';
 export interface PageCall {
   readonly state: PageCallState;
   subscribe(fn: () => void): () => void;
@@ -96,6 +101,9 @@ export interface PageCallOptions {
   noise: 'on' | 'off';
   /** user id → 0..200 (the voice.volume.<user> settings). */
   volumes: Volumes;
+  /** WB client I1: aborting ends a start that has not connected yet, the microphone prompt included: callLeave is
+   *  posted at once (the worker cancels its join), the microphone is stopped, and the start rejects with E_ABORTED. */
+  signal?: AbortSignal;
 }
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
@@ -156,6 +164,37 @@ const EV = {
   permissions: 'participantPermissionsChanged',
 } as const;
 
+/** livekit DisconnectReason values the session reads (livekit protocol): PARTICIPANT_REMOVED, ROOM_DELETED, ROOM_CLOSED. */
+const DISCONNECT = { participantRemoved: 4, roomDeleted: 5, roomClosed: 10 } as const;
+/** Why a room ended on its own, as the session's error code (WB client I3). */
+export function endCodeOf(reason: unknown): 'E_CALL_ENDED' | 'E_REMOVED' | 'E_DISCONNECTED' {
+  if (reason === DISCONNECT.roomDeleted || reason === DISCONNECT.roomClosed) return 'E_CALL_ENDED';
+  if (reason === DISCONNECT.participantRemoved) return 'E_REMOVED';
+  return 'E_DISCONNECTED';
+}
+
+/** `p`, or E_ABORTED once `signal` aborts first; `onLate` gets the value of a `p` that settles after the abort. */
+function abortable<T>(p: Promise<T>, signal: AbortSignal | undefined, onLate: (v: T) => void): Promise<T> {
+  if (signal === undefined) return p;
+  if (signal.aborted) { void p.then(onLate, () => undefined); return Promise.reject(new PageCallError('E_ABORTED')); }
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const onAbort = (): void => { if (done) return; done = true; reject(new PageCallError('E_ABORTED')); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then((v) => {
+      signal.removeEventListener('abort', onAbort);
+      if (done) { onLate(v); return; }
+      done = true;
+      resolve(v);
+    }, (e: unknown) => {
+      signal.removeEventListener('abort', onAbort);
+      if (done) return;
+      done = true;
+      reject(e instanceof Error ? e : new PageCallError('E_INTERNAL'));
+    });
+  });
+}
+
 /** Tiles are polled for verifiedIdentities() every second. */
 export const TILE_POLL_MS = 1_000;
 /** ICE credentials are refreshed this long before the expiry their username carries (DEV-53). */
@@ -190,8 +229,13 @@ export function iceExpiryMs(list: IceServerTuple[]): number | null {
 }
 
 export async function startPageCall(deps: PageCallDeps, target: { channelId: string; vdec: string }, opts: PageCallOptions): Promise<PageCall> {
-  // The microphone prompt comes before the join, so the room never shows this device while the prompt is open.
-  const mic = await acquireMic(deps.media, opts.input);
+  // The microphone prompt comes before the join, so the room never shows this device while the prompt is open. An abort
+  // while it is open ends the start at once (WB client I1); a microphone granted after that is stopped.
+  const mic = await abortable(acquireMic(deps.media, opts.input), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+  if (opts.signal?.aborted === true) {
+    if ('track' in mic) mic.track.stop();
+    throw new PageCallError('E_ABORTED');
+  }
   let roster = new Map<string, { userId: string; leaf: number }>();
   let selfLeaf = -1;
   let afterRoster: () => void = () => undefined;
@@ -209,13 +253,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   let aborted = false;
   let joinedSession: CallSession | null = null;
   const stopMic = (): void => { if ('track' in mic) mic.track.stop(); };
-  const startupHide = (): void => {
+  /** A pagehide, or the page's abort (WB client I1), during startup: everything stops now, nothing waits. */
+  const startupHide = (reason: 'pagehide' | 'user' = 'pagehide'): void => {
     if (aborted) return;
     aborted = true;
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
-    void deps.bridge.call({ m: 'callLeave', reason: 'pagehide' }).catch(() => undefined);
+    opts.signal?.removeEventListener('abort', onAbort);
+    void deps.bridge.call({ m: 'callLeave', reason }).catch(() => undefined);
     const live = joinedSession;
     if (live !== null) {
       try { live.manager.dispose(); } catch { /* released below */ }
@@ -224,9 +270,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     }
     stopMic();
   };
-  let onPageHide: () => void = startupHide;
+  let onPageHide: () => void = () => startupHide('pagehide');
   const pageHide = (): void => onPageHide();
   win?.addEventListener('pagehide', pageHide);
+  // Until the call is up, the page's abort ends the start as a pagehide does, as the person's own leave.
+  const onAbort = (): void => startupHide('user');
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
   /** Ends a failed start. After a pagehide everything is already torn down and the attempt ends E_ABORTED. */
   const abandon = async (err: unknown, posted: boolean): Promise<PageCallError> => {
     if (aborted) return new PageCallError('E_ABORTED');
@@ -234,14 +283,22 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
+    opts.signal?.removeEventListener('abort', onAbort);
     stopMic();
     const live = joinedSession;
+    detachEarly();
     // Keys stop first: media is released before the worker is told to leave.
     if (live !== null) await live.release().catch(() => undefined);
     if (posted) await deps.bridge.call({ m: 'callLeave', reason: 'user' }).catch(() => undefined);
     return pageCallError(err);
   };
-  const checkAborted = (): void => { if (aborted) throw new PageCallError('E_ABORTED'); };
+  /** WB client m2: the room's own end, heard from the moment joinCall resolved; until the call is up it ends the start. */
+  let endedBy: string | null = null;
+  let detachEarly: () => void = () => undefined;
+  const checkAborted = (): void => {
+    if (aborted) throw new PageCallError('E_ABORTED');
+    if (endedBy !== null) throw new PageCallError(endedBy);
+  };
 
   let join: CallJoinResult;
   try {
@@ -283,6 +340,19 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   }
   if (session === null) throw await abandon(joinError ?? new PageCallError('E_INTERNAL'), true);
   joinedSession = session;
+  // WB client m2: the room's end and its reconnects are heard from here on, not only once the microphone is published.
+  let onRoomEnd: (reason: unknown) => void = (reason) => { endedBy ??= endCodeOf(reason); };
+  let onRoomReconnecting: () => void = () => undefined;
+  let onRoomReconnected: () => void = () => undefined;
+  {
+    const early = session.room as unknown as Events;
+    const listeners: Array<[string, AnyListener]> = [
+      [EV.disconnected, (reason: unknown) => onRoomEnd(reason)], [EV.reconnecting, () => onRoomReconnecting()],
+      [EV.reconnected, () => onRoomReconnected()],
+    ];
+    for (const [e, f] of listeners) early.on(e, f);
+    detachEarly = () => { for (const [e, f] of listeners) early.off(e, f); };
+  }
   if (aborted) {
     // pagehide arrived while joinCall ran: what startupHide could not reach is released now.
     try { session.manager.dispose(); } catch { /* released below */ }
@@ -409,6 +479,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     // ---- sharing: callShare on, then the SFU’s permission, then the publish; callShare off once nothing is shared
     let shareOn = false;
+    /** The settle of a share waiting for the SFU's permission (WB client m3): a leave settles it with false. */
+    let waitingShare: ((ok: boolean) => void) | null = null;
     let camera: { track: MediaStreamTrack } | null = null;
     let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void } | null = null;
     const permitted = (what: keyof typeof PERMISSION): boolean => {
@@ -421,6 +493,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (shareOn && permitted(what)) return;
       let settle: (ok: boolean) => void = () => undefined;
       const granted = new Promise<boolean>((resolve) => { settle = resolve; });
+      waitingShare = settle;
       const onPermissions = (_prev: unknown, participant: unknown): void => {
         if (participant === room.localParticipant && permitted(what)) settle(true);
       };
@@ -437,6 +510,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       } finally {
         events.off(EV.permissions, onPermissions);
         cancel(timer);
+        if (waitingShare === settle) waitingShare = null;
       }
     };
     const shareOffIfIdle = async (): Promise<void> => {
@@ -493,6 +567,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         await shareOffIfIdle();
         throw pageCallError(err);
       }
+      // WB client I2: a pause (or the end) that came while the publish was in flight: nothing stays published.
+      if (ended || state.paused) {
+        await local.unpublishTrack(track).catch(() => undefined);
+        track.stop();
+        await shareOffIfIdle();
+        throw new PageCallError('E_UNAVAILABLE');
+      }
       camera = { track };
       set({ camera: true });
     });
@@ -523,6 +604,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         tracks.audio?.stop();
         await shareOffIfIdle();
         throw pageCallError(err);
+      }
+      // WB client I2: a pause (or the end) that came while the publish was in flight: nothing stays published.
+      if (ended || state.paused) {
+        await local.unpublishTrack(tracks.video).catch(() => undefined);
+        if (tracks.audio !== null) await local.unpublishTrack(tracks.audio).catch(() => undefined);
+        tracks.video.stop();
+        tracks.audio?.stop();
+        await shareOffIfIdle();
+        throw new PageCallError('E_UNAVAILABLE');
       }
       // The browser’s own "stop sharing" ends the video track.
       const onEnded = (): void => { void setSharing(false).catch(() => undefined); };
@@ -584,13 +674,17 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // ---- room events
     const onPeople = (): void => { applyGains(); refresh(); };
     const onSpeakers = (): void => refresh();
-    const onReconnecting = (): void => { if (!ended) set({ phase: 'reconnecting' }); };
-    const onReconnected = (): void => { if (!ended) set({ phase: 'connected' }); };
-    const onDisconnected = (): void => { if (!ended) void leave('removed'); };
+    // WB client I3: a room that ends on its own says why (state.error) and tells the worker it was lost.
+    onRoomReconnecting = () => { if (!ended) set({ phase: 'reconnecting' }); };
+    onRoomReconnected = () => { if (!ended) set({ phase: 'connected' }); };
+    onRoomEnd = (reason) => {
+      if (ended) return;
+      set({ error: endCodeOf(reason) });
+      void leave('lost');
+    };
     const roomListeners: Array<[string, AnyListener]> = [
       [EV.participantConnected, onPeople], [EV.participantDisconnected, onPeople], [EV.trackSubscribed, onPeople],
-      [EV.trackUnsubscribed, onPeople], [EV.activeSpeakers, onSpeakers], [EV.reconnecting, onReconnecting],
-      [EV.reconnected, onReconnected], [EV.disconnected, onDisconnected],
+      [EV.trackUnsubscribed, onPeople], [EV.activeSpeakers, onSpeakers],
     ];
     for (const [e, f] of roomListeners) events.on(e, f);
     const policy = new SpeakerPolicy(room);
@@ -604,7 +698,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       unsubscribe();
       for (const h of [...timers]) cancel(h);
       for (const [e, f] of roomListeners) events.off(e, f);
+      detachEarly();
       win?.removeEventListener('pagehide', pageHide);
+      opts.signal?.removeEventListener('abort', onAbort);
+      waitingShare?.(false);
       try { policy.dispose(); } catch { /* the room is going away */ }
     };
     const stopCaptures = (): void => {
@@ -618,7 +715,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const leave = (reason: LeaveReason): Promise<void> => {
       if (leaving !== null) return leaving;
       stopEverything();
-      const post = (r: 'user' | 'pagehide' | 'switch') => deps.bridge.call({ m: 'callLeave', reason: r }).then(() => undefined, () => undefined);
+      const post = (r: 'user' | 'pagehide' | 'switch' | 'lost') => deps.bridge.call({ m: 'callLeave', reason: r }).then(() => undefined, () => undefined);
       const releaseAll = () => release().catch(() => undefined).finally(stopCaptures);
       if (reason === 'pagehide') {
         // The page is going away: nothing here may wait. callLeave is posted, then media stops in this same task.
@@ -626,9 +723,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         try { manager.dispose(); } catch { /* released below */ }
         void Promise.resolve(room.disconnect()).catch(() => undefined);
         leaving = releaseAll();
-      } else if (reason === 'blocked' || reason === 'removed') {
+      } else if (reason === 'blocked' || reason === 'removed' || reason === 'lost') {
         // Keys must stop before anything else: media first, then the worker’s leave.
-        leaving = releaseAll().then(() => post('user'));
+        leaving = releaseAll().then(() => post(reason === 'lost' ? 'lost' : 'user'));
       } else {
         const posted = post(reason);
         leaving = releaseAll().then(() => posted);
@@ -637,7 +734,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       return leaving;
     };
 
-    // ---- connected
+    // ---- connected (WB client m2: only while the room is still up)
+    checkAborted();
+    if ((room as unknown as { state?: string }).state === 'disconnected') throw new PageCallError('E_DISCONNECTED');
+    opts.signal?.removeEventListener('abort', onAbort);
     applyGains();
     state = { ...state, phase: 'connected', tiles: tiles() };
     later(poll, TILE_POLL_MS);
@@ -681,6 +781,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       async setPaused(on) {
         if (ended || on === state.paused) return;
+        // WB client I2: a camera or screen goes quiet at once, before any queued camera or share operation (the lane may
+        // be held by the screen picker or a permission prompt); the lane then unpublishes and stops them.
+        if (on) for (const track of [camera?.track, screen?.video, screen?.audio]) if (track) track.enabled = false;
         relay.setPaused(on);
         set({ paused: on });
         applyMic();

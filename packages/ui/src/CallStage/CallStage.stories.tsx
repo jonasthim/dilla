@@ -11,8 +11,8 @@ const STATE: CallTileProps['labels']['state'] = {
   connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
 };
 const CONTROL_LABELS: CallControlsProps['labels'] = {
-  region: 'call controls', mute: 'mute', unmute: 'unmute', deafen: 'deafen', undeafen: 'undeafen', cameraOn: 'camera',
-  cameraOff: 'stop camera', shareOn: 'share screen', shareOff: 'stop sharing', leave: 'leave',
+  region: 'call controls', mute: 'mute', deafen: 'deafen', camera: 'camera',
+  share: 'share screen', leave: 'leave',
 };
 const noop = () => {};
 const controls = (more: Partial<CallControlsProps> = {}) => (
@@ -119,3 +119,42 @@ export const DmRinging: Story = {
   args: { title: 'ada', outgoing: { text: 'ringing ada' }, tiles: [tile('you', {}, true)], code: null },
 };
 export const DmDeclined: Story = { args: { title: 'ada', outgoing: { text: 'ada declined.' }, tiles: [tile('you', {}, true)], code: null } };
+
+// WB a11y m8: the info notices of flow 06 § States, each a story, so the axe and target-size runs see them.
+const info = (text: string): CallStageProps['notice'] => ({ kind: 'info', text, action: null, focusOnce: false });
+const notJoined = { tiles: [tile('ada', { speaking: true }), tile('bo', { muted: true })], code: null };
+/** `voice.full`: the join was refused; the join button is offered again. */
+export const InfoFull: Story = { args: { ...notJoined, notice: info('This voice is full.'), controls: null } };
+/** `voice.sharersFull`: the camera or share was refused; the call goes on. */
+export const InfoSharersFull: Story = { args: { notice: info('Too many people are sharing. Try again when someone stops.') } };
+/** `voice.failed`. */
+export const InfoFailed: Story = { args: { ...notJoined, notice: info('Could not join voice. Try again.'), controls: null } };
+/** `voice.removed`. */
+export const InfoRemoved: Story = { args: { ...notJoined, notice: info('You were removed from voice.'), controls: null } };
+/** `voice.disconnected` (WB client I3). */
+export const InfoDisconnected: Story = { args: { ...notJoined, notice: info('The connection to voice was lost. Join again to continue.'), controls: null } };
+/** `voice.ended` (WB client I3). */
+export const InfoEnded: Story = { args: { ...notJoined, notice: info('Voice ended for everyone.'), controls: null } };
+/** `voice.otherTab`. */
+export const InfoOtherTab: Story = { args: { ...notJoined, notice: info('Voice is open in another tab of this browser.'), controls: null } };
+/** `voice.micMissing`: listen-only. */
+export const InfoMicMissing: Story = { args: { notice: info('No microphone found. You can listen.') } };
+/** `voice.micFailed`: listen-only. */
+export const InfoMicFailed: Story = { args: { notice: info('The microphone could not be connected. You can listen.') } };
+/** An info notice at 360 CSS px: the notice wraps, nothing scrolls sideways, the controls stay 44 px. */
+export const InfoPhone: Story = {
+  args: { notice: info('The connection to voice was lost. Join again to continue.') },
+  decorators: [Story => <div style={{ width: 360 }}><Story /></div>],
+};
+/** The hold after a refused rekey (`voice.held`, WB security I1): no action, no media, camera and share aria-disabled. */
+export const Held: Story = {
+  args: {
+    notice: { kind: 'paused', text: 'A device in this call could not be checked yet, so this call is paused for you: nothing you say is sent and nothing is played. It continues once the check is done.', action: null, focusOnce: false },
+    controls: controls({ canCamera: false, canShare: false }),
+  },
+};
+/** Reconnecting: the tiles keep their last state; the dock says reconnecting. */
+export const Reconnecting: Story = { args: { tiles: [tile('ada', { state: 'not-heard' }), tile('bo', { muted: true }), tile('you', {}, true)] } };
+/** Toggles pressed (WB a11y I4): the labels stay mute, deafen, camera and share screen; `[x]` and aria-pressed say on. */
+export const TogglesPressed: Story = { args: { controls: controls({ muted: true, deafened: true, camera: true, sharing: true }) } };
+

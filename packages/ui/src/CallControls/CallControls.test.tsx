@@ -6,8 +6,7 @@ import { CallControls, type CallControlsProps } from './CallControls.tsx';
 import meta from './CallControls.stories.tsx';
 
 const labels: CallControlsProps['labels'] = {
-  region: 'call controls', mute: 'mute', unmute: 'unmute', deafen: 'deafen', undeafen: 'undeafen', cameraOn: 'camera',
-  cameraOff: 'stop camera', shareOn: 'share screen', shareOff: 'stop sharing', leave: 'leave',
+  region: 'call controls', mute: 'mute', deafen: 'deafen', camera: 'camera', share: 'share screen', leave: 'leave',
 };
 const base: CallControlsProps = {
   muted: false, deafened: false, camera: false, sharing: false, canCamera: true, canShare: true, busy: false, labels,
@@ -31,10 +30,13 @@ describe('CallControls', () => {
     expect(buttons[0]).toHaveFocus();
   });
 
-  it('labels say the next action, and each control calls its handler', async () => {
+  // WB a11y I4 (ruling 2026-10-14): a toggle keeps one visible label; aria-pressed and the aria-hidden [x] mark carry its
+  // state, so "mute, toggle button, pressed" means muted and is never contradicted by a swapped label.
+  it('toggles keep their label whatever their state, and each control calls its handler', async () => {
     const handlers = { onMute: vi.fn(), onDeafen: vi.fn(), onCamera: vi.fn(), onShare: vi.fn(), onLeave: vi.fn() };
     render(<CallControls {...base} {...handlers} muted deafened camera sharing />);
-    for (const name of ['unmute', 'undeafen', 'stop camera', 'stop sharing', 'leave']) await userEvent.click(screen.getByRole('button', { name }));
+    for (const name of ['mute', 'deafen', 'camera', 'share screen', 'leave']) await userEvent.click(screen.getByRole('button', { name }));
+    for (const gone of ['unmute', 'undeafen', 'stop camera', 'stop sharing']) expect(screen.queryByText(gone)).toBeNull();
     for (const fn of Object.values(handlers)) expect(fn).toHaveBeenCalledTimes(1);
   });
 
@@ -66,7 +68,11 @@ describe('CallControls', () => {
     expect(screen.getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-keyshortcuts');
     expect(screen.getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-pressed');
     rerender(<CallControls {...base} muted deafened camera sharing />);
-    for (const name of ['unmute', 'undeafen', 'stop camera', 'stop sharing']) expect(screen.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
+    for (const name of ['mute', 'deafen', 'camera', 'share screen']) {
+      const b = screen.getByRole('button', { name });
+      expect(b).toHaveAttribute('aria-pressed', 'true');
+      expect(within(b).getByText('[x]')).toHaveAttribute('aria-hidden', 'true');
+    }
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

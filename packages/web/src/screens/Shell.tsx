@@ -244,11 +244,14 @@ export function Shell(): React.JSX.Element {
   useLayoutEffect(() => {
     if (leftFrom === null) return;
     const name = whereOf(leftFrom.id);
+    // WB a11y m5: only the call's own row, or its own DM's call button; else the sidebar's active tab, where the dock was
+    // (never another DM's call button, never the page).
     const target = document.querySelector<HTMLElement>(`button.d-voice-row[aria-label="${CSS.escape(t('voice.open', { name }))}"]`)
-      ?? document.querySelector<HTMLElement>('.dw-call-strip__start');
+      ?? (dm?.id === leftFrom.id ? document.querySelector<HTMLElement>('.dw-call-strip__start') : null)
+      ?? document.querySelector<HTMLElement>('.dw-sidebar [role="tab"][aria-selected="true"]');
     target?.focus();
     setLeftFrom(null);
-  }, [leftFrom, whereOf]);
+  }, [leftFrom, whereOf, dm?.id]);
   // A typing signal is a hint: one the worker refuses (the channel is not viewable any more, or the socket is not online,
   // E_NOT_READY) is simply not sent, never an error banner (the docs shoot's shell-not-member image showed one).
   const typingRefused = useCallback(() => undefined, []);

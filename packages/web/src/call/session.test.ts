@@ -752,13 +752,14 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.camera).toBe(false);
   });
 
-  it('an unexpected room disconnect ends the call and posts callLeave', async () => {
+  it('an unexpected room disconnect ends the call and posts callLeave("lost") (WB client I3)', async () => {
     const f = fakes();
     const call = await start(f);
     f.room.emit('disconnected');
     await flush();
     expect(call.state.phase).toBe('ended');
-    expect(f.calls).toContainEqual({ m: 'callLeave', reason: 'user' });
+    expect(call.state.error).toBe('E_DISCONNECTED');
+    expect(f.calls).toContainEqual({ m: 'callLeave', reason: 'lost' });
     f.pushKeys(callId, keysFor(2n));
     expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n]);
   });
@@ -777,5 +778,152 @@ describe('the page call session (L-WEB-50)', () => {
     expect(f.room.count('participantPermissionsChanged')).toBe(0);
     await call.leave('user');
     expect(f.calls.filter((c) => c.m === 'callLeave')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Whole-branch fix wave (wb-client.md I1, I2, I3, m2, m3).
+// ---------------------------------------------------------------------------------------------
+
+function videoTrack(): MediaStreamTrack & { enabled: boolean; stopped: boolean } {
+  const t = { kind: 'video', enabled: true, stopped: false, stop() { t.stopped = true; }, addEventListener: () => undefined, removeEventListener: () => undefined };
+  return t as unknown as MediaStreamTrack & { enabled: boolean; stopped: boolean };
+}
+const streamOf = (video: MediaStreamTrack) => ({ getTracks: () => [video], getAudioTracks: () => [], getVideoTracks: () => [video] }) as unknown as MediaStream;
+const later = <T,>() => {
+  let resolve: (v: T) => void = () => undefined;
+  let reject: (e: unknown) => void = () => undefined;
+  const promise = new Promise<T>((ok, no) => { resolve = ok; reject = no; });
+  return { promise, resolve, reject };
+};
+
+describe('the whole-branch fix wave', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+
+  // I1: a join is cancellable from the page, the microphone prompt included.
+  it('an abort while the microphone prompt is open ends the start at once; the late track is stopped; nothing is joined', async () => {
+    const f = fakes();
+    const mic = later<MediaStream>();
+    const track = { kind: 'audio', stop: vi.fn() };
+    f.gum.mockImplementationOnce(() => mic.promise);
+    const abort = new AbortController();
+    const outcome = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, signal: abort.signal }).catch((e: unknown) => e);
+    await flush();
+    abort.abort();
+    expect(await outcome).toMatchObject({ code: 'E_ABORTED' });
+    expect(f.calls.some((c) => c.m === 'callJoin')).toBe(false);
+    mic.resolve({ getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] } as unknown as MediaStream);
+    await flush();
+    expect(track.stop).toHaveBeenCalled();
+  });
+
+  it('an abort while callJoin is pending posts callLeave("user") at once, stops the microphone and ends E_ABORTED', async () => {
+    const f = fakes();
+    const stop = vi.fn();
+    f.gum.mockImplementationOnce(async () => ({ getTracks: () => [], getAudioTracks: () => [{ kind: 'audio', stop }], getVideoTracks: () => [] }) as unknown as MediaStream);
+    const answer = later<unknown>();
+    const original = f.deps.bridge.call;
+    f.deps.bridge.call = vi.fn((cmd: Command) => (cmd.m === 'callJoin' ? (f.calls.push(cmd), answer.promise) : original(cmd)));
+    const abort = new AbortController();
+    const outcome = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, signal: abort.signal }).catch((e: unknown) => e);
+    await flush();
+    expect(f.calls.map((c) => c.m)).toEqual(['callJoin']);
+    abort.abort();
+    expect(f.calls).toContainEqual({ m: 'callLeave', reason: 'user' });
+    expect(stop).toHaveBeenCalled();
+    answer.reject(Object.assign(new Error('E_NO_CALL'), { code: 'E_NO_CALL' }));
+    expect(await outcome).toMatchObject({ code: 'E_ABORTED' });
+    expect(f.deps.joinCall).not.toHaveBeenCalled();
+  });
+
+  // I2: RV-3 says nothing is sent while paused. The camera and screen stop sending at once, even while a camera or
+  // share operation holds the lane (the screen picker left open), and an operation that finishes during the pause
+  // publishes nothing.
+  it('a pause disables a published camera at once while the screen picker is open, and the share then publishes nothing', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const cam = videoTrack();
+    f.gum.mockImplementationOnce(async () => streamOf(cam));
+    await call.setCamera(true);
+    expect(call.state.camera).toBe(true);
+    const picker = later<MediaStream>();
+    f.deps.media.getDisplayMedia = vi.fn(() => picker.promise);
+    const sharing = call.setSharing(true).catch((e: unknown) => e);
+    await flush();
+    expect(f.deps.media.getDisplayMedia).toHaveBeenCalled();
+    const paused = call.setPaused(true);
+    expect(cam.enabled).toBe(false);
+    const screen = videoTrack();
+    picker.resolve(streamOf(screen));
+    await paused;
+    expect(await sharing).toMatchObject({ code: 'E_UNAVAILABLE' });
+    expect(f.room.localParticipant.publishTrack.mock.calls.filter(([, o]) => o.source === 'screen_share')).toHaveLength(0);
+    expect(screen.stopped).toBe(true);
+    expect(cam.stopped).toBe(true);
+    expect(call.state.camera).toBe(false);
+    expect(call.state.sharing).toBe(false);
+  });
+
+  it('a camera whose publish was in flight when the pause came is unpublished and stopped', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.share(true);
+    const cam = videoTrack();
+    f.gum.mockImplementationOnce(async () => streamOf(cam));
+    const publish = later<unknown>();
+    f.room.localParticipant.publishTrack.mockImplementationOnce(() => publish.promise as never);
+    const camera = call.setCamera(true).catch((e: unknown) => e);
+    await flush();
+    void call.setPaused(true);
+    publish.resolve({ source: 'camera', track: fakeLocalTrack('video'), trackSid: 'TR_C' });
+    expect(await camera).toMatchObject({ code: 'E_UNAVAILABLE' });
+    expect(f.room.localParticipant.unpublishTrack).toHaveBeenCalledWith(cam);
+    expect(cam.stopped).toBe(true);
+    expect(call.state.camera).toBe(false);
+  });
+
+  // I3: the session says why it ended on its own, and tells the worker it was lost.
+  it.each([[5, 'E_CALL_ENDED'], [4, 'E_REMOVED'], [1, 'E_DISCONNECTED'], [undefined, 'E_DISCONNECTED']] as const)(
+    'a disconnect with LiveKit reason %s ends the call with %s', async (reason, code) => {
+      const f = fakes();
+      const call = await start(f);
+      f.room.emit('disconnected', reason);
+      await flush();
+      expect(call.state).toMatchObject({ phase: 'ended', error: code });
+      expect(f.calls.filter((c) => c.m === 'callLeave')).toEqual([{ m: 'callLeave', reason: 'lost' }]);
+    });
+
+  // m2: the room's own end is heard from the moment joinCall resolves, not only after the microphone is published.
+  it('a disconnect while the microphone is being published ends the start; it never reports connected', async () => {
+    const f = fakes();
+    const publish = later<unknown>();
+    f.room.localParticipant.publishTrack.mockImplementationOnce(() => publish.promise as never);
+    const outcome = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts).catch((e: unknown) => e);
+    await flush();
+    f.room.emit('disconnected', 1);
+    publish.resolve({ source: 'microphone', track: fakeLocalTrack('audio'), trackSid: 'TR_M' });
+    const r = await outcome;
+    expect(r).toMatchObject({ code: 'E_DISCONNECTED' });
+    expect(f.calls).toContainEqual({ m: 'callLeave', reason: 'user' });
+    expect(f.order).toContain('lock.release');
+  });
+
+  // m3: a leave while a share waits for the SFU's permission settles the waiting camera (no promise kept forever).
+  it('a leave while a share waits for its permission settles setCamera', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.deps.bridge.call = vi.fn(async (cmd: Command) => { f.calls.push(cmd); return null; });
+    const camera = call.setCamera(true).then(() => 'resolved', (e: unknown) => e);
+    await flush();
+    await call.leave('user');
+    await flush();
+    expect(await Promise.race([camera, new Promise((r) => setTimeout(() => r('pending'), 50))])).toMatchObject({ code: 'E_UNAVAILABLE' });
+    expect(f.room.count('participantPermissionsChanged')).toBe(0);
   });
 });

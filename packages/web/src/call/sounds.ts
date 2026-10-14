@@ -42,9 +42,32 @@ function tone(ctx: AudioContext, hz: number, at: number, length: number): void {
 /** `getContext` is asked on every play, so the caller decides when an AudioContext exists (null: play nothing). */
 export function createSounds(getContext: () => AudioContext | null): Sounds {
   let ring: ReturnType<typeof setInterval> | null = null;
+  /** resume() never throws here, nor rejects into the page (a context without it, or one the browser refuses). */
+  const resume = (ctx: AudioContext): void => { void Promise.resolve().then(() => ctx.resume()).catch(() => undefined); };
+  /** Contexts already given their one resume() attempt (WB client m4, plan :456). */
+  const tried = new WeakSet<AudioContext>();
+  let gesture: (() => void) | null = null;
+  const dropGesture = (): void => {
+    if (gesture !== null) globalThis.removeEventListener?.('pointerdown', gesture);
+    gesture = null;
+  };
+  /** A suspended context (made outside a gesture, or suspended by the OS or an output change): one resume() now, and one
+   *  more at the next pointerdown, a user gesture that browsers accept. */
+  const wake = (ctx: AudioContext): void => {
+    if (tried.has(ctx)) return;
+    tried.add(ctx);
+    resume(ctx);
+    dropGesture();
+    gesture = () => {
+      dropGesture();
+      if (ctx.state === 'suspended') resume(ctx);
+    };
+    globalThis.addEventListener?.('pointerdown', gesture);
+  };
 
   const usable = (): AudioContext | null => {
     const ctx = getContext();
+    if (ctx?.state === 'suspended') wake(ctx);
     // Only a running context plays: a suspended one (no user activation yet) would queue every tone at a frozen
     // currentTime and fire them all at once on resume, and a closed one cannot play.
     return ctx?.state === 'running' ? ctx : null;
@@ -81,6 +104,9 @@ export function createSounds(getContext: () => AudioContext | null): Sounds {
       }, RING.everyMs);
     },
     stopRing,
-    dispose: stopRing,
+    dispose() {
+      stopRing();
+      dropGesture();
+    },
   };
 }

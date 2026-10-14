@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
@@ -10,7 +10,7 @@ const labels: VoiceSettingsProps['labels'] = {
   outputUnsupported: 'This browser plays voice on the system default device.', mode: 'input mode', vad: 'voice activity', ptt: 'push to talk',
   pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
   pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
-  pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock, Insert or F13 to F24.',
+  pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
   noise: 'noise suppression', level: 'input level',
 };
 const base: VoiceSettingsProps = {
@@ -74,7 +74,7 @@ describe('VoiceSettings', () => {
     expect(onCaptureKey).toHaveBeenLastCalledWith('cancel');
   });
 
-  it('accepts only a non-text key on its own: F13 to F24, Pause, ScrollLock, Insert (task-8b review I2, supersedes M9)', () => {
+  it('accepts only a non-text key on its own: F13 to F24, Pause, ScrollLock, Insert (task-8b review I2, supersedes M9)', async () => {
     const onCaptureKey = vi.fn();
     render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={onCaptureKey} />);
     const capture = screen.getByRole('button', { name: 'set key' });
@@ -93,7 +93,7 @@ describe('VoiceSettings', () => {
       expect(typed).toBe(false);
     }
     expect(onCaptureKey).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('That key types text, moves the focus or needs another key.');
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('That key types text, moves the focus or needs another key.'));
     fireEvent.keyDown(capture, { key: 'Control', code: 'ControlLeft', ctrlKey: true });
     expect(onCaptureKey).not.toHaveBeenCalled();
     for (const code of ['F13', 'F24', 'Pause', 'ScrollLock', 'Insert']) {
@@ -101,6 +101,19 @@ describe('VoiceSettings', () => {
       expect(onCaptureKey).toHaveBeenLastCalledWith({ code, ctrl: false, alt: false, meta: false, shift: false });
     }
     expect(onCaptureKey).toHaveBeenCalledTimes(5);
+  });
+
+  // WB a11y m7: a second refused key says the refusal again (the region is emptied, then set), so the prompt never looks
+  // frozen to a screen reader user.
+  it('says the refusal again for a second refused key', async () => {
+    render(<VoiceSettings {...base} mode="ptt" capturing onCaptureKey={vi.fn()} />);
+    const capture = screen.getByRole('button', { name: 'set key' });
+    const status = screen.getByRole('status');
+    fireEvent.keyDown(capture, { key: 'a', code: 'KeyA' });
+    expect(status).toHaveTextContent('That key types text');
+    fireEvent.keyDown(capture, { key: 'b', code: 'KeyB' });
+    expect(status).toHaveTextContent('');
+    await waitFor(() => expect(status).toHaveTextContent('That key types text'));
   });
 
   it('refuses a key typed with AltGr, which browsers report as Control plus Alt (task 8b ruling)', () => {
