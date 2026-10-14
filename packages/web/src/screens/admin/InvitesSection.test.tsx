@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { Command, InviteSummary } from '@dilla/client-core';
+import type { Command, CommunityAccess, InviteSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
@@ -22,6 +22,9 @@ const INVITES: InviteSummary[] = [
   { id: INV2, createdBy: null, maxUses: 1, uses: 0, created: 1_800_000_000, expires: EXPIRES + 86_400 },
 ];
 
+const access = (over: Partial<CommunityAccess> = {}): CommunityAccess => ({ top: 0, owner: false, manageCommunity: false, manageChannels: false,
+  kickMembers: false, banMembers: false, createInvite: true, manageRoles: false, loaded: true, ...over });
+
 function setup(invites: InviteSummary[] | null = INVITES, handler?: (command: Command) => Promise<unknown>, members = true) {
   const fake = new FakeClient();
   fake.set('account', account());
@@ -33,6 +36,7 @@ function setup(invites: InviteSummary[] | null = INVITES, handler?: (command: Co
     ]);
   }
   if (invites !== null) fake.set(`invites:${SERVER}`, invites);
+  fake.set(`permissions:${SERVER}`, access({ manageCommunity: true }));
   fake.handler = handler ?? (command => Promise.resolve(command.m === 'createInvite'
     ? { url: 'https://dilla.test/join/abc', code: 'abc', expires: EXPIRES } : null));
   const announce = vi.fn();
@@ -96,6 +100,17 @@ describe('the invites section', () => {
     await user.click(screen.getByRole('button', { name: `revoke the link by Bob B that expires ${messageTime(EXPIRES, Date.now())}` }));
     await waitFor(() => expect(fake.callsOf('revokeInvite')).toEqual([{ m: 'revokeInvite', communityId: SERVER, inviteId: INV1 }]));
     await waitFor(() => expect(announce).toHaveBeenCalledWith(en['admin.invites.revoked']));
+  });
+  // Final fix M1: revoke is offered on a link this account made, or to someone who manages the server.
+  it('without manageCommunity only the links this account made offer revoke', () => {
+    const MINE = 'f3'.repeat(16);
+    const { fake } = setup([...INVITES, { id: MINE, createdBy: ME.id, maxUses: 5, uses: 0, created: 1_800_000_000, expires: EXPIRES }]);
+    expect(screen.getAllByRole('button', { name: /^revoke/ })).toHaveLength(3);
+    act(() => { fake.publish(`permissions:${SERVER}`, access({ manageCommunity: false })); });
+    const revokes = screen.getAllByRole('button', { name: /^revoke/ });
+    expect(revokes).toHaveLength(1);
+    expect(revokes[0]).toHaveAccessibleName(`revoke the link by ada that expires ${messageTime(EXPIRES, Date.now())}`);
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
   });
   it('says a revoke refusal (403) by its copy and other failures by their code', async () => {
     const { fake, user, announce } = setup();

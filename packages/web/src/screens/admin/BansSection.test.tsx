@@ -6,7 +6,7 @@ import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
-import { en, formatDay } from '../../strings/index.ts';
+import { en, formatDay, formatDayTime } from '../../strings/index.ts';
 import { BansSection } from './BansSection.tsx';
 import { ServerSettings } from './ServerSettings.tsx';
 
@@ -161,6 +161,24 @@ describe('fix round 1: focus and honest names', () => {
     const row = rowOf('carol');
     expect(row).not.toHaveTextContent('banned by');
     expect(row).toHaveTextContent(en['admin.bans.forever']);
+  });
+  // Final fix M4: a ban that ends within 2 days says the time as well as the date.
+  it('says the time of a ban that ends within 2 days, and only the date of a later one', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(PAST * 1000));
+    const soon = PAST + 86_400 + 3_600;
+    const edge = PAST + 2 * 86_400;
+    const later = PAST + 2 * 86_400 + 1;
+    setup([
+      { userId: BOB, name: 'Bob B', reason: '', byUser: ME.id, created: CREATED, expires: soon },
+      { userId: CAROL, name: 'carol', reason: '', byUser: ME.id, created: CREATED, expires: edge },
+      { userId: DAVE, name: 'dave', reason: '', byUser: ME.id, created: CREATED, expires: later },
+    ]);
+    expect(formatDayTime(soon)).not.toBe(formatDay(soon));
+    expect(rowOf('Bob B')).toHaveTextContent(`ends ${formatDayTime(soon)}`);
+    expect(rowOf('carol')).toHaveTextContent(`ends ${formatDayTime(edge)}`);
+    expect(rowOf('dave')).toHaveTextContent(`ends ${formatDay(later)}`);
+    expect(rowOf('dave')).not.toHaveTextContent(`ends ${formatDayTime(later)}`);
   });
   it('reads a ban that ends exactly now as ended', () => {
     vi.useFakeTimers({ toFake: ['Date'] });

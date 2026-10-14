@@ -4,13 +4,18 @@ import type { BanSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
-import { formatDay, t } from '../../strings/index.ts';
+import { formatDay, formatDayTime, t } from '../../strings/index.ts';
 import { shownName, useRun, type SectionProps } from './shared.ts';
 
-/** How long a ban lasts, as the row says it: running to a date, until lifted, or already ended (the person can join again). */
+/** Final fix M4: a ban that ends within this many seconds says the time as well as the date. */
+const SOON_S = 2 * 86_400;
+
+/** How long a ban lasts, as the row says it: running to a date (and a time when that is within 2 days), until lifted, or
+ *  already ended (the person can join again). */
 function lastsLine(ban: BanSummary, nowSeconds: number): string {
   if (ban.expires === null) return t('admin.bans.forever');
-  return ban.expires <= nowSeconds ? t('admin.bans.lapsed', { date: formatDay(ban.expires) }) : t('admin.bans.until', { date: formatDay(ban.expires) });
+  if (ban.expires <= nowSeconds) return t('admin.bans.lapsed', { date: formatDay(ban.expires) });
+  return t('admin.bans.until', { date: ban.expires - nowSeconds <= SOON_S ? formatDayTime(ban.expires) : formatDay(ban.expires) });
 }
 
 /**

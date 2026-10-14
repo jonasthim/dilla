@@ -11,6 +11,8 @@ export function t(key: StringKey, vars?: Record<string, string | number>): strin
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
 const dayFormat = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+const dayTimeFormat = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 export function formatTime(ts: number): string { return timeFormat.format(new Date(ts * 1000)); }
 export function formatDay(ts: number): string { return dayFormat.format(new Date(ts * 1000)); }
+export function formatDayTime(ts: number): string { return dayTimeFormat.format(new Date(ts * 1000)); }

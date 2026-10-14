@@ -36,6 +36,8 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
   const base = useId();
   const invites = useSlice(`invites:${communityId}`);
   const members = useSlice(`members:${communityId}`);
+  const access = useSlice(`permissions:${communityId}`);
+  const selfId = useSlice('account')?.user?.id ?? null;
   const [ttl, setTtl] = useState(String(DEFAULT_TTL_S));
   const [uses, setUses] = useState(String(DEFAULT_USES));
   const [made, setMade] = useState<Made | null>(null);
@@ -109,8 +111,10 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
   const rows = (members === undefined ? [] : invites ?? []).map(i => {
     const name = nameOf(i.createdBy, members ?? []);
     const date = messageTime(i.expires, now);
+    // Final fix M1: revoke is offered on a link this account made, or to someone who manages the server (the instance's rule).
+    const mayRevoke = (selfId !== null && i.createdBy === selfId) || access?.manageCommunity === true;
     return { id: i.id, title: t('admin.invites.row', { name, used: i.uses, max: i.maxUses, date }), detail: [] as string[],
-      action: { label: t('admin.invites.revoke'), ariaLabel: t('admin.invites.revokeLabel', { name, date }) } };
+      action: mayRevoke ? { label: t('admin.invites.revoke'), ariaLabel: t('admin.invites.revokeLabel', { name, date }) } : null };
   });
 
   return (
