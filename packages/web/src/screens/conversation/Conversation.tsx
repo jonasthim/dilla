@@ -5,6 +5,7 @@ import { Banner, Button, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dil
 import { useCore } from '../../core/context.tsx';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { t } from '../../strings/index.ts';
+import { madeHere } from '../Create.tsx';
 import { authorName, editableText, excerpt, plainBody, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { MessageItem, type RowEvent } from './MessageItem.tsx';
@@ -198,7 +199,8 @@ export function Conversation(p: ConversationProps): React.JSX.Element {
     {p.ui.notice !== null ? <Banner tone="info">{t(p.ui.notice)} <Button variant="ghost" onClick={() => {
       noticeDismissed.current = true; p.dispatch({ type: 'notice', notice: null });
     }}>{t('shell.banner.dismiss')}</Button></Banner> : null}
-    <MessageLog key={p.logKey} label={p.label} emptyLabel={p.timeline === undefined ? t('shell.log.loading') : t('shell.log.empty')}
+    <MessageLog key={p.logKey} label={p.label} emptyLabel={p.timeline === undefined ? t('shell.log.loading')
+      : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
       earlier={p.timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: () => p.onLoadEarlier() } : undefined}
       busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}>
       {items.map(item => <MessageItem key={item.key} item={item} channelId={p.channelId} book={p.book} now={now}

@@ -346,20 +346,32 @@ export function Shell(): React.JSX.Element {
     client.call({ m: 'loadVoice', communityId, channelId: null }).catch(() => undefined);
   }, [communityId, listed, selectCommunity, client]);
   // (3a) Flow 07: the selected server's lists again when the window comes back, at most once per LIST_REFRESH_MS (counting the
-  // load above). A background read: a failure keeps the lists and raises no banner, as the picker's re-read does.
+  // load above). A background read: a failure keeps the lists and raises no banner, as the picker's re-read does. A return
+  // inside the window is not dropped: it schedules one trailing read at the window's end (WB m1), which a hidden page skips
+  // (its next return reads). The instance pushes no event for a new channel yet; this stays as the fallback once it does.
   const listedAt = useRef(0);
   useEffect(() => {
     if (!listed || communityId === null) return;
     listedAt.current = Date.now();
     const id = communityId;
-    const refresh = () => {
-      if (document.visibilityState === 'hidden' || Date.now() - listedAt.current < LIST_REFRESH_MS) return;
+    let trailing: ReturnType<typeof setTimeout> | null = null;
+    const read = () => {
       listedAt.current = Date.now();
       client.call({ m: 'selectCommunity', communityId: id }).catch(() => undefined);
+    };
+    const refresh = () => {
+      if (document.visibilityState === 'hidden') return;
+      const wait = listedAt.current + LIST_REFRESH_MS - Date.now();
+      if (wait <= 0) { read(); return; }
+      trailing ??= setTimeout(() => {
+        trailing = null;
+        if (document.visibilityState !== 'hidden') read();
+      }, wait);
     };
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     return () => {
+      if (trailing !== null) clearTimeout(trailing);
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
@@ -943,7 +955,7 @@ function DmPicker(p: {
           const nameId = `${idBase}-${m.userId}`;
           return (
             <li key={m.userId} className="dw-dm-picker__row">
-              <span id={nameId}>{m.display || m.username}</span>
+              <span id={nameId} className="dw-dm-picker__name">{m.display || m.username}</span>
               <Button size="sm" aria-describedby={nameId} aria-disabled={p.busy ? true : undefined}
                 onClick={() => { if (!p.busy) p.onPick(m.userId); }}>{t('shell.dms.open')}</Button>
             </li>

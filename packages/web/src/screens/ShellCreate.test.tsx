@@ -172,6 +172,20 @@ describe('a server’s actions (flow 07)', () => {
     expect(within(screen.getByRole('group', { name: 'server actions' })).getAllByRole('button').map(b => b.textContent)).toEqual(['invite link']);
   });
 
+  // Product walk M1: in a channel this browser just made, nothing was sent before it joined, so the empty log says only
+  // that nothing is here yet. A channel made elsewhere keeps the full sentence.
+  it('an empty channel this browser just made says only that nothing is here yet', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
+    act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', items: [], hasEarlier: false }));
+    expect(screen.getByText('nothing here yet. Messages sent before this browser joined are not shown.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'new channel' }));
+    await user.type(screen.getByRole('textbox', { name: 'Channel name' }), 'Random{Enter}');
+    await waitFor(() => expect(path()).toBe(`/c/${A}/${RAND}`));
+    act(() => fake.set(`timeline:${RAND}`, { channelId: RAND, group: 'active', items: [], hasEarlier: false }));
+    await waitFor(() => expect(screen.getByText('nothing here yet.')).toBeInTheDocument());
+    expect(screen.queryByText(/Messages sent before this browser joined/)).toBeNull();
+  });
+
   it('adds a channel and opens it', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     await user.click(screen.getByRole('button', { name: 'new channel' }));
@@ -234,6 +248,31 @@ describe('a server’s actions (flow 07)', () => {
     act(() => { window.dispatchEvent(new Event('focus')); });
     expect(selects()).toBe(before + 1);
     act(() => { window.dispatchEvent(new Event('focus')); });
+    expect(selects()).toBe(before + 1);
+  });
+
+  // WB m1: a focus inside the 15 s window is not dropped. One trailing read runs when the window ends, so a tab that stays
+  // in front still learns of another member's new channel (until the instance pushes the change itself).
+  it('a focus inside the 15 s window schedules one trailing read at its end', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(1_900_000_000_000);
+    const { fake, view } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
+    const selects = () => fake.callsOf('selectCommunity').length;
+    const before = selects();
+    act(() => { vi.advanceTimersByTime(5_000); });
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(selects()).toBe(before);
+    act(() => { vi.advanceTimersByTime(9_999); });
+    expect(selects()).toBe(before);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(selects()).toBe(before + 1);
+    // A trailing read still pending when the shell goes away does not run.
+    act(() => { vi.advanceTimersByTime(1_000); });
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    expect(selects()).toBe(before + 1);
+    view.unmount();
+    act(() => { vi.advanceTimersByTime(60_000); });
     expect(selects()).toBe(before + 1);
   });
 });

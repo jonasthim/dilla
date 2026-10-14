@@ -52,6 +52,26 @@ function partialKey(missing: readonly number[]): 'create.server.partial' | 'crea
 
 interface MadeServer { communityId: string; name: string; channels: Map<number, string> }
 
+/** The channels this browser created in this page session, per worker client: nothing in them predates its join (walk M1). */
+const madeChannels = new WeakMap<object, Set<string>>();
+function rememberMade(client: object, channelId: string): void {
+  let made = madeChannels.get(client);
+  if (made === undefined) { made = new Set(); madeChannels.set(client, made); }
+  made.add(channelId);
+}
+/** Whether this browser created `channelId` in this page session. */
+export function madeHere(client: object, channelId: string): boolean {
+  return madeChannels.get(client)?.has(channelId) ?? false;
+}
+
+/** Servers whose starter channels failed after their dialog closed, by communityId, per worker client (WB m4). */
+const leftServers = new WeakMap<object, Map<string, { server: MadeServer; failure: UiError }>>();
+function leftovers(client: object): Map<string, { server: MadeServer; failure: UiError }> {
+  let held = leftServers.get(client);
+  if (held === undefined) { held = new Map(); leftServers.set(client, held); }
+  return held;
+}
+
 /**
  * "Start a server": the name, then createCommunity, then the two starter channels. `onServer` runs as soon as the server
  * exists, so the shell selects it; `onDone` once both starters exist. A starter channel that fails leaves the server as it
@@ -63,6 +83,13 @@ interface MadeServer { communityId: string; name: string; channels: Map<number, 
  * The retry first reads the server's channel list again: dillad keeps no uniqueness on channel names, and a create whose
  * answer was lost may still have made its channel, so a listed starter counts as made (review I1). A retry whose read
  * fails sends no create.
+ *
+ * A starter that fails after the dialog closed is kept by communityId for the page session and named, once, by the next
+ * open (or at once, when the dialog was opened again meanwhile), with the same retry (WB m4).
+ *
+ * A create whose answer was lost (E_NETWORK) may still have made the server. A server this account owns, with exactly that
+ * name, in the list now but not before the press, is that server: it is adopted and gets its starters, and a later press
+ * with the same name looks again before it creates anything (WB m5). The worker reads the list again on every ready.
  */
 export function CreateServerFlow(props: {
   open: boolean; onClose(): void; onServer(communityId: string): void; onDone(result: { communityId: string; channelId: string }): void;
@@ -77,14 +104,39 @@ export function CreateServerFlow(props: {
   const running = useRef(false);
   // Each open of the dialog is one session; work from an earlier one is ignored once it closed.
   const session = useRef(0);
+  const open = useRef(props.open);
   // The server this dialog created and the starter channels it holds so far, for the retry.
   const made = useRef<MadeServer | null>(null);
+  // A create whose answer was lost: its name and the servers listed before its press (WB m5).
+  const lost = useRef<{ name: string; before: ReadonlySet<string> } | null>(null);
+
+  const fail = (message: string) => { setError(message); setAttempt(a => a + 1); };
+  const notice = (server: MadeServer, failure: UiError) => {
+    const missing = STARTERS.flatMap((_, i) => (server.channels.has(i) ? [] : [i]));
+    setPartial(t(partialKey(missing), { name: server.name, code: failure.code }));
+    setAttempt(a => a + 1);
+  };
+  /** Names the latest server whose starters failed after a close, in this session, with the retry; told once. */
+  const takeLeftover = () => {
+    const held = leftovers(client);
+    const last = [...held.values()].at(-1);
+    if (last === undefined) return;
+    held.delete(last.server.communityId);
+    made.current = last.server;
+    setError(null);
+    notice(last.server, last.failure);
+  };
 
   useEffect(() => {
-    if (props.open) return;
+    open.current = props.open;
+    if (props.open) {
+      takeLeftover();
+      return;
+    }
     session.current += 1;
     setName(''); setError(null); setPartial(null);
     made.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per open and close; takeLeftover reads refs and setters only
   }, [props.open]);
 
   const starters = async (server: MadeServer, mine: () => boolean) => {
@@ -94,26 +146,26 @@ export function CreateServerFlow(props: {
       try {
         const id = idIn(await client.call({ m: 'createChannel', communityId: server.communityId, kind: starter.kind, name: starter.name }), 'channelId');
         if (id === null) failure ??= BAD_RESULT;
-        else server.channels.set(i, id);
+        else { server.channels.set(i, id); rememberMade(client, id); }
       } catch (e) {
         failure ??= errorOf(e);
       }
     }
-    if (!mine()) return;
     const general = server.channels.get(0);
     const missing = STARTERS.flatMap((_, i) => (server.channels.has(i) ? [] : [i]));
-    if (missing.length === 0 && general !== undefined) {
+    const complete = missing.length === 0 && general !== undefined;
+    if (!mine()) {
+      // The dialog closed meanwhile: what is missing waits for the next open, or is said now in a dialog opened again.
+      if (complete) leftovers(client).delete(server.communityId);
+      else leftovers(client).set(server.communityId, { server, failure: failure ?? BAD_RESULT });
+      if (!complete && open.current) takeLeftover();
+      return;
+    }
+    if (complete && general !== undefined) {
       props.onDone({ communityId: server.communityId, channelId: general });
       return;
     }
     notice(server, failure ?? BAD_RESULT);
-  };
-
-  const fail = (message: string) => { setError(message); setAttempt(a => a + 1); };
-  const notice = (server: MadeServer, failure: UiError) => {
-    const missing = STARTERS.flatMap((_, i) => (server.channels.has(i) ? [] : [i]));
-    setPartial(t(partialKey(missing), { name: server.name, code: failure.code }));
-    setAttempt(a => a + 1);
   };
 
   const run = (work: (mine: () => boolean) => Promise<void>) => {
@@ -124,6 +176,13 @@ export function CreateServerFlow(props: {
     void work(() => session.current === at).finally(() => { running.current = false; setBusy(false); });
   };
 
+  /** The id of a server this account owns, named exactly `serverName`, listed now and not in `before`; else null. */
+  const adoptable = (serverName: string, before: ReadonlySet<string>): string | null => {
+    const me = client.get('account')?.user?.id;
+    if (me === undefined) return null;
+    return (client.get('communities') ?? []).find(c => c.name === serverName && c.owner === me && !before.has(c.id))?.id ?? null;
+  };
+
   const submit = () => {
     const problem = nameProblem(name, SERVER_NAME_MAX_BYTES);
     if (problem !== null) {
@@ -131,17 +190,27 @@ export function CreateServerFlow(props: {
       return;
     }
     const serverName = name.trim();
+    // A press after a lost answer with the same name compares with the list from before that first press.
+    const earlier = lost.current?.name === serverName ? lost.current.before : null;
+    const before = earlier ?? new Set((client.get('communities') ?? []).map(c => c.id));
     run(async mine => {
-      let communityId: string | null;
-      try {
-        communityId = idIn(await client.call({ m: 'createCommunity', name: serverName }), 'communityId');
-      } catch (e) {
-        const code = errorOf(e).code;
-        // The worker's E_BAD_INPUT here is its own name check (Task 1), so it reads as a refused name too.
-        if (mine()) fail(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? t('create.server.error.refused') : t('create.server.error.other', { code }));
-        return;
+      let communityId = earlier === null ? null : adoptable(serverName, earlier);
+      if (communityId === null) {
+        try {
+          communityId = idIn(await client.call({ m: 'createCommunity', name: serverName }), 'communityId');
+        } catch (e) {
+          const code = errorOf(e).code;
+          communityId = code === 'E_NETWORK' ? adoptable(serverName, before) : null;
+          if (communityId === null) {
+            if (code === 'E_NETWORK') lost.current = { name: serverName, before };
+            // The worker's E_BAD_INPUT here is its own name check (Task 1), so it reads as a refused name too.
+            if (mine()) fail(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? t('create.server.error.refused') : t('create.server.error.other', { code }));
+            return;
+          }
+        }
       }
       if (communityId === null) { if (mine()) fail(t('create.server.error.other', { code: BAD_RESULT.code })); return; }
+      lost.current = null;
       const server: MadeServer = { communityId, name: serverName, channels: new Map<number, string>() };
       if (mine()) {
         made.current = server;
@@ -217,6 +286,12 @@ export function CreateChannelFlow(props: {
       fail(t(problem === 'empty' ? 'create.channel.error.empty' : problem === 'long' ? 'create.channel.error.long' : 'create.name.control'));
       return;
     }
+    // dillad keeps no uniqueness on channel names: a name this server already lists for the kind is refused here (walk M2).
+    const listedKind = kind === 'voice' ? 1 : 0;
+    if ((client.get(`channels:${community.id}`) ?? []).some(c => c.kind === listedKind && c.name === shown)) {
+      fail(t(kind === 'text' ? 'create.channel.error.takenText' : 'create.channel.error.takenVoice', { name: shown }));
+      return;
+    }
     running.current = true;
     setBusy(true);
     const chosen = kind;
@@ -225,6 +300,7 @@ export function CreateChannelFlow(props: {
     void (async () => {
       try {
         const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown }), 'channelId');
+        if (id !== null) rememberMade(client, id);
         if (!mine()) return;
         if (id === null) fail(t('create.channel.error.other', { code: BAD_RESULT.code }));
         else props.onDone(id, chosen);
@@ -262,14 +338,32 @@ async function copied(url: string): Promise<boolean> {
   }
 }
 
+const DAY_MS = 24 * 3600 * 1000;
+/** A link whose answer took longer than this is not copied by itself: the browser no longer counts the press (WB m3). */
+export const AUTO_COPY_MS = 1000;
+
+/** The last invite made per server, for this page session (one map per worker client): the link and when it was made. */
+const madeInvites = new WeakMap<object, Map<string, { url: string; at: number }>>();
+function inviteMemory(client: object): Map<string, { url: string; at: number }> {
+  let memory = madeInvites.get(client);
+  if (memory === undefined) { memory = new Map(); madeInvites.set(client, memory); }
+  return memory;
+}
+
 /**
  * The invite action: on open, createInvite for INVITE_MAX_USES uses over INVITE_TTL_DAYS days, then the link is copied and
  * "Invite link copied." is announced. The link stays in the dialog for a clipboard the browser blocked.
+ *
+ * The last link per server is reused for the page session while more than a day of it is left, so neither an open nor a
+ * switch between servers mints another (WB m3); `invite.limits` then counts the days left. The link is copied by itself
+ * only when it is at hand within AUTO_COPY_MS of the open; a slower answer shows the link and copy link, which copies inside
+ * the person's own press.
  */
 export function InviteFlow(props: { open: boolean; community: { id: string; name: string } | null; onClose(): void }): React.JSX.Element {
   const client = useCore();
   const [state, setState] = useState<'creating' | 'ready' | 'failed'>('creating');
   const [url, setUrl] = useState('');
+  const [days, setDays] = useState(INVITE_TTL_DAYS);
   const [status, setStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -283,15 +377,25 @@ export function InviteFlow(props: { open: boolean; community: { id: string; name
     let live = true;
     setState('creating');
     setStatus('');
+    const memory = inviteMemory(client);
+    const opened = Date.now();
     void (async () => {
       try {
-        const value = await client.call({ m: 'createInvite', communityId, maxUses: INVITE_MAX_USES, ttlSeconds: INVITE_TTL_S });
-        const link = typeof value === 'object' && value !== null ? (value as Record<string, unknown>).url : undefined;
-        if (typeof link !== 'string' || link === '') throw Object.assign(new Error(BAD_RESULT.code), BAD_RESULT);
+        let held = memory.get(communityId);
+        if (held === undefined || opened - held.at >= (INVITE_TTL_DAYS - 1) * DAY_MS) {
+          const value = await client.call({ m: 'createInvite', communityId, maxUses: INVITE_MAX_USES, ttlSeconds: INVITE_TTL_S });
+          const link = typeof value === 'object' && value !== null ? (value as Record<string, unknown>).url : undefined;
+          if (typeof link !== 'string' || link === '') throw Object.assign(new Error(BAD_RESULT.code), BAD_RESULT);
+          held = { url: link, at: Date.now() };
+          memory.set(communityId, held);
+        }
         if (!live) return;
-        setUrl(link);
+        const now = Date.now();
+        setUrl(held.url);
+        setDays(Math.min(INVITE_TTL_DAYS, Math.ceil((held.at + INVITE_TTL_DAYS * DAY_MS - now) / DAY_MS)));
         setState('ready');
-        const ok = await copied(link);
+        if (now - opened > AUTO_COPY_MS) return;
+        const ok = await copied(held.url);
         if (live) setStatus(t(ok ? 'invite.copied' : 'invite.blocked'));
       } catch (e) {
         if (!live) return;
@@ -310,7 +414,7 @@ export function InviteFlow(props: { open: boolean; community: { id: string; name
 
   return (
     <InviteLink open={props.open} state={state} url={url} status={status} error={error} attempt={attempt}
-      limits={t('invite.limits', { uses: INVITE_MAX_USES, days: INVITE_TTL_DAYS, server: props.community?.name ?? '' })}
+      limits={t('invite.limits', { uses: INVITE_MAX_USES, days, server: props.community?.name ?? '' })}
       labels={{ title: t('invite.title', { server: props.community?.name ?? '' }), creating: t('invite.creating'), link: t('invite.link'),
         copy: t('invite.copy'), close: t('dialog.close'), retry: t('invite.retry') }}
       onCopy={copyAgain} onRetry={() => setAttempt(a => a + 1)} onClose={() => props.onClose()} />

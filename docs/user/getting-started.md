@@ -28,10 +28,13 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
    and Join a server, and the rail on the left has the tiles join and new](screenshots/create-empty-desktop.png)
 
    "You are not in a server yet" "Start a server and invite your friends, or join one with an invite someone sent
-   you." The sidebar stands on **direct messages**, which has no one to message yet ("There is no one to message
-   yet: direct messages are with people you share a server with. Start a server and invite someone, or join one.").
-3. Press **Start a server**, or the **new** tile in the server rail. The dialog "Start a server" says "You own it:
-   you add its channels and invite people. It starts with a text channel and a voice channel, both called general."
+   you." The sidebar stands on **direct messages**: it says "no direct messages yet" and offers **message someone**.
+   Pressing that opens a picker which says "There is no one to message yet: direct messages are with people you share
+   a server with. Start a server and invite someone, or join one."
+3. Press **Start a server**, or the **new** tile in the server rail. With the keyboard, Tab to the rail, which is one
+   stop, then press the Down arrow (or End, then Up) until **new server** has focus, and press Enter. The dialog
+   "Start a server" says "You own it: you add its channels and invite people. It starts with a text channel and a
+   voice channel, both called general."
 
    ![The dialog "Start a server" with the name Midgard Crew typed into Server name, "Up to 255 bytes." and the
    buttons Close and Create](screenshots/create-server-desktop.png)
@@ -64,8 +67,8 @@ If the server is not created, the name field says why:
 | "That name is too long. A server name is up to 255 bytes." | Shorten it. Letters such as å or ü take two bytes each, and an emoji four or more |
 | "A name cannot hold control characters such as tabs or line breaks." | Take them out |
 | "That name was refused. Try another." | The instance refused it; choose another |
-| "Could not start the server ({code}). Try again." | Press **Create** again |
-| "{server} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list." | The server exists. **Try again** adds only what is missing; the same message names the voice channel general, or both channels, when those are missing. Closing the dialog keeps the server as it is |
+| "Could not start the server ({code}). Try again." | Press **Create** again. After E_NETWORK the server may have been made anyway: once it shows in your server list, **Create** with the same name carries on with that server instead of making a second one |
+| "{server} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list." | The server exists. **Try again** adds only what is missing; the same message names the voice channel general, or both channels, when those are missing. Closing the dialog keeps the server as it is. If you closed the dialog while the channels were still being added and one of them failed, the next time you open "Start a server" it shows this message once, with **Try again** |
 
 ## Invite people
 
@@ -79,10 +82,13 @@ times and expires in 7 days. Anyone who has it can join Midgard Crew." and "Invi
   you want in the server.
 - "Invite link copied." means it is on your clipboard. If the browser did not let the page copy it, the dialog says
   "This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself."
-  Selecting the field selects the whole link.
-- A friend who signs up through the link uses it twice: once for the account and once to join the server. So one
-  link brings in five new people, or ten who already have an account on the instance. Each time you open the dialog
-  it makes a new link.
+  Selecting the field selects the whole link. When the instance takes more than about a second to answer, the
+  dialog shows the link without copying it, because the browser no longer counts your press: press **copy link**.
+- Each person who joins with the link uses it once, whether they sign up through it or already have an account. So
+  one link brings in up to ten people.
+- Opening the dialog again, or for another server and then back, shows the same link for that server while more than
+  a day of it is left; the days in "expires in {days} days" count what is left. After a reload, or with a day or
+  less left, the dialog makes a new link.
 - "You cannot invite people to this server." or "Could not make an invite link ({code})." means no link was made;
   **Try again** asks again.
 
@@ -107,8 +113,12 @@ Up to 100 bytes." and the buttons Close and Create](screenshots/create-channel-d
 2. Type a name under "Channel name". The line under the field shows how it will look: "Shown as #{name}. Up to 100
    bytes." for a text channel. A text channel's name is kept in lower case, with spaces turned into hyphens:
    "Fika på Fredag" becomes `#fika-på-fredag`. A voice channel keeps the name as you typed it.
-3. Press **Create** or Enter ("Creating…"). A new text channel opens with the cursor in its message field; a new
-   voice channel is listed under "voice".
+3. Press **Create** or Enter ("Creating…"). A new text channel opens with the cursor in its message field and says
+   "nothing here yet."; a new voice channel is listed under "voice".
+
+The dialog does not add a second channel of the same kind and name. If the name is taken, it says "There
+is already a text channel called #{name}. Try another." (or "There is already a voice channel called {name}. Try
+another.") and nothing is created.
 
 ![The new-channel dialog at 360 pixels wide](screenshots/create-channel-phone.png)
 

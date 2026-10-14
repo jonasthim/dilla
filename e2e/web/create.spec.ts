@@ -23,6 +23,10 @@ const FRIEND = 'Björn';
 /** The task's exact values (task-4 brief, step 2). */
 const HELLO = 'hello from the owner';
 const SECOND_CHANNEL = 'plans';
+/** The whole-branch walk's long names (I2): a typed sentence, stored as its slug, and 100 bytes in one word. */
+const LONG_TYPED = 'Fika på fredag och veckans planering';
+const LONG_SLUG = 'fika-på-fredag-och-veckans-planering';
+const HUNDRED_BYTES = 'midsommar-'.repeat(10);
 
 let host: StartedHost | null = null;
 let instance = '';
@@ -93,12 +97,13 @@ test('from an empty instance: start a server, invite a friend through a link, re
 
   // 3. The invite link, read from the dialog's field. The shell tries to copy it as the dialog opens; Firefox may refuse a
   // copy that a network round trip separated from the click, and the dialog then says so. Either way the link stands in
-  // the field, which is what a person copies by hand, so the clipboard is never read here.
+  // the field, which is what a person copies by hand, so the clipboard is never read here. An answer slower than a second is
+  // not copied by itself at all (flow 07, "invite: answer slow"), and the status stays empty.
   await button(page, 'invite.open').click();
   const inviteDialog = page.getByRole('dialog', { name: copy('invite.title', { server: SERVER }), exact: true });
   const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
   await expect(linkField).toBeVisible({ timeout: WAIT });
-  const copiedOrBlocked = new RegExp(`^(${escapeRegExp(copy('invite.copied'))}|${escapeRegExp(copy('invite.blocked'))})$`);
+  const copiedOrBlocked = new RegExp(`^(${escapeRegExp(copy('invite.copied'))}|${escapeRegExp(copy('invite.blocked'))}|)$`);
   await expect(inviteDialog.getByRole('status')).toHaveText(copiedOrBlocked, { timeout: WAIT });
   const link = await linkField.inputValue();
   expect(link).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
@@ -184,6 +189,39 @@ test('from an empty instance: start a server, invite a friend through a link, re
     // 8. The second person is a member, not the owner: "invite link" yes, "new channel" no.
     await expect(button(page2, 'invite.open')).toBeVisible();
     await expect(button(page2, 'create.channel.open')).toHaveCount(0);
+
+    // 9. The whole-branch walk. The owner's two actions sit on one row of the 240 px sidebar (flow 07); a name the
+    // server already has for that kind is refused before any request (walk M2); a channel the owner just made says only
+    // "nothing here yet." (walk M1); and a long name never widens the page (walk I2): at 1280 "pinned" stays on screen,
+    // at 360 the page is no wider than the viewport.
+    const actionTops = await page.getByRole('group', { name: copy('create.actions'), exact: true }).getByRole('button')
+      .evaluateAll(els => els.map(e => Math.round(e.getBoundingClientRect().top)));
+    expect(actionTops).toHaveLength(2);
+    expect(new Set(actionTops).size, `the server actions sit on one row (tops ${actionTops.join(', ')})`).toBe(1);
+    const nameField = newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true });
+    await button(page, 'create.channel.open').click();
+    await nameField.fill(SECOND_CHANNEL);
+    await nameField.press('Enter');
+    await expect(newChannel.getByRole('alert')).toHaveText(copy('create.channel.error.takenText', { name: SECOND_CHANNEL }));
+    for (const [typed, slug] of [[LONG_TYPED, LONG_SLUG], [HUNDRED_BYTES, HUNDRED_BYTES]] as const) {
+      if (!(await newChannel.isVisible())) await button(page, 'create.channel.open').click();
+      await nameField.fill(typed);
+      await nameField.press('Enter');
+      await expect(newChannel).toBeHidden({ timeout: WAIT });
+      await expectComposerReady(page, slug);
+      const log = page.getByRole('log', { name: copy('shell.log.label', { channel: slug }), exact: true });
+      await expect(log).toContainText(copy('shell.log.emptyMade'));
+      await expect(log).not.toContainText(copy('shell.log.empty'));
+      await expect(button(page, 'shell.pins.open')).toBeInViewport({ ratio: 1 });
+      const size = page.viewportSize();
+      await page.setViewportSize({ width: 360, height: 740 });
+      try {
+        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth), { message: `${slug} at 360 px` })
+          .toBeLessThanOrEqual(360);
+      } finally {
+        if (size !== null) await page.setViewportSize(size);
+      }
+    }
     await guard.collectWorkers();
   } finally {
     await second.close();

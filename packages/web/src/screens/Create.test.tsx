@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import type { ChannelSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
-import { account } from '../test/fixtures.ts';
+import { account, ME } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import {
   CreateChannelFlow, CreateServerFlow, INVITE_MAX_USES, INVITE_TTL_DAYS, INVITE_TTL_S, InviteFlow, channelName, nameProblem,
@@ -322,12 +322,16 @@ describe('CreateServerFlow', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).not.toHaveAttribute('aria-disabled'));
   });
 
-  it('a create still running when the dialog closes leaves no stale notice for the next open', async () => {
+  // WB m4: a starter that fails after the dialog closed is not lost. The next open says what is missing, once, with the
+  // retry that adds only that; a starter create that succeeds after the close leaves nothing to say.
+  it('a starter that fails after the dialog closed is named on the next open, once', async () => {
     let release = (): void => undefined;
     const fake = client();
-    fake.handler = command => command.m === 'createCommunity'
-      ? new Promise(resolve => { release = () => resolve({ communityId: SERVER }); })
-      : Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 }));
+    fake.handler = command => {
+      if (command.m === 'createCommunity') return new Promise(resolve => { release = () => resolve({ communityId: SERVER }); });
+      if (command.m === 'createChannel' && command.kind === 'voice') return Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 }));
+      return Promise.resolve({ channelId: TEXT });
+    };
     const onServer = vi.fn();
     const onDone = vi.fn();
     const user = userEvent.setup();
@@ -338,10 +342,130 @@ describe('CreateServerFlow', () => {
     view.rerender(tree(false));
     act(() => release());
     await waitFor(() => expect(fake.callsOf('createChannel')).toHaveLength(2));
+    await act(async () => { await Promise.resolve(); });
+    view.rerender(tree(true));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
+      'Midgard is ready, but its voice channel general was not added (E_UNAVAILABLE).'));
+    expect(screen.getByRole('button', { name: 'Try again' })).toHaveFocus();
+    expect(onDone).not.toHaveBeenCalled();
+    // Told once: closed again without the retry, the next open is a fresh dialog.
+    view.rerender(tree(false));
+    view.rerender(tree(true));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(nameField('Server name')).toHaveValue('');
+    expect(fake.callsOf('createChannel').map(c => c.kind)).toEqual(['text', 'voice']);
+  });
+
+  it('the retry from a notice shown on a later open adds only what is missing and hands the server over', async () => {
+    let release = (): void => undefined;
+    let down = true;
+    const fake = client();
+    fake.handler = command => {
+      if (command.m === 'createCommunity') return new Promise(resolve => { release = () => resolve({ communityId: SERVER }); });
+      if (command.m === 'selectCommunity') return Promise.resolve(null);
+      if (command.m === 'createChannel' && command.kind === 'voice' && down) return Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 }));
+      return Promise.resolve({ channelId: command.m === 'createChannel' && command.kind === 'voice' ? VOICE : TEXT });
+    };
+    const onDone = vi.fn();
+    const user = userEvent.setup();
+    const tree = (open: boolean) => <div className="d-root"><CoreProvider client={fake}>
+      <CreateServerFlow open={open} onServer={vi.fn()} onDone={onDone} onClose={vi.fn()} /></CoreProvider></div>;
+    const view = render(tree(true));
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    view.rerender(tree(false));
+    act(() => release());
+    await waitFor(() => expect(fake.callsOf('createChannel')).toHaveLength(2));
+    await act(async () => { await Promise.resolve(); });
+    view.rerender(tree(true));
+    await screen.findByRole('alert');
+    down = false;
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith({ communityId: SERVER, channelId: TEXT }));
+    expect(fake.callsOf('createChannel').map(c => c.kind)).toEqual(['text', 'voice', 'voice']);
+    expect(fake.callsOf('createCommunity')).toHaveLength(1);
+  });
+
+  it('a create that finishes well after the dialog closed leaves no notice for the next open', async () => {
+    let release = (): void => undefined;
+    const fake = client();
+    fake.handler = command => command.m === 'createCommunity'
+      ? new Promise(resolve => { release = () => resolve({ communityId: SERVER }); })
+      : Promise.resolve({ channelId: command.m === 'createChannel' && command.kind === 'voice' ? VOICE : TEXT });
+    const onDone = vi.fn();
+    const user = userEvent.setup();
+    const tree = (open: boolean) => <div className="d-root"><CoreProvider client={fake}>
+      <CreateServerFlow open={open} onServer={vi.fn()} onDone={onDone} onClose={vi.fn()} /></CoreProvider></div>;
+    const view = render(tree(true));
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    view.rerender(tree(false));
+    act(() => release());
+    await waitFor(() => expect(fake.callsOf('createChannel')).toHaveLength(2));
+    await act(async () => { await Promise.resolve(); });
     view.rerender(tree(true));
     expect(screen.queryByRole('alert')).toBeNull();
     expect(nameField('Server name')).toHaveValue('');
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  // WB m5: a create whose answer was lost (E_NETWORK) may still have made the server. A server this account owns, with
+  // exactly that name, listed now but not before the press, is that server: it is adopted and gets its starters, never a
+  // second server.
+  describe('a lost answer to the create', () => {
+    function lost() {
+      const fake = client();
+      fake.set('communities', [{ id: 'f0'.repeat(16), name: 'Midgard', owner: 'ee'.repeat(16) }]);
+      const onServer = vi.fn();
+      const onDone = vi.fn();
+      const r = mount(fake, <CreateServerFlow open onServer={onServer} onDone={onDone} onClose={vi.fn()} />);
+      return { fake, onServer, onDone, ...r };
+    }
+    const ours = { id: SERVER, name: 'Midgard', owner: ME.id };
+    const starter = (c: { m: string; kind?: string }) => Promise.resolve({ channelId: c.kind === 'voice' ? VOICE : TEXT });
+
+    it('adopts the server when the list already holds it, and adds its starters', async () => {
+      const { fake, user, onServer, onDone } = lost();
+      fake.handler = c => {
+        if (c.m === 'createCommunity') {
+          fake.set('communities', [...(fake.get('communities') ?? []), ours]);
+          return Promise.reject(refusal({ code: 'E_NETWORK' }));
+        }
+        return starter(c);
+      };
+      await user.type(nameField('Server name'), 'Midgard{Enter}');
+      await waitFor(() => expect(onDone).toHaveBeenCalledWith({ communityId: SERVER, channelId: TEXT }));
+      expect(onServer).toHaveBeenCalledWith(SERVER);
+      expect(fake.callsOf('createCommunity')).toHaveLength(1);
+      expect(fake.callsOf('createChannel').map(c => c.kind)).toEqual(['text', 'voice']);
+    });
+
+    it('says so when the list does not hold it yet; the next press adopts it once it is listed', async () => {
+      const { fake, user, onDone } = lost();
+      fake.handler = c => (c.m === 'createCommunity' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : starter(c));
+      await user.type(nameField('Server name'), 'Midgard{Enter}');
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Could not start the server (E_NETWORK). Try again.'));
+      // The worker's next ready reads the list again.
+      act(() => fake.set('communities', [...(fake.get('communities') ?? []), ours]));
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(onDone).toHaveBeenCalledWith({ communityId: SERVER, channelId: TEXT }));
+      expect(fake.callsOf('createCommunity')).toHaveLength(1);
+    });
+
+    it('never adopts a server that was listed before the press, or one this account does not own', async () => {
+      const { fake, user } = lost();
+      fake.set('communities', [...(fake.get('communities') ?? []), ours]);
+      fake.handler = c => {
+        if (c.m === 'createCommunity') {
+          fake.set('communities', [...(fake.get('communities') ?? []), { id: 'f1'.repeat(16), name: 'Midgard', owner: 'ee'.repeat(16) }]);
+          return Promise.reject(refusal({ code: 'E_NETWORK' }));
+        }
+        return starter(c);
+      };
+      await user.type(nameField('Server name'), 'Midgard{Enter}');
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(E_NETWORK)'));
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(fake.callsOf('createCommunity')).toHaveLength(2));
+      expect(fake.callsOf('createChannel')).toEqual([]);
+    });
   });
 
   it('has no serious axe violations when idle', async () => {
@@ -460,6 +584,33 @@ describe('CreateChannelFlow', () => {
     expect(nameField('Channel name')).toHaveValue('');
   });
 
+  // Product walk M2: dillad keeps no uniqueness on channel names, so the dialog refuses a name the server's list already
+  // holds for that kind, as it will be stored (a text name as its slug), before any request.
+  it('refuses a name the server already has for that kind, and sends nothing', async () => {
+    const fake = client();
+    fake.handler = () => Promise.resolve({ channelId: VOICE });
+    fake.set(`channels:${SERVER}`, [
+      { id: TEXT, communityId: SERVER, kind: 0, mode: 0, name: 'ship-talk', topic: '', parentId: null, position: 0, group: 'active' },
+      { id: VOICE, communityId: SERVER, kind: 1, mode: 0, name: 'general', topic: '', parentId: null, position: 1, group: 'none' },
+    ]);
+    const onDone = vi.fn();
+    const { user } = mount(fake, <CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={onDone} onClose={vi.fn()} />);
+    await user.type(nameField('Channel name'), ' Ship  Talk {Enter}');
+    expect(screen.getByRole('alert')).toHaveTextContent('There is already a text channel called #ship-talk. Try another.');
+    expect(nameField('Channel name')).toHaveFocus();
+    await user.click(screen.getByRole('radio', { name: 'voice' }));
+    await user.clear(nameField('Channel name'));
+    await user.type(nameField('Channel name'), 'general{Enter}');
+    expect(screen.getByRole('alert')).toHaveTextContent('There is already a voice channel called general. Try another.');
+    expect(fake.calls).toEqual([]);
+    // The same name of the other kind is a different channel.
+    await user.click(screen.getByRole('radio', { name: 'text' }));
+    await user.click(nameField('Channel name'));
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'general' }]);
+  });
+
   it('says why a create was refused, by code', async () => {
     const { user, onDone } = setup(() => Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })));
     await user.type(nameField('Channel name'), 'loot{Enter}');
@@ -528,6 +679,76 @@ describe('InviteFlow', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.getByRole('alert')).not.toBe(first));
     expect(screen.getByRole('alert')).toHaveTextContent('You cannot invite people to this server.');
+  });
+
+  // WB m3: an open of the dialog, or a switch between servers, does not mint another invite. The last one per server is
+  // reused for this page session while more than a day of it is left; its days count what is left.
+  describe('reuse', () => {
+    const B = 'b2'.repeat(16);
+    const DAY = 86_400_000;
+    function reuse(answer?: () => Promise<unknown>) {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(1_900_000_000_000);
+      const write = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
+      const fake = client();
+      let n = 0;
+      fake.handler = answer ?? (c => {
+        n += 1;
+        return Promise.resolve(c.m === 'createInvite' ? { url: `https://chat.example.org/i/K${String(n)}`, code: `K${String(n)}`, expires: 1_900_604_800 } : null);
+      });
+      const user = userEvent.setup({ advanceTimers: () => undefined });
+      const tree = (open: boolean, community = { id: SERVER, name: 'Midgard Crew' }) => <div className="d-root"><CoreProvider client={fake}>
+        <InviteFlow open={open} community={community} onClose={vi.fn()} /></CoreProvider></div>;
+      const view = render(tree(true));
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, get: () => ({ writeText: write }) });
+      return { fake, write, user, view, tree };
+    }
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('reuses the last link per server on a reopen and on a switch back, and copies it again', async () => {
+      const { fake, write, view, tree } = reuse();
+      await waitFor(() => expect(nameField('Invite link')).toHaveValue('https://chat.example.org/i/K1'));
+      view.rerender(tree(false));
+      view.rerender(tree(true));
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Invite link copied.'));
+      expect(nameField('Invite link')).toHaveValue('https://chat.example.org/i/K1');
+      view.rerender(tree(true, { id: B, name: 'Asgard' }));
+      await waitFor(() => expect(nameField('Invite link')).toHaveValue('https://chat.example.org/i/K2'));
+      view.rerender(tree(true));
+      await waitFor(() => expect(nameField('Invite link')).toHaveValue('https://chat.example.org/i/K1'));
+      expect(fake.callsOf('createInvite').map(c => c.communityId)).toEqual([SERVER, B]);
+      expect(write).toHaveBeenLastCalledWith('https://chat.example.org/i/K1');
+    });
+
+    it('counts the days that are left, and makes a new link once a day or less is left', async () => {
+      const { fake, view, tree } = reuse();
+      await waitFor(() => expect(nameField('Invite link')).toHaveValue('https://chat.example.org/i/K1'));
+      view.rerender(tree(false));
+      vi.setSystemTime(1_900_000_000_000 + 3 * DAY + 1);
+      view.rerender(tree(true));
+      await waitFor(() => expect(nameField('Invite link')).toHaveValue('https://chat.example.org/i/K1'));
+      expect(nameField('Invite link')).toHaveAccessibleDescription('It can be used 10 times and expires in 4 days. Anyone who has it can join Midgard Crew.');
+      view.rerender(tree(false));
+      vi.setSystemTime(1_900_000_000_000 + 6 * DAY);
+      view.rerender(tree(true));
+      await waitFor(() => expect(nameField('Invite link')).toHaveValue('https://chat.example.org/i/K2'));
+      expect(nameField('Invite link')).toHaveAccessibleDescription('It can be used 10 times and expires in 7 days. Anyone who has it can join Midgard Crew.');
+      expect(fake.callsOf('createInvite')).toHaveLength(2);
+    });
+
+    it('copies by itself only when the answer came within a second; a slow one shows the link and copy link, with no blocked message', async () => {
+      const { write, user } = reuse(() => {
+        vi.setSystemTime(Date.now() + 1_500);
+        return Promise.resolve({ url: URL, code: '7KQ2', expires: 1_900_604_800 });
+      });
+      await waitFor(() => expect(nameField('Invite link')).toHaveValue(URL));
+      await act(async () => { await Promise.resolve(); });
+      expect(write).not.toHaveBeenCalled();
+      expect(screen.getByRole('status')).toHaveTextContent('');
+      await user.click(screen.getByRole('button', { name: 'copy link' }));
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Invite link copied.'));
+      expect(write).toHaveBeenCalledWith(URL);
+    });
   });
 
   it('a refused invite says why and offers a retry', async () => {

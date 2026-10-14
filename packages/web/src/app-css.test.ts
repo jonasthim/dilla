@@ -30,3 +30,11 @@ describe('the voice section rows (WB a11y m4 ruling)', () => {
     expect(css).toMatch(/\.dw-voice-section__item > \.d-voice-row\[aria-current="page"\] \{ background: transparent; box-shadow: none; \}/);
   });
 });
+
+describe('a long chosen name never widens the page (product walk I2)', () => {
+  it('the direct-message picker wraps a long name inside its row and keeps the open button whole', () => {
+    expect(rule(css, '.dw-dm-picker__name')).toMatch(/min-width:\s*0/);
+    expect(rule(css, '.dw-dm-picker__name')).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(rule(css, '.dw-dm-picker__row > .d-btn')).toMatch(/flex-shrink:\s*0/);
+  });
+});
