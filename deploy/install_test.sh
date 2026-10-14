@@ -13,6 +13,10 @@
 # leg of `dillad doctor` (strict decoding plus Validate).
 #
 # Usage: bash deploy/install_test.sh   (exit 0 when every case passes)
+#
+# SC2016: the stub bodies are written single-quoted on purpose, to expand when the stub runs.
+# SC2086, SC2089, SC2090: argument lists and "|"-joined problem lists are split on purpose.
+# shellcheck disable=SC2016,SC2086,SC2089,SC2090
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

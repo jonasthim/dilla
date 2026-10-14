@@ -386,14 +386,14 @@ doctor_and_report() {
 	printf '%s\n' "$DOCTOR_OUT" | sed 's/^/  /' >&2
 	# Legs that need DNS for the domain, outbound HTTPS, the proxy or the UDP
 	# forward: red until those exist, which is expected on a fresh install.
-	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && ($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "udp") { print $2 }')"
-	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "udp") { print $2 }')"
+	PENDING="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && ($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "udp") { printf "%s ", $2 }')"
+	BROKEN="$(printf '%s\n' "$DOCTOR_OUT" | awk '$1 == "FAIL" && !($2 == "clock" || $2 == "certificate" || $2 == "turn" || $2 == "udp") { printf "%s ", $2 }')"
 	if [ -n "$PENDING" ]; then
-		log "doctor: these checks need DNS, the network, the proxy or UDP $UDP_PORT set up first, and fail until DNS and the forwards exist:" $PENDING
+		log "doctor: these checks need DNS, the network, the proxy or UDP $UDP_PORT set up first, and fail until DNS and the forwards exist: $PENDING"
 		log "        run the doctor again once they are: runuser -u dillad -- /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml"
 	fi
 	if [ -n "$BROKEN" ]; then
-		log "error: doctor found a problem with the install itself:" $BROKEN
+		log "error: doctor found a problem with the install itself: $BROKEN"
 		return 1
 	fi
 	if [ "$DOCTOR_RC" -ne 0 ] && [ -z "$PENDING" ]; then
