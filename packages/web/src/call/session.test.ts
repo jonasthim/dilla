@@ -1025,3 +1025,21 @@ describe('product walk M5: the own mute and deafen kept across a reload', () => 
     expect(call.state).toMatchObject({ muted: false, deafened: false });
   });
 });
+
+describe('re-review N-m1: a drop never takes the key that ends the hold', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+
+  it('a hold of epoch N drops nothing once the key of a newer epoch arrived; a drop of the held epoch clears', async () => {
+    const f = fakes({ joinEpoch: 1n });
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    open.push(call);
+    f.pushKeys(callId, keysFor(2n));
+    await flush();
+    expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n, 2n]);
+    call.dropKeys(1n);
+    expect(f.manager.clearKeys).not.toHaveBeenCalled();
+    call.dropKeys(2n);
+    expect(f.manager.clearKeys).toHaveBeenCalledTimes(1);
+  });
+});

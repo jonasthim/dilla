@@ -74,7 +74,7 @@ export interface PageCall {
   setPaused(on: boolean): Promise<void>;
   /** WB security I1: the hold after a refused rekey (phase paused, not a changed identity): every media key goes at
    *  once, so nothing more is sent under the epoch the page held; the next epoch’s key installs on resume. */
-  dropKeys(): void;
+  dropKeys(upTo?: bigint): void;
   pushToTalk(down: boolean): void;
   /** Switches the input mode during the call: push to talk closes the microphone at once, until the key is held. */
   setMode(mode: 'vad' | 'ptt'): void;
@@ -394,7 +394,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const remotes = (): RemoteView[] => [...(room.remoteParticipants.values() as Iterable<unknown>)] as RemoteView[];
 
     let state: PageCallState = {
-      phase: 'connecting', muted: false, deafened: false, camera: false, sharing: false, paused: false,
+      phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
       noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
     };
@@ -828,8 +828,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           });
         }
       },
-      dropKeys() {
+      dropKeys(upTo) {
         if (ended) return;
+        // Re-review N-m1: the hold names the epoch whose key it drops; a newer epoch's key that arrived first (it ends the
+        // hold) is kept, so the drop never silences the call it was meant to resume.
+        const newest = relay.newestEpoch();
+        if (upTo !== undefined && newest !== null && newest > upTo) return;
         relay.dropHeld();
         try { manager.clearKeys(); } catch { /* a failed or disposed manager holds no keys */ }
       },

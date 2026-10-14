@@ -344,7 +344,10 @@ export class SyncEngine implements SyncInternals {
       this.disarmVolunteer(g); this.quiet.delete(toHex(g)); this.requestDrain(g);
       return true;
     } catch (e) {
-      if (built || e instanceof CoreError) {
+      // Re-review N-m4: only a commit this attempt built is aborted. A core refusal before the build (commit_build's "a
+      // commit is pending" while a call rotation's accepted commit awaits its echo) leaves that pending commit alone:
+      // aborting it would make its echo a stranger's commit and end the call as removed.
+      if (built) {
         try { this.deps.core.commitAbort(g); } catch { /* no pending state */ }
       }
       if (e instanceof DillaHttpError) {

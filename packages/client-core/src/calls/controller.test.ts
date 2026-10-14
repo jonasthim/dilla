@@ -1567,6 +1567,32 @@ describe('a refused mid-call rekey holds sending (wb-security I1)', () => {
   });
 });
 
+describe('a hold the page dropped its keys for ends only with a key (re-review N-m1)', () => {
+  // The fail-closed hold: a group read that throws while the epoch did not move. The page drops its keys, and the media
+  // pipeline bars that epoch as a sender, so the hold must not end on the same epoch with no key ("in", and silent): it
+  // stays held and a rotation moves the epoch on, whose key ends it.
+  it('a fail-closed hold at an unchanged epoch stays held and rotates to a fresh epoch, whose key ends it', async () => {
+    const w = await joined();
+    const realMedia = w.model.callMediaEpoch.bind(w.model);
+    const realRow = w.model.groupRow.bind(w.model);
+    w.model.callMediaEpoch = (): never => { throw new CoreError('E_CORE_STATE', 'unexpected'); };
+    w.model.groupRow = (): never => { throw new CoreError('E_CORE_STATE', 'unexpected'); };
+    await w.call({ m: 'refreshTrust' });
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_CORE_STATE' }, epoch: w.result.epoch });
+    w.model.callMediaEpoch = realMedia;
+    w.model.groupRow = realRow;
+    w.server.reset();
+    await w.call({ m: 'refreshTrust' });
+    await w.clock.advance(1_000);
+    await settled(w, 8);
+    // Never "in" on the old epoch with no key: the way out is a fresh epoch, keyed.
+    expect(w.server.routes()).toContain('POST commit');
+    expect(keysPosted(w).map((k) => BigInt(k.epoch) > BigInt(w.result.epoch))).toEqual([true]);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', error: null });
+  });
+});
+
 describe('a failed start on a group this device is alone in (wb-client I4)', () => {
   // The start fails after the join registered a fresh group (or joined one whose tree holds only this device). Nobody can
   // commit a self-Remove of the only leaf, and the core refuses to rejoin the same group at an epoch it has held, so a
@@ -1591,6 +1617,23 @@ describe('a failed start on a group this device is alone in (wb-client I4)', () 
     w.server.reply('DELETE call', false);
     expect(await codeOf(w.call(JOIN(w)))).toBe('E_INTERNAL');
     expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls', 'DELETE call', 'POST proposal']);
+  });
+
+  // Re-review N-m3: only a 404 means there is no call to end. A 5xx (or a lost answer) leaves it open whether another
+  // device joined, so the self-Remove is sent, as for a 409 (a self-Remove never locks the rejoin, guard 1).
+  it('a conditional end that fails with a server error sends the self-Remove; a 404 does not', async () => {
+    const w = await harness({ voiceChannel: true });
+    w.server.reset();
+    w.server.answer('POST calls', 500, 'E_INTERNAL');
+    w.server.answer('DELETE call', 503, 'E_UNAVAILABLE');
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_INTERNAL');
+    expect(w.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls', 'DELETE call', 'POST proposal']);
+    const v = await harness({ voiceChannel: true });
+    v.server.reset();
+    v.server.answer('POST calls', 500, 'E_INTERNAL');
+    v.server.answer('DELETE call', 404, 'E_NOT_FOUND');
+    expect(await codeOf(v.call(JOIN(v)))).toBe('E_INTERNAL');
+    expect(v.server.routes()).toEqual(['GET channel call', 'POST group', 'POST calls', 'DELETE call']);
   });
 
   it('a start refused on a joined group with another member still sends the self-Remove', async () => {
@@ -1736,6 +1779,34 @@ describe('the rejoin wait and a leave during its reads (task-10 fix review N1, N
       expect(w.slice('call')).toMatchObject({ phase: 'idle' });
     });
   }
+
+  // Re-review N-m2: the check before startCall, alone. A leave while the media epoch's list refresh is in flight (a
+  // pending leaf: callMediaEpoch answers E_DEVICE_LIST_STALE first) posts no start, so no call opens and nobody is rung.
+  it('a leave while the media epoch waits for a list refresh starts no call', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    // The media epoch's first read finds a pending leaf (E_DEVICE_LIST_STALE): the leave lands right then, while its list
+    // refresh runs; the second read succeeds, so only the check before startCall stands between the leave and a start.
+    const real = w.model.callMediaEpoch.bind(w.model);
+    let leave = -1;
+    let first = true;
+    w.model.callMediaEpoch = (g: Id) => {
+      if (first) {
+        first = false;
+        leave = w.send({ m: 'callLeave', reason: 'user' });
+        throw new CoreError('E_DEVICE_LIST_STALE', 'pending');
+      }
+      return real(g);
+    };
+    const id = w.send(JOIN(w));
+    await waitRet(w, id);
+    await waitRet(w, leave);
+    await settled(w);
+    expect(first).toBe(false);
+    expect(w.ret(id)).toMatchObject({ ok: false });
+    expect(w.server.routes()).not.toContain('POST calls');
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(w.slice('call')).toMatchObject({ phase: 'idle' });
+  });
 
   // N2: the 30 s bound is elapsed time on a monotonic clock: a wall clock stepped back an hour (NTP, a resumed laptop)
   // does not stretch it, and one stepped forward does not cut it short.

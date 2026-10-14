@@ -241,3 +241,12 @@ describe('the identity refusals lead somewhere (product walk M9, M10)', () => {
     expect(main().queryByText(/paused/)).toBeNull();
   });
 });
+
+describe('the hold names the epoch it drops (re-review N-m1)', () => {
+  it('the page drops only the keys up to the held epoch', async () => {
+    const app = await inHarbour();
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, epoch: '7',
+      error: { code: 'E_DEVICE_LIST_STALE', detail: '', status: 0, retryAfterMs: null }, changedUser: null }));
+    await waitFor(() => expect(app.session.dropKeys).toHaveBeenCalledWith(7n));
+  });
+});

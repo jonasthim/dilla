@@ -35,6 +35,8 @@ export interface KeyRelay {
   /** WB security I1: the copy held for the end of a pause is zero-filled (the media keys are being dropped); later
    *  keys are taken as before. */
   dropHeld(): void;
+  /** The newest epoch handed over so far (the join's, then each installed or held one); null before the join. */
+  newestEpoch(): bigint | null;
   /** Zero-fills every held copy; nothing is installed afterwards. */
   close(): void;
 }
@@ -194,6 +196,9 @@ export function createKeyRelay(opts: KeyRelayOptions = {}): KeyRelay {
     dropHeld() {
       wipe(held);
       held = null;
+    },
+    newestEpoch() {
+      return phase === 'live' ? newest : null;
     },
     close() {
       phase = 'closed';

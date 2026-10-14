@@ -407,7 +407,9 @@ export function useCall(o: UseCallOptions): CallView {
       // epoch a removed leaf may still hold, so they go at once (once per hold); the next epoch's key ends it.
       if (now?.error?.code !== 'E_UMK_CHANGED' && !keysDropped.current) {
         keysDropped.current = true;
-        safely(s, () => { s.dropKeys(); return Promise.resolve(); });
+        let upTo: bigint | undefined;
+        try { upTo = now?.epoch == null ? undefined : BigInt(now.epoch); } catch { upTo = undefined; }
+        safely(s, () => { s.dropKeys(upTo); return Promise.resolve(); });
       }
     } else if (phase === 'in') {
       keysDropped.current = false;

@@ -589,6 +589,20 @@ describe('commit duty (rule 4)', () => {
     expect(ds.view(g).epoch).toBe(0n);
   });
 
+  // Re-review N-m4: a core refusal before anything is built (commit_build's "a commit is pending", while a rotation's
+  // accepted commit awaits its echo) aborts nothing: that pending commit is not this attempt's, and aborting it would make
+  // its echo a stranger's commit (the call group lost, the call ended as removed).
+  it('a core refusal before the build aborts no pending commit', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.propose(g, 'add', THIRD.device);
+    await settle();
+    d.core.resetLog();
+    d.core.commitBuild = (): never => { throw new CoreError('E_CORE_STATE', 'a commit is pending'); };
+    expect(await d.engine.commitNow(g, 0)).toBe(false);
+    expect(coreCalls(d, g, ['commitAbort'])).toEqual([]);
+  });
+
   it('a 422 refuses the commit for good: the group is commit-quiet until op 17 asks again', async () => {
     const d = device(ds, clock, ME);
     const g = await openRegistered(ds, d);

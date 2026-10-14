@@ -68,7 +68,13 @@ export class CallRefusal extends CoreError {}
 
 interface Live {
   channel: string; channelId: Id; dm: boolean; members: string[]; groupId: Id; callId: Id; vdec: string;
-  postedEpoch: bigint; leaving: boolean; outgoing: { ringing: string[]; declined: string[]; notRung: string[] } | null;
+  postedEpoch: bigint; leaving: boolean;
+  /** Re-review N-m1: a hold made the page drop the key of postedEpoch (the pipeline then bars that epoch as a sender), so
+   *  the hold ends only with a newer epoch's key. */
+  keysDropped: boolean;
+  /** The gate passed again at the unchanged epoch of such a hold: the rotation that moves the epoch on may run. */
+  rotateOut: boolean;
+  outgoing: { ringing: string[]; declined: string[]; notRung: string[] } | null;
   /** The users of the last keyed roster: the candidates of a pause's changedUser (review M4). */
   rosterUsers: string[];
   /** The devices of the last keyed roster: a leave from a roster of this device alone ends the call (concern 2). */
@@ -208,7 +214,7 @@ export class CallController {
     const outgoing = dm && started.created ? { ringing: waiting.filter((u) => rung === null || rung.has(u)), declined: [],
       notRung: waiting.filter((u) => rung !== null && !rung.has(u)) } : null;
     this.live = { channel, channelId, dm, members: target.members, groupId, callId: started.callId, vdec, postedEpoch: media.epoch,
-      leaving: false, outgoing, rosterUsers: [], rosterDevices: [], leaveRun: null };
+      leaving: false, keysDropped: false, rotateOut: false, outgoing, rosterUsers: [], rosterDevices: [], leaveRun: null };
     // The join epoch's key: a push posted before this command's ret, its buffer transferred (L-TS-52).
     this.postKeys(this.live, media);
     this.setIn(media);
@@ -304,6 +310,7 @@ export class CallController {
       // it; that epoch is always newer than the page's). Within the epoch already keyed, the page's key is that epoch's
       // own, which only leaves the gate passed hold: nothing changes there.
       if (fromEpoch || this.epochMoved(live)) {
+        live.keysDropped = true;
         this.setState({ ...this.state, phase: 'paused', error: this.deps.errorOf(e), changedUser: null });
       }
       return;
@@ -311,9 +318,17 @@ export class CallController {
     if (media.epoch === live.postedEpoch) {
       // The page holds this epoch's key already; nothing is posted, and a pause on it ends.
       new Uint8Array(media.baseKey).fill(0);
+      // Re-review N-m1: unless a hold made the page drop it (the fail-closed hold at an unchanged epoch): then the call
+      // stays held, never "in" and silent, and a rotation moves the epoch on now; that epoch's key ends the hold.
+      if (live.keysDropped) {
+        if (!live.rotateOut) { live.rotateOut = true; this.armRotation(0); }
+        return;
+      }
       if (this.state.phase === 'paused') this.setIn(media);
       return;
     }
+    live.keysDropped = false;
+    live.rotateOut = false;
     live.postedEpoch = media.epoch;
     this.postKeys(live, media);
     this.setIn(media);
@@ -430,8 +445,11 @@ export class CallController {
     if (aloneIn !== null) {
       // The call id of a call is its channel's id (protocol/09 § Voice). A start that never reached the instance left no
       // call to end (404): the group stays with this one leaf until the idle close (RV-2), and the next join resyncs it.
-      let ended = true;
-      try { ended = await this.deps.routes.endCallIfAlone(aloneIn); } catch { /* no call: nothing to end */ }
+      // Re-review N-m3: only a 404 is "no call to end"; any other failure leaves open whether another device joined, so
+      // the self-Remove goes out as for a 409 (a self-Remove is a member proposal: it never locks the rejoin, guard 1).
+      let ended: boolean;
+      try { ended = await this.deps.routes.endCallIfAlone(aloneIn); }
+      catch (e) { ended = this.deps.errorOf(e).status === 404; }
       if (ended) {
         await this.deps.serial(groupId, () => { try { this.deps.core()?.callGroupForget(groupId); } catch { /* forgotten */ } return Promise.resolve(); });
         return;
@@ -468,15 +486,17 @@ export class CallController {
     const live = this.live;
     const core = this.deps.core();
     if (live === null || core === null || live.leaving) return;
-    // RV-3: while paused nothing is sent; the rotation waits for the next tick.
-    if (this.state.phase === 'paused') { this.armRotation(CALL_ROTATE_MS); return; }
-    if (this.state.phase !== 'in') return;
+    // RV-3: while paused nothing is sent; the rotation waits for the next tick. Re-review N-m1: a hold whose keys the page
+    // dropped, with the gate passing again at the unchanged epoch, rotates to a fresh epoch, the only way out of it.
+    const heldOut = this.state.phase === 'paused' && live.rotateOut;
+    if (this.state.phase === 'paused' && !heldOut) { this.armRotation(CALL_ROTATE_MS); return; }
+    if (this.state.phase !== 'in' && !heldOut) return;
     await this.deps.serial(live.groupId, async () => {
       // A leave that started while this waited for the lane (blocked or not, it sets `leaving` first): never a rotation,
       // since call_rotate would cancel the posted self-Remove. This is the one in-lane guard against it.
       if (this.live !== live || live.leaving) return;
-      // Review M1: a pause that landed while this waited for the lane holds the rotation too.
-      if (this.state.phase === 'paused') { this.armRotation(CALL_ROTATE_MS); return; }
+      // Review M1: a pause that landed while this waited for the lane holds the rotation too (not the N-m1 way out).
+      if (this.state.phase === 'paused' && !live.rotateOut) { this.armRotation(CALL_ROTATE_MS); return; }
       let body: Uint8Array;
       try { body = core.callRotate(live.groupId); }
       catch { this.retryRotation(live); return; }
