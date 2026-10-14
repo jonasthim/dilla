@@ -131,15 +131,32 @@ export class AdminController {
   }
 
   async deleteCommunity(communityId: string): Promise<null> {
-    await this.guarded(communityId, () => this.deps.routes.deleteCommunity(fromHex(communityId)));
+    await this.removingSelf(communityId, () => this.deps.routes.deleteCommunity(fromHex(communityId)));
     this.drop(communityId);
     return null;
   }
 
   async leaveCommunity(communityId: string): Promise<null> {
-    await this.guarded(communityId, () => this.deps.routes.leaveCommunity(fromHex(communityId)));
+    await this.removingSelf(communityId, () => this.deps.routes.leaveCommunity(fromHex(communityId)));
     this.drop(communityId);
     return null;
+  }
+
+  /** The servers this account left or deleted itself (web3.4 C4): their absence from a list read is no removal notice.
+   *  Set before the request, so a read that lands while it is in flight is covered too. A refusal (4xx) takes it out
+   *  again, and so does a join of the same server (the worker's joinPath); a failure that may have gone through (a lost
+   *  answer, a 5xx) keeps it, so the person is never told they were removed from a server they left. */
+  readonly selfRemoved = new Set<string>();
+
+  private async removingSelf(communityId: string, run: () => Promise<void>): Promise<void> {
+    this.selfRemoved.add(communityId);
+    try {
+      await this.guarded(communityId, run);
+    } catch (e) {
+      const status = statusOf(e);
+      if (status !== null && status < 500) this.selfRemoved.delete(communityId);
+      throw e;
+    }
   }
 
   async transferOwnership(communityId: string, userId: string): Promise<null> {

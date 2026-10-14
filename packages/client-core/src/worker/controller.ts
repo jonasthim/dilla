@@ -34,7 +34,7 @@ import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem,
-  type TrustSummary, type SendBlocksState, type WorkerError,
+  type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -488,9 +488,13 @@ const EMPTY_NOTICES: NoticesState = { nextId: 1, items: [] };
 const TICKET_TTL_S = 30n;
 /** A burst of op 54 community_changed (a server's starter channels, a reorder) costs one list read per server. */
 export const COMMUNITY_RELOAD_DEBOUNCE_MS = 250;
+/** web3.4 C4: the removals slice keeps this many notices, the newest (the page dismisses them locally). */
+export const REMOVALS_MAX = 8;
 
 export class Controller {
   private readonly parts: ControllerParts;
+  /** The id of the last removal notice (web3.4 C4). */
+  private removalSeq = 0;
   private readonly slices: SliceStore;
   private readonly routes: Routes;
   private instance: Instance | null = null;
@@ -611,7 +615,10 @@ export class Controller {
       core: () => this.core,
       routes: this.routes,
       post: (message, transfer) => { deps.post(message, transfer); },
-      publish: (name, value) => { this.slices.set(name, value); },
+      publish: (name, value) => {
+        if (name === 'voice') this.slices.set('voice', this.visibleVoice(value as VoiceState));
+        else this.slices.set(name, value);
+      },
       errorOf: (e) => errorOf(e),
       now: () => deps.now(),
       monotonic: () => (deps.monotonic ?? deps.now)(),
@@ -1533,13 +1540,22 @@ export class Controller {
   private async refreshCommunities(): Promise<void> {
     const rows = await this.routes.listCommunities();
     if (this.storeCleared) return;
+    // The list before this read; absent before the first list after a boot, which tells nothing (web3.4 C4).
+    const before = this.slices.get('communities');
     const list = rows.map((r) => ({ id: toHex(r.id), name: r.name, owner: toHex(r.owner) }));
     this.slices.set('communities', list);
     // Pre-flight ruling 1(vi): a community that is no longer listed loses its selection and its slices.
     const gone = new Set<string>();
+    const removed = (before ?? []).filter((c) => !this.listed(c.id));
+    for (const c of removed) gone.add(c.id);
     for (const known of this.channels.values()) if (!this.listed(known.communityId)) gone.add(known.communityId);
     if (this.selected !== null && !this.listed(this.selected)) gone.add(this.selected);
     for (const communityId of gone) this.dropCommunity(communityId);
+    // web3.4 C4: a server that was listed and is gone, and that this account did not leave or delete itself, was taken
+    // from it (a kick, a ban, a delete by its owner, a leave on another device): the page says so.
+    const notices = removed.filter((c) => !this.admin.selfRemoved.has(c.id))
+      .map((c): RemovalNotice => ({ id: ++this.removalSeq, communityId: c.id, name: c.name }));
+    if (notices.length > 0) this.slices.set('removals', [...(this.slices.get('removals') ?? []), ...notices].slice(-REMOVALS_MAX));
   }
 
   private dropCommunity(communityId: string): void {
@@ -1552,8 +1568,22 @@ export class Controller {
     this.slices.set(`channels:${communityId}`, []);
     this.slices.set(`members:${communityId}`, []);
     this.admin.forget(communityId);
+    // web3.4 C4: no voice row of the server's channels stays on the page; a call in one ends through its removed phase.
+    const voice = this.slices.get('voice');
+    if (voice !== undefined) {
+      const visible = this.visibleVoice(voice);
+      if (Object.keys(visible).length !== Object.keys(voice).length) this.slices.set('voice', visible);
+    }
     this.updateExpected();
     this.publishBadges();
+  }
+
+  /** The voice slice as the page may see it: only the calls of channels and DMs this worker knows (a dropped server's
+   *  channels are not known, though the call controller may still read or hear of their calls until its removal lands). */
+  private visibleVoice(state: VoiceState): VoiceState {
+    const known = (channel: string): boolean => this.channels.has(channel) || this.dms.has(channel);
+    if (Object.keys(state).every(known)) return state;
+    return Object.fromEntries(Object.entries(state).filter(([channel]) => known(channel)));
   }
 
   private async joinCommunity(rawInvite: string): Promise<{ communityId: string }> {
@@ -1565,6 +1595,8 @@ export class Controller {
 
   private async joinPath(communityId: Id, invite: string): Promise<{ communityId: string }> {
     await this.routes.joinCommunity(communityId, invite);
+    // web3.4 C4: a server left earlier and joined again is told of when it is later taken away.
+    this.admin.selfRemoved.delete(toHex(communityId));
     // Pre-flight ruling 1(vii): the account joined; a failed refresh of the list does not undo that.
     try { await this.refreshCommunities(); } catch { /* the next ready refreshes it */ }
     return { communityId: toHex(communityId) };

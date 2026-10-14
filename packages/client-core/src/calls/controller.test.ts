@@ -18,7 +18,7 @@ import type { Routes } from '../http/routes';
 import { DillaHttpError } from '../http/errors';
 import { INSTANCE, readyInfo } from '../sync/testing/harness';
 import { COMMUNITY, FakeGateway, ManualClock, ME, ModelCore, ModelDs, PEER, THIRD, FOURTH, idOf, settle, type Peer } from '../sync/testing/model';
-import { Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
+import { COMMUNITY_RELOAD_DEBOUNCE_MS, Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
 import { CALL_ROTATE_RETRIES } from './controller';
 import type { FromWorker } from '../worker/protocol';
 
@@ -27,6 +27,8 @@ export const DM = idOf(0xd5, 1);
 const NAMES = new Map<string, string>([[toHex(ME.user), 'Me'], [toHex(PEER.user), 'bob'], [toHex(THIRD.user), 'carol'], [toHex(FOURTH.user), 'dave']]);
 /** Members who joined the server after a page loaded its list: the instance lists them from then on. */
 const LATE: Peer[] = [];
+/** web3.4 C4: false once this account was removed from the seeded server; the instance no longer lists it. */
+const LISTED = { value: true };
 
 /** The route labels the call tests read; the engine's own catch-up reads (messages, handshakes, cursors) are not listed. */
 const LABELS: Record<string, string> = {
@@ -92,7 +94,7 @@ export async function harness(opts: HarnessOptions = {}) {
   const channelRows = [{ id: VOICE, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'lounge', topic: '', position: 0, seq: 1n, textGroupId: null }];
   const stubs: Record<string, (...a: unknown[]) => Promise<unknown>> = {
     ...(opts.created === true ? {} : {
-      listCommunities: () => Promise.resolve([{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }]),
+      listCommunities: () => Promise.resolve(LISTED.value ? [{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }] : []),
       listChannels: () => Promise.resolve(opts.voiceChannel === true ? channelRows : []),
     }),
     getInstance: () => Promise.resolve(INSTANCE),
@@ -720,6 +722,68 @@ describe('keys after the join (L-TS-56 step 2)', () => {
     await settled(w);
     expect(w.slice('call').phase).toBe('removed');
     expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+});
+
+// web3.4 C4, review focus 2: removed from the server (kicked or banned) while in one of its calls. The server's re-read
+// drops it and tells once; the call itself ends through the existing removed phase, when the own leaf's Remove lands.
+describe('removed from the server while busy (web3.4 C4)', () => {
+  const changed: Frame = { op: 54, n: 0n, groupId: null, payload: [COMMUNITY] as CborValue[] };
+  const told = [{ id: 1, communityId: toHex(COMMUNITY), name: 'friends' }];
+  async function removedFromServer(w: World): Promise<void> {
+    LISTED.value = false;
+    w.gateway.push(changed);
+    await w.clock.advance(COMMUNITY_RELOAD_DEBOUNCE_MS);
+    await settled(w);
+  }
+  const voiceAfterRemoval = (w: World): VoiceState[] => {
+    const all = w.posted().map((p) => p.message);
+    const at = all.findIndex((m) => m.t === 'slice' && m.name === 'communities' && (m.value as unknown[]).length === 0);
+    return all.slice(at).filter((m): m is Extract<FromWorker, { t: 'slice' }> => m.t === 'slice' && m.name === 'voice').map((m) => m.value as VoiceState);
+  };
+
+  it('during a call: nothing throws, no voice state of the server is published, and the call ends as removed', async () => {
+    const w = await joined();
+    try {
+      w.gateway.push(voiceFrame(ME, VOICE, 1));
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      expect(w.slice('voice')[w.voice]?.participants).toHaveLength(2);
+      await removedFromServer(w);
+      expect(w.slice('removals')).toEqual(told);
+      expect(w.slice('communities')).toEqual([]);
+      expect(w.slice('voice')[w.voice]).toBeUndefined();
+      // The instance's frames for the call no longer land in the slice.
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      w.ds.propose(w.callGroup, 'remove', ME.device);
+      await w.deliverHandshakes(w.callGroup);
+      await settled(w);
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice });
+      expect(voiceAfterRemoval(w).length).toBeGreaterThan(0);
+      expect(voiceAfterRemoval(w).every((v) => !(w.voice in v))).toBe(true);
+      expect(w.slice('removals')).toEqual(told);
+    } finally {
+      LISTED.value = true;
+    }
+  });
+
+  it('while the engine commits an own Remove it was elected for (op 17): nothing throws', async () => {
+    const w = await joined();
+    try {
+      w.ds.propose(w.callGroup, 'remove', ME.device);
+      await settled(w);
+      const held = w.server.hold('POST commit');
+      w.ds.elect(w.callGroup, ME.device, 1n);
+      await held.reached;
+      await removedFromServer(w);
+      expect(w.slice('removals')).toEqual(told);
+      held.release();
+      await settled(w, 8);
+      expect(w.slice('removals')).toEqual(told);
+      expect(w.slice('communities')).toEqual([]);
+      expect(await w.call({ m: 'refreshCommunities' })).toBeNull();
+    } finally {
+      LISTED.value = true;
+    }
   });
 });
 

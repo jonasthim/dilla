@@ -1,8 +1,10 @@
 // The admin and moderation commands (web3.4 C3) over the whole worker: the Controller with the routes doubled.
 import { describe, expect, it, vi } from 'vitest';
+import { Op } from '../gateway/frames';
+import type { GatewayEvent } from '../gateway/gateway';
 import { toHex } from '../hex';
 import type { BanRow, InviteRow, RoleRow } from '../http/routes';
-import type { BanSummary, ChannelSummary, CommunityAccess, InviteSummary, RoleSummary } from '../state/types';
+import type { BanSummary, ChannelSummary, CommunityAccess, InviteSummary, RemovalNotice, RoleSummary } from '../state/types';
 import { CHANNEL, COMMUNITY, STRANGER, USER, refusal, world, type World } from '../worker/world';
 
 const CID = toHex(COMMUNITY);
@@ -404,5 +406,135 @@ describe('AdminController: server and channel edits', () => {
     w.routes.deleteChannel.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN'));
     expect(await run(w, { m: 'deleteChannel', channelId: toHex(CHANNEL) })).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } });
     await vi.waitFor(() => expect(w.routes.getPermissions.mock.calls.length).toBe(perms + 1));
+  });
+});
+
+describe('removal notices (web3.4 C4)', () => {
+  const changed: GatewayEvent = { type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } };
+  const removals = (w: World): RemovalNotice[] | undefined => w.last<RemovalNotice[]>('removals');
+  const anyRemoval = (w: World): boolean => w.posted.some((m) => m.t === 'slice' && m.name === 'removals' && (m.value as unknown[]).length > 0);
+  const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+    let resolve: (v: T) => void = () => {};
+    let reject: (e: unknown) => void = () => {};
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  it('op 54 for a listed server whose re-read lacks it drops it, clears its slices, unselects it and tells once', async () => {
+    const w = world();
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)?.owner).toBe(true));
+    expect(await run(w, { m: 'selectCommunity', communityId: CID })).toMatchObject({ ok: true });
+    await run(w, { m: 'loadBans', communityId: CID });
+    w.state.joined = false;
+    w.gateway.emit(changed);
+    await vi.waitFor(() => expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]));
+    expect(w.last<{ id: string }[]>('communities')).toEqual([]);
+    expect(w.channels()).toEqual([]);
+    expect(w.last<unknown[]>(`members:${CID}`)).toEqual([]);
+    expect(w.last<unknown[]>(`bans:${CID}`)).toEqual([]);
+    expect(w.last<CommunityAccess>(`permissions:${CID}`)?.owner).toBe(false);
+    // Nothing is selected any more: once listed again, an unexpected Welcome reads no server's lists.
+    w.state.joined = true;
+    await run(w, { m: 'refreshCommunities' });
+    await settle();
+    const reads = w.routes.listChannels.mock.calls.length;
+    w.sync.deps!.onUnexpectedWelcome(new Uint8Array(16));
+    await new Promise((resolve) => { setTimeout(resolve, 400); });
+    expect(w.routes.listChannels.mock.calls.length).toBe(reads);
+    // Listed again is not a second notice.
+    expect(removals(w)).toHaveLength(1);
+  });
+
+  it('leave and delete leave no notice, also when the re-read that follows lacks the server', async () => {
+    for (const m of ['leaveCommunity', 'deleteCommunity'] as const) {
+      const w = world();
+      await toReady(w);
+      w.routes[m].mockImplementation(() => { w.state.joined = false; return Promise.resolve(); });
+      expect(await run(w, { m, communityId: CID })).toMatchObject({ ok: true });
+      await run(w, { m: 'refreshCommunities' });
+      expect(anyRemoval(w)).toBe(false);
+    }
+  });
+
+  it('a re-read that lands while the leave is still in flight leaves no notice', async () => {
+    const w = world();
+    await toReady(w);
+    const held = deferred<undefined>();
+    w.routes.leaveCommunity.mockImplementation(() => { w.state.joined = false; return held.promise; });
+    next += 1;
+    const leave = next;
+    w.call(leave, { m: 'leaveCommunity', communityId: CID });
+    await vi.waitFor(() => expect(w.routes.leaveCommunity).toHaveBeenCalled());
+    await run(w, { m: 'refreshCommunities' });
+    expect(w.last<{ id: string }[]>('communities')).toEqual([]);
+    held.resolve(undefined);
+    await vi.waitFor(() => expect(w.ret(leave)).toMatchObject({ ok: true }));
+    expect(anyRemoval(w)).toBe(false);
+  });
+
+  it('a refused leave is not a leave: a later removal is told', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.leaveCommunity.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN'));
+    expect(await run(w, { m: 'leaveCommunity', communityId: CID })).toMatchObject({ ok: false });
+    w.state.joined = false;
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]);
+  });
+
+  it('a leave whose answer was a 5xx may have gone through: its absence later is no notice', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.leaveCommunity.mockImplementationOnce(() => { w.state.joined = false; return Promise.reject(refusal(503, 'E_UNAVAILABLE')); });
+    expect(await run(w, { m: 'leaveCommunity', communityId: CID })).toMatchObject({ ok: false });
+    await run(w, { m: 'refreshCommunities' });
+    expect(w.last<{ id: string }[]>('communities')).toEqual([]);
+    expect(anyRemoval(w)).toBe(false);
+  });
+
+  it('a server left and joined again is told when it is later removed', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.leaveCommunity.mockImplementation(() => { w.state.joined = false; return Promise.resolve(); });
+    await run(w, { m: 'leaveCommunity', communityId: CID });
+    w.routes.getInvite.mockResolvedValue({ communityId: COMMUNITY, communityName: 'friends', expires: 0n });
+    expect(await run(w, { m: 'joinCommunity', invite: 'AB12CD34' })).toMatchObject({ ok: true });
+    expect(w.last<{ id: string }[]>('communities')?.map((c) => c.id)).toEqual([CID]);
+    w.state.joined = false;
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]);
+  });
+
+  it('the first list at ready tells nothing, even of a server missing from a list cached nowhere', async () => {
+    const w = world();
+    w.state.joined = false;
+    await toReady(w);
+    await settle();
+    expect(w.last<{ id: string }[]>('communities')).toEqual([]);
+    const listed = world();
+    await toReady(listed);
+    await settle();
+    expect(anyRemoval(w)).toBe(false);
+    expect(anyRemoval(listed)).toBe(false);
+  });
+
+  it('a ninth removal drops the oldest notice', async () => {
+    const w = world();
+    const ids = Array.from({ length: 9 }, (_, i) => id16(0x21 + i));
+    w.routes.listCommunities.mockResolvedValue(ids.map((id, i) => ({ id, name: `s${String(i + 1)}`, owner: USER, policyVersion: 1n })));
+    await toReady(w);
+    for (let i = 0; i < 8; i++) {
+      w.routes.listCommunities.mockResolvedValue(ids.slice(i + 1).map((id, j) => ({ id, name: `s${String(i + j + 2)}`, owner: USER, policyVersion: 1n })));
+      await run(w, { m: 'refreshCommunities' });
+    }
+    expect(removals(w)?.map((r) => r.name)).toEqual(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']);
+    w.routes.listCommunities.mockResolvedValue([]);
+    await run(w, { m: 'refreshCommunities' });
+    expect(removals(w)).toHaveLength(8);
+    expect(removals(w)?.map((r) => r.name)).toEqual(['s2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']);
+    expect(removals(w)?.map((r) => r.id)).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(removals(w)?.[7]).toEqual({ id: 9, communityId: toHex(ids[8]), name: 's9' });
   });
 });
