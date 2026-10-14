@@ -1,7 +1,7 @@
 # Voice, calls and media files
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
-camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.3".
+camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.4".
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -98,8 +98,10 @@ level](screenshots/voice-settings-desktop.png)
 
 Settings → voice also holds:
 
-- **input device** and **output device**, or "system default". Choosing the output device works in Chrome and Edge;
-  Firefox plays call sound on the system default device. A browser that cannot choose where sound plays says "This
+- **input device** and **output device**, or "system default". Choosing the output device works in Chrome and Edge,
+  and the call follows it: change the output device during a call and the sound moves at once. If the browser
+  refuses, the dock says "The output device did not change. Call sound plays where it did before." Firefox plays call
+  sound on the system default device. A browser that cannot choose where sound plays says "This
   browser plays voice on the system default device."
 - **noise suppression**, on by default: it removes steady background noise from your microphone. Switching it during
   a call applies at once.
@@ -240,7 +242,10 @@ let the call start its sound, for example when the browser or your system suspen
 setting in the browser held it back.
 
 If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
-volume.
+volume. The dock also says "hearing {attached} of {expected}", for example "hearing 2 of 3": it counts audio streams,
+not people. {expected} is how many audio streams should reach you, and {attached} how many you hear (a shared
+screen's sound is its own). A person whose volume you set to 0 counts as not heard. When the two numbers differ for
+more than a moment, ask the missing person to leave and join again.
 
 If you hear no one on any call, ask whoever runs your instance to update it to v0.1.0-web3.3 or later.
 

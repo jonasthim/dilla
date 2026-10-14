@@ -15,4 +15,5 @@ export type { MentionTarget, MentionPart, MentionMember } from './state/mentions
 export { BROWSER_ATTACHMENT_CAP, MAX_ATTACHMENTS } from './attachments/crypto';
 export { RENDERABLE_IMAGE } from './attachments/thumb';
 export { safeName } from './attachments/name';
+export { PERM, accessOf, topOf, canModerate } from './admin/rank';
 export type { PendingLeaf, TrustRecord, SearchScope, SearchCursor, SearchHit } from './core-port';

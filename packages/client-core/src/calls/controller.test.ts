@@ -18,8 +18,8 @@ import type { Routes } from '../http/routes';
 import { DillaHttpError } from '../http/errors';
 import { INSTANCE, readyInfo } from '../sync/testing/harness';
 import { COMMUNITY, FakeGateway, ManualClock, ME, ModelCore, ModelDs, PEER, THIRD, FOURTH, idOf, settle, type Peer } from '../sync/testing/model';
-import { Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
-import { CALL_ROTATE_RETRIES } from './controller';
+import { COMMUNITY_RELOAD_DEBOUNCE_MS, Controller, MEMBER_REREAD_MIN_MS, type ControllerParts } from '../worker/controller';
+import { CALL_ROTATE_MS, CALL_ROTATE_RETRIES } from './controller';
 import type { FromWorker } from '../worker/protocol';
 
 export const VOICE = idOf(0xc5, 1);
@@ -27,6 +27,8 @@ export const DM = idOf(0xd5, 1);
 const NAMES = new Map<string, string>([[toHex(ME.user), 'Me'], [toHex(PEER.user), 'bob'], [toHex(THIRD.user), 'carol'], [toHex(FOURTH.user), 'dave']]);
 /** Members who joined the server after a page loaded its list: the instance lists them from then on. */
 const LATE: Peer[] = [];
+/** web3.4 C4: false once this account was removed from the seeded server; the instance no longer lists it. */
+const LISTED = { value: true };
 
 /** The route labels the call tests read; the engine's own catch-up reads (messages, handshakes, cursors) are not listed. */
 const LABELS: Record<string, string> = {
@@ -92,7 +94,7 @@ export async function harness(opts: HarnessOptions = {}) {
   const channelRows = [{ id: VOICE, kind: 1, mode: 0, visibility: 0, parentId: null, name: 'lounge', topic: '', position: 0, seq: 1n, textGroupId: null }];
   const stubs: Record<string, (...a: unknown[]) => Promise<unknown>> = {
     ...(opts.created === true ? {} : {
-      listCommunities: () => Promise.resolve([{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }]),
+      listCommunities: () => Promise.resolve(LISTED.value ? [{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }] : []),
       listChannels: () => Promise.resolve(opts.voiceChannel === true ? channelRows : []),
     }),
     getInstance: () => Promise.resolve(INSTANCE),
@@ -720,6 +722,137 @@ describe('keys after the join (L-TS-56 step 2)', () => {
     await settled(w);
     expect(w.slice('call').phase).toBe('removed');
     expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+});
+
+// web3.4 C4, review focus 2: removed from the server (kicked or banned) while in one of its calls. The server's re-read
+// drops it and tells once; the call itself ends here at once through the existing removed phase (C4 fix round 1), not
+// only when the own leaf's Remove lands.
+describe('removed from the server while busy (web3.4 C4)', () => {
+  const changed: Frame = { op: 54, n: 0n, groupId: null, payload: [COMMUNITY] as CborValue[] };
+  const told = [{ id: 1, communityId: toHex(COMMUNITY), name: 'friends' }];
+  async function removedFromServer(w: World): Promise<void> {
+    LISTED.value = false;
+    w.gateway.push(changed);
+    await w.clock.advance(COMMUNITY_RELOAD_DEBOUNCE_MS);
+    await settled(w);
+  }
+  const voiceAfterRemoval = (w: World): VoiceState[] => {
+    const all = w.posted().map((p) => p.message);
+    const at = all.findIndex((m) => m.t === 'slice' && m.name === 'communities' && (m.value as unknown[]).length === 0);
+    return all.slice(at).filter((m): m is Extract<FromWorker, { t: 'slice' }> => m.t === 'slice' && m.name === 'voice').map((m) => m.value as VoiceState);
+  };
+
+  it('during a call: nothing throws, no voice state of the server is published, and the call ends as removed', async () => {
+    const w = await joined();
+    try {
+      w.gateway.push(voiceFrame(ME, VOICE, 1));
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      expect(w.slice('voice')[w.voice]?.participants).toHaveLength(2);
+      await removedFromServer(w);
+      expect(w.slice('removals')).toEqual(told);
+      expect(w.slice('communities')).toEqual([]);
+      expect(w.slice('voice')[w.voice]).toBeUndefined();
+      // The instance's frames for the call no longer land in the slice.
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      w.ds.propose(w.callGroup, 'remove', ME.device);
+      await w.deliverHandshakes(w.callGroup);
+      await settled(w);
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice });
+      expect(voiceAfterRemoval(w).length).toBeGreaterThan(0);
+      expect(voiceAfterRemoval(w).every((v) => !(w.voice in v))).toBe(true);
+      expect(w.slice('removals')).toEqual(told);
+    } finally {
+      LISTED.value = true;
+    }
+  });
+
+  it('while the engine commits an own Remove it was elected for (op 17): nothing throws', async () => {
+    const w = await joined();
+    try {
+      w.ds.propose(w.callGroup, 'remove', ME.device);
+      await settled(w);
+      const held = w.server.hold('POST commit');
+      w.ds.elect(w.callGroup, ME.device, 1n);
+      await held.reached;
+      await removedFromServer(w);
+      expect(w.slice('removals')).toEqual(told);
+      held.release();
+      await settled(w, 8);
+      expect(w.slice('removals')).toEqual(told);
+      expect(w.slice('communities')).toEqual([]);
+      expect(await w.call({ m: 'refreshCommunities' })).toBeNull();
+      // Fix 7: the call ended as removed, and the group reached state 4 (the engine's commit first, then the forget).
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice });
+      expect(w.model.group(w.callGroup)?.state).toBe(4);
+      expect(w.pushes('callKeys')).toHaveLength(0);
+    } finally {
+      LISTED.value = true;
+    }
+  });
+
+  it('fix 5: the call of a dropped server ends here at once: removed, its group forgotten, no rotation, no key', async () => {
+    const w = await joined();
+    try {
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      await removedFromServer(w);
+      // No Remove commit has landed: the drop alone ends the call.
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, callId: null, epoch: null, roster: [],
+        error: { code: 'E_NOT_FOUND' } });
+      expect(w.slice('voice')[w.voice]).toBeUndefined();
+      expect(w.model.calls.some((c) => c.m === 'callGroupForget')).toBe(true);
+      expect(w.model.group(w.callGroup)?.state).toBe(4);
+      w.server.reset();
+      await w.clock.advance(CALL_ROTATE_MS);
+      await settled(w);
+      expect(w.server.routes()).not.toContain('POST commit');
+      expect(w.pushes('callKeys')).toHaveLength(0);
+      // The page's leave after it keeps the removed phase.
+      expect(await w.call({ m: 'callLeave', reason: 'user' })).toBeNull();
+      expect(w.slice('call').phase).toBe('removed');
+    } finally {
+      LISTED.value = true;
+    }
+  });
+
+  it('fix 6: a rejoin does not bring back the participants the voice book held before the drop', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    try {
+      w.gateway.push(voiceFrame(THIRD, VOICE, 1));
+      expect(w.slice('voice')[w.voice]?.participants.map((p) => p.name)).toEqual(['carol']);
+      await removedFromServer(w);
+      expect(w.slice('voice')[w.voice]).toBeUndefined();
+      LISTED.value = true;
+      expect(await w.call({ m: 'refreshCommunities' })).toBeNull();
+      expect(await w.call({ m: 'selectCommunity', communityId: toHex(COMMUNITY) })).toBeNull();
+      await settled(w);
+      w.gateway.push(voiceFrame(PEER, VOICE, 1));
+      expect(w.slice('voice')[w.voice]?.participants.map((p) => p.name)).toEqual(['bob']);
+    } finally {
+      LISTED.value = true;
+    }
+  });
+
+  it('round 2: a join in flight into a dropped server is cancelled: removed, no key, no live call, no rotation', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    try {
+      const held = w.server.hold('POST calls');
+      const id = w.send(JOIN(w));
+      await held.reached;
+      await removedFromServer(w);
+      held.release();
+      await settled(w, 8);
+      expect(w.ret(id)).toMatchObject({ ok: false });
+      expect(w.pushes('callKeys')).toHaveLength(0);
+      expect((w.controller as unknown as { calls: { live: unknown } }).calls.live).toBeNull();
+      expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, error: { code: 'E_NOT_FOUND' } });
+      w.server.reset();
+      await w.clock.advance(CALL_ROTATE_MS);
+      await settled(w);
+      expect(w.server.routes()).not.toContain('POST commit');
+    } finally {
+      LISTED.value = true;
+    }
   });
 });
 

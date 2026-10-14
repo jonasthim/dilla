@@ -2,9 +2,11 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './Dialog.css';
 
-export type DialogProps = { open: boolean; title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; closeLabel?: string };
+export type DialogProps = { open: boolean; title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; closeLabel?: string;
+  /** The id of the element inside that describes the dialog (a confirmation's body). */
+  describedBy?: string };
 
-export function Dialog({ open, title, onClose, children, footer, closeLabel }: DialogProps) {
+export function Dialog({ open, title, onClose, children, footer, closeLabel, describedBy }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // The <dialog> element stays mounted for the component's lifetime and is
@@ -23,7 +25,7 @@ export function Dialog({ open, title, onClose, children, footer, closeLabel }: D
     return () => { if (el?.open) el.close(); };
   }, []);
   return (
-    <dialog ref={ref} className="d-dialog" aria-labelledby={titleId} aria-modal="true" tabIndex={-1}
+    <dialog ref={ref} className="d-dialog" aria-labelledby={titleId} aria-describedby={open ? describedBy : undefined} aria-modal="true" tabIndex={-1}
       onCancel={e => { e.preventDefault(); onClose(); }}
       onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>

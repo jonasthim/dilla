@@ -126,7 +126,8 @@ export function bobChanged(): TrustSummary {
 /** A PageCall double: the toggles change its state, and every call is recorded in order. */
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
-    tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, noise: 'on', audioBlocked: false };
+    tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, noise: 'on', audioBlocked: false,
+    audio: { attached: 0, expected: 0 } };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
@@ -143,6 +144,7 @@ export class FakeSession implements PageCall {
   readonly pushToTalk = vi.fn();
   readonly setVolume = vi.fn();
   readonly startAudio = vi.fn(() => { this.log.push('startAudio'); return Promise.resolve(); });
+  readonly setOutput = vi.fn((id: string) => { this.log.push(`output:${id}`); return Promise.resolve(); });
   private readonly bridge: Pick<CoreClient, 'call'> | null;
   constructor(log: string[], bridge: Pick<CoreClient, 'call'> | null = null) { this.log = log; this.bridge = bridge; }
   get muted(): boolean { return this.state.muted; }

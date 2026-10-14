@@ -1,0 +1,73 @@
+import { useState } from 'react';
+import { ChannelSettings } from '@dilla/ui';
+import type { ChannelSummary } from '@dilla/client-core';
+import { useCore } from '../../core/context.tsx';
+import { t } from '../../strings/index.ts';
+import { CHANNEL_NAME_MAX_BYTES, channelName, nameProblem } from '../Create.tsx';
+import { forbidden, refused, statusIs, useRun } from './shared.ts';
+
+const TOPIC_MAX_BYTES = 1024;
+const UTF8 = new TextEncoder();
+// Control characters other than line break and tab (the instance refuses them in a topic).
+const TOPIC_CONTROL = /[\p{Cc}]/u;
+const topicHasControl = (s: string): boolean => [...s].some(c => c !== '\n' && c !== '\t' && TOPIC_CONTROL.test(c));
+
+interface Draft { id: string; name: string; topic: string; parent: string }
+
+/**
+ * Edit a channel or category (flow 08) over `ChannelSettings`. The category select offers `top` (no category) and every
+ * category; `parent` is sent as `keep` when it is unchanged, `top` for no category, else the category's id. Only the fields
+ * that changed are sent; nothing changed closes the dialog without a request. `channel` null keeps the dialog closed.
+ */
+export function ChannelEditFlow({ channel, categories, onClose }: {
+  channel: ChannelSummary | null; categories: readonly ChannelSummary[]; onClose: () => void;
+}): React.JSX.Element {
+  const client = useCore();
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [local, setLocal] = useState<{ message: string; n: number } | null>(null);
+  const action = useRun();
+  const kind = channel === null ? 'text' : channel.kind === 2 ? 'category' : channel.kind === 1 ? 'voice' : 'text';
+  const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId != null && categories.some(c => c.id === channel.parentId) ? channel.parentId : 'top' };
+  const current = draft?.id === initial.id ? draft : initial;
+  const edit = (over: Partial<Draft>) => { setDraft({ ...current, ...over }); setLocal(null); action.reset(); };
+
+  const close = () => { if (!action.busy) { setDraft(null); setLocal(null); action.reset(); onClose(); } };
+  const refuse = (message: string) => setLocal(l => ({ message, n: (l?.n ?? 0) + 1 }));
+
+  const submit = () => {
+    if (channel === null) return;
+    const shownName = channelName(kind === 'text' ? 'text' : 'voice', current.name);
+    const problem = nameProblem(shownName, CHANNEL_NAME_MAX_BYTES);
+    if (problem !== null) {
+      refuse(t(problem === 'empty' ? 'admin.channel.error.empty' : problem === 'long' ? 'admin.channel.error.long' : 'create.name.control'));
+      return;
+    }
+    if (kind === 'text') {
+      if (UTF8.encode(current.topic).length > TOPIC_MAX_BYTES) { refuse(t('admin.channel.error.topicLong')); return; }
+      if (topicHasControl(current.topic)) { refuse(t('admin.channel.error.topicControl')); return; }
+    }
+    const name = shownName === channel.name ? null : shownName;
+    const topic = kind === 'text' && current.topic !== channel.topic ? current.topic : null;
+    const parent = kind === 'category' || current.parent === initial.parent ? 'keep' : current.parent;
+    if (name === null && topic === null && parent === 'keep') { close(); return; }
+    void action.run(() => client.call({ m: 'updateChannel', channelId: channel.id, name, topic, parent }), e =>
+      forbidden(e) ? t('admin.channel.error.forbidden')
+        : statusIs(e, 404) ? t('admin.channel.error.gone')
+          : refused(e) ? t('admin.channel.error.refused')
+            : t('admin.channel.error.other', { code: e.code }))
+      .then(ok => { if (ok) close(); });
+  };
+
+  const title = channel === null ? '' : kind === 'category' ? t('admin.channel.titleCategory', { name: channel.name })
+    : t(kind === 'voice' ? 'admin.channel.titleVoice' : 'admin.channel.titleText', { name: channel.name });
+  return (
+    <ChannelSettings open={channel !== null} kind={kind} name={current.name} onName={v => edit({ name: v })}
+      topic={current.topic} onTopic={v => edit({ topic: v })} parent={current.parent} onParent={v => edit({ parent: v })}
+      parents={[{ value: 'top', label: t('admin.channels.noCategory') }, ...categories.map(c => ({ value: c.id, label: c.name }))]}
+      error={local?.message ?? action.error} busy={action.busy} attempt={(local?.n ?? 0) + action.attempt}
+      labels={{ title, name: t('admin.channel.name'), nameHint: t('admin.channel.nameHint'), topic: t('admin.channel.topic'),
+        topicHint: t('admin.channel.topicHint'), category: t('admin.channel.category'), submit: t('admin.channel.save'),
+        busy: t('admin.channel.saving'), close: t('admin.cancel') }}
+      onSubmit={submit} onClose={close} />
+  );
+}

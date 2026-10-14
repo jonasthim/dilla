@@ -2,8 +2,11 @@ package api_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -570,5 +573,290 @@ func newTestCredential(user id.ID, rpID string, now int64) store.WebauthnCredent
 	return store.WebauthnCredentialRow{
 		CredID: cred[:], RPID: rpID, UserID: user, PublicKey: []byte{1},
 		Flags: []byte{0}, ExtensionsJSON: "{}", Created: now,
+	}
+}
+
+func TestOwnPermissionsRead(t *testing.T) {
+	e := communityEnv(t)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	path := "/v1/communities/" + cid.String() + "/permissions"
+	read := func(tok string) (uint64, uint64) {
+		t.Helper()
+		status, body := e.Do(http.MethodGet, path, tok, nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET permissions = %d (%x)", status, body)
+		}
+		var got struct {
+			_    struct{} `cbor:",toarray"`
+			Bits uint64
+			Top  uint64
+		}
+		mustUnmarshal(t, body, &got)
+		return got.Bits, got.Top
+	}
+	join := func(tok string) {
+		t.Helper()
+		if status, _ := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/join", tok, []any{nil}); status != http.StatusOK {
+			t.Fatal("join failed")
+		}
+	}
+	grant := func(user id.ID, position, allow uint64) {
+		t.Helper()
+		role := id.New()
+		if err := e.Repo.PutRole(t.Context(), store.RoleRow{ID: role, CommunityID: cid, Name: "r", Position: position,
+			Allow: allow, Created: e.Clk.Now().Unix()}); err != nil {
+			t.Fatalf("PutRole: %v", err)
+		}
+		if err := e.Repo.PutMemberRole(t.Context(), cid, user, role); err != nil {
+			t.Fatalf("PutMemberRole: %v", err)
+		}
+	}
+
+	if bits, top := read(ownerTok); bits != uint64(api.PermAll) || top != 1<<31 {
+		t.Errorf("owner = [%d, %d], want [PermAll, 2147483648]", bits, top)
+	}
+
+	_, freshTok := e.NewUser("fresh")
+	join(freshTok)
+	if bits, top := read(freshTok); bits != uint64(api.DefaultEveryoneAllow) || top != 0 {
+		t.Errorf("fresh member = [%d, %d], want [everyone, 0]", bits, top)
+	}
+
+	modID, modTok := e.NewUser("mod")
+	join(modTok)
+	grant(modID, 5, uint64(api.PermKickMembers))
+	if bits, top := read(modTok); bits != uint64(api.DefaultEveryoneAllow|api.PermKickMembers) || top != 5 {
+		t.Errorf("moderator = [%d, %d], want [everyone|kick, 5]", bits, top)
+	}
+
+	adminID, adminTok := e.NewUser("admin")
+	join(adminTok)
+	grant(adminID, 3, uint64(api.PermAdministrator))
+	if bits, top := read(adminTok); bits != uint64(api.PermAll) || top != 3 {
+		t.Errorf("administrator = [%d, %d], want [PermAll, 3]", bits, top)
+	}
+
+	// @everyone with view denied resolves to nothing for a plain member.
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	everyone := roles[0]
+	everyone.Allow, everyone.Deny = 0, uint64(api.PermViewChannel)
+	if err := e.Repo.PutRole(t.Context(), everyone); err != nil {
+		t.Fatalf("PutRole everyone: %v", err)
+	}
+	if bits, top := read(freshTok); bits != 0 || top != 0 {
+		t.Errorf("view denied = [%d, %d], want [0, 0]", bits, top)
+	}
+
+	_, strangerTok := e.NewUser("stranger")
+	if status, _ := e.Do(http.MethodGet, path, strangerTok, nil); status != http.StatusNotFound {
+		t.Errorf("non-member = %d, want 404", status)
+	}
+	if status, _ := e.Do(http.MethodGet, "/v1/communities/"+id.New().String()+"/permissions", ownerTok, nil); status != http.StatusNotFound {
+		t.Errorf("unknown community = %d, want 404", status)
+	}
+}
+
+// handOverFirst is a Repository whose next Tx first hands cid to `to`, committed on its own: a
+// hand-over that lands between a handler's pre-transaction checks and its transaction.
+type handOverFirst struct {
+	store.Repository
+	mu      sync.Mutex
+	cid, to id.ID
+	armed   bool
+}
+
+func (r *handOverFirst) arm(cid, to id.ID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cid, r.to, r.armed = cid, to, true
+}
+
+func (r *handOverFirst) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	r.mu.Lock()
+	armed := r.armed
+	r.armed = false
+	r.mu.Unlock()
+	if armed {
+		if err := r.SetCommunityOwner(ctx, r.cid, r.to); err != nil {
+			return err
+		}
+	}
+	return r.Repository.Tx(ctx, fn)
+}
+
+// Ownership is re-checked under the community lock: a hand-over that commits after a handler's
+// first checks cannot leave the community with an owner who left, was banned or was kicked, nor
+// let the previous owner delete it or kick with the authority they no longer hold.
+func TestAHandOverRacingARemovalLeavesTheOwnerInPlace(t *testing.T) {
+	setup := func(t *testing.T) (*env, *handOverFirst, id.ID, id.ID, string) {
+		t.Helper()
+		e := newEnv(t)
+		log := slog.New(slog.DiscardHandler)
+		hook := &handOverFirst{Repository: e.Repo}
+		api.NewCommunities(hook, e.DS, e.Clk, log).Register(e.Mux)
+		api.NewBans(hook, e.DS, e.Clk, log).Register(e.Mux)
+		owner, ownerTok := e.NewUser("owner")
+		return e, hook, createCommunity(t, e, ownerTok), owner, ownerTok
+	}
+	member := func(t *testing.T, e *env, cid, u id.ID) {
+		t.Helper()
+		if _, err := e.Repo.GetMember(t.Context(), cid, u); err != nil {
+			t.Fatalf("user %s is no longer a member: %v", u, err)
+		}
+	}
+
+	t.Run("a leaver who became the owner", func(t *testing.T) {
+		e, hook, cid, _, _ := setup(t)
+		leaver, leaverTok := joinAs(t, e, cid, "leaver")
+		hook.arm(cid, leaver)
+		status, body := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/leave", leaverTok, []any{})
+		if status != http.StatusForbidden || e.ErrCode(body) != "E_FORBIDDEN" {
+			t.Fatalf("leave = %d (%x), want 403", status, body)
+		}
+		member(t, e, cid, leaver)
+	})
+	t.Run("a ban whose target became the owner", func(t *testing.T) {
+		e, hook, cid, _, ownerTok := setup(t)
+		target, _ := joinAs(t, e, cid, "target")
+		hook.arm(cid, target)
+		status, body := e.Do(http.MethodPut, "/v1/communities/"+cid.String()+"/bans/"+target.String(), ownerTok, []any{"", nil})
+		if status != http.StatusForbidden || e.ErrCode(body) != "E_FORBIDDEN" {
+			t.Fatalf("ban = %d (%x), want 403", status, body)
+		}
+		member(t, e, cid, target)
+		if _, err := e.Repo.GetBan(t.Context(), cid, target); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("GetBan = %v, want no ban", err)
+		}
+	})
+	t.Run("a kick by the previous owner", func(t *testing.T) {
+		e, hook, cid, _, ownerTok := setup(t)
+		heir, _ := joinAs(t, e, cid, "heir")
+		target, _ := joinAs(t, e, cid, "target")
+		hook.arm(cid, heir)
+		status, body := e.Do(http.MethodDelete, "/v1/communities/"+cid.String()+"/members/"+target.String(), ownerTok, nil)
+		if status != http.StatusForbidden || e.ErrCode(body) != "E_FORBIDDEN" {
+			t.Fatalf("kick = %d (%x), want 403", status, body)
+		}
+		member(t, e, cid, target)
+	})
+	t.Run("a delete by the previous owner", func(t *testing.T) {
+		e, hook, cid, _, ownerTok := setup(t)
+		heir, _ := joinAs(t, e, cid, "heir")
+		hook.arm(cid, heir)
+		status, body := e.Do(http.MethodDelete, "/v1/communities/"+cid.String(), ownerTok, nil)
+		if status != http.StatusForbidden || e.ErrCode(body) != "E_FORBIDDEN" {
+			t.Fatalf("delete = %d (%x), want 403", status, body)
+		}
+		if _, err := e.Repo.GetCommunity(t.Context(), cid); err != nil {
+			t.Fatalf("the community is gone: %v", err)
+		}
+	})
+}
+
+// The owner hands the community to another member: one audit row, op 54 to the members, and the
+// previous owner is an ordinary member who keeps their roles and may now leave.
+func TestTheOwnerHandsTheCommunityToAnotherMember(t *testing.T) {
+	e, gw, cid, owner, ownerTok := notifyEnv(t)
+	heir, heirTok := joinAs(t, e, cid, "heir")
+	plain, plainTok := joinAs(t, e, cid, "plain")
+	stranger, _ := e.NewUser("stranger")
+	bot := id.New()
+	botRow := newAPITestUser(bot, "relay", e.Clk.Now().Unix())
+	botRow.Kind = 1
+	if err := e.Repo.CreateUser(t.Context(), botRow); err != nil {
+		t.Fatalf("CreateUser bot: %v", err)
+	}
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{
+		CommunityID: cid, UserID: bot, Joined: e.Clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("PutMember bot: %v", err)
+	}
+	role := createRole(t, e, cid, ownerTok, "elder", 3, api.PermPinMessages)
+	grant(t, e, cid, ownerTok, owner, role, http.StatusNoContent)
+	base := "/v1/communities/" + cid.String()
+	hand := func(tok string, to id.ID) (int, []byte) {
+		t.Helper()
+		return e.Do(http.MethodPost, base+"/owner", tok, []any{to})
+	}
+
+	status, body := hand(plainTok, heir)
+	if status != http.StatusForbidden || e.ErrCode(body) != "E_FORBIDDEN" ||
+		!bytes.Contains(body, []byte("only the owner can hand over a community")) {
+		t.Fatalf("a non-owner handing over = %d (%x), want 403", status, body)
+	}
+	if status, body := hand(ownerTok, stranger); status != http.StatusNotFound || e.ErrCode(body) != "E_NOT_FOUND" {
+		t.Fatalf("a non-member target = %d (%x), want 404", status, body)
+	}
+	if status, body := hand(ownerTok, owner); status != http.StatusBadRequest || e.ErrCode(body) != "E_INVALID_REQUEST" {
+		t.Fatalf("the owner as target = %d (%x), want 400", status, body)
+	}
+	if status, body := hand(ownerTok, bot); status != http.StatusBadRequest || e.ErrCode(body) != "E_INVALID_REQUEST" {
+		t.Fatalf("a bot target = %d (%x), want 400", status, body)
+	}
+	// A disabled or a deleted account cannot own a community, as neither may join one.
+	disabled, _ := joinAs(t, e, cid, "disabled")
+	deleted, _ := joinAs(t, e, cid, "deleted")
+	at := e.Clk.Now().Unix()
+	if err := e.Repo.SetUserDisabled(t.Context(), disabled, &at); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	if err := e.Repo.TombstoneUser(t.Context(), deleted, at); err != nil {
+		t.Fatalf("TombstoneUser: %v", err)
+	}
+	for name, to := range map[string]id.ID{"disabled": disabled, "deleted": deleted} {
+		status, body := hand(ownerTok, to)
+		if status != http.StatusBadRequest || e.ErrCode(body) != "E_INVALID_REQUEST" ||
+			!bytes.Contains(body, []byte("that account can no longer own a community")) {
+			t.Fatalf("a %s target = %d (%x), want 400", name, status, body)
+		}
+	}
+	if got, _ := e.Repo.GetCommunity(t.Context(), cid); got.Owner != owner {
+		t.Fatalf("a refused hand-over changed the owner to %s", got.Owner)
+	}
+
+	gw.reset()
+	if status, body := hand(ownerTok, heir); status != http.StatusNoContent {
+		t.Fatalf("hand over = %d (%x), want 204", status, body)
+	}
+	told(t, gw, "hand over", map[id.ID]int{owner: 1, heir: 1, plain: 1, stranger: 0})
+	if got, _ := e.Repo.GetCommunity(t.Context(), cid); got.Owner != heir {
+		t.Fatalf("owner = %s, want %s", got.Owner, heir)
+	}
+	audit, err := e.Repo.ListAudit(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	found := 0
+	for _, a := range audit {
+		if a.Action == "community.transfer" {
+			found++
+			if a.Actor == nil || *a.Actor != owner || a.Target != heir.String() || a.Detail != owner.String() {
+				t.Fatalf("audit row = %+v, want actor and detail %s, target %s", a, owner, heir)
+			}
+		}
+	}
+	if found != 1 {
+		t.Fatalf("community.transfer audit rows = %d, want 1", found)
+	}
+	// The previous owner is still a member and keeps their role.
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, owner); err != nil || len(held) != 1 || held[0] != role {
+		t.Fatalf("previous owner's roles = %v, %v, want [%s]", held, err, role)
+	}
+	// The previous owner may no longer hand it over or delete it; the new owner may.
+	if status, _ := hand(ownerTok, plain); status != http.StatusForbidden {
+		t.Fatalf("the previous owner handing over again = %d, want 403", status)
+	}
+	if status, _ := e.Do(http.MethodDelete, base, ownerTok, nil); status != http.StatusForbidden {
+		t.Fatalf("the previous owner's DELETE = %d, want 403", status)
+	}
+	if status, body := e.Do(http.MethodPost, base+"/leave", ownerTok, []any{}); status != http.StatusNoContent {
+		t.Fatalf("the previous owner's leave = %d (%x), want 204", status, body)
+	}
+	if status, body := e.Do(http.MethodDelete, base, heirTok, nil); status != http.StatusNoContent {
+		t.Fatalf("the new owner's DELETE = %d (%x), want 204", status, body)
 	}
 }

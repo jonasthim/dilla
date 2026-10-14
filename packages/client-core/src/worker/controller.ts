@@ -34,7 +34,7 @@ import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem,
-  type TrustSummary, type SendBlocksState, type WorkerError,
+  type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -42,6 +42,7 @@ import { LEADER, acquireLeadership, lockName, type Leadership, type LockManagerL
 import { isTestHook, isToWorker, type Command, type FromWorker } from './protocol';
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
+import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -160,14 +161,72 @@ function coreInput(e: unknown, details: ReadonlySet<string>): boolean {
 
 type Method = Command['m'];
 const COMMANDS: ReadonlySet<string> = new Set<Method>([
-  'start', 'signupBegin', 'signupSubmit', 'signupReset', 'resetDevice', 'joinCommunity', 'selectCommunity',
-  'createCommunity', 'createChannel', 'createInvite', 'refreshCommunities',
-  'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
-  'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
-  'forgetBrowser', 'markRead', 'setSetting', 'openDm',
-  'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-  'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
-  'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
+  'start',
+  'signupBegin',
+  'signupSubmit',
+  'signupReset',
+  'resetDevice',
+  'joinCommunity',
+  'selectCommunity',
+  'createCommunity',
+  'createChannel',
+  'createInvite',
+  'refreshCommunities',
+  'openChannel',
+  'closeChannel',
+  'loadEarlier',
+  'send',
+  'retrySend',
+  'discardSend',
+  'signInBegin',
+  'signInLogin',
+  'signInTotp',
+  'signInKey',
+  'signInCancel',
+  'refreshDevices',
+  'revokeDevice',
+  'signOutRevoke',
+  'forgetBrowser',
+  'markRead',
+  'setSetting',
+  'openDm',
+  'editMessage',
+  'deleteMessage',
+  'react',
+  'pin',
+  'loadPins',
+  'closePins',
+  'attachFiles',
+  'discardAttachment',
+  'openAttachment',
+  'refreshTrust',
+  'verifyContact',
+  'safetyNumber',
+  'search',
+  'typing',
+  'voiceSelf',
+  'resign',
+  'callJoin',
+  'callLeave',
+  'callShare',
+  'callRefresh',
+  'callStats',
+  'loadVoice',
+  'callDecline',
+  'renameCommunity',
+  'deleteCommunity',
+  'leaveCommunity',
+  'transferOwnership',
+  'createCategory',
+  'updateChannel',
+  'moveChannel',
+  'deleteChannel',
+  'kickMember',
+  'banMember',
+  'unbanMember',
+  'loadBans',
+  'loadInvites',
+  'revokeInvite',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -175,15 +234,48 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId')[]>> = {
-  selectCommunity: ['communityId'], createChannel: ['communityId'], createInvite: ['communityId'], openChannel: ['channelId'], closeChannel: ['channelId'], loadEarlier: ['channelId'],
-  send: ['channelId'], retrySend: ['msgId'], discardSend: ['msgId'],
-  revokeDevice: ['deviceId'], markRead: ['channelId'], openDm: ['userId'],
-  editMessage: ['channelId', 'msgId'], deleteMessage: ['channelId', 'msgId'], react: ['channelId', 'msgId'], pin: ['channelId', 'msgId'],
-  loadPins: ['channelId'], closePins: ['channelId'], attachFiles: ['channelId'], discardAttachment: ['channelId'],
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId')[]>> = {
+  selectCommunity: ['communityId'],
+  createChannel: ['communityId'],
+  createInvite: ['communityId'],
+  openChannel: ['channelId'],
+  closeChannel: ['channelId'],
+  loadEarlier: ['channelId'],
+  send: ['channelId'],
+  retrySend: ['msgId'],
+  discardSend: ['msgId'],
+  revokeDevice: ['deviceId'],
+  markRead: ['channelId'],
+  openDm: ['userId'],
+  editMessage: ['channelId', 'msgId'],
+  deleteMessage: ['channelId', 'msgId'],
+  react: ['channelId', 'msgId'],
+  pin: ['channelId', 'msgId'],
+  loadPins: ['channelId'],
+  closePins: ['channelId'],
+  attachFiles: ['channelId'],
+  discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
-  verifyContact: ['userId'], safetyNumber: ['userId'], typing: ['channelId'], voiceSelf: ['callId'],
-  callJoin: ['channelId'], callDecline: ['callId'],
+  verifyContact: ['userId'],
+  safetyNumber: ['userId'],
+  typing: ['channelId'],
+  voiceSelf: ['callId'],
+  callJoin: ['channelId'],
+  callDecline: ['callId'],
+  renameCommunity: ['communityId'],
+  deleteCommunity: ['communityId'],
+  leaveCommunity: ['communityId'],
+  transferOwnership: ['communityId', 'userId'],
+  createCategory: ['communityId'],
+  updateChannel: ['channelId'],
+  moveChannel: ['channelId'],
+  deleteChannel: ['channelId'],
+  kickMember: ['communityId', 'userId'],
+  banMember: ['communityId', 'userId'],
+  unbanMember: ['communityId', 'userId'],
+  loadBans: ['communityId'],
+  loadInvites: ['communityId'],
+  revokeInvite: ['communityId', 'inviteId'],
 };
 /** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
 const ACCEPTS: Record<BootPhase, readonly Method[]> = {
@@ -197,11 +289,62 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'signin-totp': ['signInTotp', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
   'ready': [
-    'joinCommunity', 'selectCommunity', 'createCommunity', 'createChannel', 'createInvite', 'refreshCommunities', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
-    'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
-    'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
-    'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
-    'callJoin', 'callLeave', 'callShare', 'callRefresh', 'callStats', 'loadVoice', 'callDecline',
+    'joinCommunity',
+    'selectCommunity',
+    'createCommunity',
+    'createChannel',
+    'createInvite',
+    'refreshCommunities',
+    'openChannel',
+    'closeChannel',
+    'loadEarlier',
+    'send',
+    'retrySend',
+    'discardSend',
+    'refreshDevices',
+    'revokeDevice',
+    'signOutRevoke',
+    'forgetBrowser',
+    'markRead',
+    'setSetting',
+    'openDm',
+    'editMessage',
+    'deleteMessage',
+    'react',
+    'pin',
+    'loadPins',
+    'closePins',
+    'attachFiles',
+    'discardAttachment',
+    'openAttachment',
+    'refreshTrust',
+    'verifyContact',
+    'safetyNumber',
+    'search',
+    'typing',
+    'voiceSelf',
+    'resign',
+    'callJoin',
+    'callLeave',
+    'callShare',
+    'callRefresh',
+    'callStats',
+    'loadVoice',
+    'callDecline',
+    'renameCommunity',
+    'deleteCommunity',
+    'leaveCommunity',
+    'transferOwnership',
+    'createCategory',
+    'updateChannel',
+    'moveChannel',
+    'deleteChannel',
+    'kickMember',
+    'banMember',
+    'unbanMember',
+    'loadBans',
+    'loadInvites',
+    'revokeInvite',
   ],
 };
 
@@ -222,6 +365,11 @@ const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSa
 const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
   && r.every((v: unknown, i) => statsField(v) || (i === 1 && v === null));
 const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string' && ID.test(v));
+
+/** Per-feature synchronous checks (wave 1+): each returns an E_BAD_INPUT reason or null. */
+const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {
+  ...ADMIN_VALIDATORS,
+};
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.
  *  Every refusal here answers only the owning page's own malformed command (deps.post reaches only that page). */
@@ -324,6 +472,8 @@ function invalid(command: Record<string, unknown>): string | null {
     if (cursor !== null && (typeof cursor !== 'object' || cursor === undefined || Object.keys(cursor).length !== 1
       || !('token' in cursor) || typeof cursor.token !== 'string' || !/^[1-9][0-9]*$/.test(cursor.token))) return 'invalid search cursor';
   }
+  const extra = VALIDATORS[m as Method]?.(command) ?? null;
+  if (extra !== null) return extra;
   return null;
 }
 
@@ -338,9 +488,16 @@ const EMPTY_NOTICES: NoticesState = { nextId: 1, items: [] };
 const TICKET_TTL_S = 30n;
 /** A burst of op 54 community_changed (a server's starter channels, a reorder) costs one list read per server. */
 export const COMMUNITY_RELOAD_DEBOUNCE_MS = 250;
+/** web3.4 C4: the removals slice keeps this many notices, the newest (the page dismisses them locally). */
+export const REMOVALS_MAX = 8;
 
 export class Controller {
   private readonly parts: ControllerParts;
+  /** The id of the last removal notice (web3.4 C4). */
+  private removalSeq = 0;
+  /** The sequence of the last community list read begun, and of the last one applied (C4 fix round 1). */
+  private listSeq = 0;
+  private listApplied = 0;
   private readonly slices: SliceStore;
   private readonly routes: Routes;
   private instance: Instance | null = null;
@@ -437,6 +594,8 @@ export class Controller {
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
   private readonly calls: CallController;
+  /** web3.4: server admin and moderation (flow 08). */
+  private readonly admin: AdminController;
   /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
   private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
   private readonly ownInCall = new Set<string>();
@@ -459,7 +618,10 @@ export class Controller {
       core: () => this.core,
       routes: this.routes,
       post: (message, transfer) => { deps.post(message, transfer); },
-      publish: (name, value) => { this.slices.set(name, value); },
+      publish: (name, value) => {
+        if (name === 'voice') this.slices.set('voice', this.visibleVoice(value as VoiceState));
+        else this.slices.set(name, value);
+      },
       errorOf: (e) => errorOf(e),
       now: () => deps.now(),
       monotonic: () => (deps.monotonic ?? deps.now)(),
@@ -499,6 +661,28 @@ export class Controller {
         return dm === undefined ? undefined : { communityId: null, members: dm.members.map(toHex) };
       },
       communityListed: (community) => this.listed(community),
+    });
+    this.admin = new AdminController({
+      routes: this.routes,
+      now: () => deps.now(),
+      me: () => this.me,
+      get: (name) => this.slices.get(name),
+      publish: (name, value) => { this.slices.set(name, value); },
+      listed: (communityId) => this.listed(communityId),
+      channelsOf: (communityId) => [...this.channels].filter(([, k]) => k.communityId === communityId).map(([id, k]) => ({ id, row: k.row })),
+      communityOf: (channelId) => this.channels.get(channelId)?.communityId ?? null,
+      setChannel: (communityId, row) => { this.channels.set(toHex(row.id), { communityId, row }); },
+      removeChannel: (channelId) => { this.channels.delete(channelId); this.open.delete(channelId); },
+      publishChannels: (communityId) => { this.publishChannels(communityId); this.updateExpected(); this.publishBadges(); },
+      structureChanged: (communityId) => { this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1); },
+      reloadCommunity: (communityId) => this.loadCommunity(communityId),
+      reloadMembers: (communityId) => this.reloadMembers(communityId),
+      refreshCommunities: () => this.refreshCommunities(),
+      listWritten: () => { this.listWritten(); },
+      // C4 fix round 2: the local drop outranks a list read already in flight, which still lists the server.
+      dropCommunity: (communityId) => { this.listWritten(); this.dropCommunity(communityId); },
+      track: (job) => { void this.barrier.track(job).catch(() => undefined); },
+      refusal: (code, detail) => new Refusal(code, detail),
     });
   }
 
@@ -639,6 +823,20 @@ export class Controller {
       case 'callRefresh': return this.calls.refresh();
       case 'callStats': return this.calls.stats(command.report);
       case 'callDecline': return this.calls.decline(command.callId, command.ringTs);
+      case 'renameCommunity': return this.admin.renameCommunity(command.communityId, command.name);
+      case 'deleteCommunity': return this.admin.deleteCommunity(command.communityId);
+      case 'leaveCommunity': return this.admin.leaveCommunity(command.communityId);
+      case 'transferOwnership': return this.admin.transferOwnership(command.communityId, command.userId);
+      case 'createCategory': return this.admin.createCategory(command.communityId, command.name);
+      case 'updateChannel': return this.admin.updateChannel(command.channelId, command.name, command.topic, command.parent);
+      case 'moveChannel': return this.admin.moveChannel(command.channelId, command.direction);
+      case 'deleteChannel': return this.admin.deleteChannel(command.channelId);
+      case 'kickMember': return this.admin.kickMember(command.communityId, command.userId);
+      case 'banMember': return this.admin.banMember(command.communityId, command.userId, command.reason, command.seconds);
+      case 'unbanMember': return this.admin.unbanMember(command.communityId, command.userId);
+      case 'loadBans': return this.admin.loadBans(command.communityId);
+      case 'loadInvites': return this.admin.loadInvites(command.communityId);
+      case 'revokeInvite': return this.admin.revokeInvite(command.communityId, command.inviteId);
       case 'resign': return this.resign(command.nonce);
     }
   }
@@ -894,6 +1092,8 @@ export class Controller {
     this.slices.set('settings', core.settings());
     this.publishBadges();
     if (this.slices.get('notices') === undefined) this.slices.set('notices', this.noticesState);
+    // C4 fix round 1: the removals slice is present from ready on, as notices is.
+    if (this.slices.get('removals') === undefined) this.slices.set('removals', []);
     this.calls.publishInitial();
     // (j) after a reload mid-ceremony the store records no username (head ruling 42): the account names it.
     let username = core.identity().username;
@@ -1345,28 +1545,71 @@ export class Controller {
   }
 
   private async refreshCommunities(): Promise<void> {
+    // C4 fix round 1: list reads overlap (op 54, a join, a transfer); one that began before the last applied is older
+    // than what the page shows, and applying it would drop, or bring back, a server falsely.
+    const seq = ++this.listSeq;
     const rows = await this.routes.listCommunities();
     if (this.storeCleared) return;
+    if (seq < this.listApplied) return;
+    this.listApplied = seq;
+    // The list before this read; absent before the first list after a boot, which tells nothing (web3.4 C4).
+    const before = this.slices.get('communities');
     const list = rows.map((r) => ({ id: toHex(r.id), name: r.name, owner: toHex(r.owner) }));
     this.slices.set('communities', list);
+    // C4 fix round 1: a server still listed with no leave or delete of it in flight was not left (a 5xx that did not go
+    // through): its later removal is told.
+    for (const id of this.admin.selfRemoved) if (this.listed(id) && !this.admin.pendingSelf.has(id)) this.admin.selfRemoved.delete(id);
     // Pre-flight ruling 1(vi): a community that is no longer listed loses its selection and its slices.
     const gone = new Set<string>();
+    const removed = (before ?? []).filter((c) => !this.listed(c.id));
+    for (const c of removed) gone.add(c.id);
     for (const known of this.channels.values()) if (!this.listed(known.communityId)) gone.add(known.communityId);
     if (this.selected !== null && !this.listed(this.selected)) gone.add(this.selected);
     for (const communityId of gone) this.dropCommunity(communityId);
+    // web3.4 C4: a server that was listed and is gone, and that this account did not leave or delete itself, was taken
+    // from it (a kick, a ban, a delete by its owner, a leave on another device): the page says so.
+    const notices = removed.filter((c) => !this.admin.selfRemoved.has(c.id))
+      .map((c): RemovalNotice => ({ id: ++this.removalSeq, communityId: c.id, name: c.name }));
+    if (notices.length > 0) this.slices.set('removals', [...(this.slices.get('removals') ?? []), ...notices].slice(-REMOVALS_MAX));
+  }
+
+  /** C4 fix round 2: a local write of the community list (a leave, a delete, a rename, a create's fallback) counts as the
+   *  newest read applied, so a read begun before it is not applied over it. */
+  private listWritten(): void {
+    this.listApplied = ++this.listSeq;
   }
 
   private dropCommunity(communityId: string): void {
     if (this.selected === communityId) this.selected = null;
+    const dropped: string[] = [];
     for (const [channelId, known] of this.channels) {
       if (known.communityId !== communityId) continue;
       this.channels.delete(channelId);
       this.open.delete(channelId);
+      dropped.push(channelId);
     }
     this.slices.set(`channels:${communityId}`, []);
     this.slices.set(`members:${communityId}`, []);
+    this.admin.forget(communityId);
+    // C4 fix round 1: a call in one of its channels ends here at once (its removed phase, its group forgotten), and the
+    // voice book forgets the channels, so a rejoin starts from the instance's state, not from what was seen before.
+    this.safely(() => { this.calls.channelsDropped(dropped); });
+    // web3.4 C4: no voice row of the server's channels stays on the page (visibleVoice stays as the guard).
+    const voice = this.slices.get('voice');
+    if (voice !== undefined) {
+      const visible = this.visibleVoice(voice);
+      if (Object.keys(visible).length !== Object.keys(voice).length) this.slices.set('voice', visible);
+    }
     this.updateExpected();
     this.publishBadges();
+  }
+
+  /** The voice slice as the page may see it: only the calls of channels and DMs this worker knows (a dropped server's
+   *  channels are not known, though the call controller may still read or hear of their calls until its removal lands). */
+  private visibleVoice(state: VoiceState): VoiceState {
+    const known = (channel: string): boolean => this.channels.has(channel) || this.dms.has(channel);
+    if (Object.keys(state).every(known)) return state;
+    return Object.fromEntries(Object.entries(state).filter(([channel]) => known(channel)));
   }
 
   private async joinCommunity(rawInvite: string): Promise<{ communityId: string }> {
@@ -1378,6 +1621,16 @@ export class Controller {
 
   private async joinPath(communityId: Id, invite: string): Promise<{ communityId: string }> {
     await this.routes.joinCommunity(communityId, invite);
+    // web3.4 C4: a server left earlier and joined again is told of when it is later taken away.
+    this.admin.selfRemoved.delete(toHex(communityId));
+    // Final fix I3: a notice of that server's removal is stale once it is joined again.
+    const notices = this.slices.get('removals');
+    if (notices !== undefined && notices.some((r) => r.communityId === toHex(communityId))) {
+      this.slices.set('removals', notices.filter((r) => r.communityId !== toHex(communityId)));
+    }
+    // A server joined again in this tab (after a kick, a lifted ban or a leave): a resync refused while the account was out
+    // stood as not-member until the next ready, so the channels stayed unwritable until a reload; the engine resyncs now.
+    this.sync?.rejoined(communityId);
     // Pre-flight ruling 1(vii): the account joined; a failed refresh of the list does not undo that.
     try { await this.refreshCommunities(); } catch { /* the next ready refreshes it */ }
     return { communityId: toHex(communityId) };
@@ -1400,6 +1653,7 @@ export class Controller {
     // As joinPath: the server exists; a failed refresh of the list does not undo that.
     try { await this.refreshCommunities(); } catch { /* listed below; the next ready refreshes it */ }
     if (!this.storeCleared && !this.listed(communityId) && this.me !== null) {
+      this.listWritten();
       this.slices.set('communities', [...(this.slices.get('communities') ?? []),
         { id: communityId, name: communityName, owner: toHex(this.me.userId) }]);
     }
@@ -1475,6 +1729,15 @@ export class Controller {
     this.updateExpected();
     this.publishBadges();
     this.publishDms();                               // a DM's name comes from the member lists
+    // The access reads are tracked by the barrier, not awaited: a select never waits on them, and a failed read leaves them absent.
+    void this.barrier.track(this.admin.loadAccess(communityId)).catch(() => undefined);
+  }
+
+  /** The member list of one server, read again (a kick, a ban, a transfer). */
+  private async reloadMembers(communityId: string): Promise<void> {
+    const rows = await this.routes.listMembers(fromHex(communityId));
+    if (this.storeCleared || !this.listed(communityId)) return;
+    this.publishMembers(communityId, rows);
   }
 
   private publishMembers(communityId: string, rows: readonly MemberRow[]): void {
@@ -1974,6 +2237,10 @@ export class Controller {
     this.slices.set('badges', {});
     this.slices.set('settings', {});
     this.slices.set('notices', this.noticesState);
+    // C4 fix round 1: the removal notices and the own leaves of this account go with it; the next account's removals are
+    // told whatever this one left.
+    if (this.slices.get('removals') !== undefined) this.slices.set('removals', []);
+    this.admin.selfRemoved.clear();
     this.slices.set('trust', []);
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });

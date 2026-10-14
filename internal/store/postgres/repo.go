@@ -2033,6 +2033,10 @@ func (r *Repo) SoftDeleteCommunity(ctx context.Context, communityID id.ID, at in
 	return nil
 }
 
+func (r *Repo) SetCommunityOwner(ctx context.Context, communityID, owner id.ID) error {
+	return wrap(r.w.SetCommunityOwner(ctx, pgdb.SetCommunityOwnerParams{Owner: owner, ID: communityID}))
+}
+
 // LockCommunity takes the community row FOR NO KEY UPDATE until the
 // transaction ends. Outside a transaction the lock would be released with the
 // statement, so it is refused there.

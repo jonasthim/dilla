@@ -128,6 +128,102 @@ to 100 bytes.", "A name cannot hold control characters such as tabs or line brea
 this server.", "That name was refused. Try another." or "Could not add the channel ({code}). Try again." when the
 channel was not added.
 
+## Run your server
+
+Once a server has people in it, you run it from **server settings** and from the member list. Both are for people
+whose roles allow it; the owner can do everything here.
+
+### Server settings
+
+Press **server settings** under the server's name. The dialog "Server settings" has a list of sections
+("server settings sections"). A section shows only to someone whose roles allow it: **overview** (manage the server),
+**channels** (manage channels), **invites** (create invites) and **bans** (ban members). The last section differs: a
+non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Tab stops once on the
+list and once on the section; Escape closes the dialog and focus goes back to **server settings**.
+
+**Overview** renames the server. Type under "Server name" ("Up to 255 bytes. Everyone in the server, and the host,
+can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
+a name.", "That name is too long. A server name is up to 255 bytes.", "That name was refused. Try another.", "You
+cannot rename this server." or "Could not save ({code}). Try again." If "Someone else changed the server at the same
+time. Check the name and save again.", look at the name that is there now and save again.
+
+**Channels** lists the channels under their categories ("no category" holds the rest). Each row has **edit**, **move
+up**, **move down** and **delete**; the screen announces "{name} moved." after a move.
+
+- **new category** asks for a "Category name" ("Up to 100 bytes. A category groups channels in the list; it holds no
+  messages.") and **Create**.
+- **edit** opens "Edit #{name}" (or "Edit {name}" for a voice channel, "Edit category {name}" for a category). You
+  can change the "Channel name" ("Up to 100 bytes."), the "Topic" of a text channel ("Shown under the channel name.
+  Up to 1024 bytes. The host can read it.") and its "Category". A category has only a name. The header of an open
+  text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
+- **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
+  someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
+  ends. Deleting a category keeps its channels, without a category. Focus starts on **Cancel**.
+
+**Invites** makes and lists invite links. Choose "Expires after" (30 minutes up to 30 days) and "Max uses" (1 use, or
+a number), then **Make link**. "An invite lasts at most 30 days and admits at most 1000 people." The new link shows
+as in [Invite people](#invite-people). The list under it has one row per live link: "by {name}, {used} of {max}
+uses, expires {date}", with **revoke**. "Invite link revoked." means people can no longer join with it. An empty list
+says "No live invite links."
+
+Invite links cannot be shown again. "The server keeps only a fingerprint of each link, so a link cannot be shown
+again. Make a new one to share." Copy a link when you make it; if it is lost, revoke it and make another.
+
+**Bans** lists who is banned from the server, with "banned by {name} on {date}", when it ends ("ends {date}" or
+"until lifted"), and the reason or "no reason given". A ban that has run out says "ended {date}; can join again". A
+moderator who has since left the server shows as "a former member", and an account the instance no longer names as
+"a deleted account". **unban** asks "Unban {name}?": "{name} can join {server} again with an invite. This does not add them
+back." An empty list says "Nobody is banned from {server}." If the list does not load, **Try again** loads it
+again.
+
+### Members
+
+The **members** button in the channel header opens the list of "members of {server}", grouped by role: one group
+for each role shown apart, highest first ("{name} — {count}"), then "members". A row can carry the tags `owner`,
+`you` and `bot`. On a wide window the list is a column beside the conversation. On a phone, or any window narrower
+than 64 rem, it is a panel over the screen: focus moves into it, and **close members**, Escape or a tap outside it
+closes it. Focus goes back to **members**.
+
+Each row has an **actions for {name}** button. Right-click on the row, or Shift+F10 or the ContextMenu key with the
+row focused, opens the same menu. In the menu, Down and Up move between the items, Home and End jump to the first and
+last, Enter runs one and Escape closes it. The items are **message**, **compare safety numbers**, and, if your roles
+allow it and the person's highest role is below yours, **kick** and **ban**.
+
+**kick** asks "Kick {name} from {server}?": "{name} leaves every channel and call of {server} at once. They can
+join again with an invite. Messages they already received stay on their devices." Focus starts on **Cancel**. **Kick**
+says "Kicking…", then "{name} was kicked."
+
+**ban** asks "Ban {name} from {server}?": "{name} leaves every channel and call of {server} at once and cannot join
+again until the ban ends or is lifted. Messages they already received stay on their devices." Choose "Ban length"
+(1 hour, 1 day, 7 days, 30 days or until lifted) and, if you like, a "Reason" ("Optional. Shown to moderators in the
+ban list, not to {name}. Up to 512 bytes."). **Ban** says "Banning…", then "{name} was banned." A refused kick or ban
+says so in the dialog: "You cannot kick {name}. Their highest role is at or above yours, or your roles do not allow
+kicking." (and the same for banning), or "{name} is no longer in {server}."
+
+### Leave, hand over and delete
+
+Anyone but the owner can leave: **leave server** asks "Leave {server}?", "You leave every channel and call of
+{server}. To come back you need an invite." and says "You left {server}." The owner sees "You own {server}, so you
+cannot leave it. Hand it to another member or delete it."
+
+**hand over server** ("Hand {server} to another member") makes someone else the owner. Choose the "New owner", type
+the server name under "Type the server name to confirm" and press **Hand over**. The new owner gets every permission
+and you stay as a member who can no longer delete the server. You cannot undo it yourself. With nobody else in the
+server it says "There is no other member to hand the server to yet." The page says "{name} now owns {server}."
+
+**delete server** ("Delete {server}?") removes every channel, message and file for everyone and ends every call in
+it. **Delete server** stays off until you type the server name under "Type the server name to confirm"; "That is not
+the server name." shows while it differs. "{server} was deleted." Copies someone already saved stay with them. Only
+the owner can do it, and it cannot be undone.
+
+### What a removed person sees
+
+A person who is kicked, banned, or whose server is deleted sees a banner, "You are no longer in {server}.", with
+**dismiss**. The server leaves their rail, the page moves to their first other server (or to the start page), and any
+dialog open for that server closes. A banned person who tries an invite link again sees "This server does not let your account join."
+until the ban ends or is lifted. See also
+[You are no longer a member](#you-are-no-longer-a-member).
+
 ## 1. Open the invite
 
 An invite is a code or a link. A link to an instance looks like `https://chat.example.org/i/<code>`.
@@ -250,8 +346,9 @@ From left to right:
   arrow into a bracket) is "join a server": paste a server invite ("A server invite, as a code or a link.") and
   press **Join**. **new** (a plus) is "new server" ([Start a server](#start-a-server)). The last tile is
   "settings"; a number on a server tile counts its unread channels.
-- **The channel list.** The server's name, its actions (**invite link** for everyone, and **+ channel** for the
-  owner; see [Invite people](#invite-people) and [Add a channel](#add-a-channel)) and its channels. Text channels
+- **The channel list.** The server's name, its actions (**invite link** for everyone, **+ channel** for the
+  owner, and **server settings**; see [Invite people](#invite-people), [Add a channel](#add-a-channel) and [Run your
+  server](#run-your-server)) and its channels. Text channels
   open here. Voice channels are
   listed under "voice" and open the voice channel ([Voice, calls and media files](voice.md)); while you are in
   a call, its dock sits above your user panel. Channels the server can read ("Readable by this server") are
@@ -718,10 +815,10 @@ and when the other tab closes it takes over by itself.
 - No native phone or desktop app. A second browser needs the recovery key and the password (and the code,
   for an account with a second factor). A new browser does not get messages from before it joined. Devices have
   no names, and the password cannot be changed from the web client.
-- Only a server's owner can add channels: there are no roles yet that let others do it, and no roles,
-  permissions or profile screens. Channels cannot be renamed, given a topic or removed from the web client, and
-  servers cannot be renamed or removed. An invite link is always for 10 uses and 7 days. Other members see a new
-  channel when they come back to the tab, reconnect or reload, not at once.
+- The web client cannot create or edit roles, and it has no profile screens. The "invite link" button always makes a
+  link for 10 uses and 7 days; choose other limits under server settings → invites ([Run your
+  server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or ban gives no way to
+  tell the person why.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
 - No threads, link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
@@ -767,9 +864,8 @@ warnings of section 7 need a device of mira's account that no browser can make, 
 quoted, not shown. Every name and
 message is made up, and the accounts are deleted with the test host. The account has no second factor, so
 step 3 of the sign-in has no screenshot, and the two warnings of sections 6 and 7 that need a second
-sign-in at the same moment or foreign recovery data are quoted, not shown. The web client cannot remove a member
-yet, so for section 5 the script removes mira on ada's authority through the instance's own route (the test host's
-`/debug/kick`); it is the one step no client takes. To re-shoot them (not part of CI):
+sign-in at the same moment or foreign recovery data are quoted, not shown. For section 5 the script removes mira on ada's authority through the instance's own route (the test host's
+`/debug/kick`), not through the member list. To re-shoot them (not part of CI):
 
 ```sh
 npm run build -w @dilla/web

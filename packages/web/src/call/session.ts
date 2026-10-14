@@ -54,6 +54,9 @@ export interface PageCallState {
   noise: 'on' | 'off';
   /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
   audioBlocked: boolean;
+  /** web3.4 V2: the remote audio tracks this device is subscribed to (expected: pending and attached) and those
+   *  attached, so playing (attached stays the same while deafened or paused holds a new track back). */
+  audio: { attached: number; expected: number };
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -84,6 +87,9 @@ export interface PageCall {
   setNoise(noise: 'on' | 'off'): Promise<void>;
   /** web3.3: the "turn on audio" press: room.startAudio(), then canPlaybackAudio read again; a refusal never throws. */
   startAudio(): Promise<void>;
+  /** web3.4 V1: moves the call's sound to output device `id` ('' is the system default) during the call. A no-op where
+   *  the browser cannot choose an output, and after the leave; rejects when the browser refuses the device. */
+  setOutput(id: string): Promise<void>;
   leave(reason: LeaveReason): Promise<void>;
 }
 
@@ -297,11 +303,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     ctxClosed = true;
     try { void Promise.resolve(ctx.close()).catch(() => undefined); } catch { /* already closed */ }
   };
-  if (ctx !== null && opts.output !== '' && typeof (ctx as { setSinkId?: unknown }).setSinkId === 'function') {
-    try {
-      void Promise.resolve((ctx as unknown as { setSinkId(id: string): Promise<void> }).setSinkId(opts.output)).catch(() => undefined);
-    } catch { /* the system default plays */ }
-  }
+  /** Sends the call's sound to output device `id` ('' is the system default). Null where the context cannot choose an
+   *  output (Firefox): the system default plays. web3.4 V1: also the mid-call switch (setOutput). */
+  const setSink = ctx !== null && typeof (ctx as { setSinkId?: unknown }).setSinkId === 'function'
+    ? async (id: string): Promise<void> => { await (ctx as unknown as { setSinkId(id: string): Promise<void> }).setSinkId(id); }
+    : null;
+  // A refused device at the start leaves the system default playing.
+  if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
   let mic: Awaited<ReturnType<typeof acquireMic>>;
   try {
     mic = await abortable(acquireMic(deps.media, opts.input), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
@@ -465,7 +473,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
       noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
-      audioBlocked: false,
+      audioBlocked: false, audio: { attached: 0, expected: 0 },
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -552,6 +560,14 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (!roster.has(identity) || gainFor(identity) <= 0) continue;
         if (attachAudio(t, identity)) pending.delete(t);
       }
+      countAudio();
+    };
+    /** web3.4 V2: state.audio follows `pending` and `playing`, said only on a change. A queued track is counted by the
+     *  applyGains that follows every queueAudio (onSubscribed, the sweep at connect). */
+    const countAudio = (): void => {
+      const attached = playing.size;
+      const expected = attached + pending.size;
+      if (state.audio.attached !== attached || state.audio.expected !== expected) set({ audio: { attached, expected } });
     };
     const attachAudio = (t: RemoteAudio, identity: string): boolean => {
       if (playing.has(t)) return true;
@@ -571,15 +587,18 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const t = track as RemoteAudio;
       pending.delete(t);
       const entry = playing.get(t);
-      if (entry === undefined) return;
-      playing.delete(t);
-      try { t.detach(entry.el); } catch { /* the element is removed all the same */ }
-      entry.el.remove();
+      if (entry !== undefined) {
+        playing.delete(t);
+        try { t.detach(entry.el); } catch { /* the element is removed all the same */ }
+        entry.el.remove();
+      }
+      countAudio();
     };
     /** Every attached or held-back track, or those of one participant. */
     const detachAudioOf = (identity?: string): void => {
       for (const [t, id] of [...pending]) if (identity === undefined || id === identity) pending.delete(t);
       for (const [t, entry] of [...playing]) if (identity === undefined || entry.identity === identity) detachAudio(t);
+      countAudio();
     };
     /** Review Focus 1: tracks subscribed before the listeners existed (while joinCall or the publish was in flight). */
     const sweepAudio = (): void => {
@@ -1040,6 +1059,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         try { if (ctx !== null) tries.push(ctx.resume()); } catch { /* still held back */ }
         try { tries.push(room.startAudio()); } catch { /* still held back */ }
         return Promise.allSettled(tries).then(() => { if (!ended) set({ audioBlocked: playbackBlocked() }); });
+      },
+      // web3.4 V1: Settings → Voice's output during the call. With webAudioMix everything plays through the context's
+      // destination, so the context's sink is the one to move. A refusal rejects (the shell says so); the call goes on
+      // where it played before.
+      setOutput(id) {
+        if (ended || setSink === null) return Promise.resolve();
+        return setSink(id);
       },
       leave,
     };

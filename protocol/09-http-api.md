@@ -235,16 +235,21 @@ community answers `404` to everyone.
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
 | `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/permissions` | — | `[bits(uint), top(uint)]`: the caller's community-wide permissions (§ Permissions; no channel overwrite applied) and the position of the caller's highest role, `0` for `@everyone` alone and `2147483648` for the owner |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
 | `POST /v1/communities/{id}/leave` | `[]` | `204` |
+| `POST /v1/communities/{id}/owner` | `[user_id(bstr16)]` | `204`; `403` for anyone but the owner, `404` when the target is not a member, `400` for the caller themself, a bot account, or a disabled or deleted account |
 | `PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}` | `[]` | `204` |
 
 - The creator is the **owner** and the first member, and the community starts with one role,
   `@everyone`, at position 0, whose id is `role_everyone`. The owner can neither leave nor be
   removed. `PATCH` needs `manage_community` (§ Permissions); `DELETE` is the owner's alone
   (`403 E_FORBIDDEN` for any other member). Removing a member is the **kick** of § Bans. Role
-  grants are § Roles'.
+  grants are § Roles'. The owner may hand the community to another member (`POST …/owner`); then
+  they are an ordinary member and may leave. They keep their roles, the hand-over writes a
+  `community.transfer` audit row, and the members are sent `community_changed` (`02`).
+- Any member reads their own permissions (`GET …/permissions`). A client uses it to offer only what the instance allows and still handles every refusal.
 - `leave` removes the caller's leaves from every `text` and `call` group of the community's
   channels, as a kick does (§ Bans). `DELETE` closes every such group after the community and its
   channels are tombstoned.
@@ -348,10 +353,12 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 ### Roles
 
 Every route below is `E`, and every one needs `manage_roles` community-wide (for an overwrite, in
-that channel); a caller who is not a member of the community answers `404 E_NOT_FOUND`.
+that channel), except `GET`, which any member may read; a caller who is not a member of the
+community answers `404 E_NOT_FOUND`.
 
 | Method and path | Request | Response |
 |---|---|---|
+| `GET /v1/communities/{id}/roles` | — | `[[role_id(bstr16), name(tstr), color(uint), position(uint), allow(uint), deny(uint), hoist(uint), mentionable(uint)]]`: every role ordered by `position` then `role_id`, `@everyone` first; bits outside § Permissions are cleared |
 | `POST /v1/communities/{id}/roles` | `[name(tstr), color(uint), position(uint), allow(uint), deny(uint), hoist(uint), mentionable(uint)]` | `201 [role_id(bstr16)]` |
 | `PATCH /v1/roles/{id}` | the same seven fields, each `\|null`; null leaves a field alone | `204` |
 | `DELETE /v1/roles/{id}` | — | `204` |
@@ -391,7 +398,7 @@ the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
 |---|---|---|
 | `PUT /v1/communities/{id}/bans/{user_id}` | `[reason(tstr), expires(uint\|null)]` | `204` |
 | `DELETE /v1/communities/{id}/bans/{user_id}` | — | `204`; `404` when there is no such ban |
-| `GET /v1/communities/{id}/bans` | — | `[[user_id, reason, by_user, created, expires(uint\|null)]]`, newest first |
+| `GET /v1/communities/{id}/bans` | — | `[[user_id, reason, by_user, created, expires(uint\|null), username(tstr), display(tstr)]]`, newest first; `display` is `""` for a deleted account, whose `username` stays (§ Accounts); both are `""` only if the account row is gone |
 | `DELETE /v1/communities/{id}/members/{user_id}` (kick) | — | `204`; `404` when the target is not a member |
 
 - **Rank.** Nobody may ban or kick the owner, and anyone but the owner acts only on a user whose
@@ -405,7 +412,9 @@ the kick needs `kick_members` (§ Permissions); `403 E_FORBIDDEN` otherwise.
   null for a ban that stands until it is lifted; anything else is `400 E_INVALID_REQUEST`. A ban
   whose `expires` has passed no longer refuses a join but stays listed, as the moderation history,
   until it is lifted.
-- A **kick** removes the membership and writes no ban: the user may join again at once.
+- A **kick** removes the membership and writes no ban: the user may join again at once. A kick,
+  or a ban of a member, removes the membership and, after the commit, the instance sends
+  `community_changed` (`02`) to the remaining members and once to the removed user.
 - Lifting a ban re-adds the user to nothing; they join again.
 - After a ban, a kick or a `leave` has committed, the instance, as the external sender (`02`
   § Roles), issues one `Remove` proposal for every live leaf of the user in every `text` and `call`

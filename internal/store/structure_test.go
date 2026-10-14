@@ -312,6 +312,45 @@ func TestCommunityMetaMembershipAndRoleGrants(t *testing.T) {
 	}
 }
 
+// SetCommunityOwner writes the owner of a live community; on a tombstoned one it is a no-op that
+// neither fails nor brings the community back.
+func TestSetCommunityOwnerRoundTrip(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			owner := seedUser(ctx, t, repo).ID
+			heir := seedUser(ctx, t, repo).ID
+			live, gone := id.New(), id.New()
+			for _, cid := range []id.ID{live, gone} {
+				if err := repo.CreateCommunity(ctx, store.CommunityRow{
+					ID: cid, Owner: owner, Name: "c", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: 10,
+				}); err != nil {
+					t.Fatalf("CreateCommunity: %v", err)
+				}
+			}
+			if err := repo.SetCommunityOwner(ctx, live, heir); err != nil {
+				t.Fatalf("SetCommunityOwner: %v", err)
+			}
+			got, err := repo.GetCommunity(ctx, live)
+			if err != nil || got.Owner != heir {
+				t.Fatalf("owner after SetCommunityOwner = %v, %v, want %v", got.Owner, err, heir)
+			}
+			if got.Name != "c" || got.PolicyVersion != 1 {
+				t.Fatalf("SetCommunityOwner changed another column: %+v", got)
+			}
+			if err := repo.SoftDeleteCommunity(ctx, gone, 99); err != nil {
+				t.Fatalf("SoftDeleteCommunity: %v", err)
+			}
+			if err := repo.SetCommunityOwner(ctx, gone, heir); err != nil {
+				t.Fatalf("SetCommunityOwner on a tombstone = %v, want a no-op", err)
+			}
+			if _, err := repo.GetCommunity(ctx, gone); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetCommunity after SetCommunityOwner on a tombstone = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
 // ListCommunities is what `dillad admin community list` pages through: the live
 // communities in id order, a soft-deleted one left out, and the cursor and limit
 // honoured the way ListUsers honours them.

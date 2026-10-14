@@ -389,6 +389,8 @@ func TestBanListShapeAndLift(t *testing.T) {
 		ByUser  id.ID
 		Created int64
 		Expires *uint64
+		Name    string
+		Display string
 	}
 	mustUnmarshalBody(t, body, &bans)
 	if len(bans) != 2 || bans[0].UserID != b || bans[0].Expires == nil || *bans[0].Expires != until ||
@@ -406,6 +408,109 @@ func TestBanListShapeAndLift(t *testing.T) {
 	}
 	joinCommunity(t, e, cid, bTok)
 	// An unbanned user is not re-added to any group: they re-join.
+}
+
+// userGoneRepo reads one user as missing.
+type userGoneRepo struct {
+	store.Repository
+	gone id.ID
+}
+
+func (r userGoneRepo) GetUser(ctx context.Context, userID id.ID) (store.UserRow, error) {
+	if userID == r.gone {
+		return store.UserRow{}, store.ErrNotFound
+	}
+	return r.Repository.GetUser(ctx, userID)
+}
+
+func TestBanListNamesEachAccount(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	a, _ := e.NewUser("alice")
+	gone, _ := e.NewUser("gone")
+	// A ban row's foreign key keeps its account row alive in storage, so the
+	// vanished account is simulated: GetUser answers ErrNotFound for it.
+	api.NewBans(userGoneRepo{Repository: e.Repo, gone: gone}, &recordingDS{}, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	base := "/v1/communities/" + cid.String()
+	owner := ownerOf(t, e, cid)
+	for i, u := range []id.ID{a, gone} {
+		if err := e.Repo.PutBan(t.Context(), store.BanRow{CommunityID: cid, UserID: u, ByUser: owner,
+			Created: e.Clk.Now().Add(time.Duration(i) * time.Minute).Unix()}); err != nil {
+			t.Fatalf("PutBan: %v", err)
+		}
+	}
+	status, body := e.Do(http.MethodGet, base+"/bans", ownerTok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET bans = %d", status)
+	}
+	var raw []cbor.RawMessage
+	mustUnmarshalBody(t, body, &raw)
+	if len(raw) != 2 {
+		t.Fatalf("bans = %d rows, want 2", len(raw))
+	}
+	var rows [2][]cbor.RawMessage
+	for i := range raw {
+		mustUnmarshalBody(t, raw[i], &rows[i])
+		if len(rows[i]) != 7 {
+			t.Fatalf("row %d has %d fields, want 7", i, len(rows[i]))
+		}
+	}
+	str := func(m cbor.RawMessage) string {
+		var s string
+		mustUnmarshalBody(t, m, &s)
+		return s
+	}
+	// Newest first: the account with no user row, then alice.
+	if u, d := str(rows[0][5]), str(rows[0][6]); u != "" || d != "" {
+		t.Errorf("deleted account names = %q, %q, want empty", u, d)
+	}
+	user, err := e.Repo.GetUser(t.Context(), a)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if u, d := str(rows[1][5]), str(rows[1][6]); u != user.Username || d != "alice" {
+		t.Errorf("alice names = %q, %q, want %q, alice", u, d, user.Username)
+	}
+}
+
+// A deleted account is tombstoned: it keeps its username (R36) and its display name is blanked, so
+// its ban row reads [username, ""]. Both are "" only when the account row itself is gone.
+func TestBanListNamesATombstonedAccountByUsernameOnly(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewBans(e.Repo, &recordingDS{}, e.Clk, slog.New(slog.DiscardHandler)).Register(e.Mux)
+	banned, _ := e.NewUser("bertil")
+	user, err := e.Repo.GetUser(t.Context(), banned)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	owner := ownerOf(t, e, cid)
+	if err := e.Repo.PutBan(t.Context(), store.BanRow{CommunityID: cid, UserID: banned, ByUser: owner,
+		Created: e.Clk.Now().Unix()}); err != nil {
+		t.Fatalf("PutBan: %v", err)
+	}
+	if err := e.Repo.TombstoneUser(t.Context(), banned, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("TombstoneUser: %v", err)
+	}
+	status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/bans", ownerTok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET bans = %d", status)
+	}
+	var rows []struct {
+		_        struct{} `cbor:",toarray"`
+		UserID   id.ID
+		Reason   string
+		ByUser   id.ID
+		Created  int64
+		Expires  *int64
+		Username string
+		Display  string
+	}
+	mustUnmarshalBody(t, body, &rows)
+	if len(rows) != 1 || rows[0].UserID != banned {
+		t.Fatalf("bans = %+v, want the one tombstoned account", rows)
+	}
+	if rows[0].Username != user.Username || rows[0].Display != "" {
+		t.Fatalf("tombstoned account names = %q, %q, want %q, \"\"", rows[0].Username, rows[0].Display, user.Username)
+	}
 }
 
 // Who may ban, kick and read the list, and what a request may carry.

@@ -356,6 +356,8 @@ type Querier interface {
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
+	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
+	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error
 	// Invariant 11's restore half, and MONOTONE. `dillad restore` names the generation it read out of
 	// the backup's manifest; a backup taken before an earlier restore would otherwise walk the number
 	// BACKWARDS, and the generation is exactly what invalidates outstanding resume tokens, so a

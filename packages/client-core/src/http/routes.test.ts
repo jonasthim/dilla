@@ -1031,3 +1031,158 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect(t.seen).toHaveLength(0);
   });
 });
+
+// ---- wave 1: server admin and moderation (flow 08) ----
+describe('Routes: server admin and moderation', () => {
+  const OTHER = fill(16, 0x21);
+  const INVITE = fill(16, 0x22);
+  const TOP = 2 ** 31;
+  const role = (hoist: number): (number | string | bigint | Uint8Array)[] => [ROLE, 'mods', 0xff8800, 5, 4096n, 0n, hoist, 1];
+  const one = async (reply: Response, call: (r: Routes) => Promise<unknown>) => {
+    const { t, http, routes } = setup();
+    t.replies.push(reply);
+    const result = await call(routes);
+    return { result, seen: t.seen[0], http };
+  };
+
+  it('getPermissions reads [bits, top]', async () => {
+    const { result, seen, http } = await one(cborReply(200, [16_777_215, TOP]), (r) => r.getPermissions(COMMUNITY));
+    expect(result).toEqual({ bits: 16_777_215n, top: TOP });
+    expect(seen.method).toBe('GET');
+    expect(seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/permissions`);
+    expect(http.requests[0].bucket).toBe('read');
+    expect(http.requests[0].idempotent).toBe(true);
+  });
+  it('getPermissions refuses a short answer and a rank above the owner', async () => {
+    const a = setup();
+    a.t.replies.push(cborReply(200, [1]));
+    await expect(a.routes.getPermissions(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+    const b = setup();
+    b.t.replies.push(cborReply(200, [1, TOP + 1]));
+    await expect(b.routes.getPermissions(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+  });
+  it('listRoles reads the role rows', async () => {
+    const { result, seen } = await one(cborReply(200, [role(1)]), (r) => r.listRoles(COMMUNITY));
+    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: 4096n, deny: 0n, hoist: true, mentionable: true }]);
+    expect(seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/roles`);
+  });
+  it('listRoles refuses 251 rows and a hoist of 2', async () => {
+    const a = setup();
+    a.t.replies.push(cborReply(200, Array.from({ length: 251 }, () => role(0))));
+    await expect(a.routes.listRoles(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
+    const b = setup();
+    b.t.replies.push(cborReply(200, [role(2)]));
+    await expect(b.routes.listRoles(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+    const c = setup();
+    c.t.replies.push(cborReply(200, Array.from({ length: 250 }, () => role(0))));
+    expect(await c.routes.listRoles(COMMUNITY)).toHaveLength(250);
+  });
+  it('patchCommunity sends [name, null, null, null] and reads the policy version', async () => {
+    const { result, seen, http } = await one(cborReply(200, [4]), (r) => r.patchCommunity(COMMUNITY, { name: 'Asgard' }));
+    expect(result).toBe(4n);
+    expect(seen.method).toBe('PATCH');
+    expect(seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}`);
+    expect(seen.body).toEqual(encode(['Asgard', null, null, null]));
+    expect(http.requests[0].bucket).toBe('write');
+  });
+  it('patchCommunity refuses an empty name, 256 bytes and a newline before any request', async () => {
+    const { t, routes } = setup();
+    for (const name of ['', 'x'.repeat(256), '\n']) {
+      await expect(routes.patchCommunity(COMMUNITY, { name })).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    }
+    expect(t.seen).toHaveLength(0);
+  });
+  it('deleteCommunity, leaveCommunity and transferOwnership send what the server reads', async () => {
+    const del = await one(noContent(), (r) => r.deleteCommunity(COMMUNITY));
+    expect(del.seen.method).toBe('DELETE');
+    expect(del.seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}`);
+    expect(del.http.requests[0].idempotent).toBe(true);
+    const leave = await one(noContent(), (r) => r.leaveCommunity(COMMUNITY));
+    expect(leave.seen.method).toBe('POST');
+    expect(leave.seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/leave`);
+    expect(leave.seen.body).toEqual(encode([]));
+    expect(leave.http.requests[0].idempotent).toBe(false);
+    const give = await one(noContent(), (r) => r.transferOwnership(COMMUNITY, OTHER));
+    expect(give.seen.method).toBe('POST');
+    expect(give.seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/owner`);
+    expect(give.seen.body).toEqual(encode([OTHER]));
+    expect(give.http.requests[0].idempotent).toBe(false);
+  });
+  it('createCategory sends [2, 0, 0, null, name, "", position, 0]', async () => {
+    const { result, seen } = await one(cborReply(201, [CATEGORY, 0, 0]), (r) => r.createCategory(COMMUNITY, { name: 'rooms', position: 3 }));
+    expect(result).toEqual({ id: CATEGORY, mode: 0, visibility: 0 });
+    expect(seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/channels`);
+    expect(seen.body).toEqual(encode([2, 0, 0, null, 'rooms', '', 3, 0]));
+  });
+  it('patchChannel puts each change in its slot and null elsewhere', async () => {
+    const top = await one(noContent(), (r) => r.patchChannel(CHANNEL, { parent: 'top' }));
+    expect(top.seen.method).toBe('PATCH');
+    expect(top.seen.url).toBe(`https://dilla.test/v1/channels/${hex(CHANNEL)}`);
+    expect(top.seen.body).toEqual(encode([null, null, null, null, new Uint8Array(16), null, null]));
+    const into = await one(noContent(), (r) => r.patchChannel(CHANNEL, { parent: CATEGORY }));
+    expect(into.seen.body).toEqual(encode([null, null, null, null, CATEGORY, null, null]));
+    const moved = await one(noContent(), (r) => r.patchChannel(CHANNEL, { position: 4 }));
+    expect(moved.seen.body).toEqual(encode([null, null, null, null, null, 4, null]));
+    const named = await one(noContent(), (r) => r.patchChannel(CHANNEL, { name: 'lobby', topic: 'a\nb' }));
+    expect(named.seen.body).toEqual(encode(['lobby', 'a\nb', null, null, null, null, null]));
+    const cleared = await one(noContent(), (r) => r.patchChannel(CHANNEL, { topic: '' }));
+    expect(cleared.seen.body).toEqual(encode([null, '', null, null, null, null, null]));
+  });
+  it('patchChannel refuses a 1025-byte topic and a NUL before any request, and accepts 1024 bytes', async () => {
+    const { t, routes } = setup();
+    await expect(routes.patchChannel(CHANNEL, { topic: 'x'.repeat(1025) })).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    await expect(routes.patchChannel(CHANNEL, { topic: '\u0000' })).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    await expect(routes.patchChannel(CHANNEL, { name: 'a\nb' })).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    await expect(routes.patchChannel(CHANNEL, { position: -1 })).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    await expect(routes.patchChannel(new Uint8Array(15), { position: 1 })).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    expect(t.seen).toHaveLength(0);
+    t.replies.push(noContent());
+    await routes.patchChannel(CHANNEL, { topic: 'x'.repeat(1024) });
+    expect(t.seen).toHaveLength(1);
+  });
+  it('deleteChannel, kickMember, deleteBan and revokeInvite use their paths', async () => {
+    const ch = await one(noContent(), (r) => r.deleteChannel(CHANNEL));
+    expect([ch.seen.method, ch.seen.url]).toEqual(['DELETE', `https://dilla.test/v1/channels/${hex(CHANNEL)}`]);
+    const kick = await one(noContent(), (r) => r.kickMember(COMMUNITY, OTHER));
+    expect([kick.seen.method, kick.seen.url]).toEqual(['DELETE', `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(OTHER)}`]);
+    const unban = await one(noContent(), (r) => r.deleteBan(COMMUNITY, OTHER));
+    expect([unban.seen.method, unban.seen.url]).toEqual(['DELETE', `https://dilla.test/v1/communities/${hex(COMMUNITY)}/bans/${hex(OTHER)}`]);
+    const revoke = await one(noContent(), (r) => r.revokeInvite(INVITE));
+    expect([revoke.seen.method, revoke.seen.url]).toEqual(['DELETE', `https://dilla.test/v1/invites/${hex(INVITE)}`]);
+  });
+  it('putBan sends [reason, expires|null]', async () => {
+    const forever = await one(noContent(), (r) => r.putBan(COMMUNITY, OTHER, { reason: 'spam', expires: null }));
+    expect(forever.seen.method).toBe('PUT');
+    expect(forever.seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/bans/${hex(OTHER)}`);
+    expect(forever.seen.body).toEqual(encode(['spam', null]));
+    const timed = await one(noContent(), (r) => r.putBan(COMMUNITY, OTHER, { reason: '', expires: 1_800_000_000n }));
+    expect(timed.seen.body).toEqual(encode(['', 1_800_000_000]));
+  });
+  it('putBan refuses a 513-byte reason before any request', async () => {
+    const { t, routes } = setup();
+    await expect(routes.putBan(COMMUNITY, OTHER, { reason: 'x'.repeat(513), expires: null })).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    expect(t.seen).toHaveLength(0);
+  });
+  it('listBans reads seven elements, and a five-element row has username and display ""', async () => {
+    const seven = [OTHER, 'spam', USER, 1_700_000_000, null, 'loki', 'Loki'];
+    const five = [PEER_USER, '', USER, 1_700_000_001, 1_800_000_000];
+    const { result, seen } = await one(cborReply(200, [seven, five]), (r) => r.listBans(COMMUNITY));
+    expect(seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/bans`);
+    expect(result).toEqual([
+      { userId: OTHER, reason: 'spam', byUser: USER, created: 1_700_000_000n, expires: null, username: 'loki', display: 'Loki' },
+      { userId: PEER_USER, reason: '', byUser: USER, created: 1_700_000_001n, expires: 1_800_000_000n, username: '', display: '' },
+    ]);
+  });
+  it('listInvites reads the invite rows past grants_admin', async () => {
+    const row = [INVITE, COMMUNITY, USER, 0, 10, 3, 1_700_000_000, 1_700_600_000, null];
+    const { result, seen } = await one(cborReply(200, [row]), (r) => r.listInvites(COMMUNITY));
+    expect(seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/invites`);
+    expect(result).toEqual([{ id: INVITE, communityId: COMMUNITY, createdBy: USER, maxUses: 10, uses: 3,
+      created: 1_700_000_000n, expires: 1_700_600_000n, revokedAt: null }]);
+  });
+  it('kickMember 403 is E_FORBIDDEN', async () => {
+    const { t, routes } = setup();
+    t.replies.push(refusal(403, 'E_FORBIDDEN', 'kick members'));
+    await expect(routes.kickMember(COMMUNITY, OTHER)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+  });
+});

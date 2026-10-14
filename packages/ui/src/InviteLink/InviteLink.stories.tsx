@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { Button } from '../Button/Button.tsx';
 import { InviteLink } from './InviteLink.tsx';
 
 // Every string is flow 07's (docs/design/flows/07-create.md), as en.ts holds it.
@@ -30,3 +31,7 @@ export const ClipboardBlocked: Story = {
     status: 'This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself.' },
 };
 export const Refused: Story = { args: { state: 'failed', error: 'You cannot invite people to this server.' } };
+export const WithExtraAction = {
+  args: { state: 'ready', url: 'https://chat.example.org/i/7KQ2-M4ZP-XW9D', status: 'Invite link copied.',
+    extra: <Button variant="ghost">more options</Button> },
+} satisfies Story;

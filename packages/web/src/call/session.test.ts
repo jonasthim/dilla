@@ -1432,6 +1432,41 @@ describe('web3.3 fix round 1: the session’s AudioContext (I1, M2), no blip whi
     expect(call.state.phase).toBe('connected');
   });
 
+  it('V1: setOutput mid-call sends the new device to the session’s AudioContext', async () => {
+    const f = fakes();
+    const call = await start(f, { output: 'spk' });
+    await call.setOutput('headset');
+    expect(f.contexts[0].setSinkId).toHaveBeenLastCalledWith('headset');
+    // '' is the system default, which setSinkId takes as it is.
+    await call.setOutput('');
+    expect(f.contexts[0].setSinkId).toHaveBeenLastCalledWith('');
+  });
+
+  it('V1: setOutput on a context that cannot choose an output (Firefox) is a no-op', async () => {
+    const f = fakes();
+    f.audio.noSinkId = true;
+    const call = await start(f);
+    await expect(call.setOutput('headset')).resolves.toBeUndefined();
+    expect(call.state.phase).toBe('connected');
+  });
+
+  it('V1: a refused setOutput rejects, so the shell can say so, and the call goes on', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.contexts[0].setSinkId.mockRejectedValueOnce(new Error('NotFoundError'));
+    await expect(call.setOutput('gone')).rejects.toThrow('NotFoundError');
+    expect(call.state.phase).toBe('connected');
+  });
+
+  it('V1: setOutput after the leave touches nothing', async () => {
+    const f = fakes();
+    const call = await start(f);
+    await call.leave('user');
+    f.contexts[0].setSinkId.mockClear();
+    await call.setOutput('headset');
+    expect(f.contexts[0].setSinkId).not.toHaveBeenCalled();
+  });
+
   it('M2: audioBlocked follows the context: suspended at connect, running on statechange', async () => {
     const f = fakes();
     f.audio.contextState = 'suspended';
@@ -1508,6 +1543,50 @@ describe('web3.3 fix round 1: the session’s AudioContext (I1, M2), no blip whi
     expect(track.attach).toHaveBeenCalledTimes(1);
     expect(attachThenVolume(bob, track, 1)).toBe(true);
     expect(elementsIn(f.audioHost)).toHaveLength(1);
+  });
+
+  it('V2: state.audio counts the subscribed remote audio tracks (expected) and the attached ones', async () => {
+    const f = fakes();
+    const call = await start(f);
+    expect(call.state.audio).toEqual({ attached: 0, expected: 0 });
+    const seen = vi.fn();
+    call.subscribe(() => { seen(call.state.audio); });
+    const bob = f.addRemote(BOB_DEV);
+    const mic = f.subscribeTrack(bob, 'microphone');
+    expect(call.state.audio).toEqual({ attached: 1, expected: 1 });
+    // A camera is not audio.
+    f.subscribeTrack(bob, 'camera');
+    expect(call.state.audio).toEqual({ attached: 1, expected: 1 });
+    // Deafened: a new track is subscribed but held back, so it is expected and not attached; the one attached before
+    // stays attached (its gain goes to 0).
+    call.setDeafened(true);
+    const screenAudio = f.subscribeTrack(bob, 'screen_share_audio');
+    expect(call.state.audio).toEqual({ attached: 1, expected: 2 });
+    call.setDeafened(false);
+    expect(call.state.audio).toEqual({ attached: 2, expected: 2 });
+    f.unsubscribeTrack(bob, screenAudio.pub);
+    expect(call.state.audio).toEqual({ attached: 1, expected: 1 });
+    f.unsubscribeTrack(bob, mic.pub);
+    expect(call.state.audio).toEqual({ attached: 0, expected: 0 });
+    expect(seen).toHaveBeenCalledWith({ attached: 1, expected: 2 });
+  });
+
+  it('V2: a pending track that leaves with its participant is no longer expected; the leave counts nothing', async () => {
+    const f = fakes();
+    const call = await start(f);
+    call.setDeafened(true);
+    const bob = f.addRemote(BOB_DEV);
+    f.subscribeTrack(bob, 'microphone');
+    expect(call.state.audio).toEqual({ attached: 0, expected: 1 });
+    f.room.remoteParticipants.delete(BOB_DEV);
+    f.room.emit('participantDisconnected', bob);
+    expect(call.state.audio).toEqual({ attached: 0, expected: 0 });
+    call.setDeafened(false);
+    const carol = f.addRemote(BOB_DEV);
+    f.subscribeTrack(carol, 'microphone');
+    expect(call.state.audio).toEqual({ attached: 1, expected: 1 });
+    await call.leave('user');
+    expect(call.state.audio).toEqual({ attached: 0, expected: 0 });
   });
 
   it('I3: a per-person volume of 0 holds the attach back until it rises to 50', async () => {

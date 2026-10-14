@@ -4,6 +4,7 @@ import { t } from '../../strings/index.ts';
 import {
   A, BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
+import { expectNoAxeViolations } from '../../test/setup.ts';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -485,6 +486,43 @@ describe('web3.3: the browser holds call audio back', () => {
     act(() => app.session.update({ audioBlocked: false }));
     await waitFor(() => expect(turnOn()).toBeNull());
     expect(screen.queryByText(t('voice.audioBlocked'))).toBeNull();
+  });
+});
+
+describe('web3.4 V2: the dock says how many it hears', () => {
+  it('shows "hearing {attached} of {expected}" with its counts while any remote audio is expected, and nothing otherwise', async () => {
+    const app = await inVoice();
+    const line = () => document.querySelector('.dw-voice-dock [data-audio-expected]');
+    expect(line()).toBeNull();
+    // Deafened: a newcomer's track is expected but held back.
+    act(() => app.session.update({ audio: { attached: 1, expected: 2 } }));
+    const shown = await waitFor(() => { const l = line(); expect(l).not.toBeNull(); return l!; });
+    expect(shown).toHaveTextContent(t('voice.diag.tracks', { attached: 1, expected: 2 }));
+    expect(shown).toHaveAttribute('data-audio-attached', '1');
+    expect(shown).toHaveAttribute('data-audio-expected', '2');
+    // A diagnostic, not news: no status region of its own (the dock's one region says what changes).
+    expect(shown.closest('[role="status"]')).toBeNull();
+    await expectNoAxeViolations(document.querySelector('.dw-voice-dock')!);
+    act(() => app.session.update({ audio: { attached: 2, expected: 2 } }));
+    await waitFor(() => expect(line()).toHaveAttribute('data-audio-attached', '2'));
+    expect(line()).toHaveTextContent(t('voice.diag.tracks', { attached: 2, expected: 2 }));
+    act(() => app.session.update({ audio: { attached: 0, expected: 0 } }));
+    await waitFor(() => expect(line()).toBeNull());
+  });
+
+  it('fix 1: no hearing line while deafened or paused (nothing plays then); it returns after', async () => {
+    const app = await inVoice();
+    const shown = () => screen.queryByText(t('voice.diag.tracks', { attached: 2, expected: 2 }));
+    act(() => app.session.update({ audio: { attached: 2, expected: 2 } }));
+    await waitFor(() => expect(shown()).not.toBeNull());
+    act(() => app.session.update({ deafened: true, muted: true }));
+    await waitFor(() => expect(shown()).toBeNull());
+    act(() => app.session.update({ deafened: false }));
+    await waitFor(() => expect(shown()).not.toBeNull());
+    act(() => app.session.update({ paused: true }));
+    await waitFor(() => expect(shown()).toBeNull());
+    act(() => app.session.update({ paused: false }));
+    await waitFor(() => expect(shown()).not.toBeNull());
   });
 });
 

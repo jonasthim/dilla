@@ -1,8 +1,14 @@
 // Every user-visible string of @dilla/web. Keys are flat and dot-separated; {name} is a placeholder.
 // Apostrophes are typographic (’). The copy lint (scripts/check-ui-copy.mjs) scans this file.
 import { privacy } from './privacy.ts';
+import { admin } from './admin.ts';
+import { members } from './members.ts';
+import { moderation } from './moderation.ts';
 export const en = {
   ...privacy,
+  ...admin,
+  ...members,
+  ...moderation,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
@@ -502,6 +508,8 @@ export const en = {
   'voice.messages': 'messages',
   'voice.tag.web': 'web',
   'voice.tag.bot': 'bot',
+  'voice.diag.tracks': 'hearing {attached} of {expected}',
+  'voice.outputFailed': 'The output device did not change. Call sound plays where it did before.',
   // Flow 07 (v0.1.0-web3.1): start a server, add a channel, invite people (docs/design/flows/07-create.md, Copy).
   'shell.noServer.create': 'Start a server',
   'shell.dms.noServer': 'There is no one to message yet: direct messages are with people you share a server with. Start a server and invite someone, or join one.',
@@ -556,4 +564,5 @@ export const en = {
   'invite.retry': 'Try again',
   'invite.error.forbidden': 'You cannot invite people to this server.',
   'invite.error.other': 'Could not make an invite link ({code}).',
+  'invite.options': 'more options',
 } as const;

@@ -45,6 +45,10 @@ WHERE id = ? AND deleted_at IS NULL;
 -- name: SoftDeleteCommunity :execrows
 UPDATE communities SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL;
 
+-- name: SetCommunityOwner :exec
+-- POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
+UPDATE communities SET owner = sqlc.arg(owner) WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
+
 -- name: LockCommunity :one
 -- SQLite has no row locks and needs none: every write transaction is BEGIN
 -- IMMEDIATE on a one-connection pool, so the join's and the ban's transactions

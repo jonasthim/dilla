@@ -14,6 +14,14 @@ describe('Dialog', () => {
     await userEvent.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+  it('is described by the element whose id describedBy names', () => {
+    render(<Dialog open title="Ban Astrid?" describedBy="why" onClose={() => {}}><p id="why">They cannot join again.</p></Dialog>);
+    expect(screen.getByRole('dialog', { name: 'Ban Astrid?' })).toHaveAccessibleDescription('They cannot join again.');
+  });
+  it('has no description when describedBy is not given', () => {
+    render(<Dialog open title="Ban Astrid?" onClose={() => {}}><p>They cannot join again.</p></Dialog>);
+    expect(screen.getByRole('dialog', { name: 'Ban Astrid?' })).not.toHaveAttribute('aria-describedby');
+  });
   it('renders nothing visible when closed', () => {
     render(<Dialog open={false} title="Hidden" onClose={() => {}}><p>x</p></Dialog>);
     expect(screen.queryByRole('dialog')).toBeNull();

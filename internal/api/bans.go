@@ -28,6 +28,14 @@ type Bans struct {
 	log  *slog.Logger
 	// calls cuts a banned user's connected call sessions after the commit; nil touches no call.
 	calls *Calls
+	// notify tells the members, and once the banned member, after the commit (op 54); nil sends nothing.
+	notify *StructureNotifier
+}
+
+// WithNotifier sets where a ban is announced to the members and to the user it removed, and returns b.
+func (b *Bans) WithNotifier(n *StructureNotifier) *Bans {
+	b.notify = n
+	return b
 }
 
 func NewBans(repo store.Repository, dsvc DS, clk clock.Clock, log *slog.Logger) *Bans {
@@ -102,9 +110,15 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 	// The rows first, in one transaction under the community row lock the join
 	// takes too, so a join is either wholly before the ban (and its member row
 	// is deleted here) or wholly after it (and its gate reads the ban) …
+	// removed is whether a membership row was deleted: only a member is told they were removed.
+	removed := false
 	if err := b.repo.Tx(r.Context(), func(tx store.Repository) error {
+		removed = false
 		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
 			return notFound(err)
+		}
+		if err := stillModerates(r.Context(), tx, m, PermBanMembers); err != nil {
+			return err
 		}
 		if err := tx.PutBan(r.Context(), store.BanRow{
 			CommunityID: m.community, UserID: m.target, Reason: req.Reason,
@@ -112,7 +126,10 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
-		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil && !errors.Is(err, store.ErrNotFound) {
+		switch err := tx.DeleteMember(r.Context(), m.community, m.target); {
+		case err == nil:
+			removed = true
+		case !errors.Is(err, store.ErrNotFound):
 			return err
 		}
 		// The user's own channel overwrites and channel_members rows go with the
@@ -151,6 +168,12 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 			"community", m.community, "user", m.target, "err", err)
 	}
 	syncAfterMembership(ctx, b.calls, m.community, m.target, nil)
+	// A ban of someone who was not a member tells them nothing: they may never have known the
+	// community.
+	if removed {
+		b.notify.Removed(ctx, m.community, m.target)
+	}
+	b.notify.Changed(ctx, m.community)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -185,10 +208,14 @@ type banResp struct {
 	ByUser  id.ID
 	Created int64
 	Expires *int64
+	// Username and Display are "" when the account no longer exists.
+	Username string
+	Display  string
 }
 
-// list answers [[user_id, reason, by_user, created, expires|null]], newest
-// first. A lapsed ban is listed: the row is the history, BanStands is the gate.
+// list answers [[user_id, reason, by_user, created, expires|null, username,
+// display]], newest first. A lapsed ban is listed: the row is the history,
+// BanStands is the gate.
 func (b *Bans) list(w http.ResponseWriter, r *http.Request) {
 	m, err := moderate(r, b.repo, PermBanMembers)
 	if err != nil {
@@ -202,9 +229,19 @@ func (b *Bans) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]banResp, 0, len(rows))
 	for _, row := range rows {
+		var username, display string
+		switch u, err := b.repo.GetUser(r.Context(), row.UserID); {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			b.fail(w, r, "list bans", err)
+			return
+		default:
+			username, display = u.Username, u.Display
+		}
 		out = append(out, banResp{
 			UserID: row.UserID, Reason: row.Reason, ByUser: row.ByUser,
 			Created: row.Created, Expires: row.Expires,
+			Username: username, Display: display,
 		})
 	}
 	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
@@ -263,6 +300,21 @@ func moderate(r *http.Request, repo store.Repository, want Bits) (moderation, er
 		return m, server.Errorf(server.CodeForbidden, "missing permission")
 	}
 	return m, nil
+}
+
+// stillModerates repeats moderate's permission check and outranks inside tx, which already holds
+// the community row lock: a hand-over (POST …/owner takes the same lock) or a role change that
+// committed after the checks before the transaction must not let a kick or ban remove the owner,
+// or let an actor act with authority they no longer hold.
+func stillModerates(ctx context.Context, tx store.Repository, m moderation, want Bits) error {
+	snap, err := LoadSnapshot(ctx, tx, m.community, m.session.UserID, nil)
+	if err != nil {
+		return notFound(err)
+	}
+	if !snap.Resolve(m.session.UserID).Has(want) {
+		return server.Errorf(server.CodeForbidden, "missing permission")
+	}
+	return outranks(ctx, tx, snap, m.session.UserID, m.target, m.community)
 }
 
 // outranks refuses a moderation action against the owner or against a user

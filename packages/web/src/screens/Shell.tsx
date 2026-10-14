@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, SidebarTabs,
@@ -24,6 +24,10 @@ import {
 import { useCall } from './voice/useCall.tsx';
 import { ActiveVoiceList, DmCall, Dock, removedFromServer, speakingDevices, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { RingFlow } from './voice/Ring.tsx';
+import { useAnnouncer } from './announcer.ts';
+import { MemberPane } from './admin/MemberPane.tsx';
+import { ServerSettings, type AdminTab } from './admin/ServerSettings.tsx';
+import { ChannelEditFlow } from './admin/ChannelEditFlow.tsx';
 import { useSounds } from './voice/useSounds.tsx';
 
 /**
@@ -166,6 +170,60 @@ export function Shell(): React.JSX.Element {
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  // Flow 08: the member pane (a toggle in the channel header; open at 64rem or wider, not remembered) and the server settings
+  // dialog (the server it is open for, and its tab).
+  const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
+  // Final fix B2: the open default is the wide column's. Crossing below 64rem closes the pane unless it was opened while the
+  // shell was already narrow (a drawer the person asked for there); widening forgets that. The drawer never opens by itself.
+  const openedNarrow = useRef(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia('(min-width: 64rem)');
+    const onChange = (e: { matches: boolean }) => {
+      if (e.matches) openedNarrow.current = false;
+      else if (!openedNarrow.current) setMembersOpen(false);
+    };
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+  const toggleMembers = () => {
+    const narrowNow = typeof window.matchMedia !== 'function' || !window.matchMedia('(min-width: 64rem)').matches;
+    openedNarrow.current = !membersOpen && narrowNow;
+    setMembersOpen(!membersOpen);
+  };
+  const [adminFor, setAdminFor] = useState<string | null>(null);
+  const [adminTab, setAdminTab] = useState<AdminTab>('overview');
+  // Final fix I1: where focus was when server settings opened (as searchOpener); it goes back there when the dialog closes.
+  const adminOpener = useRef<HTMLElement | null>(null);
+  const openAdminFor = (id: string, tab: AdminTab) => {
+    const active = document.activeElement;
+    adminOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    setAdminTab(tab);
+    setAdminFor(id);
+  };
+  const adminWas = useRef<string | null>(null);
+  useEffect(() => {
+    const was = adminWas.current;
+    adminWas.current = adminFor;
+    if (was === null || adminFor !== null) return;
+    const opener = adminOpener.current;
+    adminOpener.current = null;
+    if (opener?.isConnected) { opener.focus(); return; }
+    const settingsButton = document.querySelector<HTMLElement>('[data-admin-open]');
+    if (settingsButton !== null) settingsButton.focus();
+    else focusComposer();
+  }, [adminFor]);
+  // Final fix M2: the channel whose edit dialog the header's "edit channel" opened.
+  const [editChannelId, setEditChannelId] = useState<string | null>(null);
+  const access = useSlice(`permissions:${communityId ?? ''}`);
+  // The toggle is found by its marker: the shared Button takes no ref, and AppShell reads `current` only when the drawer closes.
+  const membersToggle = useMemo<RefObject<HTMLElement | null>>(
+    () => ({ get current() { return document.querySelector<HTMLElement>('[data-members-toggle]'); } }), []);
+  // The one polite announcer (always rendered); MemberPane and ServerSettings speak through it.
+  const { text: announcement, announce } = useAnnouncer();
+  const removals = useSlice('removals');
+  const [dismissedRemovals, setDismissedRemovals] = useState<ReadonlySet<number>>(() => new Set());
+  const seenRemovals = useRef<ReadonlySet<number>>(new Set());
   const createFlowOpen = createOpen || channelOpen || inviteOpen;
   // The text channel a create just opened: its composer takes focus once it is on screen (after the dialog handed focus back).
   // `from` is the conversation open when the wish was made: the shell may still show it for a render or two.
@@ -232,6 +290,19 @@ export function Shell(): React.JSX.Element {
     if (opener?.isConnected) opener.focus();
   }, [searchOpen]);
   const self = account?.user ?? null;
+  // A removal is told once: the banner below, and nothing of that server stays open (effects (2) and (1) below already take the route
+  // from a server that left the list to the first remaining one).
+  useEffect(() => {
+    const fresh = (removals ?? []).filter(r => !seenRemovals.current.has(r.id));
+    if (fresh.length === 0) return;
+    seenRemovals.current = new Set([...seenRemovals.current, ...fresh.map(r => r.id)]);
+    const gone = new Set(fresh.map(r => r.communityId));
+    setAdminFor(open => (open !== null && gone.has(open) ? null : open));
+    if (communityId !== null && gone.has(communityId)) {
+      setChannelOpen(false);
+      setInviteOpen(false);
+    }
+  }, [removals, communityId]);
   const conversationMembers = channel !== null ? members ?? [] : dm !== null ? allMembers.filter(m => dm.members.includes(m.userId)) : [];
   const book = useMemo(() => nameBook(self, channel !== null ? members ?? [] : allMembers), [self, channel, members, allMembers]);
   const encodeWith = mentionMembers(conversationMembers);
@@ -683,6 +754,10 @@ export function Shell(): React.JSX.Element {
     return { id: c.id, name: c.name, unread: counts.unread, mentions: counts.mentions };
   });
 
+  // Flow 07: the instance serves no role bits before the permissions read, so ownership stands in for ManageChannels until then.
+  const owner = community !== null && self !== null && community.owner === self.id;
+  const canManageChannels = access?.loaded === true ? access.manageChannels : owner;
+  const editing = editChannelId === null ? null : (channels ?? []).find(c => c.id === editChannelId) ?? null;
   // The sidebar with its tabs stands whenever a server is shown, DMs exist or a DM route is open (WORKER-WEB-02). On the
   // channels tab, a server that did not load and the absence of any server are said inside the tab panel, so the
   // DMs tab stays reachable (A11Y-DESIGN-02).
@@ -703,11 +778,14 @@ export function Shell(): React.JSX.Element {
     const voiceHere = !onDms && community !== null && content === undefined;
     // Flow 07: the server's actions. The instance serves no role bits, so the one permission fact here is ownership: the
     // owner holds ManageChannels; every member holds CreateInvite by default (@everyone), and a refusal is said in the dialog.
-    const owner = community !== null && self !== null && community.owner === self.id;
+    const openAdmin = (tab: AdminTab) => { if (community !== null) openAdminFor(community.id, tab); };
+    // Final fix B1: "edit channel" sits in the channel header (M2), not here.
     const actions = voiceHere ? <>
-      {owner ? <Button className="dw-new-channel" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
+      {canManageChannels ? <Button className="dw-new-channel" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
         {t('create.channel.button')}</Button> : null}
       <Button onClick={() => setInviteOpen(true)}>{t('invite.open')}</Button>
+      <Button data-admin-open="" onClick={() => openAdmin('overview')}>{t('admin.open')}</Button>
+      {!owner ? <Button onClick={() => openAdmin('danger')}>{t('admin.leave.open')}</Button> : null}
     </> : undefined;
     sidebar = (<div className="dw-sidebar">
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
@@ -773,7 +851,12 @@ export function Shell(): React.JSX.Element {
   const header = voiceChannel !== null ? null : channel !== null
     ? <ChannelHeader name={channel.name} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
-      actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} />
+      actions={<>
+        {openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : null}
+        {canManageChannels ? <Button onClick={() => setEditChannelId(channel.id)}>{t('admin.channel.open')}</Button> : null}
+        <Button data-members-toggle="" pressed={membersOpen} onClick={toggleMembers}>
+          {t('members.toggle')}</Button>
+      </>} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
       actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
@@ -844,7 +927,8 @@ export function Shell(): React.JSX.Element {
   const rootMismatch = account?.rootMismatch === true;
   // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
   const ownTrust = account?.ownTrust ?? null;
-  const banner = offline || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
+  const removalNotices = (removals ?? []).filter(r => !dismissedRemovals.has(r.id));
+  const banner = offline || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -857,6 +941,12 @@ export function Shell(): React.JSX.Element {
       {offline ? (
         <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
+      {removalNotices.map(r => (
+        <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {
+          focusComposer();
+          setDismissedRemovals(done => new Set([...done, r.id]));
+        } }}>{t('removed.notice', { server: r.name })}</Banner>
+      ))}
       {removedHere ? <p className="dw-trust-removed" role="status">{t('privacy.removed')}</p> : null}
       {changedHere.length > 0 ? <div className="dw-trust-alerts" data-doc-state="trust-conversation">{changedHere.map(row => <TrustAlert key={row.userId} kind="changed" name={row.name}
         labels={{ changed: t(row.changedUmk === null ? 'privacy.changedNoKey' : 'privacy.changed'), unlisted: t('privacy.unlisted'),
@@ -872,8 +962,11 @@ export function Shell(): React.JSX.Element {
     </>
   ) : undefined;
 
+  // The pane belongs to a server shown by a channel route; a DM route, voice stage or Settings has none beside it.
+  const asideShown = membersOpen && base.name === 'channel' && community !== null && channel !== null && voiceChannel === null;
   return (
     <>
+      <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
       <AppShell
         skipLabel={t('shell.skip')}
         rail={<CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
@@ -904,6 +997,11 @@ export function Shell(): React.JSX.Element {
           </StatusBar>
         }
         banner={banner}
+        aside={asideShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
+          onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
+          announce={announce} /> : undefined}
+        asideLabel={community === null ? undefined : t('members.region', { server: community.name })}
+        asideOpen={asideShown} onAsideClose={() => setMembersOpen(false)} asideCloseLabel={t('members.close')} asideReturnRef={membersToggle}
       >
         {main}
       </AppShell>
@@ -934,7 +1032,11 @@ export function Shell(): React.JSX.Element {
           setChannelOpen(false);
           if (community !== null) navigate({ name: 'channel', communityId: community.id, channelId: id });
         }} />
-      <InviteFlow open={inviteOpen} community={community} onClose={() => setInviteOpen(false)} />
+      <InviteFlow open={inviteOpen} community={community} onClose={() => setInviteOpen(false)}
+        onMoreOptions={() => { if (community !== null) openAdminFor(community.id, 'invites'); }} />
+      <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} onClose={() => setEditChannelId(null)} />
+      {adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
+        onClose={() => setAdminFor(null)} announce={announce} /> : null}
     </>
   );
 }

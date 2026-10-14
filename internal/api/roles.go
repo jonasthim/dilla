@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/clock"
@@ -53,6 +54,15 @@ type Roles struct {
 	// without them no call is touched.
 	tokens CallTokens
 	calls  *Calls
+	// notify tells the community's members, after the commit, that a role, grant or overwrite
+	// changed (op 54); nil sends nothing.
+	notify *StructureNotifier
+}
+
+// WithNotifier sets where a role, grant or channel overwrite change is announced, and returns h.
+func (h *Roles) WithNotifier(n *StructureNotifier) *Roles {
+	h.notify = n
+	return h
 }
 
 func NewRoles(repo store.Repository, clk clock.Clock, rpID string, log *slog.Logger) *Roles {
@@ -86,6 +96,7 @@ func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, c
 }
 
 func (h *Roles) Register(mux *server.Mux) {
+	mux.HandleFunc("GET /v1/communities/{id}/roles", h.list)
 	mux.HandleFunc("POST /v1/communities/{id}/roles", h.create)
 	mux.HandleFunc("PATCH /v1/roles/{id}", h.patch)
 	mux.HandleFunc("DELETE /v1/roles/{id}", h.delete)
@@ -228,6 +239,59 @@ type createRoleReq struct {
 	Mentionable uint64
 }
 
+type roleResp struct {
+	_           struct{} `cbor:",toarray"`
+	ID          id.ID
+	Name        string
+	Color       uint64
+	Position    uint64
+	Allow       uint64
+	Deny        uint64
+	Hoist       uint64
+	Mentionable uint64
+}
+
+// list answers every role of the community, @everyone first (position 0), then
+// by position and role_id. Any member may read it; a non-member is 404. Bits
+// outside the vocabulary are cleared, as the resolver ignores them.
+func (h *Roles) list(w http.ResponseWriter, r *http.Request) {
+	s, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	cid, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if _, err := h.repo.GetCommunity(r.Context(), cid); err != nil {
+		h.fail(w, r, "list roles", notFound(err))
+		return
+	}
+	if _, err := h.repo.GetMember(r.Context(), cid, s.UserID); err != nil {
+		h.fail(w, r, "list roles", notFound(err))
+		return
+	}
+	rows, err := h.repo.ListRoles(r.Context(), cid)
+	if err != nil {
+		h.fail(w, r, "list roles", err)
+		return
+	}
+	slices.SortFunc(rows, byPositionThenID)
+	out := make([]roleResp, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, roleResp{
+			ID: row.ID, Name: row.Name, Color: row.Color, Position: row.Position,
+			Allow: row.Allow & uint64(PermAll), Deny: row.Deny & uint64(PermAll),
+			Hoist: uint64(row.Hoist), Mentionable: uint64(row.Mentionable),
+		})
+	}
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		h.log.Error("encode roles", "err", err)
+	}
+}
+
 // create is POST /v1/communities/{id}/roles: 201 [role_id]. Four checks: the
 // actor holds PermManageRoles community-wide; the position is strictly below
 // the actor's highest role; position 0 is refused (it is @everyone's, and
@@ -312,6 +376,7 @@ func (h *Roles) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "create role", err)
 		return
 	}
+	h.notify.Changed(afterCommit(r), cid)
 	if err := server.EncodeBody(w, http.StatusCreated, []id.ID{role.ID}); err != nil {
 		h.log.Error("encode create role", "err", err)
 	}
@@ -472,6 +537,7 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 	// A role's bits decide who may see every private channel of the community.
 	h.materialiseCommunity(afterCommit(r), current.CommunityID, now)
 	h.syncCallGrants(afterCommit(r), current.CommunityID, nil, nil)
+	h.notify.Changed(afterCommit(r), current.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -523,6 +589,7 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	h.materialiseCommunity(afterCommit(r), role.CommunityID, now)
 	h.syncCallGrants(afterCommit(r), role.CommunityID, nil, nil)
+	h.notify.Changed(afterCommit(r), role.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -670,6 +737,7 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), g.cid, &g.target, nil)
+	h.notify.Changed(afterCommit(r), g.cid)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -698,6 +766,7 @@ func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "sync channel eligibility", "community", g.cid, "user", g.target, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), g.cid, &g.target, nil)
+	h.notify.Changed(afterCommit(r), g.cid)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -861,6 +930,7 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), *o.ch.CommunityID, nil, &o.ch.ID)
+	h.notify.Changed(afterCommit(r), *o.ch.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -889,6 +959,7 @@ func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
 		h.log.ErrorContext(r.Context(), "materialise channel members", "channel", o.ch.ID, "err", err)
 	}
 	h.syncCallGrants(afterCommit(r), *o.ch.CommunityID, nil, &o.ch.ID)
+	h.notify.Changed(afterCommit(r), *o.ch.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

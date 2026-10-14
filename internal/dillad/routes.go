@@ -102,16 +102,18 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	// is not a way round the limit on guessing codes (task 5).
 	// A kick, a leave, a ban, a group-DM removal and a user disable cut the user's connected call
 	// sessions after their commit (dilla-media task 10).
-	// A channel's create, update and delete and a community PATCH tell every member's live
-	// connections (op 54 community_changed), so an open tab re-reads the channel list.
+	// A channel's create, update and delete, a community PATCH, a membership change and a role,
+	// grant or overwrite change tell every member's live connections (op 54 community_changed), so
+	// an open tab re-reads its lists; a delete tells the members it had, and a leave, kick or ban
+	// tells the user it removed once.
 	notify := api.NewStructureNotifier(p.gw, repo, log)
 	api.NewCommunities(repo, p.delivery, clk, log).
 		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).WithNotifier(notify).Register(m)
 	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify)
 	channels.Register(m)
 	channels.RegisterMembers(m)
-	api.NewRoles(repo, clk, cfg.Auth.WebAuthn.RPID, log).WithDS(p.delivery).WithCalls(tokens, calls).Register(m)
-	api.NewBans(repo, p.delivery, clk, log).WithCalls(calls).Register(m)
+	api.NewRoles(repo, clk, cfg.Auth.WebAuthn.RPID, log).WithDS(p.delivery).WithCalls(tokens, calls).WithNotifier(notify).Register(m)
+	api.NewBans(repo, p.delivery, clk, log).WithCalls(calls).WithNotifier(notify).Register(m)
 	api.NewInvites(repo, clk, "https://"+urlHost(cfg.Instance.Domain), log).Register(m)
 	api.NewDMs(repo, p.delivery, clk, p.instance.InstanceID, maxGroupDM, log).Register(m)
 	api.NewReadable(repo, res, p.gw, p.keys, clk, log).Register(m)

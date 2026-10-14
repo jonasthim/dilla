@@ -60,6 +60,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* Product walk M7: the input mode is a line of its own under the meter, never squeezed beside it. */
 .d-voice-dock .d-voice-dock__meter { flex-direction: column; align-items: stretch; gap: 0.25rem; }
 .dw-voice-dock__mode { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin: 0; font-size: var(--text-xs); color: var(--fg-2); }
+.dw-voice-dock__hearing { margin: 0; font-size: var(--text-xs); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .dw-voice-dock__mode .d-btn { min-height: 2.5rem; }
 /* The phone toggle of a DM call (flow 06): only below 48rem. */
 .dw-dm-call__bar { display: none; }
@@ -128,3 +129,13 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;
 }
+
+/* Server settings (flow 08) */
+.dw-admin-form { display: flex; flex-direction: column; gap: var(--group-gap); max-width: 32rem; }
+.dw-admin-group { display: flex; flex-direction: column; gap: var(--row-gap); }
+.dw-admin-grouphead, .dw-admin-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--row-gap); }
+.dw-admin-grouphead h3 { font-size: inherit; }
+.dw-admin-rows { list-style: none; margin: 0; padding: 0 0 0 var(--group-gap); display: flex; flex-direction: column; gap: var(--row-gap); }
+.dw-admin-name { min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+.dw-admin-controls { display: flex; flex-wrap: wrap; gap: var(--row-gap); }
+.dw-admin-error { color: var(--danger); }

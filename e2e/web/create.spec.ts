@@ -203,14 +203,36 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await expect(button(page2, 'invite.open')).toBeVisible();
     await expect(button(page2, 'create.channel.open')).toHaveCount(0);
 
-    // 9. The whole-branch walk. The owner's two actions sit on one row of the 240 px sidebar (flow 07); a name the
-    // server already has for that kind is refused before any request (walk M2); a channel the owner just made says only
-    // "nothing here yet." (walk M1); and a long name never widens the page (walk I2): at 1280 "pinned" stays on screen,
-    // at 360 the page is no wider than the viewport.
-    const actionTops = await page.getByRole('group', { name: copy('create.actions'), exact: true }).getByRole('button')
-      .evaluateAll(els => els.map(e => Math.round(e.getBoundingClientRect().top)));
-    expect(actionTops).toHaveLength(2);
-    expect(new Set(actionTops).size, `the server actions sit on one row (tops ${actionTops.join(', ')})`).toBe(1);
+    // 9. The whole-branch walk. The owner's actions (new channel, invite link, server settings; web3.4 final fix B1) are
+    // all visible and none is clipped: each fits inside its row and the group fits the 240 px sidebar (flow 07); a name
+    // the server already has for that kind is refused before any request (walk M2); a channel the owner just made says
+    // only "nothing here yet." (walk M1); and a long name never widens the page (walk I2): at 1280 "pinned" stays on
+    // screen, at 360 the page is no wider than the viewport.
+    const actionGroup = page.getByRole('group', { name: copy('create.actions'), exact: true });
+    const actionButtons = actionGroup.getByRole('button');
+    await expect(actionButtons).toHaveCount(3);
+    for (const b of await actionButtons.all()) await expect(b).toBeVisible();
+    const fit = await actionGroup.evaluate(group => {
+      const box = group.getBoundingClientRect();
+      const sidebar = group.closest('.d-app-shell__sidebar')?.getBoundingClientRect();
+      return {
+        group: { left: box.left, right: box.right, width: box.width },
+        sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right, width: sidebar.width },
+        buttons: [...group.querySelectorAll('button')].map(b => {
+          const r = b.getBoundingClientRect();
+          return { name: b.getAttribute('aria-label') ?? b.textContent ?? '', left: r.left, right: r.right,
+            clipped: b.scrollWidth > b.clientWidth + 1 };
+        }),
+      };
+    });
+    expect(fit.sidebar?.width ?? Infinity, `the sidebar is 240 px (${JSON.stringify(fit.sidebar)})`).toBeLessThanOrEqual(240);
+    expect(fit.group.left).toBeGreaterThanOrEqual((fit.sidebar?.left ?? 0) - 0.5);
+    expect(fit.group.right).toBeLessThanOrEqual((fit.sidebar?.right ?? 0) + 0.5);
+    for (const b of fit.buttons) {
+      expect(b.left, `${b.name} starts inside its row`).toBeGreaterThanOrEqual(fit.group.left - 0.5);
+      expect(b.right, `${b.name} ends inside its row`).toBeLessThanOrEqual(fit.group.right + 0.5);
+      expect(b.clipped, `${b.name} shows its whole label`).toBe(false);
+    }
     const nameField = newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true });
     await button(page, 'create.channel.open').click();
     await nameField.fill(SECOND_CHANNEL);
