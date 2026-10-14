@@ -46,14 +46,15 @@ describe('CheckList', () => {
     expect(onToggle).not.toHaveBeenCalled();
   });
 
-  it('disables only the busy row and marks it aria-busy', () => {
+  it('marks only the busy row aria-disabled and aria-busy, and keeps it focusable', () => {
     setup({ busyId: 'devs' });
     const busy = screen.getByRole('checkbox', { name: 'developers' });
-    expect(busy).toBeDisabled();
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+    expect(busy).toBeEnabled();
     expect(busy).toHaveAttribute('aria-busy', 'true');
     expect(busy.closest('li')).toHaveAttribute('aria-busy', 'true');
     const other = screen.getByRole('checkbox', { name: 'moderators' });
-    expect(other).toBeEnabled();
+    expect(other).not.toHaveAttribute('aria-disabled');
     expect(other).not.toHaveAttribute('aria-busy');
     expect(other.closest('li')).not.toHaveAttribute('aria-busy');
   });
@@ -67,7 +68,7 @@ describe('CheckList', () => {
 
   it('draws the colour dot (aria-hidden, through --d-swatch) for a coloured item only', () => {
     const { container } = setup();
-    const dots = container.querySelectorAll<HTMLElement>('.d-check-list__dot');
+    const dots = container.querySelectorAll<HTMLElement>('.d-role-dot');
     expect(dots).toHaveLength(1);
     expect(dots[0]).toHaveAttribute('aria-hidden', 'true');
     expect(dots[0].style.getPropertyValue('--d-swatch')).toBe('#3498db');
@@ -86,5 +87,20 @@ describe('CheckList', () => {
     full.unmount();
     const empty = render(<div className="d-root"><CheckList label="roles" items={[]} busyId={null} emptyLabel="No roles yet." onToggle={() => {}} /></div>);
     await expectNoAxeViolations(empty.container);
+  });
+});
+
+describe('CheckList busy row', () => {
+  it('keeps focus and ignores a click and Space while busy', async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    render(<CheckList label="roles" items={ITEMS} busyId="devs" emptyLabel="none" onToggle={onToggle} />);
+    const busy = screen.getByRole('checkbox', { name: 'developers' });
+    busy.focus();
+    await user.keyboard(' ');
+    await user.click(busy);
+    expect(busy).toHaveFocus();
+    expect(busy).not.toBeChecked();
+    expect(onToggle).not.toHaveBeenCalled();
   });
 });
