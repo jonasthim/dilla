@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import './AppShell.css';
 
 export interface AppShellProps {
@@ -16,15 +16,44 @@ export interface AppShellProps {
    * covers the stage controls.
    */
   ring?: ReactNode;
+  /**
+   * web3.4: a pane after main (the member list). Rendered only while `asideOpen`. From 64rem of shell width it is a
+   * fourth grid column; below that an overlay drawer from the right, where focus moves in on open, Escape calls
+   * `onAsideClose` and focus goes back to the opener.
+   */
+  aside?: ReactNode;
+  asideLabel?: string;
+  asideOpen?: boolean;
+  onAsideClose?(): void;
 }
+
+/** The shell width from which the aside is a column (base.css holds the same 64rem in its container query). */
+const COLUMN_REM = 64;
 
 /**
  * The Mesh shell: rail | sidebar | main (header, content, composer), a banner
  * above and the status bar below. DOM order is the focus order of the web-1
  * keyboard map: skip link → banner → rail → sidebar → main → status bar.
  */
-export function AppShell({ skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring }: AppShellProps) {
+export function AppShell({ skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose }: AppShellProps) {
   const mainId = useId();
+  const asideRef = useRef<HTMLElement>(null);
+  const showAside = asideOpen === true && aside !== undefined && aside !== null && aside !== false;
+  // True while the aside is the overlay drawer (the shell is narrower than 64rem). jsdom has no layout: width 0 reads as narrow.
+  const isOverlay = () => {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    return (rootRef.current?.offsetWidth ?? 0) < COLUMN_REM * rem;
+  };
+  // The drawer takes focus on open and hands it back to its opener when it closes; a column does neither.
+  useEffect(() => {
+    if (!showAside || !isOverlay()) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const el = asideRef.current;
+    (el?.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? el)?.focus();
+    return () => {
+      if (opener?.isConnected && (document.activeElement === document.body || el?.contains(document.activeElement))) opener.focus();
+    };
+  }, [showAside]);
   const mainRef = useRef<HTMLElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const ringRef = useRef<HTMLDivElement>(null);
@@ -41,7 +70,12 @@ export function AppShell({ skipLabel, rail, sidebar, header, children, composer,
     observer.observe(el);
     return () => observer.disconnect();
   }, [hasRing]);
-  const hasBanner = banner !== undefined && banner !== null && banner !== false;
+  const onAsideKey = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || !isOverlay()) return;
+    e.preventDefault();
+    onAsideClose?.();
+  };
+  const hasBanner =banner !== undefined && banner !== null && banner !== false;
   // No hash change and no history entry: focus moves to <main> and the URL stays.
   const onSkip = (e: MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
@@ -50,7 +84,7 @@ export function AppShell({ skipLabel, rail, sidebar, header, children, composer,
   return (
     <div ref={rootRef} className="d-app-shell">
       <a className="d-app-shell__skip" href={`#${mainId}`} onClick={onSkip}>{skipLabel}</a>
-      <div className="d-app-shell__grid">
+      <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
         {hasBanner ? <div className="d-app-shell__banner">{banner}</div> : null}
         <div className="d-app-shell__rail">{rail}</div>
         <div className="d-app-shell__sidebar">{sidebar}</div>
@@ -60,6 +94,7 @@ export function AppShell({ skipLabel, rail, sidebar, header, children, composer,
           <div className="d-app-shell__content">{children}</div>
           {composer}
         </main>
+        {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside" onKeyDown={onAsideKey}>{aside}</aside> : null}
         <div className="d-app-shell__status">{statusBar}</div>
       </div>
     </div>

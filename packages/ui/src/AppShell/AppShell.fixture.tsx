@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { AppShell } from './AppShell.tsx';
+import { AppShell, type AppShellProps } from './AppShell.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 import { ChannelList } from '../ChannelList/ChannelList.tsx';
 import { ChannelHeader } from '../ChannelHeader/ChannelHeader.tsx';
@@ -20,13 +20,14 @@ const itemLabel = (i: { name: string; unread: number; mentions: number }) => `${
 // The composed shell for the stories and the focus-order test; every string is a story string.
 // The Composer is controlled (L-UI-13): the fixture holds its text and clears it on send, as the
 // shell (task 24) does once a send resolves.
-export function ComposedShell({ banner = false, ring }: { banner?: boolean; ring?: ReactNode }) {
+export function ComposedShell({ banner = false, ring, shell }: { banner?: boolean; ring?: ReactNode; shell?: Partial<AppShellProps> }) {
   const [draft, setDraft] = useState('');
   const [tab, setTab] = useState('channels');
   return (
     <AppShell
       skipLabel="skip to messages"
       ring={ring}
+      {...shell}
       banner={banner ? <Banner tone="warn" action={{ label: 'retry now', onAction: noop }}>offline · reconnecting to dilla.thim.dev</Banner> : undefined}
       rail={<CommunityRail label="servers" activeId="a1" onSelect={noop} joinLabel="join a server" onJoin={noop}
         settingsLabel="settings" onSettings={noop} itemLabel={itemLabel}

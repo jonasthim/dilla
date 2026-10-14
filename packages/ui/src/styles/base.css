@@ -39,6 +39,14 @@
   .d-app-shell .d-app-shell__ring { position: fixed; top: 0; left: 0; right: 0; z-index: 20; }
   .d-app-shell:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
 }
+/* web3.4: from 64rem of shell width an open aside (the member list) is a fourth grid column; below that it stays the
+   overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */
+@container d-shell (min-width: 64rem) {
+  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--sidebar-w) minmax(0, 1fr) var(--sidebar-w); grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "status status status status"; }
+  .d-app-shell .d-app-shell__aside { position: static; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
+}
+/* A drawer focused only by script (no control inside) draws no ring around the whole pane; its controls keep theirs. */
+.d-root .d-app-shell__aside[tabindex="-1"]:focus-visible { outline: none; }
 /* The settings frame (L-UI-24). Under 45rem of viewport it fills the viewport; under 45rem of its own
    width the navigation stacks above the section. The second is a container query on the frame, so a
    story can show it at any viewport through --d-settings-w and --d-settings-h. The frame's container
