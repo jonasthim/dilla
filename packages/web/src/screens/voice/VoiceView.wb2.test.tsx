@@ -146,6 +146,26 @@ describe('Settings → Voice follows the call (product walk M1)', () => {
     app.client.publish('settings', { 'voice.noise': 'on' });
     await waitFor(() => expect(app.session.setNoise).toHaveBeenLastCalledWith('on'));
   });
+
+  it('V1: the output device follows Settings during a call, and only a change moves it', async () => {
+    const app = await inHarbour({ settings: { 'voice.output': 'spk' } });
+    // The call started on 'spk' (startPageCall's output): nothing to move at the join.
+    expect(app.session.setOutput).not.toHaveBeenCalled();
+    app.client.publish('settings', { 'voice.output': 'headset' });
+    await waitFor(() => expect(app.session.setOutput).toHaveBeenCalledWith('headset'));
+    // Back to the system default.
+    app.client.publish('settings', {});
+    await waitFor(() => expect(app.session.setOutput).toHaveBeenLastCalledWith(''));
+    expect(app.session.setOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it('V1: a refused output device is said in the dock, and the call goes on', async () => {
+    const app = await inHarbour();
+    app.session.setOutput.mockRejectedValueOnce(new Error('NotFoundError'));
+    app.client.publish('settings', { 'voice.output': 'gone' });
+    await waitFor(() => expect(dockStatus()).toHaveTextContent(t('voice.outputFailed')));
+    expect(app.session.leave).not.toHaveBeenCalled();
+  });
 });
 
 describe('the dock says where and how (product walk M7, M8)', () => {

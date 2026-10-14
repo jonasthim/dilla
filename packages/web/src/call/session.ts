@@ -84,6 +84,9 @@ export interface PageCall {
   setNoise(noise: 'on' | 'off'): Promise<void>;
   /** web3.3: the "turn on audio" press: room.startAudio(), then canPlaybackAudio read again; a refusal never throws. */
   startAudio(): Promise<void>;
+  /** web3.4 V1: moves the call's sound to output device `id` ('' is the system default) during the call. A no-op where
+   *  the browser cannot choose an output, and after the leave; rejects when the browser refuses the device. */
+  setOutput(id: string): Promise<void>;
   leave(reason: LeaveReason): Promise<void>;
 }
 
@@ -297,11 +300,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     ctxClosed = true;
     try { void Promise.resolve(ctx.close()).catch(() => undefined); } catch { /* already closed */ }
   };
-  if (ctx !== null && opts.output !== '' && typeof (ctx as { setSinkId?: unknown }).setSinkId === 'function') {
-    try {
-      void Promise.resolve((ctx as unknown as { setSinkId(id: string): Promise<void> }).setSinkId(opts.output)).catch(() => undefined);
-    } catch { /* the system default plays */ }
-  }
+  /** Sends the call's sound to output device `id` ('' is the system default). Null where the context cannot choose an
+   *  output (Firefox): the system default plays. web3.4 V1: also the mid-call switch (setOutput). */
+  const setSink = ctx !== null && typeof (ctx as { setSinkId?: unknown }).setSinkId === 'function'
+    ? async (id: string): Promise<void> => { await (ctx as unknown as { setSinkId(id: string): Promise<void> }).setSinkId(id); }
+    : null;
+  // A refused device at the start leaves the system default playing.
+  if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
   let mic: Awaited<ReturnType<typeof acquireMic>>;
   try {
     mic = await abortable(acquireMic(deps.media, opts.input), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
@@ -1040,6 +1045,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         try { if (ctx !== null) tries.push(ctx.resume()); } catch { /* still held back */ }
         try { tries.push(room.startAudio()); } catch { /* still held back */ }
         return Promise.allSettled(tries).then(() => { if (!ended) set({ audioBlocked: playbackBlocked() }); });
+      },
+      // web3.4 V1: Settings → Voice's output during the call. With webAudioMix everything plays through the context's
+      // destination, so the context's sink is the one to move. A refusal rejects (the shell says so); the call goes on
+      // where it played before.
+      setOutput(id) {
+        if (ended || setSink === null) return Promise.resolve();
+        return setSink(id);
       },
       leave,
     };

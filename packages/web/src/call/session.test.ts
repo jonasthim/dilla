@@ -1432,6 +1432,41 @@ describe('web3.3 fix round 1: the session’s AudioContext (I1, M2), no blip whi
     expect(call.state.phase).toBe('connected');
   });
 
+  it('V1: setOutput mid-call sends the new device to the session’s AudioContext', async () => {
+    const f = fakes();
+    const call = await start(f, { output: 'spk' });
+    await call.setOutput('headset');
+    expect(f.contexts[0].setSinkId).toHaveBeenLastCalledWith('headset');
+    // '' is the system default, which setSinkId takes as it is.
+    await call.setOutput('');
+    expect(f.contexts[0].setSinkId).toHaveBeenLastCalledWith('');
+  });
+
+  it('V1: setOutput on a context that cannot choose an output (Firefox) is a no-op', async () => {
+    const f = fakes();
+    f.audio.noSinkId = true;
+    const call = await start(f);
+    await expect(call.setOutput('headset')).resolves.toBeUndefined();
+    expect(call.state.phase).toBe('connected');
+  });
+
+  it('V1: a refused setOutput rejects, so the shell can say so, and the call goes on', async () => {
+    const f = fakes();
+    const call = await start(f);
+    f.contexts[0].setSinkId.mockRejectedValueOnce(new Error('NotFoundError'));
+    await expect(call.setOutput('gone')).rejects.toThrow('NotFoundError');
+    expect(call.state.phase).toBe('connected');
+  });
+
+  it('V1: setOutput after the leave touches nothing', async () => {
+    const f = fakes();
+    const call = await start(f);
+    await call.leave('user');
+    f.contexts[0].setSinkId.mockClear();
+    await call.setOutput('headset');
+    expect(f.contexts[0].setSinkId).not.toHaveBeenCalled();
+  });
+
   it('M2: audioBlocked follows the context: suspended at connect, running on statechange', async () => {
     const f = fakes();
     f.audio.contextState = 'suspended';

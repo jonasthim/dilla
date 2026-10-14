@@ -143,6 +143,7 @@ export class FakeSession implements PageCall {
   readonly pushToTalk = vi.fn();
   readonly setVolume = vi.fn();
   readonly startAudio = vi.fn(() => { this.log.push('startAudio'); return Promise.resolve(); });
+  readonly setOutput = vi.fn((id: string) => { this.log.push(`output:${id}`); return Promise.resolve(); });
   private readonly bridge: Pick<CoreClient, 'call'> | null;
   constructor(log: string[], bridge: Pick<CoreClient, 'call'> | null = null) { this.log = log; this.bridge = bridge; }
   get muted(): boolean { return this.state.muted; }
