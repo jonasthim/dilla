@@ -1,0 +1,4 @@
+.d-confirm-dialog { display: grid; gap: 0.875rem; min-width: min(26rem, calc(100vw - 4.25rem)); }
+.d-confirm-dialog__body { margin: 0; }
+.d-confirm-dialog__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
+.d-confirm-dialog__error::before { content: "✕ " / ""; }

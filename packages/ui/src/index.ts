@@ -121,3 +121,7 @@ export { InviteLink } from './InviteLink/InviteLink.tsx';
 export type { InviteLinkProps } from './InviteLink/InviteLink.tsx';
 export { ActionMenu } from './ActionMenu/ActionMenu.tsx';
 export type { ActionMenuProps, ActionMenuItem } from './ActionMenu/ActionMenu.tsx';
+export { ConfirmDialog } from './ConfirmDialog/ConfirmDialog.tsx';
+export type { ConfirmDialogProps } from './ConfirmDialog/ConfirmDialog.tsx';
+export { Select } from './Select/Select.tsx';
+export type { SelectProps } from './Select/Select.tsx';
