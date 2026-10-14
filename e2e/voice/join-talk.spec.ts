@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, audioRunning, heard, joinVoice, keyPath, onboard, openVoice, self, snapshotDevices, tile,
+  VoicePeer, WAIT, audible, audioRunning, heard, joinVoice, keyPath, onboard, openVoice, self, snapshotDevices, tile,
 } from './support/voice';
 
 watchContexts(test);
@@ -64,6 +64,12 @@ test('two browsers join one voice channel, see each other ok and hear each other
     await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     await heard(alice.page, b.device);
     await heard(bob.page, a.device);
+    if (browserName === 'chromium') {
+      // web3.3: decrypted is not heard. Each page plays the other's track into its audio graph, with the tone in it
+      // (headless Firefox has no audio server, so its graph reads silent whatever plays).
+      await audible(alice.page);
+      await audible(bob.page);
+    }
     // Bob's tile passed through `connecting` on alice's stage before it was ok.
     // Alice's page loaded the member list before bob joined the server: his tile names him once the worker has read it
     // again (task 10, concern 4), so a state recorded before that is under his id's first 8 characters.

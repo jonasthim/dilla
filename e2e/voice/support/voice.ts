@@ -434,6 +434,35 @@ export async function heard(page: Page, deviceHex: string): Promise<number> {
   await expect.poll(() => heardCount(page, deviceHex), { ...POLL, message: `frames verified as ${deviceHex}` }).toBeGreaterThan(0);
   return heardCount(page, deviceHex);
 }
+/** The RMS level above which a remote track counts as sound (the fake microphone sends a steady 1 kHz tone). */
+export const AUDIBLE_RMS = 0.005;
+/** The loudest time-domain RMS any remote analyser (peer-browser.ts: a remote track that reached a WebAudio source) read
+ *  over a short window; 0 when no remote track reached the audio graph at all. */
+export async function audibleLevel(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const analysers = (window as unknown as { __dw: { remoteAnalysers: AnalyserNode[] } }).__dw.remoteAnalysers;
+    let max = 0;
+    for (let i = 0; i < 8; i++) {
+      for (const a of analysers) {
+        const buf = new Float32Array(a.fftSize);
+        a.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (const x of buf) sum += x * x;
+        max = Math.max(max, Math.sqrt(sum / buf.length));
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return max;
+  });
+}
+/** `audible` (web3.3): waits until a remote call track plays into this page's audio graph with sound in it. `heard`
+ *  proves the media worker decrypted frames; only this proves the page plays them. */
+export async function audible(page: Page): Promise<number> {
+  let level = 0;
+  await expect.poll(async () => { level = await audibleLevel(page); return level; },
+    { ...POLL, message: 'a remote call track reached the audio graph with sound' }).toBeGreaterThan(AUDIBLE_RMS);
+  return level;
+}
 /** This page's own encrypted frames (`__dillaMediaStats.encrypted`, every key and slot summed): its own frame clock. */
 export async function sentCount(page: Page): Promise<number> {
   let n = 0;

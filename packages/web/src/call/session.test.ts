@@ -52,6 +52,27 @@ function fakeLocalTrack(kind: string): FakeTrack {
   return t;
 }
 
+/** A remote track as livekit hands it over: attach() makes an element (as RemoteAudioTrack’s, a fresh <audio>), detach(el)
+ *  lets it go; every element ever made is kept in `made`. */
+function fakeRemoteTrack(kind: 'audio' | 'video', sid: string) {
+  const t = {
+    kind, sid, attached: [] as HTMLMediaElement[], made: [] as HTMLMediaElement[],
+    attach: vi.fn((el?: HTMLMediaElement) => {
+      const out = el ?? document.createElement(kind);
+      t.attached.push(out);
+      t.made.push(out);
+      return out;
+    }),
+    detach: vi.fn((el?: HTMLMediaElement) => {
+      const out = el === undefined ? t.attached.splice(0) : t.attached.filter((x) => x === el);
+      t.attached = t.attached.filter((x) => !out.includes(x));
+      return el === undefined ? out : el;
+    }),
+  };
+  return t;
+}
+type FakeRemoteTrack = ReturnType<typeof fakeRemoteTrack>;
+
 function fakeRemote(identity: string) {
   const gains = { microphone: 1, screen_share_audio: 1 } as Record<string, number>;
   const p = {
@@ -127,7 +148,12 @@ function fakes(o: Options = {}) {
       unpublishTrack: vi.fn(async (track: unknown) => { order.push('unpublish'); void track; }),
     }),
     disconnect: vi.fn(async () => { order.push('room.disconnect'); }),
+    // The browser’s autoplay rule: false while it holds call audio back; startAudio() is the one press that lifts it.
+    canPlaybackAudio: true,
+    startAudio: vi.fn(async () => undefined),
   });
+  // The hidden container the session attaches remote audio elements into (PageCallDeps.audioHost).
+  const audioHost = document.createElement('div');
 
   const share = (on: boolean) => {
     room.localParticipant.permissions = { canPublish: true, canPublishSources: on ? [1, 2, 3, 4] : [2] };
@@ -205,6 +231,7 @@ function fakes(o: Options = {}) {
     setTimer: (fn, ms) => { const id = nextTimer++; timers.set(id, { at: now + ms, fn }); return id; },
     clearTimer: (id) => { timers.delete(id as number); },
     media,
+    audioHost: () => audioHost,
   };
   const addRemote = (identity: string) => {
     const p = fakeRemote(identity);
@@ -212,8 +239,28 @@ function fakes(o: Options = {}) {
     room.emit('participantConnected', p);
     return p;
   };
+  type Remote = ReturnType<typeof fakeRemote>;
+  type Pub = { source: string; kind: string; trackSid: string; track?: FakeRemoteTrack };
+  /** `p` publishes `source`, and this device is subscribed to it: the track is on the publication, and with `emit` the
+   *  room says so (trackSubscribed). Without `emit` it was subscribed before anyone listened. */
+  const subscribeTrack = (p: Remote, source: string, emit = true) => {
+    const kind = source === 'camera' || source === 'screen_share' ? 'video' : 'audio';
+    const trackSid = `TR_${p.identity.slice(0, 4)}_${source}`;
+    const pub = (p.trackPublications.get(trackSid) as Pub | undefined) ?? { source, kind, trackSid };
+    pub.track ??= fakeRemoteTrack(kind, trackSid);
+    p.trackPublications.set(trackSid, pub);
+    if (emit) room.emit('trackSubscribed', pub.track, pub, p);
+    return { track: pub.track, pub };
+  };
+  /** The SFU stopped sending `pub` to this device (SpeakerPolicy’s exclusion, or the publisher’s unpublish). */
+  const unsubscribeTrack = (p: Remote, pub: Pub) => {
+    const track = pub.track;
+    delete pub.track;
+    room.emit('trackUnsubscribed', track, pub, p);
+  };
   return {
     deps, order, calls, pushKeys, manager, room, localTracks, advance, verified, addRemote, share, timers, gum,
+    audioHost, subscribeTrack, unsubscribeTrack,
     get joinOptions() { return joinOptions; },
     setRefresh: (a: typeof refreshAnswer) => { refreshAnswer = a; },
     setNow: (t: number) => { now = t; },
@@ -1091,5 +1138,237 @@ describe('fix round 3 (wb-fix2-review-client I-1, m1, m2)', () => {
     expect(call.state.noise).toBe('off');
     expect(mic.setProcessor).toHaveBeenCalledTimes(1);
     expect(mic.stopProcessor).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('web3.3: remote call audio plays (attach, gains, autoplay, detach)', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+  const elementsIn = (host: HTMLElement) => [...host.querySelectorAll('audio, video')];
+  const orderOf = (fn: { mock: { invocationCallOrder: number[] } }) => fn.mock.invocationCallOrder;
+  /** True when `p.setVolume(volume, source)` ran after `track.attach` (livekit applies a volume only to a gain node that exists). */
+  const setAfterAttach = (p: ReturnType<typeof fakeRemote>, track: FakeRemoteTrack, volume: number, source = 'microphone') => {
+    const attachedAt = orderOf(track.attach)[0];
+    return attachedAt !== undefined
+      && p.setVolume.mock.calls.some(([v, s], i) => v === volume && s === source && orderOf(p.setVolume)[i] > attachedAt);
+  };
+
+  it('a remote microphone that subscribes is attached once, into the audio host; a camera is not', async () => {
+    const f = fakes();
+    await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const { track } = f.subscribeTrack(bob, 'microphone');
+    expect(track.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(f.audioHost)).toEqual([track.made[0]]);
+    const cam = f.subscribeTrack(bob, 'camera');
+    expect(cam.track.attach).not.toHaveBeenCalled();
+    expect(elementsIn(f.audioHost)).toHaveLength(1);
+  });
+
+  it('screen-share audio is attached as the microphone is', async () => {
+    const f = fakes();
+    await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const { track } = f.subscribeTrack(bob, 'screen_share_audio');
+    expect(track.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(f.audioHost)).toEqual([track.made[0]]);
+  });
+
+  it('Review Focus 1: a track subscribed before the listeners existed is attached once at connect, never twice', async () => {
+    const f = fakes();
+    const bob = fakeRemote(BOB_DEV);
+    f.room.remoteParticipants.set(BOB_DEV, bob);
+    const { track, pub } = f.subscribeTrack(bob, 'microphone', false);
+    const call = await start(f);
+    expect(call.state.phase).toBe('connected');
+    expect(track.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(f.audioHost)).toHaveLength(1);
+    // The room’s own trackSubscribed for the same track, late: still one element.
+    f.room.emit('trackSubscribed', track, pub, bob);
+    expect(track.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(f.audioHost)).toHaveLength(1);
+  });
+
+  it('Review Focus 1: a track subscribed while the join was still publishing the microphone is attached at connect', async () => {
+    const f = fakes();
+    const carol = fakeRemote(CAROL_DEV);
+    let early: FakeRemoteTrack | null = null;
+    const publish = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementationOnce(async (track, o) => {
+      f.room.remoteParticipants.set(CAROL_DEV, carol);
+      early = f.subscribeTrack(carol, 'microphone').track; // heard by nobody yet
+      return publish(track, o);
+    });
+    await start(f);
+    expect(early).not.toBeNull();
+    expect(early!.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(f.audioHost)).toHaveLength(1);
+  });
+
+  it('Review Focus 2: deafened, a newcomer is attached and then set to zero gain', async () => {
+    const f = fakes();
+    const call = await start(f);
+    call.setDeafened(true);
+    const bob = f.addRemote(BOB_DEV);
+    bob.setVolume.mockClear();
+    const { track } = f.subscribeTrack(bob, 'microphone');
+    expect(setAfterAttach(bob, track, 0)).toBe(true);
+    expect(bob.gains.microphone).toBe(0);
+  });
+
+  it('a per-person volume set before the attach is applied after it', async () => {
+    const f = fakes();
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    call.setVolume(BOB, 50);
+    bob.setVolume.mockClear();
+    const { track } = f.subscribeTrack(bob, 'microphone');
+    expect(setAfterAttach(bob, track, 0.5)).toBe(true);
+  });
+
+  it('a track attached by the connect sweep gets its gain after the attach', async () => {
+    const f = fakes();
+    const bob = fakeRemote(BOB_DEV);
+    f.room.remoteParticipants.set(BOB_DEV, bob);
+    const { track } = f.subscribeTrack(bob, 'microphone', false);
+    await start(f, { self: 'deafened' });
+    expect(setAfterAttach(bob, track, 0)).toBe(true);
+  });
+
+  it('Review Focus 3: the browser holding audio back sets audioBlocked, at connect and on audioPlaybackChanged', async () => {
+    const f = fakes();
+    f.room.canPlaybackAudio = false;
+    const call = await start(f);
+    expect(call.state.audioBlocked).toBe(true);
+    const g = fakes();
+    const other = await start(g);
+    expect(other.state.audioBlocked).toBe(false);
+    const seen = vi.fn();
+    other.subscribe(seen);
+    g.room.canPlaybackAudio = false;
+    g.room.emit('audioPlaybackChanged', false);
+    expect(other.state.audioBlocked).toBe(true);
+    expect(seen).toHaveBeenCalled();
+    g.room.canPlaybackAudio = true;
+    g.room.emit('audioPlaybackChanged', true);
+    expect(other.state.audioBlocked).toBe(false);
+  });
+
+  it('startAudio() asks the room to start audio, then reads canPlaybackAudio again', async () => {
+    const f = fakes();
+    f.room.canPlaybackAudio = false;
+    const call = await start(f);
+    f.room.startAudio.mockImplementation(async () => { f.room.canPlaybackAudio = true; });
+    await call.startAudio();
+    expect(f.room.startAudio).toHaveBeenCalledTimes(1);
+    expect(call.state.audioBlocked).toBe(false);
+  });
+
+  it('a refused startAudio() leaves audioBlocked true and does not throw', async () => {
+    const f = fakes();
+    f.room.canPlaybackAudio = false;
+    const call = await start(f);
+    f.room.startAudio.mockRejectedValue(new Error('NotAllowedError'));
+    await expect(call.startAudio()).resolves.toBeUndefined();
+    expect(call.state.audioBlocked).toBe(true);
+  });
+
+  it('Review Focus 5: trackUnsubscribed detaches and removes that element; the speaker coming back attaches once', async () => {
+    const f = fakes();
+    await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const carol = f.addRemote(CAROL_DEV);
+    const first = f.subscribeTrack(bob, 'microphone');
+    const kept = f.subscribeTrack(carol, 'microphone');
+    const el = first.track.made[0];
+    f.unsubscribeTrack(bob, first.pub);
+    expect(first.track.detach).toHaveBeenCalledWith(el);
+    expect(el.isConnected).toBe(false);
+    expect(elementsIn(f.audioHost)).toEqual([kept.track.made[0]]);
+    // SpeakerPolicy lets bob back in: a new subscription (heard twice), one new element.
+    const again = f.subscribeTrack(bob, 'microphone');
+    f.room.emit('trackSubscribed', again.track, again.pub, bob);
+    expect(again.track.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(f.audioHost)).toHaveLength(2);
+  });
+
+  it('a participant who leaves leaves no element of theirs', async () => {
+    const f = fakes();
+    await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const { track } = f.subscribeTrack(bob, 'microphone');
+    f.room.remoteParticipants.delete(BOB_DEV);
+    f.room.emit('participantDisconnected', bob);
+    expect(track.detach).toHaveBeenCalledWith(track.made[0]);
+    expect(elementsIn(f.audioHost)).toEqual([]);
+  });
+
+  for (const reason of ['user', 'switch', 'pagehide', 'lost'] as const) {
+    it(`Review Focus 4: leave('${reason}') detaches every attached track and empties the container`, async () => {
+      const f = fakes();
+      const call = await start(f);
+      const bob = f.addRemote(BOB_DEV);
+      const carol = f.addRemote(CAROL_DEV);
+      const tracks = [f.subscribeTrack(bob, 'microphone').track, f.subscribeTrack(carol, 'microphone').track,
+        f.subscribeTrack(bob, 'screen_share_audio').track];
+      expect(elementsIn(f.audioHost)).toHaveLength(3);
+      await call.leave(reason);
+      expect(elementsIn(f.audioHost)).toEqual([]);
+      for (const t of tracks) expect(t.detach).toHaveBeenCalledWith(t.made[0]);
+      // Nothing is attached after the leave.
+      f.subscribeTrack(fakeRemote(DEV_D), 'microphone');
+      expect(elementsIn(f.audioHost)).toEqual([]);
+    });
+  }
+
+  it('Review Focus 4: a second call after a leave starts from an empty container, one element per track', async () => {
+    const f = fakes();
+    const bob = fakeRemote(BOB_DEV);
+    f.room.remoteParticipants.set(BOB_DEV, bob);
+    const { track } = f.subscribeTrack(bob, 'microphone', false);
+    const first = await start(f);
+    expect(elementsIn(f.audioHost)).toHaveLength(1);
+    await first.leave('switch');
+    expect(elementsIn(f.audioHost)).toEqual([]);
+    await start(f);
+    expect(track.attach).toHaveBeenCalledTimes(2);
+    expect(track.attached).toHaveLength(1);
+    expect(elementsIn(f.audioHost)).toHaveLength(1);
+  });
+
+  it('the attached elements sit under aria-hidden and carry no controls', async () => {
+    const f = fakes();
+    await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const { track } = f.subscribeTrack(bob, 'microphone');
+    const el = track.made[0];
+    expect(el.controls).toBe(false);
+    expect(el.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('web3.3: the default audio host', () => {
+  it('is one hidden, aria-hidden container on document.body, created on first use', async () => {
+    const f = fakes();
+    delete f.deps.audioHost;
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    const bob = f.addRemote(BOB_DEV);
+    const { track } = f.subscribeTrack(bob, 'microphone');
+    const again = f.subscribeTrack(bob, 'screen_share_audio');
+    const hosts = document.querySelectorAll('[data-dilla-call-audio]');
+    expect(hosts).toHaveLength(1);
+    const host = hosts[0] as HTMLElement;
+    expect(host.parentElement).toBe(document.body);
+    expect(host.hidden).toBe(true);
+    expect(host.getAttribute('aria-hidden')).toBe('true');
+    expect(track.made[0].parentElement).toBe(host);
+    expect(again.track.made[0].parentElement).toBe(host);
+    await call.leave('user');
+    expect(host.children).toHaveLength(0);
   });
 });

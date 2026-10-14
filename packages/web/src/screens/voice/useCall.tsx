@@ -102,6 +102,8 @@ export interface CallView {
   toggleCamera: () => void;
   toggleShare: () => void;
   setVolume: (userId: string, volume: number) => void;
+  /** web3.3: the "turn on audio" press while the browser holds call audio back (state.audioBlocked). */
+  startAudio: () => void;
 }
 
 export interface UseCallOptions {
@@ -344,6 +346,10 @@ export function useCall(o: UseCallOptions): CallView {
     sessionRef.current?.setVolume(userId, volume);
     client.call({ m: 'setSetting', key: SETTINGS.voiceVolume(userId), value: String(volume) }).catch(() => undefined);
   }, [client]);
+  const startAudio = useCallback(() => {
+    // The press is the user activation the browser asks for; a refusal leaves the line on offer (the session never throws).
+    sessionRef.current?.startAudio().catch(() => undefined);
+  }, []);
 
   const closeUnsupported = useCallback(() => {
     setUnsupported(false);
@@ -526,6 +532,6 @@ export function useCall(o: UseCallOptions): CallView {
     channelId, joining, session, state, announcement, lasting, announce, notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume,
+    join, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
   };
 }

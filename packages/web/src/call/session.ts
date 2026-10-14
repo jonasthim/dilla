@@ -52,6 +52,8 @@ export interface PageCallState {
   localScreen: MediaStream | null;
   /** Product walk M1: noise suppression in force; it follows Settings → Voice during the call. */
   noise: 'on' | 'off';
+  /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
+  audioBlocked: boolean;
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -80,6 +82,8 @@ export interface PageCall {
   setMode(mode: 'vad' | 'ptt'): void;
   /** Product walk M1: switches noise suppression during the call (the microphone's processor is set or stopped). */
   setNoise(noise: 'on' | 'off'): Promise<void>;
+  /** web3.3: the "turn on audio" press: room.startAudio(), then canPlaybackAudio read again; a refusal never throws. */
+  startAudio(): Promise<void>;
   leave(reason: LeaveReason): Promise<void>;
 }
 
@@ -103,6 +107,23 @@ export interface PageCallDeps {
   /** Product walk I3: a local view of one sent track for the self-view; `new MediaStream([track])` by default (null where
    *  the browser has no MediaStream). */
   viewOf?: (track: MediaStreamTrack) => MediaStream | null;
+  /** web3.3: the container remote audio elements are attached into; one hidden `<div data-dilla-call-audio>` on
+   *  document.body by default (null where there is no document). */
+  audioHost?: () => HTMLElement | null;
+}
+
+/** The default audio host: one hidden, aria-hidden container on document.body, made on first use. */
+function defaultAudioHost(): HTMLElement | null {
+  if (typeof document === 'undefined' || document.body === null) return null;
+  let host = document.querySelector<HTMLElement>('div[data-dilla-call-audio]');
+  if (host === null) {
+    host = document.createElement('div');
+    host.setAttribute('data-dilla-call-audio', '');
+    host.hidden = true;
+    host.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(host);
+  }
+  return host;
 }
 
 export interface PageCallOptions {
@@ -178,6 +199,7 @@ const EV = {
   reconnected: 'reconnected',
   disconnected: 'disconnected',
   permissions: 'participantPermissionsChanged',
+  audioPlayback: 'audioPlaybackChanged',
 } as const;
 
 /** livekit DisconnectReason values the session reads (livekit protocol): PARTICIPANT_REMOVED, ROOM_DELETED, ROOM_CLOSED. */
@@ -227,7 +249,10 @@ interface RemoteView {
   isSpeaking: boolean;
   setVolume(volume: number, source?: Source): void;
   getTrackPublication(source: Source): { track?: { mediaStream?: MediaStream } } | undefined;
+  trackPublications?: Map<string, { track?: unknown }>;
 }
+/** What the session needs of a subscribed remote track to play it (livekit’s RemoteAudioTrack). */
+interface RemoteAudio { kind: string; attach(): HTMLMediaElement; detach(element: HTMLMediaElement): unknown }
 interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void> } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
 
@@ -397,6 +422,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
       noise: opts.noise, muted: opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+      audioBlocked: false,
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
@@ -451,6 +477,44 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
     };
     afterRoster = () => { if (!ended) { applyGains(); refresh(); } };
+
+    // web3.3: livekit plays a remote audio track only once it is attached. With webAudioMix, attach() is also what routes
+    // it through the room’s AudioContext and its gain node: a setVolume before the attach has no gain node to act on (and
+    // a 0 is not re-applied by the attach), so applyGains runs after every attach. One element per track, in the hidden
+    // audio host; each is detached and removed on unsubscribe, on the participant’s leave and on every leave of the call.
+    const audioHost = deps.audioHost ?? defaultAudioHost;
+    const playing = new Map<RemoteAudio, { el: HTMLMediaElement; identity: string }>();
+    /** Attaches a subscribed remote audio track; a no-op for a track already attached, for video, and after the end. */
+    const attachAudio = (track: unknown, identity: string): void => {
+      const t = track as RemoteAudio | null | undefined;
+      if (ended || t == null || t.kind !== 'audio' || playing.has(t)) return;
+      const host = audioHost();
+      if (host === null) return;
+      let el: HTMLMediaElement;
+      try { el = t.attach(); } catch { return; }
+      el.controls = false;
+      el.tabIndex = -1;
+      el.setAttribute('aria-hidden', 'true');
+      host.appendChild(el);
+      playing.set(t, { el, identity });
+    };
+    const detachAudio = (track: unknown): void => {
+      const t = track as RemoteAudio;
+      const entry = playing.get(t);
+      if (entry === undefined) return;
+      playing.delete(t);
+      try { t.detach(entry.el); } catch { /* the element is removed all the same */ }
+      entry.el.remove();
+    };
+    /** Every attached track, or those of one participant. */
+    const detachAudioOf = (identity?: string): void => {
+      for (const [t, entry] of [...playing]) if (identity === undefined || entry.identity === identity) detachAudio(t);
+    };
+    /** Review Focus 1: tracks subscribed before the listeners existed (while joinCall or the publish was in flight). */
+    const sweepAudio = (): void => {
+      for (const p of remotes()) for (const pub of p.trackPublications?.values() ?? []) attachAudio(pub.track, p.identity);
+    };
+    const playbackBlocked = (): boolean => (room as unknown as { canPlaybackAudio?: boolean }).canPlaybackAudio === false;
 
     // ---- the microphone
     const gate = new VoiceGate({ mode: opts.mode === 'ptt' ? 'ptt' : 'open' });
@@ -711,9 +775,21 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       set({ error: endCodeOf(reason) });
       void leave('lost');
     };
+    const onSubscribed = (track: unknown, _pub: unknown, participant: unknown): void => {
+      if (ended) return;
+      attachAudio(track, (participant as RemoteView | undefined)?.identity ?? '');
+      onPeople(); // applyGains after the attach: the new gain node takes the person’s volume, or zero while deafened
+    };
+    const onUnsubscribed = (track: unknown): void => { detachAudio(track); if (!ended) onPeople(); };
+    const onLeft = (participant: unknown): void => {
+      const identity = (participant as RemoteView | undefined)?.identity;
+      if (typeof identity === 'string') detachAudioOf(identity);
+      if (!ended) onPeople();
+    };
+    const onPlayback = (): void => { if (!ended) set({ audioBlocked: playbackBlocked() }); };
     const roomListeners: Array<[string, AnyListener]> = [
-      [EV.participantConnected, onPeople], [EV.participantDisconnected, onPeople], [EV.trackSubscribed, onPeople],
-      [EV.trackUnsubscribed, onPeople], [EV.activeSpeakers, onSpeakers],
+      [EV.participantConnected, onPeople], [EV.participantDisconnected, onLeft], [EV.trackSubscribed, onSubscribed],
+      [EV.trackUnsubscribed, onUnsubscribed], [EV.activeSpeakers, onSpeakers], [EV.audioPlayback, onPlayback],
     ];
     for (const [e, f] of roomListeners) events.on(e, f);
     const policy = new SpeakerPolicy(room);
@@ -727,6 +803,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       unsubscribe();
       for (const h of [...timers]) cancel(h);
       for (const [e, f] of roomListeners) events.off(e, f);
+      detachAudioOf();
       detachEarly();
       win?.removeEventListener('pagehide', pageHide);
       opts.signal?.removeEventListener('abort', onAbort);
@@ -767,8 +844,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     checkAborted();
     if ((room as unknown as { state?: string }).state === 'disconnected') throw new PageCallError('E_DISCONNECTED');
     opts.signal?.removeEventListener('abort', onAbort);
+    sweepAudio();
     applyGains();
-    state = { ...state, phase: 'connected', tiles: tiles() };
+    state = { ...state, phase: 'connected', tiles: tiles(), audioBlocked: playbackBlocked() };
     // Product walk M5: a call started muted or deafened says so to the others at once.
     if (state.muted || state.deafened) sendSelf();
     later(poll, TILE_POLL_MS);
@@ -872,6 +950,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         }
         applyMic();
       }),
+      async startAudio() {
+        if (ended) return;
+        try {
+          await room.startAudio();
+        } catch {
+          // Still held back: the press stays on offer.
+        }
+        if (!ended) set({ audioBlocked: playbackBlocked() });
+      },
       leave,
     };
   } catch (err) {

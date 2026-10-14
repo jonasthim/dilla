@@ -456,3 +456,24 @@ describe('review round 1', () => {
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
   });
 });
+
+describe('web3.3: the browser holds call audio back', () => {
+  it('the dock offers "Turn on audio" with its hint; a key press starts audio; the line goes once audio plays', async () => {
+    const app = await inVoice();
+    const turnOn = () => screen.queryByRole('button', { name: t('voice.audioStart') });
+    expect(turnOn()).toBeNull();
+    expect(screen.queryByText(t('voice.audioBlocked'))).toBeNull();
+    act(() => app.session.update({ audioBlocked: true }));
+    const button = await screen.findByRole('button', { name: t('voice.audioStart') });
+    expect(button).toHaveAccessibleDescription(t('voice.audioBlocked'));
+    // Beside the call controls: in the dock, which shows wherever the person is while in a call.
+    expect(button.closest('.dw-voice-dock')).not.toBeNull();
+    expect(screen.getByText(t('voice.audioBlocked')).closest('[role="status"]')).not.toBeNull();
+    button.focus();
+    await app.user.keyboard('{Enter}');
+    expect(app.session.startAudio).toHaveBeenCalledTimes(1);
+    act(() => app.session.update({ audioBlocked: false }));
+    await waitFor(() => expect(turnOn()).toBeNull());
+    expect(screen.queryByText(t('voice.audioBlocked'))).toBeNull();
+  });
+});
