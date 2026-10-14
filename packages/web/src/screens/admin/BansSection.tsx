@@ -44,19 +44,21 @@ export function BansSection({ communityId, serverName, announce }: SectionProps)
   }, [target]);
   // A ban that leaves the list while its confirm is open (lifted elsewhere) closes the confirm.
   const gone = target !== null && bans !== undefined && !bans.some(b => b.userId === target.userId);
-  useEffect(() => { if (gone) setTarget(null); }, [gone]);
+  useEffect(() => { if (gone) { focusHeading.current = true; setTarget(null); } }, [gone]);
 
-  const nameOf = (userId: string): string => {
-    const m = members?.find(x => x.userId === userId);
-    return m === undefined ? t('admin.bans.unknownUser') : shownName(m);
+  // A banner who is not in the member list has left; until the members are read the clause is left out.
+  const nameOf = (userId: string): string | null => {
+    if (members === undefined) return null;
+    const m = members.find(x => x.userId === userId);
+    return m === undefined ? t('admin.member.former') : shownName(m);
   };
   const shownBan = (b: BanSummary): string => (b.name !== '' ? b.name : t('admin.bans.unknownUser'));
   const nowSeconds = Math.floor(Date.now() / 1000);
   const rows = (bans ?? []).map(b => ({
     id: b.userId,
     title: shownBan(b),
-    detail: [t('admin.bans.by', { name: nameOf(b.byUser), date: formatDay(b.created) }), lastsLine(b, nowSeconds),
-      b.reason !== '' ? b.reason : t('admin.bans.noReason')],
+    detail: [...(nameOf(b.byUser) === null ? [] : [t('admin.bans.by', { name: nameOf(b.byUser) ?? '', date: formatDay(b.created) })]),
+      lastsLine(b, nowSeconds), b.reason !== '' ? b.reason : t('admin.bans.noReason')],
     action: { label: t('admin.bans.unban'), ariaLabel: t('admin.bans.unbanLabel', { name: shownBan(b) }) },
   }));
 
@@ -76,6 +78,7 @@ export function BansSection({ communityId, serverName, announce }: SectionProps)
         announce(t('admin.bans.unbanned', { name: shownBan(ban) }));
         focusHeading.current = true;
         setTarget(null);
+        headingRef.current?.focus();
       });
   };
   const named = shownBan(target ?? last.current ?? { name: '' } as BanSummary);

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { BanSummary, Command } from '@dilla/client-core';
@@ -26,11 +26,11 @@ const BANS: BanSummary[] = [
   { userId: GONE, name: '', reason: '', byUser: ME.id, created: CREATED, expires: null },
 ];
 
-function setup(bans: BanSummary[] | null = BANS, handler?: (command: Command) => Promise<unknown>) {
+function setup(bans: BanSummary[] | null = BANS, handler?: (command: Command) => Promise<unknown>, members: boolean = true) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: ME.id }]);
-  fake.set(`members:${SERVER}`, [{ userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] }]);
+  if (members) fake.set(`members:${SERVER}`, [{ userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] }]);
   if (bans !== null) fake.set(`bans:${SERVER}`, bans);
   fake.handler = handler ?? (() => Promise.resolve(null));
   const announce = vi.fn();
@@ -130,8 +130,42 @@ describe('the bans tab of ServerSettings', () => {
       banMembers: true, createInvite: false, manageRoles: false, loaded: true });
     fake.set(`bans:${SERVER}`, BANS);
     render(<div className="d-root"><CoreProvider client={fake}>
-      <ServerSettings communityId={SERVER} tab="bans" onTab={vi.fn()} onClose={vi.fn()} />
+      <ServerSettings communityId={SERVER} tab="bans" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />
     </CoreProvider></div>);
     expect(screen.getByRole('heading', { name: en['admin.bans.title'], level: 2 })).toBeInTheDocument();
+  });
+});
+
+describe('fix round 1: focus and honest names', () => {
+  afterEach(() => { vi.useRealTimers(); });
+  it('moves focus to the heading after an unban even when the list is published before the command resolves', async () => {
+    const { fake, user } = setup();
+    fake.handler = command => {
+      if (command.m === 'unbanMember') fake.publish(`bans:${SERVER}`, BANS.filter(b => b.userId !== CAROL));
+      return Promise.resolve(null);
+    };
+    await user.click(screen.getByRole('button', { name: 'unban carol' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Unban carol?' });
+    await user.click(within(dialog).getByRole('button', { name: en['admin.bans.unbanConfirm'] }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Unban carol?' })).toBeNull());
+    await waitFor(() => expect(screen.getByRole('heading', { name: en['admin.bans.title'], level: 2 })).toHaveFocus());
+  });
+  it('calls a banner who is no longer a member a former member, not a deleted account', () => {
+    setup([{ userId: CAROL, name: 'carol', reason: '', byUser: BOB, created: CREATED, expires: null }]);
+    const row = rowOf('carol');
+    expect(row).toHaveTextContent(`banned by ${en['admin.member.former']} on`);
+    expect(row).not.toHaveTextContent(en['admin.bans.unknownUser']);
+  });
+  it('leaves out the by-clause while the members are not read', () => {
+    setup(BANS, undefined, false);
+    const row = rowOf('carol');
+    expect(row).not.toHaveTextContent('banned by');
+    expect(row).toHaveTextContent(en['admin.bans.forever']);
+  });
+  it('reads a ban that ends exactly now as ended', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(PAST * 1000));
+    setup();
+    expect(rowOf('Bob B')).toHaveTextContent(`ended ${formatDay(PAST)}; can join again`);
   });
 });

@@ -1,6 +1,6 @@
 // Flow 08 (v0.1.0-web3.4): the Server settings dialog. A SettingsFrame whose tabs follow the viewer's permissions in
 // `permissions:<cid>`; every gate here is advisory, the instance answers each request again.
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SettingsFrame, SettingsNav } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
@@ -19,8 +19,8 @@ export interface ServerSettingsProps {
   tab: AdminTab;
   onTab: (tab: AdminTab) => void;
   onClose: () => void;
-  /** The shell's polite announcer; the dialog also keeps its own status region while it is open. */
-  announce?: Announce;
+  /** The shell's polite announcer (its status region outlives this dialog, which closes after leave and delete). */
+  announce: Announce;
 }
 
 /**
@@ -32,8 +32,21 @@ export interface ServerSettingsProps {
 export function ServerSettings({ communityId, tab, onTab, onClose, announce }: ServerSettingsProps): React.JSX.Element | null {
   const community = useSlice('communities')?.find(c => c.id === communityId);
   const access = useSlice(`permissions:${communityId}`);
-  const [status, setStatus] = useState('');
-  const say: Announce = message => { setStatus(message); announce?.(message); };
+  // The last community seen: leave and delete drop the server from the list before their command resolves, and the dialog
+  // keeps showing it until it has been told to close, so the close path restores focus and the message is still announced.
+  const known = useRef(community);
+  if (community !== undefined) known.current = community;
+  const shown = community ?? known.current;
+  const [closed, setClosed] = useState(false);
+  const told = useRef(false);
+  const finish = () => {
+    if (told.current) return;
+    told.current = true;
+    setClosed(true);
+    onClose();
+  };
+  const gone = community === undefined && known.current !== undefined;
+  useEffect(() => { if (gone) finish(); });
 
   const loaded = access?.loaded === true;
   const tabs: { id: AdminTab; label: string }[] = [];
@@ -54,17 +67,17 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
     previous.current = active;
   }, [active]);
 
-  if (community === undefined) return null;
-  const common = { communityId, serverName: community.name, announce: say };
+  if (shown === undefined) return null;
+  const common = { communityId, serverName: shown.name, announce };
   return (
-    <SettingsFrame open title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={onClose}
+    <SettingsFrame open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={onClose}
       nav={<SettingsNav label={t('admin.nav')} items={tabs} activeId={active ?? ''} onSelect={id => onTab(id as AdminTab)} />}>
-      <p className="d-sr-only" role="status">{status}</p>
+      {!loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       {active === 'overview' ? <OverviewSection {...common} /> : null}
       {active === 'channels' ? <ChannelsSection {...common} /> : null}
       {active === 'invites' ? <InvitesSection {...common} /> : null}
       {active === 'bans' ? <BansSection {...common} /> : null}
-      {active === 'danger' ? <DangerSection {...common} owner={access?.owner === true} onGone={onClose} /> : null}
+      {active === 'danger' ? <DangerSection {...common} owner={access?.owner === true} onGone={finish} /> : null}
     </SettingsFrame>
   );
 }

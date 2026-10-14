@@ -27,7 +27,7 @@ export function ChannelEditFlow({ channel, categories, onClose }: {
   const [local, setLocal] = useState<{ message: string; n: number } | null>(null);
   const action = useRun();
   const kind = channel === null ? 'text' : channel.kind === 2 ? 'category' : channel.kind === 1 ? 'voice' : 'text';
-  const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId ?? 'top' };
+  const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId != null && categories.some(c => c.id === channel.parentId) ? channel.parentId : 'top' };
   const current = draft?.id === initial.id ? draft : initial;
   const edit = (over: Partial<Draft>) => { setDraft({ ...current, ...over }); setLocal(null); action.reset(); };
 

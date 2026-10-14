@@ -44,6 +44,7 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
   const [revokeError, setRevokeError] = useState<{ message: string; n: number } | null>(null);
   const revoking = useRef(false);
   const making = useRef(0);
+  const inflight = useRef(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   const load = useCallback(() => {
@@ -53,6 +54,8 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
   useEffect(load, [load]);
 
   const make = () => {
+    if (inflight.current) return;
+    inflight.current = true;
     const ttlSeconds = Number(ttl);
     const maxUses = Number(uses);
     const ttlLabel = t(TTL_OPTIONS.find(o => o.seconds === ttlSeconds)?.key ?? 'admin.invites.ttl.week');
@@ -61,7 +64,8 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
     setMade(m => ({ state: 'creating', url: '', status: '', error: null, attempt: m?.attempt ?? 0, limits }));
     void (async () => {
       try {
-        const value = await client.call({ m: 'createInvite', communityId, maxUses, ttlSeconds });
+        const value = await client.call({ m: 'createInvite', communityId, maxUses, ttlSeconds })
+          .finally(() => { if (making.current === mine) inflight.current = false; });
         const url = typeof value === 'object' && value !== null ? (value as Record<string, unknown>).url : undefined;
         if (typeof url !== 'string' || url === '') throw Object.assign(new Error('E_BAD_RESULT'), { code: 'E_BAD_RESULT' });
         if (making.current !== mine) return;
@@ -77,7 +81,7 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
       }
     })();
   };
-  const closeMade = () => { making.current += 1; setMade(null); };
+  const closeMade = () => { making.current += 1; inflight.current = false; setMade(null); };
 
   const revoke = (id: string) => {
     const row = invites?.find(i => i.id === id);
@@ -94,13 +98,16 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
     }).finally(() => { revoking.current = false; setBusyId(null); });
   };
 
-  const nameOf = (userId: string | null): string => {
-    const m = userId === null ? undefined : members?.find(x => x.userId === userId);
-    return m === undefined ? t('admin.bans.unknownUser') : shownName(m);
+  // No maker on record is an account the instance no longer names; a maker who is not in the member list has left.
+  const nameOf = (userId: string | null, listed: readonly { userId: string; display: string; username: string }[]): string => {
+    if (userId === null) return t('admin.bans.unknownUser');
+    const m = listed.find(x => x.userId === userId);
+    return m === undefined ? t('admin.member.former') : shownName(m);
   };
   const now = Date.now();
-  const rows = (invites ?? []).map(i => {
-    const name = nameOf(i.createdBy);
+  // Until the members are read a maker cannot be named, so no row is listed rather than naming one wrongly.
+  const rows = (members === undefined ? [] : invites ?? []).map(i => {
+    const name = nameOf(i.createdBy, members ?? []);
     const date = messageTime(i.expires, now);
     return { id: i.id, title: t('admin.invites.row', { name, used: i.uses, max: i.maxUses, date }), detail: [] as string[],
       action: { label: t('admin.invites.revoke'), ariaLabel: t('admin.invites.revokeLabel', { name, date }) } };
@@ -127,7 +134,7 @@ export function InvitesSection({ communityId, serverName, announce }: SectionPro
         </div>
       ) : null}
       {revokeError !== null ? <p key={revokeError.n} role="alert" className="dw-admin-error">{revokeError.message}</p> : null}
-      {invites !== undefined ? (
+      {invites !== undefined && members !== undefined ? (
         <ManageList label={t('admin.invites.title')} rows={rows} emptyLabel={t('admin.invites.empty')} busyId={busyId} onAction={revoke} />
       ) : null}
       <InviteLink open={made !== null} state={made?.state ?? 'creating'} url={made?.url ?? ''} status={made?.status ?? ''}

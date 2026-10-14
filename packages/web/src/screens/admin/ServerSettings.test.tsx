@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { CommunityAccess } from '@dilla/client-core';
+import type { CommunityAccess, MemberSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
@@ -20,16 +20,18 @@ export const FULL: CommunityAccess = { top: 100, owner: true, manageCommunity: t
 const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
   banMembers: false, createInvite: false, manageRoles: false };
 
-function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab } = {}) {
+function setup(access: CommunityAccess | undefined, over: { name?: string; tab?: AdminTab; members?: MemberSummary[] | null } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
   if (access !== undefined) fake.set(`permissions:${SERVER}`, access);
-  fake.set(`members:${SERVER}`, [
-    { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
-    { userId: BOB, username: 'bob', display: 'Bob B', kind: 0, roleIds: [] },
-    { userId: CAROL, username: 'carol', display: '', kind: 0, roleIds: [] },
-  ]);
+  if (over.members !== null) {
+    fake.set(`members:${SERVER}`, over.members ?? [
+      { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
+      { userId: BOB, username: 'bob', display: 'Bob B', kind: 0, roleIds: [] },
+      { userId: CAROL, username: 'carol', display: '', kind: 0, roleIds: [] },
+    ]);
+  }
   const onClose = vi.fn();
   const onTab = vi.fn();
   const announce = vi.fn();
@@ -199,5 +201,64 @@ describe('the danger section', () => {
     fake.publish(`members:${SERVER}`, [{ userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] }]);
     expect(screen.getByText(en['admin.transfer.none'])).toBeInTheDocument();
     expect(pane().queryByRole('button', { name: 'hand over server' })).toBeNull();
+  });
+});
+
+describe('fix round 1: loading, closing, minors', () => {
+  it('says the settings are loading, with text, while the permissions are read', () => {
+    setup({ ...NONE, loaded: false });
+    expect(screen.getByText(en['admin.loading'])).toBeInTheDocument();
+  });
+  it('keeps no status region of its own: the announcer it was given says it', () => {
+    setup(FULL);
+    expect(document.querySelector('.d-settings-frame [role="status"]')).toBeNull();
+  });
+  it.each([
+    ['leave', NONE, 'leave server', 'Leave', en['admin.leave.confirm'], `You left ${NAME}.`],
+    ['delete', FULL, 'delete server', 'Delete', en['admin.delete.confirm'], `${NAME} was deleted.`],
+  ] as const)('%s: a community dropped before the command resolves still announces and closes', async (_k, access, button, title, confirm, message) => {
+    const { fake, user, onClose, announce } = setup(access, { tab: 'danger' });
+    fake.handler = () => { fake.publish('communities', []); return Promise.resolve(null); };
+    await user.click(pane().getByRole('button', { name: button }));
+    const dialog = await screen.findByRole('dialog', { name: new RegExp(title) });
+    const typed = within(dialog).queryByRole('textbox');
+    if (typed !== null) await user.type(typed, NAME);
+    await user.click(within(dialog).getByRole('button', { name: confirm }));
+    await waitFor(() => expect(announce).toHaveBeenCalledWith(message));
+    expect(onClose).toHaveBeenCalled();
+    // The frame is closed through its own close path (which hands focus back), not torn down: the last known server stays.
+    const frame = document.querySelector('dialog.d-settings-frame');
+    expect(frame).not.toBeNull();
+    expect(frame).not.toHaveAttribute('open');
+  });
+  it('does not say there is no one to hand over to before the members are read', () => {
+    setup(FULL, { tab: 'danger', members: null });
+    expect(screen.queryByText(en['admin.transfer.none'])).toBeNull();
+  });
+  it('leaves bots out of the hand over list: the server refuses them', async () => {
+    const { user } = setup(FULL, { tab: 'danger', members: [
+      { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
+      { userId: BOB, username: 'robo', display: '', kind: 1, roleIds: [] },
+      { userId: CAROL, username: 'carol', display: '', kind: 0, roleIds: [] },
+    ] });
+    await user.click(pane().getByRole('button', { name: 'hand over server' }));
+    const dialog = await screen.findByRole('dialog', { name: /Hand/ });
+    expect(within(within(dialog).getByRole('combobox')).getAllByRole('option').map(o => o.textContent)).toEqual(['carol']);
+  });
+  it('says there is no one when the only other member is a bot', () => {
+    setup(FULL, { tab: 'danger', members: [
+      { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
+      { userId: BOB, username: 'robo', display: '', kind: 1, roleIds: [] },
+    ] });
+    expect(screen.getByText(en['admin.transfer.none'])).toBeInTheDocument();
+  });
+  it('does not overwrite a name being typed when the server is renamed elsewhere, but follows when not typing', async () => {
+    const { fake, user } = setup(FULL);
+    const field = screen.getByRole('textbox', { name: en['admin.overview.name'] });
+    fake.publish('communities', [{ id: SERVER, name: 'Elsewhere', owner: ME.id }]);
+    expect(field).toHaveValue('Elsewhere');
+    await user.type(field, ' mine');
+    fake.publish('communities', [{ id: SERVER, name: 'Again', owner: ME.id }]);
+    expect(field).toHaveValue('Elsewhere mine');
   });
 });

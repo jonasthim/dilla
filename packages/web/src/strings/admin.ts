@@ -10,6 +10,8 @@ export const admin = {
   'admin.nav.delete': 'delete server',
   'admin.nav.leave': 'leave server',
   'admin.cancel': 'Cancel',
+  'admin.loading': 'Loading server settings…',
+  'admin.member.former': 'a former member',
   'admin.overview.title': 'Overview',
   'admin.overview.name': 'Server name',
   'admin.overview.hint': 'Up to 255 bytes. Everyone in the server, and the host, can read it.',

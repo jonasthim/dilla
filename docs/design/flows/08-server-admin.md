@@ -189,6 +189,9 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bans.unbanConfirm='Unban'`, `admin.bans.unbanBusy='Unbanning…'`, `admin.bans.unbanned='{name} was unbanned.'`
 - `admin.bans.error.load='Could not load the ban list ({code}).'`, `admin.bans.retry='Try again'`
 
+*Loading and people:*
+- `admin.loading='Loading server settings…'`, `admin.member.former='a former member'`
+
 *Leave and delete:*
 - `admin.leave.open='leave server'`, `admin.leave.title='Leave {server}?'`
 - `admin.leave.body='You leave every channel and call of {server}. To come back you need an invite.'`

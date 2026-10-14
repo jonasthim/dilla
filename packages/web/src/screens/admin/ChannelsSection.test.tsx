@@ -207,8 +207,41 @@ describe('the channels tab of ServerSettings', () => {
     fake.set(`permissions:${SERVER}`, { top: 1, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false,
       banMembers: false, createInvite: false, manageRoles: false, loaded: true });
     render(<div className="d-root"><CoreProvider client={fake}>
-      <ServerSettings communityId={SERVER} tab="channels" onTab={vi.fn()} onClose={vi.fn()} />
+      <ServerSettings communityId={SERVER} tab="channels" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />
     </CoreProvider></div>);
     expect(screen.getByRole('heading', { name: en['admin.channels.title'], level: 2 })).toBeInTheDocument();
+  });
+});
+
+describe('fix round 1: focus and the category select', () => {
+  it('moves focus to the heading after a delete even when the list is published before the command resolves', async () => {
+    const { fake, user } = setup();
+    fake.handler = command => {
+      if (command.m === 'deleteChannel') fake.publish(`channels:${SERVER}`, CHANNELS.filter(c => c.id !== LOBBY));
+      return Promise.resolve(null);
+    };
+    await user.click(btn('delete lobby'));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete #lobby?' });
+    await user.click(within(dialog).getByRole('button', { name: en['admin.channelDelete.confirm'] }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete #lobby?' })).toBeNull());
+    await waitFor(() => expect(screen.getByRole('heading', { name: en['admin.channels.title'], level: 2 })).toHaveFocus());
+  });
+  it('keeps focus on the moved row button when the new order is published before the command resolves', async () => {
+    const { fake, user } = setup();
+    fake.handler = command => {
+      if (command.m === 'moveChannel') {
+        fake.publish(`channels:${SERVER}`, CHANNELS.map(c => (c.id === DEV ? { ...c, position: 0 } : c.id === LOBBY ? { ...c, position: 1 } : c)));
+      }
+      return Promise.resolve(null);
+    };
+    await user.click(btn('move dev up'));
+    await waitFor(() => expect(btn('move dev up')).toBeDisabled());
+    await waitFor(() => expect(btn('move dev down')).toHaveFocus());
+  });
+  it('selects no category when the channel names a category that is not listed', async () => {
+    const { user } = setup([...CHANNELS.filter(c => c.id !== TALK)]);
+    await user.click(btn('edit lobby'));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit #lobby' });
+    expect(within(dialog).getByRole('combobox', { name: en['admin.channel.category'] })).toHaveValue('top');
   });
 });

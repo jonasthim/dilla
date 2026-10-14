@@ -17,7 +17,8 @@ export function DangerSection({ communityId, serverName, announce, owner, onGone
   const base = useId();
   const me = useSlice('account')?.user?.id ?? null;
   const members = useSlice(`members:${communityId}`);
-  const others = (members ?? []).filter(m => m.userId !== me);
+  // Bots cannot own a server (the instance refuses them), so they are not offered.
+  const others = (members ?? []).filter(m => m.userId !== me && m.kind === 0);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [typed, setTyped] = useState('');
   const [target, setTarget] = useState('');
@@ -70,7 +71,7 @@ export function DangerSection({ communityId, serverName, announce, owner, onGone
       {owner ? (
         <>
           <p>{t('admin.leave.owner', { server: serverName })}</p>
-          {others.length === 0 ? <p>{t('admin.transfer.none')}</p> : null}
+          {members !== undefined && others.length === 0 ? <p>{t('admin.transfer.none')}</p> : null}
           <div className="dw-settings-actions">
             {others.length > 0 ? <Button onClick={() => choose('transfer')}>{t('admin.nav.transfer')}</Button> : null}
             <Button variant="danger" onClick={() => choose('delete')}>{t('admin.nav.delete')}</Button>

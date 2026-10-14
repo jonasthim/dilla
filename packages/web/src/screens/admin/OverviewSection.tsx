@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Button, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { t } from '../../strings/index.ts';
@@ -15,7 +15,13 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   // A refusal found before asking the server, and how many refusals of either kind were shown.
   const [local, setLocal] = useState<{ message: string; n: number } | null>(null);
   const action = useRun();
-  useEffect(() => { setName(serverName); }, [serverName]);
+  // A rename made elsewhere reaches the field only if nothing is being typed (the field still holds the name last shown).
+  const shownName = useRef(serverName);
+  useEffect(() => {
+    const before = shownName.current;
+    shownName.current = serverName;
+    setName(current => (current === before ? serverName : current));
+  }, [serverName]);
   const error = local?.message ?? action.error;
   const shown = (local?.n ?? 0) + action.attempt;
   // A refusal puts focus in the field that holds it, also when the save button was pressed.

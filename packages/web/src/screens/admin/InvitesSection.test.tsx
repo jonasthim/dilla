@@ -22,14 +22,16 @@ const INVITES: InviteSummary[] = [
   { id: INV2, createdBy: null, maxUses: 1, uses: 0, created: 1_800_000_000, expires: EXPIRES + 86_400 },
 ];
 
-function setup(invites: InviteSummary[] | null = INVITES, handler?: (command: Command) => Promise<unknown>) {
+function setup(invites: InviteSummary[] | null = INVITES, handler?: (command: Command) => Promise<unknown>, members = true) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: ME.id }]);
-  fake.set(`members:${SERVER}`, [
-    { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
-    { userId: BOB, username: 'bob', display: 'Bob B', kind: 0, roleIds: [] },
-  ]);
+  if (members) {
+    fake.set(`members:${SERVER}`, [
+      { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },
+      { userId: BOB, username: 'bob', display: 'Bob B', kind: 0, roleIds: [] },
+    ]);
+  }
   if (invites !== null) fake.set(`invites:${SERVER}`, invites);
   fake.handler = handler ?? (command => Promise.resolve(command.m === 'createInvite'
     ? { url: 'https://dilla.test/join/abc', code: 'abc', expires: EXPIRES } : null));
@@ -144,5 +146,27 @@ describe('InviteFlow more options', () => {
     await user.click(await screen.findByRole('button', { name: en['invite.options'] }));
     expect(onMore).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe('fix round 1: honest names and one make at a time', () => {
+  it('calls a maker who is no longer a member a former member', () => {
+    setup([{ id: INV1, createdBy: 'ab'.repeat(16), maxUses: 10, uses: 0, created: 1, expires: EXPIRES }]);
+    expect(screen.getByRole('listitem')).toHaveTextContent(`by ${en['admin.member.former']}, 0 of 10 uses`);
+  });
+  it('lists no link while the members are not read, rather than naming a maker wrongly', () => {
+    setup(INVITES, undefined, false);
+    expect(screen.queryByRole('listitem')).toBeNull();
+  });
+  it('sends one createInvite when make is pressed again before the first answers', async () => {
+    const { fake, user } = setup();
+    let release: (v: unknown) => void = () => undefined;
+    fake.handler = command => (command.m === 'createInvite' ? new Promise(r => { release = r; }) : Promise.resolve(null));
+    const button = screen.getByRole('button', { name: en['admin.invites.create'] });
+    await user.click(button);
+    await user.click(button);
+    expect(fake.callsOf('createInvite')).toHaveLength(1);
+    release({ url: 'https://dilla.test/join/z', code: 'z', expires: EXPIRES });
+    await screen.findByDisplayValue('https://dilla.test/join/z');
   });
 });

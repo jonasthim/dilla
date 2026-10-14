@@ -52,7 +52,7 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
   const live = target !== null && target.kind !== 'category' ? channels.find(c => c.id === target.id) : undefined;
   // A channel that vanishes while its dialog is open (deleted elsewhere) closes the dialog.
   const stale = target !== null && target.kind !== 'category' && live === undefined;
-  useEffect(() => { if (stale) setTarget(null); }, [stale]);
+  useEffect(() => { if (stale) { focusHeading.current = true; setTarget(null); } }, [stale]);
 
   // After a move the row sits elsewhere: its button gets focus back; if it can no longer move that way, the other one.
   useEffect(() => {
@@ -119,7 +119,7 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
       ))}
       <ChannelEditFlow channel={target?.kind === 'edit' ? live ?? null : null} categories={categories} onClose={() => setTarget(null)} />
       <DeleteChannel channel={target?.kind === 'delete' ? live ?? null : null}
-        onDone={() => { focusHeading.current = true; setTarget(null); }} onClose={() => setTarget(null)} />
+        onDone={() => { focusHeading.current = true; setTarget(null); headingRef.current?.focus(); }} onClose={() => setTarget(null)} />
       <NewCategory open={target?.kind === 'category'} communityId={communityId} serverName={serverName} onClose={() => setTarget(null)} />
     </section>
   );
