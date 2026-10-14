@@ -117,6 +117,9 @@ func (b *Bans) put(w http.ResponseWriter, r *http.Request) {
 		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
 			return notFound(err)
 		}
+		if err := stillModerates(r.Context(), tx, m, PermBanMembers); err != nil {
+			return err
+		}
 		if err := tx.PutBan(r.Context(), store.BanRow{
 			CommunityID: m.community, UserID: m.target, Reason: req.Reason,
 			ByUser: m.session.UserID, Created: now, Expires: expires,
@@ -297,6 +300,21 @@ func moderate(r *http.Request, repo store.Repository, want Bits) (moderation, er
 		return m, server.Errorf(server.CodeForbidden, "missing permission")
 	}
 	return m, nil
+}
+
+// stillModerates repeats moderate's permission check and outranks inside tx, which already holds
+// the community row lock: a hand-over (POST …/owner takes the same lock) or a role change that
+// committed after the checks before the transaction must not let a kick or ban remove the owner,
+// or let an actor act with authority they no longer hold.
+func stillModerates(ctx context.Context, tx store.Repository, m moderation, want Bits) error {
+	snap, err := LoadSnapshot(ctx, tx, m.community, m.session.UserID, nil)
+	if err != nil {
+		return notFound(err)
+	}
+	if !snap.Resolve(m.session.UserID).Has(want) {
+		return server.Errorf(server.CodeForbidden, "missing permission")
+	}
+	return outranks(ctx, tx, snap, m.session.UserID, m.target, m.community)
 }
 
 // outranks refuses a moderation action against the owner or against a user

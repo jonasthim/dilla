@@ -729,6 +729,12 @@ func (c *Communities) removeMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), m.community); err != nil {
+			return notFound(err)
+		}
+		if err := stillModerates(r.Context(), tx, m, PermKickMembers); err != nil {
+			return err
+		}
 		if err := tx.DeleteMember(r.Context(), m.community, m.target); err != nil {
 			return err
 		}
@@ -783,13 +789,23 @@ func (c *Communities) leave(w http.ResponseWriter, r *http.Request) {
 	// The membership and the user's channel_members rows for the community go in
 	// one transaction, as for a kick.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// Re-checked under the community lock: a hand-over to the leaver may have committed
+		// since the read above, and the owner must never leave.
+		owner, err := lockedOwner(r.Context(), tx, row.ID)
+		if err != nil {
+			return err
+		}
+		if owner == s.UserID {
+			return server.Errorf(server.CodeForbidden,
+				"the owner must transfer ownership or delete the community")
+		}
 		if err := tx.DeleteMember(r.Context(), row.ID, s.UserID); err != nil {
 			return err
 		}
 		if _, err := tx.DeleteUserOverwrites(r.Context(), row.ID, s.UserID); err != nil {
 			return err
 		}
-		_, err := tx.DeleteCommunityChannelMembers(r.Context(), row.ID, s.UserID)
+		_, err = tx.DeleteCommunityChannelMembers(r.Context(), row.ID, s.UserID)
 		return err
 	}); err != nil {
 		c.fail(w, r, "leave", notFound(err))
@@ -816,6 +832,14 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	// DeleteChannelsOfCommunity or it returns nothing.
 	var toClose, ids, members []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// Re-checked under the community lock: a hand-over may have committed since ownerOnly.
+		owner, err := lockedOwner(r.Context(), tx, row.ID)
+		if err != nil {
+			return err
+		}
+		if owner != s.UserID {
+			return server.Errorf(server.CodeForbidden, "owner only")
+		}
 		channels, err := tx.ListChannels(r.Context(), row.ID)
 		if err != nil {
 			return err
@@ -911,6 +935,10 @@ func (c *Communities) transfer(w http.ResponseWriter, r *http.Request) {
 		if u.Kind != 0 {
 			return server.Errorf(server.CodeInvalidRequest, "a bot account cannot own a community")
 		}
+		// As joinGate: an account that may not join a community may not own one.
+		if u.DisabledAt != nil || u.DeletedAt != nil {
+			return server.Errorf(server.CodeInvalidRequest, "that account can no longer own a community")
+		}
 		if err := tx.SetCommunityOwner(r.Context(), row.ID, req.UserID); err != nil {
 			return err
 		}
@@ -954,6 +982,20 @@ func enrolledSession(r *http.Request) (auth.Session, error) {
 		return s, server.Errorf(server.CodeForbidden, "an enrolled session is required")
 	}
 	return s, nil
+}
+
+// lockedOwner takes the community row lock in tx and reads the owner under it, so a decision that
+// depends on who owns the community cannot be overtaken by a hand-over (POST …/owner takes the
+// same lock). An unknown or deleted community is 404.
+func lockedOwner(ctx context.Context, tx store.Repository, cid id.ID) (id.ID, error) {
+	if err := tx.LockCommunity(ctx, cid); err != nil {
+		return id.ID{}, notFound(err)
+	}
+	row, err := tx.GetCommunity(ctx, cid)
+	if err != nil {
+		return id.ID{}, notFound(err)
+	}
+	return row.Owner, nil
 }
 
 func notFound(err error) error {

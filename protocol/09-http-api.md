@@ -239,7 +239,7 @@ community answers `404` to everyone.
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
 | `POST /v1/communities/{id}/leave` | `[]` | `204` |
-| `POST /v1/communities/{id}/owner` | `[user_id(bstr16)]` | `204`; `403` for anyone but the owner, `404` when the target is not a member, `400` for the caller themself or a bot account |
+| `POST /v1/communities/{id}/owner` | `[user_id(bstr16)]` | `204`; `403` for anyone but the owner, `404` when the target is not a member, `400` for the caller themself, a bot account, or a disabled or deleted account |
 | `PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}` | `[]` | `204` |
 
 - The creator is the **owner** and the first member, and the community starts with one role,
