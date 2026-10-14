@@ -63,7 +63,70 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
     act(() => { fake.publish(`permissions:${A}`, access({ manageChannels: true })); });
     expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'edit channel' })).toBeInTheDocument();
+  });
+
+  // Final fix B1/M2: "edit channel" left the sidebar; the channel header has it, for that channel.
+  it('the sidebar has no edit channel; the header has it with manageChannels and it opens the edit dialog of that channel', async () => {
+    const { fake, user } = setup(ME.id);
+    act(() => { fake.publish(`permissions:${A}`, access({ manageChannels: true })); });
+    const sidebar = document.querySelector('.dw-sidebar') as HTMLElement;
+    expect(within(sidebar).queryByRole('button', { name: 'edit channel' })).toBeNull();
+    const header = document.querySelector('.d-channel-header') as HTMLElement;
+    await user.click(within(header).getByRole('button', { name: 'edit channel' }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit #general' });
+    expect(within(dialog).getByRole('textbox', { name: 'Channel name' })).toHaveValue('general');
+    expect(screen.queryByRole('dialog', { name: /settings/i })).toBeNull();
+  });
+
+  it('without manageChannels the header has no edit channel', () => {
+    const { fake } = setup();
+    act(() => { fake.publish(`permissions:${A}`, access({ manageChannels: false })); });
+    expect(screen.queryByRole('button', { name: 'edit channel' })).toBeNull();
+  });
+
+  // Final fix B2: the open-by-default pane belongs to the wide column; narrowing closes it unless the person used the toggle.
+  it('starts open when wide; narrowing closes it with nothing inert; the toggle opens it again', async () => {
+    const listeners: ((e: { matches: boolean }) => void)[] = [];
+    window.matchMedia = ((query: string) => ({ matches: true, media: query, onchange: null, dispatchEvent: () => false,
+      addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
+      removeEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.splice(listeners.indexOf(cb), 1); },
+      addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
+    const { user } = setup();
+    expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
+    act(() => { for (const cb of [...listeners]) cb({ matches: false }); });
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(document.querySelector('[inert]')).toBeNull();
+    const toggle = screen.getByRole('button', { name: /^members/ });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await user.click(toggle);
+    expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
+  });
+
+  it('a pane the person opened with the toggle stays open on narrowing', async () => {
+    const listeners: ((e: { matches: boolean }) => void)[] = [];
+    window.matchMedia = ((query: string) => ({ matches: false, media: query, onchange: null, dispatchEvent: () => false,
+      addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
+      removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: /^members/ }));
+    act(() => { for (const cb of [...listeners]) cb({ matches: false }); });
+    expect(screen.getByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
+  });
+
+  // Final fix I2: the drawer's own close control.
+  it('the drawer has a close members button that closes it', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: /^members/ }));
+    const side = screen.getByRole('complementary', { name: 'members of Midgard' });
+    await user.click(within(side).getByRole('button', { name: 'close members' }));
+    expect(screen.queryByRole('complementary')).toBeNull();
+  });
+
+  // Final fix M5: the aside names the list; the list inside is no second region of the same name.
+  it('the member list inside the aside is not a second region named like it', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: /^members/ }));
+    expect(screen.queryByRole('region', { name: 'members of Midgard' })).toBeNull();
   });
 
   it('shows server settings for every member and leave only for non-owners', () => {

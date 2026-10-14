@@ -76,7 +76,8 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
 
   return (
     <div ref={region} tabIndex={-1}>
-      <MemberList label={t('members.region', { server: serverName })} groups={groups} loading={members === undefined}
+      {/* Final fix M5: the shell's aside carries the name "members of {server}"; the list repeats no region of its own. */}
+      <MemberList groups={groups} loading={members === undefined}
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} onAction={onAction} />
       <KickFlow open={kickOpen} communityId={communityId} serverName={serverName} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />

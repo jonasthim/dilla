@@ -106,7 +106,7 @@ describe('focus and reopening', () => {
     await user.click(screen.getByRole('button', { name: 'Kick' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.body).not.toHaveFocus());
-    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'members of Midgard' }).parentElement);
+    expect(document.activeElement).toBe(document.querySelector('.d-member-list')?.parentElement);
   });
   it('reopening on another member does not show the busy label of the closed dialog', async () => {
     const { user, fake } = setup();
