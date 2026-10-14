@@ -77,7 +77,7 @@ jobs:
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
         with:
           targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v7
@@ -88,7 +88,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
@@ -110,7 +110,7 @@ jobs:
     needs: [tag]
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
         with:
           targets: wasm32-wasip1
       - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked

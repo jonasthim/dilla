@@ -272,12 +272,12 @@ const REQUIRED_STEPS = {
   'go-fts5-arm64': ['runs-on: ubuntu-24.04-arm', 'go test ./internal/store/sqlite/...'],
   // The five W2-W5 gates. Each entry is a string the job carries and no other step of that job
   // already contains, so a silently gutted job is caught.
-  'go-lint': ['golangci/golangci-lint-action@v9', 'version: v2.14.0'],
+  'go-lint': ['golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9', 'version: v2.14.0'],
   'go-vuln': [
     'golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...',
     '-scan package -tags dillapins ./internal/deps',
   ],
-  'go-sqlc': ['sqlc-dev/setup-sqlc@v5', "sqlc-version: '1.31.1'", 'sqlc diff', 'git diff --exit-code'],
+  'go-sqlc': ['sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5', "sqlc-version: '1.31.1'", 'sqlc diff', 'git diff --exit-code'],
   'go-postgres': [
     'postgres:18.6-alpine3.24',
     '--locale-provider=builtin --builtin-locale=C.UTF-8',
@@ -303,10 +303,10 @@ const REQUIRED_STEPS = {
     'name: dilla-web-dist',
     'path: internal/web/dist',
     'content="placeholder"',
-    'docker/setup-buildx-action@v4.4.1',
-    'docker/login-action@v4.6.0',
-    'docker/metadata-action@v6.2.0',
-    'docker/build-push-action@v7.4.0',
+    'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1',
+    'docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0',
+    'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0',
+    'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0',
     'platforms: linux/amd64,linux/arm64',
     'provenance: mode=max',
     'sbom: true',
@@ -799,8 +799,13 @@ export function checkReleaseWorkflow(root) {
       problems.push(`${file}:${i + 1}: a workflow_dispatch input is expanded outside an env: key; pass it through env to the script`);
     }
     const uses = /^\s*(?:- )?uses:\s*(\S+)/.exec(line);
-    if (uses && !new RegExp(`uses:\\s*${uses[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm').test(ci)) {
+    if (uses && !new RegExp(`uses:\\s*${uses[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'm').test(ci)) {
       problems.push(`${file}:${i + 1}: ${uses[1]} is not an action ci.yml uses at that version; pin actions as ci.yml does`);
+    }
+    // The release job publishes what install.sh runs as root: a third-party action is pinned to a
+    // commit, never to a tag its owner can move (install-release security scan, 2026-10-14).
+    if (uses && !uses[1].startsWith('actions/') && !/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}\s+#\s+\S+\s*$/.test(line.trim().replace(/^- /, '').replace(/^uses:\s*/, ''))) {
+      problems.push(`${file}:${i + 1}: ${uses[1]} is a third-party action not pinned to a 40-hex commit SHA with a "# <tag>" comment`);
     }
   });
   if (!/^ {2}push:\n {4}tags: \['v\*'\]$/m.test(text)) problems.push(`${file}: must run on a push of tags 'v*'`);

@@ -75,7 +75,7 @@ jobs:
   rust-wasm-node:
     runs-on: ubuntu-latest
     steps:
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
         with:
           targets: wasm32-unknown-unknown
           components: clippy
@@ -328,7 +328,7 @@ jobs:
   go-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.14.0
 
@@ -341,7 +341,7 @@ jobs:
   go-sqlc:
     runs-on: ubuntu-latest
     steps:
-      - uses: sqlc-dev/setup-sqlc@v5
+      - uses: sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5
         with:
           sqlc-version: '1.31.1'
       - run: sqlc diff
@@ -405,16 +405,16 @@ jobs:
         run: |
           test -f internal/web/dist/index.html
           if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - uses: docker/setup-buildx-action@v4.4.1
-      - uses: docker/login-action@v4.6.0
-      - uses: docker/metadata-action@v6.2.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: meta
         with:
           images: ghcr.io/\${{ github.repository }}/dillad
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
-      - uses: docker/build-push-action@v7.4.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -764,10 +764,10 @@ test('a workflow without the image job is reported', () => {
 });
 
 for (const needle of [
-  'docker/setup-buildx-action@v4.4.1',
-  'docker/login-action@v4.6.0',
-  'docker/metadata-action@v6.2.0',
-  'docker/build-push-action@v7.4.0',
+  'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1',
+  'docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0',
+  'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0',
+  'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0',
   'platforms: linux/amd64,linux/arm64',
   'actions/checkout@v7',
   'actions/download-artifact@v8',
@@ -791,7 +791,7 @@ for (const needle of [
 
 test('setup-qemu-action anywhere in the workflow is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - uses: docker/setup-buildx-action@v4.4.1\n', '      - uses: docker/setup-qemu-action@v4\n      - uses: docker/setup-buildx-action@v4.4.1\n')),
+    fixture(GOOD.replace('      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n', '      - uses: docker/setup-qemu-action@v4\n      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n')),
   );
   assert.ok(problems.some((p) => p.includes('setup-qemu-action')), problems.join('\n'));
 });
@@ -1513,7 +1513,7 @@ test('contents: write on a build job is reported', () => {
 });
 
 test('a container image in the release workflow is reported', () => {
-  assertReported(releaseProblems((t) => `${t}\n  image:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/setup-buildx-action@v4.4.1\n`), 'container image');
+  assertReported(releaseProblems((t) => `${t}\n  image:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n`), 'container image');
 });
 
 test('a dispatch input expanded inside a script is reported', () => {
@@ -1546,6 +1546,22 @@ test('|| true in the release workflow is reported', () => {
 
 test('a release workflow that no longer runs on v* tags is reported', () => {
   assertReported(releaseProblems((t) => t.replace("tags: ['v*']", "tags: ['*']")), "tags 'v*'");
+});
+
+test('a third-party action pinned by tag in the release workflow is reported', () => {
+  const problems = releaseProblems((t) => t.replace(/taiki-e\/install-action@[0-9a-f]{40} # v2/, 'taiki-e/install-action@' + 'v2'));
+  assertReported(problems, 'taiki-e/install-action@' + 'v2 is a third-party action not pinned');
+});
+
+test('a third-party action pinned by SHA but without its tag comment is reported', () => {
+  const problems = releaseProblems((t) => t.replace(/(dtolnay\/rust-toolchain@[0-9a-f]{40}) # 1\.98\.1/, '$1'));
+  assertReported(problems, 'not pinned to a 40-hex commit SHA');
+});
+
+test('every third-party action in release.yml is pinned to a commit', () => {
+  const thirdParty = REAL_RELEASE.split('\n').filter((l) => /uses:/.test(l) && !/uses:\s*actions\//.test(l));
+  assert.ok(thirdParty.length > 0);
+  for (const line of thirdParty) assert.match(line, /@[0-9a-f]{40} # \S+$/, line);
 });
 
 test('the CLI checks release.yml too', () => {
