@@ -25,14 +25,38 @@ const config: TestRunnerConfig = {
     // row's inset bar, the pressed button's underline) cannot swallow it.
     // Tab once: if anything takes focus, its computed outline must be the
     // 2px solid accent ring.
+    // One exception (Jonas, 2026-10-14): the composer's textarea draws no ring; its box shows focus
+    // instead, its border turning the resolved --accent (WCAG 2.4.7 still holds).
     await page.keyboard.press('Tab');
     const focused = await page.evaluate(() => {
       const el = document.activeElement;
       if (!el || el === document.body || el === document.documentElement) return null;
       const s = getComputedStyle(el);
-      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth };
+      const box = el.matches('.d-composer__input') ? el.closest('.d-composer__box') : null;
+      let composer: { border: string; accent: string } | null = null;
+      if (box) {
+        // Settle the border-color transition so the value read is the focused one.
+        for (const a of box.getAnimations()) a.finish();
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        box.appendChild(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        const b = getComputedStyle(box);
+        const sides = [b.borderTopColor, b.borderRightColor, b.borderBottomColor, b.borderLeftColor];
+        composer = { border: sides.every(c => c === sides[0]) ? sides[0] : sides.join(' / '), accent };
+      }
+      return { tag: el.tagName.toLowerCase(), outlineStyle: s.outlineStyle, outlineWidth: s.outlineWidth, composer };
     });
-    if (focused && (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px')) {
+    if (focused?.composer) {
+      const { composer } = focused;
+      if (focused.outlineStyle !== 'none' || composer.border !== composer.accent) {
+        throw new Error(
+          `${context.title} / ${context.name}: the focused composer textarea should show focus through its box, not a ring ` +
+          `(outline-style: ${focused.outlineStyle}, expected none; box border-color: ${composer.border}, expected --accent ${composer.accent})`,
+        );
+      }
+    } else if (focused && (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px')) {
       throw new Error(
         `${context.title} / ${context.name}: the focused <${focused.tag}> has no visible focus ring ` +
         `(outline-style: ${focused.outlineStyle}, outline-width: ${focused.outlineWidth}; expected solid / 2px)`,
