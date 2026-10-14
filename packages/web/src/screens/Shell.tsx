@@ -249,6 +249,9 @@ export function Shell(): React.JSX.Element {
     target?.focus();
     setLeftFrom(null);
   }, [leftFrom, whereOf]);
+  // A typing signal is a hint: one the worker refuses (the channel is not viewable any more, or the socket is not online,
+  // E_NOT_READY) is simply not sent, never an error banner (the docs shoot's shell-not-member image showed one).
+  const typingRefused = useCallback(() => undefined, []);
   const typingSent = useRef<string | null>(null);
   const typingAt = useRef(0);
   useEffect(() => {
@@ -257,20 +260,20 @@ export function Shell(): React.JSX.Element {
       // The server holds a typing signal for 10 s and meters one per 3 s (L-HTTP-96): a draft still changing renews it.
       if (active !== null && Date.now() - typingAt.current >= TYPING_RENEW_MS) {
         typingAt.current = Date.now();
-        client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+        client.call({ m: 'typing', channelId: active, on: true }).catch(typingRefused);
       }
       return;
     }
-    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(typingRefused);
     typingSent.current = active;
     if (active !== null) {
       typingAt.current = Date.now();
-      client.call({ m: 'typing', channelId: active, on: true }).catch(report);
+      client.call({ m: 'typing', channelId: active, on: true }).catch(typingRefused);
     }
-  }, [client, draft.channelId, draft.text, targetId, report]);
+  }, [client, draft.channelId, draft.text, targetId, typingRefused]);
   useEffect(() => () => {
-    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(report);
-  }, [client, report]);
+    if (typingSent.current !== null) client.call({ m: 'typing', channelId: typingSent.current, on: false }).catch(typingRefused);
+  }, [client, typingRefused]);
 
   const selectCommunity = useCallback((id: string) => {
     setSelectFailure(null);

@@ -23,7 +23,9 @@ export interface SyncDeps {
   onGroupChanged(groupId: Id, result: ApplyResult): void; onOutboxChanged(groupId: Id): void;
   onTrustChanged(): void;
   trackJob?(job: Promise<unknown>): void;
-  onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void;
+  /** 'member' (WB fix wave): a group reported not-member was read to the end again (the DS serves group reads to
+   *  current leaves only), so the device holds its leaf after all. A frame applied to the group proves no such thing. */
+  onMembership(groupId: Id, status: 'resyncing' | 'not-member' | 'member'): void;
   onJoinAll(progress: { done: number; total: number; failed: number }): void;
   /** A Welcome for an unexpected group; the controller reloads DMs. */
   onUnexpectedWelcome(groupId: Id): void;
@@ -63,6 +65,8 @@ export class SyncEngine implements SyncInternals {
   readonly resyncTried = new Set<string>();
   readonly quiet = new Set<string>();
   readonly unexpectedReported = new Set<string>();
+  /** Groups whose last membership report was not-member (WB fix wave): a confirmed catch-up withdraws it. */
+  private readonly lostReported = new Set<string>();
   private expectedList: ExpectedGroup[] = [];
   private readonly joinAll = new JoinAll(this, (p) => { this.deps.onJoinAll(p); });
   private readonly opened = new Map<string, ExpectedGroup>();
@@ -77,6 +81,11 @@ export class SyncEngine implements SyncInternals {
 
   constructor(readonly deps: SyncDeps) { this.queues = new SerialQueues((job) => deps.trackJob?.(job)); }
   stopped(): boolean { return this.isStopped; }
+  /** Every membership report goes through here, so the engine knows which groups it last reported not-member. */
+  reportMembership(g: Id, status: 'resyncing' | 'not-member' | 'member'): void {
+    if (status === 'not-member') this.lostReported.add(toHex(g)); else this.lostReported.delete(toHex(g));
+    this.deps.onMembership(g, status);
+  }
   start(): void {
     if (this.unsubscribe !== null || this.isStopped) return;
     this.unsubscribe = this.deps.gateway.subscribe((e) => { this.onEvent(e); });
@@ -256,6 +265,8 @@ export class SyncEngine implements SyncInternals {
         if (this.row(g)?.state !== 2) return false;
         if (ms.count < SYNC.messagePage && hs.count < SYNC.handshakePage && !(hs.lastSeq !== null && hs.lastSeq > through)) break;
       }
+      // The DS answered every read of the group: this device holds its leaf, whatever an earlier refusal reported.
+      if (this.lostReported.has(toHex(g))) this.reportMembership(g, 'member');
       await this.cursorStep(g);
       return true;
     } catch (e) {
@@ -263,6 +274,8 @@ export class SyncEngine implements SyncInternals {
       if ((this.membershipLost(g, e) || (e instanceof DillaHttpError && e.status === 410 && e.code === 'E_PRUNED'))
         && !this.resyncTried.has(toHex(g))) {
         await this.resync(g);
+      } else if (this.membershipLost(g, e)) {
+        this.relost(g);
       }
       return false;
     }
@@ -346,11 +359,18 @@ export class SyncEngine implements SyncInternals {
           if (e.status === 422) this.quiet.add(toHex(g));
         } else if (((e.status === 403 && e.code === 'E_LEAF_NOT_CURRENT') || this.membershipLost(g, e)) && !this.resyncTried.has(toHex(g))) {
           await this.resync(g);
+        } else if (this.membershipLost(g, e)) {
+          this.relost(g);
         }
       }
       this.requestDrain(g);
       return false;
     }
+  }
+  /** A 404 on a group whose resync was already tried (it is not tried again before the next ready): reported not-member
+   *  again unless that is still the last report, since nothing else would say it once a confirmed read withdrew it. */
+  private relost(g: Id): void {
+    if (!this.lostReported.has(toHex(g))) this.reportMembership(g, 'not-member');
   }
   private armVolunteer(g: Id): void {
     const hex = toHex(g); if (this.volunteer.has(hex) || this.quiet.has(hex)) return;
@@ -382,7 +402,7 @@ export class SyncEngine implements SyncInternals {
   private async resync(g: Id): Promise<boolean> {
     if (this.row(g)?.kind === 1) {
       this.resyncTried.add(toHex(g));
-      this.deps.onMembership(g, 'not-member');
+      this.reportMembership(g, 'not-member');
       return false;
     }
     return resyncGroup(this, g, false);

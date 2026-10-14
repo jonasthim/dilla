@@ -2075,7 +2075,10 @@ export class Controller {
       for (const key of this.fetchedLeaves) if (key.startsWith(prefix)) this.fetchedLeaves.delete(key);
       if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     }
-    if (result.state === 2) { this.resyncing.delete(hex); this.notMember.delete(hex); }
+    // A state-2 apply ends a resync, never a not-member report: a frame applied to the group after a refused resync (the
+    // docs shoot's removal) proves nothing about this device's leaf. Not-member ends with a rejoin ('resyncing') or a
+    // catch-up the DS served ('member').
+    if (result.state === 2) this.resyncing.delete(hex);
     this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
     this.stopTypingIfUnviewable();
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
@@ -2086,8 +2089,13 @@ export class Controller {
     this.runPurges();
   }
 
-  private onMembership(groupId: Id, status: 'resyncing' | 'not-member'): void {
+  private onMembership(groupId: Id, status: 'resyncing' | 'not-member' | 'member'): void {
     const hex = toHex(groupId);
+    if (status === 'member') {
+      if (!this.notMember.delete(hex) && !this.resyncing.delete(hex)) return;
+      this.safely(() => { this.touchGroup(groupId); });
+      return;
+    }
     if (status === 'resyncing') { this.resyncing.add(hex); this.notMember.delete(hex); }
     else { this.notMember.add(hex); this.resyncing.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });

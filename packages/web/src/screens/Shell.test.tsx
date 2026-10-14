@@ -205,6 +205,20 @@ it('says searching while the worker answers, then the scope’s empty text', asy
   await waitFor(() => expect(screen.getByRole('search')).toHaveTextContent('No results in this scope'));
 });
 
+// The docs shoot's shell-not-member image showed "(E_NOT_READY)" in the error banner: a typing signal the worker refuses
+// (the channel no longer viewable, or offline) is a hint that was not sent, never an error the person must read.
+it('a refused typing signal shows no error banner', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.handler = command => (command.m === 'typing' ? Promise.reject(refusal({ code: 'E_NOT_READY' })) : Promise.resolve(null));
+  } });
+  await user.type(composer(), 'anyone still here?');
+  await waitFor(() => expect(fake.callsOf('typing').length).toBeGreaterThan(0));
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByText(/E_NOT_READY/)).toBeNull();
+  expect(document.body).not.toHaveTextContent('E_NOT_READY');
+});
+
 it('renews typing while the draft keeps changing, within the server’s hold', async () => {
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
   try {

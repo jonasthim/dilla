@@ -772,6 +772,30 @@ describe('membership loss: a kicked device (rule 7, INTEGRATION-SEAMS-01)', () =
     expect(d.core.outbox(g)).toMatchObject([{ msgId: m2, state: 2 }]);
   });
 
+  // The docs shoot's removal after a refused voice join (task-11 shots report, concern 3): the worker no longer drops a
+  // not-member report on any state-2 apply (a gateway frame for the group proves nothing about its leaf), so the engine
+  // says when the membership is confirmed again: a catch-up the DS served (it answers group reads to current leaves
+  // only) reports member, and a later 404 after that reports not-member again, though the resync was tried already.
+  it('a not-member report is withdrawn only by a catch-up the DS served, and a later 404 reports it again', async () => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    ds.inject('getMessages', { fail: httpError(404, 'E_NOT_FOUND') });
+    ds.inject('getGroupInfo', { fail: httpError(503, 'E_UNAVAILABLE') });
+    d.engine.requestCatchUp(g);
+    await settle();
+    expect(d.membership).toEqual([{ group: toHex(g), status: 'resyncing' }, { group: toHex(g), status: 'not-member' }]);
+    d.engine.requestCatchUp(g);
+    await settle();
+    expect(d.membership.at(-1)).toEqual({ group: toHex(g), status: 'member' });
+    expect(d.membership).toHaveLength(3);
+    ds.inject('getMessages', { fail: httpError(404, 'E_NOT_FOUND') });
+    d.engine.requestCatchUp(g);
+    await settle();
+    expect(d.membership.at(-1)).toEqual({ group: toHex(g), status: 'not-member' });
+    expect(count('getGroupInfo')).toBe(1);   // no second resync before the next ready
+    expect(d.membership).toHaveLength(4);
+  });
+
   it('a refused resync after a 404 on the catch-up reports not-member once per ready', async () => {
     const { d, g } = await kicked();
     d.gateway.ready(readyInfo(ME));

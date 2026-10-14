@@ -1924,7 +1924,10 @@ describe('Controller in the ready phase', () => {
     expect(w.timeline()?.group).toBe('not-member');
   });
 
-  it('a refused resync of an active row shows not-member until a state-2 report clears it', async () => {
+  // The docs shoot's removal after a refused voice join (task-11 shots report, concern 3): a gateway frame applied to the
+  // group after the refused resync (state 2) proves nothing about this device's leaf. Not-member stays until the engine
+  // reports the membership confirmed (a catch-up the DS served) or a rejoin starts; the composer never reopens on a frame.
+  it('a refused resync of an active row shows not-member until the engine confirms the membership again', async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
@@ -1936,6 +1939,9 @@ describe('Controller in the ready phase', () => {
     expect(w.channels()?.[0]?.group).toBe('not-member');
     expect(w.timeline()?.group).toBe('not-member');
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
+    expect(w.channels()?.[0]?.group).toBe('not-member');
+    expect(w.timeline()?.group).toBe('not-member');
+    w.sync.deps!.onMembership(GROUP, 'member');
     expect(w.channels()?.[0]?.group).toBe('active');
     expect(w.timeline()?.group).toBe('active');
   });
@@ -1948,6 +1954,8 @@ describe('Controller in the ready phase', () => {
     w.sync.deps!.onMembership(GROUP, 'resyncing');
     w.sync.deps!.onMembership(GROUP, 'not-member');
     expect(w.channels()?.[0]?.group).toBe('not-member');
+    // The next ready resyncs again (a resync starts with its own report), and this time it joins.
+    w.sync.deps!.onMembership(GROUP, 'resyncing');
     w.state.groups = [textGroup(2)];
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
     expect(w.channels()?.[0]?.group).toBe('active');

@@ -950,6 +950,16 @@ async function main(argv) {
     await tab.goto('/');
     await shootState(tab, 'tabs-handover', { close: () => tab.close() });
 
+    // web-3: the peer's new device opens the call of "watch-voice", and Mira's join is refused before anything is
+    // posted, with a notice that names the peer. Shot before the removal below, in the order of the guide (the WB fix
+    // wave fixed the not-member report a later frame used to clear, which kept that removal from showing).
+    await peer.request('call_join', { actor: 'peer', channel: watch.voice_channel_id });
+    await railServer(mira, 'Bridge Watch').click();
+    await mira.getByRole('tablist', { name: t('shell.tabs.label'), exact: true }).getByRole('tab', { name: /^channels/ }).click();
+    await voiceRow(mira, 'watch-voice').click();
+    await stage(mira).getByRole('button', { name: t('voice.join'), exact: true }).click();
+    await shootState(mira, 'voice-blocked');
+
     await byText(mira, 'navigation', 'shell.rail.label').getByRole('button', { name: new RegExp(`^${SERVER}(, |$)`) }).click();
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
@@ -970,19 +980,6 @@ async function main(argv) {
     await notMember.waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('shell-not-member');
-
-    // web-3, last: the peer's new device opens the call of "watch-voice", and Mira's join is refused before anything is
-    // posted, with a notice that names the peer. (Shot after the removal above: with the refused join first, that
-    // removal never showed as "not a member" in a run on 2026-10-14.) Mira reloads first, as the removal notice says,
-    // so no error of the lost membership is left on screen.
-    await peer.request('call_join', { actor: 'peer', channel: watch.voice_channel_id });
-    await mira.reload();
-    await byText(mira, 'navigation', 'shell.rail.label').waitFor({ timeout: WAIT });
-    await railServer(mira, 'Bridge Watch').click();
-    await mira.getByRole('tablist', { name: t('shell.tabs.label'), exact: true }).getByRole('tab', { name: /^channels/ }).click();
-    await voiceRow(mira, 'watch-voice').click();
-    await stage(mira).getByRole('button', { name: t('voice.join'), exact: true }).click();
-    await shootState(mira, 'voice-blocked');
   } finally {
     if (peer !== null) await stop(peer.child);
     for (const c of contexts) await c.close().catch(() => undefined);
