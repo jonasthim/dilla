@@ -64,6 +64,25 @@ func TestASFUHostWithAWebRootNamesItsListenerAsTheLiveKitURL(t *testing.T) {
 	}
 }
 
+// Task-10 fix review N3: -sfu-departure-timeout reaches the host options; absent, it is zero (the
+// instance default).
+func TestTheSFUDepartureTimeoutFlagReachesTheHostOptions(t *testing.T) {
+	o, err := parseFlags([]string{"-sfu", "-sfu-departure-timeout", "60"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got := o.hostOptions("/data", "/core.wasm", "").SFUDepartureTimeout; got != 60 {
+		t.Fatalf("SFUDepartureTimeout = %d, want 60", got)
+	}
+	o, err = parseFlags([]string{"-sfu"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got := o.hostOptions("/data", "/core.wasm", "").SFUDepartureTimeout; got != 0 {
+		t.Fatalf("default SFUDepartureTimeout = %d, want 0", got)
+	}
+}
+
 func TestARelativeWebRootIsResolvedAgainstTheWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "dist"), 0o700); err != nil {

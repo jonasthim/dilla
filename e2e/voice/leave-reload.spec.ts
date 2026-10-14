@@ -73,7 +73,7 @@ test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and lea
       await dock(alice.page).getByRole('button', { name: copy('voice.leave'), exact: true }).click();
       await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
       // Nobody can commit the Remove of the only leaf; the leave ended the call, so the rejoin registers a fresh group
-      // well inside the room's 20 s departure timeout.
+      // at once: the room's departure timeout (90 s in this suite) plays no part.
       await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
       await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'in', { timeout: 10_000 });
     });

@@ -56,14 +56,15 @@ someone joins. You do not have to do anything.
 
 ## Mute, deafen and push to talk
 
-**mute** turns your microphone off ("Microphone muted.") and **unmute** on again ("Microphone on."). **deafen** turns
-off everything you hear, and mutes you too ("Sound off."); **undeafen** turns it back on ("Sound on.").
+**mute** turns your microphone off ("Microphone muted.") and, pressed again, on ("Microphone on."). **deafen** turns
+off everything you hear, and mutes you too ("Sound off."); pressed again, it turns it back on ("Sound on."). These
+buttons keep their names: while one is on it shows `[x]` before its name, and a screen reader says "pressed".
 
 | Key | What it does |
 |---|---|
 | Control/⌘+Shift+M | Mutes or unmutes, from anywhere in the app while you are in a call |
 | Control/⌘+Shift+D | Deafens or undeafens, from anywhere in the app while you are in a call |
-| Arrow Left, Arrow Right, Home, End | Move between the buttons of the dock or the call controls |
+| Arrow Left, Arrow Right, Home, End | Move between the buttons of the dock or the stage's controls |
 
 Control or ⌘ works on every system. There are no single-key shortcuts. Settings → keyboard lists both, next to the
 search shortcuts.
@@ -72,9 +73,10 @@ search shortcuts.
 
 1. Open **Settings → voice**, and under "input mode" choose "push to talk". The microphone closes at once.
 2. Press **set key**: "Press the key to use. Escape cancels. It works only while dilla is the active tab."
-3. Press one key on its own: F13 to F24, Pause, Scroll Lock or Insert. Any other key, and any key held with Control,
-   Alt, ⌘, Shift or AltGr, is refused with "That key types text, moves the focus or needs another key. Use one key on
-   its own, such as Pause, Scroll Lock, Insert or F13 to F24."
+3. Press one key on its own: F13 to F24, Pause or Scroll Lock. Any other key, and any key held with Control, Alt, ⌘,
+   Shift or AltGr, is refused with "That key types text, moves the focus or needs another key. Use one key on its own,
+   such as Pause, Scroll Lock or F13 to F24." Insert works too, but screen readers use it as their own key, so it
+   is not suggested.
 
 There is no key until you set one ("no key set"). Hold it to talk. It works only while the dilla tab is the active
 tab, never while you type in a text field, and the dock says "push to talk" while it is in force.
@@ -93,8 +95,8 @@ Settings → voice also holds:
 
 ## Camera and screen
 
-**camera** shows your camera in your tile for everyone in the call, and **stop camera** ends it. **share screen**
-lets the browser ask which screen, window or tab to share, and **stop sharing** ends it. The only sound a share
+**camera** shows your camera in your tile for everyone in the call, and pressed again ends it. **share screen**
+lets the browser ask which screen, window or tab to share, and pressed again ends it. The only sound a share
 carries is a tab's, when you share a browser tab in a Chromium-based browser; a whole screen or window is shared
 without sound. If too many people already show a camera or a screen: "Too many people are sharing. Try again when
 someone stops."
@@ -176,6 +178,10 @@ continue, or wait until {name} leaves." The dock says "paused in {where}" and **
 comparison. Nothing you say is sent and nothing is played until you verify them or they leave; then "The call
 continues." The call goes on for the others.
 
+If a device in the call cannot be checked yet (its owner's device list could not be read), the call holds for you the
+same way: "A device in this call could not be checked yet, so this call is paused for you: nothing you say is sent and
+nothing is played. It continues once the check is done." It continues by itself once the check succeeds.
+
 ![The refused join at 360 pixels wide](screenshots/voice-blocked-phone.png)
 
 ### A device failed the check
@@ -197,6 +203,8 @@ refused while sending in that direct message is paused.
 | "This voice is full." | The call has as many people as the instance allows |
 | "Could not join voice. Try again." | Press **join voice** again |
 | "You were removed from voice." | Your device was taken out of the call; join again if you can still open the channel |
+| "The connection to voice was lost. Join again to continue." | The connection dropped and did not come back; press **join voice** again |
+| "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the dock | The connection dropped; the call comes back by itself |
 
 ## Known limits

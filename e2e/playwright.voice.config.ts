@@ -9,7 +9,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 // VOICE-E2E (web-3 task 10, L-E2E-31): packages/web/dist served by dilla-testhost on 8481/8482, with its in-process
 // LiveKit on 7884 (signalling, reached through the host's /rtc proxy) and 7886 (ICE/UDP). Two browsers of one engine
 // talk, ring and play through it, beside a native peer that can poison a call group.
-const dillaHost: HostConfig = { port: 8481, control: 8482, webRoot: 'packages/web/dist', sfu: { port: 7884, udpPort: 7886 } };
+// Task-10 fix review N3: the rooms' departure timeout is 90 s here (20 s in production), so leave-reload's second test
+// (a reload alone in the room, then a rejoin that waits for the peer's commit) is never raced by the room's own end on a
+// slow runner. No voice test relies on the departure timeout to end a call.
+const dillaHost: HostConfig = { port: 8481, control: 8482, webRoot: 'packages/web/dist', sfu: { port: 7884, udpPort: 7886, departureTimeout: 90 } };
 // Written at config load, before any browser launches: the Chromium switches name the files (a 1 kHz tone, so the
 // microphone is never silent and voice activity always sends).
 const fixtures = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'));

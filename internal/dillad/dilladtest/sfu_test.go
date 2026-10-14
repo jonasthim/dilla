@@ -173,6 +173,25 @@ func TestTheTestSFUAdvertisesInternalAddresses(t *testing.T) {
 	}
 }
 
+// Task-10 fix review N3: a voice suite's host may give its rooms a longer departure timeout, so a
+// test that reloads a browser alone in a room is not raced by the room's own end on a slow runner;
+// zero keeps the instance default (20 s) that every other test sees.
+func TestTheHostOptionsSetTheTestSFUDepartureTimeout(t *testing.T) {
+	for _, c := range []struct {
+		opt  uint32
+		want string
+	}{{0, "  departure_timeout: 20\n"}, {60, "  departure_timeout: 60\n"}} {
+		cfg := HostOptions{SFUDepartureTimeout: c.opt}.sfuConfig(7880, 7882, "dilla", strings.Repeat("s", 64))
+		yaml, err := cfg.YAML()
+		if err != nil {
+			t.Fatalf("YAML: %v", err)
+		}
+		if !strings.Contains(yaml, c.want) {
+			t.Errorf("SFUDepartureTimeout %d: the YAML lacks %q:\n%s", c.opt, c.want, yaml)
+		}
+	}
+}
+
 // GET /debug/sfu and POST /debug/sfu/token exist on the control listener only; the public
 // listener — what a scenario client and a browser reach — answers 404 for both.
 func TestTheDebugSFURoutesAreControlOnly(t *testing.T) {

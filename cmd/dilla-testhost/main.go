@@ -52,6 +52,7 @@ func parseFlags(args []string) (options, error) {
 	sfuNoInternalIP := fs.Bool("sfu-no-internal-ip", false,
 		"SP-27 only: render advertise_internal_ip: false (Firefox then cannot pair with the loopback node_ip)")
 	sfuAV1 := fs.Bool("sfu-av1", false, "browser test only: enable AV1 in the real SFU")
+	sfuDeparture := fs.Uint("sfu-departure-timeout", 0, "the in-process LiveKit's room departure_timeout in seconds (0: the instance default, 20)")
 	webRoot := fs.String("web-root", "", "a built web client directory (with its dilla-manifest.json) served at the public listener's origin instead of the embedded placeholder")
 	productionACL := fs.Bool("production-acl", false, "build the instance with production's ACL and channel seams (api.ResolverACL, api.StructureChannels) instead of the scenario harness's")
 	if err := fs.Parse(args); err != nil {
@@ -75,7 +76,7 @@ func parseFlags(args []string) (options, error) {
 	return options{public: *public, control: *control, dataDir: *dataDir, core: *core,
 		logLevel: *logLevel, webRoot: root, productionACL: *productionACL,
 		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
-			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1}}, nil
+			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
 
 // sfuOptions are the -sfu flags: whether the host starts an in-process LiveKit, and on which ports.
@@ -84,13 +85,14 @@ type sfuOptions struct {
 	port, udpPort int
 	noInternalIP  bool
 	av1           bool
+	departure     uint32
 }
 
 func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostOptions {
 	ho := dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: o.logLevel,
 		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
-		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1,
+		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1, SFUDepartureTimeout: o.sfu.departure,
 		ScrapeToken: scrapeToken, WebRoot: o.webRoot, ProductionACL: o.productionACL,
 	}
 	// A browser test (a web root) that calls (an SFU) reaches LiveKit through this host's own /rtc

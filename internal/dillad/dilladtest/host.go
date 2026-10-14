@@ -89,6 +89,10 @@ type HostOptions struct {
 	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
 	SFUNoInternalIP bool
 	SFUEnableAV1    bool
+	// SFUDepartureTimeout is the rooms' departure_timeout in seconds (task-10 fix review N3: the
+	// voice suite's host gives its rooms longer, so a test that reloads a browser alone in a room is
+	// not raced by the room's own end on a slow runner); 0 keeps the instance default of 20 s.
+	SFUDepartureTimeout uint32
 	// ScrapeToken is the bearer token /metrics accepts (dillad.Options.ScrapeToken; dilla-testhost
 	// takes it from DILLA_METRICS_TOKEN, as dillad does). Empty keeps dillad's default: a random
 	// token nobody holds, so every scrape is refused.
@@ -390,11 +394,7 @@ func (h *Host) startSFU(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cfg := testSFUConfig(port, udp, h.cfg.LiveKit.APIKey, secret)
-	if h.o.SFUNoInternalIP {
-		cfg.AdvertiseInternalIP = false
-	}
-	cfg.TestAV1 = h.o.SFUEnableAV1
+	cfg := h.o.sfuConfig(port, udp, h.cfg.LiveKit.APIKey, secret)
 	// The webhook receiver, as dillad's livekit.webhook_listen (cmd/dillad/front.go): bound before the
 	// SFU starts, so LiveKit renders its URL; each verified event goes to the instance current then
 	// (a Restore replaces it).
