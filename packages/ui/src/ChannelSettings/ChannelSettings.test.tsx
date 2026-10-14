@@ -84,3 +84,21 @@ describe('ChannelSettings', () => {
     }
   });
 });
+
+// useId values differ between two renders; the rest of the markup must not.
+const norm = (html: string) => html.replace(/\b(id|for|form|aria-describedby|aria-labelledby)="[^"]*"/g, '$1="_"');
+describe('ChannelSettings children slot', () => {
+  it('renders children inside the form, after the topic and category fields, and adds nothing without them', () => {
+    const { unmount } = render(<ChannelSettings {...props()} />);
+    const bare = norm(document.querySelector('form')!.innerHTML);
+    unmount();
+    render(<ChannelSettings {...props()}><label>private <input type="checkbox" /></label></ChannelSettings>);
+    const form = document.querySelector('form')!;
+    const slot = screen.getByRole('checkbox', { name: 'private' });
+    expect(form.contains(slot)).toBe(true);
+    for (const before of [screen.getByRole('textbox', { name: labels.topic }), screen.getByRole('combobox', { name: labels.category })]) {
+      expect(before.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(norm(form.innerHTML.replace(/<label>private <input type="checkbox"><\/label>/, ''))).toBe(bare);
+  });
+});

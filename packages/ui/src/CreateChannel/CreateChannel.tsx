@@ -1,4 +1,4 @@
-import { useEffect, useId, type FormEvent } from 'react';
+import { useEffect, useId, type FormEvent, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
 import { Segmented } from '../Segmented/Segmented.tsx';
@@ -23,6 +23,8 @@ export interface CreateChannelProps {
   labels: { title: string; kind: string; text: string; voice: string; name: string; submit: string; busy: string; close: string };
   onSubmit(): void;
   onClose(): void;
+  /** Extra fields, rendered inside the form after the name field. */
+  children?: ReactNode;
 }
 
 /**
@@ -30,7 +32,7 @@ export interface CreateChannelProps {
  * form submitted by Enter or the footer's accent button. Focus starts in the name field; the kind group is one Shift+Tab
  * away. A refusal is the field's error.
  */
-export function CreateChannel({ open, kind, onKind, name, onName, hint, error, busy, attempt = 0, labels, onSubmit, onClose }: CreateChannelProps) {
+export function CreateChannel({ open, kind, onKind, name, onName, hint, error, busy, attempt = 0, labels, onSubmit, onClose, children }: CreateChannelProps) {
   const base = useId();
   const fieldId = `${base}-name`;
   const formId = `${base}-form`;
@@ -58,6 +60,7 @@ export function CreateChannel({ open, kind, onKind, name, onName, hint, error, b
         </div>
         <TextField key={attempt} id={fieldId} label={labels.name} value={name} onChange={onName} hint={hint} error={error ?? undefined}
           required autoComplete="off" spellCheck={false} />
+        {children}
         {/* Focus stays in the field on Enter, so the busy submit's new name alone is not heard (review M1). */}
         <p className="d-sr-only" role="status">{busy ? labels.busy : ''}</p>
       </form>

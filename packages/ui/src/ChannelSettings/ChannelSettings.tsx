@@ -1,4 +1,4 @@
-import { useEffect, useId, type FormEvent } from 'react';
+import { useEffect, useId, type FormEvent, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
 import { Select } from '../Select/Select.tsx';
@@ -22,6 +22,8 @@ export interface ChannelSettingsProps {
   labels: { title: string; name: string; nameHint: string; topic: string; topicHint: string; category: string; submit: string; busy: string; close: string };
   onSubmit(): void;
   onClose(): void;
+  /** Extra fields, rendered inside the form after the topic and category fields. */
+  children?: ReactNode;
 }
 
 /**
@@ -30,7 +32,7 @@ export interface ChannelSettingsProps {
  * is the name field's error and puts focus back there.
  */
 export function ChannelSettings({
-  open, kind, name, onName, topic, onTopic, parent, parents, onParent, error, busy, attempt = 0, labels, onSubmit, onClose,
+  open, kind, name, onName, topic, onTopic, parent, parents, onParent, error, busy, attempt = 0, labels, onSubmit, onClose, children,
 }: ChannelSettingsProps) {
   const base = useId();
   const fieldId = `${base}-name`;
@@ -57,6 +59,7 @@ export function ChannelSettings({
           <TextField id={`${base}-topic`} label={labels.topic} value={topic} onChange={onTopic} hint={labels.topicHint} autoComplete="off" />
         ) : null}
         {kind !== 'category' ? <Select label={labels.category} value={parent} options={parents} onChange={onParent} /> : null}
+        {children}
         {/* The form has several fields, so Enter submits through a default submit button inside it. The footer's button
             is the visible one (outside the form, tied by `form`). */}
         <button type="submit" hidden tabIndex={-1} aria-hidden="true" />

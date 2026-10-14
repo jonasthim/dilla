@@ -89,3 +89,20 @@ describe('CreateChannel', () => {
     }
   });
 });
+
+// useId values differ between two renders; the rest of the markup must not.
+const norm = (html: string) => html.replace(/\b(id|for|form|aria-describedby|aria-labelledby)="[^"]*"/g, '$1="_"');
+describe('CreateChannel children slot', () => {
+  it('renders children inside the form, after the name field, and adds nothing without them', () => {
+    const { unmount } = render(<CreateChannel {...props()} />);
+    const bare = norm(document.querySelector('form')!.innerHTML);
+    unmount();
+    render(<CreateChannel {...props()}><label>private <input type="checkbox" /></label></CreateChannel>);
+    const form = document.querySelector('form')!;
+    const slot = screen.getByRole('checkbox', { name: 'private' });
+    expect(form.contains(slot)).toBe(true);
+    const field = screen.getByRole('textbox', { name: labels.name });
+    expect(field.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(norm(form.innerHTML.replace(/<label>private <input type="checkbox"><\/label>/, ''))).toBe(bare);
+  });
+});
