@@ -67,18 +67,25 @@ describe('ConfirmDialog', () => {
     expect(screen.getByRole('textbox', { name: 'reason' })).toHaveFocus();
   });
 
-  it('an error that arrives one render after busy ended still moves focus to Cancel, once', () => {
+  it('an error set together with busy=false focuses Cancel; the same error shown again does not take focus back', () => {
+    const p = props();
+    const field = <input aria-label="reason" />;
+    const { rerender } = render(<ConfirmDialog {...p}>{field}</ConfirmDialog>);
+    rerender(<ConfirmDialog {...p} busy>{field}</ConfirmDialog>);
+    rerender(<ConfirmDialog {...p} busy={false} error="You cannot ban this member.">{field}</ConfirmDialog>);
+    expect(screen.getByRole('button', { name: 'cancel' })).toHaveFocus();
+    screen.getByRole('textbox', { name: 'reason' }).focus();
+    rerender(<ConfirmDialog {...p} busy={false} error="You cannot ban this member." attempt={2}>{field}</ConfirmDialog>);
+    expect(screen.getByRole('textbox', { name: 'reason' })).toHaveFocus();
+  });
+
+  it('busy ends with no error, then a later error does not take focus', () => {
     const p = props();
     const field = <input aria-label="reason" />;
     const { rerender } = render(<ConfirmDialog {...p}>{field}</ConfirmDialog>);
     rerender(<ConfirmDialog {...p} busy>{field}</ConfirmDialog>);
     rerender(<ConfirmDialog {...p} busy={false}>{field}</ConfirmDialog>);
-    expect(screen.getByRole('button', { name: 'cancel' })).not.toHaveFocus();
-    rerender(<ConfirmDialog {...p} busy={false} error="You cannot ban this member.">{field}</ConfirmDialog>);
-    expect(screen.getByRole('button', { name: 'cancel' })).toHaveFocus();
-    // Used up: the user goes back to the field, and the same error shown again does not take focus away.
-    screen.getByRole('textbox', { name: 'reason' }).focus();
-    rerender(<ConfirmDialog {...p} busy={false} error="You cannot ban this member." attempt={2}>{field}</ConfirmDialog>);
+    rerender(<ConfirmDialog {...p} busy={false} error="Something unrelated.">{field}</ConfirmDialog>);
     expect(screen.getByRole('textbox', { name: 'reason' })).toHaveFocus();
   });
 

@@ -11,7 +11,9 @@ export interface ConfirmDialogProps {
   busyLabel: string;
   cancelLabel: string;
   tone?: 'danger' | 'accent';
+  /** True while the confirmed action runs. Contract: when it fails, the caller clears `busy` and sets `error` in the same update. */
   busy: boolean;
+  /** The refusal to show, or null. Set it in the same update that clears `busy`: that is what moves focus to Cancel. */
   error: string | null;
   /** Counts the refusals the caller has shown. A new count with the same text is a new alert, so it is announced again. */
   attempt?: number;
@@ -43,17 +45,11 @@ export function ConfirmDialog({
   }, [open]);
   // The confirm button was disabled while busy, so focus may have been lost; a refusal puts it on Cancel (never on the
   // destructive button), next to the alert.
-  // The error may arrive in the render after busy ended, so a finished run stays "pending" until an error uses it up.
+  // This relies on the caller setting `error` in the same update that clears `busy`.
   const wasBusy = useRef(false);
-  const pending = useRef(false);
   useEffect(() => {
-    if (!open || busy) pending.current = false;
-    else if (wasBusy.current) pending.current = true;
+    if (open && wasBusy.current && !busy && error !== null) cancelButton()?.focus();
     wasBusy.current = busy;
-    if (open && pending.current && error !== null) {
-      pending.current = false;
-      cancelButton()?.focus();
-    }
   }, [busy, open, error]);
   const bodyId = `${useId()}-body`;
   return (
