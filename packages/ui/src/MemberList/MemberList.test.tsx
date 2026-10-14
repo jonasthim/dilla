@@ -42,8 +42,18 @@ describe('MemberList', () => {
   it('a right-click opens the row’s menu at the pointer', () => {
     render(<MemberList {...props()} />);
     const row = screen.getByText('Bjorn').closest('li')!;
-    fireEvent.contextMenu(row, { clientX: 33, clientY: 44 });
+    fireEvent.contextMenu(row, { clientX: 33, clientY: 44, button: 2, detail: 1 });
     expect(screen.getByRole('menu', { name: 'actions for Bjorn' })).toHaveStyle({ position: 'fixed', left: '33px', top: '44px' });
+  });
+
+  it.each([
+    ['button -1', { button: -1, detail: 1 }],
+    ['detail 0', { button: 2, detail: 0 }],
+  ])('a contextmenu event from the keyboard (%s) opens the menu at the trigger, not at a pointer', (_name, init) => {
+    render(<MemberList {...props()} />);
+    fireEvent.contextMenu(screen.getByText('Bjorn').closest('li')!, { clientX: 33, clientY: 44, ...init });
+    const menu = screen.getByRole('menu', { name: 'actions for Bjorn' });
+    expect(menu).not.toHaveStyle({ position: 'fixed' });
   });
 
   it('Shift+F10 and the ContextMenu key open the menu at the trigger', async () => {
@@ -81,7 +91,8 @@ describe('MemberList', () => {
   it('a row with no actions has no trigger and no context menu', () => {
     render(<MemberList {...props()} />);
     expect(screen.queryByRole('button', { name: 'actions for You' })).toBeNull();
-    fireEvent.contextMenu(screen.getByText('You').closest('li')!, { clientX: 1, clientY: 1 });
+    // Not prevented (fireEvent returns true): the browser's own menu stays for a row that has none of ours.
+    expect(fireEvent.contextMenu(screen.getByText('You').closest('li')!, { clientX: 1, clientY: 1, button: 2, detail: 1 })).toBe(true);
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
