@@ -236,8 +236,8 @@ checks every device again.
 If the dock says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
 you press something on the page. The line and its button sit above **mute**, **deafen** and **leave**; one press
 starts the call's sound and the line goes. Nothing else about the call changes. This happens when the browser did not
-let the call start its sound, for example when you answered a call without a press on the page, or when the browser
-or your system suspended audio.
+let the call start its sound, for example when the browser or your system suspended audio, or a stricter autoplay
+setting in the browser held it back.
 
 If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
 volume.

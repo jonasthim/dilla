@@ -25,7 +25,8 @@ export interface VoiceDeps {
   load(): Promise<VoiceModule>;
   createSounds(): Sounds;
   /** web3.3 fix round 2 (Minor 1): the call’s AudioContext, made synchronously in the join’s press so the browser lets it
-   *  run (a context made after the module load and a switch’s leave starts suspended on Safari). A new AudioContext by
+   *  run (browsers start an AudioContext made outside a user gesture suspended, as after the module load and a switch’s
+   *  leave). A new AudioContext by
    *  default; null where the browser has none. */
   createCallContext?(): AudioContext | null;
 }
