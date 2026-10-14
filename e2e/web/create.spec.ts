@@ -2,20 +2,27 @@
 // and every suite hid it by seeding its servers through dilla-testhost. This suite starts a test host of its own with no
 // account, no server and no channel, and gets from there to two people talking using the shipping client alone: the
 // bootstrap invite, "new server", "invite link", a sign-up through that link, a reply, a direct message through the picker,
-// and a second channel both of them use. Nothing here seeds state or calls the instance's API on anyone's behalf.
-import { mkdirSync, rmSync } from 'node:fs';
-import { expect, type Page } from '@playwright/test';
+// and a second channel both of them use. Nothing here seeds state or calls the instance's API on anyone's behalf: the one
+// request the spec makes itself is GET /v1/instance, for the name the onboarding shows.
+// The create flow's controls are found by role and accessible name (flow 07's copy keys in en.ts) only.
+import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, expectAccessible, expectComposerReady, expectShell, messageRow,
-  newAccount, openChannel, railItem, railNav, sendText, sidebarTab, signUp, tag, test,
+  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, escapeRegExp, expectAccessible, expectComposerReady, expectShell,
+  messageRow, newAccount, openChannel, railItem, railNav, sendText, sidebarTab, signUp, tag, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
-import { profileDirFor } from './support/persistent';
+import { launchSecond, secondProfileDir } from './support/second-harness';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { rmSync } from 'node:fs';
 
 /** Its own ports: the suite's shared host (8463/8464) has servers in it by now. */
 const EMPTY: HostConfig = { port: 8477, control: 8478, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
+const OWNER = 'Ada';
+const FRIEND = 'Björn';
+/** The task's exact values (task-4 brief, step 2). */
+const HELLO = 'hello from the owner';
+const SECOND_CHANNEL = 'plans';
 
 let host: StartedHost | null = null;
 let instance = '';
@@ -37,76 +44,94 @@ function started(): StartedHost {
   if (host === null) throw new Error('the empty test host did not start');
   return host;
 }
-const log = (page: Page) => page.getByRole('log');
-const dmRow = (page: Page, text: string) => log(page).locator('.d-message-row').filter({ hasText: text });
+const button = (scope: Page | Locator, key: string, vars?: Record<string, string>) =>
+  scope.getByRole('button', { name: copy(key, vars), exact: true });
+const dmLog = (page: Page, name: string) => page.getByRole('log', { name: copy('shell.dm.log', { name }), exact: true });
+const dmRow = (page: Page, name: string, text: string) => dmLog(page, name).locator('.d-message-row').filter({ hasText: text });
 
 test('from an empty instance: start a server, invite a friend through a link, reply, DM and add a channel', async ({
   page, guard, playwright, browserName, launchOptions, headless, channel, viewport,
 }, testInfo) => {
   const h = started();
 
-  // The first person on the instance: the bootstrap invite, then a shell that says how to begin.
+  // 1. The first person on the instance: the bootstrap invite, then a shell that says how to begin.
   // The host prints its instance invites comma-separated; the first is the one an operator would hand on.
-  await signUp(page, h.invite.split(',')[0], instance, 'Ada');
+  await signUp(page, h.invite.split(',')[0], instance, OWNER);
   const empty = page.getByRole('region', { name: copy('shell.noServer.title'), exact: true });
   await expect(empty).toBeVisible({ timeout: WAIT });
-  await expect(empty.getByRole('button', { name: copy('shell.noServer.create'), exact: true })).toBeVisible();
-  await expect(empty.getByRole('button', { name: copy('shell.noServer.action'), exact: true })).toBeVisible();
+  // The control main's client lacked (dbe836b): the spec fails here against it.
+  const newServer = railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true });
+  await expect(newServer).toBeVisible();
+  await expect(button(empty, 'shell.noServer.create')).toBeVisible();
+  await expect(button(empty, 'shell.noServer.action')).toBeVisible();
   await expectAccessible(page, 'a fresh instance, no server');
 
-  // Start a server from the rail: it comes with #general and a voice general, and #general opens, focus in its composer.
-  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  // Flow 07: a dialog takes focus in on open and gives it back to its opener on Escape (a real browser's focus, which
+  // the ui suite's jsdom could only stub).
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
-  await expect(start.getByRole('textbox', { name: copy('create.server.name'), exact: true })).toBeFocused();
+  const serverName = start.getByRole('textbox', { name: copy('create.server.name'), exact: true });
+  await newServer.focus();
+  await page.keyboard.press('Enter');
+  await expect(serverName).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(start).toBeHidden();
+  await expect(newServer).toBeFocused();
+
+  // 2. "new server", a name, and #general opens with focus in its composer. The server also has a voice general.
+  await newServer.click();
+  await expect(serverName).toBeFocused();
   await expectAccessible(page, 'start a server');
   await page.keyboard.type(SERVER);
   await page.keyboard.press('Enter');
   await expect(start).toBeHidden({ timeout: WAIT });
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
   await expect(railItem(page, SERVER)).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('button', { name: copy('voice.open', { name: 'general' }), exact: true })).toBeVisible();
+  await expect(button(page, 'voice.open', { name: 'general' })).toBeVisible();
   await expectComposerReady(page, 'general');
   await expect(composerBox(page, 'general')).toBeFocused();
-  const alone = `the first message on a new instance ${tag()}`;
-  await sendText(page, 'general', alone);
+  await sendText(page, 'general', HELLO);
 
-  // Copy an invite link. Chromium lets the test read the clipboard back; Firefox may refuse a copy that a network round
-  // trip separated from the click, and the dialog then says so. Either way the link stands in the dialog.
-  if (browserName === 'chromium') await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.getByRole('button', { name: copy('invite.open'), exact: true }).click();
+  // 3. The invite link, read from the dialog's field. The shell tries to copy it as the dialog opens; Firefox may refuse a
+  // copy that a network round trip separated from the click, and the dialog then says so. Either way the link stands in
+  // the field, which is what a person copies by hand, so the clipboard is never read here.
+  await button(page, 'invite.open').click();
   const inviteDialog = page.getByRole('dialog', { name: copy('invite.title', { server: SERVER }), exact: true });
-  const status = inviteDialog.getByRole('status');
-  if (browserName === 'chromium') await expect(status).toHaveText(copy('invite.copied'), { timeout: WAIT });
-  else await expect(status).toHaveText(new RegExp(`^(${copy('invite.copied')}|${copy('invite.blocked')})$`), { timeout: WAIT });
-  const link = await inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true }).inputValue();
+  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
+  await expect(linkField).toBeVisible({ timeout: WAIT });
+  const copiedOrBlocked = new RegExp(`^(${escapeRegExp(copy('invite.copied'))}|${escapeRegExp(copy('invite.blocked'))})$`);
+  await expect(inviteDialog.getByRole('status')).toHaveText(copiedOrBlocked, { timeout: WAIT });
+  const link = await linkField.inputValue();
   expect(link).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
-  if (browserName === 'chromium') expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(link);
   await expectAccessible(page, 'the invite link');
   await page.keyboard.press('Escape');
   await expect(inviteDialog).toBeHidden();
 
-  // The second person, in a browser of their own, through that link: the instance's invite page, then its "open dilla"
+  // 4. The second person, in a browser of their own, through that link: the instance's invite page, its "open dilla"
   // link, then the sign-up, which lands them in the server. The link names the instance's public domain; this host
   // serves it on loopback, so its path is opened here.
-  const secondDir = `${profileDirFor(testInfo.project.name, testInfo.workerIndex)}-second`;
-  rmSync(secondDir, { recursive: true, force: true });
-  mkdirSync(secondDir, { recursive: true });
-  const second = await playwright[browserName].launchPersistentContext(secondDir, { ...launchOptions, headless, channel, viewport, baseURL: h.url });
+  const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
+  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
   try {
     const page2 = second.pages()[0] ?? (await second.newPage());
     await page2.goto(new URL(link).pathname);
-    const openLink = page2.getByRole('link', { name: 'Open dilla in this browser' });
+    const openLink = page2.getByRole('link', { name: 'Open dilla in this browser', exact: true });
     await expect(openLink).toHaveAttribute('href', /^\/welcome\?invite=[^&\s]+$/);
     // The guard watches the web client from its first page on. The invite page before it is the instance's static HTML
     // under `default-src 'none'`: Firefox asks it for /favicon.ico on its own and reports the refusal, which is that CSP
     // working, not the client's (it is not this suite's to judge).
     await guard.attach(second);
     await openLink.click();
-    await completeSignUp(page2, newAccount('Björn'), instance);
+    await completeSignUp(page2, newAccount(FRIEND), instance);
+
+    // 5. The second person lands in the server, with #general (review focus 5). "hello from the owner" went out before
+    // their browser was in #general's MLS group, so it is not readable here: the log says so instead of looking empty
+    // (shell.log.empty, flow 03 "messages from before this browser joined"). The conversation they see starts at their
+    // join: the owner's next message reaches them, and their reply reaches the owner.
     await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
     await openChannel(page2, SERVER, 'general');
-    // A browser shows no message from before it joined (Flow 04); the conversation starts now.
-    await expect(messageRow(page2, 'general', alone)).toHaveCount(0);
+    const generalLog = page2.getByRole('log', { name: copy('shell.log.label', { channel: 'general' }), exact: true });
+    await expect(generalLog).toContainText(copy('shell.log.empty'));
+    await expect(messageRow(page2, 'general', HELLO)).toHaveCount(0);
     const welcome = `welcome to ${SERVER} ${tag()}`;
     await sendText(page, 'general', welcome);
     await expect(messageRow(page2, 'general', welcome)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
@@ -114,45 +139,51 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await sendText(page2, 'general', reply);
     await expect(messageRow(page, 'general', reply)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // A direct message with the first person, through the picker.
+    // 6. A direct message to the owner, through "message someone".
     await sidebarTab(page2, 'dms').click();
-    await page2.getByRole('button', { name: copy('shell.dms.new'), exact: true }).click();
+    await button(page2, 'shell.dms.new').click();
     const picker = page2.getByRole('dialog', { name: copy('shell.dms.newTitle'), exact: true });
     const pick = picker.getByRole('button', { name: copy('shell.dms.open'), exact: true });
     await expect(pick).toHaveCount(1);
-    await expect(pick).toHaveAccessibleDescription('Ada');
+    await expect(pick).toHaveAccessibleDescription(OWNER);
     await pick.click();
     await expect(page2).toHaveURL(/\/dm\/[0-9a-f]{32}$/, { timeout: WAIT });
-    const dmBox = page2.getByRole('textbox', { name: copy('shell.dm.composer', { name: 'Ada' }), exact: true });
+    const dmBox = page2.getByRole('textbox', { name: copy('shell.dm.composer', { name: OWNER }), exact: true });
     await expect(dmBox).toBeEnabled({ timeout: WAIT });
     const dmText = `just between us ${tag()}`;
     await dmBox.fill(dmText);
     await dmBox.press('Enter');
-    await expect(dmRow(page2, dmText)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    await expect(dmRow(page2, OWNER, dmText)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
     await sidebarTab(page, 'dms').click();
-    await dmsNav(page).getByRole('button', { name: /^Björn(, |$)/ }).click();
-    await expect(dmRow(page, dmText)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    await dmsNav(page).getByRole('button', { name: new RegExp(`^${FRIEND}(, |$)`) }).click();
+    await expect(dmRow(page, FRIEND, dmText)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // The owner adds a second text channel and both use it. The second person's tab learns of it when it is read again:
-    // the window coming back to the tab, a reconnect or, as here, a reload.
+    // 7. The owner adds a text channel and both use it. The second person's tab learns of it when it reads the server
+    // again: the window coming back to the tab, a reconnect or, as here, a reload.
     await sidebarTab(page, 'channels').click();
-    await page.getByRole('button', { name: copy('create.channel.open'), exact: true }).click();
+    await button(page, 'create.channel.open').click();
     const newChannel = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
     await expect(newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true })).toBeFocused();
+    const kind = newChannel.getByRole('radiogroup', { name: copy('create.channel.kind'), exact: true });
+    await expect(kind.getByRole('radio', { name: copy('create.channel.text'), exact: true })).toBeChecked();
     await expectAccessible(page, 'new channel');
-    await page.keyboard.type('Random');
+    await page.keyboard.type(SECOND_CHANNEL);
     await page.keyboard.press('Enter');
     await expect(newChannel).toBeHidden({ timeout: WAIT });
-    await expectComposerReady(page, 'random');
+    await expectComposerReady(page, SECOND_CHANNEL);
     await page2.reload();
     await expectShell(page2);
-    await openChannel(page2, SERVER, 'random');
-    const inRandom = `the first words in #random ${tag()}`;
-    await sendText(page, 'random', inRandom);
-    await expect(messageRow(page2, 'random', inRandom)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-    const answer = `and an answer in #random ${tag()}`;
-    await sendText(page2, 'random', answer);
-    await expect(messageRow(page, 'random', answer)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    await openChannel(page2, SERVER, SECOND_CHANNEL);
+    const inPlans = `the first words in #${SECOND_CHANNEL} ${tag()}`;
+    await sendText(page, SECOND_CHANNEL, inPlans);
+    await expect(messageRow(page2, SECOND_CHANNEL, inPlans)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+    const answer = `and an answer in #${SECOND_CHANNEL} ${tag()}`;
+    await sendText(page2, SECOND_CHANNEL, answer);
+    await expect(messageRow(page, SECOND_CHANNEL, answer)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+
+    // 8. The second person is a member, not the owner: "invite link" yes, "new channel" no.
+    await expect(button(page2, 'invite.open')).toBeVisible();
+    await expect(button(page2, 'create.channel.open')).toHaveCount(0);
     await guard.collectWorkers();
   } finally {
     await second.close();

@@ -423,12 +423,12 @@ export async function readRecoveryKey(page: Page): Promise<string[]> {
   return page.locator(`${CLASS.recoveryKey} li`).allInnerTexts();
 }
 
-/** The whole onboarding with the pointer; returns what the person would have written down. */
 /** A new account's details: a random username, the given display name and the suite's password. */
 export function newAccount(display = 'web tester'): Account {
   return { username: `w${randomInt(0, 0xffff_ffff).toString(16).padStart(8, '0')}`, display, password: 'e2e-password-1234', recoveryKey: [] };
 }
 
+/** The whole onboarding with the pointer; returns what the person would have written down. */
 export async function signUp(page: Page, invite: string, instanceName: string, display = 'web tester'): Promise<Account> {
   const account = newAccount(display);
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
