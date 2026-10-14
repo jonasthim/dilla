@@ -810,6 +810,66 @@ describe('membership loss: a kicked device (rule 7, INTEGRATION-SEAMS-01)', () =
     expect(d.membership).toHaveLength(4);
   });
 
+  // The admin walk's rejoin in the same tab (web3.4): the resync refused while the device was out of the server stood as
+  // not-member, and a resync is tried once per ready, so only a reload (a new ready) made the channel writable again.
+  it('a rejoin of the community re-arms the resync: removed and rejoined twice in one ready, the channel opens writable', async () => {
+    const { d, g } = await kicked();
+    for (let round = 0; round < 2; round++) {
+      if (round > 0) ds.kick(g, ME.device);
+      d.engine.requestCatchUp(g);
+      await settle();
+      expect(d.membership.at(-1)).toEqual({ group: toHex(g), status: 'not-member' });
+      ds.readmit(ME.device);
+      d.engine.rejoined(COMMUNITY);
+      await settle();
+      expect(d.membership.at(-1)).toEqual({ group: toHex(g), status: 'resyncing' });
+      expect(d.core.group(g)?.state).toBe(2);
+    }
+    expect(count('postResync')).toBe(2);
+    expect(await d.engine.openChannel({ communityId: COMMUNITY, channelId: CHANNEL, textGroupId: g })).toEqual({ groupId: g, state: 2 });
+    d.engine.send(g, 'back again');
+    await settle();
+    expect(ds.view(g).messages.map((m) => m.body)).toEqual(['back again']);
+    expect(d.membership.at(-1)).toEqual({ group: toHex(g), status: 'resyncing' });
+  });
+
+  it('a loss met only after the rejoin resyncs, though a resync was tried earlier in the same ready', async () => {
+    const { d, g } = await kicked();
+    d.engine.requestCatchUp(g);
+    await settle();
+    ds.readmit(ME.device);
+    d.engine.rejoined(COMMUNITY);
+    await settle();
+    expect(count('postResync')).toBe(1);
+    ds.kick(g, ME.device);                           // removed again, and joined again before any read meets it
+    ds.readmit(ME.device);
+    d.engine.rejoined(COMMUNITY);
+    await settle();
+    expect(count('postResync')).toBe(1);
+    d.engine.requestCatchUp(g);
+    await settle();
+    expect(count('postResync')).toBe(2);
+    expect(d.membership.at(-1)).toEqual({ group: toHex(g), status: 'resyncing' });
+    expect(d.core.group(g)?.state).toBe(2);
+  });
+
+  it('a rejoin resyncs only the lost groups of that community, and a refused one is not tried again before the next rejoin', async () => {
+    const { d, g } = await kicked();
+    d.engine.requestCatchUp(g);
+    await settle();
+    expect(count('getGroupInfo')).toBe(1);
+    d.engine.rejoined(idOf(0xc0, 99));               // another server: nothing to do here
+    await settle();
+    expect(count('getGroupInfo')).toBe(1);
+    d.engine.rejoined(COMMUNITY);                    // still refused by the ACL: tried once, reported again
+    await settle();
+    expect(count('getGroupInfo')).toBe(2);
+    expect(d.membership.at(-1)).toEqual({ group: toHex(g), status: 'not-member' });
+    d.engine.requestCatchUp(g);
+    await settle();
+    expect(count('getGroupInfo')).toBe(2);
+  });
+
   it('a refused resync after a 404 on the catch-up reports not-member once per ready', async () => {
     const { d, g } = await kicked();
     d.gateway.ready(readyInfo(ME));

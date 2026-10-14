@@ -1949,6 +1949,24 @@ describe('Controller command edge cases', () => {
     expect(w.routes.joinCommunity).toHaveBeenCalledWith(COMMUNITY, 'friends-code');
   });
 
+  // web3.4: a server joined again in the same tab (after a kick, a lifted ban or a leave) lets the engine resync its groups
+  // at once; a join the instance refused does not.
+  it('a join tells the engine the community was joined again; a refused join does not', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.getInvite.mockImplementation(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
+    w.routes.joinCommunity.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_FORBIDDEN')));
+    w.call(2, { m: 'joinCommunity', invite: 'friends-code' });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    expect(w.ret(2)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } });
+    expect(w.sync.rejoined).not.toHaveBeenCalled();
+    w.call(3, { m: 'joinCommunity', invite: 'friends-code' });
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    expect(w.ret(3)).toMatchObject({ ok: true });
+    expect(w.sync.rejoined).toHaveBeenCalledTimes(1);
+    expect(w.sync.rejoined).toHaveBeenCalledWith(COMMUNITY);
+  });
+
   it('(viii) a network failure while entering ready at boot is the error phase', async () => {
     const w = world();
     const down = new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: 'fetch failed', retryAfterMs: null, extra: [] });

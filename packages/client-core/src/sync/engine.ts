@@ -410,6 +410,28 @@ export class SyncEngine implements SyncInternals {
     }
     return resyncGroup(this, g, false);
   }
+  /**
+   * The account joined the community again (web3.4: a kick, a lifted ban or a leave, then a join in the same tab). A
+   * resync is tried once per ready, and one refused while the account was out stood as not-member until the next ready (a
+   * reload), so the community's text groups may resync again from here: each one last reported not-member, or still in
+   * state 3, resyncs at once on its lane (also after a refusal that was in flight meanwhile); a loss no read has met yet
+   * resyncs when one does.
+   */
+  rejoined(communityId: Id): void {
+    if (this.isStopped) return;
+    const community = toHex(communityId);
+    const lost = (g: Id): boolean => {
+      const row = this.row(g);
+      return row?.state === 3 || (row?.state === 2 && this.lostReported.has(toHex(g)));
+    };
+    for (const row of this.deps.core.groups()) {
+      if (row.kind !== 0 || row.communityId === null || toHex(row.communityId) !== community) continue;
+      const g = row.groupId;
+      this.resyncTried.delete(toHex(g));
+      if (!lost(g)) continue;
+      this.queues.coalesce(key(g), 'resync', async () => { if (lost(g)) await resyncGroup(this, g, true); });
+    }
+  }
   /** Runs a job on the group's lane, serialised with every apply, catch-up and commit of that group (review M7). */
   runOnGroup<T>(g: Id, job: () => Promise<T>): Promise<T> { return this.queues.run(key(g), job); }
   async pollWelcomes(): Promise<void> { await this.queues.run('w', () => welcomeStep(this)).catch(() => undefined); }
