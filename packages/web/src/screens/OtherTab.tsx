@@ -5,10 +5,12 @@ import { t } from '../strings/index.ts';
  * The tab hand-over view (L-WEB-46): the waiting tab's "Use this tab", or the old leader's paused state. `overlay`
  * covers a shell that is still leaving, so focus moves here before the composer is removed.
  */
-export function OtherTab({ onUse, onRetry = onUse, phase = 'other-tab', overlay = false }: {
-  onUse: () => void; onRetry?: () => void; phase?: 'other-tab' | 'waiting' | 'failed' | 'paused'; overlay?: boolean;
+export function OtherTab({ onUse, onRetry = onUse, onConfirm, onKeep, phase = 'other-tab', overlay = false }: {
+  onUse: () => void; onRetry?: () => void; onConfirm?: () => void; onKeep?: () => void;
+  phase?: 'other-tab' | 'waiting' | 'failed' | 'paused' | 'confirm'; overlay?: boolean;
 }): React.JSX.Element {
   return <div data-doc-state="tabs-handover" tabIndex={-1} className={overlay ? 'dw-other-tab dw-other-tab--overlay' : 'dw-other-tab'}><TabHandover phase={phase}
-    labels={{ otherTab: t('boot.otherTab.status'), use: t('tabs.use'), wait: t('tabs.wait'), failed: t('tabs.failed'), paused: t('tabs.paused'), pausedDetail: t('tabs.pausedDetail') }}
-    onUse={onUse} onRetry={onRetry} /></div>;
+    labels={{ otherTab: t('boot.otherTab.status'), use: t('tabs.use'), wait: t('tabs.wait'), failed: t('tabs.failed'), paused: t('tabs.paused'), pausedDetail: t('tabs.pausedDetail'),
+      voiceWarning: t('tabs.voiceWarning'), voiceUse: t('tabs.voiceUse'), voiceKeep: t('tabs.voiceKeep') }}
+    onUse={onUse} onRetry={onRetry} onConfirm={onConfirm} onKeep={onKeep} /></div>;
 }

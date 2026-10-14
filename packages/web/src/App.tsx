@@ -38,7 +38,10 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const account = useSlice('account');
   const diagnostics = useSlice('diagnostics');
   const settings = useSlice('settings');
-  const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused'>('other-tab');
+  const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused' | 'confirm'>('other-tab');
+  const call = useSlice('call');
+  /** Product walk I7: whether the tab that holds dilla said it is in a call (false until it says so). */
+  const [otherInCall, setOtherInCall] = useState(false);
   // The old leader's side of hand-over: 'resigning' shows the paused view over the still mounted shell and moves focus
   // into it before the shell (and its composer) leaves; 'released' follows the worker's release. One resign at a time.
   const [paused, setPaused] = useState<'no' | 'resigning' | 'released'>('no');
@@ -87,6 +90,31 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     channel.addEventListener('message', onMessage);
     return () => { channel.removeEventListener('message', onMessage); channel.close(); };
   }, [client, diagnostics?.instance, phase]);
+  // Product walk I7: the tabs say, content-free, whether this browser's dilla is in a call ({t:'voice', instance, on}),
+  // so a tab about to take over warns before it ends that call. The tab that holds dilla says it on every change and
+  // when asked ({t:'voice?', instance}); a waiting tab asks once and keeps the last answer.
+  const inCall = call !== undefined && (call.phase === 'joining' || call.phase === 'in' || call.phase === 'paused');
+  const voiceInstance = diagnostics?.instance;
+  const waitingTab = phase === 'other-tab' || paused === 'released';
+  useEffect(() => {
+    if (!voiceInstance || !/^[0-9a-f]{32}$/.test(voiceInstance) || typeof BroadcastChannel === 'undefined') return;
+    if (phase !== 'ready' && !waitingTab) return;
+    const channel = new BroadcastChannel(`dilla-voice:${voiceInstance}`);
+    const leads = phase === 'ready' && paused === 'no';
+    const say = () => channel.postMessage({ t: 'voice', instance: voiceInstance, on: inCall });
+    const onMessage = (event: MessageEvent) => {
+      const data: unknown = event.data;
+      if (typeof data !== 'object' || data === null) return;
+      const value = data as Record<string, unknown>;
+      if (value.instance !== voiceInstance) return;
+      const keys = Object.keys(value).length;
+      if (leads && value.t === 'voice?' && keys === 2) say();
+      if (!leads && value.t === 'voice' && keys === 3 && typeof value.on === 'boolean') setOtherInCall(value.on);
+    };
+    channel.addEventListener('message', onMessage);
+    if (leads) say(); else channel.postMessage({ t: 'voice?', instance: voiceInstance });
+    return () => { channel.removeEventListener('message', onMessage); channel.close(); };
+  }, [voiceInstance, phase, paused, waitingTab, inCall]);
   // C1 hand-back: after a release the worker waits for the lock again (other-tab); once it leads (the other tab handed
   // back or closed) it boots from the store, and from then on the page follows the worker's phase again: the shell when
   // it is ready, the splash or an error otherwise.
@@ -102,9 +130,11 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       setPaused('no');
     }
   }, [paused, phase]);
-  const useThisTab = () => {
+  const takeThisTab = (confirmed = false) => {
     const instance = diagnostics?.instance;
     if (!instance) { setTabPhase('failed'); return; }
+    // Product walk I7: taking over ends the other tab's call; ask first.
+    if (otherInCall && !confirmed) { setTabPhase('confirm'); return; }
     setTabPhase('waiting');
     void requestHandover(instance, name => new BroadcastChannel(name), async () => {
       await client.call({ m: 'start' });
@@ -172,12 +202,15 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   if (failed) return <Boot fatal={failed} />;
   // The paused view keeps its place after the screens, so it stays mounted (and focused) while the shell goes.
   // A paused tab can take dilla back: its hand-over request shows the waiting or failed phase in the same place.
-  const pausedPhase = paused === 'resigning' || (tabPhase !== 'waiting' && tabPhase !== 'failed') ? 'paused' : tabPhase;
+  const pausedPhase = paused === 'resigning' || (tabPhase !== 'waiting' && tabPhase !== 'failed' && tabPhase !== 'confirm') ? 'paused' : tabPhase;
+  const keepCall = () => setTabPhase('other-tab');
   const pausedView = paused !== 'no' || phase === 'paused-error'
-    ? <OtherTab phase={pausedPhase} overlay={paused === 'resigning' && phase === 'ready'} onUse={useThisTab} /> : null;
+    ? <OtherTab phase={pausedPhase} overlay={paused === 'resigning' && phase === 'ready'} onUse={() => takeThisTab()}
+      onConfirm={() => takeThisTab(true)} onKeep={keepCall} /> : null;
   let body: ReactNode;
   if (pausedView !== null) body = paused === 'resigning' && phase === 'ready' ? screenBody() : null;
-  else if (phase === 'other-tab') body = <OtherTab phase={tabPhase} onUse={useThisTab} onRetry={useThisTab} />;
+  else if (phase === 'other-tab') body = <OtherTab phase={tabPhase === 'paused' ? 'other-tab' : tabPhase} onUse={() => takeThisTab()}
+    onRetry={() => takeThisTab()} onConfirm={() => takeThisTab(true)} onKeep={keepCall} />;
   else body = screenBody();
   return <>{body}{pausedView}</>;
 

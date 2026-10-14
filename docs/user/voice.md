@@ -210,6 +210,7 @@ refused while sending in that direct message is paused.
 | "The microphone could not be connected. You can listen." | The microphone is there but could not be used; leave and join again, or pick another input device |
 | "Voice does not work in this browser" | "This browser lacks a feature dilla needs for voice. Use a current Chromium-based browser or Firefox." Safari is not supported yet |
 | "Voice is open in another tab of this browser." | Voice runs in one tab at a time: use the tab that has it, or close it |
+| "You are in a call in the other tab. Using this tab ends that call." | You pressed **Use this tab** while the other tab is in voice: **Keep the call**, or **Leave the call and use this tab** |
 | "This voice is full." | The call has as many people as the instance allows |
 | "Could not join voice. Try again." | Press **join voice** again |
 | "You were removed from voice." | Your device was taken out of the call; join again if you can still open the channel |

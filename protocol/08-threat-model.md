@@ -101,6 +101,9 @@ Stated plainly in the product's documentation and onboarding:
   `{t:'released',instance,nonce}` notice. The next leader acquires that lock and reloads its own
   store. Neither notice carries a key, token, method arguments or content; a missing release
   leaves the follower in its other-tab state.
+  On a separate channel the leader also says whether it is in a call, `{t:'voice',instance,on}` with
+  `on` a boolean, on every change and when a follower asks `{t:'voice?',instance}`, so the follower
+  warns before a takeover ends that call (2026-10-14). It names no channel, person or key.
 - Metadata is visible to the instance: membership, presence, typing, who is in voice, message
   timestamps and sizes, attachment sizes, franking tags, and in a call each participant's audio
   level and speaking activity (the RTP audio-level header extension is outside SFrame, and a silent

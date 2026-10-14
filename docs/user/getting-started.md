@@ -582,6 +582,10 @@ this tab**:
 3. If the first tab does not let go, the new one says "Close the other tab, then try again." and its button tries
    again (it is labelled **Use this tab** too).
 
+If the first tab is in a voice channel or a call, **Use this tab** asks first: "You are in a call in the other tab.
+Using this tab ends that call." **Keep the call** leaves everything as it is; **Leave the call and use this tab** moves
+the app here, and the call in the first tab ends.
+
 The paused tab shows nothing of your conversations. Its own **Use this tab** moves the app back to it the same way,
 and when the other tab closes it takes over by itself.
 
