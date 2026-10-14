@@ -1,5 +1,6 @@
 import { useId, useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { arrowIndex } from '../internal/arrow-select.ts';
+import { hex } from '../internal/hex.ts';
 import './ColorSwatches.css';
 
 export interface ColorSwatchesProps {
@@ -12,7 +13,6 @@ export interface ColorSwatchesProps {
   onChange(v: number): void;
 }
 
-const hex = (v: number): string => `#${(v & 0xffffff).toString(16).padStart(6, '0')}`;
 
 /**
  * A single choice of colour: the ARIA radio group with selection following focus. The "none" option (value 0)
@@ -46,7 +46,7 @@ export function ColorSwatches({ label, hint, value, options, noneLabel, onChange
           const none = o.value === 0;
           const style = none ? undefined : ({ '--d-swatch': hex(o.value) } as CSSProperties);
           return (
-            <button key={o.value} ref={el => { refs.current[i] = el; }} type="button" role="radio" aria-label={o.name} title={o.name}
+            <button key={i} ref={el => { refs.current[i] = el; }} type="button" role="radio" aria-label={o.name} title={o.name}
               className={`d-color-swatches__swatch${none ? ' d-color-swatches__swatch--none' : ''}`} style={style}
               aria-checked={i === checked} tabIndex={i === stop ? 0 : -1} onClick={() => { if (o.value !== value) onChange(o.value); }}>
               {i === checked ? <span className="d-color-swatches__check" aria-hidden="true">{'✓'}</span> : null}

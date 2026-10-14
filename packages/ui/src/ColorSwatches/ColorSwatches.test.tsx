@@ -92,3 +92,26 @@ describe('ColorSwatches', () => {
     await expectNoAxeViolations(container);
   });
 });
+
+describe('ColorSwatches keys and Home/End', () => {
+  it('Home and End select the first (none) and last swatch', async () => {
+    const user = userEvent.setup();
+    const onValue = vi.fn();
+    render(<Controlled initial={0x3498db} onValue={onValue} />);
+    swatch('blue').focus();
+    await user.keyboard('{End}');
+    expect(swatch('green')).toHaveFocus();
+    await user.keyboard('{Home}');
+    expect(swatch('no colour')).toHaveFocus();
+    expect(onValue.mock.calls.map(c => c[0])).toEqual([0x2ecc71, 0]);
+  });
+
+  it('renders options with a repeated value without a duplicate-key warning', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<ColorSwatches label="colour" value={0} noneLabel="no colour" onChange={() => {}}
+      options={[{ value: 0xe74c3c, name: 'red' }, { value: 0xe74c3c, name: 'red again' }]} />);
+    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+});
