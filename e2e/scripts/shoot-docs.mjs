@@ -18,8 +18,16 @@
 //      of them and shoots mira's view of each (the images are drawn by canvas in the page at run time);
 //   4. signs mira in from a fourth browser (recovery key, then username and password, then done), then
 //      shoots Devices in both browsers, notifications, badges, a DM and a DM's badge;
+//   4b. (web-3) has ada call mira in their DM and shoots the ring; shoots Settings → Voice; has björn share an audio
+//      file and shoots its player; has ada, björn and mira join the voice channel "harbour" and shoots the stage and,
+//      from #general, the dock; then all three leave;
+//   4c. (web-2c and web-3) the native peer's server "Bridge Watch": Privacy, the comparison, search, diagnostics, the
+//      peer's changed identity in the conversation, in Privacy and as a refused voice join, and a second tab;
 //   5. removes mira from the server through the owner's session and shoots the "no longer a member" state;
 //   6. closes every browser, stops the host and deletes the temporary directories.
+//
+// The host runs its in-process LiveKit on 127.0.0.1:7888 (signalling, reached through the host's /rtc proxy) and
+// 7890 (ICE/UDP); the browsers use Chromium's fake microphone and camera (e2e/media/support/fixtures.ts).
 //
 // Every name and message is fictional, and the recovery key shown belongs to an account that is
 // deleted with the host's data directory. Not part of CI: nothing runs it but a person.
@@ -33,6 +41,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { t } from '../../packages/web/src/strings/index.ts';
+import { chromiumMediaArgs, writeFixtures } from '../media/support/fixtures.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TESTHOST_BIN = path.join(REPO_ROOT, 'target', 'dilla-testhost');
@@ -42,10 +51,13 @@ const WAIT = 60_000;
 
 // L-DOC-23: the two real browser viewports of the guide's images, and the ten web-2c images, each waiting for the
 // data-doc-state its visible root carries (packages/web/src/screens: Privacy, Search, Diagnostics, OtherTab).
+// L-DOC-24 (web-3): the six voice states of docs/user/voice.md (packages/web/src/screens: voice/VoiceView, voice/Ring,
+// settings/Voice, conversation/Attachments).
 export const DOC_VIEWPORTS = { desktop: { width: 1280, height: 800 }, phone: { width: 360, height: 740 } };
 const DESKTOP = DOC_VIEWPORTS.desktop;
 const PHONE = DOC_VIEWPORTS.phone;
-export const DOC_SHOTS = ['trust-privacy', 'trust-compare', 'trust-conversation', 'trust-changed', 'search-results', 'settings-diagnostics', 'tabs-handover']
+export const DOC_SHOTS = ['trust-privacy', 'trust-compare', 'trust-conversation', 'trust-changed', 'search-results', 'settings-diagnostics', 'tabs-handover',
+  'voice-stage', 'voice-dock', 'voice-settings', 'voice-blocked', 'call-ring', 'media-player']
   .flatMap((state) => ['desktop', 'phone'].map((viewport) => ({ name: `${state}-${viewport}`, state: `[data-doc-state="${state}"]`, viewport })));
 
 /**
@@ -67,6 +79,10 @@ const CHANNELS = [
   { name: 'general', topic: 'plans, raids and everything that is not loot' },
   { name: 'loot', topic: '' },
 ];
+// web-3: the server's voice channel (kind 1, protocol/09), after the text channels.
+const VOICE = 'harbour';
+// The host's in-process LiveKit: signalling and ICE/UDP (the plan's docs:shots ports).
+const SFU = { port: 7888, udpPort: 7890 };
 const PEOPLE = {
   ada: { username: 'ada', display: 'Ada' },
   bjorn: { username: 'bjorn', display: 'Björn' },
@@ -91,6 +107,7 @@ const MAP = { name: 'saturday-map.png', width: 640, height: 400 };
 const BRIDGE = { name: 'bridge-sketch.png', width: 480, height: 320 };
 const LOOT_LIST = { name: 'loot-list.txt', mimeType: 'text/plain', text: 'rope\ntorches\nshields\nsnacks for Björn\n' };
 const PACKING_LIST = { name: 'packing-list.txt', mimeType: 'text/plain', text: 'rope x2\ntorches x6\nthe good shields\n' };
+const SHANTY = { name: 'bridge-shanty.wav', text: 'the shanty from saturday, for the long walk' };
 
 // ---------------------------------------------------------------------------------------------------
 // Arguments.
@@ -197,6 +214,7 @@ function startHost(o, dataDir) {
   const child = spawn(TESTHOST_BIN, [
     '-listen', `127.0.0.1:${o.port}`, '-control', `127.0.0.1:${o.control}`, '-core', WASI_CORE,
     '-log-level', 'warn', '-data-dir', dataDir, '-production-acl', '-web-root', WEB_ROOT,
+    '-sfu', '-sfu-port', String(SFU.port), '-sfu-udp-port', String(SFU.udpPort),
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
   const ready = new Promise((resolve, reject) => {
     let seen = '';
@@ -283,6 +301,7 @@ async function createServer(publicUrl, token) {
   for (const [position, c] of CHANNELS.entries()) {
     await api(publicUrl, token, 'POST', `/v1/communities/${community}/channels`, [0, 0, 0, null, c.name, c.topic, position, 0]);
   }
+  await api(publicUrl, token, 'POST', `/v1/communities/${community}/channels`, [1, 0, 0, null, VOICE, '', CHANNELS.length, 0]);
   const answer = await api(publicUrl, token, 'POST', `/v1/communities/${community}/invites`, [50, 24 * 3600, 0]);
   return { community, invite: answer[1] };
 }
@@ -460,18 +479,65 @@ async function focusRow(page, channel, msgId) {
   throw new Error('could not move to ' + msgId);
 }
 
+/** A 2 s, 48 kHz, 16-bit mono WAV of a short tune, made here (no audio file ships with the script). */
+function shantyWav() {
+  const rate = 48_000;
+  const notes = [392, 440, 494, 523, 494, 440, 392, 330];
+  const samples = rate * 2;
+  const per = samples / notes.length;
+  const b = Buffer.alloc(44 + samples * 2);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + samples * 2, 4); b.write('WAVE', 8);
+  b.write('fmt ', 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34);
+  b.write('data', 36); b.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i++) {
+    const at = i % per;
+    const fade = Math.min(1, at / 480, (per - at) / 480);
+    b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * notes[Math.floor(i / per)] * i) / rate) * 0.3 * fade * 32767), 44 + i * 2);
+  }
+  return b;
+}
+
+// The voice page contract, as e2e/voice/support/voice.ts reads it.
+const railServer = (page, name) => byText(page, 'navigation', 'shell.rail.label').getByRole('button', { name: new RegExp(`^${name}(, |$)`) });
+const voiceRow = (page, name) => page.getByRole('button', { name: t('voice.open', { name }), exact: true }).first();
+const stage = (page) => page.locator('.dw-voice-stage');
+const dock = (page) => page.locator('.dw-voice-dock');
+
+/** The call phase is `in` and the dock shows a connected session. */
+async function connected(page) {
+  await page.locator('[data-call-phase="in"]').first().waitFor({ timeout: WAIT });
+  await dock(page).locator('.d-voice-dock[data-phase="connected"]').waitFor({ timeout: WAIT });
+}
+
+/** Opens the voice channel `name` of the server `server`, presses `join voice` and waits for a connected call. */
+async function joinVoice(page, server, name) {
+  await railServer(page, server).click();
+  await page.getByRole('tablist', { name: t('shell.tabs.label'), exact: true }).getByRole('tab', { name: /^channels/ }).click();
+  await voiceRow(page, name).click();
+  await stage(page).getByRole('button', { name: t('voice.join'), exact: true }).click();
+  await connected(page);
+}
+
+/** Leaves through the dock's `leave` and waits until the dock is gone. */
+async function leaveVoice(page) {
+  await dock(page).getByRole('button', { name: t('voice.leave'), exact: true }).click();
+  await dock(page).waitFor({ state: 'detached', timeout: WAIT });
+}
+
 async function main(argv) {
   const o = parseArgs(argv);
   const publicUrl = `http://127.0.0.1:${o.port}`;
   const controlUrl = `http://127.0.0.1:${o.control}`;
   if (!existsSync(path.join(WEB_ROOT, 'index.html'))) throw new Error(`${WEB_ROOT} has no index.html: npm run build -w @dilla/web first`);
   if (!existsSync(WASI_CORE)) throw new Error(`${WASI_CORE} is missing: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked, then copy it there`);
-  for (const p of [o.port, o.control]) {
+  for (const p of [o.port, o.control, SFU.port]) {
     if (!(await portFree(p))) throw new Error(`127.0.0.1:${p} is in use: pick others with --port and --control`);
   }
   execFileSync(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', TESTHOST_BIN, './cmd/dilla-testhost'], { stdio: 'inherit' });
 
   const scratch = mkdtempSync(path.join(tmpdir(), 'dilla-docs-shots-'));
+  const fixtures = writeFixtures(path.join(scratch, 'media'));
   const host = startHost(o, path.join(scratch, 'host'));
   const contexts = [];
   const problems = [];
@@ -487,6 +553,8 @@ async function main(argv) {
       const context = await chromium.launchPersistentContext(path.join(scratch, `profile-${who}`), {
         headless: true, viewport: DESKTOP, deviceScaleFactor: 1, colorScheme: 'dark', reducedMotion: 'reduce',
         locale: 'en-GB', timezoneId: 'Europe/Stockholm', baseURL: publicUrl,
+        // web-3: Chromium's fake microphone and camera (a steady tone, a moving gradient), granted without a prompt.
+        args: chromiumMediaArgs(fixtures), permissions: ['microphone', 'camera'],
       });
       contexts.push(context);
       // Headless Chromium denies notifications in a persistent profile even after CDP sets "prompt".
@@ -758,13 +826,13 @@ async function main(argv) {
     await settle(mira);
     await shoot('shell-dm-badge');
 
-    // web-2c (L-DOC-23): Privacy, a contact's changed identity, search, diagnostics and the tab hand-over, each shot
-    // at both viewports once its data-doc-state is visible. The contact whose key changes is the native peer, in a
-    // server of its own that Mira joins.
-    const shootState = async (page, state, owned = null) => {
+    // Each data-doc-state shot (L-DOC-23, L-DOC-24) at both viewports once its state is visible; `before` brings the
+    // state into view after the viewport changes (a phone stacks the channel list above the conversation).
+    const shootState = async (page, state, owned = null, before = null) => {
       for (const shot of DOC_SHOTS.filter((s) => s.state === `[data-doc-state="${state}"]`)) {
         await page.setViewportSize(DOC_VIEWPORTS[shot.viewport]);
         await page.waitForSelector(shot.state, { state: 'visible', timeout: WAIT });
+        if (before !== null) await before();
         await settle(page, { keepFocus: true });
         const outFile = path.join(o.outDir, `${shot.name}.png`);
         await shootNamedState({ context: shot.viewport === 'phone' ? owned : null, page, state: shot.state, outFile });
@@ -778,8 +846,57 @@ async function main(argv) {
     };
     const closeSettings = () => byText(mira, 'button', 'settings.close').click();
 
+    // web-3 (L-DOC-24). Ada calls Mira from their DM: Mira's banner rings (30 s from its arrival, time enough for both
+    // shots); she declines, and Ada, alone in the call, leaves, which ends it.
+    await pages.ada.locator('.dw-call-strip').getByRole('button', { name: t('call.start'), exact: true }).click();
+    await connected(pages.ada);
+    const ring = mira.locator('.d-ring-banner__ring');
+    await ring.getByRole('button', { name: t('call.ring.answer'), exact: true }).waitFor({ timeout: WAIT });
+    await shootState(mira, 'call-ring');
+    await ring.getByRole('button', { name: t('call.ring.decline'), exact: true }).click();
+    await ring.waitFor({ state: 'detached', timeout: WAIT });
+    await leaveVoice(pages.ada);
+
+    await openSettings('voice');
+    await shootState(mira, 'voice-settings');
+    await closeSettings();
+
+    // Björn shares an audio file in #general; Mira presses its play button, and the browser's own player shows.
+    await attach(pages.bjorn, { name: SHANTY.name, mimeType: 'audio/wav', buffer: shantyWav() });
+    await trayReady(pages.bjorn, 1);
+    await send(pages.bjorn, 'general', SHANTY.text);
+    await confirmed(mira, 'general', SHANTY.text);
+    const player = mira.locator('[data-doc-state="media-player"]').filter({ hasText: SHANTY.name });
+    await player.getByRole('button', { name: t('media.play', { name: SHANTY.name }), exact: true }).click();
+    await player.locator('audio').waitFor({ timeout: WAIT });
+    // The play button had the focus, which shows the message's toolbar: blur it so the shot shows the player alone.
+    await shootState(mira, 'media-player', null, async () => {
+      await player.scrollIntoViewIfNeeded();
+      await mira.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+    });
+
+    // Ada and Björn join "harbour", then Mira; her stage waits until it hears both of them (data-voice-state ok).
+    await joinVoice(pages.ada, SERVER, VOICE);
+    await joinVoice(pages.bjorn, SERVER, VOICE);
+    await joinVoice(mira, SERVER, VOICE);
+    await stage(mira).locator('.d-call-tile:not([data-own])[data-voice-state="ok"]').nth(1).waitFor({ timeout: WAIT });
+    await shootState(mira, 'voice-stage');
+    // Mira reads #general and stays in voice: the dock above her user panel keeps the controls.
+    await mira.getByRole('button', { name: 'general', exact: true }).click();
+    await composer(mira, 'general').waitFor({ timeout: WAIT });
+    await shootState(mira, 'voice-dock', null, () => dock(mira).scrollIntoViewIfNeeded());
+    for (const who of [mira, pages.bjorn, pages.ada]) await leaveVoice(who);
+    // Back in #general, Ada's and Björn's tabs commit what the instance proposes there (Mira's removal, below).
+    for (const who of [pages.bjorn, pages.ada]) {
+      await who.getByRole('button', { name: 'general', exact: true }).click();
+      await composer(who, 'general').waitFor({ timeout: WAIT });
+    }
+
+    // web-2c (L-DOC-23): Privacy, a contact's changed identity, search, diagnostics and the tab hand-over, each shot
+    // at both viewports once its data-doc-state is visible. The contact whose key changes is the native peer, in a
+    // server of its own that Mira joins.
     peer = startPeer(publicUrl, controlUrl, instanceInvite);
-    const watch = (await peer.request('setup', { community: 'Bridge Watch', channel: 'watch' }));
+    const watch = (await peer.request('setup', { community: 'Bridge Watch', channel: 'watch', voice: true }));
     await peer.request('register');
     await byText(mira, 'button', 'shell.rail.join').click();
     const join = byText(mira, 'dialog', 'join.title');
@@ -853,6 +970,19 @@ async function main(argv) {
     await notMember.waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('shell-not-member');
+
+    // web-3, last: the peer's new device opens the call of "watch-voice", and Mira's join is refused before anything is
+    // posted, with a notice that names the peer. (Shot after the removal above: with the refused join first, that
+    // removal never showed as "not a member" in a run on 2026-10-14.) Mira reloads first, as the removal notice says,
+    // so no error of the lost membership is left on screen.
+    await peer.request('call_join', { actor: 'peer', channel: watch.voice_channel_id });
+    await mira.reload();
+    await byText(mira, 'navigation', 'shell.rail.label').waitFor({ timeout: WAIT });
+    await railServer(mira, 'Bridge Watch').click();
+    await mira.getByRole('tablist', { name: t('shell.tabs.label'), exact: true }).getByRole('tab', { name: /^channels/ }).click();
+    await voiceRow(mira, 'watch-voice').click();
+    await stage(mira).getByRole('button', { name: t('voice.join'), exact: true }).click();
+    await shootState(mira, 'voice-blocked');
   } finally {
     if (peer !== null) await stop(peer.child);
     for (const c of contexts) await c.close().catch(() => undefined);
