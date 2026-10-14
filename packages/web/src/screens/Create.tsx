@@ -1,7 +1,8 @@
 // Flow 07 (v0.1.0-web3.1): start a server, add a channel, invite people. Each flow is a @dilla/ui dialog driven by one
 // worker command at a time; every refusal is said by its code, never by the instance's detail text.
 import { useEffect, useRef, useState } from 'react';
-import { CreateChannel, CreateServer, InviteLink, type NewChannelKind } from '@dilla/ui';
+import { createPortal } from 'react-dom';
+import { Button, CreateChannel, CreateServer, InviteLink, type NewChannelKind } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { t } from '../strings/index.ts';
@@ -384,8 +385,14 @@ function inviteMemory(client: object): Map<string, { url: string; at: number }> 
  * switch between servers mints another (WB m3); `invite.limits` then counts the days left. The link is copied by itself
  * only when it is at hand within AUTO_COPY_MS of the open; a slower answer shows the link and copy link, which copies inside
  * the person's own press.
+ *
+ * `onMoreOptions`, when given, adds the `invite.options` button beside close once the link is shown: it closes this dialog
+ * and calls back, and the shell opens Server settings on its invites tab (flow 08). InviteLink has no slot for it, so the
+ * button is portalled into the dialog's footer.
  */
-export function InviteFlow(props: { open: boolean; community: { id: string; name: string } | null; onClose(): void }): React.JSX.Element {
+export function InviteFlow(props: {
+  open: boolean; community: { id: string; name: string } | null; onClose(): void; onMoreOptions?: (() => void) | undefined;
+}): React.JSX.Element {
   const client = useCore();
   const [state, setState] = useState<'creating' | 'ready' | 'failed'>('creating');
   const [url, setUrl] = useState('');
@@ -433,16 +440,32 @@ export function InviteFlow(props: { open: boolean; community: { id: string; name
     return () => { live = false; };
   }, [props.open, communityId, attempt, client]);
 
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const wantsOptions = props.onMoreOptions !== undefined;
+  useEffect(() => {
+    if (!props.open || state !== 'ready' || !wantsOptions) return;
+    const footer = document.querySelector('.d-invite-link')?.closest('dialog')?.querySelector('.d-dialog__footer');
+    if (!footer) return;
+    const host = document.createElement('span');
+    footer.appendChild(host);
+    setSlot(host);
+    return () => { host.remove(); setSlot(null); };
+  }, [props.open, state, wantsOptions]);
+
   const copyAgain = () => {
     setStatus('');
     void copied(url).then(ok => setStatus(t(ok ? 'invite.copied' : 'invite.blocked')));
   };
 
   return (
-    <InviteLink open={props.open} state={state} url={url} status={status} error={error} attempt={attempt}
-      limits={t('invite.limits', { uses: INVITE_MAX_USES, days, server: props.community?.name ?? '' })}
-      labels={{ title: t('invite.title', { server: props.community?.name ?? '' }), creating: t('invite.creating'), link: t('invite.link'),
-        copy: t('invite.copy'), close: t('dialog.close'), retry: t('invite.retry') }}
-      onCopy={copyAgain} onRetry={() => setAttempt(a => a + 1)} onClose={() => props.onClose()} />
+    <>
+      <InviteLink open={props.open} state={state} url={url} status={status} error={error} attempt={attempt}
+        limits={t('invite.limits', { uses: INVITE_MAX_USES, days, server: props.community?.name ?? '' })}
+        labels={{ title: t('invite.title', { server: props.community?.name ?? '' }), creating: t('invite.creating'), link: t('invite.link'),
+          copy: t('invite.copy'), close: t('dialog.close'), retry: t('invite.retry') }}
+        onCopy={copyAgain} onRetry={() => setAttempt(a => a + 1)} onClose={() => props.onClose()} />
+      {slot !== null ? createPortal(
+        <Button variant="ghost" onClick={() => { props.onClose(); props.onMoreOptions?.(); }}>{t('invite.options')}</Button>, slot) : null}
+    </>
   );
 }
