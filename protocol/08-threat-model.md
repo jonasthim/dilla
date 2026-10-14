@@ -41,8 +41,9 @@ For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–
 - Call media keys follow the group's validation: a device derives no `base_key` for a `call`
   group while any other leaf of it holds a failed, changed or pending verdict, or, for a DM's or
   group DM's call, while that DM's `text` group is send-blocked (`01-groups.md`, "Calls"). Nor
-  does it go on sending under the previous epoch's key once a newer epoch is refused: it holds the
-  call with no media until the current epoch's key is derived.
+  does it go on sending under the previous epoch's key once a newer epoch is refused: from the
+  moment it applies the new epoch's commit it holds the call with no media under the previous
+  key until the current epoch's key is derived.
 - The browser key path: in a browser call, each epoch's `base_key` leaves the core worker only as
   a transferred `ArrayBuffer` posted to the page that owns the call, which hands it, transferred
   again, to that call's media worker and zero-fills its own copy after the hand-off. It is never in
@@ -63,6 +64,11 @@ Stated plainly in the product's documentation and onboarding:
 - The instance may add any **legitimate** user's devices to groups it controls (adversary 1). This
   is visible: members see "X joined" and the leaf in the tree, and a pinned-UMK mismatch is a loud
   alert. It is not silent, but it is possible.
+- A call's previous epoch key still reaches media until each client applies the commit that
+  ended it: a removed leaf can read what members send in that window (the commit's delivery and
+  each client's hand-over to its media path), and an instance that delays or withholds the commit
+  from a member stretches it for that member. The removed leaf is told nothing new by the commit
+  itself.
 - The instance may withhold newer device-list history on first sight. Trust on first use cannot
   prove that the served signed head is the newest, so first sight is not called verified.
 - A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in

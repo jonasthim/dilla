@@ -198,7 +198,10 @@ the send block for that group alone; it does not verify the changed key or relea
   When a new epoch's key cannot be derived for any other reason (a leaf still pending its list
   after the refresh, or an error), the client holds the call the same way and also stops sending
   and playing media under the previous epoch's key, which a leaf that epoch's commit removed still
-  holds: no media at all, not only no new key, until the current epoch's key is derived.
+  holds: no media under the previous key from the moment the client applies the new epoch's
+  commit, not only no new key, until the current epoch's key is derived. Frames sent before that
+  moment (the commit's delivery and the client's own hand-over to its media path) are under the
+  previous key; `08` § Residual trust states the window.
   The call goes on for the other members either way.
 
 ## Cadence
