@@ -79,6 +79,7 @@
 | a menu item is run | its dialog takes focus as above; with no dialog, back to the button | none |
 | the member drawer opens (below 64rem) | into the drawer | none |
 | the member drawer closes with Escape or `members.close` | the `members` toggle | none |
+| the sidebar tab order | the server actions first, each its own stop: for a member `invite link`, `server settings`, `leave server`; for an owner `+ channel`, `invite link`, `server settings`; then the tabs, then the rows (a member gets five stops in all). `edit channel` and the `members` toggle live in the channel header actions | none |
 | the shell tab order, at 64rem or wider | main pane, then the member aside, then the status bar | none |
 | the member drawer is open, below 64rem | Tab stays inside the drawer; on close, focus returns to the `members` toggle (the shell passes it to AppShell, so it also holds when the opener was the page body) | none |
 | the `members` toggle changes | unchanged; the toggle's pressed state is the state | none |

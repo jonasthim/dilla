@@ -681,7 +681,7 @@ func (r *handOverFirst) Tx(ctx context.Context, fn func(store.Repository) error)
 	r.armed = false
 	r.mu.Unlock()
 	if armed {
-		if err := r.Repository.SetCommunityOwner(ctx, r.cid, r.to); err != nil {
+		if err := r.SetCommunityOwner(ctx, r.cid, r.to); err != nil {
 			return err
 		}
 	}
