@@ -34,6 +34,10 @@
 @container d-shell (max-width: 47.99rem) {
   .d-app-shell .d-app-shell__grid { grid-template-columns: var(--rail-w) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; grid-template-areas: "banner banner" "rail sidebar" "rail main" "status status"; }
   .d-app-shell .d-app-shell__sidebar { max-height: 35dvh; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
+  /* web3.4 final fix: a narrow header gives its actions (pins, edit channel, members) rows of their own rather than
+     widening the page or cutting a button; the name keeps the first row, cut with its ellipsis. */
+  .d-app-shell .d-channel-header { flex-wrap: wrap; height: auto; min-height: var(--channel-header-h); padding-block: 0.5rem; row-gap: 0.5rem; }
+  .d-app-shell .d-channel-header__actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
   /* web-3 (flow 06): the ring is fixed to the top of the shell (its containing block: the shell is a size container) and
      the grid moves down by its height, so the ring never covers the stage controls. */
   .d-app-shell .d-app-shell__ring { position: fixed; top: 0; left: 0; right: 0; z-index: 20; }
