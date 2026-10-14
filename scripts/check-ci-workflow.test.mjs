@@ -1368,7 +1368,7 @@ for (const job of WASM_JOBS) {
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job pinned to another build is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1.2', '23.1.3')))));
+    const problems = checkWorkflow(fixture(editJob(job, (b) => b.replace(WASM_LLVM_VERSION, WASM_LLVM_VERSION.replace('23.1.4', '23.1.3')))));
     assert.ok(problems.includes(STEP_RULE(job)), problems.join('\n'));
   });
   test(`a ${job} job checking another key fingerprint is reported`, () => {

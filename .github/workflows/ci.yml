@@ -109,7 +109,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
@@ -223,7 +223,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
@@ -274,7 +274,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
@@ -353,7 +353,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
