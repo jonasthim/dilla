@@ -167,6 +167,26 @@ Root cause: established above, from the source. No spec file exists beyond this 
 
 ---
 
+### Task 3: No focus ring on the composer's textarea (Jonas, 2026-10-14)
+
+Jonas asked for no `:focus-visible` ring on `<textarea class="d-composer__input">`. The box around it already shows focus: `.d-composer__box:focus-within { border-color: var(--accent); }` (packages/ui/src/Composer/Composer.css:8). So focus stays visible (WCAG 2.4.7) through the box border. The ring comes from the global `.d-root :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }` (packages/ui/src/styles/base.css:21), whose specificity is (0,2,0).
+
+**Files:**
+- Modify: `packages/ui/src/Composer/Composer.css`
+- Test: whichever exists of a Composer test (`packages/ui/src/Composer/*.test.tsx`) or an e2e/axe check that reads computed styles. If none can read computed CSS, add a Playwright assertion to an existing web e2e spec that focuses the composer by keyboard.
+
+- [ ] **Step 1: Write the failing test.**
+  1. Focus the composer textarea by keyboard (Tab).
+  2. Assert that its computed `outline-style` is `none`.
+  3. Assert that the `.d-composer__box` computed `border-color` equals the resolved `--accent`.
+
+  The test fails on main, because the outline is the focus ring.
+- [ ] **Step 2: Implement.** Add `.d-composer .d-composer__input:focus-visible { outline: none; }` to Composer.css. At (0,3,0) it beats the global rule regardless of stylesheet order. Touch no other element's focus style.
+- [ ] **Step 3: Run the test, the ui package's tests and the Composer story's axe check (if any).** All must pass.
+- [ ] **Step 4: Commit.** `style(ui): the composer's textarea shows focus through its box, not a ring`.
+
+---
+
 ## After the tasks
 
 - Whole-branch review on the most capable model. It includes a product walk from an EMPTY instance on dilla-testhost:
