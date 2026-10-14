@@ -435,6 +435,7 @@ export const en = {
   'voice.blockedChanged': '{name}’s identity changed. Compare safety numbers in Privacy before joining.',
   'voice.paused': '{name}’s identity changed, so this call is paused for you: nothing you say is sent and nothing is played. Compare safety numbers in Privacy to continue, or wait until {name} leaves.',
   'voice.pausedAction': 'compare safety numbers',
+  'voice.held': 'A device in this call could not be checked yet, so this call is paused for you: nothing you say is sent and nothing is played. It continues once the check is done.',
   'voice.resumed': 'The call continues.',
   'voice.dock.paused': 'paused in {where}',
   'voice.removed': 'You were removed from voice.',

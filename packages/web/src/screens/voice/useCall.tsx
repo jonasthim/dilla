@@ -109,6 +109,8 @@ export function useCall(o: UseCallOptions): CallView {
   const starting = useRef(false);
   const mounted = useRef(true);
   const paused = useRef(false);
+  /** The current hold (WB security I1) already dropped the session's media keys. */
+  const keysDropped = useRef(false);
   const module = useRef<VoiceModule | null>(null);
   // The join button the unsupported dialog was opened from: focus returns there when it closes (flow 06).
   const opener = useRef<HTMLElement | null>(null);
@@ -124,6 +126,7 @@ export function useCall(o: UseCallOptions): CallView {
     sessionRef.current = null;
     channelRef.current = null;
     paused.current = false;
+    keysDropped.current = false;
     setSession(null);
     setState(null);
     setChannelId(null);
@@ -292,7 +295,14 @@ export function useCall(o: UseCallOptions): CallView {
         setPauseFocusPending(true);
         safely(s, () => s.setPaused(true));
       }
+      // WB security I1: a pause that is not a changed identity is the hold after a refused rekey. The page's keys are an
+      // epoch a removed leaf may still hold, so they go at once (once per hold); the next epoch's key ends it.
+      if (now?.error?.code !== 'E_UMK_CHANGED' && !keysDropped.current) {
+        keysDropped.current = true;
+        safely(s, () => { s.dropKeys(); return Promise.resolve(); });
+      }
     } else if (phase === 'in') {
+      keysDropped.current = false;
       if (paused.current) {
         paused.current = false;
         setPauseFocusPending(false);

@@ -130,6 +130,7 @@ export class FakeSession implements PageCall {
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
+  readonly dropKeys = vi.fn(() => { this.log.push('dropKeys'); });
   // As the real session: a person's leave posts callLeave with its reason; a block or removal posts 'user' after stopping.
   readonly leave = vi.fn((reason: 'user' | 'pagehide' | 'switch' | 'blocked' | 'removed') => {
     this.log.push(`leave:${reason}`);

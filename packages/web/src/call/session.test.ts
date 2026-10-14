@@ -106,6 +106,7 @@ function fakes(o: Options = {}) {
     installs,
     installEpoch: vi.fn(async (k: EpochKeys) => { installs.push(k); }),
     dispose: vi.fn(() => { order.push('manager.dispose'); }),
+    clearKeys: vi.fn(() => { order.push('manager.clearKeys'); }),
     verifiedIdentities: vi.fn(async () => new Set(verified)),
     stats: vi.fn(async () => ({ encrypted: {}, dropped: {} })),
   };
@@ -406,6 +407,25 @@ describe('the page call session (L-WEB-50)', () => {
     expect(mic.muted).toBe(false);
     expect(call.state.camera).toBe(false);
     expect(call.state.paused).toBe(false);
+  });
+
+  // WB security I1: the hold after a refused rekey drops the media keys, so nothing more is sent under the old
+  // epoch; a key held from before the drop is wiped, and the next epoch's key installs when the hold ends.
+  it('dropKeys clears every media key at once and wipes a held key; the next epoch installs on resume', async () => {
+    const f = fakes();
+    const call = await start(f);
+    await call.setPaused(true);
+    const held = keysFor(2n);
+    f.pushKeys(callId, held);
+    call.dropKeys();
+    expect(f.manager.clearKeys).toHaveBeenCalledTimes(1);
+    f.pushKeys(callId, keysFor(3n));
+    expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n]);
+    await call.setPaused(false);
+    expect(f.manager.installs.map((k) => k.epoch)).toEqual([1n, 3n]);
+    await call.leave('user');
+    call.dropKeys();
+    expect(f.manager.clearKeys).toHaveBeenCalledTimes(1);
   });
 
   it('a muted person stays muted after resume, and camera or screen cannot start while paused', async () => {

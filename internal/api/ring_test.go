@@ -408,6 +408,46 @@ func TestDeclineByANonParticipantIsNotFound(t *testing.T) {
 	h.requireNoFrame(t, h.alice.devices[0])
 }
 
+// WB security m2: a decline on a deleted channel answers like an unknown call id, as the read routes
+// do. Deleting a channel ends its calls today; this pins the route's own check in case that ever
+// stops being synchronous (the channel row is marked deleted here without ending the call).
+func TestDeclineOnADeletedChannelIsNotFound(t *testing.T) {
+	h := newDMCallHost(t)
+	call := h.startCall(t, h.alice)
+	expires := h.lastFrame(t, h.bob.devices[0]).Expires
+	if err := h.e.Repo.DeleteChannel(t.Context(), h.dm, h.e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("DeleteChannel: %v", err)
+	}
+	status, known := h.decline(t, call, h.bob, expires)
+	if status != http.StatusNotFound || h.e.ErrCode(known) != "E_NOT_FOUND" {
+		t.Fatalf("a decline on a deleted DM = %d %x, want 404 E_NOT_FOUND", status, known)
+	}
+	if _, unknown := h.decline(t, id.New(), h.bob, expires); !bytes.Equal(known, unknown) {
+		t.Fatalf("a decline on a deleted DM answers %x, a random call %x: they must be identical", known, unknown)
+	}
+	h.requireNoFrame(t, h.alice.devices[0])
+
+	// A community voice channel deleted under its call: 404 like an unknown id, not the 400 that
+	// would confirm a call of a voice channel exists there.
+	e, ch, tok, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
+	calls.WithRinger(api.NewRinger(&ringGW{devices: map[id.ID][]id.ID{}, frames: map[id.ID][]deviceFrame{}}, e.Clk, slog.New(slog.DiscardHandler)))
+	_, _, bobTok := joinedMember(t, e, ch, group, "bob")
+	seedLeaf(t, e, group, deviceOf(t, e, tok), 3, nil)
+	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if status != http.StatusCreated {
+		t.Fatalf("start = %d %s", status, e.ErrCode(body))
+	}
+	voice := decodeCall(t, body).CallID
+	if err := e.Repo.DeleteChannel(t.Context(), ch, e.Clk.Now().Unix()); err != nil {
+		t.Fatalf("DeleteChannel: %v", err)
+	}
+	status, deleted := e.Do(http.MethodPost, "/v1/calls/"+voice.String()+"/decline", bobTok, []any{uint64(1)})
+	_, random := e.Do(http.MethodPost, "/v1/calls/"+id.New().String()+"/decline", bobTok, []any{uint64(1)})
+	if status != http.StatusNotFound || !bytes.Equal(deleted, random) {
+		t.Fatalf("a decline in a deleted voice channel = %d %x, want the unknown id's answer %x", status, deleted, random)
+	}
+}
+
 func TestACommunityVoiceCallNeverRings(t *testing.T) {
 	e, ch, tok, group, _, calls := callEnvCalls(t, api.CallsConfig{LiveKitURL: testLiveKitURL})
 	gw := &ringGW{devices: map[id.ID][]id.ID{}, frames: map[id.ID][]deviceFrame{}}

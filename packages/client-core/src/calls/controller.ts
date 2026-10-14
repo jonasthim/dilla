@@ -253,8 +253,6 @@ export class CallController {
       media = core.callMediaEpoch(live.groupId);
     } catch (e) {
       const code = e instanceof CoreError ? e.code : 'E_INTERNAL';
-      // A pending leaf: no key until a refresh validates it (the refresh ends in onTrust, which keys then).
-      if (code === 'E_DEVICE_LIST_STALE') { if (fromEpoch) this.deps.track(this.deps.refreshLeaves(live.groupId)); return; }
       // RV-3: a changed identity pauses this device; it stays in the call group and the room.
       if (code === 'E_UMK_CHANGED') {
         const text = live.dm ? this.textGroup(live.channel) : null;
@@ -266,6 +264,18 @@ export class CallController {
       if (isTrustBlock(code)) {
         this.setState({ ...this.state, phase: 'blocked', error: this.deps.errorOf(e), changedUser: null });
         this.deps.track(this.leave(true));
+        return;
+      }
+      // A pending leaf: no key until a refresh validates it (the refresh ends in onTrust, which keys then).
+      if (code === 'E_DEVICE_LIST_STALE' && fromEpoch) this.deps.track(this.deps.refreshLeaves(live.groupId));
+      // WB security I1: once the group has moved past the epoch whose key the page holds, that key is one a leaf the new
+      // epoch's commit removed still holds. So a new epoch the gate refuses as pending, or for any other reason (an
+      // unexpected core error fails closed), holds the call: phase paused with no changed contact and the refusal's
+      // code, so the page sends and plays nothing and drops its keys, until the current epoch's key is posted (setIn ends
+      // it; that epoch is always newer than the page's). Within the epoch already keyed, the page's key is that epoch's
+      // own, which only leaves the gate passed hold: nothing changes there.
+      if (fromEpoch || this.epochMoved(live)) {
+        this.setState({ ...this.state, phase: 'paused', error: this.deps.errorOf(e), changedUser: null });
       }
       return;
     }
@@ -278,6 +288,11 @@ export class CallController {
     live.postedEpoch = media.epoch;
     this.postKeys(live, media);
     this.setIn(media);
+  }
+
+  /** The call group's epoch is not the one whose key was posted last (a read that fails answers yes: fail closed). */
+  private epochMoved(live: Live): boolean {
+    try { return this.deps.core()?.groupRow(live.groupId)?.epoch !== live.postedEpoch; } catch { return true; }
   }
 
   private postKeys(live: Live, media: CallMediaEpoch): void {

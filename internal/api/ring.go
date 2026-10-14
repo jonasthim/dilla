@@ -449,7 +449,9 @@ func (h *Calls) decline(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if !bits.Has(PermViewChannel) || row.Ended != nil {
+	// WB security m2: a deleted channel answers like an unknown id, as the read routes do
+	// (viewableCallChannel), whether or not the resolver already refused it.
+	if !bits.Has(PermViewChannel) || row.Ended != nil || ch.DeletedAt != nil {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such object"))
 		return
 	}

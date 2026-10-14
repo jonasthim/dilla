@@ -81,6 +81,10 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
   const slice = v.slice;
   if (slice !== undefined && slice.channelId === channelId) {
     const name = slice.changedUser !== null ? userName(slice.changedUser, v.members, v.trust) : null;
+    if (slice.phase === 'paused' && slice.error?.code !== 'E_UMK_CHANGED') {
+      // WB security I1: the hold after a refused rekey (a device of the call not checked yet); nothing to compare.
+      return { kind: 'paused', text: t('voice.held'), focusOnce: false, action: null };
+    }
     if (slice.phase === 'paused') {
       const changed = slice.changedUser;
       return { kind: 'paused', text: t('voice.paused', { name: name ?? '' }), focusOnce: v.call.pauseFocusPending,

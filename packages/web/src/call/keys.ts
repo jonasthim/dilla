@@ -32,6 +32,9 @@ export interface KeyRelay {
   /** RV-3: while paused nothing is installed; only the newest key is held (the worker posts the key of the epoch
    *  that ends a pause just before the phase slice that ends it), and resuming installs it. */
   setPaused(on: boolean): void;
+  /** WB security I1: the copy held for the end of a pause is zero-filled (the media keys are being dropped); later
+   *  keys are taken as before. */
+  dropHeld(): void;
   /** Zero-fills every held copy; nothing is installed afterwards. */
   close(): void;
 }
@@ -187,6 +190,10 @@ export function createKeyRelay(opts: KeyRelayOptions = {}): KeyRelay {
       held = null;
       if (installer === null) { held = copy; return; }
       install(copy);
+    },
+    dropHeld() {
+      wipe(held);
+      held = null;
     },
     close() {
       phase = 'closed';

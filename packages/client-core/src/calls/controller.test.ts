@@ -1464,4 +1464,59 @@ describe('a send block that comes or goes (integration cards)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// Whole-branch fix wave (wb-security.md I1, wb-client.md I4 and m1-m7, task-10-fix-review.md N1 and N2).
+// ---------------------------------------------------------------------------------------------
+
+describe('a refused mid-call rekey holds sending (wb-security I1)', () => {
+  // Attacker: the instance plus one colluding member K. The instance keeps a leaf pending (it withholds the list), then
+  // a member commits K's Remove. The new epoch gets no key, and the page must not go on sending under the previous
+  // epoch's key, which K's removed leaf still holds: the call holds (phase paused, no changed contact) until a key for
+  // the new epoch is posted.
+  it('a commit to a new epoch with a pending leaf holds the call, posts no key, and resumes once the leaf validates', async () => {
+    const w = await joined();
+    // The instance withholds carol's list (her new device's leaf stays pending), and a commit moves the epoch on.
+    const lists = (w.ds as unknown as { lists: Map<string, unknown> }).lists;
+    const carol = lists.get(toHex(THIRD.user));
+    lists.delete(toHex(THIRD.user));
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }, { leafIndex: 2, user: THIRD.user, device: THIRD.device }]);
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.server.routes()).toContain('GET device list');
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', changedUser: null, error: { code: 'E_DEVICE_LIST_STALE' }, epoch: w.result.epoch });
+    expect(w.server.routes()).not.toContain('POST proposal');
+    // A trust refresh in the meantime keeps the hold.
+    await w.call({ m: 'refreshTrust' });
+    await settled(w);
+    expect(w.slice('call').phase).toBe('paused');
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    // The list is served again: the next epoch's refresh reads it, that epoch's key is posted, and the call goes on.
+    lists.set(toHex(THIRD.user), carol);
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w, 8);
+    expect(keysPosted(w).map((k) => k.epoch)).toEqual([(BigInt(w.result.epoch) + 2n).toString()]);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', error: null, changedUser: null });
+  });
+
+  it('any other core refusal of a new epoch fails closed: the call holds, no key, no leave, no rotation', async () => {
+    const w = await joined();
+    const real = w.model.callMediaEpoch.bind(w.model);
+    w.model.callMediaEpoch = (): never => { throw new CoreError('E_CORE_STATE', 'unexpected'); };
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', changedUser: null, error: { code: 'E_CORE_STATE' } });
+    expect(w.server.routes()).not.toContain('POST proposal');
+    await w.clock.advance(3_600_000);
+    await settled(w);
+    expect(w.server.routes()).not.toContain('POST commit');
+    w.model.callMediaEpoch = real;
+    await w.call({ m: 'refreshTrust' });
+    await settled(w, 8);
+    expect(keysPosted(w)).toHaveLength(1);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', error: null });
+  });
+});
+
 export { fromHex };

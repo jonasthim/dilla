@@ -293,6 +293,16 @@ describe('DillaE2EEManager (interfaces.md c.4)', () => {
     await expect(p).resolves.toBe(data);
   });
 
+  // WB security I1: a call held after a refused rekey drops every media key at once; the next epoch installs as usual.
+  it('clearKeys posts clearKeys, forgets the rosters, and a later epoch installs', async () => {
+    const { w, m } = setup();
+    await install(w, m, keys(5n));
+    m.clearKeys();
+    expect(w.last('clearKeys')).toBeDefined();
+    await install(w, m, keys(6n));
+    expect(w.last('installEpoch')?.msg.epoch).toBe(6n);
+  });
+
   it('dispose posts clearKeys and removes every listener', () => {
     const { w, m, room } = setup();
     m.on('participantEncryptionStatusChanged', () => undefined);

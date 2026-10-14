@@ -476,6 +476,38 @@ describe('verified decrypts are counted per mapped device (N6)', () => {
   });
 });
 
+// WB security I1: a call held after a refused mid-call rekey drops its keys (the page's dropKeys → clearKeys). A leaf the
+// refused epoch's commit removed still holds the old epoch's key, so after the drop not one frame of any slot may be
+// encrypted under it; the next epoch's key restarts the sender under that epoch only.
+describe('nothing is encrypted under the old epoch after the hold drops the keys (WB security I1)', () => {
+  it('drops every frame after clearKeys, and encrypts only under the next installed epoch', () => {
+    const { p, cipher, posted } = setup();
+    install(p, 7n);
+    const mic = new Sink();
+    const cam = new Sink();
+    const hm = p.addTrack(enc(0), mic);
+    const hc = p.addTrack(enc(1), cam);
+    p.frame(hm, frame([0x01], 'audio/opus'));
+    p.frame(hc, frame([0x02], 'video/VP8'));
+    expect(p.stats.encrypted['7']).toEqual({ 0: 1, 1: 1, 2: 0, 3: 0 });
+    const before = cipher.encrypts.length;
+    p.handle({ kind: 'clearKeys' });
+    for (let i = 0; i < 5; i++) {
+      p.frame(hm, frame([0x10 + i], 'audio/opus'));
+      p.frame(hc, frame([0x20 + i], 'video/VP8'));
+    }
+    expect(cipher.encrypts.length).toBe(before);
+    expect(mic.out).toHaveLength(1);
+    expect(cam.out).toHaveLength(1);
+    expect(p.stats.encrypted['7']).toEqual({ 0: 1, 1: 1, 2: 0, 3: 0 });
+    expect(posted.some((m) => m.kind === 'error' && m.code === 'E_NO_EPOCH')).toBe(true);
+    install(p, 8n);
+    p.frame(hm, frame([0x30], 'audio/opus'));
+    expect(p.stats.encrypted['7']).toEqual({ 0: 1, 1: 1, 2: 0, 3: 0 });
+    expect(p.stats.encrypted['8']).toEqual({ 0: 1, 1: 0, 2: 0, 3: 0 });
+  });
+});
+
 describe('worker-side key zeroing (I3: review mutant M9, M4)', () => {
   it('zeroes the transferred key and every copy it handed to the cipher, after the cipher saw the real key', () => {
     const { p, cipher } = setup();

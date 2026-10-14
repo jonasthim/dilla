@@ -59,6 +59,9 @@ export interface PageCall {
   setVolume(userId: string, volume: number): void;
   /** RV-3: driven by the call slice’s phase 'paused'. */
   setPaused(on: boolean): Promise<void>;
+  /** WB security I1: the hold after a refused rekey (phase paused, not a changed identity): every media key goes at
+   *  once, so nothing more is sent under the epoch the page held; the next epoch’s key installs on resume. */
+  dropKeys(): void;
   pushToTalk(down: boolean): void;
   /** Switches the input mode during the call: push to talk closes the microphone at once, until the key is held. */
   setMode(mode: 'vad' | 'ptt'): void;
@@ -691,6 +694,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
             await shareOffIfIdle();
           });
         }
+      },
+      dropKeys() {
+        if (ended) return;
+        relay.dropHeld();
+        try { manager.clearKeys(); } catch { /* a failed or disposed manager holds no keys */ }
       },
       pushToTalk(down) {
         if (ended || mode !== 'ptt') return;

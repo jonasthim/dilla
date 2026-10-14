@@ -195,6 +195,10 @@ the send block for that group alone; it does not verify the changed key or relea
   `Remove` proposal, as above); a leaf whose verdict becomes changed (a member's identity changed
   and is not yet verified) makes the client pause instead: it derives, sends and installs no key
   for that call and stays a member, until the change is verified or that leaf leaves the group.
+  When a new epoch's key cannot be derived for any other reason (a leaf still pending its list
+  after the refresh, or an error), the client holds the call the same way and also stops sending
+  and playing media under the previous epoch's key, which a leaf that epoch's commit removed still
+  holds: no media at all, not only no new key, until the current epoch's key is derived.
   The call goes on for the other members either way.
 
 ## Cadence

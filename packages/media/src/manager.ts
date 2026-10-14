@@ -295,6 +295,18 @@ export class DillaE2EEManager extends EventEmitter implements BaseE2EEManager {
     this.refreshRemoteStatus();
   }
 
+  /**
+   * WB security I1 (web-3): every epoch's key goes at once, so nothing more is encrypted or decrypted under them (a call
+   * held after a refused rekey: a leaf the refused epoch's commit removed still holds the old key). The worker keeps its
+   * transforms; a later installEpoch starts the sender again at that newer epoch (N1 holds across the clear).
+   */
+  clearKeys(): void {
+    this.assertUsable();
+    this.post({ kind: 'clearKeys' });
+    this.rosters.clear();
+    this.refreshRemoteStatus();
+  }
+
   stats(): Promise<DillaMediaStats> {
     try {
       this.assertUsable();

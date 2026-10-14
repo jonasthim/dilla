@@ -40,7 +40,9 @@ For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–
 - Cryptographic device revocation: signed device lists (`03-identity.md`).
 - Call media keys follow the group's validation: a device derives no `base_key` for a `call`
   group while any other leaf of it holds a failed, changed or pending verdict, or, for a DM's or
-  group DM's call, while that DM's `text` group is send-blocked (`01-groups.md`, "Calls").
+  group DM's call, while that DM's `text` group is send-blocked (`01-groups.md`, "Calls"). Nor
+  does it go on sending under the previous epoch's key once a newer epoch is refused: it holds the
+  call with no media until the current epoch's key is derived.
 - The browser key path: in a browser call, each epoch's `base_key` leaves the core worker only as
   a transferred `ArrayBuffer` posted to the page that owns the call, which hands it, transferred
   again, to that call's media worker and zero-fills its own copy after the hand-off. It is never in

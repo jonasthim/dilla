@@ -100,6 +100,8 @@ export interface CallJoinResult { callId: string; groupId: string; livekitUrl: s
 export type CallStatsReport = [candidateType: number, relayProtocol: number | null, rttMs: number,
   fractionLostPermille: number, decryptFailures: number, framesEncrypted: number];
 // 'paused' (RV-3, Jonas): a mid-call identity change (E_UMK_CHANGED); still in the group and the room, no keys sent or installed.
+// Also the hold of WB security I1: a new epoch the gate refused for any other reason (error: E_DEVICE_LIST_STALE or the
+// core's code, changedUser null); the page sends and plays nothing and drops its media keys until the next key arrives.
 export type CallPhase = 'idle' | 'joining' | 'in' | 'paused' | 'leaving' | 'blocked' | 'removed' | 'failed';
 export interface CallState { phase: CallPhase; channelId: string | null; callId: string | null; epoch: string | null;
   code: string | null; error: WorkerError | null; roster: { userId: string; deviceId: string; leaf: number }[];

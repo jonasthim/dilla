@@ -172,9 +172,11 @@ const CALL_ROSTER_MAX = 1024;
  * decodes. The facade's own Vec is already zeroized (L-WASM-34); this clears the copy wasm-bindgen handed out.
  */
 export function readCallMediaEpoch(bytes: Uint8Array): CallMediaEpoch {
+  // WB security m1: the decoded key copy is zero-filled on every path, an error after it was decoded included.
+  let key: Uint8Array | null = null;
   try {
     const a = arr(decode(bytes), 5);
-    const key = bin(field(a, 1), 16);
+    key = bin(field(a, 1), 16);
     const roster = arr(field(a, 3));
     if (roster.length > CALL_ROSTER_MAX) throw new CborError('E_CBOR_SHAPE', 'roster limit');
     const code = str(field(a, 4));
@@ -185,12 +187,12 @@ export function readCallMediaEpoch(bytes: Uint8Array): CallMediaEpoch {
       code,
     };
     new Uint8Array(out.baseKey).set(key);
-    key.fill(0);
     return out;
   } catch (err) {
     if (err instanceof CborError || err instanceof RangeError) throw new CoreError('E_CORE_DECODE', `callMediaEpoch: ${err.message}`);
     throw err;
   } finally {
+    key?.fill(0);
     bytes.fill(0);
   }
 }
