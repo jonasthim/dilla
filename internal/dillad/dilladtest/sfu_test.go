@@ -118,6 +118,41 @@ func TestTheHostServesMetricsToItsScrapeTokenOnly(t *testing.T) {
 	}
 }
 
+// Task-10 review M9: a webhook never reaches an instance that is shutting down. Close stops the SFU and its receiver
+// first and leaves no current instance; a Restore drops the current instance before it shuts the old one down, so a
+// restore that fails after the shutdown leaves none either (events in that window are dropped, not handed to a closed
+// repository).
+func TestNoWebhookReachesAnInstanceThatIsShuttingDown(t *testing.T) {
+	h := sfuHost(t, false)
+	if h.current.Load() == nil {
+		t.Fatal("a running host has no current instance")
+	}
+	path, err := h.snapshotPath("broken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not an archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Restore(t.Context(), "broken"); err == nil {
+		t.Fatal("a restore of a broken archive succeeded")
+	}
+	if h.current.Load() != nil {
+		t.Fatal("a restore that failed after the shutdown left the shut-down instance current")
+	}
+
+	closed := sfuHost(t, false)
+	if err := closed.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if closed.current.Load() != nil {
+		t.Fatal("a closed host still names a current instance")
+	}
+}
+
 // The YAML the harness SFU renders carries the two settings Firefox needs: node_ip on loopback
 // and advertise_internal_ip (G35 run A1), never sfu.DefaultConfig()'s AdvertiseInternalIP false.
 func TestTheTestSFUAdvertisesInternalAddresses(t *testing.T) {

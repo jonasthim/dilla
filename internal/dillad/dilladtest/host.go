@@ -713,6 +713,9 @@ func (h *Host) Restore(ctx context.Context, name string) error {
 	defer func() { _ = archive.Close() }()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// No webhook reaches the instance being shut down: until the restored one is stored, events are dropped (task-10
+	// review M9).
+	h.current.Store(nil)
 	if err := h.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("dilladtest: stop the instance for the restore: %w", err)
 	}
@@ -728,12 +731,14 @@ func (h *Host) Restore(ctx context.Context, name string) error {
 	return nil
 }
 
-// Close stops the server and, when NewHost compiled it, the wasm runtime.
+// Close stops the SFU and its webhook receiver, then the server and, when NewHost compiled it, the wasm runtime: no
+// webhook reaches the instance as it shuts down (task-10 review M9).
 func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	err := h.server.Shutdown(ctx)
 	h.stopSFU(ctx)
+	h.current.Store(nil)
+	err := h.server.Shutdown(ctx)
 	h.closeWasm(ctx)
 	return err
 }
