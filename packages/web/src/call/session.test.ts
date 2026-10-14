@@ -1251,12 +1251,15 @@ describe('web3.3: remote call audio plays (attach, gains, autoplay, detach)', ()
     expect(setAfterAttach(bob, track, 0.5)).toBe(true);
   });
 
-  it('Review Focus 3: the browser holding audio back sets audioBlocked, at connect and on audioPlaybackChanged', async () => {
+  // Fix round 2 (Minor 3): the room’s canPlaybackAudio speaks only where the session has no AudioContext of its own.
+  it('Review Focus 3: without a session context, the room holding audio back sets audioBlocked, at connect and on audioPlaybackChanged', async () => {
     const f = fakes();
+    f.deps.audioContext = () => null;
     f.room.canPlaybackAudio = false;
     const call = await start(f);
     expect(call.state.audioBlocked).toBe(true);
     const g = fakes();
+    g.deps.audioContext = () => null;
     const other = await start(g);
     expect(other.state.audioBlocked).toBe(false);
     const seen = vi.fn();
@@ -1270,8 +1273,9 @@ describe('web3.3: remote call audio plays (attach, gains, autoplay, detach)', ()
     expect(other.state.audioBlocked).toBe(false);
   });
 
-  it('startAudio() asks the room to start audio, then reads canPlaybackAudio again', async () => {
+  it('without a session context, startAudio() asks the room to start audio, then reads canPlaybackAudio again', async () => {
     const f = fakes();
+    f.deps.audioContext = () => null;
     f.room.canPlaybackAudio = false;
     const call = await start(f);
     f.room.startAudio.mockImplementation(async () => { f.room.canPlaybackAudio = true; });
@@ -1280,8 +1284,9 @@ describe('web3.3: remote call audio plays (attach, gains, autoplay, detach)', ()
     expect(call.state.audioBlocked).toBe(false);
   });
 
-  it('a refused startAudio() leaves audioBlocked true and does not throw', async () => {
+  it('without a session context, a refused startAudio() leaves audioBlocked true and does not throw', async () => {
     const f = fakes();
+    f.deps.audioContext = () => null;
     f.room.canPlaybackAudio = false;
     const call = await start(f);
     f.room.startAudio.mockRejectedValue(new Error('NotAllowedError'));
@@ -1427,7 +1432,7 @@ describe('web3.3 fix round 1: the session’s AudioContext (I1, M2), no blip whi
     expect(call.state.phase).toBe('connected');
   });
 
-  it('M2: audioBlocked follows the context: suspended at connect, running on statechange, and the room’s canPlaybackAudio too', async () => {
+  it('M2: audioBlocked follows the context: suspended at connect, running on statechange', async () => {
     const f = fakes();
     f.audio.contextState = 'suspended';
     const call = await start(f);
@@ -1438,10 +1443,6 @@ describe('web3.3 fix round 1: the session’s AudioContext (I1, M2), no blip whi
     expect(call.state.audioBlocked).toBe(false);
     expect(seen).toHaveBeenCalled();
     f.contexts[0].to('suspended');
-    expect(call.state.audioBlocked).toBe(true);
-    f.contexts[0].to('running');
-    f.room.canPlaybackAudio = false;
-    f.room.emit('audioPlaybackChanged', false);
     expect(call.state.audioBlocked).toBe(true);
   });
 
@@ -1599,5 +1600,99 @@ describe('web3.3 fix round 1: the session’s AudioContext (I1, M2), no blip whi
     expect(track.attach).not.toHaveBeenCalled();
     expect(elementsIn(f.audioHost)).toEqual([]);
     expect(f.contexts[0].state).toBe('closed');
+  });
+});
+
+describe('web3.3 fix round 2: the passed context, newcomers before the roster, the lingering line, a failed attach', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+  const elementsIn = (host: HTMLElement) => [...host.querySelectorAll('audio, video')];
+
+  it('Minor 1: a context passed in (made in the press) is the one used and closed; none of its own is made', async () => {
+    const f = fakes();
+    const passed = new FakeAudioContext();
+    const call = await start(f, { audioContext: passed as unknown as AudioContext, output: 'spk' });
+    expect(f.contexts).toHaveLength(0);
+    expect(f.joinOptions?.roomOptions?.webAudioMix).toEqual({ audioContext: passed });
+    expect(passed.setSinkId).toHaveBeenCalledWith('spk');
+    await call.leave('user');
+    expect(passed.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('Minor 1: a passed context is closed by a start that fails', async () => {
+    const f = fakes({ joinCallError: new Error('E_CALL_IN_OTHER_TAB') });
+    const passed = new FakeAudioContext();
+    await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, audioContext: passed as unknown as AudioContext }))
+      .rejects.toThrow();
+    expect(passed.state).toBe('closed');
+  });
+
+  it('Minor 2: a track subscribed before its device is in the roster waits; muted by its volume it never plays; at 50 it attaches once', async () => {
+    const f = fakes();
+    const call = await start(f, { volumes: { [ALICE_USER]: 0 } });
+    const alice = f.addRemote(ALICE);
+    const { track } = f.subscribeTrack(alice, 'microphone');
+    // Not in the roster yet: its gain is unknown, so it is not attached at full gain.
+    expect(track.attach).not.toHaveBeenCalled();
+    f.pushKeys(callId, keysFor(2n, [...BASE_ROSTER, { leaf: 3, deviceId: ALICE, userId: ALICE_USER }]));
+    await flush(); // the roster moves once the media worker holds the epoch’s key
+    // In the roster at volume 0: still nothing.
+    expect(track.attach).not.toHaveBeenCalled();
+    alice.setVolume.mockClear();
+    call.setVolume(ALICE_USER, 50);
+    expect(track.attach).toHaveBeenCalledTimes(1);
+    const at = track.attach.mock.invocationCallOrder[0];
+    expect(alice.setVolume.mock.calls.some(([v, s], i) => v === 0.5 && s === 'microphone' && alice.setVolume.mock.invocationCallOrder[i] > at))
+      .toBe(true);
+  });
+
+  it('Minor 2: a newcomer the roster maps later at full volume is attached by that roster change', async () => {
+    const f = fakes();
+    await start(f);
+    const alice = f.addRemote(ALICE);
+    const { track } = f.subscribeTrack(alice, 'microphone');
+    expect(track.attach).not.toHaveBeenCalled();
+    f.pushKeys(callId, keysFor(2n, [...BASE_ROSTER, { leaf: 3, deviceId: ALICE, userId: ALICE_USER }]));
+    await flush(); // the roster moves once the media worker holds the epoch’s key
+    expect(track.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(f.audioHost)).toHaveLength(1);
+  });
+
+  it('Minor 3: with a session context, the line goes once the context runs, whatever canPlaybackAudio still says', async () => {
+    const f = fakes();
+    f.audio.contextState = 'suspended';
+    f.room.canPlaybackAudio = false;
+    const call = await start(f);
+    expect(call.state.audioBlocked).toBe(true);
+    f.contexts[0].to('running');
+    expect(call.state.audioBlocked).toBe(false);
+    f.room.emit('audioPlaybackChanged', false);
+    expect(call.state.audioBlocked).toBe(false);
+  });
+
+  it('Nit 1: no host yet, or an attach that throws, keeps the track pending; the next gain change attaches it once', async () => {
+    const f = fakes();
+    const host = f.audioHost;
+    let hostReady = false;
+    f.deps.audioHost = () => (hostReady ? host : null);
+    const call = await start(f);
+    const bob = f.addRemote(BOB_DEV);
+    const { track } = f.subscribeTrack(bob, 'microphone');
+    expect(track.attach).not.toHaveBeenCalled();
+    hostReady = true;
+    track.attach.mockImplementationOnce(() => { throw new Error('NotSupportedError'); });
+    call.setVolume(BOB, 90);
+    expect(track.attach).toHaveBeenCalledTimes(1);
+    expect(elementsIn(host)).toEqual([]);
+    call.setVolume(BOB, 80);
+    expect(track.attach).toHaveBeenCalledTimes(2);
+    expect(elementsIn(host)).toHaveLength(1);
+    call.setVolume(BOB, 70);
+    expect(track.attach).toHaveBeenCalledTimes(2);
   });
 });

@@ -110,8 +110,9 @@ export interface PageCallDeps {
   /** web3.3: the container remote audio elements are attached into; one hidden `<div data-dilla-call-audio>` on
    *  document.body by default (null where there is no document). */
   audioHost?: () => HTMLElement | null;
-  /** Fix round 1 (I1, M2): the call’s own AudioContext, the mixer remote audio plays through (webAudioMix); a new
-   *  AudioContext by default (null where the browser has none). The session closes it on every leave. */
+  /** Fix round 1 (I1, M2): the fallback maker of the call’s AudioContext, the mixer remote audio plays through
+   *  (webAudioMix), used only when PageCallOptions.audioContext is absent; a new AudioContext by default (null where the
+   *  browser has none). The session closes the context on every leave. */
   audioContext?: () => AudioContext | null;
 }
 
@@ -149,6 +150,10 @@ export interface PageCallOptions {
   /** Product walk M5: this browser's own mute or deafen kept from its last call; the call starts in it, so a reload never
    *  reopens a microphone the person had muted. */
   self?: 'muted' | 'deafened' | null;
+  /** Fix round 2 (Minor 1): the call’s AudioContext, made by the shell synchronously inside the person’s press (useCall’s
+   *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
+   *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
+  audioContext?: AudioContext | null;
 }
 
 /** A refusal or failure of the session, by code only (copy maps codes, never error text). */
@@ -280,11 +285,12 @@ export function iceExpiryMs(list: IceServerTuple[]): number | null {
 export async function startPageCall(deps: PageCallDeps, target: { channelId: string; vdec: string }, opts: PageCallOptions): Promise<PageCall> {
   // The microphone prompt comes before the join, so the room never shows this device while the prompt is open. An abort
   // while it is open ends the start at once (WB client I1); a microphone granted after that is stopped.
-  // Fix round 1 (I1, M2): the call’s own AudioContext is made first, still inside the person’s press where the browser
-  // lets it run; livekit mixes remote audio into it (webAudioMix) and never closes a context it did not make, so every
-  // way out of this call closes it here. The output device is set on it: with webAudioMix the elements stay muted and
-  // everything plays through the context’s destination.
-  const ctx = (deps.audioContext ?? defaultAudioContext)();
+  // Fix round 1 (I1, M2): the call’s own AudioContext. The shell makes it inside the person’s press (useCall’s join, before
+  // its first await; fix round 2, Minor 1) and passes it in; only without one is it made here, after the shell’s awaits,
+  // where Safari may start it suspended (audioBlocked then offers the press). livekit mixes remote audio into it
+  // (webAudioMix) and never closes a context it did not make, so every way out of this call closes it here. The output
+  // device is set on it: with webAudioMix the elements stay muted and everything plays through the context’s destination.
+  const ctx = opts.audioContext !== undefined ? opts.audioContext : (deps.audioContext ?? defaultAudioContext)();
   let ctxClosed = false;
   const closeCtx = (): void => {
     if (ctx === null || ctxClosed) return;
@@ -538,24 +544,28 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (ended || t == null || t.kind !== 'audio' || playing.has(t)) return;
       pending.set(t, identity);
     };
+    /** Fix round 2 (Minor 2): a device not in the roster yet has no known gain (its user, and so its volume, is unknown):
+     *  it waits, and the roster change that names it (afterRoster → applyGains) attaches it. Nit 1: a track leaves
+     *  `pending` only once it is attached; no host yet, or an attach that throws, keeps it for the next applyGains. */
     const attachPending = (): void => {
       for (const [t, identity] of [...pending]) {
-        if (gainFor(identity) <= 0) continue;
-        pending.delete(t);
-        attachAudio(t, identity);
+        if (!roster.has(identity) || gainFor(identity) <= 0) continue;
+        if (attachAudio(t, identity)) pending.delete(t);
       }
     };
-    const attachAudio = (t: RemoteAudio, identity: string): void => {
-      if (ended || playing.has(t)) return;
+    const attachAudio = (t: RemoteAudio, identity: string): boolean => {
+      if (playing.has(t)) return true;
+      if (ended) return false;
       const host = audioHost();
-      if (host === null) return;
+      if (host === null) return false;
       let el: HTMLMediaElement;
-      try { el = t.attach(); } catch { return; }
+      try { el = t.attach(); } catch { return false; }
       el.controls = false;
       el.tabIndex = -1;
       el.setAttribute('aria-hidden', 'true');
       host.appendChild(el);
       playing.set(t, { el, identity });
+      return true;
     };
     const detachAudio = (track: unknown): void => {
       const t = track as RemoteAudio;
@@ -575,9 +585,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const sweepAudio = (): void => {
       for (const p of remotes()) for (const pub of p.trackPublications?.values() ?? []) queueAudio(pub.track, p.identity);
     };
-    /** Fix round 1 (M2): call audio is held back while the session’s context is not running, or the room says so. */
-    const playbackBlocked = (): boolean => (ctx !== null && ctx.state !== 'running')
-      || (room as unknown as { canPlaybackAudio?: boolean }).canPlaybackAudio === false;
+    /** Fix round 1 (M2): call audio is held back while the session’s context is not running. Fix round 2 (Minor 3): the
+     *  context alone decides when there is one (the room’s canPlaybackAudio lags it); the room’s flag only without one. */
+    const playbackBlocked = (): boolean => (ctx !== null ? ctx.state !== 'running'
+      : (room as unknown as { canPlaybackAudio?: boolean }).canPlaybackAudio === false);
 
     // ---- the microphone
     const gate = new VoiceGate({ mode: opts.mode === 'ptt' ? 'ptt' : 'open' });
@@ -1020,8 +1031,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         }
         applyMic();
       }),
-      // Fix round 1 (M2): both run synchronously inside the press (the user activation the browser asks for); nothing
-      // is awaited before them. A refusal leaves the line on offer.
+      // Fix round 1 (M2): both run synchronously inside the "turn on audio" press (the dock’s button, the user activation
+      // the browser asks for); nothing is awaited before them. A refusal leaves the line on offer. (The context itself is
+      // made in the join's press, by useCall; see PageCallOptions.audioContext.)
       startAudio() {
         if (ended) return Promise.resolve();
         const tries: unknown[] = [];

@@ -182,7 +182,14 @@ export interface VoiceHarnessOptions {
   hidden?: boolean;
   /** Also render Settings over the shell on a settings route, as App does. */
   withSettings?: boolean;
+  /** The call module fails to load (a lost chunk). */
+  loadFails?: boolean;
+  /** The session starts with the browser holding call audio back (audioBlocked), or turns so in the tick it attaches. */
+  audioBlocked?: 'at-start' | 'same-tick';
 }
+
+/** A call AudioContext double (VoiceDeps.createCallContext): which one, and whether it was closed. */
+export interface FakeCallContext { n: number; closed: boolean; close(): Promise<void> }
 
 function Root({ withSettings }: { withSettings: boolean }) {
   const [route] = useRoute();
@@ -260,7 +267,17 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
         };
         if (opts.signal?.aborted === true) onAbort(); else opts.signal?.addEventListener('abort', onAbort, { once: true });
       });
+      startedWith.push((opts.audioContext ?? null) as unknown as FakeCallContext | null);
       const session = new FakeSession(log, deps.bridge);
+      if (o.audioBlocked === 'at-start') session.state = { ...session.state, audioBlocked: true };
+      if (o.audioBlocked === 'same-tick') {
+        const subscribe = session.subscribe.bind(session);
+        session.subscribe = (fn) => {
+          const off = subscribe(fn);
+          queueMicrotask(() => session.update({ audioBlocked: true }));
+          return off;
+        };
+      }
       // As the real session: it starts in the mode it was started with.
       session.state = { ...session.state, mode: opts.mode };
       sessions.push(session);
@@ -269,8 +286,16 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     bindPushToTalk: vi.fn(() => () => undefined),
     volumesFromSettings: () => ({}),
   };
+  const callContexts: FakeCallContext[] = [];
+  const startedWith: (FakeCallContext | null)[] = [];
   const deps: VoiceDeps = {
-    load: () => Promise.resolve(module),
+    load: () => (o.loadFails === true ? Promise.reject(new Error('E_CHUNK')) : Promise.resolve(module)),
+    createCallContext: () => {
+      const ctx: FakeCallContext = { n: callContexts.length + 1, closed: false, close: () => { ctx.closed = true; return Promise.resolve(); } };
+      callContexts.push(ctx);
+      log.push(`ctx:${ctx.n}`);
+      return ctx as unknown as AudioContext;
+    },
     createSounds: () => ({
       play: kind => { sounds.played.push(kind); },
       startRing: () => { sounds.ringing = true; sounds.starts += 1; },
@@ -283,7 +308,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   const view = render(createElement('div', { className: 'd-root' }, createElement(CoreProvider, { client: fake, children: tree })));
   return {
     client: fake,
-    user, view, log, sessions, sounds, notifications, module, requestPermission, activation, holdStart,
+    user, view, log, sessions, sounds, notifications, module, requestPermission, activation, holdStart, callContexts, startedWith,
     /** Hides or shows the page, as the browser does, with its visibilitychange event. */
     setHidden(hidden: boolean): void {
       visibility.state = hidden ? 'hidden' : 'visible';
