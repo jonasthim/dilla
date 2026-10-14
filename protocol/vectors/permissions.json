@@ -1,0 +1,500 @@
+{
+  "version": 1,
+  "description": "dilla permission resolution (09-http-api.md \u00a7 Permissions). Frozen from internal/api/perm.go (Go is the reference): community = Snapshot.Resolve(user), channel = Snapshot.ResolveChannel(user) with the case's overwrites.",
+  "bits": {
+    "view_channel": 1,
+    "send_messages": 2,
+    "manage_messages": 4,
+    "pin_messages": 8,
+    "attach_files": 16,
+    "add_reactions": 32,
+    "read_history": 64,
+    "connect": 128,
+    "speak": 256,
+    "video": 512,
+    "screen_share": 1024,
+    "create_invite": 2048,
+    "kick_members": 4096,
+    "ban_members": 8192,
+    "manage_channels": 16384,
+    "manage_roles": 32768,
+    "manage_community": 65536,
+    "view_audit_log": 131072,
+    "mention_everyone": 262144,
+    "bypass_slowmode": 524288,
+    "administrator": 1048576,
+    "mute_members": 2097152,
+    "move_members": 4194304,
+    "manage_nicknames": 8388608
+  },
+  "cases": [
+    {
+      "name": "owner",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 0,
+          "deny": 1
+        }
+      ],
+      "user": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "community": 16777215,
+      "channel": 16777215
+    },
+    {
+      "name": "everyone_only",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "higher_role_deny_wins",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 2,
+          "allow": 0,
+          "deny": 2
+        },
+        {
+          "id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "position": 1,
+          "allow": 2,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      ],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4081,
+      "channel": 4081
+    },
+    {
+      "name": "higher_role_allow_wins",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 0,
+          "deny": 2
+        },
+        {
+          "id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "position": 2,
+          "allow": 2,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      ],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "equal_position_tie_by_id",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 0,
+          "deny": 2
+        },
+        {
+          "id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "position": 1,
+          "allow": 2,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      ],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "administrator_role",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 1048576,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 0,
+          "deny": 1
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 16777215,
+      "channel": 16777215
+    },
+    {
+      "name": "no_view_is_nothing",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 0,
+          "deny": 1
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 0,
+      "channel": 0
+    },
+    {
+      "name": "role_overwrite_denies_view",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 0,
+          "deny": 1
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 0
+    },
+    {
+      "name": "user_overwrite_reallows_view",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 0,
+          "deny": 1
+        },
+        {
+          "kind": 1,
+          "target": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "allow": 1,
+          "deny": 0
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "role_overwrite_reallows_view",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 0,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 0,
+          "deny": 1
+        },
+        {
+          "kind": 0,
+          "target": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "allow": 1,
+          "deny": 0
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "overwrite_kick_ignored",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 4096,
+          "deny": 0
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "overwrite_administrator_ignored",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 1,
+          "target": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "allow": 1048576,
+          "deny": 0
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4083
+    },
+    {
+      "name": "pin_via_overwrite",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 8,
+          "deny": 0
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4091
+    },
+    {
+      "name": "mention_everyone_denied_to_everyone",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 266227,
+          "deny": 0
+        }
+      ],
+      "held": [],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "allow": 0,
+          "deny": 262144
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 266227,
+      "channel": 4083
+    },
+    {
+      "name": "user_overwrite_applies_last",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 0,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "allow": 2,
+          "deny": 0
+        },
+        {
+          "kind": 1,
+          "target": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "allow": 0,
+          "deny": 2
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 4083,
+      "channel": 4081
+    },
+    {
+      "name": "overwrite_cannot_remove_community_bit",
+      "owner": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "everyone": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "roles": [
+        {
+          "id": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "position": 0,
+          "allow": 4083,
+          "deny": 0
+        },
+        {
+          "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "position": 1,
+          "allow": 4096,
+          "deny": 0
+        }
+      ],
+      "held": [
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      ],
+      "overwrites": [
+        {
+          "kind": 0,
+          "target": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "allow": 0,
+          "deny": 4096
+        }
+      ],
+      "user": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "community": 8179,
+      "channel": 8179
+    }
+  ]
+}
