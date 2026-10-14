@@ -17,6 +17,20 @@ describe('SafetyCompare', () => {
     expect([...dialog.querySelectorAll('[data-safety-group]')].map(el => el.textContent)).toEqual(groups);
     view.unmount();
   });
+  // Product walk M11: the 12 blocks are the comparison; the 64-character key waits behind a closed disclosure.
+  it('keeps the public key behind a closed details disclosure', async () => {
+    const user = userEvent.setup();
+    const view = render(<SafetyCompare open contactName="Ada" state="changed" approvedUmk={key} groups={groups} canVerify
+      labels={{ ...labels, details: 'public key' }} onCopy={vi.fn()} onVerify={vi.fn()} onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: labels.title });
+    const details = dialog.querySelector('details')!;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(details.querySelector('[data-public-umk]')).toHaveTextContent(key);
+    await user.click(within(dialog).getByText('public key'));
+    expect(details.open).toBe(true);
+    view.unmount();
+  });
   it('shows the person, state, exact key and 12 groups; Copy cannot approve', async () => {
     const user = userEvent.setup();
     const onVerify = vi.fn();

@@ -436,6 +436,8 @@ export const en = {
   'voice.volumeValue': '{n} %',
   'voice.blocked': 'A device in this voice failed the identity check, so you left. Joining stays paused until it is removed.',
   'voice.blockedJoin': 'A device in this voice failed the identity check. Joining is paused until it is removed.',
+  'voice.blockedLeft': 'A device in this voice failed the identity check, so you left. You can try to join again.',
+  'voice.blockedRetry': 'A device in this voice failed the identity check. You can try to join again.',
   'voice.blockedChanged': '{name}’s identity changed. Compare safety numbers in Privacy before joining.',
   'voice.paused': '{name}’s identity changed, so this call is paused for you: nothing you say is sent and nothing is played. Compare safety numbers in Privacy to continue, or wait until {name} leaves.',
   'voice.pausedAction': 'compare safety numbers',

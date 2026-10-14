@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
-import { BOB, BOB_DEV, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
+import { BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { RING_MS, UNANSWERED_LEAVE_MS } from './useCall.tsx';
 
@@ -211,5 +211,33 @@ describe('mute is kept across a reload (product walk M5)', () => {
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.module.startPageCall).toHaveBeenCalled());
     expect(vi.mocked(app.module.startPageCall).mock.calls[0][2]).toMatchObject({ self: 'muted' });
+  });
+});
+
+describe('the identity refusals lead somewhere (product walk M9, M10)', () => {
+  const UMK = { code: 'E_UMK_CHANGED', detail: '', status: 0, retryAfterMs: null };
+  it('M9: a join refused for a changed identity offers the comparison, as the pause does', async () => {
+    const app = renderVoiceShell({ trust: [bobChanged()], withSettings: true,
+      call: callState({ phase: 'blocked', channelId: GENV, error: UMK, changedUser: BOB }) });
+    expect(await main().findByText(t('voice.blockedChanged', { name: 'bob' }))).toBeInTheDocument();
+    const action = main().getByRole('button', { name: t('voice.pausedAction') });
+    await waitFor(() => expect(action).toHaveFocus());
+    await app.user.click(action);
+    await waitFor(() => expect(window.location.pathname).toBe('/settings/privacy'));
+  });
+
+  it('M10: a block that offers the join again never says joining is paused', async () => {
+    const app = await inHarbour({ sendBlocks: {} });
+    app.client.publish('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }));
+    expect(await main().findByText(t('voice.blockedLeft'))).toBeInTheDocument();
+    expect(main().getByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(main().queryByText(/paused/)).toBeNull();
+  });
+
+  it('M10: a refused join that offers the join again never says joining is paused', async () => {
+    renderVoiceShell({ sendBlocks: {}, call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }) });
+    expect(await main().findByText(t('voice.blockedRetry'))).toBeInTheDocument();
+    expect(main().getByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(main().queryByText(/paused/)).toBeNull();
   });
 });

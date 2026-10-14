@@ -655,7 +655,8 @@ export function Shell(): React.JSX.Element {
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
         rowLabel={badgeLabel}
         content={content}
-        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => setPickerOpen(true)}>{t('shell.dms.new')}</Button>
+        // Product walk M12: opening the picker reads the server's members again (a removal, a newcomer since the load).
+        footer={onDms && community !== null ? <Button variant="ghost" onClick={() => { selectCommunity(community.id); setPickerOpen(true); }}>{t('shell.dms.new')}</Button>
           : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
             onJoin={id => { openVoice(id); call.join(id); }} /> : undefined} />
       <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}

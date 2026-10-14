@@ -1226,6 +1226,18 @@ describe('direct messages', () => {
     expect(path()).toBe(`/dm/${DM}`);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+  // Product walk M12: the picker listed a removed member and missed one who joined after the page loaded.
+  it('reads the server\'s members again when the picker opens, and lists what that read says', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    const before = fake.callsOf('selectCommunity').length;
+    await user.click(screen.getByRole('button', { name: 'message someone' }));
+    expect(fake.callsOf('selectCommunity').slice(before)).toEqual([{ m: 'selectCommunity', communityId: A }]);
+    const dialog = screen.getByRole('dialog', { name: 'Message someone' });
+    act(() => fake.set(`members:${A}`, [{ userId: '5e'.repeat(16), username: 'sven', display: 'Sven', kind: 0, roleIds: [] }]));
+    expect(within(dialog).getByText('Sven')).toBeInTheDocument();
+    expect(within(dialog).queryByText('bob')).toBeNull();
+  });
   it('shows a refused DM in its dialog', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { before: withDms });
     fake.handler = c => (c.m === 'openDm' ? Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null));

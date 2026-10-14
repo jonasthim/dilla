@@ -183,8 +183,8 @@ play it with another program.
 no join button](screenshots/voice-blocked-desktop.png)
 
 If someone in the call has a changed identity that you have not compared yet, the join is refused before anything is
-sent: "{name}’s identity changed. Compare safety numbers in Privacy before joining." Compare the number with them
-(Settings → privacy, [Contacts and safety numbers](getting-started.md#contacts-and-safety-numbers)); once you have
+sent: "{name}’s identity changed. Compare safety numbers in Privacy before joining." **compare safety numbers**,
+next to it, opens the comparison. Compare the number with them (Settings → privacy, [Contacts and safety numbers](getting-started.md#contacts-and-safety-numbers)); once you have
 verified them, **join voice** is offered again without a reload.
 
 If the identity of someone changes while you are in the call, the call pauses for you: "{name}’s identity changed, so
@@ -204,7 +204,10 @@ nothing is played. It continues once the check is done." It continues by itself 
 If a device in the call is not on its owner's signed device list, you leave at once: "A device in this voice failed
 the identity check, so you left. Joining stays paused until it is removed." Before you join, the same says "A device
 in this voice failed the identity check. Joining is paused until it is removed." A call in a direct message is also
-refused while sending in that direct message is paused.
+refused while sending in that direct message is paused. When only the call's own setup held the device (nothing in the
+channel itself is paused), **join voice** shows again and the notice says "… so you left. You can try to join again."
+(or, before you join, "A device in this voice failed the identity check. You can try to join again."); a new join
+checks every device again.
 
 ### Other messages
 

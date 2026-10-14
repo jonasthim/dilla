@@ -483,8 +483,9 @@ Verification belongs to this browser: a second browser of your account keeps its
 To verify someone:
 
 1. Open **Settings → privacy** on your device, and ask the other person to do the same on theirs.
-2. Press **Compare with {name}**. "Compare safety numbers" shows the person's public key and a number of 12 blocks
-   of five digits ("Working out the number…" while it is worked out).
+2. Press **Compare with {name}**. "Compare safety numbers" shows a number of 12 blocks of five digits ("Working out
+   the number…" while it is worked out). The person's exact public key is behind "public key", closed at first; the
+   12 blocks are what you compare.
 3. Read the 12 blocks to each other "in person or on a call you started yourself": a voice call that one of you
    started independently, not a link or a message the instance delivered. **Copy number** only copies it; copying
    approves nothing.

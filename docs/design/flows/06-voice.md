@@ -51,6 +51,8 @@ How a block code maps to copy:
 
 Amended 2026-10-13 (controller ruling I2, task 1 review): the `{name}` of `voice.paused` and `voice.blockedChanged` comes from `call.changedUser`, the 32-hex user id of the changed contact that the worker sets for phase `paused` and for an `E_UMK_CHANGED` join refusal (the first by `user_id` when several changed), and is null otherwise. The page looks the name up as for any contact. At join, "exactly one changed contact" means the worker named one; `voice.blockedJoin` is shown when `changedUser` is null.
 
+Amended 2026-10-14 (product walk M9, M10): a join refused with `voice.blockedChanged` carries the `voice.pausedAction` button, which opens Privacy's comparison for that contact (focus moves to it once), on the stage and on a DM's call strip. A block whose join button shows again (the ruling below) says `voice.blockedLeft` mid-call and `voice.blockedRetry` before joining, never "joining is paused".
+
 Amended 2026-10-13 (controller ruling at integration; narrows "no join button until the cause is gone" in the blocked states above): a block that came only from the call group, meaning `call.phase` is blocked, the channel's own `sendBlocks` entry is clear and the block is not a changed identity (`call.changedUser` null, code other than `E_UMK_CHANGED`), keeps its notice and shows the join button again. The call group was left and forgotten, so nothing can show that block cleared; a new join is safe because `call_join_check` refuses a staged join before anything is posted, and RV-2 closes a poisoned idle group. A block of the channel's text group (its `sendBlocks` entry is set) or a changed identity keeps the join hidden, and so does any block while `sendBlocks` has not been published yet. When the text group's block clears, the worker moves the call slice to idle.
 
 ## 1280×800
@@ -267,6 +269,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `voice.blocked='A device in this voice failed the identity check, so you left. Joining stays paused until it is removed.'`
 - `voice.blockedJoin='A device in this voice failed the identity check. Joining is paused until it is removed.'`
 - `voice.blockedChanged='{name}’s identity changed. Compare safety numbers in Privacy before joining.'`
+- `voice.blockedLeft='A device in this voice failed the identity check, so you left. You can try to join again.'`, `voice.blockedRetry='A device in this voice failed the identity check. You can try to join again.'` (a block that offers the join again, mid-call and before joining, in place of `voice.blocked` and `voice.blockedJoin`, which say joining is paused; added 2026-10-14, product walk M10)
 - `voice.paused='{name}’s identity changed, so this call is paused for you: nothing you say is sent and nothing is played. Compare safety numbers in Privacy to continue, or wait until {name} leaves.'` (RV-3; the banner on the stage and the dock, `role="status"`, focus moves to its `compare safety numbers` button once)
 - `voice.pausedAction='compare safety numbers'`
 - `voice.held='A device in this call could not be checked yet, so this call is paused for you: nothing you say is sent and nothing is played. It continues once the check is done.'` (the hold after a refused mid-call rekey: the stage and the dock banner, `role="status"`, no action; added 2026-10-14, WB security I1)

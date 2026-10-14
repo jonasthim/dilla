@@ -117,7 +117,7 @@ export function Settings(): React.JSX.Element {
           && comparison.error !== 'privacy.keyMoved'}
         error={comparison?.error ? t(comparison.error) : null} docState="trust-compare"
         labels={{ title: t('privacy.title'), copy: t('privacy.copy'), verify: t('privacy.verify'), close: t('dialog.close'), loading: t('privacy.loading'),
-          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
+          instructions: t('privacy.instructions'), confirm: t('privacy.confirm'), details: t('privacy.keyDetails'), firstSeen: t('privacy.firstSeen', { name: comparison?.record.name ?? '' }),
           states: { 'first-seen': t('privacy.firstSeenLabel'), changed: t('privacy.changed'), verified: t('privacy.verifiedLabel'),
             unlisted: t('privacy.unlisted') } }}
         onCopy={() => { if (comparison?.number) void navigator.clipboard?.writeText(comparison.number); }}

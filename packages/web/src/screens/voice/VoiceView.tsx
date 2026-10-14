@@ -98,9 +98,15 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
         action: changed !== null ? { label: t('voice.pausedAction'), onAction: () => v.onCompare(changed) } : null };
     }
     if (slice.phase === 'blocked') {
-      const text = v.call.blockedMidCall === channelId ? t('voice.blocked')
-        : slice.error?.code === 'E_UMK_CHANGED' && name !== null ? t('voice.blockedChanged', { name }) : t('voice.blockedJoin');
-      return { kind: 'blocked', text, action: null, focusOnce: true };
+      // Product walk M10: a block that offers the join again (joinHeld false) never says joining is paused.
+      const held = joinHeld(v, channelId);
+      const changed = slice.error?.code === 'E_UMK_CHANGED' && name !== null ? slice.changedUser : null;
+      const midCall = v.call.blockedMidCall === channelId;
+      const text = midCall ? t(held ? 'voice.blocked' : 'voice.blockedLeft')
+        : changed !== null && name !== null ? t('voice.blockedChanged', { name }) : t(held ? 'voice.blockedJoin' : 'voice.blockedRetry');
+      // Product walk M9: a join refused for a named changed identity offers the comparison, as the pause does.
+      const action = !midCall && changed !== null ? { label: t('voice.pausedAction'), onAction: () => v.onCompare(changed) } : null;
+      return { kind: 'blocked', text, action, focusOnce: true };
     }
     if (slice.phase === 'failed' && v.call.channelId !== channelId) return { kind: 'info', text: t('voice.failed'), action: null, focusOnce: false };
     // Product walk I8: removed, and the channel is gone for this device (the membership is): the removal says so.
@@ -300,6 +306,7 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
         data-call-phase={inThisCall ? undefined : v.slice?.channelId === channelId ? v.slice.phase : 'idle'}
         data-empty={inThisCall && notice === null ? 'true' : undefined}>
         <StripNotice notice={notice} refObj={noticeRef} />
+        {notice?.action != null ? <Button className="dw-call-strip__action" onClick={() => notice.action?.onAction()}>{notice.action.label}</Button> : null}
         {inThisCall || held ? null : (
           <Button className="dw-call-strip__start" onClick={() => v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
         )}

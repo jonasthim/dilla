@@ -151,6 +151,7 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | privacy.copy | Copy number | dialog button |
 | privacy.verify | All 12 blocks match | dialog final button |
 | privacy.instructions | Open Privacy on both devices. Read the 12 blocks of five digits to each other in person or on a call you started yourself. | dialog instructions |
+| privacy.keyDetails | public key | the closed disclosure the person's exact public key sits behind; the 12 blocks are the comparison (added 2026-10-14, product walk M11) |
 | privacy.confirm | Yes, all 12 blocks match | dialog checkbox |
 | privacy.firstSeen | This is the first key this device saw for {name}. The server could have shown a different one. Compare numbers to verify. | under first-seen state on Privacy page and in dialog |
 | privacy.firstSeenLabel | First seen here — not verified | first-seen state label on Privacy page and in dialog |

@@ -380,7 +380,7 @@ describe('review round 1', () => {
   it('a call-group-only block keeps its notice and offers the join again', async () => {
     const app = renderVoiceShell({ sendBlocks: {},
       call: callState({ phase: 'blocked', channelId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' }, changedUser: null }) });
-    expect(main().getByText(t('voice.blockedJoin'))).toBeInTheDocument();
+    expect(main().getByText(t('voice.blockedRetry'))).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'join voice' }));
     expect(app.client.calls.filter(c => c.m === 'callJoin')).toHaveLength(1);
   });
