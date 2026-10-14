@@ -45,6 +45,8 @@ export { Segmented } from './Segmented/Segmented.tsx';
 export type { SegmentedProps } from './Segmented/Segmented.tsx';
 export { PermissionGrid } from './PermissionGrid/PermissionGrid.tsx';
 export type { PermissionGridProps, PermissionGridGroup, PermissionGridRow, PermValue } from './PermissionGrid/PermissionGrid.tsx';
+export { ColorSwatches } from './ColorSwatches/ColorSwatches.tsx';
+export type { ColorSwatchesProps } from './ColorSwatches/ColorSwatches.tsx';
 export { SettingsRow } from './SettingsRow/SettingsRow.tsx';
 export type { SettingsRowProps } from './SettingsRow/SettingsRow.tsx';
 export { SettingsNav } from './SettingsNav/SettingsNav.tsx';
