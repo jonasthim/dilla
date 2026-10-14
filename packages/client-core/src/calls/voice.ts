@@ -108,6 +108,22 @@ export class VoiceBook {
     this.deps.publish(this.state);
   }
 
+  /** Product walk I8: one device left a channel's call as far as this device knows (its own removal); published. */
+  dropDevice(channelHex: string, deviceHex: string): void {
+    const before = this.state[channelHex]?.participants;
+    if (before === undefined) return;
+    const rest = before.filter((p) => p.deviceId !== deviceHex);
+    if (rest.length === before.length) return;
+    if (rest.length === 0) this.drop(channelHex, false);
+    else this.state = { ...this.state, [channelHex]: { ...this.state[channelHex], participants: rest } };
+    this.deps.publish(this.state);
+  }
+
+  /** Product walk I8: a channel this device may no longer see (its read answered 404): its entry goes. */
+  forget(channelHex: string): void {
+    this.drop(channelHex, true);
+  }
+
   clear(): void {
     this.reads.clear();
     this.state = {};

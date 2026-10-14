@@ -214,6 +214,7 @@ refused while sending in that direct message is paused.
 | "This voice is full." | The call has as many people as the instance allows |
 | "Could not join voice. Try again." | Press **join voice** again |
 | "You were removed from voice." | Your device was taken out of the call; join again if you can still open the channel |
+| "You were removed from this server, so you left its voice." | The server's owner removed you while you were in its voice; there is nothing to join there any more |
 | "The connection to voice was lost. Join again to continue." | The connection dropped and did not come back; press **join voice** again |
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the dock | The connection dropped; the call comes back by itself |

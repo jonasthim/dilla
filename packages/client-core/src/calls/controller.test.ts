@@ -666,6 +666,39 @@ describe('keys after the join (L-TS-56 step 2)', () => {
     }
   });
 
+  // Product walk I8: removed while in voice. The own entry leaves the voice slice at once (no stale "in harbour" with
+  // oneself), the channel's call is read again, and when the instance no longer lets this device see it (404, the
+  // membership is gone) the voice entry goes and the removal says why (error E_NOT_FOUND): the page holds the join.
+  it('a removal drops the own entry and, when the channel is gone for this device, says so', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    w.gateway.push(voiceFrame(PEER, VOICE, 1));
+    expect(w.slice('voice')[w.voice]?.participants.map((p) => p.own)).toEqual(expect.arrayContaining([true]));
+    w.ds.inject('getChannelCall', { fail: new DillaHttpError({ status: 404, code: 'E_NOT_FOUND', detail: '', retryAfterMs: null, extra: [] }) });
+    w.ds.propose(w.callGroup, 'remove', ME.device);
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'removed', channelId: w.voice, error: { code: 'E_NOT_FOUND' } });
+    expect(w.slice('voice')[w.voice]).toBeUndefined();
+  });
+
+  it('a removal from a call still visible keeps the others and drops only the own entry', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    w.gateway.push(voiceFrame(PEER, VOICE, 1));
+    // The read again is held: the own entry is gone before it answers, not only because of it.
+    let release: () => void = () => undefined;
+    w.ds.inject('getChannelCall', { gate: new Promise<void>((resolve) => { release = resolve; }) });
+    w.ds.propose(w.callGroup, 'remove', ME.device);
+    await w.deliverHandshakes(w.callGroup);
+    await settle();
+    expect(w.slice('call')).toMatchObject({ phase: 'removed', error: null });
+    expect((w.slice('voice')[w.voice]?.participants ?? []).map((p) => p.own)).toEqual([false]);
+    release();
+    await settled(w);
+    expect((w.slice('voice')[w.voice]?.participants ?? []).some((p) => p.own)).toBe(false);
+  });
+
   it('the own leaf removed by another member sets phase removed', async () => {
     const w = await joined();
     w.ds.propose(w.callGroup, 'remove', ME.device);

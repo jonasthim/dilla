@@ -20,6 +20,7 @@ The media key never appears in this flow: the browser derives it in the core wor
 | paused mid-call (RV-3) | banner `voice.paused` on the stage and the dock with its `voice.pausedAction` button; dock says `voice.dock.paused`; tiles show no media, only names and state words; camera and share buttons `aria-disabled` | `call.phase` paused, `call.error.code` E_UMK_CHANGED, `call.changedUser` the changed contact, still in the group and the room, no keys posted | the banner (`role="status"`; focus moves to its button once); `voice.resumed` when it ends |
 | held mid-call (added 2026-10-14, WB security I1) | banner `voice.held` on the stage and the dock, no action; otherwise as paused; the page drops its media keys | `call.phase` paused, `call.error.code` other than E_UMK_CHANGED (E_DEVICE_LIST_STALE, or the core's code for any other refusal of a new epoch), `call.changedUser` null; no key posted until the current epoch's | the banner (`role="status"`); `voice.resumed` when it ends |
 | removed | `voice.removed`; the dock goes away | `call.phase` removed | the notice |
+| removed from the server (added 2026-10-14, product walk I8) | `voice.removedNotMember`; no join button on the stage or the voice row; this device's own entry is gone from the voice list at once | `call.phase` removed with `call.error.code` E_NOT_FOUND: after the removal the worker reads the channel's call again and the instance no longer lets this device see it | the notice |
 | connection lost or call ended (added 2026-10-14, WB client I3) | `voice.disconnected` when LiveKit's connection ended and its reconnect gave up, `voice.ended` when the room was closed (the call ended for everyone), `voice.removed` when the instance removed this device from the room; the dock and the stage's controls go away | the page posts `callLeave` with reason `lost`; `call.phase` removed with `call.error.code` E_DISCONNECTED | the notice, in the stage's region when the stage shows, else in the status region that outlives the dock |
 | full | `voice.full` (or `voice.sharersFull` when the camera or share is refused) | `call.error.code` E_CALL_FULL / E_CALL_SHARERS_FULL | the notice |
 | failed | `voice.failed` with the join button available again | `call.phase` failed (also E_DEVICE_LIST_STALE after one refresh, RV-1) | the notice |
@@ -270,6 +271,7 @@ Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and s
 - `voice.resumed='The call continues.'` (announced once in the dock's status region when the pause ends)
 - `voice.dock.paused='paused in {where}'`
 - `voice.removed='You were removed from voice.'`
+- `voice.removedNotMember='You were removed from this server, so you left its voice.'` (a removal after which the channel is gone for this device; added 2026-10-14, product walk I8)
 - `voice.disconnected='The connection to voice was lost. Join again to continue.'` (the room's connection ended on its own and LiveKit's reconnect gave up; added 2026-10-14, WB client I3)
 - `voice.ended='Voice ended for everyone.'` (the room was closed under this device: the call ended for everyone; added 2026-10-14, WB client I3)
 - `voice.full='This voice is full.'`

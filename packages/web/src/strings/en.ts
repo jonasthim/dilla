@@ -443,6 +443,7 @@ export const en = {
   'voice.resumed': 'The call continues.',
   'voice.dock.paused': 'paused in {where}',
   'voice.removed': 'You were removed from voice.',
+  'voice.removedNotMember': 'You were removed from this server, so you left its voice.',
   'voice.disconnected': 'The connection to voice was lost. Join again to continue.',
   'voice.ended': 'Voice ended for everyone.',
   'voice.full': 'This voice is full.',

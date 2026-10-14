@@ -249,6 +249,23 @@ export class CallController {
     try { this.deps.core()?.callGroupForget(live.groupId); } catch { /* forgotten already */ }
     this.deps.callEnded(toHex(live.callId));
     this.setState({ ...CALL_IDLE, phase: 'removed', channelId: live.channel });
+    // Product walk I8: the own entry leaves the voice slice now (the instance's leave reaches it later, or never once the
+    // membership is gone), and the channel's call is read again: a 404 means this device may no longer see the channel,
+    // so its entry goes and the removal says so (E_NOT_FOUND), which the page shows instead of a join that cannot work.
+    const own = this.deps.me();
+    const ownHex = own === null ? null : toHex(own.deviceId);
+    if (ownHex !== null) this.book.dropDevice(live.channel, ownHex);
+    this.deps.track((async () => {
+      try {
+        await this.book.loadChannel(live.channelId);
+        if (ownHex !== null) this.book.dropDevice(live.channel, ownHex);
+      } catch (e) {
+        const error = this.deps.errorOf(e);
+        if (error.code !== 'E_NOT_FOUND') return;
+        this.book.forget(live.channel);
+        if (this.state.phase === 'removed' && this.state.channelId === live.channel) this.setState({ ...this.state, error });
+      }
+    })());
   }
 
   /** After every trust refresh: a pause may end (the changed contact verified), a pending leaf may now validate, and a

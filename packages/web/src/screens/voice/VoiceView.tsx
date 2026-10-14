@@ -103,6 +103,8 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
       return { kind: 'blocked', text, action: null, focusOnce: true };
     }
     if (slice.phase === 'failed' && v.call.channelId !== channelId) return { kind: 'info', text: t('voice.failed'), action: null, focusOnce: false };
+    // Product walk I8: removed, and the channel is gone for this device (the membership is): the removal says so.
+    if (removedFromServer(v, channelId)) return { kind: 'info', text: t('voice.removedNotMember'), action: null, focusOnce: false };
   }
   if (v.call.notice?.channelId === channelId) return { kind: 'info', text: v.call.notice.text ?? t(v.call.notice.key), action: null, focusOnce: false };
   const mic = v.call.channelId === channelId && v.call.state !== null ? micNoticeKey(v.call.state.mic) : null;
@@ -118,6 +120,8 @@ export function stageNotice(v: VoiceContext, channelId: string): CallStageNotice
  * worker's call slice leaves 'blocked' (review m9).
  */
 function joinHeld(v: VoiceContext, channelId: string): boolean {
+  // Product walk I8: no join of a channel this device may no longer see.
+  if (removedFromServer(v, channelId)) return true;
   const s = v.slice;
   if (s?.channelId !== channelId || s.phase !== 'blocked') return false;
   const changed = (r: TrustSummary) => r.changedUmk !== null || r.blocked === 'E_UMK_CHANGED';
@@ -135,6 +139,11 @@ function joinHeld(v: VoiceContext, channelId: string): boolean {
   const callGroupOnly = s.error?.code !== 'E_UMK_CHANGED' && s.changedUser === null
     && v.sendBlocks !== undefined && v.sendBlocks[channelId] === undefined;
   return !callGroupOnly;
+}
+
+/** Product walk I8: the call of this channel ended as removed, and the worker's read of the channel answered 404. */
+export function removedFromServer(v: Pick<VoiceContext, 'slice'>, channelId: string): boolean {
+  return v.slice?.channelId === channelId && v.slice.phase === 'removed' && v.slice.error?.code === 'E_NOT_FOUND';
 }
 
 /**
@@ -320,7 +329,9 @@ function place(rows: readonly HTMLButtonElement[], stop: number): void {
 /** One voice row of the sidebar with its people, and `voice.join` on focus or hover (flow 06 § States, idle). `speaking`:
  *  the devices the call this device is in hears speaking (product walk M3); empty for any other row. */
 interface VoiceRowItem { id: string; name: string; readable: boolean; current: boolean; joined: boolean; room: VoiceCall | undefined;
-  speaking: ReadonlySet<string> }
+  speaking: ReadonlySet<string>;
+  /** No join for this row (product walk I8: the channel is gone for this device). */
+  held: boolean }
 
 /** Product walk M3: the devices of this device's call that are speaking now, its own included. */
 export function speakingDevices(state: CallView['state'], ownDevice: string | null): ReadonlySet<string> {
@@ -395,7 +406,7 @@ function VoiceSectionItem({ r, labels, onOpen, onJoin }: { r: VoiceRowItem; labe
     <li className="dw-voice-section__item" data-joined={r.joined ? 'true' : undefined}>
       <VoiceChannelRow name={r.name} current={r.current} joined={r.joined} readable={r.readable}
         participants={(r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId)))} labels={labels} onOpen={() => onOpen(r.id)} />
-      {r.joined ? null : (
+      {r.joined || r.held ? null : (
         <>
           <span id={nameId} hidden>{r.name}</span>
           <button type="button" className="d-btn dw-voice-section__join" data-variant="ghost" data-size="sm" tabIndex={-1}

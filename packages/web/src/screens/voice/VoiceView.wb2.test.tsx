@@ -176,3 +176,20 @@ describe('the dock says where and how (product walk M7, M8)', () => {
     await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.announce.left', { where })));
   });
 });
+
+describe('removed from the server while in voice (product walk I8)', () => {
+  it('says so and offers no join that cannot work, on the stage and in the sidebar', async () => {
+    const app = await inHarbour();
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+      error: { code: 'E_NOT_FOUND', detail: '', status: 404, retryAfterMs: null } }));
+    expect(await main().findByText(t('voice.removedNotMember'))).toBeInTheDocument();
+    expect(main().queryByText(t('voice.removed'))).toBeNull();
+    expect(main().queryByRole('button', { name: 'join voice' })).toBeNull();
+    const row = [...document.querySelectorAll('.dw-voice-section__item')].find(li => li.querySelector('[aria-label="voice general"]') !== null);
+    expect(row).toBeDefined();
+    expect(row!.querySelector('.dw-voice-section__join')).toBeNull();
+    // A removal from the call alone (the channel still visible) keeps the join.
+    app.client.publish('call', callState({ phase: 'removed', channelId: GENV }));
+    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+  });
+});
