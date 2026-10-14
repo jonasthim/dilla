@@ -239,13 +239,16 @@ community answers `404` to everyone.
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
 | `POST /v1/communities/{id}/leave` | `[]` | `204` |
+| `POST /v1/communities/{id}/owner` | `[user_id(bstr16)]` | `204`; `403` for anyone but the owner, `404` when the target is not a member, `400` for the caller themself or a bot account |
 | `PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}` | `[]` | `204` |
 
 - The creator is the **owner** and the first member, and the community starts with one role,
   `@everyone`, at position 0, whose id is `role_everyone`. The owner can neither leave nor be
   removed. `PATCH` needs `manage_community` (§ Permissions); `DELETE` is the owner's alone
   (`403 E_FORBIDDEN` for any other member). Removing a member is the **kick** of § Bans. Role
-  grants are § Roles'.
+  grants are § Roles'. The owner may hand the community to another member (`POST …/owner`); then
+  they are an ordinary member and may leave. They keep their roles, the hand-over writes a
+  `community.transfer` audit row, and the members are sent `community_changed` (`02`).
 - Any member reads their own. A client uses it to offer only what the instance allows and still handles every refusal.
 - `leave` removes the caller's leaves from every `text` and `call` group of the community's
   channels, as a kick does (§ Bans). `DELETE` closes every such group after the community and its

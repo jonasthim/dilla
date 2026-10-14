@@ -395,6 +395,10 @@ type Communities interface {
 	// §4.1 had no way to write them.
 	UpdateCommunityMeta(ctx context.Context, communityID id.ID, name string, minAge uint64, requireMod2FA uint8) error
 	SoftDeleteCommunity(ctx context.Context, communityID id.ID, at int64) error
+	// SetCommunityOwner hands a live community to owner (POST /v1/communities/{id}/owner). The
+	// caller holds LockCommunity in the same transaction, which already answered ErrNotFound for an
+	// unknown or deleted community, and has checked that owner is a member.
+	SetCommunityOwner(ctx context.Context, communityID, owner id.ID) error
 	// LockCommunity is Plan 2 task 4 fix round 1: it holds the community row
 	// until the transaction ends, so a join's ban check and member insert and a
 	// ban's ban write and member delete serialise rather than interleave (a ban

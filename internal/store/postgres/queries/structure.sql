@@ -45,6 +45,10 @@ WHERE id = $4 AND deleted_at IS NULL;
 -- name: SoftDeleteCommunity :execrows
 UPDATE communities SET deleted_at = $1 WHERE id = $2 AND deleted_at IS NULL;
 
+-- name: SetCommunityOwner :exec
+-- POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
+UPDATE communities SET owner = sqlc.arg(owner) WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
+
 -- name: LockCommunity :one
 -- The join and the ban both take this lock before they read or write the
 -- membership, so a join's ban check and its member insert cannot interleave with

@@ -157,6 +157,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// dilla-web-1 task 8 (L-SQL-02): GET /v1/communities, reached through the embedded
 			// Communities.
 			"ListCommunitiesForUser",
+			// dilla-web-3-4 S5: POST /v1/communities/{id}/owner, reached through the embedded
+			// Communities.
+			"SetCommunityOwner",
 			// §4.1 plus P2-D22's GetVoiceSession and the live-call listing POST
 			// /v1/channels/{id}/calls joins through (task 16), reached through the
 			// embedded VoiceSessions.
@@ -193,8 +196,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
 			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",
-			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SoftDeleteCommunity",
-			"UpdateCommunityMeta", "UpdateCommunityPolicy",
+			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SetCommunityOwner",
+			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{
 			"SearchReadable",

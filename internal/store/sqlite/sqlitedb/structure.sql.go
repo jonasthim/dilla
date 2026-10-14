@@ -1156,6 +1156,21 @@ func (q *Queries) PutVoiceSession(ctx context.Context, arg PutVoiceSessionParams
 	return err
 }
 
+const setCommunityOwner = `-- name: SetCommunityOwner :exec
+UPDATE communities SET owner = ?1 WHERE id = ?2 AND deleted_at IS NULL
+`
+
+type SetCommunityOwnerParams struct {
+	Owner id.ID
+	ID    id.ID
+}
+
+// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
+func (q *Queries) SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error {
+	_, err := q.db.ExecContext(ctx, setCommunityOwner, arg.Owner, arg.ID)
+	return err
+}
+
 const softDeleteCommunity = `-- name: SoftDeleteCommunity :execrows
 UPDATE communities SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL
 `

@@ -2028,6 +2028,10 @@ func (r *Repo) SoftDeleteCommunity(ctx context.Context, communityID id.ID, at in
 	return nil
 }
 
+func (r *Repo) SetCommunityOwner(ctx context.Context, communityID, owner id.ID) error {
+	return wrap(r.w.SetCommunityOwner(ctx, sqlitedb.SetCommunityOwnerParams{Owner: owner, ID: communityID}))
+}
+
 // LockCommunity reads the live community row inside the write transaction.
 // SQLite needs no row lock: the transaction is BEGIN IMMEDIATE on the
 // one-connection write pool, so it already excludes every other writer.

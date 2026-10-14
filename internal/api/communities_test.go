@@ -656,3 +656,90 @@ func TestOwnPermissionsRead(t *testing.T) {
 		t.Errorf("unknown community = %d, want 404", status)
 	}
 }
+
+// The owner hands the community to another member: one audit row, op 54 to the members, and the
+// previous owner is an ordinary member who keeps their roles and may now leave.
+func TestTheOwnerHandsTheCommunityToAnotherMember(t *testing.T) {
+	e, gw, cid, owner, ownerTok := notifyEnv(t)
+	heir, heirTok := joinAs(t, e, cid, "heir")
+	plain, plainTok := joinAs(t, e, cid, "plain")
+	stranger, _ := e.NewUser("stranger")
+	bot := id.New()
+	botRow := newAPITestUser(bot, "relay", e.Clk.Now().Unix())
+	botRow.Kind = 1
+	if err := e.Repo.CreateUser(t.Context(), botRow); err != nil {
+		t.Fatalf("CreateUser bot: %v", err)
+	}
+	if err := e.Repo.PutMember(t.Context(), store.MemberOfCommunityRow{
+		CommunityID: cid, UserID: bot, Joined: e.Clk.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("PutMember bot: %v", err)
+	}
+	role := createRole(t, e, cid, ownerTok, "elder", 3, api.PermPinMessages)
+	grant(t, e, cid, ownerTok, owner, role, http.StatusNoContent)
+	base := "/v1/communities/" + cid.String()
+	hand := func(tok string, to id.ID) (int, []byte) {
+		t.Helper()
+		return e.Do(http.MethodPost, base+"/owner", tok, []any{to})
+	}
+
+	status, body := hand(plainTok, heir)
+	if status != http.StatusForbidden || e.ErrCode(body) != "E_FORBIDDEN" ||
+		!bytes.Contains(body, []byte("only the owner can hand over a community")) {
+		t.Fatalf("a non-owner handing over = %d (%x), want 403", status, body)
+	}
+	if status, body := hand(ownerTok, stranger); status != http.StatusNotFound || e.ErrCode(body) != "E_NOT_FOUND" {
+		t.Fatalf("a non-member target = %d (%x), want 404", status, body)
+	}
+	if status, body := hand(ownerTok, owner); status != http.StatusBadRequest || e.ErrCode(body) != "E_INVALID_REQUEST" {
+		t.Fatalf("the owner as target = %d (%x), want 400", status, body)
+	}
+	if status, body := hand(ownerTok, bot); status != http.StatusBadRequest || e.ErrCode(body) != "E_INVALID_REQUEST" {
+		t.Fatalf("a bot target = %d (%x), want 400", status, body)
+	}
+	if got, _ := e.Repo.GetCommunity(t.Context(), cid); got.Owner != owner {
+		t.Fatalf("a refused hand-over changed the owner to %s", got.Owner)
+	}
+
+	gw.reset()
+	if status, body := hand(ownerTok, heir); status != http.StatusNoContent {
+		t.Fatalf("hand over = %d (%x), want 204", status, body)
+	}
+	told(t, gw, "hand over", map[id.ID]int{owner: 1, heir: 1, plain: 1, stranger: 0})
+	if got, _ := e.Repo.GetCommunity(t.Context(), cid); got.Owner != heir {
+		t.Fatalf("owner = %s, want %s", got.Owner, heir)
+	}
+	audit, err := e.Repo.ListAudit(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	found := 0
+	for _, a := range audit {
+		if a.Action == "community.transfer" {
+			found++
+			if a.Actor == nil || *a.Actor != owner || a.Target != heir.String() || a.Detail != owner.String() {
+				t.Fatalf("audit row = %+v, want actor and detail %s, target %s", a, owner, heir)
+			}
+		}
+	}
+	if found != 1 {
+		t.Fatalf("community.transfer audit rows = %d, want 1", found)
+	}
+	// The previous owner is still a member and keeps their role.
+	if held, err := e.Repo.ListMemberRoles(t.Context(), cid, owner); err != nil || len(held) != 1 || held[0] != role {
+		t.Fatalf("previous owner's roles = %v, %v, want [%s]", held, err, role)
+	}
+	// The previous owner may no longer hand it over or delete it; the new owner may.
+	if status, _ := hand(ownerTok, plain); status != http.StatusForbidden {
+		t.Fatalf("the previous owner handing over again = %d, want 403", status)
+	}
+	if status, _ := e.Do(http.MethodDelete, base, ownerTok, nil); status != http.StatusForbidden {
+		t.Fatalf("the previous owner's DELETE = %d, want 403", status)
+	}
+	if status, body := e.Do(http.MethodPost, base+"/leave", ownerTok, []any{}); status != http.StatusNoContent {
+		t.Fatalf("the previous owner's leave = %d (%x), want 204", status, body)
+	}
+	if status, body := e.Do(http.MethodDelete, base, heirTok, nil); status != http.StatusNoContent {
+		t.Fatalf("the new owner's DELETE = %d (%x), want 204", status, body)
+	}
+}

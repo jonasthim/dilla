@@ -90,6 +90,7 @@ func (c *Communities) Register(mux *server.Mux) {
 	mux.HandleFunc("DELETE /v1/communities/{id}/members/{user_id}", c.removeMember)
 	mux.HandleFunc("POST /v1/communities/{id}/join", c.join)
 	mux.HandleFunc("POST /v1/communities/{id}/leave", c.leave)
+	mux.HandleFunc("POST /v1/communities/{id}/owner", c.transfer)
 }
 
 // maxCommunityNameBytes bounds the one free-text field a community owner controls.
@@ -857,6 +858,71 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	// Every live call of its channels ends with it (CALLS-1), as for a channel delete.
 	c.calls.EndChannelCalls(afterCommit(r), ids, "community_deleted")
 	c.notify.ChangedTo(afterCommit(r), row.ID, members)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type transferReq struct {
+	_      struct{} `cbor:",toarray"`
+	UserID id.ID
+}
+
+// transfer is POST /v1/communities/{id}/owner [user_id]: 204. Only the owner hands the community
+// over, to another member who is not a bot; the previous owner stays a member with their roles,
+// and may then leave like anyone else. The new owner is read and written under the community row
+// lock, with an audit row naming the previous owner, and the members are told after the commit.
+func (c *Communities) transfer(w http.ResponseWriter, r *http.Request) {
+	row, s, err := c.memberOnly(r)
+	if err != nil {
+		c.fail(w, r, "transfer ownership", err)
+		return
+	}
+	if row.Owner != s.UserID {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "only the owner can hand over a community"))
+		return
+	}
+	var req transferReq
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if req.UserID == s.UserID {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the community is already yours"))
+		return
+	}
+	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), row.ID); err != nil {
+			return notFound(err)
+		}
+		// The owner is re-read under the lock: a hand-over that raced this one has already moved it.
+		locked, err := tx.GetCommunity(r.Context(), row.ID)
+		if err != nil {
+			return notFound(err)
+		}
+		if locked.Owner != s.UserID {
+			return server.Errorf(server.CodeForbidden, "only the owner can hand over a community")
+		}
+		if _, err := tx.GetMember(r.Context(), row.ID, req.UserID); err != nil {
+			return notFound(err)
+		}
+		u, err := tx.GetUser(r.Context(), req.UserID)
+		if err != nil {
+			return notFound(err)
+		}
+		if u.Kind != 0 {
+			return server.Errorf(server.CodeInvalidRequest, "a bot account cannot own a community")
+		}
+		if err := tx.SetCommunityOwner(r.Context(), row.ID, req.UserID); err != nil {
+			return err
+		}
+		return tx.Audit(r.Context(), store.AuditRow{
+			Actor: &s.UserID, Action: "community.transfer", Target: req.UserID.String(),
+			Detail: s.UserID.String(), At: c.clk.Now().Unix(),
+		})
+	}); err != nil {
+		c.fail(w, r, "transfer ownership", err)
+		return
+	}
+	c.notify.Changed(afterCommit(r), row.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
