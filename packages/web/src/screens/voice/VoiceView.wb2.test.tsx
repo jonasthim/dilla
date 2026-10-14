@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
-import { callState, DM, renderVoiceShell } from '../../test/fake-client.ts';
+import { BOB, BOB_DEV, callState, DM, GENV, OWN_DEV, renderVoiceShell } from '../../test/fake-client.ts';
+import { ME } from '../../test/fixtures.ts';
 import { RING_MS, UNANSWERED_LEAVE_MS } from './useCall.tsx';
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -53,5 +54,96 @@ describe('the outgoing ring says what the instance did (product walk I6)', () =>
     act(() => app.session.update({ tiles: [] }));
     await act(() => vi.advanceTimersByTimeAsync(RING_MS + UNANSWERED_LEAVE_MS + 1000));
     expect(app.session.leave).not.toHaveBeenCalled();
+  });
+});
+
+// jsdom has no MediaStream: a bare stand-in is enough, a tile only hands it to a <video>'s srcObject.
+if (typeof globalThis.MediaStream === 'undefined') {
+  (globalThis as { MediaStream?: unknown }).MediaStream = class MediaStream {};
+}
+
+async function inHarbour(o: Parameters<typeof renderVoiceShell>[0] = {}) {
+  const app = renderVoiceShell({
+    voice: { [GENV]: { callId: GENV, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false },
+      { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    ] } },
+    ...o,
+  });
+  await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+  await waitFor(() => expect(app.sessions).toHaveLength(1));
+  app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+  await main().findByRole('toolbar', { name: 'voice channel controls' });
+  return app;
+}
+const tileOf = (name: string) => main().getAllByRole('listitem').find(li => within(li).queryByText(name, { exact: true }) !== null)!;
+
+describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)', () => {
+  it('I2: a person with camera and screen on shows the screen as the tile and the camera as an inset', async () => {
+    const app = await inHarbour();
+    const screenStream = new MediaStream();
+    const cam = new MediaStream();
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: cam, screen: screenStream }] }));
+    const tile = await waitFor(() => { const t = tileOf('bob'); expect(t.querySelectorAll('video')).toHaveLength(2); return t; });
+    const [big, inset] = [...tile.querySelectorAll('video')];
+    expect(big.srcObject).toBe(screenStream);
+    expect(inset.srcObject).toBe(cam);
+  });
+
+  it('I3: your own tile shows your camera mirrored, and your screen', async () => {
+    const app = await inHarbour();
+    const cam = new MediaStream();
+    act(() => app.session.update({ camera: true, localCamera: cam }));
+    const own = await waitFor(() => { const t = document.querySelector('.d-call-tile[data-own="true"]')!; expect(t.querySelector('video')).not.toBeNull(); return t; });
+    expect(own.querySelector('video')!.srcObject).toBe(cam);
+    expect(own.querySelector('video')).toHaveAttribute('data-mirror', 'true');
+    const screenStream = new MediaStream();
+    act(() => app.session.update({ sharing: true, localScreen: screenStream }));
+    await waitFor(() => expect(own.querySelectorAll('video')).toHaveLength(2));
+    const [big, inset] = [...own.querySelectorAll('video')];
+    expect(big.srcObject).toBe(screenStream);
+    expect(big).not.toHaveAttribute('data-mirror');
+    expect(inset).toHaveAttribute('data-mirror', 'true');
+  });
+
+  it('M4: your own tile says speaking when the SFU hears you, whatever the meter level', async () => {
+    const app = await inHarbour();
+    act(() => app.session.update({ speaking: true, level: 1 }));
+    await waitFor(() => expect(document.querySelector('.d-call-tile[data-own="true"]')).toHaveAttribute('data-speaking', 'true'));
+  });
+
+  it('M13: no tile shows the client tag, yours included', async () => {
+    const app = await inHarbour();
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: null }] }));
+    await waitFor(() => expect(main().getAllByRole('listitem')).toHaveLength(2));
+    expect(main().queryByText(t('voice.tag.web'), { exact: true })).toBeNull();
+  });
+
+  it('M13: the people of a call you are not in carry no client tag either (the worker marks only this device as web)', async () => {
+    renderVoiceShell({ voice: { [GENV]: { callId: GENV, participants: [
+      { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags: 0, own: false, web: false, bot: false },
+      { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+    ] } } });
+    await main().findByRole('button', { name: 'join voice' });
+    await waitFor(() => expect(main().getAllByRole('listitem')).toHaveLength(2));
+    expect(main().queryByText(t('voice.tag.web'), { exact: true })).toBeNull();
+  });
+
+  it('M3: the sidebar row of a person says speaking while the call hears them', async () => {
+    const app = await inHarbour();
+    const sidebar = () => within(document.querySelector('.dw-sidebar') as HTMLElement);
+    expect(sidebar().queryByText(t('voice.state.speaking'))).toBeNull();
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: true, video: null, screen: null }] }));
+    await waitFor(() => expect(sidebar().getAllByText(t('voice.state.speaking')).length).toBeGreaterThan(0));
+  });
+});
+
+describe('Settings → Voice follows the call (product walk M1)', () => {
+  it('switching noise suppression during a call applies it at once', async () => {
+    const app = await inHarbour();
+    app.client.publish('settings', { 'voice.noise': 'off' });
+    await waitFor(() => expect(app.session.setNoise).toHaveBeenCalledWith('off'));
+    app.client.publish('settings', { 'voice.noise': 'on' });
+    await waitFor(() => expect(app.session.setNoise).toHaveBeenLastCalledWith('on'));
   });
 });

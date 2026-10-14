@@ -241,7 +241,7 @@ describe('formatSize (L-COPY-03)', () => {
 describe('voice (flow 06)', () => {
   const p = { userId: 'aa'.repeat(16), deviceId: 'bb'.repeat(16), name: 'bo', flags: 0, own: false, web: true, bot: false };
   it('reads the voice_state flag bits', () => {
-    expect(participantView({ ...p, flags: 1 })).toMatchObject({ muted: false, deafened: false, video: false, screen: false, web: true, state: 'ok' });
+    expect(participantView({ ...p, flags: 1 })).toMatchObject({ muted: false, deafened: false, video: false, screen: false, web: false, state: 'ok' });
     expect(participantView({ ...p, flags: 1 | 2 | 4 | 8 | 16 }, 'not-heard', true))
       .toMatchObject({ muted: true, deafened: true, video: true, screen: true, state: 'not-heard', speaking: true });
   });

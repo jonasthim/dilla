@@ -126,7 +126,7 @@ export function bobChanged(): TrustSummary {
 /** A PageCall double: the toggles change its state, and every call is recorded in order. */
 export class FakeSession implements PageCall {
   state: PageCallState = { phase: 'connected', muted: false, deafened: false, camera: false, sharing: false, paused: false, mic: 'ok',
-    tiles: [], level: 0, error: null, mode: 'vad' };
+    tiles: [], level: 0, error: null, mode: 'vad', speaking: false, localCamera: null, localScreen: null, noise: 'on' };
   readonly log: string[];
   private readonly fns = new Set<() => void>();
   readonly setPaused = vi.fn((on: boolean) => { this.log.push(`setPaused:${String(on)}`); this.update({ paused: on }); return Promise.resolve(); });
@@ -152,6 +152,7 @@ export class FakeSession implements PageCall {
     for (const fn of [...this.fns]) fn();
   }
   readonly setMode = vi.fn((mode: 'vad' | 'ptt') => { this.log.push(`mode:${mode}`); this.update({ mode }); });
+  readonly setNoise = vi.fn((noise: 'on' | 'off') => { this.log.push(`noise:${noise}`); this.update({ noise }); return Promise.resolve(); });
   setMuted(on: boolean): void { this.log.push(`muted:${String(on)}`); this.update({ muted: on }); }
   setDeafened(on: boolean): void { this.log.push(`deafened:${String(on)}`); this.update({ deafened: on, muted: on || this.state.muted }); }
   setCamera(on: boolean): Promise<void> { this.update({ camera: on }); return Promise.resolve(); }

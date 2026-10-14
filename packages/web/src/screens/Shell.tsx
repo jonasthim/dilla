@@ -21,7 +21,7 @@ import {
   nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
-import { ActiveVoiceList, DmCall, Dock, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { ActiveVoiceList, DmCall, Dock, speakingDevices, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { RingFlow } from './voice/Ring.tsx';
 import { useSounds } from './voice/useSounds.tsx';
 
@@ -56,6 +56,8 @@ export function isChanged(row: TrustSummary): boolean {
 const HEX32 = /^[0-9a-f]{32}$/;
 // Renew an unchanged typing signal after 5 s: above the server's 3 s meter, inside its 10 s hold (L-HTTP-96).
 const TYPING_RENEW_MS = 5_000;
+/** No device speaking: the voice rows of calls this device is not in (product walk M3). */
+const NOBODY: ReadonlySet<string> = new Set();
 
 type SidebarTab = 'channels' | 'dms';
 
@@ -604,8 +606,9 @@ export function Shell(): React.JSX.Element {
   const channelCounts = sumBadges(channelRows);
   const dmCounts = sumBadges(dmRows);
   // The voice channels sit under their own heading with their people (flow 06), not among the text rows.
+  const speakingNow = speakingDevices(call.state, account?.deviceId ?? null);
   const voiceRows = ordered.filter(isVoice).map(c => ({ id: c.id, name: c.name, readable: false, current: c.id === channelId,
-    joined: call.channelId === c.id, room: voiceSlice?.[c.id] }));
+    joined: call.channelId === c.id, room: voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY }));
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];

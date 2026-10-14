@@ -26,12 +26,14 @@ the call has a tile with their name and their state:
 | "connecting" | They are joining; nothing of theirs is played yet |
 | "not heard yet" | They are in the call, and nothing from their device has been checked yet |
 | "speaking", "muted", "deafened" | You hear them, and this is what they are doing |
-| "camera on", "sharing screen" | Their camera or their screen shows in the tile |
+| "camera on", "sharing screen" | Their camera or their screen shows in the tile; with both on, the screen fills the tile and the camera sits in its corner |
 | "unverified stream" | Something arrives in their name that is not one of the call's devices; nothing of it is shown or played |
 
 A tile with no state word is someone you hear who is quiet right now.
 
-Each tile has "volume for {name}": it changes how loud that person is for you only.
+Each tile has "volume for {name}": it changes how loud that person is for you only, from 0 % to 200 %. The value shows
+beside it, and the mark in the middle is 100 %, the volume they arrive at. Your own tile has no volume; it says
+"speaking" when the others hear you.
 
 **leave**, in the dock or under the tiles, leaves the call ("You left {where}."). If you were the only one left in
 the call, leaving ends it. If you join again right after leaving, the dock can stay at "connecting" for up to 30
@@ -88,15 +90,18 @@ Settings → voice also holds:
 
 - **input device** and **output device**, or "system default". A browser that cannot choose where sound plays says
   "This browser plays voice on the system default device."
-- **noise suppression**, on by default: it removes steady background noise from your microphone.
+- **noise suppression**, on by default: it removes steady background noise from your microphone. Switching it during
+  a call applies at once.
 - **input level**: a meter of what your microphone hears.
 
 ![Settings → Voice at 360 pixels wide](screenshots/voice-settings-phone.png)
 
 ## Camera and screen
 
-**camera** shows your camera in your tile for everyone in the call, and pressed again ends it. **share screen**
-lets the browser ask which screen, window or tab to share, and pressed again ends it. The only sound a share
+**camera** sends your camera to everyone in the call, and pressed again ends it. Your own tile shows what you send:
+your camera, mirrored as a mirror shows you (the others see it the right way round). **share screen** lets the browser
+ask which screen, window or tab to share, and pressed again ends it; your own tile shows your screen too. With the
+camera and a share both on, every tile shows the screen, with the camera in its corner. The only sound a share
 carries is a tab's, when you share a browser tab in a Chromium-based browser; a whole screen or window is shared
 without sound. If too many people already show a camera or a screen: "Too many people are sharing. Try again when
 someone stops."

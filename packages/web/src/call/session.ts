@@ -44,6 +44,14 @@ export interface PageCallState {
   tiles: PageCallTile[];
   /** The local input level, 0..12. */
   level: number;
+  /** Product walk M4: the SFU hears this device speaking (its own isSpeaking), never while muted or paused. */
+  speaking: boolean;
+  /** Product walk I3: what this device sends, for its own tile's self-view: the camera and the screen as local views
+   *  (never a received stream), null while not sent. */
+  localCamera: MediaStream | null;
+  localScreen: MediaStream | null;
+  /** Product walk M1: noise suppression in force; it follows Settings → Voice during the call. */
+  noise: 'on' | 'off';
   /**
    * An E_ code, or null. Once the phase is 'ended' because the room ended on its own (WB client I3): E_CALL_ENDED (the
    * room was closed: the call ended for everyone), E_REMOVED (the instance removed this device from the room) or
@@ -70,6 +78,8 @@ export interface PageCall {
   pushToTalk(down: boolean): void;
   /** Switches the input mode during the call: push to talk closes the microphone at once, until the key is held. */
   setMode(mode: 'vad' | 'ptt'): void;
+  /** Product walk M1: switches noise suppression during the call (the microphone's processor is set or stopped). */
+  setNoise(noise: 'on' | 'off'): Promise<void>;
   leave(reason: LeaveReason): Promise<void>;
 }
 
@@ -90,6 +100,9 @@ export interface PageCallDeps {
   copyKey?: (buffer: ArrayBuffer) => Uint8Array;
   /** Where pagehide is heard; the page’s window by default. */
   win?: Pick<Window, 'addEventListener' | 'removeEventListener'>;
+  /** Product walk I3: a local view of one sent track for the self-view; `new MediaStream([track])` by default (null where
+   *  the browser has no MediaStream). */
+  viewOf?: (track: MediaStreamTrack) => MediaStream | null;
 }
 
 export interface PageCallOptions {
@@ -212,7 +225,7 @@ interface RemoteView {
   setVolume(volume: number, source?: Source): void;
   getTrackPublication(source: Source): { track?: { mediaStream?: MediaStream } } | undefined;
 }
-interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void> } }
+interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void> } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
 
 /** The earliest expiry, in ms, among the TURN usernames (`<expiry seconds>:<…>`), or null. */
@@ -371,7 +384,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     relay.attach(manager);
     const events = room as unknown as Events;
     const local = room.localParticipant as unknown as Events & {
-      identity: string; audioLevel?: number; permissions?: Permissions;
+      identity: string; audioLevel?: number; isSpeaking?: boolean; permissions?: Permissions;
       publishTrack(track: MediaStreamTrack, o: PublishOptions): Promise<LocalPub>;
       unpublishTrack(track: MediaStreamTrack): Promise<unknown>;
     };
@@ -379,8 +392,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     let state: PageCallState = {
       phase: 'connecting', muted: false, deafened: false, camera: false, sharing: false, paused: false,
-      mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode,
+      mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
+      noise: opts.noise,
     };
+    const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
     const listeners = new Set<{ fn: () => void }>();
     const set = (patch: Partial<PageCallState>): void => {
       state = { ...state, ...patch };
@@ -421,7 +436,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       return out;
     };
     const level = (): number => (state.muted || state.paused ? 0 : Math.max(0, Math.min(12, Math.round((local.audioLevel ?? 0) * 12))));
-    const refresh = (): void => { if (!ended) set({ tiles: tiles(), level: level() }); };
+    const ownSpeaking = (): boolean => local.isSpeaking === true && !state.muted && !state.deafened && !state.paused;
+    const refresh = (): void => { if (!ended) set({ tiles: tiles(), level: level(), speaking: ownSpeaking() }); };
     const applyGains = (): void => {
       for (const p of remotes()) {
         const g = gainOf(roster.get(p.identity)?.userId ?? '', volumes, { deafened: state.deafened, paused: state.paused });
@@ -441,6 +457,19 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
     let micSending: boolean | null = null;
+    /** Sets an RNNoise processor on the microphone in the mode in force; a failure goes on without it. */
+    const startNoise = async (): Promise<void> => {
+      const track = micPub?.track;
+      if (!track?.setProcessor || processor !== null) return;
+      processorMode = mode;
+      const made = (deps.createNoiseProcessor ?? ((m) => new DillaRnnoiseProcessor({ mode: m })))(processorMode);
+      try {
+        await track.setProcessor(made);
+        processor = made;
+      } catch {
+        processor = null; // the microphone goes on without noise suppression
+      }
+    };
     const applyMic = (): void => {
       const track = micPub?.track;
       if (!track) return;
@@ -461,15 +490,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         state = { ...state, mic: 'failed', error: 'E_MIC_PUBLISH' };
       }
       checkAborted();
-      if (micPub?.track?.setProcessor && opts.noise === 'on') {
-        processorMode = mode;
-        const made = (deps.createNoiseProcessor ?? ((m) => new DillaRnnoiseProcessor({ mode: m })))(processorMode);
-        try {
-          await micPub.track.setProcessor(made);
-          processor = made;
-        } catch {
-          processor = null; // the microphone goes on without noise suppression
-        }
+      if (opts.noise === 'on') {
+        await startNoise();
         checkAborted();
       }
     } else {
@@ -522,7 +544,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const c = camera;
       if (c === null) return;
       camera = null;
-      set({ camera: false });
+      set({ camera: false, localCamera: null });
       await local.unpublishTrack(c.track).catch(() => undefined);
       c.track.stop();
     };
@@ -530,7 +552,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const s = screen;
       if (s === null) return;
       screen = null;
-      set({ sharing: false });
+      set({ sharing: false, localScreen: null });
       s.video.removeEventListener('ended', s.onEnded);
       await local.unpublishTrack(s.video).catch(() => undefined);
       if (s.audio) await local.unpublishTrack(s.audio).catch(() => undefined);
@@ -575,7 +597,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         throw new PageCallError('E_UNAVAILABLE');
       }
       camera = { track };
-      set({ camera: true });
+      set({ camera: true, localCamera: viewOf(track) });
     });
 
     const setSharing = (on: boolean): Promise<void> => inLane(async () => {
@@ -618,7 +640,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const onEnded = (): void => { void setSharing(false).catch(() => undefined); };
       tracks.video.addEventListener('ended', onEnded);
       screen = { ...tracks, onEnded };
-      set({ sharing: true });
+      set({ sharing: true, localScreen: viewOf(tracks.video) });
     });
 
     // ---- self flags, sent only after callJoin (the PageCall exists only once it answered)
@@ -730,7 +752,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const posted = post(reason);
         leaving = releaseAll().then(() => posted);
       }
-      set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0 });
+      set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0, speaking: false, localCamera: null, localScreen: null });
       return leaving;
     };
 
@@ -755,6 +777,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended) return;
         const patch: Partial<PageCallState> = { muted: on };
         if (!on && state.deafened) patch.deafened = false;
+        patch.speaking = local.isSpeaking === true && !on && !state.paused;
         set(patch);
         applyMic();
         applyGains();
@@ -817,6 +840,18 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         // A processor built for push to talk is held open under voice activity and closed again for push to talk.
         if (processorMode === 'ptt') processor?.setPttActive(next !== 'ptt');
         set({ mode: next });
+        applyMic();
+      },
+      async setNoise(next) {
+        if (ended || next === state.noise) return;
+        set({ noise: next });
+        const track = micPub?.track;
+        if (next === 'on') {
+          await startNoise();
+        } else if (processor !== null) {
+          processor = null;
+          await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
+        }
         applyMic();
       },
       leave,

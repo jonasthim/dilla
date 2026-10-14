@@ -432,14 +432,15 @@ describe('review round 1', () => {
     expect(document.activeElement?.closest('.dw-voice-section__item')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
   });
 
-  it('the own tile shows speaking from the input level', async () => {
+  // Product walk M4: the SFU's own speaking (the session's state.speaking), no longer the meter level.
+  it('the own tile shows speaking when the SFU hears this device', async () => {
     const app = await inVoice();
     const own = () => document.querySelector('.d-call-tile[data-own="true"]');
     expect(own()).toHaveAttribute('data-speaking', 'false');
     act(() => app.session.update({ level: 8 }));
-    expect(own()).toHaveAttribute('data-speaking', 'true');
-    act(() => app.session.update({ level: 8, muted: true }));
     expect(own()).toHaveAttribute('data-speaking', 'false');
+    act(() => app.session.update({ speaking: true }));
+    expect(own()).toHaveAttribute('data-speaking', 'true');
   });
 
   it('I7: in a DM call a "messages" toggle swaps the stage for the log and composer', async () => {

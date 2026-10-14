@@ -78,6 +78,35 @@ describe('CallTile', () => {
     expect(screen.getByRole('slider', { name: 'volume for ada' })).toHaveAttribute('aria-valuetext', '120 procent');
   });
 
+  it('product walk I2: a screen and a camera show together, the screen as the tile and the camera as an inset', () => {
+    const screenStream = new MediaStream();
+    const cam = new MediaStream();
+    const { container } = render(<CallTile view={{ ...view, video: true, screen: true }} {...rest} media={screenStream} inset={cam} />);
+    const [main, inset] = [...container.querySelectorAll('video')];
+    expect(main.srcObject).toBe(screenStream);
+    expect(inset.srcObject).toBe(cam);
+    expect(inset).toHaveClass('d-call-tile__inset');
+    expect(inset.muted).toBe(true);
+  });
+
+  it('product walk I3: the own camera is mirrored, the own screen is not', () => {
+    const cam = new MediaStream();
+    const { container, rerender } = render(<CallTile view={{ ...view, video: true }} {...rest} own media={cam} mirror="media" />);
+    expect(container.querySelector('video')).toHaveAttribute('data-mirror', 'true');
+    rerender(<CallTile view={{ ...view, video: true, screen: true }} {...rest} own media={new MediaStream()} inset={cam} mirror="inset" />);
+    const [main, inset] = [...container.querySelectorAll('video')];
+    expect(main).not.toHaveAttribute('data-mirror');
+    expect(inset).toHaveAttribute('data-mirror', 'true');
+  });
+
+  it('product walk M6: the volume shows its value and marks 100 %', () => {
+    const { container } = render(<CallTile view={view} {...rest} volume={120} />);
+    expect(container.querySelector('.d-call-tile__volume-value')).toHaveTextContent('120 %');
+    const range = screen.getByRole('slider', { name: 'volume for ada' });
+    const list = container.querySelector(`datalist#${CSS.escape(range.getAttribute('list') ?? '')}`);
+    expect([...(list?.querySelectorAll('option') ?? [])].map(o => o.getAttribute('value'))).toEqual(['100']);
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><CallTile {...(meta.args as CallTileProps)} /></div>);

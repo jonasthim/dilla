@@ -33,9 +33,6 @@ function volumeOf(settings: Readonly<Record<string, string>>, userId: string): n
   return v !== undefined && VOLUME.test(v) ? Number(v) : 100;
 }
 
-/** The own tile reads as speaking from this level of the 12-step input meter up, while the microphone is on. */
-const SPEAKING_LEVEL = 3;
-
 function tileLabels(name: string): CallTileProps['labels'] {
   return { state: voiceStateLabels(), volume: t('voice.volume', { name }), volumeValue: en['voice.volumeValue'] };
 }
@@ -45,13 +42,19 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   const { call } = v;
   const state = call.state;
   const room = v.voice?.[channelId];
+  // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
+  // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
+  const camera = state?.localCamera ?? null;
+  const screen = state?.localScreen ?? null;
   const own = v.self === null ? [] : [{
     view: {
       deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: userName(v.self.id, v.members, v.trust), state: 'ok' as const,
-      speaking: state !== null && !state.muted && !state.deafened && state.level >= SPEAKING_LEVEL, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
-      screen: state?.sharing ?? false, web: true, bot: false,
+      speaking: state?.speaking ?? false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
+      screen: state?.sharing ?? false, web: false, bot: false,
     },
-    own: true, volume: 100, media: null, labels: tileLabels(v.self.username), onVolume: () => undefined,
+    own: true, volume: 100, media: screen ?? camera, inset: screen !== null ? camera : null,
+    mirror: camera === null ? null : screen !== null ? 'inset' as const : 'media' as const,
+    labels: tileLabels(v.self.username), onVolume: () => undefined,
   }];
   const others = (state?.tiles ?? []).map(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
@@ -59,7 +62,9 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
     const view = p !== undefined ? participantView(p, tile.state, tile.speaking)
       : { deviceId: tile.deviceId, userId: tile.userId, name, state: tile.state, speaking: tile.speaking, muted: false, deafened: false,
         video: tile.video !== null, screen: tile.screen !== null, web: false, bot: false };
-    return { view, own: false, volume: volumeOf(v.settings, tile.userId), media: tile.video ?? tile.screen, labels: tileLabels(name),
+    // Product walk I2: the screen is the tile and the camera its inset when both are on.
+    return { view, own: false, volume: volumeOf(v.settings, tile.userId), media: tile.screen ?? tile.video,
+      inset: tile.screen !== null ? tile.video : null, labels: tileLabels(name),
       onVolume: (n: number) => call.setVolume(tile.userId, n) };
   });
   return [...own, ...others];
@@ -310,8 +315,18 @@ function place(rows: readonly HTMLButtonElement[], stop: number): void {
   });
 }
 
-/** One voice row of the sidebar with its people, and `voice.join` on focus or hover (flow 06 § States, idle). */
-interface VoiceRowItem { id: string; name: string; readable: boolean; current: boolean; joined: boolean; room: VoiceCall | undefined }
+/** One voice row of the sidebar with its people, and `voice.join` on focus or hover (flow 06 § States, idle). `speaking`:
+ *  the devices the call this device is in hears speaking (product walk M3); empty for any other row. */
+interface VoiceRowItem { id: string; name: string; readable: boolean; current: boolean; joined: boolean; room: VoiceCall | undefined;
+  speaking: ReadonlySet<string> }
+
+/** Product walk M3: the devices of this device's call that are speaking now, its own included. */
+export function speakingDevices(state: CallView['state'], ownDevice: string | null): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const tile of state?.tiles ?? []) if (tile.speaking) out.add(tile.deviceId);
+  if (state?.speaking === true && ownDevice !== null) out.add(ownDevice);
+  return out;
+}
 
 /**
  * The sidebar's voice channels under the `voice.heading.channels` heading: one roving tab stop over the rows, the people
@@ -377,7 +392,7 @@ function VoiceSectionItem({ r, labels, onOpen, onJoin }: { r: VoiceRowItem; labe
   return (
     <li className="dw-voice-section__item" data-joined={r.joined ? 'true' : undefined}>
       <VoiceChannelRow name={r.name} current={r.current} joined={r.joined} readable={r.readable}
-        participants={(r.room?.participants ?? []).map(p => participantView(p))} labels={labels} onOpen={() => onOpen(r.id)} />
+        participants={(r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId)))} labels={labels} onOpen={() => onOpen(r.id)} />
       {r.joined ? null : (
         <>
           <span id={nameId} hidden>{r.name}</span>
@@ -398,7 +413,7 @@ export function ActiveVoiceList({ rows, onOpen }: { rows: readonly VoiceRowItem[
   const live = rows.filter(r => (r.room?.participants.length ?? 0) > 0);
   return (
     <ActiveVoice channels={live.map(r => ({ id: r.id, name: r.name, current: r.current, joined: r.joined,
-      participants: (r.room?.participants ?? []).map(p => participantView(p)) }))}
+      participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) }))}
       labels={{ heading: t('voice.heading.active'), ...rowLabels() }} onOpen={onOpen} />
   );
 }

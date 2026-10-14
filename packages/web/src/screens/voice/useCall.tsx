@@ -472,6 +472,12 @@ export function useCall(o: UseCallOptions): CallView {
     session.setMode(wanted);
     announce(t(wanted === 'ptt' ? 'settings.voice.ptt' : 'settings.voice.vad'));
   }, [session, wanted, announce]);
+  // Product walk M1: noise suppression follows Settings → Voice during the call too.
+  const wantedNoise = o.settings[SETTINGS.voiceNoise] === 'off' ? 'off' : 'on';
+  useEffect(() => {
+    if (session === null || session.state.noise === wantedNoise) return;
+    session.setNoise(wantedNoise).catch(() => undefined);
+  }, [session, wantedNoise]);
   // Push to talk (decision 2): only in ptt mode with a key that is one non-text key on its own; a stored key that is
   // not (an older rule saved KeyV) binds nothing, and Settings shows it as unset.
   const applied = state?.mode;

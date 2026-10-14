@@ -106,7 +106,7 @@ export function CallStage({ title, tiles, code, notice, controls, outgoing, labe
         <ul role="list" aria-label={labels.tiles} className="d-call-stage__tiles">
           {tiles.map(t => (
             <li key={t.view.deviceId} className="d-call-stage__tile">
-              <CallTile {...t} media={hideMedia ? null : t.media} />
+              <CallTile {...t} media={hideMedia ? null : t.media} inset={hideMedia ? null : t.inset ?? null} />
             </li>
           ))}
         </ul>

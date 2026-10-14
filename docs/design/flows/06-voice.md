@@ -80,6 +80,8 @@ The `ACTIVE VOICE` heading (`voice.heading.active`, shown in caps by the token s
 └──┴──────────────────────┴───────────────────────────────────────────────────────────────────────────────┘
 ```
 
+Amended 2026-10-14 (product walk I2, I3, M4, M6, M13; controller rulings): a tile with both a camera and a screen shows the screen as the tile and the camera as an inset in its lower right corner. The own tile is a self-view of what this device sends: its camera mirrored, its screen as sent. The own tile says `voice.state.speaking` when the SFU hears this device (as the others' tiles), not from the input meter. The volume range shows its value (`voice.volumeValue`) beside it, marks 100 % and is drawn in Mesh (a hairline track filled with the accent, a square thumb). No tile and no row carries the `voice.tag.web` tag: the page knows the client only of its own device, so the tag would differ between people on the same client; `voice.tag.bot` stays. The sidebar's people say `voice.state.speaking` while the call this device is in hears them.
+
 The disclosure `voice.code` is closed by default. Opened, it shows the call code as 6 groups of 5 digits and `voice.codeHelp` under it; Escape closes it.
 
 **DM call.** A call strip sits under the conversation header: `call.start` when no call is live, `call.join` when one is, and `call.outgoing.ringing` while this device's call rings others. While in the call, the stage sits above the log at 40 % of the main pane's height; the log and composer stay usable below it.

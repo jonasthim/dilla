@@ -247,7 +247,9 @@ export function participantView(p: VoiceParticipant, state: VoiceParticipantView
   return {
     deviceId: p.deviceId, userId: p.userId, name: p.name, state, speaking,
     muted: (p.flags & FLAG_MUTE) !== 0, deafened: (p.flags & FLAG_DEAF) !== 0,
-    video: (p.flags & FLAG_VIDEO) !== 0, screen: (p.flags & FLAG_SCREEN) !== 0, web: p.web, bot: p.bot,
+    // Product walk M13: the client tag is shown on no participant (the worker knows only its own device is web), so the
+    // tags never differ between people who use the same client; the bot tag stays.
+    video: (p.flags & FLAG_VIDEO) !== 0, screen: (p.flags & FLAG_SCREEN) !== 0, web: false, bot: p.bot,
   };
 }
 

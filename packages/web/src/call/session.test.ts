@@ -927,3 +927,71 @@ describe('the whole-branch fix wave', () => {
     expect(f.room.count('participantPermissionsChanged')).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Whole-branch fix wave 2 (review/wb-product-walk.md I3, M1, M4).
+// ---------------------------------------------------------------------------------------------
+
+describe('the product walk fixes', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const start = async (f: ReturnType<typeof fakes>, o: Partial<PageCallOptions> = {}) => {
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o });
+    open.push(call);
+    return call;
+  };
+  const withViews = (f: ReturnType<typeof fakes>) => {
+    f.deps.viewOf = (track) => ({ id: 'view', track }) as unknown as MediaStream;
+    return f;
+  };
+
+  it('I3: the own camera and screen are in the state as local views, gone when they stop and at the leave', async () => {
+    const f = withViews(fakes());
+    const cam = videoTrack();
+    const screenTrack = videoTrack();
+    f.deps.media.getUserMedia = vi.fn(async (c: MediaStreamConstraints) => (c.video !== undefined && c.video !== false ? streamOf(cam) : {
+      getTracks: () => [], getAudioTracks: () => [{ kind: 'audio', stop: () => undefined }], getVideoTracks: () => [] }) as unknown as MediaStream);
+    f.deps.media.getDisplayMedia = vi.fn(async () => streamOf(screenTrack));
+    const call = await start(f);
+    expect(call.state.localCamera).toBeNull();
+    await call.setCamera(true);
+    expect((call.state.localCamera as unknown as { track: unknown }).track).toBe(cam);
+    await call.setSharing(true);
+    expect((call.state.localScreen as unknown as { track: unknown }).track).toBe(screenTrack);
+    await call.setCamera(false);
+    expect(call.state.localCamera).toBeNull();
+    expect(call.state.localScreen).not.toBeNull();
+    await call.leave('user');
+    expect(call.state.localScreen).toBeNull();
+  });
+
+  it('M4: the own speaking follows the SFU, never while muted', async () => {
+    const f = fakes();
+    const call = await start(f);
+    expect(call.state.speaking).toBe(false);
+    (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
+    f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
+    expect(call.state.speaking).toBe(true);
+    call.setMuted(true);
+    expect(call.state.speaking).toBe(false);
+  });
+
+  it('M1: noise suppression switches during the call', async () => {
+    const f = fakes();
+    const made: string[] = [];
+    f.deps.createNoiseProcessor = (mode) => { made.push(mode); return { setPttActive: vi.fn() }; };
+    const call = await start(f, { noise: 'on' });
+    const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void> };
+    mic.stopProcessor = vi.fn(async () => undefined);
+    expect(mic.setProcessor).toHaveBeenCalledTimes(1);
+    await call.setNoise('off');
+    expect(mic.stopProcessor).toHaveBeenCalledTimes(1);
+    await call.setNoise('off');
+    expect(mic.stopProcessor).toHaveBeenCalledTimes(1);
+    call.setMode('ptt');
+    await call.setNoise('on');
+    expect(mic.setProcessor).toHaveBeenCalledTimes(2);
+    expect(made).toEqual(['vad', 'ptt']);
+    expect(call.state.noise).toBe('on');
+  });
+});
