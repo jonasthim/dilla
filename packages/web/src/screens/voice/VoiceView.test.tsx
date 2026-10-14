@@ -458,7 +458,7 @@ describe('review round 1', () => {
 });
 
 describe('web3.3: the browser holds call audio back', () => {
-  it('the dock offers "Turn on audio" with its hint; a key press starts audio; the line goes once audio plays', async () => {
+  it('the dock offers "turn on audio" with its hint; a key press starts audio; the line goes once audio plays', async () => {
     const app = await inVoice();
     const turnOn = () => screen.queryByRole('button', { name: t('voice.audioStart') });
     expect(turnOn()).toBeNull();
@@ -468,7 +468,17 @@ describe('web3.3: the browser holds call audio back', () => {
     expect(button).toHaveAccessibleDescription(t('voice.audioBlocked'));
     // Beside the call controls: in the dock, which shows wherever the person is while in a call.
     expect(button.closest('.dw-voice-dock')).not.toBeNull();
-    expect(screen.getByText(t('voice.audioBlocked')).closest('[role="status"]')).not.toBeNull();
+    // Review M1: the line is no status region of its own; the dock’s one status region says it, once per change.
+    const line = document.querySelector('.dw-voice-dock__audio')!;
+    expect(line.closest('[role="status"]')).toBeNull();
+    const said = () => [...document.querySelectorAll('[role="status"]')].filter(r => r.textContent === t('voice.audioBlocked'));
+    await waitFor(() => expect(said()).toHaveLength(1));
+    expect(said()[0].closest('.dw-voice-dock')).not.toBeNull();
+    // Said on the false→true change only: a later announcement is not overwritten by an update that keeps it blocked.
+    await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
+    await waitFor(() => expect(said()).toHaveLength(0));
+    act(() => app.session.update({ level: 3 }));
+    expect(said()).toHaveLength(0);
     button.focus();
     await app.user.keyboard('{Enter}');
     expect(app.session.startAudio).toHaveBeenCalledTimes(1);

@@ -482,9 +482,10 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
           ) : null}
         </div>
       ) : null}
-      {/* web3.3: the browser holds call audio back (its autoplay rule); one press starts it, right above the controls. */}
+      {/* web3.3: the browser holds call audio back (its autoplay rule); one press starts it, right above the controls.
+          Review M1: no status region of its own; useCall says the hint once through the dock’s announcement. */}
       {call.state?.audioBlocked === true ? (
-        <div className="dw-voice-dock__audio" role="status">
+        <div className="dw-voice-dock__audio">
           <p id="dw-voice-dock-audio">{t('voice.audioBlocked')}</p>
           <Button aria-describedby="dw-voice-dock-audio" onClick={call.startAudio}>{t('voice.audioStart')}</Button>
         </div>

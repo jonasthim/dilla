@@ -111,3 +111,27 @@ describe('Settings → Voice', () => {
     expect(getUserMedia).not.toHaveBeenCalled();
   });
 });
+
+describe('Settings → Voice: the output device (web3.3 fix round 1, I1)', () => {
+  // Remote call audio plays through an AudioContext (webAudioMix), so the output is chosen on the context, not an element.
+  it('offers the output picker where AudioContext can choose an output', () => {
+    vi.stubGlobal('AudioContext', class { setSinkId() { return Promise.resolve(); } });
+    setup();
+    expect(screen.getByRole('combobox', { name: 'output device' })).toBeInTheDocument();
+    expect(screen.queryByText('This browser plays voice on the system default device.')).toBeNull();
+  });
+
+  it('says the system default plays where only a media element could choose (Firefox)', () => {
+    vi.stubGlobal('AudioContext', class {});
+    const proto = HTMLMediaElement.prototype as unknown as { setSinkId?: unknown };
+    const had = Object.prototype.hasOwnProperty.call(proto, 'setSinkId');
+    proto.setSinkId = () => Promise.resolve();
+    try {
+      setup();
+      expect(screen.queryByRole('combobox', { name: 'output device' })).toBeNull();
+      expect(screen.getByText('This browser plays voice on the system default device.')).toBeInTheDocument();
+    } finally {
+      if (!had) delete proto.setSinkId;
+    }
+  });
+});

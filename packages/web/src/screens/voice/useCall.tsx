@@ -195,9 +195,14 @@ export function useCall(o: UseCallOptions): CallView {
     setSession(next);
     setState(next.state);
     setChannelId(id);
+    // web3.3 review M1: the browser holding call audio back is said once, in the dock’s status region, on each change
+    // from playing to held back (a call that starts held back says it with the join).
+    let audioBlocked = next.state.audioBlocked;
     unsubscribe.current = next.subscribe(() => {
       if (sessionRef.current !== next) return;
       setState(next.state);
+      if (next.state.audioBlocked && !audioBlocked) announce(t('voice.audioBlocked'));
+      audioBlocked = next.state.audioBlocked;
       // The room ended on its own (the session already left; a person's own leave detaches first, so it never gets
       // here). WB client I3: say why, in the stage's notice and, off the stage, where it outlives the dock.
       if (next.state.phase === 'ended') {
@@ -207,7 +212,8 @@ export function useCall(o: UseCallOptions): CallView {
         if (!live.current.stageShown(id)) setLasting(t(key));
       }
     });
-    announce(t('voice.announce.joined', { where: live.current.whereOf(id) }));
+    const joined = t('voice.announce.joined', { where: live.current.whereOf(id) });
+    announce(audioBlocked ? `${joined} ${t('voice.audioBlocked')}` : joined);
   }, [announce, detach]);
 
   const join = useCallback((id: string) => {

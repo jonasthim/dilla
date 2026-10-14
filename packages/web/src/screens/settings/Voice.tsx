@@ -116,7 +116,9 @@ export function Voice(): React.JSX.Element {
     setCapturing(false);
     if (action !== 'cancel' && isPushToTalkKey(action.code)) write(SETTINGS.voicePttKey, action.code);
   };
-  const canSelectOutput = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+  // web3.3 fix round 1 (I1): call audio plays through the call’s AudioContext (webAudioMix), so the output is chosen
+  // there; a browser whose AudioContext cannot (Firefox) plays on the system default whatever an element could do.
+  const canSelectOutput = typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID} data-doc-state="voice-settings">
       <h2 id={TITLE_ID} tabIndex={-1}>{t('settings.voice.section')}</h2>

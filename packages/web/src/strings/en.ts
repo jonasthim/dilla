@@ -406,7 +406,7 @@ export const en = {
   'voice.dock.pttNoKey': 'push to talk: no key set',
   'voice.dock.pttSetKey': 'set a key',
   'voice.audioBlocked': 'Your browser paused call audio.',
-  'voice.audioStart': 'Turn on audio',
+  'voice.audioStart': 'turn on audio',
   'call.where': 'the call with {name}',
   'voice.mute': 'mute',
   'voice.deafen': 'deafen',

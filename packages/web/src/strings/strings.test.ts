@@ -118,7 +118,7 @@ describe('flow 06 (L-COPY-05)', () => {
   it('fills each placeholder the flow names and keeps chrome lower case', () => {
     expect(en['voice.paused'].match(/\{name\}/g)).toHaveLength(2);
     for (const k of ['voice.join', 'voice.mute', 'voice.leave', 'call.ring.answer', 'call.ring.decline', 'media.save', 'settings.nav.voice',
-      'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring'] as const) expect(en[k], k).toMatch(/^[a-z]/);
+      'settings.notify.sounds', 'settings.sound.voice', 'settings.sound.ring', 'voice.audioStart'] as const) expect(en[k], k).toMatch(/^[a-z]/);
   });
 });
 
