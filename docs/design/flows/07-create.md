@@ -13,18 +13,19 @@ Chrome labels use lower case and dialog copy uses sentence case; nothing ends in
 | picker, alone | the picker says `shell.dms.alone` and lists no one | the selected server lists no member but this account | dialog title |
 | start a server: idle | dialog `create.server.title` with `create.server.body` and the field `create.server.name` (hint `create.server.hint`); focus in the field | none | dialog title |
 | start a server: refused before sending | the field's error: `create.server.error.empty`, `create.server.error.long` or `create.name.control`; focus stays in the field | none: nothing is sent | the error (`role="alert"`) |
-| start a server: creating | the submit says `create.server.busy` and is `aria-disabled`; a second Enter or click sends nothing | `createCommunity`, then `createChannel` text general, then voice general | none |
-| start a server: refused | the field's error: `create.server.error.refused` (E_INVALID_REQUEST) or `create.server.error.other` | `createCommunity` refused | the error |
-| start a server: channels failed | the server is listed and selected behind the dialog; the field gives way to a warn banner that names what is missing: `create.server.partialText` (#general), `create.server.partialVoice` (the voice general) or `create.server.partial` (both); focus moves to the submit, which says `create.server.retry` and adds only the channels still missing (the banner stays while it runs); closing keeps the server as it is (never a silent rollback) | the server exists; a `createChannel` was refused | the banner (`role="alert"`) |
+| start a server: creating | the submit says `create.server.busy` and is `aria-disabled`; a second Enter or click sends nothing; a dialog closed and opened again while the create runs still says `create.server.busy` until it ends, and that create no longer changes the dialog | `createCommunity`, then `createChannel` text general, then voice general | `create.server.busy` in the dialog's visually hidden status region |
+| start a server: refused | the field's error: `create.server.error.refused` (E_INVALID_REQUEST, or the worker's own name check E_BAD_INPUT) or `create.server.error.other`; the same refusal again is a new alert | `createCommunity` refused | the error |
+| start a server: channels failed | the server is listed and selected behind the dialog; the field gives way to a warn banner that names what is missing: `create.server.partialText` (#general), `create.server.partialVoice` (the voice general) or `create.server.partial` (both); focus moves to the submit, which says `create.server.retry`, reads the server's channels again (a create whose answer was lost may have made its channel; a listed starter counts as made) and adds only the channels still missing (the banner stays while it runs; a failed read sends no create and names its code); closing keeps the server as it is (never a silent rollback) | the server exists; a `createChannel` was refused | the banner (`role="alert"`) |
 | start a server: done | the dialog closes; the server is selected and `#general` opens; focus moves to its composer | `communities` lists the server (owner: this account) before `createCommunity` answers; each channel is listed before `createChannel` answers | none |
 | server actions | under the server's name: `create.channel.button` (named `create.channel.open`) for the owner, `invite.open` for every member, in a group named `create.actions` | the owner is `communities[].owner`; the instance serves no role bits, so ownership is the one permission fact (the owner holds ManageChannels; `@everyone` holds CreateInvite by default) | none |
 | new channel: idle | dialog `create.channel.title` with the kind group `create.channel.kind` (`create.channel.text`, `create.channel.voice`; selection follows the arrows) and the field `create.channel.name`; focus in the field; the hint says how the name will show (`create.channel.hintText` or `create.channel.hintVoice`, `create.channel.hint` while empty) | none | dialog title |
-| new channel: refused | the field's error: `create.channel.error.empty`, `create.channel.error.long`, `create.name.control`, `create.channel.error.forbidden` (E_FORBIDDEN), `create.channel.error.refused` (E_INVALID_REQUEST) or `create.channel.error.other` | `createChannel` refused | the error |
+| new channel: creating | the submit says `create.channel.busy` and is `aria-disabled`; a second Enter or click sends nothing; as for a server, a reopened dialog says `create.channel.busy` until an earlier create ends, and that create neither changes the dialog nor opens its channel | `createChannel` | `create.channel.busy` in the dialog's visually hidden status region |
+| new channel: refused | the field's error: `create.channel.error.empty`, `create.channel.error.long`, `create.name.control`, `create.channel.error.forbidden` (E_FORBIDDEN), `create.channel.error.refused` (E_INVALID_REQUEST only) or `create.channel.error.other` (any other code, the worker's E_BAD_INPUT included); the same refusal again is a new alert | `createChannel` refused | the error |
 | new channel: done | the dialog closes and the channel opens; a text channel's composer takes focus | the channel is listed before `createChannel` answers | none |
 | invite: creating | dialog `invite.title` says `invite.creating` | `createInvite` with `INVITE_MAX_USES` and `INVITE_TTL_DAYS` | dialog title |
 | invite: copied | the link in a read-only field `invite.link` (selected whole on focus) with `invite.copy`, described by `invite.limits` | the instance's own link, `<base>/i/<code>`, which the join dialog and the invite page accept | `invite.copied` in the dialog's status region |
-| invite: clipboard blocked | as copied | the browser refused `clipboard.writeText` | `invite.blocked` in the status region |
-| invite: refused | a danger banner `invite.error.forbidden` (E_FORBIDDEN) or `invite.error.other`, with `invite.retry` | `createInvite` refused | the banner (`role="alert"`) |
+| invite: clipboard blocked | as copied; `invite.copy` tries again inside the person's own press, which a browser that refused the copy after the round trip (Safari, Firefox) allows | the browser refused `clipboard.writeText`, or has no clipboard | `invite.blocked` in the status region |
+| invite: refused | a danger banner `invite.error.forbidden` (E_FORBIDDEN) or `invite.error.other`, with `invite.retry`; the same refusal again is a new alert | `createInvite` refused | the banner (`role="alert"`) |
 | another member's new channel | it shows when the window comes back to the tab (at most once in 15 s), on the next reconnect, or after a reload | the instance sends no event for a new channel | none |
 
 A text channel's name is stored as a lower-case slug: runs of spaces become one `-`, and letters outside ASCII stay (`Fika på Fredag` is `#fika-på-fredag`). A voice channel's name is kept as typed, trimmed, with runs of spaces made one. Names are checked before sending as the instance checks them: not blank, at most 255 UTF-8 bytes for a server and 100 for a channel, and no control character.
@@ -82,14 +83,14 @@ The rail stays a 60 px column, and the captions fit under its 40 px tiles. The s
 | a create dialog opens | its name field (the invite dialog: the dialog, then Tab reaches the link) | dialog title |
 | a submit is refused before or after sending | the field, which holds the error | the error (`role="alert"`) |
 | a starter channel failed (the field gives way to the banner) | the submit, which now says `create.server.retry` | the banner (`role="alert"`) |
-| a server is started | the composer of its `#general`, once it is on screen | none |
-| a text channel is added | its composer, once it is on screen | none |
+| a server is started | the composer of its `#general`, once it is on screen (dropped if another conversation opens first) | none |
+| a text channel is added | its composer, once it is on screen (dropped if another conversation opens first) | none |
 | a voice channel is added, or a dialog is closed without creating | back to the opener | none |
 | the invite link is copied (or the copy is blocked) | unchanged | `invite.copied` or `invite.blocked` |
 
 ## Announcements
 
-The invite dialog has one `role="status"` region, present from its first render, so `invite.copied` is announced when it is set. A refusal in a create dialog is the field's `role="alert"`. A starter channel that failed is a warn banner (`role="alert"`). Nothing in this flow moves focus without a person's action.
+The invite dialog has one `role="status"` region, present from its first render, so `invite.copied` is announced when it is set. The two create dialogs each have a visually hidden `role="status"` region, also present from the first render, which says `create.server.busy` or `create.channel.busy` while a create runs: Enter keeps focus in the field, so the submit's new name alone is not heard. A refusal or notice the same as the last one is drawn as a new alert, so it is announced again. A refusal in a create dialog is the field's `role="alert"`. A starter channel that failed is a warn banner (`role="alert"`). Nothing in this flow moves focus without a person's action.
 
 ## Copy
 
@@ -111,7 +112,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `create.server.name='Server name'`, `create.server.hint='Up to 255 bytes.'`
 - `create.server.submit='Create'`, `create.server.busy='Creating…'`, `create.server.retry='Try again'`
 - `create.server.error.empty='Give the server a name.'`, `create.server.error.long='That name is too long. A server name is up to 255 bytes.'`
-- `create.server.error.refused='The server refused that name. Try another.'`, `create.server.error.other='Could not start the server ({code}). Try again.'`
+- `create.server.error.refused='That name was refused. Try another.'`, `create.server.error.other='Could not start the server ({code}). Try again.'`
 - `create.server.partial='{name} is ready, but its channels were not added ({code}). Try again, or close this and add them from the channel list.'`
 - `create.server.partialText='{name} is ready, but #general was not added ({code}). Try again, or close this and add it from the channel list.'`
 - `create.server.partialVoice='{name} is ready, but its voice channel general was not added ({code}). Try again, or close this and add it from the channel list.'`
@@ -123,12 +124,12 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `create.channel.hintText='Shown as #{name}. Up to 100 bytes.'`, `create.channel.hintVoice='Shown as {name}. Up to 100 bytes.'`
 - `create.channel.submit='Create'`, `create.channel.busy='Creating…'`
 - `create.channel.error.empty='Give the channel a name.'`, `create.channel.error.long='That name is too long. A channel name is up to 100 bytes.'`
-- `create.channel.error.forbidden='You cannot add channels to this server.'`, `create.channel.error.refused='The server refused that name. Try another.'`
+- `create.channel.error.forbidden='You cannot add channels to this server.'`, `create.channel.error.refused='That name was refused. Try another.'`
 - `create.channel.error.other='Could not add the channel ({code}). Try again.'`
 
 *Invite:*
 - `invite.title='Invite people to {server}'`, `invite.creating='Making an invite link…'`, `invite.link='Invite link'`, `invite.copy='copy link'`
-- `invite.copied='Invite link copied.'`, `invite.blocked='This browser did not let dilla copy. Select the link and copy it yourself.'`
+- `invite.copied='Invite link copied.'`, `invite.blocked='This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself.'`
 - `invite.limits='It can be used {uses} times and expires in {days} days. Anyone who has it can join {server}.'`
 - `invite.retry='Try again'`, `invite.error.forbidden='You cannot invite people to this server.'`, `invite.error.other='Could not make an invite link ({code}).'`
 

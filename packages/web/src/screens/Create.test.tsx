@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ChannelSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account } from '../test/fixtures.ts';
@@ -10,6 +11,7 @@ import {
 } from './Create.tsx';
 
 const SERVER = 'a1'.repeat(16);
+const BLOCKED = 'This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself.';
 const TEXT = 'c3'.repeat(16);
 const VOICE = 'c4'.repeat(16);
 
@@ -103,7 +105,7 @@ describe('CreateServerFlow', () => {
   it('says what the instance refused, in the field', async () => {
     const { user, onServer } = setup(() => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 })));
     await user.type(nameField('Server name'), 'Midgard{Enter}');
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('The server refused that name. Try another.'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('That name was refused. Try another.'));
     expect(nameField('Server name')).toHaveFocus();
     expect(onServer).not.toHaveBeenCalled();
   });
@@ -222,6 +224,104 @@ describe('CreateServerFlow', () => {
     expect(fake.callsOf('createCommunity')).toHaveLength(1);
   });
 
+  // Review I1: dillad keeps no uniqueness on channel names, so a create whose answer was lost may still have made the
+  // channel. The retry reads the server's list first and counts a listed starter as made.
+  it('a retry after a lost answer reads the list first and never makes a second #general', async () => {
+    const listed: ChannelSummary[] = [];
+    const row = (id: string, kind: 0 | 1): ChannelSummary =>
+      ({ id, communityId: SERVER, kind, mode: 0, name: 'general', topic: '', parentId: null, position: listed.length, group: 'none' });
+    const { fake, user, onDone } = setup((m, n) => {
+      const c = fake.calls[n - 1];
+      if (m === 'createCommunity') return Promise.resolve({ communityId: SERVER });
+      if (c?.m === 'selectCommunity') { fake.set(`channels:${SERVER}`, [...listed]); return Promise.resolve(null); }
+      if (c?.m === 'createChannel' && c.kind === 'text') {
+        listed.push(row(TEXT, 0));   // the instance made it; the answer never arrives
+        return Promise.reject(refusal({ code: 'E_NETWORK', status: 0 }));
+      }
+      listed.push(row(VOICE, 1));
+      return Promise.resolve({ channelId: VOICE });
+    });
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Midgard is ready, but #general was not added (E_NETWORK).'));
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith({ communityId: SERVER, channelId: TEXT }));
+    expect(fake.callsOf('selectCommunity')).toEqual([{ m: 'selectCommunity', communityId: SERVER }]);
+    expect(fake.callsOf('createChannel').map(c => c.kind)).toEqual(['text', 'voice']);
+  });
+
+  it('a retry whose list read fails sends no create and says why', async () => {
+    let failText = true;
+    const { fake, user, onDone } = setup((m, n) => {
+      const c = fake.calls[n - 1];
+      if (m === 'createCommunity') return Promise.resolve({ communityId: SERVER });
+      if (c?.m === 'selectCommunity') return Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 }));
+      if (c?.m === 'createChannel' && c.kind === 'text' && failText) { failText = false; return Promise.reject(refusal({ code: 'E_NETWORK' })); }
+      return Promise.resolve({ channelId: VOICE });
+    });
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(E_NETWORK)'));
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Midgard is ready, but #general was not added (E_UNAVAILABLE).'));
+    expect(fake.callsOf('createChannel')).toHaveLength(2);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  // Review M3: the same failure twice is a new alert, so it is announced again.
+  it('the same refusal twice is announced twice', async () => {
+    const { user } = setup(() => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 })));
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    const first = await screen.findByRole('alert');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(screen.getByRole('alert')).not.toBe(first));
+    expect(screen.getByRole('alert')).toHaveTextContent('That name was refused. Try another.');
+    expect(nameField('Server name')).toHaveFocus();
+  });
+
+  it('the same channel failure twice is announced twice', async () => {
+    const { user } = setup((m) => (m === 'createCommunity' ? Promise.resolve({ communityId: SERVER })
+      : m === 'createChannel' ? Promise.reject(refusal({ code: 'E_UNAVAILABLE', status: 503 })) : Promise.resolve(null)));
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(E_UNAVAILABLE)'));
+    const first = screen.getByRole('alert');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('alert')).not.toBe(first));
+    expect(screen.getByRole('alert')).toHaveTextContent('Midgard is ready, but its channels were not added (E_UNAVAILABLE).');
+  });
+
+  // Review M1: busy is said in a status region, since focus stays in the field.
+  it('says it is creating in a status region while busy', async () => {
+    let release = (): void => undefined;
+    const { user } = setup((m) => m === 'createCommunity'
+      ? new Promise(resolve => { release = () => resolve({ communityId: SERVER }); }) : Promise.resolve({ channelId: TEXT }));
+    expect(screen.getByRole('status')).toHaveTextContent('');
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    expect(screen.getByRole('status')).toHaveTextContent('Creating…');
+    act(() => release());
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(''));
+  });
+
+  // Review M5: a dialog reopened while an earlier create still runs says so, and sends nothing more until it ends.
+  it('reopened while an earlier create runs, it shows that create as busy until it ends', async () => {
+    let release = (): void => undefined;
+    const fake = client();
+    fake.handler = command => command.m === 'createCommunity'
+      ? new Promise(resolve => { release = () => resolve({ communityId: SERVER }); })
+      : Promise.resolve({ channelId: TEXT });
+    const user = userEvent.setup();
+    const tree = (open: boolean) => <div className="d-root"><CoreProvider client={fake}>
+      <CreateServerFlow open={open} onServer={vi.fn()} onDone={vi.fn()} onClose={vi.fn()} /></CoreProvider></div>;
+    const view = render(tree(true));
+    await user.type(nameField('Server name'), 'Midgard{Enter}');
+    view.rerender(tree(false));
+    view.rerender(tree(true));
+    expect(screen.getByRole('button', { name: 'Creating…' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('Creating…');
+    await user.type(nameField('Server name'), 'Asgard{Enter}');
+    expect(fake.callsOf('createCommunity')).toHaveLength(1);
+    act(() => release());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).not.toHaveAttribute('aria-disabled'));
+  });
+
   it('a create still running when the dialog closes leaves no stale notice for the next open', async () => {
     let release = (): void => undefined;
     const fake = client();
@@ -301,6 +401,65 @@ describe('CreateChannelFlow', () => {
     expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'voice', name: edge }]);
   });
 
+  // Review M7: E_BAD_INPUT from the worker is not about the name (an unknown server); only E_INVALID_REQUEST is.
+  it('says E_BAD_INPUT by its code, not as a refused name', async () => {
+    const { user } = setup(() => Promise.reject(refusal({ code: 'E_BAD_INPUT' })));
+    await user.type(nameField('Channel name'), 'loot{Enter}');
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Could not add the channel (E_BAD_INPUT). Try again.'));
+  });
+
+  it('says E_INVALID_REQUEST as a refused name', async () => {
+    const { user } = setup(() => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 })));
+    await user.type(nameField('Channel name'), 'loot{Enter}');
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('That name was refused. Try another.'));
+  });
+
+  // Review M8: two submits before the busy state renders make one channel.
+  it('makes one channel for two submits in the same tick', async () => {
+    let release = (): void => undefined;
+    const { fake, user, onDone } = setup(() => new Promise(resolve => { release = () => resolve({ channelId: TEXT }); }));
+    await user.type(nameField('Channel name'), 'loot');
+    const form = nameField('Channel name').closest('form');
+    if (form === null) throw new Error('no form');
+    act(() => { fireEvent.submit(form); fireEvent.submit(form); });
+    expect(screen.getByRole('button', { name: 'Creating…' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('Creating…');
+    act(() => release());
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(fake.callsOf('createChannel')).toHaveLength(1);
+  });
+
+  // Review I2: a create still running at close neither speaks to the next open nor hands over its channel.
+  it('a create still running when the dialog closes leaves no stale error, hands nothing over, and is busy on reopen', async () => {
+    const pending: { settle(ok: boolean): void }[] = [];
+    const fake = client();
+    fake.handler = () => new Promise((resolve, reject) => {
+      pending.push({ settle: ok => (ok ? resolve({ channelId: TEXT }) : reject(refusal({ code: 'E_UNAVAILABLE', status: 503 }))) });
+    });
+    const onDone = vi.fn();
+    const user = userEvent.setup();
+    const tree = (open: boolean) => <div className="d-root"><CoreProvider client={fake}>
+      <CreateChannelFlow open={open} community={{ id: SERVER, name: 'Midgard Crew' }} onDone={onDone} onClose={vi.fn()} /></CoreProvider></div>;
+    const view = render(tree(true));
+    await user.type(nameField('Channel name'), 'loot{Enter}');
+    view.rerender(tree(false));
+    view.rerender(tree(true));
+    // C: the earlier create is still running, and the dialog says so.
+    expect(screen.getByRole('button', { name: 'Creating…' })).toHaveAttribute('aria-disabled', 'true');
+    // A: its late failure is not shown here.
+    await act(async () => { pending[0].settle(false); await Promise.resolve(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument());
+    expect(screen.queryByRole('alert')).toBeNull();
+    // B: a late success after a close hands nothing over.
+    await user.type(nameField('Channel name'), 'gold{Enter}');
+    view.rerender(tree(false));
+    await act(async () => { pending[1].settle(true); await Promise.resolve(); });
+    view.rerender(tree(true));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument());
+    expect(onDone).not.toHaveBeenCalled();
+    expect(nameField('Channel name')).toHaveValue('');
+  });
+
   it('says why a create was refused, by code', async () => {
     const { user, onDone } = setup(() => Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })));
     await user.type(nameField('Channel name'), 'loot{Enter}');
@@ -334,7 +493,7 @@ describe('InviteFlow', () => {
 
   it('when the clipboard is blocked, says to copy the link from the field; the copy button tries again', async () => {
     const { user, write } = setup(undefined, () => Promise.reject(new DOMException('blocked', 'NotAllowedError')));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('This browser did not let dilla copy. Select the link and copy it yourself.'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(BLOCKED));
     write.mockImplementationOnce(() => Promise.resolve());
     await user.click(screen.getByRole('button', { name: 'copy link' }));
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Invite link copied.'));
@@ -355,12 +514,20 @@ describe('InviteFlow', () => {
     const region = screen.getByRole('status');
     const watch = new MutationObserver(() => { said.push(region.textContent ?? ''); });
     watch.observe(region, { childList: true, characterData: true, subtree: true });
-    await waitFor(() => expect(region).toHaveTextContent('This browser did not let dilla copy. Select the link and copy it yourself.'));
+    await waitFor(() => expect(region).toHaveTextContent(BLOCKED));
     watch.disconnect();
     expect(said.some(s => s.includes('Invite link copied.'))).toBe(false);
     const field = nameField('Invite link');
     expect(field).toHaveValue(URL);
     expect(field).toHaveAttribute('readonly');
+  });
+
+  it('the same refusal twice is announced twice', async () => {
+    const { user } = setup(() => Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 })));
+    const first = await screen.findByRole('alert');
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.getByRole('alert')).not.toBe(first));
+    expect(screen.getByRole('alert')).toHaveTextContent('You cannot invite people to this server.');
   });
 
   it('a refused invite says why and offers a retry', async () => {

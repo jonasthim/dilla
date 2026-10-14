@@ -90,6 +90,28 @@ describe('CreateServer', () => {
     expect(p.onRetry).not.toHaveBeenCalled();
   });
 
+  it('says it is busy in a status region that stands from the first render', () => {
+    const { rerender } = render(<CreateServer {...props({ name: 'Midgard' })} />);
+    const region = screen.getByRole('status');
+    expect(region).toHaveTextContent('');
+    rerender(<CreateServer {...props({ name: 'Midgard', busy: true })} />);
+    expect(screen.getByRole('status')).toBe(region);
+    expect(region).toHaveTextContent(labels.busy);
+  });
+
+  it('a new attempt with the same refusal or notice is a new alert', () => {
+    const p = props({ name: 'Midgard', error: 'That name was refused. Try another.', attempt: 1 });
+    const { rerender } = render(<CreateServer {...p} />);
+    const first = screen.getByRole('alert');
+    rerender(<CreateServer {...p} attempt={2} />);
+    expect(screen.getByRole('alert')).not.toBe(first);
+    expect(screen.getByRole('textbox', { name: labels.name })).toHaveFocus();
+    rerender(<CreateServer {...p} error={null} partial={PartialVoice.args.partial} attempt={3} />);
+    const notice = screen.getByRole('alert');
+    rerender(<CreateServer {...p} error={null} partial={PartialVoice.args.partial} attempt={4} />);
+    expect(screen.getByRole('alert')).not.toBe(notice);
+  });
+
   it('Escape and the close button call onClose; a closed dialog shows nothing', async () => {
     const user = userEvent.setup();
     const p = props();

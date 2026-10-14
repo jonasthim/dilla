@@ -60,6 +60,18 @@ describe('CreateChannel', () => {
     expect(screen.getByRole('textbox', { name: labels.name })).toHaveFocus();
   });
 
+  it('says it is busy in a status region; a new attempt with the same refusal is a new alert', () => {
+    const p = props({ name: 'loot', error: 'That name was refused. Try another.', attempt: 1 });
+    const { rerender } = render(<CreateChannel {...p} />);
+    expect(screen.getByRole('status')).toHaveTextContent('');
+    const first = screen.getByRole('alert');
+    rerender(<CreateChannel {...p} attempt={2} />);
+    expect(screen.getByRole('alert')).not.toBe(first);
+    expect(screen.getByRole('textbox', { name: labels.name })).toHaveFocus();
+    rerender(<CreateChannel {...p} error={null} busy />);
+    expect(screen.getByRole('status')).toHaveTextContent(labels.busy);
+  });
+
   it('Escape calls onClose', async () => {
     const user = userEvent.setup();
     const p = props();

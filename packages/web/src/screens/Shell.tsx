@@ -168,7 +168,8 @@ export function Shell(): React.JSX.Element {
   const [inviteOpen, setInviteOpen] = useState(false);
   const createFlowOpen = createOpen || channelOpen || inviteOpen;
   // The text channel a create just opened: its composer takes focus once it is on screen (after the dialog handed focus back).
-  const pendingFocus = useRef<string | null>(null);
+  // `from` is the conversation open when the wish was made: the shell may still show it for a render or two.
+  const pendingFocus = useRef<{ id: string; from: string | null } | null>(null);
   // The DM picker (requirement 5).
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
@@ -514,10 +515,13 @@ export function Shell(): React.JSX.Element {
   }, [pickerOpen]);
 
   // Flow 07: a created text channel's composer takes focus once it is on screen. No dependency list: it may appear several
-  // renders after the create answered.
+  // renders after the create answered. The wish is dropped once another conversation opens (review M6), so a composer that
+  // shows later, after the person went elsewhere and came back, does not take focus.
   useEffect(() => {
-    const want = pendingFocus.current;
-    if (want === null || targetId !== want) return;
+    const pending = pendingFocus.current;
+    if (pending === null) return;
+    if (targetId !== null && targetId !== pending.id && targetId !== pending.from) { pendingFocus.current = null; return; }
+    if (targetId !== pending.id) return;
     const box = document.querySelector<HTMLTextAreaElement>('.d-composer textarea');
     if (box === null || createFlowOpen) return;
     box.focus();
@@ -907,13 +911,13 @@ export function Shell(): React.JSX.Element {
       <CreateServerFlow open={createOpen} onClose={() => setCreateOpen(false)}
         onServer={id => { setJoined(id); navigate({ name: 'channel', communityId: id, channelId: null }); }}
         onDone={({ communityId: id, channelId: general }) => {
-          pendingFocus.current = general;
+          pendingFocus.current = { id: general, from: targetId };
           setCreateOpen(false);
           navigate({ name: 'channel', communityId: id, channelId: general }, true);
         }} />
       <CreateChannelFlow open={channelOpen} community={community} onClose={() => setChannelOpen(false)}
         onDone={(id, kind) => {
-          if (kind === 'text') pendingFocus.current = id;
+          if (kind === 'text') pendingFocus.current = { id, from: targetId };
           setChannelOpen(false);
           if (community !== null) navigate({ name: 'channel', communityId: community.id, channelId: id });
         }} />

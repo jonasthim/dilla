@@ -182,6 +182,28 @@ describe('a server’s actions (flow 07)', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  // Review M6: a new channel's composer takes focus once, on arrival. If the person goes elsewhere first, the wish is
+  // dropped, so the composer does not take focus later when they come back.
+  it('a pending composer focus is dropped when the person goes elsewhere before the channel shows', async () => {
+    const LOBBY = 'e1'.repeat(16);
+    const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
+    act(() => fake.set(`channels:${A}`, [ch(GEN, A, 'general'), ch(LOBBY, A, 'lobby', { position: 1 })]));
+    const answer = worker(fake);
+    // The instance makes the channel, but the list that holds it has not arrived yet.
+    fake.handler = c => (c.m === 'createChannel' ? Promise.resolve({ channelId: RAND }) : answer(c));
+    await user.click(screen.getByRole('button', { name: 'new channel' }));
+    await user.type(screen.getByRole('textbox', { name: 'Channel name' }), 'Random{Enter}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(screen.getByRole('button', { name: /lobby/ }));
+    await waitFor(() => expect(path()).toBe(`/c/${A}/${LOBBY}`));
+    act(() => fake.set(`channels:${A}`, [ch(GEN, A, 'general'), ch(LOBBY, A, 'lobby', { position: 1 }), ch(RAND, A, 'random', { position: 2 })]));
+    const row = screen.getByRole('button', { name: /random/ });
+    await user.click(row);
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'message #random' })).toBeInTheDocument());
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('textbox', { name: 'message #random' })).not.toHaveFocus();
+  });
+
   it('copies an invite link and says so; the link shows in the dialog', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
     await user.click(screen.getByRole('button', { name: 'invite link' }));

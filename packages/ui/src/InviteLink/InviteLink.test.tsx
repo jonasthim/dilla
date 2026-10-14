@@ -55,6 +55,14 @@ describe('InviteLink', () => {
     expect(p.onRetry).toHaveBeenCalledTimes(1);
   });
 
+  it('a new attempt with the same refusal is a new alert', () => {
+    const p = props({ state: 'failed', url: '', error: 'You cannot invite people to this server.', attempt: 1 });
+    const { rerender } = render(<InviteLink {...p} />);
+    const first = screen.getByRole('alert');
+    rerender(<InviteLink {...p} attempt={2} />);
+    expect(screen.getByRole('alert')).not.toBe(first);
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, creating, ready and failed', async theme => {
     document.documentElement.dataset.theme = theme;
     for (const over of [{ state: 'creating' as const, url: '' }, { status: 'Invite link copied.' }, { state: 'failed' as const, error: 'x' }]) {

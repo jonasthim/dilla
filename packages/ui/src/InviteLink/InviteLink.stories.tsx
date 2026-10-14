@@ -27,6 +27,6 @@ export const Copied = {
 } satisfies Story;
 export const ClipboardBlocked: Story = {
   args: { state: 'ready', url: 'https://chat.example.org/i/7KQ2-M4ZP-XW9D',
-    status: 'This browser did not let dilla copy. Select the link and copy it yourself.' },
+    status: 'This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself.' },
 };
 export const Refused: Story = { args: { state: 'failed', error: 'You cannot invite people to this server.' } };

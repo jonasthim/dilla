@@ -40,7 +40,7 @@ const ACTIONS = <>
   <Button aria-label="new channel"><span aria-hidden="true">+</span> channel</Button>
   <Button>invite link</Button>
 </>;
-export const WithActions: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, channels: BADGED, actions: ACTIONS, actionsLabel: 'Midgard Crew',
+export const WithActions: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, channels: BADGED, actions: ACTIONS, actionsLabel: 'server actions',
   tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
     tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} /> } };
 export const WithTabs: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, channels: BADGED,

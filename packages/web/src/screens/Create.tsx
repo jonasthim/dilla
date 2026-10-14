@@ -57,7 +57,12 @@ interface MadeServer { communityId: string; name: string; channels: Map<number, 
  * exists, so the shell selects it; `onDone` once both starters exist. A starter channel that fails leaves the server as it
  * is and names what is missing, with a retry that adds only the missing channels (never a silent rollback, never a second
  * #general). One server per press: a ref guards the in flight create, since two submits can land before `busy` renders.
- * A create still running when the dialog closes finishes its work but no longer speaks to this dialog or calls `onDone`.
+ * A create still running when the dialog closes finishes its work but no longer speaks to this dialog or calls `onDone`;
+ * `busy` follows that create, so a dialog reopened meanwhile says it is still creating (review I2, M5).
+ *
+ * The retry first reads the server's channel list again: dillad keeps no uniqueness on channel names, and a create whose
+ * answer was lost may still have made its channel, so a listed starter counts as made (review I1). A retry whose read
+ * fails sends no create.
  */
 export function CreateServerFlow(props: {
   open: boolean; onClose(): void; onServer(communityId: string): void; onDone(result: { communityId: string; channelId: string }): void;
@@ -67,6 +72,8 @@ export function CreateServerFlow(props: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [partial, setPartial] = useState<string | null>(null);
+  // Each refusal or notice shown counts one: the same text again is a new alert (review M3).
+  const [attempt, setAttempt] = useState(0);
   const running = useRef(false);
   // Each open of the dialog is one session; work from an earlier one is ignored once it closed.
   const session = useRef(0);
@@ -99,7 +106,14 @@ export function CreateServerFlow(props: {
       props.onDone({ communityId: server.communityId, channelId: general });
       return;
     }
-    setPartial(t(partialKey(missing), { name: server.name, code: (failure ?? BAD_RESULT).code }));
+    notice(server, failure ?? BAD_RESULT);
+  };
+
+  const fail = (message: string) => { setError(message); setAttempt(a => a + 1); };
+  const notice = (server: MadeServer, failure: UiError) => {
+    const missing = STARTERS.flatMap((_, i) => (server.channels.has(i) ? [] : [i]));
+    setPartial(t(partialKey(missing), { name: server.name, code: failure.code }));
+    setAttempt(a => a + 1);
   };
 
   const run = (work: (mine: () => boolean) => Promise<void>) => {
@@ -113,7 +127,7 @@ export function CreateServerFlow(props: {
   const submit = () => {
     const problem = nameProblem(name, SERVER_NAME_MAX_BYTES);
     if (problem !== null) {
-      setError(t(problem === 'empty' ? 'create.server.error.empty' : problem === 'long' ? 'create.server.error.long' : 'create.name.control'));
+      fail(t(problem === 'empty' ? 'create.server.error.empty' : problem === 'long' ? 'create.server.error.long' : 'create.name.control'));
       return;
     }
     const serverName = name.trim();
@@ -123,10 +137,11 @@ export function CreateServerFlow(props: {
         communityId = idIn(await client.call({ m: 'createCommunity', name: serverName }), 'communityId');
       } catch (e) {
         const code = errorOf(e).code;
-        if (mine()) setError(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? t('create.server.error.refused') : t('create.server.error.other', { code }));
+        // The worker's E_BAD_INPUT here is its own name check (Task 1), so it reads as a refused name too.
+        if (mine()) fail(code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? t('create.server.error.refused') : t('create.server.error.other', { code }));
         return;
       }
-      if (communityId === null) { if (mine()) setError(t('create.server.error.other', { code: BAD_RESULT.code })); return; }
+      if (communityId === null) { if (mine()) fail(t('create.server.error.other', { code: BAD_RESULT.code })); return; }
       const server: MadeServer = { communityId, name: serverName, channels: new Map<number, string>() };
       if (mine()) {
         made.current = server;
@@ -139,18 +154,37 @@ export function CreateServerFlow(props: {
   // The notice stays while the retry runs; it changes only with the retry's result.
   const retry = () => {
     const server = made.current;
-    if (server !== null) run(mine => starters(server, mine));
+    if (server === null) return;
+    run(async mine => {
+      try {
+        await client.call({ m: 'selectCommunity', communityId: server.communityId });
+      } catch (e) {
+        if (mine()) notice(server, errorOf(e));
+        return;
+      }
+      for (const [i, starter] of STARTERS.entries()) {
+        if (server.channels.has(i)) continue;
+        const kind = starter.kind === 'voice' ? 1 : 0;
+        const listed = (client.get(`channels:${server.communityId}`) ?? []).find(c => c.kind === kind && c.name === starter.name);
+        if (listed !== undefined) server.channels.set(i, listed.id);
+      }
+      await starters(server, mine);
+    });
   };
 
   return (
     <CreateServer open={props.open} name={name} onName={v => { setName(v); setError(null); }} error={error} busy={busy} partial={partial}
       labels={{ title: t('create.server.title'), body: t('create.server.body'), name: t('create.server.name'), hint: t('create.server.hint'),
         submit: t('create.server.submit'), busy: t('create.server.busy'), close: t('dialog.close'), retry: t('create.server.retry') }}
-      onSubmit={submit} onRetry={retry} onClose={() => props.onClose()} />
+      attempt={attempt} onSubmit={submit} onRetry={retry} onClose={() => props.onClose()} />
   );
 }
 
-/** "New channel": a kind and a name, then createChannel; `onDone` hands over the new channel to select. */
+/**
+ * "New channel": a kind and a name, then createChannel; `onDone` hands over the new channel to select. As in
+ * CreateServerFlow, a create still running when the dialog closes no longer speaks to it or calls `onDone`, and `busy`
+ * follows it into a dialog reopened meanwhile (review I2).
+ */
 export function CreateChannelFlow(props: {
   open: boolean; community: { id: string; name: string } | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
 }): React.JSX.Element {
@@ -159,12 +193,17 @@ export function CreateChannelFlow(props: {
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const running = useRef(false);
+  const session = useRef(0);
 
   useEffect(() => {
     if (props.open) return;
-    setKind('text'); setName(''); setError(null); setBusy(false);
+    session.current += 1;
+    setKind('text'); setName(''); setError(null);
   }, [props.open]);
+
+  const fail = (message: string) => { setError(message); setAttempt(a => a + 1); };
 
   const shown = channelName(kind, name);
   const hint = shown === '' ? t('create.channel.hint')
@@ -175,21 +214,26 @@ export function CreateChannelFlow(props: {
     if (community === null || running.current) return;
     const problem = nameProblem(shown, CHANNEL_NAME_MAX_BYTES);
     if (problem !== null) {
-      setError(t(problem === 'empty' ? 'create.channel.error.empty' : problem === 'long' ? 'create.channel.error.long' : 'create.name.control'));
+      fail(t(problem === 'empty' ? 'create.channel.error.empty' : problem === 'long' ? 'create.channel.error.long' : 'create.name.control'));
       return;
     }
     running.current = true;
     setBusy(true);
     const chosen = kind;
+    const at = session.current;
+    const mine = () => session.current === at;
     void (async () => {
       try {
         const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown }), 'channelId');
-        if (id === null) setError(t('create.channel.error.other', { code: BAD_RESULT.code }));
+        if (!mine()) return;
+        if (id === null) fail(t('create.channel.error.other', { code: BAD_RESULT.code }));
         else props.onDone(id, chosen);
       } catch (e) {
+        if (!mine()) return;
+        // Only the instance's E_INVALID_REQUEST is about the name; the worker's E_BAD_INPUT here is not (review M7).
         const code = errorOf(e).code;
-        setError(code === 'E_FORBIDDEN' ? t('create.channel.error.forbidden')
-          : code === 'E_INVALID_REQUEST' || code === 'E_BAD_INPUT' ? t('create.channel.error.refused')
+        fail(code === 'E_FORBIDDEN' ? t('create.channel.error.forbidden')
+          : code === 'E_INVALID_REQUEST' ? t('create.channel.error.refused')
             : t('create.channel.error.other', { code }));
       } finally {
         running.current = false;
@@ -200,7 +244,7 @@ export function CreateChannelFlow(props: {
 
   return (
     <CreateChannel open={props.open} kind={kind} onKind={k => { setKind(k); setError(null); }} name={name}
-      onName={v => { setName(v); setError(null); }} hint={hint} error={error} busy={busy}
+      onName={v => { setName(v); setError(null); }} hint={hint} error={error} busy={busy} attempt={attempt}
       labels={{ title: t('create.channel.title', { server: props.community?.name ?? '' }), kind: t('create.channel.kind'),
         text: t('create.channel.text'), voice: t('create.channel.voice'), name: t('create.channel.name'), submit: t('create.channel.submit'),
         busy: t('create.channel.busy'), close: t('dialog.close') }}
@@ -265,7 +309,7 @@ export function InviteFlow(props: { open: boolean; community: { id: string; name
   };
 
   return (
-    <InviteLink open={props.open} state={state} url={url} status={status} error={error}
+    <InviteLink open={props.open} state={state} url={url} status={status} error={error} attempt={attempt}
       limits={t('invite.limits', { uses: INVITE_MAX_USES, days: INVITE_TTL_DAYS, server: props.community?.name ?? '' })}
       labels={{ title: t('invite.title', { server: props.community?.name ?? '' }), creating: t('invite.creating'), link: t('invite.link'),
         copy: t('invite.copy'), close: t('dialog.close'), retry: t('invite.retry') }}
