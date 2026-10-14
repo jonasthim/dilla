@@ -26,6 +26,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at }: A
   const menuRef = useRef<HTMLDivElement>(null);
   const startAt = useRef<'first' | 'last'>('first');
   const [clamped, setClamped] = useState<{ x: number; y: number } | null>(null);
+  const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
 
   // Focus goes to the first item (the last after ArrowUp) every time the menu opens.
   useEffect(() => {
@@ -36,15 +37,30 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at }: A
     startAt.current = 'first';
   }, [open]);
 
-  // The pointer position, kept inside the viewport once the popup's size is known.
+  // The pointer position, kept inside the popup's containing block once the popup's size is known. A fixed popup is
+  // placed against the viewport, except inside the app shell, which is a size container and so its containing block:
+  // there the position is relative to the shell's corner and clamped to the shell.
   useLayoutEffect(() => {
     if (!open || !at) { setClamped(null); return; }
     const w = menuRef.current?.offsetWidth ?? 0;
     const h = menuRef.current?.offsetHeight ?? 0;
+    const shell = rootRef.current?.closest('.d-app-shell')?.getBoundingClientRect();
+    const box = shell ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
     setClamped({
-      x: Math.max(0, Math.min(at.x, window.innerWidth - w)),
-      y: Math.max(0, Math.min(at.y, window.innerHeight - h)),
+      x: Math.max(0, Math.min(at.x - box.left, box.width - w)),
+      y: Math.max(0, Math.min(at.y - box.top, box.height - h)),
     });
+  }, [open, at]);
+
+  // Without `at` the popup hangs under the trigger, or above it when the trigger is in the bottom half of its nearest
+  // scrollable ancestor (the viewport when there is none).
+  useLayoutEffect(() => {
+    if (!open || at || !triggerRef.current) return;
+    let scroller: Element | null = triggerRef.current.parentElement;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    const area = scroller?.getBoundingClientRect() ?? { top: 0, height: window.innerHeight };
+    const t = triggerRef.current.getBoundingClientRect();
+    setPlacement(t.top + t.height / 2 > area.top + area.height / 2 ? 'top' : 'bottom');
   }, [open, at]);
 
   // A pointerdown anywhere outside the trigger and the popup closes the menu.
@@ -107,7 +123,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at }: A
         <span aria-hidden="true">⋯</span>
       </button>
       {open ? (
-        <div ref={menuRef} id={`${base}-menu`} role="menu" aria-label={label} className="d-action-menu__popup" style={style}
+        <div ref={menuRef} id={`${base}-menu`} role="menu" aria-label={label} className="d-action-menu__popup" style={style} data-placement={at ? undefined : placement}
           onKeyDown={onMenuKey}>
           {items.map(item => (
             <button key={item.id} type="button" role="menuitem" tabIndex={-1} className="d-action-menu__item"

@@ -8,15 +8,31 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 const items = [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }, { id: 'copy', label: 'copy id' }];
 
 /** Holds `open` the way a caller does, and reports selections. */
-function Harness({ onSelect, at, startOpen = false }: { onSelect?: (id: string) => void; at?: ActionMenuProps['at']; startOpen?: boolean }) {
+function Harness({ onSelect, at, startOpen = false, frame }: {
+  onSelect?: (id: string) => void; at?: ActionMenuProps['at']; startOpen?: boolean; frame?: 'shell' | 'scroller';
+}) {
   const [open, setOpen] = useState(startOpen);
-  return (
+  const inner = (
     <div>
       <button type="button">before</button>
       <ActionMenu label="actions for Astrid" items={items} open={open} onOpenChange={setOpen} onSelect={onSelect ?? (() => {})} at={at} />
       <button type="button">after</button>
     </div>
   );
+  if (frame === 'shell') return <div className="d-app-shell">{inner}</div>;
+  if (frame === 'scroller') return <div data-testid="scroller" style={{ overflowY: 'auto' }}>{inner}</div>;
+  return inner;
+}
+
+/** Mocks getBoundingClientRect by a class name or test id on the element. */
+function mockRects(rects: Record<string, { left?: number; top?: number; width: number; height: number }>) {
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    const key = Object.keys(rects).find(k => this.classList.contains(k) || this.getAttribute('data-testid') === k);
+    const r = key ? rects[key]! : { width: 0, height: 0 };
+    const left = r.left ?? 0;
+    const top = r.top ?? 0;
+    return { left, top, x: left, y: top, width: r.width, height: r.height, right: left + r.width, bottom: top + r.height, toJSON() { return {}; } };
+  });
 }
 
 const trigger = () => screen.getByRole('button', { name: 'actions for Astrid' });
@@ -128,6 +144,34 @@ describe('ActionMenu', () => {
     unmount();
     render(<Harness startOpen at={{ x: window.innerWidth - 10, y: window.innerHeight - 10 }} />);
     expect(screen.getByRole('menu')).toHaveStyle({ left: `${window.innerWidth - 160}px`, top: `${window.innerHeight - 100}px` });
+  });
+
+  it('inside the app shell `at` is measured from the shell’s corner and clamped to the shell, not the window', () => {
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(160);
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(100);
+    mockRects({ 'd-app-shell': { left: 100, top: 50, width: 400, height: 300 } });
+    const { unmount } = render(<Harness startOpen frame="shell" at={{ x: 150, y: 120 }} />);
+    expect(screen.getByRole('menu')).toHaveStyle({ position: 'fixed', left: '50px', top: '70px' });
+    unmount();
+    render(<Harness startOpen frame="shell" at={{ x: 490, y: 340 }} />);
+    expect(screen.getByRole('menu')).toHaveStyle({ left: '240px', top: '200px' });
+  });
+
+  it('without `at`, a trigger in the bottom half of its scroller opens the menu upward; in the top half, downward', () => {
+    mockRects({ 'd-action-menu__trigger': { top: 280, width: 24, height: 24 }, scroller: { top: 0, width: 300, height: 300 } });
+    const { unmount } = render(<Harness startOpen frame="scroller" />);
+    expect(screen.getByRole('menu')).toHaveAttribute('data-placement', 'top');
+    unmount();
+    vi.restoreAllMocks();
+    mockRects({ 'd-action-menu__trigger': { top: 10, width: 24, height: 24 }, scroller: { top: 0, width: 300, height: 300 } });
+    render(<Harness startOpen frame="scroller" />);
+    expect(screen.getByRole('menu')).toHaveAttribute('data-placement', 'bottom');
+  });
+
+  it('without a scroller the viewport decides', () => {
+    mockRects({ 'd-action-menu__trigger': { top: window.innerHeight - 40, width: 24, height: 24 } });
+    render(<Harness startOpen />);
+    expect(screen.getByRole('menu')).toHaveAttribute('data-placement', 'top');
   });
 
   it('opens on its first item when `at` is set', () => {

@@ -5,3 +5,4 @@
 .d-action-menu__item { display: block; min-height: 1.75rem; padding: 0 0.625rem; font: inherit; font-size: var(--text-sm); text-align: left; color: var(--fg); background: transparent; border: 0; border-radius: var(--r-md); cursor: pointer; }
 .d-action-menu__item:hover, .d-action-menu__item:focus-visible { background: var(--surface-2); }
 .d-action-menu__item[data-danger="true"] { color: var(--danger); }
+.d-action-menu__popup[data-placement="top"] { top: auto; bottom: 100%; }
