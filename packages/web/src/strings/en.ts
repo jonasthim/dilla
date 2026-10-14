@@ -419,6 +419,7 @@ export const en = {
   'voice.state.screen': 'sharing screen',
   'voice.announce.joined': 'You joined {where}.',
   'voice.announce.left': 'You left {where}.',
+  'voice.announce.rejoining': 'Rejoining {where}. This can take up to 30 seconds.',
   'voice.announce.muted': 'Microphone muted.',
   'voice.announce.unmuted': 'Microphone on.',
   'voice.announce.deafened': 'Sound off.',

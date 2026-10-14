@@ -299,6 +299,19 @@ describe('review round 1', () => {
     expect(app.module.bindPushToTalk).not.toHaveBeenCalled();
   });
 
+  it('f10app m2: a rejoin that waits for its earlier Remove is announced in the dock status', async () => {
+    const app = renderVoiceShell();
+    const release = app.holdStart();
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    const status = () => document.querySelector('.d-voice-dock [role="status"]');
+    await waitFor(() => expect(status()).not.toBeNull());
+    app.client.publish('call', callState({ phase: 'joining', channelId: GENV }));
+    expect(status()).not.toHaveTextContent(t('voice.announce.rejoining', { where: 'general' }));
+    app.client.publish('call', callState({ phase: 'joining', channelId: GENV, rejoining: true }));
+    await waitFor(() => expect(status()).toHaveTextContent('Rejoining general. This can take up to 30 seconds.'));
+    release();
+  });
+
   it('I3: the outgoing ring is announced in the dock status, once per change', async () => {
     const app = renderVoiceShell({ path: `/dm/${DM}` });
     await app.user.click(await main().findByRole('button', { name: 'call' }));

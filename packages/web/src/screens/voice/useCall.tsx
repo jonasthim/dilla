@@ -274,6 +274,12 @@ export function useCall(o: UseCallOptions): CallView {
     }
   }, [teardown]);
   const slice = o.call;
+  // f10app m2: the rejoin's wait for this device's earlier Remove (up to 30 s, the dock says "connecting") is said once in
+  // the dock's status region, so a screen reader user knows why nothing happens yet.
+  const rejoining = slice?.phase === 'joining' && slice.rejoining && slice.channelId === channelId && channelId !== null;
+  useEffect(() => {
+    if (rejoining && channelId !== null) announce(t('voice.announce.rejoining', { where: live.current.whereOf(channelId) }));
+  }, [rejoining, channelId, announce]);
   useEffect(() => {
     const s = sessionRef.current;
     const id = channelRef.current;

@@ -11,7 +11,8 @@ The media key never appears in this flow: the browser derives it in the core wor
 | idle | voice rows with `voice.join` on focus or hover; no dock | `call.phase` idle | none |
 | no one in voice | the row shows no sub-rows and no count; the stage says `voice.empty` | `voice[channel]` absent | none |
 | live, not joined | the row shows `voice.count` and one sub-row per person with their state words; `voice.join` / `call.join` | `voice[channel]` has participants, `call.phase` idle | none |
-| joining | dock shows `voice.dock.connecting`; the stage controls appear but stay `aria-disabled` | `call.phase` joining (also while a rejoin waits, at most 30 s, for the Remove of this device's earlier leaf to be committed: the instance refuses the target of an outstanding Remove; a person alone ends the call as they leave, so their rejoin never waits) | none |
+| joining | dock shows `voice.dock.connecting`; the stage controls appear but stay `aria-disabled` | `call.phase` joining | none |
+| rejoining | as joining | `call.phase` joining with `call.rejoining` true: the join waits, at most 30 s, for the Remove of this device's earlier leaf to be committed (the instance refuses the target of an outstanding Remove with `E_REMOVE_PENDING`); a person alone ends the call as they leave (only while the instance finds no other device in it), so their rejoin never waits | `voice.announce.rejoining`, once, in the dock's status region |
 | connected | dock shows `voice.dock.connected`; tiles for everyone; the toolbar is live | `call.phase` in | `voice.announce.joined` |
 | reconnecting | dock shows `voice.dock.reconnecting`; tiles keep their last state | page room reconnecting, `call.phase` in | none |
 | blocked before join | `voice.blockedChanged` (the changed contact the core names from the call tree, or one in the call roster) or `voice.blockedJoin`; no join button until the cause is gone (the contact verified: the join is offered again without a reload) | `call.phase` blocked, `call.error.code` E_UMK_CHANGED (with `call.changedUser`) or another block code | the notice (focus moves to it once) |
@@ -233,6 +234,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 
 *Announcements:*
 - `voice.announce.joined='You joined {where}.'`, `voice.announce.left='You left {where}.'`
+- `voice.announce.rejoining='Rejoining {where}. This can take up to 30 seconds.'` (the rejoin's wait for this device's earlier Remove; added 2026-10-14, task-10 fix round, f10app m2)
 - `voice.announce.muted='Microphone muted.'`, `voice.announce.unmuted='Microphone on.'`
 - `voice.announce.deafened='Sound off.'`, `voice.announce.undeafened='Sound on.'`
 
