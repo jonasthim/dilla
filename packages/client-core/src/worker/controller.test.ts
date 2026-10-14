@@ -4534,6 +4534,31 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
       value: { url: 'https://dilla.test/i/AB12CD34', code: 'AB12CD34', expires: Number(NOW_S + 604_800n) } });
   });
 
+  it('createInvite stores nothing: no slice changes, and no other route or core call', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const posted = w.posted.length;
+    const calls = w.calls.length;
+    w.call(95, { m: 'createInvite', communityId: toHex(COMMUNITY), maxUses: 10, ttlSeconds: 604_800 });
+    await vi.waitFor(() => expect(w.ret(95)).toMatchObject({ ok: true }));
+    await settle();
+    expect(w.posted.slice(posted).filter((m) => m.t === 'slice')).toEqual([]);
+    expect(w.calls.slice(calls)).toEqual([]);
+  });
+
+  it('a server name of exactly 255 bytes of emoji is accepted; 256 bytes is refused before any request', async () => {
+    const w = world();
+    await toReady(w);
+    const edge = '😀'.repeat(63) + 'abc';                         // 63×4 + 3 = 255 UTF-8 bytes
+    w.call(96, { m: 'createCommunity', name: edge });
+    await vi.waitFor(() => expect(w.ret(96)).toMatchObject({ ok: true }));
+    expect(w.routes.createCommunity).toHaveBeenCalledWith(edge);
+    w.call(97, { m: 'createCommunity', name: '😀'.repeat(64) });
+    expect(w.ret(97)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.routes.createCommunity).toHaveBeenCalledTimes(1);
+  });
+
   it('a refused create crosses with its code and status; an unknown server is refused before any request', async () => {
     const w = world();
     await toReady(w);

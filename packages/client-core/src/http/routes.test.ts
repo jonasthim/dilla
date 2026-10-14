@@ -658,6 +658,27 @@ describe('Routes: retries and inputs', () => {
     }
     expect(t.seen).toHaveLength(0);
   });
+  it('a server name of exactly 255 bytes of emoji is sent, and 256 bytes is refused before any request', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [COMMUNITY, ROLE, 1]));
+    const edge = '😀'.repeat(63) + 'abc';                         // 63×4 + 3 = 255 UTF-8 bytes
+    expect(await routes.createCommunity(edge)).toEqual({ id: COMMUNITY, roleEveryone: ROLE, policyVersion: 1n });
+    expect(t.seen[0].body).toEqual(encode([edge, new Uint8Array(0), 0, 0]));
+    await expect(routes.createCommunity('😀'.repeat(64))).rejects.toThrow(/^E_ROUTE_INPUT: name must be 1\.\.255 bytes$/);
+    expect(t.seen).toHaveLength(1);
+  });
+  it('a channel name of exactly 100 bytes is sent, 101 bytes or a bell character is refused before any request', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(201, [CHANNEL, 0, 0]));
+    const edge = 'å'.repeat(50);                                  // 50×2 = 100 UTF-8 bytes
+    await routes.createChannel(COMMUNITY, { kind: 'text', name: edge, position: 0 });
+    expect(t.seen[0].body).toEqual(encode([0, 0, 0, null, edge, '', 0, 0]));
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: edge + 'x', position: 0 }))
+      .rejects.toThrow(/^E_ROUTE_INPUT: name must be 1\.\.100 bytes$/);
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a\u0007b', position: 0 }))
+      .rejects.toThrow(/^E_ROUTE_INPUT: name contains a control character$/);
+    expect(t.seen).toHaveLength(1);
+  });
   it('postMessage is sent once after a network failure', async () => {
     const { t, routes } = setup();
     t.replies.push(new TypeError('fetch failed'), bytesReply(200, UPLOADED));
