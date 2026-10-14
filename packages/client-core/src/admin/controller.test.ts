@@ -623,6 +623,19 @@ describe('removal notices (web3.4 C4)', () => {
     expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]);
   });
 
+  it('final fix I3: kick, notice, rejoin: the notice of that server is gone', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.joined = false;
+    w.gateway.emit(changed);
+    await vi.waitFor(() => expect(removals(w)).toEqual([{ id: 1, communityId: CID, name: 'friends' }]));
+    w.state.joined = true;
+    w.routes.getInvite.mockResolvedValue({ communityId: COMMUNITY, communityName: 'friends', expires: 0n });
+    expect(await run(w, { m: 'joinCommunity', invite: 'AB12CD34' })).toMatchObject({ ok: true });
+    expect(w.last<{ id: string }[]>('communities')?.map((c) => c.id)).toEqual([CID]);
+    expect(removals(w)).toEqual([]);
+  });
+
   it('the first list at ready tells nothing, even of a server missing from a list cached nowhere', async () => {
     const w = world();
     w.state.joined = false;

@@ -1623,6 +1623,11 @@ export class Controller {
     await this.routes.joinCommunity(communityId, invite);
     // web3.4 C4: a server left earlier and joined again is told of when it is later taken away.
     this.admin.selfRemoved.delete(toHex(communityId));
+    // Final fix I3: a notice of that server's removal is stale once it is joined again.
+    const notices = this.slices.get('removals');
+    if (notices !== undefined && notices.some((r) => r.communityId === toHex(communityId))) {
+      this.slices.set('removals', notices.filter((r) => r.communityId !== toHex(communityId)));
+    }
     // A server joined again in this tab (after a kick, a lifted ban or a leave): a resync refused while the account was out
     // stood as not-member until the next ready, so the channels stayed unwritable until a reload; the engine resyncs now.
     this.sync?.rejoined(communityId);
