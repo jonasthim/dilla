@@ -70,15 +70,17 @@ test('a screen share and a camera reach the other browser verified, and stop', a
 // share's audio track. Playwright launches Chromium with `--mute-audio`, which silences every tab and so the captured
 // sound too: this test drops it (measured: a tab capture reads an RMS of 0 with it, about 0.6 without). Playwright
 // allows launch options only per file or worker, so the test launches a browser of its own with these switches; the
-// rest of the suite keeps the worker's browser and its fake picker.
+// rest of the suite keeps the worker's browser and its fake picker. That browser follows the config's `headless`; a
+// headed run (`--headed`) plays the tab's 440 Hz tone and the fake microphone's 1 kHz tone aloud on this machine.
 const TONE_TITLE = 'dilla-share-tone';
 const fixtures = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'));
 const stateWord = (seen: Locator, key: string): Locator => seen.locator(`.d-call-tile__state[data-state="${key}"]`);
 
-test('a shared tab’s sound is heard by the other browser', async ({ peerBrowser, browserName, playwright, channel }) => {
+test('a shared tab’s sound is heard by the other browser', async ({ peerBrowser, browserName, playwright, channel, headless }) => {
   test.skip(browserName !== 'chromium', 'DEV-63 / NV-10: screen capture, and a tab picked by its title, are Chromium only');
   const tabPicking = await playwright.chromium.launch({
     ...(channel === undefined ? {} : { channel }),
+    headless,
     args: [
       ...chromiumMediaArgs(fixtures).filter((a) => a !== '--use-fake-ui-for-media-stream'),
       `--auto-select-tab-capture-source-by-title=${TONE_TITLE}`,

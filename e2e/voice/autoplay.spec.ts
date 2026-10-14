@@ -1,7 +1,8 @@
 // VOICE-E2E (web3.4 V3): the browser holds call audio back (its autoplay rule), and one press brings it back. Bob's
 // page runs under a stricter rule than the suite's Chromium flags allow (`--autoplay-policy=no-user-gesture-required`):
-// an init script makes every new AudioContext start suspended, and lets resume() through only during a user activation
-// (as Safari does, and as Chromium does for a context made outside a gesture). Alice's microphone tone then reaches
+// an init script makes every new AudioContext start suspended, and lets resume() through only inside a press (a
+// transient activation, Safari-like). That is stricter than Chromium, which starts a context made outside a gesture on any
+// later activation of the page (sticky activation). Alice's microphone tone then reaches
 // bob's media worker (`heard`) but not his ears, until he presses `turn on audio` (`audible`). Chromium only (the plan's
 // scope for V3; the suite's Chromium switch is the rule this script tightens).
 import { expect, test } from './support/peer-browser';
