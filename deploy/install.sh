@@ -48,7 +48,7 @@ die() {
 
 # On any exit after init, the link is printed once: init consumed it, and the
 # database holds only its hash.
-# shellcheck disable=SC2329 # invoked by the EXIT trap below
+# shellcheck disable=SC2317,SC2329 # invoked by the EXIT trap below (SC2317 on older shellcheck)
 on_exit() {
 	[ -z "$WORK" ] || rm -rf "$WORK"
 	if [ -n "$LINK" ] && [ "$LINK_PRINTED" -eq 0 ]; then
