@@ -142,9 +142,11 @@ test('(b) a device that fails the signed-list check joins mid-call: alice leaves
     // A device of the peer that the instance admits but whose signed-list entry carries the wrong tier.
     await peer.forgeDevice();
     await peer.callJoin(call, 'second');
-    await expect(notice(alice.page, copy('voice.blocked'))).toBeVisible({ timeout: WAIT });
+    await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
     await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked');
+    // Product walk M10: the block came from the call group only, so the join is offered again, and the notice says so.
+    await expect(stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true })).toBeVisible();
     await peer.waitForCallMembers(call, (d) => !d.includes(a.device), 'drops alice');
     await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).not.toContain(a.device);
   } finally {
@@ -253,7 +255,7 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowse
     await peer.waitForCallMembers(dm.channel_id, (d) => d.includes(a.device), 'lists alice');
     await peer.forgeDevice();
     await peer.callJoin(dm.channel_id, 'second');
-    await expect(notice(alice.page, copy('voice.blocked'))).toBeVisible({ timeout: WAIT });
+    await expect(notice(alice.page, copy('voice.blockedLeft'))).toBeVisible({ timeout: WAIT });
     await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
     // The call group's block is the call's only: the DM's text group is unaffected and so is its composer.
     await expect(dmComposer(alice.page)).toBeEnabled();

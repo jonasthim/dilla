@@ -34,11 +34,11 @@ test('takeover notices contain exactly three public routing fields', async ({ pa
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
   const install = () => {
-    const w = window as typeof window & { __noticeKeys?: string[][] };
+    const w = window as typeof window & { __noticeKeys?: [string, string[]][] };
     w.__noticeKeys = [];
     const old = BroadcastChannel.prototype.postMessage;
-    BroadcastChannel.prototype.postMessage = function (value: unknown) {
-      w.__noticeKeys!.push(Object.keys(value as object).sort());
+    BroadcastChannel.prototype.postMessage = function (this: BroadcastChannel, value: unknown) {
+      w.__noticeKeys!.push([this.name.split(':')[0], Object.keys(value as object).sort()]);
       return old.call(this, value);
     };
   };
@@ -50,11 +50,18 @@ test('takeover notices contain exactly three public routing fields', async ({ pa
     await other.page.getByRole('button', { name: copy('tabs.use') }).click();
     await expect(other.page.getByRole('textbox', { name: /message/i })).toBeVisible({ timeout: WAIT });
     const keys = [
-      ...(await page.evaluate(() => (window as typeof window & { __noticeKeys: string[][] }).__noticeKeys)),
-      ...(await other.page.evaluate(() => (window as typeof window & { __noticeKeys: string[][] }).__noticeKeys)),
+      ...(await page.evaluate(() => (window as typeof window & { __noticeKeys: [string, string[]][] }).__noticeKeys)),
+      ...(await other.page.evaluate(() => (window as typeof window & { __noticeKeys: [string, string[]][] }).__noticeKeys)),
     ];
-    expect(keys.length).toBeGreaterThan(0);
-    for (const names of keys) expect(names).toEqual(['instance', 'nonce', 't']);
+    const takeover = keys.filter(([channel]) => channel === 'dilla-core');
+    expect(takeover.length).toBeGreaterThan(0);
+    for (const [, names] of takeover) expect(names).toEqual(['instance', 'nonce', 't']);
+    // Product walk I7: the voice-presence channel carries only whether a call is on ({t, instance, on}) or the question
+    // ({t, instance}); nothing else crosses tabs.
+    for (const [channel, names] of keys.filter(([c]) => c !== 'dilla-core')) {
+      expect(channel).toBe('dilla-voice');
+      expect([['instance', 'on', 't'], ['instance', 't']]).toContainEqual(names);
+    }
   } finally { await other.page.close(); }
 });
 

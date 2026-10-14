@@ -1323,7 +1323,7 @@ impl HttpDs {
         )?;
         check_status(status, &out)?;
         decode_call_started(&out, status == 201)
-        .map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
+            .map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
     }
 
     /// `GET /v1/channels/{id}/call` (web-3, L-HTTP-100).
@@ -2689,8 +2689,17 @@ mod tests {
     fn a_call_start_answer_has_six_or_seven_elements() {
         let answer = |n: usize| {
             cbor(|e| {
-                e.array(n).bytes(&[1; 16]).bytes(&[2; 16]).text("ws://x").text("t");
-                e.array(1).array(3).array(1).text("turn:x").text("u").text("c");
+                e.array(n)
+                    .bytes(&[1; 16])
+                    .bytes(&[2; 16])
+                    .text("ws://x")
+                    .text("t");
+                e.array(1)
+                    .array(3)
+                    .array(1)
+                    .text("turn:x")
+                    .text("u")
+                    .text("c");
                 e.array(3).uint(64_000).uint(2_500_000).uint(1);
                 if n >= 7 {
                     e.array(1).bytes(&[3; 16]);
@@ -2702,7 +2711,10 @@ mod tests {
         };
         for n in [6, 7] {
             let got = decode_call_started(&answer(n), true).unwrap();
-            assert_eq!((got.call_id, got.group_id, got.caps), ([1; 16], [2; 16], [64_000, 2_500_000, 1]));
+            assert_eq!(
+                (got.call_id, got.group_id, got.caps),
+                ([1; 16], [2; 16], [64_000, 2_500_000, 1])
+            );
             assert!(got.created);
         }
         assert!(decode_call_started(&answer(8), true).is_err());
