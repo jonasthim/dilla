@@ -14,6 +14,9 @@ export type Command =
   | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice'; name: string }   // → { channelId }; listed before the ret
   | { m: 'createInvite'; communityId: string; maxUses: number; ttlSeconds: number }     // → InviteCreatedResult
   | { m: 'selectCommunity'; communityId: string }
+  // Ready only → null: GET /v1/communities again; the communities slice is published before the answer (the page looks for
+  // a server whose create answer was lost, with the socket still up).
+  | { m: 'refreshCommunities' }
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }

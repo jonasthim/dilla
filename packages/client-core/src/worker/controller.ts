@@ -161,7 +161,7 @@ function coreInput(e: unknown, details: ReadonlySet<string>): boolean {
 type Method = Command['m'];
 const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'start', 'signupBegin', 'signupSubmit', 'signupReset', 'resetDevice', 'joinCommunity', 'selectCommunity',
-  'createCommunity', 'createChannel', 'createInvite',
+  'createCommunity', 'createChannel', 'createInvite', 'refreshCommunities',
   'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
   'signInBegin', 'signInLogin', 'signInTotp', 'signInKey', 'signInCancel', 'refreshDevices', 'revokeDevice', 'signOutRevoke',
   'forgetBrowser', 'markRead', 'setSetting', 'openDm',
@@ -197,7 +197,7 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'signin-totp': ['signInTotp', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
   'ready': [
-    'joinCommunity', 'selectCommunity', 'createCommunity', 'createChannel', 'createInvite', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
+    'joinCommunity', 'selectCommunity', 'createCommunity', 'createChannel', 'createInvite', 'refreshCommunities', 'openChannel', 'closeChannel', 'loadEarlier', 'send', 'retrySend', 'discardSend',
     'refreshDevices', 'revokeDevice', 'signOutRevoke', 'forgetBrowser', 'markRead', 'setSetting', 'openDm',
     'editMessage', 'deleteMessage', 'react', 'pin', 'loadPins', 'closePins', 'attachFiles', 'discardAttachment', 'openAttachment',
     'refreshTrust', 'verifyContact', 'safetyNumber', 'search', 'typing', 'voiceSelf', 'resign',
@@ -598,6 +598,7 @@ export class Controller {
       case 'createCommunity': return this.createCommunity(command.name);
       case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
+      case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'openChannel': return this.openChannel(command.channelId);
       case 'closeChannel': return this.closeChannel(command.channelId);
       case 'loadEarlier': return this.loadEarlier(command.channelId);

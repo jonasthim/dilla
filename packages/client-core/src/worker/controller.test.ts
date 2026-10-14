@@ -4650,6 +4650,35 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     expect(w.routes.listChannels.mock.calls.slice(before).map((c) => toHex(c[0]))).toEqual([toHex(COMMUNITY)]);
   });
 
+  // Lane B's lost createCommunity answer: the page asks for the server list again, with the socket still up, and finds
+  // the server the lost answer made. Ready only; the list is published before the (empty) answer.
+  it('refreshCommunities reads the server list again and publishes it before it answers null', async () => {
+    const w = world();
+    await toReady(w);
+    await settle();
+    const before = w.routes.listCommunities.mock.calls.length;
+    w.state.created.push({ id: NEW_COMMUNITY, name: 'Lost answer' });
+    const held = deferred<void>();
+    const list = w.routes.listCommunities.getMockImplementation()!;
+    w.routes.listCommunities.mockImplementationOnce(async () => { await held.promise; return list(); });
+    w.call(122, { m: 'refreshCommunities' });
+    await settle();
+    expect(w.ret(122)).toBeUndefined();
+    held.resolve();
+    await vi.waitFor(() => expect(w.ret(122)).toBeDefined());
+    expect(w.ret(122)).toEqual({ t: 'ret', id: 122, ok: true, value: null });
+    expect(w.routes.listCommunities).toHaveBeenCalledTimes(before + 1);
+    const listed = sliceAt(w, 'communities', (v) => (v as CommunitySummary[]).some((c) => c.id === toHex(NEW_COMMUNITY)));
+    expect(listed).toBeGreaterThan(-1);
+    expect(listed).toBeLessThan(retAt(w, 122));
+
+    const fresh = world({ phase: 0 });
+    fresh.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(fresh.account()?.phase).toBe('needs-signup'));
+    fresh.call(2, { m: 'refreshCommunities' });
+    expect(fresh.ret(2)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+  });
+
   // The cheap belt beside op 54: a Welcome this device did not expect can be a new channel's group, so the selected
   // server's channels are read again too.
   it('an unexpected Welcome also reads the selected server\'s channels again', async () => {

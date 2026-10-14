@@ -310,7 +310,8 @@ describe('abort', () => {
 describe('per-attempt timeout', () => {
   /** A fetch that never answers, and rejects only when its signal aborts, as a browser's stalled fetch does. */
   const hang = (t: ReturnType<typeof fakeTransport>): typeof fetch => (input, init) => {
-    t.seen.push({ url: String(input), method: init?.method ?? 'GET', headers: new Headers(init?.headers), body: null, init: init ?? {} });
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    t.seen.push({ url, method: init?.method ?? 'GET', headers: new Headers(init?.headers), body: null, init: init ?? {} });
     return new Promise((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => { reject(init.signal?.reason as Error); });
     });
