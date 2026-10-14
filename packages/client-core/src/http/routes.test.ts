@@ -765,6 +765,21 @@ describe('Routes: response shapes', () => {
     await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 })).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
   });
 
+  // WB m6: the link is the instance's invite landing for the answered code, nothing else: path /i/<code>, no query, no
+  // fragment. Attacker: an instance (or anything between) handing out a link that looks like an invite and leads elsewhere.
+  it('refuses an invite link whose path is not /i/<the answered code>', async () => {
+    const { t, routes } = setup();
+    const bad = ['https://dilla.test/i/ZZ99', 'https://dilla.test/x/AB12', 'https://dilla.test/i/AB12/more',
+      'https://dilla.test/', 'https://dilla.test/i/AB12?next=https://evil.test', 'https://dilla.test/i/AB12#x',
+      'https://dilla.test/welcome?invite=AB12'];
+    for (const url of bad) t.replies.push(cborReply(201, [KEY_ID, 'AB12', url, 1_800_000_000]));
+    for (const url of bad) {
+      await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 }), url).rejects.toMatchObject({ code: 'E_CBOR_RANGE' });
+    }
+    t.replies.push(cborReply(201, [KEY_ID, 'AB12', 'http://dilla.test:8443/i/AB12', 1_800_000_000]));
+    await expect(routes.createInvite(COMMUNITY, { maxUses: 1, ttlSeconds: 1 })).resolves.toMatchObject({ url: 'http://dilla.test:8443/i/AB12' });
+  });
+
   it('keeps auth methods it does not know', async () => {
     const { t, routes } = setup();
     const doc = [...INSTANCE_DOC];

@@ -140,12 +140,18 @@ function between(field: string, v: number, min: number, max: number): number {
   if (!Number.isSafeInteger(v) || v < min || v > max) throw new RangeError(`E_ROUTE_INPUT: ${field} must be ${String(min)}..${String(max)}`);
   return v;
 }
-/** An invite link as the instance answers it: an absolute http(s) URL (it is shown and copied, never followed here). */
-function inviteUrl(v: CborValue): string {
+/** An invite link as the instance answers it: an absolute http(s) URL (it is shown and copied, never followed here) whose
+ *  path is `/i/<code>` for the answered code, with no query or fragment (WB m6): the instance's own landing, nothing else. */
+function inviteUrl(v: CborValue, code: string): string {
   const s = str(v);
-  let protocol = '';
-  try { protocol = new URL(s).protocol; } catch { /* not a URL */ }
-  if (protocol !== 'https:' && protocol !== 'http:') throw new CborError('E_CBOR_RANGE', 'the invite url is not an http(s) URL');
+  let url: URL | null = null;
+  try { url = new URL(s); } catch { /* not a URL */ }
+  if (url === null || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+    throw new CborError('E_CBOR_RANGE', 'the invite url is not an http(s) URL');
+  }
+  if (url.pathname !== '/i/' + encodeURIComponent(code) || url.search !== '' || url.hash !== '' || s.includes('#')) {
+    throw new CborError('E_CBOR_RANGE', 'the invite url is not the landing of the answered code');
+  }
   return s;
 }
 function callPath(callId: Uint8Array, rest = ''): string {
@@ -243,7 +249,8 @@ export class Routes {
     const body = encode([between('maxUses', invite.maxUses, 1, INVITE_USES_MAX), between('ttlSeconds', invite.ttlSeconds, 1, INVITE_TTL_MAX_S), 0]);
     const raw = await this.body('POST', `/v1/communities/${id('communityId', communityId)}/invites`, 'write', false, { body });
     const a = atLeast(decode(raw), 4);
-    return { inviteId: bin(a[0], 16), code: str(a[1]), url: inviteUrl(a[2]), expires: u64(a[3]) };
+    const code = str(a[1]);
+    return { inviteId: bin(a[0], 16), code, url: inviteUrl(a[2], code), expires: u64(a[3]) };
   }
   async listChannels(communityId: Uint8Array): Promise<ChannelRow[]> {
     const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/channels`, 'read', true);
