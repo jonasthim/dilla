@@ -125,3 +125,5 @@ export { ConfirmDialog } from './ConfirmDialog/ConfirmDialog.tsx';
 export type { ConfirmDialogProps } from './ConfirmDialog/ConfirmDialog.tsx';
 export { Select } from './Select/Select.tsx';
 export type { SelectProps } from './Select/Select.tsx';
+export { MemberList } from './MemberList/MemberList.tsx';
+export type { MemberListProps, MemberListGroup, MemberListMember } from './MemberList/MemberList.tsx';
