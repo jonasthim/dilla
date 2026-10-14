@@ -92,7 +92,7 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
 
     await test.step("join the peer's community with its invite and see its channel and members", async () => {
       expect(await ok(page, { m: 'joinCommunity', invite: s.invite_code })).toEqual({ communityId: s.community_id });
-      expect(await slice<CommunitySummary[]>(page, 'communities')).toEqual([{ id: s.community_id, name: 'harness community' }]);
+      expect(await slice<CommunitySummary[]>(page, 'communities')).toEqual([{ id: s.community_id, name: 'harness community', owner: s.user_id }]);
       await ok(page, { m: 'selectCommunity', communityId: s.community_id });
       expect(await slice<ChannelSummary[]>(page, `channels:${s.community_id}`)).toEqual([{
         id: s.channel_id, communityId: s.community_id, kind: 0, mode: 0, name: 'general', topic: '',
