@@ -1,5 +1,5 @@
 // Flow 08: the member pane. W3 mounts it in the shell's aside; it reads the members, roles and permissions slices.
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MemberList, type MemberListGroup } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
@@ -28,6 +28,18 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const [kickOpen, setKickOpen] = useState(false);
   const [banOpen, setBanOpen] = useState(false);
 
+  // Where focus goes when a dialog closes: the row's trigger that opened it, else (a kicked member's row is gone) the pane.
+  const region = useRef<HTMLDivElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const restore = useRef(false);
+  const anyOpen = kickOpen || banOpen;
+  useEffect(() => {
+    if (anyOpen || !restore.current) return;
+    restore.current = false;
+    const back = opener.current;
+    (back !== null && back.isConnected ? back : region.current)?.focus();
+  }, [anyOpen]);
+
   const community = communities?.find(c => c.id === communityId);
   const serverName = community?.name ?? '';
   const ownerId = community?.owner ?? '';
@@ -54,6 +66,8 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     const row = byId.get(userId);
     if (row === undefined) return;
     const target = { userId, name: memberName(row) };
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    restore.current = action === 'kick' || action === 'ban';
     if (action === 'message') props.onMessage(userId);
     else if (action === 'compare') props.onCompare(userId);
     else if (action === 'kick') { setKick(target); setKickOpen(true); }
@@ -61,13 +75,13 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   };
 
   return (
-    <>
+    <div ref={region} tabIndex={-1}>
       <MemberList label={t('members.region', { server: serverName })} groups={groups} loading={members === undefined}
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} onAction={onAction} />
       <KickFlow open={kickOpen} communityId={communityId} serverName={serverName} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />
       <BanFlow open={banOpen} communityId={communityId} serverName={serverName} target={ban} announce={text => props.announce(text)}
         onClose={() => setBanOpen(false)} onDone={() => setBanOpen(false)} />
-    </>
+    </div>
   );
 }

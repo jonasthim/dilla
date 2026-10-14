@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { CommunityAccess, MemberSummary, RoleSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { MemberPane } from './MemberPane.tsx';
+import { reasonProblem } from './Moderation.tsx';
 
 const id = (n: number) => n.toString(16).padStart(2, '0').repeat(16);
 const CID = id(9), OWNER = id(1), ME = id(2), BOB = id(3), CAL = id(4);
@@ -91,6 +92,35 @@ describe('KickFlow', () => {
   });
 });
 
+describe('focus and reopening', () => {
+  it('Cancel returns focus to the row trigger', async () => {
+    const { user } = setup();
+    await pick(user, 'bob', 'kick');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'actions for bob' })).toHaveFocus());
+  });
+  it('a successful kick leaves focus on the member region, not body', async () => {
+    const { user, fake } = setup();
+    await pick(user, 'bob', 'kick');
+    fake.handler = () => { fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(CAL, 'carol', [MOD.id])]); return Promise.resolve(null); };
+    await user.click(screen.getByRole('button', { name: 'Kick' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.body).not.toHaveFocus());
+    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'members of Midgard' }).parentElement);
+  });
+  it('reopening on another member does not show the busy label of the closed dialog', async () => {
+    const { user, fake } = setup();
+    fake.handler = () => new Promise(() => undefined);
+    await pick(user, 'bob', 'kick');
+    await user.click(screen.getByRole('button', { name: 'Kick' }));
+    expect(screen.getByRole('button', { name: 'Kicking…' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await pick(user, 'bob', 'kick');
+    expect(screen.getByRole('button', { name: 'Kick' })).toBeEnabled();
+  });
+});
+
 describe('BanFlow', () => {
   it('sends the reason and a day by default', async () => {
     const { user, fake, announce } = setup();
@@ -108,7 +138,6 @@ describe('BanFlow', () => {
     await waitFor(() => expect(fake.callsOf('banMember')).toHaveLength(1));
     expect(fake.callsOf('banMember')[0]?.seconds).toBe(604800);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    await pick(user, 'carol', 'ban').catch(() => undefined);
     await pick(user, 'bob', 'ban');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Ban length' }), 'until lifted');
     await user.click(screen.getByRole('button', { name: 'Ban' }));
@@ -131,7 +160,8 @@ describe('BanFlow', () => {
   });
   it.each([
     [{ code: 'E_FORBIDDEN' }, 'You cannot ban bob.'],
-    [{ code: 'E_BAD_INPUT' }, 'The ban length was refused.'],
+    [{ code: 'E_BAD_INPUT', detail: 'unknown community', status: 400 }, 'That did not work (E_BAD_INPUT). Try again.'],
+    [{ code: 'E_NOT_FOUND', status: 404 }, 'That did not work (E_NOT_FOUND). Try again.'],
     [{ code: 'E_INVALID_REQUEST', status: 400 }, 'The ban length was refused.'],
     [{ code: 'E_NETWORK' }, 'That did not work (E_NETWORK). Try again.'],
   ])('maps %o to its copy', async (init, text) => {
@@ -140,6 +170,34 @@ describe('BanFlow', () => {
     await pick(user, 'bob', 'ban');
     await user.click(screen.getByRole('button', { name: 'Ban' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(text);
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+  });
+  it('refuses a reason by its bytes: 257 x e-acute is too long, 200 passes', async () => {
+    const { user, fake } = setup();
+    await pick(user, 'bob', 'ban');
+    const reason = screen.getByRole('textbox', { name: 'Reason' });
+    await user.click(reason);
+    await user.paste('é'.repeat(257));
+    await user.click(screen.getByRole('button', { name: 'Ban' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('too long');
+    expect(fake.callsOf('banMember')).toHaveLength(0);
+    await user.clear(reason);
+    await user.paste('é'.repeat(200));
+    await user.click(screen.getByRole('button', { name: 'Ban' }));
+    await waitFor(() => expect(fake.callsOf('banMember')).toHaveLength(1));
+  });
+  it('counts a carriage return as a control character', () => {
+    expect(reasonProblem('a\rb')).toBe('control');
+    expect(reasonProblem('a\nb\tc')).toBeNull();
+  });
+  it('one call for a double click while the first is pending', async () => {
+    const { user, fake } = setup();
+    fake.handler = () => new Promise(() => undefined);
+    await pick(user, 'bob', 'ban');
+    const ban = screen.getByRole('button', { name: 'Ban' });
+    // Both clicks land before React renders the disabled button.
+    act(() => { ban.click(); ban.click(); });
+    expect(fake.callsOf('banMember')).toHaveLength(1);
   });
   it('has no axe violations open', async () => {
     const { user } = setup();

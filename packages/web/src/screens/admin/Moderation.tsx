@@ -12,9 +12,8 @@ export type BanLength = keyof typeof BAN_LENGTHS;
 const LENGTH_KEYS: readonly BanLength[] = ['hour', 'day', 'week', 'month', 'forever'];
 
 const UTF8 = new TextEncoder();
-// Control characters other than line breaks and tabs.
- 
-const BAD_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+// Control characters other than line feeds and tabs.
+const BAD_CONTROL = /[\u0000-\u0008\u000b\u000c\u000d\u000e-\u001f\u007f-\u009f]/;
 
 /** Why the instance would refuse `reason`; null when it would not. */
 export function reasonProblem(reason: string): 'long' | 'control' | null {
@@ -46,6 +45,8 @@ function useGuarded(open: boolean) {
   useEffect(() => {
     if (open) return;
     session.current += 1;
+    running.current = false;
+    setBusy(false);
     setError(null);
   }, [open]);
   return { running, session, error, busy, attempt, setError, setBusy, setAttempt };
@@ -66,18 +67,16 @@ export function KickFlow(props: ModFlowProps): React.JSX.Element {
     void (async () => {
       try {
         await client.call({ m: 'kickMember', communityId: props.communityId, userId: target.userId });
-        g.running.current = false;
-        g.setBusy(false);
+        if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
         props.announce(t('mod.kick.done', { name: target.name }));
         if (g.session.current === at) props.onDone();
       } catch (e) {
-        g.running.current = false;
         const code = errorOf(e).code;
         const message = code === 'E_FORBIDDEN' ? t('mod.kick.error.forbidden', vars)
           : code === 'E_NOT_FOUND' ? t('mod.kick.error.gone', vars) : t('mod.error.other', { code });
         // The error and the end of busy land in one update (ConfirmDialog's contract).
         if (g.session.current === at) { g.setError(message); g.setAttempt(a => a + 1); }
-        g.setBusy(false);
+        if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
       }
     })();
   };
@@ -117,19 +116,17 @@ export function BanFlow(props: ModFlowProps): React.JSX.Element {
     void (async () => {
       try {
         await client.call({ m: 'banMember', communityId: props.communityId, userId: target.userId, reason, seconds: BAN_LENGTHS[length] });
-        g.running.current = false;
-        g.setBusy(false);
+        if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
         props.announce(t('mod.ban.done', { name: target.name }));
         if (g.session.current === at) props.onDone();
       } catch (e) {
-        g.running.current = false;
         const err = errorOf(e);
         // The reason was checked above, so a 400 (or the worker's own refusal) can only be about the length.
         const message = err.code === 'E_FORBIDDEN' ? t('mod.ban.error.forbidden', vars)
-          : err.code === 'E_BAD_INPUT' || err.status === 400 ? t('mod.ban.error.clock')
+          : err.status === 400 && err.code === 'E_INVALID_REQUEST' ? t('mod.ban.error.clock')
             : t('mod.error.other', { code: err.code });
         if (g.session.current === at) { g.setError(message); g.setAttempt(a => a + 1); }
-        g.setBusy(false);
+        if (g.session.current === at) { g.running.current = false; g.setBusy(false); }
       }
     })();
   };
