@@ -847,6 +847,62 @@ func TestAPrivateCreateRechecksUnderTheLock(t *testing.T) {
 	}
 }
 
+// S2 round 2: channel PATCH and DELETE take manage_channels again inside their transaction under
+// the community row lock. A moderator demoted between the route's checks and its transaction is
+// 403 and nothing is written; the same request undisturbed (the control) succeeds. The PATCH is
+// the sensitive one: a private channel made invite-visible.
+func TestChannelPatchAndDeleteRecheckUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewChannels(hooked, e.DS, e.Clk, 10, log).Register(e.Mux)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5, api.PermViewChannel|api.PermManageChannels)
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, uint64(api.VisPrivate), "privat")
+	path := "/v1/channels/" + ch.String()
+
+	gone := func() bool {
+		_, err := e.Repo.GetChannel(t.Context(), ch)
+		return err != nil
+	}
+	cases := []struct {
+		name, method string
+		body         any
+		unchanged    func() bool
+	}{
+		{"patch private to invite", http.MethodPatch, []any{nil, nil, nil, uint64(api.VisInvite), nil, nil, nil},
+			func() bool { return mustChannel(t, e, ch).Visibility == api.VisPrivate }},
+		{"delete", http.MethodDelete, nil, func() bool { return !gone() }},
+	}
+	for _, c := range cases {
+		hooked.arm(func() {
+			if err := e.Repo.DeleteMemberRole(t.Context(), cid, mod, modRole); err != nil {
+				t.Errorf("demote: %v", err)
+			}
+		})
+		if status, body := e.Do(c.method, path, modTok, c.body); status != http.StatusForbidden {
+			t.Fatalf("%s by a mod demoted before the transaction = %d (%x), want 403", c.name, status, body)
+		}
+		if !c.unchanged() {
+			t.Fatalf("the refused %s wrote", c.name)
+		}
+		if err := e.Repo.PutMemberRole(t.Context(), cid, mod, modRole); err != nil {
+			t.Fatalf("re-promote: %v", err)
+		}
+		if status, body := e.Do(c.method, path, modTok, c.body); status != http.StatusNoContent {
+			t.Fatalf("control: %s undisturbed = %d (%x), want 204", c.name, status, body)
+		}
+		if c.unchanged() {
+			t.Fatalf("control: the %s wrote nothing", c.name)
+		}
+	}
+}
+
 // S2: the create body is 8 or 9 elements; any other length is the shape refusal it always was.
 func TestAChannelCreateIsEightOrNineElements(t *testing.T) {
 	f := privateEnv(t)

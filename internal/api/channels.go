@@ -718,7 +718,7 @@ type patchChannelReq struct {
 }
 
 func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
-	current, s, err := c.manageable(r)
+	current, s, err := c.manageable(r, c.repo)
 	if err != nil {
 		c.fail(w, r, "patch channel", err)
 		return
@@ -759,6 +759,9 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	// The row is read again inside the transaction and the request applied to
 	// that, so two concurrent PATCHes of different fields both land.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := c.lockManageable(r, tx, current); err != nil {
+			return err
+		}
 		row, err := tx.GetChannel(r.Context(), current.ID)
 		if err != nil {
 			return notFound(err)
@@ -955,7 +958,7 @@ func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
-	row, s, err := c.manageable(r)
+	row, s, err := c.manageable(r, c.repo)
 	if err != nil {
 		c.fail(w, r, "delete channel", err)
 		return
@@ -963,6 +966,9 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	now := c.clk.Now().Unix()
 	var toClose []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := c.lockManageable(r, tx, row); err != nil {
+			return err
+		}
 		// Read the channel's open groups inside the transaction; close them after it.
 		var err error
 		if toClose, err = openChannelGroups(r.Context(), tx, []id.ID{row.ID}); err != nil {
@@ -1016,6 +1022,11 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 // visible loads {id} for a caller who holds PermViewChannel in it. Anyone else,
 // a non-member included, gets the 404 an unknown channel gets.
 func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, error) {
+	return visibleIn(r, c.repo)
+}
+
+// visibleIn is visible reading through repo.
+func visibleIn(r *http.Request, repo store.Repository) (store.ChannelRow, auth.Session, error) {
 	s, err := enrolledSession(r)
 	if err != nil {
 		return store.ChannelRow{}, s, err
@@ -1024,7 +1035,7 @@ func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, err
 	if err != nil {
 		return store.ChannelRow{}, s, err
 	}
-	row, err := c.repo.GetChannel(r.Context(), chID)
+	row, err := repo.GetChannel(r.Context(), chID)
 	if err != nil {
 		return store.ChannelRow{}, s, notFound(err)
 	}
@@ -1032,26 +1043,39 @@ func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, err
 	// taken the channel from: neither learns that it exists. For a DM or group
 	// DM the members are its participants (channel_members), which is what
 	// makes a 1:1 DM's derived id a name rather than a capability (P2-D31).
-	if err := c.res.Require(r.Context(), s.UserID, row, PermViewChannel); err != nil {
+	if err := NewResolver(repo).Require(r.Context(), s.UserID, row, PermViewChannel); err != nil {
 		return store.ChannelRow{}, s, err
 	}
 	return row, s, nil
 }
 
 // manageable is visible plus PermManageChannels in that channel, overwrites
-// applied.
-func (c *Channels) manageable(r *http.Request) (store.ChannelRow, auth.Session, error) {
-	row, s, err := c.visible(r)
+// applied, read through repo. patch and delete call it before their
+// transaction, for the refusal's precedence, and again inside it under the
+// community row lock.
+func (c *Channels) manageable(r *http.Request, repo store.Repository) (store.ChannelRow, auth.Session, error) {
+	row, s, err := visibleIn(r, repo)
 	if err != nil {
 		return row, s, err
 	}
 	if row.CommunityID == nil {
 		return row, s, server.Errorf(server.CodeForbidden, "a DM has no manager")
 	}
-	if err := c.res.Require(r.Context(), s.UserID, row, PermManageChannels); err != nil {
+	if err := NewResolver(repo).Require(r.Context(), s.UserID, row, PermManageChannels); err != nil {
 		return row, s, err
 	}
 	return row, s, nil
+}
+
+// lockManageable takes the community row lock in tx and runs manageable again through it, so a
+// demotion that committed after a route's checks refuses the write. row is the channel the
+// route checked before its transaction; it is a community channel (manageable refused a DM).
+func (c *Channels) lockManageable(r *http.Request, tx store.Repository, row store.ChannelRow) error {
+	if err := tx.LockCommunity(r.Context(), *row.CommunityID); err != nil {
+		return notFound(err)
+	}
+	_, _, err := c.manageable(r, tx)
+	return err
 }
 
 // fail writes err as the client's refusal. Anything that is not a
