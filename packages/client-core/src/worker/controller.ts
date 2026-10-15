@@ -605,8 +605,9 @@ export class Controller {
   /** A signup this worker completed has sent no KeyPackages yet (a V route, refused while owed): enterReady sends them
    *  once past the factor gate, before any join. */
   private keyPackagesOwed = false;
-  /** The onFactorRequired latch (contract 6): set when it fires, cleared when the phase is next ready and on re-attach. */
-  private factorRequiredLatch = false;
+  /** factorSetupDone in flight: a second one is refused E_NOT_READY (as step() does for sign-in), so a double submit never
+   *  runs two enterReady at once. */
+  private factorSetupRunning = false;
   private storeCleared = false;
   private wiping = false;
   private gateway: Gateway | null = null;
@@ -713,6 +714,9 @@ export class Controller {
       reauthenticate: () => this.reauthenticate(),
       onGeneration: (generation) => { this.setConnection({ generation: generation.toString() }); },
       // web3.6: an instance that answers E_FACTOR_REQUIRED to a ready account (an operator reset) owns the next step.
+      // Once per transition: onFactorRequired leaves 'ready' synchronously, so the refusals that follow (and any while
+      // factor-setup, signup or sign-in runs) do not re-run it or overwrite its origin. This filter is the C2 brief's
+      // latch; a separate flag could never be observed (C2 review finding 7).
       onRefusal: (code) => { if (code === 'E_FACTOR_REQUIRED' && this.phase === 'ready') this.onFactorRequired(); },
     });
     this.routes = this.parts.routes(http);
@@ -917,7 +921,11 @@ export class Controller {
       case 'signInPasskeyBegin': return this.signInPasskeyBegin();
       case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response, command.recoveryKey));
       case 'signInBackupCode': return this.step(() => this.signInBackupCode(command.code, command.recoveryKey));
-      case 'factorSetupDone': return this.factorSetupDone(command.invite);
+      case 'factorSetupDone': {
+        if (this.factorSetupRunning) return Promise.reject(new Refusal('E_NOT_READY', 'factorSetupDone is running'));
+        this.factorSetupRunning = true;
+        return this.factorSetupDone(command.invite).finally(() => { this.factorSetupRunning = false; });
+      }
       case 'refreshFactors': return this.factorsCtl.refresh();
       case 'factorTotpBegin': return this.factorsCtl.totpBegin(command.stepup);
       case 'factorTotpConfirm': return this.factorsCtl.totpConfirm(command.code);
@@ -989,7 +997,6 @@ export class Controller {
     if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
     this.phase = this.accountState.phase;
-    if (this.phase === 'ready') this.factorRequiredLatch = false;
     this.slices.set('account', this.accountState);
   }
 
@@ -1082,7 +1089,6 @@ export class Controller {
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
       this.core = core;
-      this.factorRequiredLatch = false;
       this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
       const session = this.parts.session({ core, routes: this.routes, now });
@@ -1505,10 +1511,9 @@ export class Controller {
   }
 
   /** The global hook (HttpDeps.onRefusal): a ready account the instance now finds owing (an operator reset) stops its
-   *  socket and engine, with no ticket retry, and shows the forced set-up. Once per transition (the latch). */
+   *  socket and engine, with no ticket retry, and shows the forced set-up. Once per transition (the hook's phase filter). */
   private onFactorRequired(): void {
-    if (this.factorRequiredLatch || this.wiping || this.storeCleared) return;
-    this.factorRequiredLatch = true;
+    if (this.wiping || this.storeCleared) return;
     this.clearReauthTimer();
     this.typingOff();
     this.calls.reset();
@@ -2612,7 +2617,7 @@ export class Controller {
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
-    this.pendingJoin = null; this.keyPackagesOwed = false; this.factorRequiredLatch = false;
+    this.pendingJoin = null; this.keyPackagesOwed = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.memberReadEnded.clear(); this.voiceLookups.clear();

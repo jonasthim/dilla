@@ -374,7 +374,7 @@ describe('App sign-in', () => {
       if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, needsTotp: false, factor: null } });
       if (c.m === 'signInLogin' || c.m === 'signInKey') move({ phase: 'ready', user: { id: 'bb'.repeat(16), username: 'ada' }, signIn: null });
       if (c.m === 'signInCancel') move({ phase: 'needs-signup', signIn: null });
-      return Promise.resolve(c.m === 'signInLogin' ? { needsTotp: false, factor: null } : null);
+      return Promise.resolve(c.m === 'signInLogin' ? { needs: 0 } : null);
     };
   }
   const startAt = (fake: FakeClient) => {

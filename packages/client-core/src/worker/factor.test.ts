@@ -110,6 +110,9 @@ describe('the factor-setup phase (web3.6 C2)', () => {
   it('factor-setup accepts factorSetupDone, forgetBrowser and the five enrol commands (C3)', () => {
     expect(ACCEPTS['factor-setup']).toEqual(['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish']);
     expect(ACCEPTS['signin-passkey']).toEqual(['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
+    // C2 review finding 8: the two sign-in rows the wave widened.
+    expect(ACCEPTS['signin-login']).toEqual(['signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel']);
+    expect(ACCEPTS['signin-totp']).toEqual(['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
   });
 });
 
@@ -317,5 +320,81 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
       registrationMode: 0, authMethods: [0, 2], policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(2) }));
     await toReady(w);
     expect(w.account()?.instance).toMatchObject({ passwordSignup: true, passkeys: true, totp: false } satisfies Partial<NonNullable<AccountState['instance']>>);
+  });
+});
+
+// C2 review fix round 1.
+describe('C2 review: an owed account on a new browser, the double submit, the hook\'s filter', () => {
+  it('an owed account signing in on a new browser (needs 0) whose state upload is refused stops at factor-setup with origin signin, then reaches ready', async () => {
+    // D5: an operator reset keeps the password and the recovery key. The login owes nothing, the enrolment writes the core
+    // (phase 2), and the state PUT inside Enrol.complete answers 403 E_FACTOR_REQUIRED (backups are not an F route).
+    const w = world({ phase: 0, owed: true });
+    w.enrol.complete.mockImplementationOnce(() => { w.state.phase = 2; return Promise.reject(refusal(403, 'E_FACTOR_REQUIRED')); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    expect(await answered(w, 3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } });
+    expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signin' }, error: null, user: { id: toHex(USER) } });
+    expect(w.gateway.starts).toBe(0);
+    expect(w.account.ensureBackups).not.toHaveBeenCalled();
+    w.state.owed = false;
+    w.call(4, { m: 'factorSetupDone', invite: null });
+    expect(await answered(w, 4)).toEqual({ t: 'ret', id: 4, ok: true, value: { communityId: null, joinError: null } });
+    expect(w.account()).toMatchObject({ phase: 'ready', factorSetup: null });
+    // (e) uploads what the refused PUT could not.
+    expect(w.account.ensureBackups).toHaveBeenCalledTimes(1);
+    expect(w.gateway.starts).toBe(1);
+  });
+
+  it('a second factorSetupDone while one runs is refused E_NOT_READY; the first reaches ready once', async () => {
+    const w = world({ phase: 2, owed: true });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('factor-setup'));
+    w.state.owed = false;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    w.routes.getFactors.mockImplementationOnce(async () => {
+      await held;
+      return { owed: false, totp: 1_700_000_000, passkeys: [], backupCodesLeft: 10, hasPassword: true };
+    });
+    w.call(2, { m: 'factorSetupDone', invite: null });
+    w.call(3, { m: 'factorSetupDone', invite: null });
+    expect(await answered(w, 3)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    release();
+    expect(await answered(w, 2)).toMatchObject({ ok: true, value: { communityId: null, joinError: null } });
+    expect(w.account()?.phase).toBe('ready');
+    expect(w.account.ensureBackups).toHaveBeenCalledTimes(1);
+    expect(w.gateway.starts).toBe(1);
+  });
+
+  /** A world whose postTicket goes through the controller's HttpClient, answered 403 E_FACTOR_REQUIRED. */
+  function refusingWorld(opts: { phase?: 0 | 2; owed?: boolean } = {}) {
+    const fetch = (() => Promise.resolve(cbor(['E_FACTOR_REQUIRED', '', null], 403))) as typeof globalThis.fetch;
+    return world({ ...opts, httpTicket: true, fetch });
+  }
+  const factorSetups = (w: World): number => w.posted.filter((m) => m.t === 'slice' && m.name === 'account'
+    && (m.value as AccountState).phase === 'factor-setup').length;
+
+  it('the hook runs once per transition: refusals that follow the first do not run it again', async () => {
+    const w = refusingWorld();
+    await toReady(w);
+    const reads = w.routes.getFactors.mock.calls.length;
+    await w.routes.postTicket().catch(() => undefined);
+    await w.routes.postTicket().catch(() => undefined);
+    await vi.waitFor(() => expect(w.routes.getFactors.mock.calls.length).toBe(reads + 1));
+    expect(w.account()?.factorSetup).toEqual({ origin: 'required' });
+    expect(factorSetups(w)).toBe(1);
+    expect(w.sync.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refusal outside ready leaves the phase and its origin alone (a signup at factor-setup stays origin signup)', async () => {
+    const w = refusingWorld({ phase: 0, owed: true });
+    await toKeys(w);
+    w.call(3, SUBMIT);
+    await answered(w, 3);
+    expect(w.account()?.factorSetup).toEqual({ origin: 'signup' });
+    const published = factorSetups(w);
+    await w.routes.postTicket().catch(() => undefined);
+    expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signup' } });
+    expect(factorSetups(w)).toBe(published);
   });
 });
