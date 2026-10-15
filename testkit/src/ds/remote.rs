@@ -1347,28 +1347,7 @@ impl HttpDs {
         match login.needs {
             0 => Ok(login.assertion),
             1 => {
-                let state = self.totp.as_ref().ok_or_else(|| {
-                    TestkitError::Scenario(
-                        "the account asks for a TOTP code and this peer enrolled none".into(),
-                    )
-                })?;
-                let secret = state.secret.clone();
-                let counter = totp::pick_counter(
-                    state.last_counter,
-                    || host_unix().map_err(|e| e.to_string()),
-                    || {
-                        control_post("/debug/clock", r#"{"seconds":30}"#)
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    },
-                )
-                .map_err(TestkitError::Scenario)?;
-                let code = totp::code(&secret, counter).map_err(TestkitError::Scenario)?;
-                // Spent from here on, whether or not the answer reaches us: reusing a counter is refused,
-                // skipping one is harmless.
-                if let Some(state) = self.totp.as_mut() {
-                    state.last_counter = counter;
-                }
+                let code = self.next_totp_code()?;
                 let out = post_cbor(
                     &self.agent,
                     &format!("{}/v1/auth/totp/verify", self.base),
@@ -1388,6 +1367,50 @@ impl HttpDs {
                 "the account asks for a passkey login and a native peer holds no passkey".into(),
             )),
         }
+    }
+
+    /// This account's next TOTP code, counter `max(c-1, last+1)`. The counter is spent from here on, whether or
+    /// not the answer reaches us: reusing a counter is refused, skipping one is harmless.
+    fn next_totp_code(&mut self) -> Result<String, TestkitError> {
+        let state = self.totp.as_ref().ok_or_else(|| {
+            TestkitError::Scenario(
+                "the account asks for a TOTP code and this peer enrolled none".into(),
+            )
+        })?;
+        let secret = state.secret.clone();
+        let counter = totp::pick_counter(
+            state.last_counter,
+            || host_unix().map_err(|e| e.to_string()),
+            || {
+                control_post("/debug/clock", r#"{"seconds":30}"#)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .map_err(TestkitError::Scenario)?;
+        let code = totp::code(&secret, counter).map_err(TestkitError::Scenario)?;
+        if let Some(state) = self.totp.as_mut() {
+            state.last_counter = counter;
+        }
+        Ok(code)
+    }
+
+    /// `POST /v1/auth/stepup [1, code]` → `[stepup, expires]`: a step-up token from this account's TOTP.
+    pub fn step_up(&mut self) -> Result<String, TestkitError> {
+        let code = self.next_totp_code()?;
+        let token = self.post_decoded(
+            "/v1/auth/stepup",
+            &encode(|e| {
+                e.array(2).uint(1).text(&code);
+            }),
+            |d: &mut Decoder<'_>| {
+                d.array(2)?;
+                let token = d.text()?.to_owned();
+                d.uint()?;
+                Ok(token)
+            },
+        )?;
+        Ok(token)
     }
 
     pub fn device(&self) -> DeviceId {
@@ -1626,14 +1649,24 @@ impl HttpDs {
         )
     }
 
-    /// `POST /v1/auth/password [null, password]`: a first password, set from a fresh session.
-    pub fn set_password(&self, password: &str) -> Result<(), DsError> {
+    /// `POST /v1/auth/password [null, password, stepup|null]`: a first password, set from a fresh session. An
+    /// account that holds a factor spends a step-up token on it (protocol/09), taken here from the peer's TOTP.
+    pub fn set_password(&mut self, password: &str) -> Result<(), TestkitError> {
+        let stepup = match self.totp {
+            Some(_) => Some(self.step_up()?),
+            None => None,
+        };
         self.post_status(
             "/v1/auth/password",
             &encode(|e| {
-                e.array(2).null().text(password);
+                e.array(3).null().text(password);
+                match &stepup {
+                    Some(token) => e.text(token),
+                    None => e.null(),
+                };
             }),
-        )
+        )?;
+        Ok(())
     }
 
     /// `GET /v1/users/{user_id}/device-list`: the newest row (L-HTTP-56).
