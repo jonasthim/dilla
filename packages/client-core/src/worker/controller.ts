@@ -44,7 +44,7 @@ import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
 import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
-import { FACTOR_VALIDATORS, FactorsController, factorsState } from '../account/factors';
+import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
 import { authorityFor } from '../admin/authority';
 
 export interface ControllerDeps {
@@ -257,8 +257,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
 /** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
-const BACKUP_CODE = /^[A-Z2-7]{26}$/;
-const backupCode = (code: string): string => code.replace(/[-\s]/g, '').toUpperCase();
+const backupCode = normaliseBackupCode;
 /** The WebAuthn response a page hands over for a passkey sign-in: at most 64 KiB of JSON. */
 const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
@@ -796,7 +795,7 @@ export class Controller {
       accessForgotten: (communityId) => { this.rolesCtl.forget(communityId); this.accessRead.delete(communityId); },
       refusal: (code, detail) => new Refusal(code, detail),
     });
-    this.factorsCtl = new FactorsController({ routes: this.routes, publish: (name, value) => { this.slices.set(name, value); } });
+    this.factorsCtl = new FactorsController({ routes: this.routes, holdsFactors: () => this.phase === 'ready' || this.phase === 'factor-setup', publish: (name, value) => { this.slices.set(name, value); } });
     this.rolesCtl = new RolesController({
       routes: this.routes,
       me: () => this.me,
@@ -2647,6 +2646,7 @@ export class Controller {
     if (this.slices.get('removals') !== undefined) this.slices.set('removals', []);
     this.admin.selfRemoved.clear();
     this.slices.set('trust', []);
+    if (this.slices.get('factors') !== undefined) this.slices.set('factors', NO_FACTORS);
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.calls.reset();

@@ -39,8 +39,9 @@ function rig() {
     removeFactor: vi.fn((_s: string, _k: 0 | 1, _c: Uint8Array | null) => { log.push('removeFactor'); return Promise.resolve(); }),
     regenerateBackupCodes: vi.fn((_s: string) => { log.push('regenerateBackupCodes'); return Promise.resolve(CODES); }),
   } satisfies FactorsRoutes;
-  const ctl = new FactorsController({ routes, publish: (name, value) => { log.push(`publish:${name}`); published.push(value as FactorsState); } });
-  return { ctl, routes, log, published };
+  const hold = { on: true };
+  const ctl = new FactorsController({ routes, holdsFactors: () => hold.on, publish: (name, value) => { log.push(`publish:${name}`); published.push(value as FactorsState); } });
+  return { ctl, routes, log, published, hold };
 }
 
 /* eslint-enable @typescript-eslint/no-unused-vars */
@@ -156,6 +157,55 @@ describe('FactorsController', () => {
   });
 });
 
+describe('a commit survives a failed re-read (C3 review)', () => {
+  const offline = (): Promise<never> => Promise.reject(new Error('offline'));
+
+  it('totpConfirm still returns the codes', async () => {
+    const r = rig();
+    r.routes.getFactors.mockImplementationOnce(offline);
+    expect(await r.ctl.totpConfirm('123456')).toEqual({ backupCodes: CODES });
+  });
+
+  it('passkeyFinish still returns the codes', async () => {
+    const r = rig();
+    r.routes.getFactors.mockImplementationOnce(offline);
+    expect(await r.ctl.passkeyFinish(CEREMONY_HEX, '{}', 'Laptop')).toEqual({ backupCodes: CODES });
+  });
+
+  it('removeFactor still resolves for a removal that happened', async () => {
+    const r = rig();
+    r.routes.getFactors.mockImplementationOnce(offline);
+    expect(await r.ctl.removeFactor('su-1', 'totp', null)).toBeNull();
+  });
+
+  it('regenerateBackupCodes still returns the new codes', async () => {
+    const r = rig();
+    r.routes.getFactors.mockImplementationOnce(offline);
+    expect(await r.ctl.regenerateBackupCodes('su-1')).toEqual({ backupCodes: CODES });
+    expect(r.published).toEqual([]);
+  });
+
+  it('control: refreshFactors itself still rejects when its read does', async () => {
+    const r = rig();
+    r.routes.getFactors.mockImplementationOnce(offline);
+    await expect(r.ctl.refresh()).rejects.toThrow('offline');
+  });
+
+  it('refresh publishes nothing outside the phases that hold factors, before or after the read', async () => {
+    const r = rig();
+    r.hold.on = false;
+    await r.ctl.refresh();
+    expect(r.routes.getFactors).not.toHaveBeenCalled();
+    r.hold.on = true;
+    r.routes.getFactors.mockImplementationOnce(() => { r.hold.on = false; return Promise.resolve(held); });
+    await r.ctl.refresh();
+    expect(r.published).toEqual([]);
+    r.hold.on = true;
+    await r.ctl.refresh();
+    expect(r.published).toHaveLength(1);
+  });
+});
+
 describe('the factor validators', () => {
   const v = (m: keyof typeof FACTOR_VALIDATORS, c: Record<string, unknown>): string | null => FACTOR_VALIDATORS[m]?.(c) ?? null;
   const longName = 'x'.repeat(65);
@@ -193,6 +243,8 @@ describe('the factor validators', () => {
     expect(v('factorPasskeyFinish', { ...ok, name: 'a\nb' })).toBe(bad);
     expect(v('factorPasskeyFinish', { ...ok, name: 'x'.repeat(64) })).toBeNull();
     expect(v('factorPasskeyFinish', { ...ok, name: 7 })).toBe(bad);
+    expect(v('factorPasskeyFinish', { ...ok, name: '\u6f22'.repeat(22) })).toBe('name is longer than 64 bytes');
+    expect(v('factorPasskeyFinish', { ...ok, name: '\u6f22'.repeat(21) })).toBeNull();
     expect(v('factorPasskeyFinish', { ...ok, ceremonyId: 'ce' })).toBe('ceremonyId is not 32 lowercase hex');
     expect(v('factorPasskeyFinish', { ...ok, response: '' })).toBe('response is not a string of 1..65536 bytes');
   });
@@ -243,7 +295,7 @@ describe('the factor commands through the worker', () => {
     expect(await answered(w, 12)).toEqual({ t: 'ret', id: 12, ok: true, value: { backupCodes: CODES } });
   });
 
-  it('in ready, a command publishes the factors slice before its answer, and the answer holds the codes only', async () => {
+  it('in ready, a command publishes the factors slice before its answer', async () => {
     const w = world();
     await toReady(w);
     Object.assign(w.routes, { regenerateBackupCodes: vi.fn(() => Promise.resolve(CODES)) });
@@ -256,8 +308,45 @@ describe('the factor commands through the worker', () => {
     const ret = mine.findIndex((p) => p.t === 'ret' && p.id === 20);
     expect(slice).toBeGreaterThanOrEqual(0);
     expect(slice).toBeLessThan(ret);
-    // Nothing secret is in any slice the worker published.
-    expect(JSON.stringify(mine.filter((p) => p.t === 'slice'))).not.toContain(CODES[0]);
+  });
+
+  it('no slice ever holds a code, the secret, the uri or a step-up token, whichever command returned it', async () => {
+    const w = world();
+    await toReady(w);
+    Object.assign(w.routes, {
+      totpEnroll: vi.fn(() => Promise.resolve({ secret: SECRET, uri: URI })),
+      totpConfirm: vi.fn(() => Promise.resolve(CODES)),
+      passkeyRegisterBegin: vi.fn(() => Promise.resolve({ ceremonyId: CEREMONY, options: '{"publicKey":{}}' })),
+      passkeyRegisterFinish: vi.fn(() => Promise.resolve({ credId: CRED, backupCodes: CODES })),
+      stepUp: vi.fn(() => Promise.resolve({ token: 'su-token-1', expires: 9n })),
+      stepUpPasskeyBegin: vi.fn(() => Promise.resolve({ ceremonyId: CEREMONY, options: '{}' })),
+      stepUpPasskeyFinish: vi.fn(() => Promise.resolve({ token: 'su-token-2', expires: 9n })),
+      removeFactor: vi.fn(() => Promise.resolve()),
+      regenerateBackupCodes: vi.fn(() => Promise.resolve(CODES)),
+    });
+    const cmds: Record<string, unknown>[] = [
+      { m: 'factorTotpBegin', stepup: null }, { m: 'factorTotpConfirm', code: '123456' },
+      { m: 'factorPasskeyBegin', stepup: null }, { m: 'factorPasskeyFinish', ceremonyId: CEREMONY_HEX, response: '{}', name: 'Laptop' },
+      { m: 'stepUp', method: 'password', secret: 'pw' }, { m: 'stepUpPasskeyBegin' },
+      { m: 'stepUpPasskeyFinish', ceremonyId: CEREMONY_HEX, response: '{}' },
+      { m: 'removeFactor', stepup: 'su-token-1', kind: 'totp', credId: null }, { m: 'regenerateBackupCodes', stepup: 'su-token-1' },
+    ];
+    const before = w.posted.length;
+    for (const [i, c] of cmds.entries()) {
+      w.call(100 + i, c);
+      expect(await answered(w, 100 + i)).toMatchObject({ ok: true });
+    }
+    const slices = JSON.stringify(w.posted.slice(before).filter((p) => p.t === 'slice'));
+    for (const secret of [...CODES, SECRET, URI, 'su-token-1', 'su-token-2', 'otpauth']) expect(slices).not.toContain(secret);
+  });
+
+  it('forgetting the browser empties the factors slice', async () => {
+    const w = world();
+    await toReady(w);
+    expect(w.last<FactorsState>('factors')).toMatchObject({ totp: { confirmedAt: 1_700_000_000 }, backupCodesLeft: 10 });
+    w.call(40, { m: 'forgetBrowser' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('cleared'));
+    expect(w.last<FactorsState>('factors')).toEqual({ owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false });
   });
 
   it('in factor-setup the enrol commands run, a step-up command is not accepted', async () => {

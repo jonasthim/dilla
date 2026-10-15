@@ -15,12 +15,17 @@ export type FactorsRoutes = Pick<Routes, 'getFactors' | 'totpEnroll' | 'totpConf
 
 export interface FactorsDeps {
   routes: FactorsRoutes;
+  /** Whether the worker is in a phase that holds the factors slice (ready or factor-setup). */
+  holdsFactors(): boolean;
   publish<K extends SliceName>(name: K, value: SliceTypes[K]): void;
 }
 
 type FactorCommand = Extract<Command, { m: 'refreshFactors' | 'factorTotpBegin' | 'factorTotpConfirm' | 'factorPasskeyBegin'
   | 'factorPasskeyFinish' | 'stepUp' | 'stepUpPasskeyBegin' | 'stepUpPasskeyFinish' | 'removeFactor' | 'regenerateBackupCodes' }>;
 export type FactorMethod = FactorCommand['m'];
+
+/** What the slice shows once the account is forgotten. */
+export const NO_FACTORS: FactorsState = { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false };
 
 /** The factors slice from GET /v1/auth/factors: ids in hex, nothing secret. */
 export function factorsState(f: Factors): FactorsState {
@@ -31,7 +36,7 @@ export function factorsState(f: Factors): FactorsState {
 
 const ID = /^[0-9a-f]{32}$/;
 const SIX_DIGITS = /^\d{6}$/;
-const BACKUP_CODE = /^[A-Z2-7]{26}$/;
+export const BACKUP_CODE = /^[A-Z2-7]{26}$/;
 /** A credential id: 1..1023 bytes in lowercase hex (2..2046 characters). */
 const CRED_ID = /^(?:[0-9a-f]{2}){1,1023}$/;
 const CONTROL = /\p{Cc}/u;
@@ -52,8 +57,9 @@ function nameProblem(v: unknown): string | null {
   const bad = 'name must be 1 to 64 characters';
   if (typeof v !== 'string' || CONTROL.test(v)) return bad;
   const points = [...v].length;
-  // The route also bounds the name in bytes, so a name of 64 wide characters is refused here, not by the route.
-  return points >= 1 && points <= 64 && UTF8.encode(v).length <= PASSKEY_NAME_MAX_BYTES ? null : bad;
+  if (points < 1 || points > 64) return bad;
+  // The route also bounds the name in bytes, so a name of wide characters is refused here, not by the route.
+  return UTF8.encode(v).length <= PASSKEY_NAME_MAX_BYTES ? null : `name is longer than ${String(PASSKEY_NAME_MAX_BYTES)} bytes`;
 }
 
 /** The synchronous input checks of the factor commands: an E_BAD_INPUT reason, or null. */
@@ -87,8 +93,17 @@ export class FactorsController {
 
   /** Reads the factors and publishes them; rejects when the read does. */
   async refresh(): Promise<null> {
-    this.deps.publish('factors', factorsState(await this.deps.routes.getFactors()));
+    if (!this.deps.holdsFactors()) return null;
+    const factors = await this.deps.routes.getFactors();
+    // A late answer after a wipe or a re-attach is not this account's to publish.
+    if (this.deps.holdsFactors()) this.deps.publish('factors', factorsState(factors));
     return null;
+  }
+
+  /** The re-read after a commit: the server has already acted, so a failed read must not hide the result. The slice stays
+   *  as it was and the page can call refreshFactors. */
+  private async reread(): Promise<void> {
+    try { await this.refresh(); } catch { /* the commit stands */ }
   }
 
   async totpBegin(stepup: string | null): Promise<{ secret: string; uri: string }> {
@@ -98,7 +113,7 @@ export class FactorsController {
 
   async totpConfirm(code: string): Promise<{ backupCodes: string[] }> {
     const backupCodes = await this.guarded(() => this.deps.routes.totpConfirm(code));
-    await this.refresh();
+    await this.reread();
     return { backupCodes };
   }
 
@@ -109,7 +124,7 @@ export class FactorsController {
 
   async passkeyFinish(ceremonyId: string, response: string, name: string): Promise<{ backupCodes: string[] }> {
     const done = await this.guarded(() => this.deps.routes.passkeyRegisterFinish(fromHex(ceremonyId), response, name));
-    await this.refresh();
+    await this.reread();
     return { backupCodes: done.backupCodes };
   }
 
@@ -132,12 +147,13 @@ export class FactorsController {
 
   async removeFactor(stepup: string, kind: 'totp' | 'passkey', credId: string | null): Promise<null> {
     await this.guarded(() => this.deps.routes.removeFactor(stepup, kind === 'totp' ? 0 : 1, credId === null ? null : fromHex(credId)));
-    return this.refresh();
+    await this.reread();
+    return null;
   }
 
   async regenerateBackupCodes(stepup: string): Promise<{ backupCodes: string[] }> {
     const backupCodes = await this.guarded(() => this.deps.routes.regenerateBackupCodes(stepup));
-    await this.refresh();
+    await this.reread();
     return { backupCodes };
   }
 
@@ -148,7 +164,7 @@ export class FactorsController {
       return await call();
     } catch (e) {
       if (e instanceof DillaHttpError && (e.status === 404 || e.status === 409 || (e.status === 403 && e.code === 'E_STEP_UP'))) {
-        try { await this.refresh(); } catch { /* the original refusal is the answer */ }
+        await this.reread();
       }
       throw e;
     }
