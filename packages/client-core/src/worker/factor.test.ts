@@ -107,8 +107,8 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(w.account.ensureBackups).toHaveBeenCalled();
   });
 
-  it('factor-setup accepts exactly factorSetupDone and forgetBrowser (C3 adds its five)', () => {
-    expect(ACCEPTS['factor-setup']).toEqual(['factorSetupDone', 'forgetBrowser']);
+  it('factor-setup accepts factorSetupDone, forgetBrowser and the five enrol commands (C3)', () => {
+    expect(ACCEPTS['factor-setup']).toEqual(['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish']);
     expect(ACCEPTS['signin-passkey']).toEqual(['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
   });
 });

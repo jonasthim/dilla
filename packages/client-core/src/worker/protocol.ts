@@ -34,6 +34,18 @@ export type Command =
   | { m: 'signInPasskey'; ceremonyId: string; response: string; recoveryKey: string }  // → { needs }: 1 signin-totp, 0 ready
   | { m: 'signInBackupCode'; code: string; recoveryKey: string } // signin-totp|passkey → ready; a refusal: signin-login
   | { m: 'factorSetupDone'; invite: string | null }              // factor-setup → ready → { communityId, joinError }
+  // web3.6 (flow 10): factor management. The secret, the uri, the codes and the tokens travel only in these returns: the
+  // worker keeps none of them, and the factors slice holds none. Every state-changing one publishes `factors` before it resolves.
+  | { m: 'refreshFactors' }                                      // ready|factor-setup → null; slice factors
+  | { m: 'factorTotpBegin'; stepup: string | null }              // ready|factor-setup → { secret, uri }
+  | { m: 'factorTotpConfirm'; code: string }                     // ready|factor-setup → { backupCodes }
+  | { m: 'factorPasskeyBegin'; stepup: string | null }           // ready|factor-setup → { ceremonyId (32 hex), options (JSON) }
+  | { m: 'factorPasskeyFinish'; ceremonyId: string; response: string; name: string } // ready|factor-setup → { backupCodes }
+  | { m: 'stepUp'; method: 'password' | 'totp' | 'backup'; secret: string }          // ready → { token }
+  | { m: 'stepUpPasskeyBegin' }                                  // ready → { ceremonyId, options }
+  | { m: 'stepUpPasskeyFinish'; ceremonyId: string; response: string }               // ready → { token }
+  | { m: 'removeFactor'; stepup: string; kind: 'totp' | 'passkey'; credId: string | null } // ready → null
+  | { m: 'regenerateBackupCodes'; stepup: string }               // ready → { backupCodes }
   | { m: 'signInKey'; recoveryKey: string }                      // signin-key (a registered enrolment) → ready
   | { m: 'signInCancel' }                                        // signin-* → needs-signup
   | { m: 'refreshDevices' }                                      // ready: GET /v1/devices + own list → slice devices

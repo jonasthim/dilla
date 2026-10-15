@@ -23,7 +23,7 @@ import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
-  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow, type Factors,
+  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
   type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
@@ -34,7 +34,7 @@ import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem,
-  type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin, type FactorsState,
+  type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -44,7 +44,7 @@ import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
 import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
-import { FACTOR_VALIDATORS } from '../account/factors';
+import { FACTOR_VALIDATORS, FactorsController, factorsState } from '../account/factors';
 import { authorityFor } from '../admin/authority';
 
 export interface ControllerDeps {
@@ -191,6 +191,16 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInPasskey',
   'signInBackupCode',
   'factorSetupDone',
+  'refreshFactors',
+  'factorTotpBegin',
+  'factorTotpConfirm',
+  'factorPasskeyBegin',
+  'factorPasskeyFinish',
+  'stepUp',
+  'stepUpPasskeyBegin',
+  'stepUpPasskeyFinish',
+  'removeFactor',
+  'regenerateBackupCodes',
   'refreshDevices',
   'revokeDevice',
   'signOutRevoke',
@@ -251,12 +261,6 @@ const BACKUP_CODE = /^[A-Z2-7]{26}$/;
 const backupCode = (code: string): string => code.replace(/[-\s]/g, '').toUpperCase();
 /** The WebAuthn response a page hands over for a passkey sign-in: at most 64 KiB of JSON. */
 const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
-/** The factors slice from GET /v1/auth/factors (web3.6): ids in hex, nothing secret. */
-function factorsState(f: Factors): FactorsState {
-  return { owed: f.owed, totp: f.totp === null ? null : { confirmedAt: f.totp },
-    passkeys: f.passkeys.map((k) => ({ id: toHex(k.credId), name: k.name, created: k.created, lastUsed: k.lastUsed })),
-    backupCodesLeft: f.backupCodesLeft, hasPassword: f.hasPassword };
-}
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
   ({ username, needsTotp: factor === 'totp', factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
@@ -327,8 +331,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'signin-totp': ['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-passkey': ['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
-  // Task C3 adds its five factor commands here.
-  'factor-setup': ['factorSetupDone', 'forgetBrowser'],
+  // web3.6: a person owing a factor enrols one (the five that need no step-up) and reads the list; the rest need a factor held.
+  'factor-setup': ['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish'],
   'ready': [
     'joinCommunity',
     'selectCommunity',
@@ -346,6 +350,16 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'revokeDevice',
     'signOutRevoke',
     'forgetBrowser',
+    'refreshFactors',
+    'factorTotpBegin',
+    'factorTotpConfirm',
+    'factorPasskeyBegin',
+    'factorPasskeyFinish',
+    'stepUp',
+    'stepUpPasskeyBegin',
+    'stepUpPasskeyFinish',
+    'removeFactor',
+    'regenerateBackupCodes',
     'markRead',
     'setSetting',
     'openDm',
@@ -680,6 +694,8 @@ export class Controller {
   private readonly admin: AdminController;
   /** Wave 2a: roles, overwrites and private channels (flow 09). */
   private readonly rolesCtl: RolesController;
+  /** web3.6: second-factor management (flow 10). */
+  private readonly factorsCtl: FactorsController;
   /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
   private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
   private readonly ownInCall = new Set<string>();
@@ -776,6 +792,7 @@ export class Controller {
       accessForgotten: (communityId) => { this.rolesCtl.forget(communityId); this.accessRead.delete(communityId); },
       refusal: (code, detail) => new Refusal(code, detail),
     });
+    this.factorsCtl = new FactorsController({ routes: this.routes, publish: (name, value) => { this.slices.set(name, value); } });
     this.rolesCtl = new RolesController({
       routes: this.routes,
       me: () => this.me,
@@ -901,6 +918,16 @@ export class Controller {
       case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response, command.recoveryKey));
       case 'signInBackupCode': return this.step(() => this.signInBackupCode(command.code, command.recoveryKey));
       case 'factorSetupDone': return this.factorSetupDone(command.invite);
+      case 'refreshFactors': return this.factorsCtl.refresh();
+      case 'factorTotpBegin': return this.factorsCtl.totpBegin(command.stepup);
+      case 'factorTotpConfirm': return this.factorsCtl.totpConfirm(command.code);
+      case 'factorPasskeyBegin': return this.factorsCtl.passkeyBegin(command.stepup);
+      case 'factorPasskeyFinish': return this.factorsCtl.passkeyFinish(command.ceremonyId, command.response, command.name);
+      case 'stepUp': return this.factorsCtl.stepUp(command.method, command.secret);
+      case 'stepUpPasskeyBegin': return this.factorsCtl.stepUpPasskeyBegin();
+      case 'stepUpPasskeyFinish': return this.factorsCtl.stepUpPasskeyFinish(command.ceremonyId, command.response);
+      case 'removeFactor': return this.factorsCtl.removeFactor(command.stepup, command.kind, command.credId);
+      case 'regenerateBackupCodes': return this.factorsCtl.regenerateBackupCodes(command.stepup);
       case 'refreshDevices': return this.refreshDevices();
       case 'revokeDevice': return this.revokeDevice(command.deviceId, command.recoveryKey);
       case 'signOutRevoke': return this.signOutRevoke(command.recoveryKey);
