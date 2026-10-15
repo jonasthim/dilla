@@ -80,6 +80,9 @@ function bigServer(n: number, roles: number, channels: number) {
 describe('authorityFor at scale (C4 fix round 1)', () => {
   it('answers what channelBitsOf answers member by member', () => {
     const s = bigServer(120, 11, 12);
+    // Only states the instance stores: it refuses an overwrite that both allows and denies a bit (400, roles.go
+    // putOverwrite). ALL is mention_everyone alone, so the member overwrite's VIEW | PIN against ALL is disjoint.
+    for (const o of [...Object.values(s.overwrites).flat(), ...s.roles]) expect(o.allow & o.deny).toBe(0);
     for (const channel of s.channels) {
       const input = { ...s, overwrites: s.overwrites[channel.id] ?? [] };
       const users = [...new Set([s.owner, ...s.members.map((m) => m.userId)])].sort();
