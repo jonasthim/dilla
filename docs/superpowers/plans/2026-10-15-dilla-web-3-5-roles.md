@@ -1410,7 +1410,7 @@ W2b also changes two values, so T1b must update flow 09's Copy too (flow09's tes
 - **E4 `threads.spec.ts`** (8503/8504): reply in a thread; the summary count shows on both sides; the thread pane opens in the aside; a mention in a thread gives a badge.
 
 **Task order:**
-- P0: T0b (sonnet: the string files, flow 10, `strings.flow10.test.ts`), then T1b (sonnet: the copy).
+- P0: T0b (sonnet: the string files, flow 11, `strings.flow11.test.ts`), then T1b (sonnet: the copy).
 - Then: SRV-B (SB1) → CORE-R-B (RB1, then TB1) → CORE-B (CB2, CB3, TB2) → UI-B → WEB-B → W-Shell-B → E3 → E4 → H1b → 07 rows.
 - **Split again if needed:** threads (TB1/TB2/UI/E4) touch nothing of the class work except core schema numbering. If W2b runs long, ship threads as W2c.
 
