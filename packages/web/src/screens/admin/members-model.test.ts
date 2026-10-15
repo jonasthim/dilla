@@ -4,14 +4,15 @@ import { memberGroups, menuFor } from './members-model.ts';
 
 const id = (n: number) => n.toString(16).padStart(2, '0').repeat(16);
 const OWNER = id(1), ME = id(2), BOB = id(3), CAL = id(4), BOT = id(5);
-const MOD: RoleSummary = { id: id(10), name: 'mods', color: 0, position: 5, hoist: true, mentionable: false };
-const CREW: RoleSummary = { id: id(11), name: 'crew', color: 0, position: 2, hoist: true, mentionable: false };
-const QUIET: RoleSummary = { id: id(12), name: 'quiet', color: 0, position: 9, hoist: false, mentionable: false };
+const MOD: RoleSummary = { id: id(10), name: 'mods', color: 0, position: 5, hoist: true, mentionable: false, allow: 0, deny: 0, members: 0 };
+const CREW: RoleSummary = { id: id(11), name: 'crew', color: 0, position: 2, hoist: true, mentionable: false, allow: 0, deny: 0, members: 0 };
+const QUIET: RoleSummary = { id: id(12), name: 'quiet', color: 0, position: 9, hoist: false, mentionable: false, allow: 0, deny: 0, members: 0 };
 const ROLES = [CREW, MOD, QUIET];
 const m = (userId: string, username: string, roleIds: string[] = [], kind: 0 | 1 = 0, display = ''): MemberSummary => ({ userId, username, display, kind, roleIds });
 const MEMBERS = [m(OWNER, 'olof'), m(ME, 'ada', [CREW.id]), m(BOB, 'bob', [CREW.id, MOD.id]), m(CAL, 'carol', [QUIET.id], 0, 'Åsa'), m(BOT, 'robo', [], 1)];
+const EVERYONE = 'ab'.repeat(16);
 const access = (over: Partial<CommunityAccess> = {}): CommunityAccess => ({ top: 5, owner: false, manageCommunity: false, manageChannels: false,
-  kickMembers: true, banMembers: true, createInvite: false, manageRoles: false, loaded: true, ...over });
+  kickMembers: true, banMembers: true, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE, ...over });
 
 describe('memberGroups', () => {
   it('groups by the highest hoisted role, highest first, and the rest last; an unhoisted role does not group', () => {

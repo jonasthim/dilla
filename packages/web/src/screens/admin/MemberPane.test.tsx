@@ -10,10 +10,11 @@ import { reasonProblem } from './Moderation.tsx';
 
 const id = (n: number) => n.toString(16).padStart(2, '0').repeat(16);
 const CID = id(9), OWNER = id(1), ME = id(2), BOB = id(3), CAL = id(4);
-const MOD: RoleSummary = { id: id(10), name: 'mods', color: 0, position: 5, hoist: true, mentionable: false };
+const MOD: RoleSummary = { id: id(10), name: 'mods', color: 0, position: 5, hoist: true, mentionable: false, allow: 0, deny: 0, members: 0 };
 const m = (userId: string, username: string, roleIds: string[] = []): MemberSummary => ({ userId, username, display: '', kind: 0, roleIds });
+const EVERYONE = 'ab'.repeat(16);
 const access = (over: Partial<CommunityAccess> = {}): CommunityAccess => ({ top: 5, owner: false, manageCommunity: false, manageChannels: false,
-  kickMembers: true, banMembers: true, createInvite: false, manageRoles: false, loaded: true, ...over });
+  kickMembers: true, banMembers: true, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE, ...over });
 
 function setup(acc: CommunityAccess | undefined = access()) {
   const fake = new FakeClient();

@@ -205,7 +205,7 @@ describe('the channels tab of ServerSettings', () => {
     fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
     fake.set(`channels:${SERVER}`, CHANNELS);
     fake.set(`permissions:${SERVER}`, { top: 1, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false,
-      banMembers: false, createInvite: false, manageRoles: false, loaded: true });
+      banMembers: false, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) });
     render(<div className="d-root"><CoreProvider client={fake}>
       <ServerSettings communityId={SERVER} tab="channels" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />
     </CoreProvider></div>);

@@ -15,8 +15,9 @@ const CHANNELS: ChannelSummary[] = [
   { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, group: 'none' },
 ];
 const MEMBERS: MemberSummary[] = [{ userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [] }];
+const EVERYONE = 'ab'.repeat(16);
 const access = (over: Partial<CommunityAccess> = {}): CommunityAccess => ({ top: 0, owner: false, manageCommunity: false, manageChannels: false,
-  kickMembers: false, banMembers: false, createInvite: true, manageRoles: false, loaded: true, ...over });
+  kickMembers: false, banMembers: false, createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE, ...over });
 
 const VOICE = 'e5'.repeat(16);
 const GEN_B = 'd4'.repeat(16);

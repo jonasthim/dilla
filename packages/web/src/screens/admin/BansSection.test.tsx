@@ -127,7 +127,7 @@ describe('the bans tab of ServerSettings', () => {
     fake.set('account', account());
     fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
     fake.set(`permissions:${SERVER}`, { top: 1, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
-      banMembers: true, createInvite: false, manageRoles: false, loaded: true });
+      banMembers: true, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) });
     fake.set(`bans:${SERVER}`, BANS);
     render(<div className="d-root"><CoreProvider client={fake}>
       <ServerSettings communityId={SERVER} tab="bans" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />

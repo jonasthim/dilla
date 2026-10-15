@@ -16,7 +16,7 @@ const NAME = 'Björn';
 const NFD = 'Björn';
 
 export const FULL: CommunityAccess = { top: 100, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true,
-  banMembers: true, createInvite: true, manageRoles: true, loaded: true };
+  banMembers: true, createInvite: true, manageRoles: true, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) };
 const NONE: CommunityAccess = { ...FULL, top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
   banMembers: false, createInvite: false, manageRoles: false };
 

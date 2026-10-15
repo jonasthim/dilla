@@ -420,7 +420,7 @@ describe('CreateServerFlow', () => {
       return { fake, onServer, onDone, ...r };
     }
     const ours = { id: SERVER, name: 'Midgard', owner: ME.id };
-    const starter = (c: { m: string; kind?: string }) => Promise.resolve({ channelId: c.kind === 'voice' ? VOICE : TEXT });
+    const starter = (c: { m: string }) => Promise.resolve({ channelId: 'kind' in c && c.kind === 'voice' ? VOICE : TEXT });
 
     /** The instance as the worker sees it with the socket up: a create may make the server and lose its answer; only
      *  refreshCommunities (or a ready, which never comes here) publishes the instance's list. */
