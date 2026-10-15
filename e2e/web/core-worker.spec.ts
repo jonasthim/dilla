@@ -327,6 +327,8 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
   try {
     const s = await peer.setup({ community: 'fold community', channel: 'general' });
     expect((await peer.register()).epoch).toBe(0);
+    // Pins count by the pinner's right, which @everyone lacks by default: the owner grants it, as its roles tab would.
+    await peer.allowEveryone(1 << 3);
     const username = `fld${(peer.seed & 0xff_ffff).toString(16).padStart(6, '0')}`;
     const ch = s.channel_id;
     const itemsOf = async (p: Page): Promise<TimelineItem[]> => (await slice<TimelineState>(p, `timeline:${ch}`))?.items ?? [];
