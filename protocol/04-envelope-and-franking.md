@@ -113,6 +113,12 @@ on the order in which rows reach it.
   `<@everyone>`/`<@here>` only from a sender holding `mention_everyone` in that channel now, and
   recomputes the messages it holds when the view changes (§ Mentions); a receiver that holds none
   keeps the former rule.
+- **Role mentions.** A receiver that holds the community's role view counts a token of a role it
+  holds only when that role is marked "anyone can mention" (`mentionable`) or the sender holds
+  `mention_everyone` in that channel now; otherwise the token is shown as the role's name and does
+  not count. A token of a role the receiver does not hold never counts. A change of either input
+  (a role's `mentionable`, a sender's `mention_everyone`) recomputes the messages it holds, as for
+  broadcast mentions; a receiver that holds no view keeps the former rule.
 - **The role view.** The view is served by the instance and is not authenticated by the group
   (`08` § Residual trust): it decides only which pins and mentions a receiver counts, never which
   messages it shows. A DM has no role view.
@@ -129,7 +135,9 @@ community, `<@everyone>` or `<@here>`. A receiver that holds the community's rol
 overwrites, roles, members) counts `<@everyone>` and `<@here>` only from a sender holding
 `mention_everyone` in that channel now, and recomputes the count of the messages it holds when the
 view changes; a receiver that holds none keeps the former rule, which counts them from any member.
-The receiver's own user id and its own role ids count from any sender. This version counts
+The same receiver counts one of its own role ids only when the view marks that role `mentionable`
+or the sender holds `mention_everyone` there (§ Semantics, Role mentions); without a view, its own
+role ids count from any sender. The receiver's own user id counts from any sender. This version counts
 `<@here>` as `<@everyone>`. An edit never raises a mention.
 A client shows a mention as the name it stands for, never as the raw token.
 

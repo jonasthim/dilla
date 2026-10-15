@@ -408,10 +408,11 @@ export class FakeCore implements CorePort {
   purgeDone(groupId: Id, seq: bigint): void { return this.notModelled('purgeDone', groupId, seq); }
   ownRolesSet(communityId: Id, roleIds: Id[]): void { return this.notModelled('ownRolesSet', communityId, roleIds); }
   /** web3.5 R1: every authoritySet call, in hex, in call order (C4 reads it). */
-  readonly authoritySets: { groupId: string; pinners: string[]; broadcasters: string[] }[] = [];
-  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[]): void {
+  readonly authoritySets: { groupId: string; pinners: string[]; broadcasters: string[]; mentionable: string[] }[] = [];
+  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[], mentionable: Id[]): void {
     this.enter('authoritySet');
-    this.authoritySets.push({ groupId: toHex(groupId), pinners: pinners.map(toHex), broadcasters: broadcasters.map(toHex) });
+    this.authoritySets.push({ groupId: toHex(groupId), pinners: pinners.map(toHex), broadcasters: broadcasters.map(toHex),
+      mentionable: mentionable.map(toHex) });
   }
   // web-3 call groups (L-TS-55) are group-half methods: ModelCore models them (lesson f); here they are not modelled.
   callGroupCreate(groupId: Id, communityId: Id | null, channelId: Id, policyVersion: bigint, externalSenderPub: Uint8Array): Uint8Array {

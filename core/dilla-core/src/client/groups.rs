@@ -423,6 +423,7 @@ impl ClientCore {
                         "app_reactions",
                         "app_authority",
                         "app_authority_known",
+                        "app_authority_mentionable",
                     ] {
                         c.execute(
                             &format!("DELETE FROM {table} WHERE group_id=?1"),

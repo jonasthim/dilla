@@ -98,12 +98,12 @@ describe('FakeCore group half', () => {
     const core = member();
     const a = new Uint8Array(16).fill(0xa1);
     const b = new Uint8Array(16).fill(0xb2);
-    core.authoritySet(GROUP, [a, b], [b]);
-    core.authoritySet(GROUP, [], []);
+    core.authoritySet(GROUP, [a, b], [b], [a]);
+    core.authoritySet(GROUP, [], [], []);
     const hex = (x: Uint8Array): string => Array.from(x, (v) => v.toString(16).padStart(2, '0')).join('');
     expect(core.authoritySets).toEqual([
-      { groupId: hex(GROUP), pinners: [hex(a), hex(b)], broadcasters: [hex(b)] },
-      { groupId: hex(GROUP), pinners: [], broadcasters: [] },
+      { groupId: hex(GROUP), pinners: [hex(a), hex(b)], broadcasters: [hex(b)], mentionable: [hex(a)] },
+      { groupId: hex(GROUP), pinners: [], broadcasters: [], mentionable: [] },
     ]);
     expect(core.calls.filter((c) => c === 'authoritySet')).toHaveLength(2);
   });

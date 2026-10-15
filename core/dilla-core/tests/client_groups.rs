@@ -169,10 +169,10 @@ fn a_discarded_group_leaves_no_authority_rows() {
         )
         .expect("create");
     a.core
-        .authority_set(&GROUP, &[0xe5; 16], &[0xe5; 16])
+        .authority_set(&GROUP, &[0xe5; 16], &[0xe5; 16], &[0x3c; 16])
         .expect("a view");
     a.core
-        .authority_set(&OTHER_GROUP, &[0xe5; 16], &[])
+        .authority_set(&OTHER_GROUP, &[0xe5; 16], &[], &[])
         .expect("another group's view");
     {
         let db = a.probe.lock().expect("lock");
@@ -203,6 +203,10 @@ fn a_discarded_group_leaves_no_authority_rows() {
         rows("SELECT count(*) FROM app_authority_known WHERE group_id = ?1"),
         0
     );
+    assert_eq!(
+        rows("SELECT count(*) FROM app_authority_mentionable WHERE group_id = ?1"),
+        0
+    );
     assert_eq!(rows("SELECT count(*) FROM app_pins WHERE group_id = ?1"), 0);
     assert_eq!(
         rows("SELECT count(*) FROM app_reactions WHERE group_id = ?1"),
@@ -230,7 +234,7 @@ fn a_dm_group_takes_no_role_view() {
         .group_create(&DM_GROUP, None, &DM_CHANNEL, POLICY, &instance.public())
         .expect("a DM group");
     assert_eq!(
-        code(a.core.authority_set(&DM_GROUP, &[0xe5; 16], &[])),
+        code(a.core.authority_set(&DM_GROUP, &[0xe5; 16], &[], &[])),
         "E_CORE_STATE"
     );
     let rows: i64 = a

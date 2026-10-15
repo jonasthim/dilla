@@ -1861,8 +1861,9 @@ export class Controller {
   }
 
   /**
-   * web3.5 C4: hands the core each of the server's text groups' role view (who may pin, who may mention everyone), so it
-   * counts only their pins and broadcast mentions. Runs after a member list and after an access read land.
+   * web3.5 C4: hands the core each of the server's text groups' role view (who may pin, who may mention everyone, which
+   * roles anyone may mention), so it counts only their pins, broadcast mentions and role mentions. Runs after a member
+   * list and after an access read land.
    *
    * Nothing is sent while the view is unknown: until this attach has read the server's member list, and its roles,
    * @everyone and overwrites (`loaded` and `overwritesLoaded`), the core keeps its old rule (every pin counts). The member
@@ -1896,13 +1897,16 @@ export class Controller {
     }
     if (channels.length === 0) return;
     const changed = new Set<string>();
+    // W2a review finding 1: the server's roles anyone may mention (never @everyone's own row, whose token is <@everyone>);
+    // a role token from a member without mention_everyone counts only for these.
+    const mentionable = roles.filter((r) => r.position > 0 && r.mentionable).map((r) => r.id).sort();
     for (const [groupHex, view] of authorityFor({ owner, everyoneId: access.everyoneId, roles, members, overwrites, channels })) {
-      const key = `${view.pinners.join(',')}|${view.broadcasters.join(',')}`;
+      const key = `${view.pinners.join(',')}|${view.broadcasters.join(',')}|${mentionable.join(',')}`;
       const channelId = channels.find((c) => c.textGroupId === groupHex)?.id;
       if (channelId !== undefined) this.authorityStates.set(groupHex, this.groupState(channelId, groups));
       if (this.authority.get(groupHex)?.key === key) continue;
       try {
-        core.authoritySet(fromHex(groupHex), view.pinners.map(fromHex), view.broadcasters.map(fromHex));
+        core.authoritySet(fromHex(groupHex), view.pinners.map(fromHex), view.broadcasters.map(fromHex), mentionable.map(fromHex));
       } catch { continue; }
       this.authority.set(groupHex, { communityId, key });
       changed.add(groupHex);

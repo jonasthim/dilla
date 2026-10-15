@@ -43,7 +43,7 @@ fn write_the_v3_fixture() {
 
 fn authority_tables(db: &rusqlite::Connection) -> i64 {
     db.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('app_authority','app_authority_known')",
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('app_authority','app_authority_known','app_authority_mentionable')",
         [],
         |r| r.get(0),
     )
@@ -72,7 +72,7 @@ fn a_v3_store_gains_the_authority_tables_with_its_pins_unchanged() {
         .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
         .expect("schema");
     assert_eq!(schema, vec![0x04]);
-    assert_eq!(authority_tables(&db), 2);
+    assert_eq!(authority_tables(&db), 3);
     type PinRow = (Vec<u8>, Vec<u8>, i64, Vec<u8>);
     let pins: Vec<PinRow> = db
         .prepare("SELECT group_id, target, seq, by_user FROM app_pins")
@@ -101,11 +101,11 @@ fn a_schema_4_store_without_the_authority_tables_gains_them() {
     drop(ClientCore::open(Arc::clone(&conn)).expect("fresh"));
     conn.lock()
         .expect("lock")
-        .execute_batch("DROP TABLE app_authority; DROP TABLE app_authority_known;")
+        .execute_batch("DROP TABLE app_authority; DROP TABLE app_authority_known; DROP TABLE app_authority_mentionable;")
         .expect("a web3.4 store");
     drop(ClientCore::open(Arc::clone(&conn)).expect("reopen"));
     let db = conn.lock().expect("lock");
-    assert_eq!(authority_tables(&db), 2);
+    assert_eq!(authority_tables(&db), 3);
     assert_eq!(meta_of(&db, "schema"), Some(vec![0x04]));
 }
 

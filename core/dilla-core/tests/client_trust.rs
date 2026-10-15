@@ -261,7 +261,7 @@ fn a_released_pending_message_applies_the_broadcast_gate() {
     assert_eq!(alice.row_at(&GROUP, plain).status, 1);
     alice
         .core
-        .authority_set(&GROUP, &[], &[])
+        .authority_set(&GROUP, &[], &[], &[])
         .expect("bob may not broadcast");
     let (history, head) = list_wire(&bob);
     alice
@@ -300,7 +300,7 @@ fn a_released_pending_broadcast_from_an_allowed_sender_counts() {
     assert_eq!(alice.row_at(&GROUP, seq).status, 1);
     alice
         .core
-        .authority_set(&GROUP, &[], &bob.user)
+        .authority_set(&GROUP, &[], &bob.user, &[])
         .expect("bob may broadcast");
     let (history, head) = list_wire(&bob);
     alice

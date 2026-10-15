@@ -902,42 +902,62 @@ describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CO
 
   it('counts a pin or unpin only from a pinner once the role view is known, and refolds when it changes (web3.5 R1)', () => {
     const core = fresh();
-    core.authoritySet(G, [PEER.user], []);
+    core.authoritySet(G, [PEER.user], [], []);
     apply(core, app(1n, PEER, T, 'first'), app(2n, PEER, fold(2n), '', { type: 5, replyTo: T }),
       app(3n, THIRD, fold(3n), '', { type: 6, replyTo: T }), app(4n, PEER, T2, 'second'), app(5n, THIRD, fold(5n), '', { type: 5, replyTo: T2 }));
     expect(core.pins(G).map((p) => [p.targetSeq, p.pinnedSeq])).toEqual([[1n, 2n]]);
     expect(shown(core, 4n).pinned).toBe(false);
-    core.authoritySet(G, [], []);
+    core.authoritySet(G, [], [], []);
     expect(core.pins(G)).toEqual([]);
-    core.authoritySet(G, [PEER.user], []);
+    core.authoritySet(G, [PEER.user], [], []);
     expect(core.pins(G).map((p) => p.targetSeq)).toEqual([1n]);
-    core.authoritySet(G, [PEER.user, THIRD.user], []);
+    core.authoritySet(G, [PEER.user, THIRD.user], [], []);
     expect(core.pins(G).map((p) => [p.targetSeq, p.pinnedSeq])).toEqual([[4n, 5n]]);
     const tooMany = Array.from({ length: 4097 }, (_, i) => idOf(0x40, i));
-    expect(thrown(() => core.authoritySet(G, tooMany, []))).toMatchObject({ code: 'E_CORE_INPUT', detail: 'pinners and broadcasters must be 0..=4096 ids of 16 bytes' });
-    expect(thrown(() => core.authoritySet(G, [], [new Uint8Array(15)]))).toMatchObject({ code: 'E_CORE_INPUT' });
+    expect(thrown(() => core.authoritySet(G, tooMany, [], []))).toMatchObject({ code: 'E_CORE_INPUT', detail: 'pinners, broadcasters and mentionable must be 0..=4096 ids of 16 bytes' });
+    expect(thrown(() => core.authoritySet(G, [], [new Uint8Array(15)], []))).toMatchObject({ code: 'E_CORE_INPUT' });
   });
 
   it('refuses a role view for a DM group as the core does (web3.5 C4: a worker that pushes one is caught)', () => {
     const core = fresh();
     const dm = idOf(0xd2, 1);
     core.seedGroup(dm, 0, null, idOf(0xd1, 1));
-    expect(thrown(() => core.authoritySet(dm, [PEER.user], []))).toMatchObject({ code: 'E_CORE_STATE', detail: 'a DM group has no role view' });
-    core.authoritySet(G, [PEER.user], []);
+    expect(thrown(() => core.authoritySet(dm, [PEER.user], [], []))).toMatchObject({ code: 'E_CORE_STATE', detail: 'a DM group has no role view' });
+    core.authoritySet(G, [PEER.user], [], []);
   });
 
   it('counts @everyone/@here only from a broadcaster once the view is known, recomputing held rows (web3.5 R1)', () => {
     const core = fresh();
     apply(core, app(1n, PEER, idOf(0x7e, 1), '<@everyone> standup'));
     expect(shown(core, 1n).mention).toBe(true);
-    core.authoritySet(G, [], []);
+    core.authoritySet(G, [], [], []);
     expect(shown(core, 1n).mention).toBe(false);
     apply(core, app(2n, PEER, idOf(0x7e, 2), '<@here> ping'), app(3n, PEER, idOf(0x7e, 3), `<@everyone> <@${toHex(ME.user)}>`));
     expect([shown(core, 2n).mention, shown(core, 3n).mention]).toEqual([false, true]);
     expect(at(core.activity(), 0).mentions).toBe(1);
-    core.authoritySet(G, [], [PEER.user]);
+    core.authoritySet(G, [], [PEER.user], []);
     expect([1n, 2n, 3n].map((s) => shown(core, s).mention)).toEqual([true, true, true]);
     expect(at(core.activity(), 0).mentions).toBe(3);
+  });
+
+  it('counts an own-role token only if the role is mentionable or the sender may broadcast (W2a review finding 1)', () => {
+    const core = fresh();
+    const other = idOf(0x3d, 1);
+    const unheld = idOf(0x3e, 1);
+    core.ownRolesSet(COMMUNITY, [ROLE, other]);
+    core.authoritySet(G, [], [], []);
+    apply(core, app(1n, PEER, idOf(0x7e, 1), `<@${toHex(ROLE)}> ops`), app(2n, PEER, idOf(0x7e, 2), `<@${toHex(other)}> ops`),
+      app(3n, PEER, idOf(0x7e, 3), `<@${toHex(unheld)}> ops`));
+    const flags = (): boolean[] => [1n, 2n, 3n].map((s) => shown(core, s).mention);
+    expect(flags()).toEqual([false, false, false]);
+    core.authoritySet(G, [], [], [ROLE, unheld]);
+    expect(flags()).toEqual([true, false, false]);
+    core.authoritySet(G, [], [PEER.user], [ROLE]);
+    expect(flags()).toEqual([true, true, false]);
+    core.authoritySet(G, [], [], [ROLE]);
+    expect(flags()).toEqual([true, false, false]);
+    expect(at(core.activity(), 0).mentions).toBe(1);
+    expect(thrown(() => core.authoritySet(G, [], [], [new Uint8Array(15)]))).toMatchObject({ code: 'E_CORE_INPUT' });
   });
 
   it('never raises a mention through an edit', () => {

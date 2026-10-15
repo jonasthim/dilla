@@ -651,6 +651,7 @@ fn open_creates_app_schema_v4_and_reopens_idempotently() {
         [
             "app_authority",
             "app_authority_known",
+            "app_authority_mentionable",
             "app_device_lists",
             "app_groups",
             "app_groups_by_target",

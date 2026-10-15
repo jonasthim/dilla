@@ -674,7 +674,7 @@ fn the_wasm_bindgen_surface_round_trips_every_envelope_vector_with_its_name() {
     assert!(first.contains("\"name\":\"wolf-capes.jpg\""), "{first}");
 }
 
-/// web3.5 R1: authority_set's pinners and broadcasters are each 0..=4096 ids of 16 bytes, refused
+/// web3.5 R1: authority_set's pinners, broadcasters and mentionable are each 0..=4096 ids of 16 bytes, refused
 /// in the facade before the core is borrowed; the detail names the list and length, never the bytes.
 #[wasm_bindgen_test]
 fn authority_ids_are_zero_to_4096_ids_of_sixteen_bytes() {
@@ -701,6 +701,13 @@ fn authority_ids_are_zero_to_4096_ids_of_sixteen_bytes() {
             .unwrap_err()
             .detail,
         "broadcasters: expected 0..=4096 ids of 16 bytes, got 65552 bytes"
+    );
+    // The mentionable role ids (W2a review finding 1) take the same bound.
+    assert_eq!(
+        authority_ids_arg("mentionable", &[0x5a; 17])
+            .unwrap_err()
+            .detail,
+        "mentionable: expected 0..=4096 ids of 16 bytes, got 17 bytes"
     );
 }
 

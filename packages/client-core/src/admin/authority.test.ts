@@ -143,6 +143,18 @@ describe('the worker pushes the role view into the core', () => {
     expect(pushes(w)).toEqual([[G, BOTH, BOTH], [G, [toHex(USER)], [toHex(USER)]]]);
   });
 
+  it('sends the roles anyone may mention, never @everyone, and sends the view again when one changes (W2a finding 1)', async () => {
+    const w = await ready();
+    await vi.waitFor(() => expect(w.core.authoritySet).toHaveBeenCalledTimes(1));
+    const mentionable = (): string[][] => w.core.authoritySet.mock.calls.map(([, , , m]) => m.map(toHex));
+    expect(mentionable()).toEqual([[]]);
+    w.routes.listRoles.mockResolvedValue([{ ...role(EVERYONE, 0, VIEW | PERM.sendMessages), mentionable: true },
+      { ...role(MOD, 1, PIN | ALL), mentionable: true }]);
+    await run(w, { m: 'updateRole', communityId: CID, roleId: toHex(MOD), name: null, color: null, hoist: null, mentionable: true, allow: null });
+    await vi.waitFor(() => expect(mentionable()).toEqual([[], [toHex(MOD)]]));
+    expect(pushes(w)).toEqual([[G, BOTH, BOTH], [G, BOTH, BOTH]]);
+  });
+
   it('sends nothing again while the inputs are unchanged', async () => {
     const w = await ready();
     await vi.waitFor(() => expect(w.core.authoritySet).toHaveBeenCalledTimes(1));

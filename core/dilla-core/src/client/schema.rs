@@ -67,11 +67,12 @@ pub(crate) const STATE_PRIOR: &str = "state_prior";
 /// - `app_messages.envelope`: the envelope CBOR (with k_f) of an ok row; NULL otherwise.
 /// - `app_messages.mention`: 1 on a status-0 type-0 row from another user (by `sender_user`,
 ///   ruling 29: the own user's other devices are excluded too) whose body `mentions_me_gated`
-///   (`<@everyone>`/`<@here>` by the group's role view, web3.5 R1), else 0. `authority_set`
-///   recomputes it for the group's broadcast rows of senders whose broadcast bit changed, and
-///   that rescan reads today's own roles (`app_roles`), not the roles held when the row arrived:
-///   a rescanned row with an own-role token counts by the current roles (ruling 12 holds for rows
-///   the rescan does not touch).
+///   (`<@everyone>`/`<@here>` and own-role tokens by the group's role view, web3.5 R1 and W2a
+///   review finding 1), else 0. `authority_set` recomputes it for the group's rows naming a
+///   `<@…>` token from senders whose broadcast bit changed (from every sender when the view's
+///   mentionable roles changed), and that rescan reads today's own roles (`app_roles`), not the
+///   roles held when the row arrived: a rescanned row with an own-role token counts by the current
+///   roles (ruling 12 holds for rows the rescan does not touch).
 /// - `app_messages.reply_to`: the envelope's `reply_to` of a status-0 row, retained by a
 ///   status-2 row that kept its identity; NULL otherwise.
 /// - `app_messages.edit_body` and `edit_seq`: the latest author's edit applied to a type-0 row;
@@ -79,7 +80,7 @@ pub(crate) const STATE_PRIOR: &str = "state_prior";
 /// - `app_reactions` and `app_pins`: derived per target by `fold::refold`.
 /// - `app_purges`: the task-3 purge records.
 /// - `app_roles`: this device's own role ids per community, replaced by `own_roles_set`.
-/// - `app_authority`, `app_authority_known`: see `APP_AUTHORITY`.
+/// - `app_authority`, `app_authority_known`, `app_authority_mentionable`: see `APP_AUTHORITY`.
 /// - `app_outbox.state`: 0 queued, 1 in_flight, 2 failed.
 /// - `app_outbox.epoch`: the epoch send_encrypt framed the message in; read by send_confirm.
 /// - `app_read_state`: the device-local read marker of a group, never lowered.
@@ -242,11 +243,16 @@ CREATE TABLE IF NOT EXISTS app_trust_audit (
 ///
 /// - `app_authority`: per group, the users the host-served role view allows `pin_messages`
 ///   (`bit` 3) or `mention_everyone` (`bit` 18) in the group's channel; never another bit.
+/// - `app_authority_mentionable`: per group, the server's role ids the view marks "anyone can
+///   mention" (W2a review finding 1); an own-role token from a sender without bit 18 counts only
+///   for these.
 /// - `app_authority_known`: the groups whose view is known; replaced with the rows above by
 ///   `authority_set`. A group without a row keeps the former rule (any member counts).
 pub(super) const APP_AUTHORITY: &str = "
 CREATE TABLE IF NOT EXISTS app_authority (group_id BLOB NOT NULL, bit INTEGER NOT NULL, user_id BLOB NOT NULL,
   PRIMARY KEY (group_id, bit, user_id)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS app_authority_mentionable (group_id BLOB NOT NULL, role_id BLOB NOT NULL,
+  PRIMARY KEY (group_id, role_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS app_authority_known (group_id BLOB PRIMARY KEY, set_at INTEGER NOT NULL) WITHOUT ROWID;
 ";
 

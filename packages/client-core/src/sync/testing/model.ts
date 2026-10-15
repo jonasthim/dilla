@@ -971,8 +971,9 @@ export class ModelCore implements CorePort {
   private readonly purgeRows = new Map<string, PurgeRow>();
   /** app_roles: community hex → the own role ids (L-CORE-35). */
   private readonly roles = new Map<string, Id[]>();
-  /** app_authority / app_authority_known (web3.5 R1): group hex → user hexes allowed pin_messages / mention_everyone. */
-  private readonly authority = new Map<string, { pinners: Set<string>; broadcasters: Set<string> }>();
+  /** app_authority / app_authority_known / app_authority_mentionable (web3.5 R1): group hex → user hexes allowed
+   *  pin_messages / mention_everyone, and the role hexes anyone may mention. */
+  private readonly authority = new Map<string, { pinners: Set<string>; broadcasters: Set<string>; mentionable: Set<string> }>();
 
   constructor(readonly me: Peer) {
     // F3: the own pin is this device's own credential key, verified from signup on; it never takes a pending change.
@@ -1584,22 +1585,31 @@ export class ModelCore implements CorePort {
   }
 
   /** web3.5 R1 `authority_set`: replaces the group's role view, refolds every pinned or unpinned target and recomputes
-   *  the mention flag of every other user's readable row naming <@everyone>/<@here>. The group need not be held; a held
-   *  DM group is refused with E_CORE_STATE. */
-  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[]): void {
+   *  the mention flag of other users' readable rows naming a <@…> token: every such row on a first view or when the
+   *  mentionable roles changed, else only those of senders whose broadcast bit changed (W2a review finding 1). The group
+   *  need not be held; a held DM group is refused with E_CORE_STATE. */
+  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[], mentionable: Id[]): void {
     const bad = (ids: Id[]): boolean => ids.length > 4096 || ids.some((r) => !(r instanceof Uint8Array) || r.length !== 16);
-    if (bad(pinners) || bad(broadcasters)) throw coreError('E_CORE_INPUT', 'pinners and broadcasters must be 0..=4096 ids of 16 bytes');
+    if (bad(pinners) || bad(broadcasters) || bad(mentionable)) {
+      throw coreError('E_CORE_INPUT', 'pinners, broadcasters and mentionable must be 0..=4096 ids of 16 bytes');
+    }
     const g = this.gs.get(toHex(groupId));
     // messages.rs (98bc249): a DM group has no roles; nothing is written.
     if (g !== undefined && g.communityId === null) throw coreError('E_CORE_STATE', 'a DM group has no role view');
-    this.authority.set(toHex(groupId), { pinners: new Set(pinners.map(toHex)), broadcasters: new Set(broadcasters.map(toHex)) });
+    const before = this.authority.get(toHex(groupId));
+    const next = { pinners: new Set(pinners.map(toHex)), broadcasters: new Set(broadcasters.map(toHex)), mentionable: new Set(mentionable.map(toHex)) };
+    this.authority.set(toHex(groupId), next);
     if (g === undefined) return;
     const targets = new Map<string, Id>();
     for (const r of g.rows.values()) if (r.type !== null && (r.type === 5 || r.type === 6) && r.replyTo !== null) targets.set(toHex(r.replyTo), r.replyTo);
     for (const target of targets.values()) this.refold(g, target, null);
+    const everySender = before === undefined || before.mentionable.size !== next.mentionable.size
+      || [...next.mentionable].some((role) => !before.mentionable.has(role));
     for (const r of [...g.rows.values()]) {
       if (r.status !== 0 || r.type !== 0 || r.senderUser === null || same(r.senderUser, this.me.user)) continue;
-      if (!r.body.includes('<@everyone>') && !r.body.includes('<@here>')) continue;
+      if (!r.body.includes('<@')) continue;
+      const sender = toHex(r.senderUser);
+      if (!everySender && before.broadcasters.has(sender) === next.broadcasters.has(sender)) continue;
       const mention = this.mentionOf(g, r.body, r.senderUser);
       if (mention !== r.mention) g.rows.set(r.seq, { ...r, mention });
     }
@@ -1611,13 +1621,14 @@ export class ModelCore implements CorePort {
     return view === undefined || (user !== null && view.pinners.has(toHex(user)));
   }
 
-  /** messages.rs mentions_me_gated: <@everyone>/<@here> count only from a broadcaster (bit 18) or while the view is unknown. */
+  /** messages.rs mentions_me_gated: <@everyone>/<@here> and own-role tokens count from a broadcaster (bit 18) or while the
+   *  view is unknown; from anyone else only a direct mention and a token of an own role the view marks mentionable. */
   private mentionOf(g: MGroup, body: string, sender: Id): boolean {
     const view = this.authority.get(toHex(g.groupId));
     const me = toHex(this.me.user);
     const roles = this.roleHexes(g);
     if (view === undefined || view.broadcasters.has(toHex(sender))) return mentionsMe(body, me, roles);
-    return body.includes(`<@${me}>`) || roles.some((role) => body.includes(`<@${role}>`));
+    return body.includes(`<@${me}>`) || roles.some((role) => view.mentionable.has(role) && body.includes(`<@${role}>`));
   }
 
   /** L-CORE-34: displayable rows (type null or 0) with the fold applied. */
