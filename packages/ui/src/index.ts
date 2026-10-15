@@ -143,3 +143,5 @@ export { CodeList } from './CodeList/CodeList.tsx';
 export type { CodeListProps } from './CodeList/CodeList.tsx';
 export { ChoiceCards } from './ChoiceCards/ChoiceCards.tsx';
 export type { ChoiceCardsProps, ChoiceCardOption } from './ChoiceCards/ChoiceCards.tsx';
+export { FactorRow } from './FactorRow/FactorRow.tsx';
+export type { FactorRowProps } from './FactorRow/FactorRow.tsx';
