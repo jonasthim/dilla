@@ -1,6 +1,7 @@
 export * from './cbor';
 export { fromHex, toHex } from './hex';
 export { normaliseRecoveryKey } from './recovery-key';
+export { BACKUP_CODE, normaliseBackupCode } from './account/factors';
 export { connectCore, createCoreWorker, CoreCallError } from './bridge';
 export type { CoreClient } from './bridge';
 export type * from './state/types';

@@ -93,7 +93,8 @@ screen (`factorSignin.passkey.title`, no code field) holds `factorSignin.passkey
 passkey and backup-code options. The backup-code form (`factorSignin.backup.title`) has one field, with a
 format check (`factorSignin.backup.format`) and a ghost `factor.back` that returns to the form it came from.
 Step 2 gains the ghost button `factorSignin.usePasskey` under the password field, only where the instance offers
-passkeys and the browser can use them.
+passkeys and the browser can use them. A passkey-only account in a browser that cannot run passkeys never sees
+the passkey screen: step 3 opens as the backup-code form, with `Cancel` in place of `Back`.
 Each of the first three is one `<form noValidate>`: `Enter` in a field submits the step, as does its
 forward button (`type="submit"`). The back button comes first in the footer, is `type="button"` and never
 submits: `Create a new account instead` (a ghost button) on step 1 before the login, which has no `Cancel`,
@@ -183,6 +184,30 @@ Step 3, second factor:
 |                      --------------------------------------------------                      |
 |                                               [ Cancel ]    [ Continue ]                     |
 +----------------------------------------------------------------------------------------------+
+```
+
+Step 2 where the instance offers passkeys and the browser can use them (the ghost button sits under the password field):
+
+```
+|                      Password                                                                |
+|                      +--------------------------------------------------+                    |
+|                      | ••••••••••••                                     |                    |
+|                      +--------------------------------------------------+                    |
+|                      [ Sign in with a passkey ]                           (ghost button)     |
+|                      --------------------------------------------------                      |
+|                                               [ Cancel ]    [ Continue ]                     |
+```
+
+Step 3, code form after a passkey that did not check the person (the note sits above the code field):
+
+```
+|                      Your second factor                                   <h1>, has focus    |
+|                      Step 3 of 4                                                             |
+|                      This passkey did not check that it is you, so dilla.thim.dev also       |
+|                      asks for your code.                                                     |
+|                      Enter the six-digit code from your authenticator app.                   |
+|                      Code                                                                    |
+|                      +--------------------------------------------------+                    |
 ```
 
 Step 3, passkey screen (an account with a passkey and no app; no code field):
@@ -544,14 +569,18 @@ data or a refused enrolment:
 | `E_UNAUTHENTICATED` | 401 | `signInLogin` | step 2, password emptied, focus on the password field | field error `signin.error.loginFailed` |
 | `E_UNAUTHENTICATED` | 401 | `signInTotp` | step 2 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
 | `E_NO_ASSERTION` | 0 | `signInTotp` | step 2 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
+| `E_UNAUTHENTICATED` | 401 | `signInBackupCode` | step 2 (phase `signin-login`), username kept, password empty, key kept, focus on the password field | warn banner `factorSignin.backup.failed` |
+| `E_NO_ASSERTION` | any | `signInBackupCode` | as the row above | warn banner `factorSignin.backup.failed` |
+| `E_PASSKEY_UNKNOWN` | 401 | `signInPasskey` | stays on the step that started it, focus on the passkey button | danger banner `factorSignin.passkey.unknown` with `{instance}` |
+| any other code below 500 (`E_UNAUTHENTICATED`, …), or a ceremony the browser cancelled or could not run | 4xx, or none | `signInPasskey`, `signInPasskeyBegin` and `navigator.credentials.get` | stays on the step that started it, focus on the passkey button | danger banner `factorSignin.passkey.failed` |
 | `E_FORBIDDEN` | 403 | `signInLogin`, `signInTotp` (the registration) | step 2 (phase `signin-login`), username kept | danger banner `signin.error.deviceCap` |
-| `E_RATE_LIMITED` | 429 | `signInLogin`, `signInTotp` (the login, the second-factor route or the registration) | step 2 (phase `signin-login`), username kept | warn banner `signin.error.tooMany` with `seconds = Math.ceil(retryAfterMs / 1000)`; `onboarding.error.rateLimitedNoWait` (flow 01) when `retryAfterMs` is `null` |
+| `E_RATE_LIMITED` | 429 | `signInLogin`, `signInTotp`, `signInPasskey`, `signInBackupCode` (the login, the second-factor route or the registration) | step 2 (phase `signin-login`), username kept | warn banner `signin.error.tooMany` with `seconds = Math.ceil(retryAfterMs / 1000)`; `onboarding.error.rateLimitedNoWait` (flow 01) when `retryAfterMs` is `null` |
 | `E_NO_BACKUP` | 0 | the reload into step 1 (the fetch) | step 1 without the field | danger banner `signin.error.noBackup`; `Cancel` only |
 | `E_NO_BACKUP` | 0 | `signInLogin`, `signInTotp`, `signInKey` (the fetch or the backup state) | step 1 without the field | danger banner `signin.error.noBackupState`; `Cancel` only |
 | `E_RECOVERY_KEY` | 0 | `signInLogin`, `signInTotp`, `signInKey` (the key's form, before the login is sent, or the root object after the registration) | step 1, value kept, focus on the field | field error `signin.error.wrongKey` |
 | `E_SIGNIN_EVICTED` | 0 | `signInLogin`, `signInTotp`, `signInKey` (a 401 on the fetch, the list `PUT` or the session after it) | step 2 (phase `signin-login`), or after a written enrolment phase `cleared` and the reload to `/welcome?signin=evicted`, onboarding step 1 | danger banner `signin.error.evicted` |
 | `E_LIST_RACE` | 0 | `signInKey` | phase `cleared`: the boot splash, then the reload to `/welcome?signin=race`, onboarding step 1 | warn banner `signin.error.listRace` on the connect step |
-| `E_NETWORK`, or any code with `status` ≥ 500 | — | any | the step `account.phase` names | danger banner `signin.error.network` |
+| `E_NETWORK`, or any code with `status` ≥ 500 | — | any, including `signInPasskey` and `signInBackupCode` | the step `account.phase` names | danger banner `signin.error.network` |
 | anything else | below 500 | any | the step `account.phase` names | danger banner `signin.error.other` with `{code}` |
 
 A `401` from the registration inside `signInKey` (a login older than the instance's five-minute
@@ -568,6 +597,8 @@ assertion, an account that never published a device list, or a fault of the inst
 | a refused backup code (step 3 → step 2) | step 2's `<h1>`, then the empty password field | the banner `factorSignin.backup.failed` (`role="alert"`), then the field |
 | a cancelled or refused passkey ceremony (step 2 or the passkey screen) | the button that started it | the banner `factorSignin.passkey.failed` or `factorSignin.passkey.unknown` (`role="alert"`) |
 | the backup-code form opens | its field | the heading, then the field |
+| `signin-passkey` in a browser that cannot run passkeys | the backup-code form's `<h1>`: it opens directly, with `Cancel` where `Back` would be | the heading |
+| `devices.forget` on the set-up view (origin `signin`, the only way out) | Cancel, Escape and close return focus to it; the confirm opens on Cancel | the dialog; a refused wipe is a `role="alert"` in it and focus goes to Cancel |
 | the set-up copies a key or codes (step 3, origin `signin`) | unchanged | `factor.totp.keyCopied` or `factor.codes.copied`, by the polite region that exists while the set-up is shown |
 | a banner on the step that is shown | unchanged | the banner (`role="alert"`) |
 | a banner on a step the refusal returns to (any other refusal of step 3: the device cap, too many attempts, the network) | step 2's `<h1>` | the heading, then the banner |

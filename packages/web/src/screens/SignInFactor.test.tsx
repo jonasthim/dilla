@@ -1,6 +1,6 @@
 // web3.6 W2: the second factor in the sign-in ceremony (flow 10, states 14 to 16; flow 03 step 3).
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import type { AccountState, BootPhase, Command, FactorsState } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -8,6 +8,7 @@ import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, INSTANCE } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { en } from '../strings/index.ts';
+import { liveRegions, watchRegion } from '../test/live-regions.ts';
 import { SignIn } from './SignIn.tsx';
 
 const GROUPED = '7K2M-QX9D-H4TB-R8NW-C3VF-J6PZ-A1GE-Y5KS-M0QT-B7XH-W2DN-F9RC-P4ZA';
@@ -301,7 +302,8 @@ describe('set-up on a new browser (flow 10 state 1, origin signin)', () => {
     fake.set('factors', NO_FACTORS);
     expect(h1()).toHaveTextContent('Add a second factor');
     expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /cancel|skip|later/i })).toBeNull();
+    // An allow-list: the choice's Continue and the exit that clears this browser, nothing else.
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([en['factor.choose.next'], en['devices.forget']]);
     await user.click(button('Continue'));
     await screen.findByRole('img', { name: /QR code/ });
     await user.type(field(en['factor.totp.code']), '123456{Enter}');
@@ -327,14 +329,106 @@ describe('set-up on a new browser (flow 10 state 1, origin signin)', () => {
     expect(h1()).toHaveTextContent('Your backup codes');
   });
 
-  it('announces through the sign-in announcer region', async () => {
+  it('has one live region, and a copy is spoken once', async () => {
     const script: Script = () => Promise.resolve({ secret: SECRET, uri: `otpauth://totp/x?secret=${SECRET}` });
-    const { fake, user } = setup('factor-setup', script, { factorSetup: { origin: 'signin' }, user: ME });
+    const { fake, user, view } = setup('factor-setup', script, { factorSetup: { origin: 'signin' }, user: ME });
     fake.set('factors', NO_FACTORS);
+    expect(liveRegions(view.container)).toHaveLength(1);
     await user.click(button('Continue'));
     await screen.findByRole('img', { name: /QR code/ });
+    const region = screen.getByTestId('signin-announcer');
+    expect(liveRegions(view.container)).toEqual([region]);
+    const watch = watchRegion(region);
     await user.click(button('Copy'));
-    await act(async () => { await Promise.resolve(); });
-    await waitFor(() => { expect(screen.getByTestId('signin-announcer')).toHaveTextContent('Setup key copied.'); });
+    await waitFor(() => { expect(watch.history).toEqual([en['factor.totp.keyCopied']]); });
+    await new Promise(r => setTimeout(r, 450));
+    expect(watch.history).toEqual([en['factor.totp.keyCopied']]);
+    watch.stop();
+  });
+
+  it('offers the exit that clears this browser, and sends nothing else on confirm', async () => {
+    const { fake, user } = setup('factor-setup', () => Promise.resolve(null), { factorSetup: { origin: 'signin' }, user: ME });
+    fake.set('factors', NO_FACTORS);
+    const forget = () => screen.getByRole('button', { name: en['devices.forget'] });
+    for (let i = 0; i < 8 && document.activeElement !== forget(); i++) await user.tab();
+    expect(document.activeElement).toBe(forget());
+    await user.keyboard('{Enter}');
+    await user.click(await screen.findByRole('button', { name: en['signin.cancel'] }));
+    expect(document.activeElement).toBe(forget());
+    expect(fake.callsOf('forgetBrowser')).toEqual([]);
+    await user.click(forget());
+    await user.click(await screen.findByRole('button', { name: en['devices.confirmForget'] }));
+    expect(fake.callsOf('forgetBrowser')).toEqual([{ m: 'forgetBrowser' }]);
+    expect(fake.callsOf('factorSetupDone')).toEqual([]);
+  });
+
+  it('a 429 or a dropped connection on the last step says what happened', async () => {
+    for (const [r, text] of [[{ code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 2000 }, 'Too many attempts. Try again in 2 s.'],
+      [{ code: 'E_NETWORK', status: 0 }, en['factor.error.network']]] as const) {
+      const script: Script = c => c.m === 'factorSetupDone' ? Promise.reject(refusal(r))
+        : Promise.resolve({ secret: SECRET, uri: 'otpauth://totp/x', backupCodes: [BACKUP] });
+      const { user, fake, view } = setup('factor-setup', script, { factorSetup: { origin: 'signin' }, user: ME });
+      fake.set('factors', NO_FACTORS);
+      await user.click(button('Continue'));
+      await screen.findByRole('img', { name: /QR code/ });
+      await user.type(field(en['factor.totp.code']), '123456{Enter}');
+      await user.click(await screen.findByRole('checkbox'));
+      await user.click(button('Continue'));
+      expect(await screen.findByRole('alert')).toHaveTextContent(text);
+      view.unmount();
+    }
+  });
+});
+
+describe('backup codes, tightened', () => {
+  it('rejects a 26-character code with a digit the alphabet does not have', async () => {
+    const { fake, user } = setup('signin-login', worker());
+    await login(user);
+    await user.click(button(en['factorSignin.useBackup']));
+    // 26 characters, but 0, 1, 8 and 9 are not in the alphabet (A-Z, 2-7).
+    for (const bad of ['ABCDEFGHIJKLMNOPQRSTUVWXY0', 'ABCDEFGHIJKLMNOPQRSTUVWXY1', 'ABCDEFGHIJKLMNOPQRSTUVWXY8', 'ABCDEFGHIJKLMNOPQRSTUVWXY9']) {
+      await user.clear(field('Backup code'));
+      await user.type(field('Backup code'), `${bad}{Enter}`);
+      expect(field('Backup code')).toHaveAccessibleDescription(en['factorSignin.backup.format']);
+    }
+    expect(fake.callsOf('signInBackupCode')).toEqual([]);
+    await user.clear(field('Backup code'));
+    await user.type(field('Backup code'), 'ABCDEFGHIJKLMNOPQRSTUVWXY7{Enter}');
+    expect(fake.callsOf('signInBackupCode')).toHaveLength(1);
+  });
+
+  it('E_NO_ASSERTION on a backup code reads like a refused code', async () => {
+    const script: Script = (c, f) => {
+      if (c.m === 'signInBackupCode') {
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: false, factor: null } });
+        return Promise.reject(refusal({ code: 'E_NO_ASSERTION', status: 401 }));
+      }
+      return worker()(c, f);
+    };
+    const { user } = setup('signin-login', script);
+    await login(user);
+    await user.click(button(en['factorSignin.useBackup']));
+    await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['factorSignin.backup.failed']);
+    expect(document.activeElement).toBe(password());
+  });
+});
+
+describe('a passkey-only account in a browser without passkeys', () => {
+  it('goes straight to the backup-code form: no passkey button that can only fail, and Cancel instead of Back', async () => {
+    const { fake, user } = setup('signin-login', worker({ needs: 2 }), {}, { webauthn: false });
+    await login(user);
+    expect(h1()).toHaveTextContent('Use a backup code');
+    expect(screen.queryByRole('button', { name: 'Use passkey' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+    await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    expect(fake.callsOf('signInBackupCode')).toHaveLength(1);
+    expect(fake.callsOf('signInPasskeyBegin')).toEqual([]);
+  });
+  it('Cancel leaves the ceremony', async () => {
+    const { fake, user } = setup('signin-login', worker({ needs: 2 }), {}, { webauthn: false });
+    await login(user);
+    await user.click(button('Cancel'));
+    expect(fake.callsOf('signInCancel')).toHaveLength(1);
   });
 });

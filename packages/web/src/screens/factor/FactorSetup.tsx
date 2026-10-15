@@ -38,7 +38,7 @@ const KIND_GROUP = 'factor-kind';
 const codePoints = (s: string): number => [...s].length;
 
 /** The refusals every request shares, by status and code only (never by detail). Null: the caller's own rows apply. */
-function sharedRefusal(e: UiError): Pick<Problem, 'key' | 'vars'> | null {
+export function sharedRefusal(e: UiError): Pick<Problem, 'key' | 'vars'> | null {
   if (e.status === 429) return { key: 'factor.error.tooMany', vars: { seconds: Math.max(1, Math.ceil((e.retryAfterMs ?? 1000) / 1000)) } };
   if (e.status === 0) return { key: 'factor.error.network', vars: {} };
   return null;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { normaliseRecoveryKey } from '@dilla/client-core';
+import { BACKUP_CODE, normaliseBackupCode, normaliseRecoveryKey } from '@dilla/client-core';
 import { Banner, Button, OnboardingFrame, RecoveryKeyField, Splash, TextField } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
@@ -8,7 +8,9 @@ import { useSlice } from '../core/use-slice.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { PasskeyError, getPasskey, passkeysUsable } from '../webauthn.ts';
 import { useAnnouncer } from './announcer.ts';
+import { doneProblem, type DoneProblem } from './factor/doneRefusal.ts';
 import { FactorSetup } from './factor/FactorSetup.tsx';
+import { ForgetBrowser } from './factor/ForgetBrowser.tsx';
 
 const KEY_LENGTH = 52;
 type Field = 'username' | 'password' | 'code' | 'key' | 'backup' | 'passkey';
@@ -19,8 +21,6 @@ const FIELD_ID: Readonly<Record<Field, string>> = {
   backup: 'signin-backup', passkey: 'signin-passkey',
 };
 const FIELD_ORDER: readonly Field[] = ['username', 'password', 'code', 'backup', 'key'];
-// internal/auth recovery codes: 26 of A-Z 2-7 once hyphens and spaces are dropped and case is mapped.
-const BACKUP_CODE = /^[A-Z2-7]{26}$/;
 const LENGTH_ID = 'signin-key-length';
 
 interface BannerState { tone: 'warn' | 'danger'; key: StringKey; vars: Record<string, string | number> }
@@ -102,7 +102,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [backup, setBackup] = useState('');
   // A backup code signed this browser in: the done step says how many remain.
   const [usedBackup, setUsedBackup] = useState(false);
-  const [factorDone, setFactorDone] = useState<{ busy: boolean; code: string | null }>({ busy: false, code: null });
+  const [factorDone, setFactorDone] = useState<{ busy: boolean; problem: DoneProblem | null }>({ busy: false, problem: null });
   const { text: announcement, announce } = useAnnouncer();
   const factors = useSlice('factors');
   const [focusRequest, setFocusRequest] = useState<{ target: 'heading' | Field; n: number }>({ target: 'heading', n: 0 });
@@ -115,11 +115,14 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   // Requirement 10: a reload in the ceremony meets E_NO_BACKUP only through the slice. No other code is read there.
   const noBackupKey: StringKey | null = phase !== 'signin-key' ? null
     : noBackup ?? (busy === null && account?.error?.code === 'E_NO_BACKUP' ? 'signin.error.noBackup' : null);
+  // A passkey-only account in a browser that cannot run a passkey ceremony gets no screen whose button can only fail:
+  // the backup-code form opens directly and has no Back (there is nothing to go back to).
+  const noPasskeys = phase === 'signin-passkey' && !passkeysUsable(instance);
   const shown: Shown = phase === 'ready' ? 'done'
     : phase === 'factor-setup' ? 'factor'
       : noBackupKey !== null ? 'noBackup'
         : phase === 'signin-totp' ? (backupMode ? 'backup' : 'totp')
-          : phase === 'signin-passkey' ? (backupMode ? 'backup' : 'passkey')
+          : phase === 'signin-passkey' ? (backupMode || noPasskeys ? 'backup' : 'passkey')
             : phase === 'signin-key' ? 'key'
               : enrolling ? (busy !== null && busyStep !== null ? busyStep : 'key')
                 : keyHeld ? 'login' : 'key';
@@ -221,7 +224,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     run('key', client.call({ m: 'signInKey', recoveryKey: key }), () => setKey(''));
   };
   const submitBackup = () => {
-    const cleaned = backup.replace(/[-\s]/g, '').toUpperCase();
+    const cleaned = normaliseBackupCode(backup);
     if (!BACKUP_CODE.test(cleaned)) { showErrors({ backup: 'factorSignin.backup.format' }); return; }
     begin('backup', 'backup');
     run('backup', client.call({ m: 'signInBackupCode', code: cleaned, recoveryKey: key }), () => {
@@ -262,10 +265,10 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   // The factor was set up here: the worker reads the factors again, then the browser is ready.
   const finishFactor = () => {
     if (factorDone.busy) return;
-    setFactorDone({ busy: true, code: null });
+    setFactorDone({ busy: true, problem: null });
     client.call({ m: 'factorSetupDone', invite: null })
-      .then(() => { setFactorDone({ busy: false, code: null }); })
-      .catch((e: unknown) => { setFactorDone({ busy: false, code: errorOf(e).code }); });
+      .then(() => { setFactorDone({ busy: false, problem: null }); })
+      .catch((e: unknown) => { setFactorDone({ busy: false, problem: doneProblem(errorOf(e)) }); });
   };
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -324,10 +327,11 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     // Flow 10: an account found owing at sign-in sets up its factor here, as step 3; there is no skip.
     content = (
       <>
-        {factorDone.code === null ? null : <Banner tone="danger">{t('factor.error.other', { code: factorDone.code })}</Banner>}
+        {factorDone.problem === null ? null : <Banner tone="danger">{t(factorDone.problem.key, factorDone.problem.vars)}</Banner>}
         <FactorSetup origin="signin" stepLabel={stepLabel(3)} instanceName={name}
           username={account.user?.username ?? account.signIn?.username ?? username.trim().toLowerCase()}
           announce={announce} onDone={finishFactor} />
+        <ForgetBrowser />
         <p className="d-sr-only" role="status" aria-live="polite" data-testid="signin-announcer">{announcement}</p>
       </>
     );
@@ -345,7 +349,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     </>);
   } else if (shown === 'backup') {
     content = form(t('factorSignin.backup.title'), 3, <>
-      <Button variant="ghost" type="button" onClick={closeBackup} {...blockedProps}>{t('factor.back')}</Button>
+      {noPasskeys ? cancelButton('signin.cancel')
+        : <Button variant="ghost" type="button" onClick={closeBackup} {...blockedProps}>{t('factor.back')}</Button>}
       <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'backup' ? 'signin.login.working' : 'signin.login.submit')}</Button>
     </>, <>
       <p>{t('factorSignin.backup.body')}</p>

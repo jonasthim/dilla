@@ -9,7 +9,9 @@ import { extractInviteCode } from '../invite.ts';
 import { useRoute } from '../router.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { useAnnouncer } from './announcer.ts';
+import { doneProblem, type DoneProblem } from './factor/doneRefusal.ts';
 import { FactorSetup } from './factor/FactorSetup.tsx';
+import { ForgetBrowser } from './factor/ForgetBrowser.tsx';
 
 /** What the done step hands to the App: the value signupSubmit resolved with and the invite code sent. */
 export interface SignupResult { communityId: string | null; joinError: UiError | null; invite: string }
@@ -115,7 +117,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   // web3.6: the account was created and now owes its second factor (step 5); the done step (6) waits for the factor.
   const [viaFactor, setViaFactor] = useState(false);
   const [factorResult, setFactorResult] = useState<SignupResult | null>(null);
-  const [factorState, setFactorState] = useState<{ busy: boolean; code: string | null }>({ busy: false, code: null });
+  const [factorState, setFactorState] = useState<{ busy: boolean; problem: DoneProblem | null }>({ busy: false, problem: null });
   const { text: announcement, announce } = useAnnouncer();
   const [focusRequest, setFocusRequest] = useState<{ target: FocusTarget; n: number }>({ target: 'heading', n: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
@@ -255,12 +257,12 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   // The factor is in place: the worker reads the factors again, makes the browser ready and joins the invite's server.
   const finishFactor = () => {
     if (factorState.busy) return;
-    setFactorState({ busy: true, code: null });
+    setFactorState({ busy: true, problem: null });
     const code = extractInviteCode(invite);
     client.call({ m: 'factorSetupDone', invite: code === '' ? null : code }).then((value) => {
       setFactorResult(resultOf(value, code));
-      setFactorState({ busy: false, code: null });
-    }).catch((e: unknown) => { setFactorState({ busy: false, code: errorOf(e).code }); });
+      setFactorState({ busy: false, problem: null });
+    }).catch((e: unknown) => { setFactorState({ busy: false, problem: doneProblem(errorOf(e)) }); });
   };
   const back = (to: Step) => () => {
     if (blocked) return;
@@ -310,9 +312,10 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   if (shown === 'factor') {
     content = (
       <>
-        {factorState.code === null ? null : <Banner tone="danger">{t('factor.error.other', { code: factorState.code })}</Banner>}
+        {factorState.problem === null ? null : <Banner tone="danger">{t(factorState.problem.key, factorState.problem.vars)}</Banner>}
         <FactorSetup origin="signup" stepLabel={stepLabel(5)} instanceName={name}
           username={account.user?.username ?? username.trim().toLowerCase()} announce={announce} onDone={finishFactor} />
+        <ForgetBrowser />
         <p className="d-sr-only" role="status" aria-live="polite" data-testid="onboarding-announcer">{announcement}</p>
       </>
     );

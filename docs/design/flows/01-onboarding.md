@@ -191,6 +191,7 @@ Step 5, second factor (flow 10 draws it in full; this is its place in the sequen
 |                      ( ) authenticator app    ( ) passkey                                    |
 |                      --------------------------------------------------                      |
 |                                                            [ Continue ]    (no skip)         |
+|                                          [ forget this browser ]   (the only way out)        |
 +----------------------------------------------------------------------------------------------+
 ```
 
@@ -260,6 +261,24 @@ the instance offers it.
 |  ------------------------------      |   |  ------------------------------      |
 |          [ Back ]  [ Continue ]      |   |                    [ Open dilla ]    |
 |  Tick the box to continue.           |   +--------------------------------------+
++--------------------------------------+
+```
+
+Step 5 at 360 × 740 (flow 10 draws it in full; the ChoiceCards stack and the exit stands under the frame):
+
+```
++--------------------------------------+
+| [D] DILLA_                           |
++--------------------------------------+
+|  Add a second factor                 |
+|  Step 5 of 6                         |
+|  Every account on dilla.thim.dev     |
+|  needs a second factor. ...          |
+|  ( ) authenticator app               |
+|  ( ) passkey                         |
+|  ------------------------------      |
+|                     [ Continue ]     |
+|        [ forget this browser ]       |
 +--------------------------------------+
 ```
 
@@ -356,6 +375,10 @@ keeps the typed values; going forward again passes step 3 with the box still tic
 | a banner on the step that is shown | unchanged | the banner (`role="alert"`) |
 | registering starts | unchanged (the pressed button becomes `aria-disabled` and keeps focus) | `onboarding.browser.registering` (`role="status"`) |
 | the box of step 3 is ticked | the checkbox | nothing extra; `Continue` becomes enabled and loses the description `onboarding.keys.ackHint` |
+| step 5 appears | its `<h1>` (flow 10: the choice) | the heading, by the focus move |
+| step 5 copies the setup key or the backup codes | unchanged | `factor.totp.keyCopied` or `factor.codes.copied`, once, by the one polite region that exists while step 5 is shown |
+| step 5's last press is refused (`factorSetupDone`) | unchanged (the pressed button keeps focus) | `role="alert"` banner: `factor.error.tooMany` for 429, `factor.error.network` for a dropped connection, else `factor.error.other` with `{code}` |
+| `devices.forget` on step 5 (the only way out) | Cancel, Escape and close return focus to it; the confirm opens on Cancel | the dialog; a refused wipe is a `role="alert"` in it and focus goes to Cancel |
 
 Tab order inside each step: the fields in visual order, then (step 1, and the closed frame) `Use an
 existing account`, then (step 3) the checkbox, then `Print`, then `Back`, then the forward button. There

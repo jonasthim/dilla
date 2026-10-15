@@ -8,6 +8,7 @@ import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { en } from '../strings/index.ts';
+import { liveRegions, watchRegion } from '../test/live-regions.ts';
 import { Onboarding } from './Onboarding.tsx';
 
 const KEY = ['7K2M', 'QX9D', 'H4TB', 'R8NW', 'C3VF', 'J6PZ', 'A1GE', 'Y5KS', 'M0QT', 'B7XH', 'W2DN', 'F9RC', 'P4ZA'];
@@ -73,7 +74,8 @@ describe('step 5: the second factor', () => {
     expect(h1()).toHaveTextContent('Add a second factor');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /skip|later|cancel|back/i })).toBeNull();
+    // An allow-list: the choice's Continue and the exit that clears this browser, nothing else.
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual([en['factor.choose.next'], en['devices.forget']]);
     expect(onFinish).not.toHaveBeenCalled();
     await expectNoAxeViolations(view.container);
   });
@@ -136,13 +138,59 @@ describe('step 5: the second factor', () => {
     expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
   });
 
-  it('has its own announcer: a copy is spoken once, in the one region', async () => {
-    const { user } = setup();
+  it('has one live region, and a copy is spoken once', async () => {
+    const { user, view } = setup();
     await toFactor(user);
+    expect(liveRegions(view.container)).toHaveLength(1);
     await user.click(button('Continue'));
     await screen.findByRole('img', { name: /QR code/ });
+    const region = screen.getByTestId('onboarding-announcer');
+    expect(liveRegions(view.container)).toEqual([region]);
+    expect(region).toHaveAttribute('aria-live', 'polite');
+    const watch = watchRegion(region);
     await user.click(button('Copy'));
-    await waitFor(() => { expect(screen.getByTestId('onboarding-announcer')).toHaveTextContent('Setup key copied.'); });
-    expect(screen.getByTestId('onboarding-announcer')).toHaveAttribute('aria-live', 'polite');
+    await waitFor(() => { expect(watch.history).toEqual([en['factor.totp.keyCopied']]); });
+    await new Promise(r => setTimeout(r, 450));
+    expect(watch.history).toEqual([en['factor.totp.keyCopied']]);
+    watch.stop();
+  });
+
+  it('keeps the earlier steps free of the factor region', async () => {
+    const { user, view } = setup();
+    await user.type(screen.getByRole('textbox', { name: 'Invite' }), 'ABCD-EFGH');
+    expect(liveRegions(view.container)).toHaveLength(0);
+    await user.click(button('Continue'));
+    expect(liveRegions(view.container)).toHaveLength(0);
+  });
+
+  it('a 429 or a dropped connection on the last step says what happened', async () => {
+    for (const [r, text] of [[{ code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 2000 }, 'Too many attempts. Try again in 2 s.'],
+      [{ code: 'E_NETWORK', status: 0 }, en['factor.error.network']]] as const) {
+      const script: Script = (c, f) => c.m === 'factorSetupDone' ? Promise.reject(refusal(r)) : base(c, f);
+      const { user, view } = setup(script);
+      await toFactor(user);
+      await throughApp(user);
+      await user.click(button('Continue'));
+      expect(await screen.findByRole('alert')).toHaveTextContent(text);
+      view.unmount();
+    }
+  });
+
+  describe('forget this browser', () => {
+    const forget = () => screen.getByRole('button', { name: en['devices.forget'] });
+    it('is reachable by keyboard, sends forgetBrowser only on confirm, and Cancel returns focus to it', async () => {
+      const { fake, user } = setup();
+      await toFactor(user);
+      for (let i = 0; i < 8 && document.activeElement !== forget(); i++) await user.tab();
+      expect(document.activeElement).toBe(forget());
+      await user.keyboard('{Enter}');
+      await user.click(await screen.findByRole('button', { name: en['signin.cancel'] }));
+      expect(document.activeElement).toBe(forget());
+      expect(fake.callsOf('forgetBrowser')).toEqual([]);
+      await user.click(forget());
+      await user.click(await screen.findByRole('button', { name: en['devices.confirmForget'] }));
+      expect(fake.callsOf('forgetBrowser')).toEqual([{ m: 'forgetBrowser' }]);
+      expect(fake.callsOf('factorSetupDone')).toEqual([]);
+    });
   });
 });

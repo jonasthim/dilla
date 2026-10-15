@@ -7,7 +7,7 @@ Every human account on an instance has a second factor, and the server enforces 
 | State | What shows | Copy keys |
 |---|---|---|
 | 1. Choose, for sign-up | Step 5 of 6 of onboarding, in `OnboardingFrame`. `ChoiceCards` with the authenticator app and the passkey, and `Button` Continue. | `factor.step`, `factor.choose.title`, `factor.choose.body`, `factor.choose.label`, `factor.choose.app`, `factor.choose.appHint`, `factor.choose.passkey`, `factor.choose.passkeyHint`, `factor.choose.next` |
-| 2. Choose, when forced | The same screen, mounted by App for an account that owes a factor. It adds the required paragraph. There is no skip and no cancel control. | `factor.choose.required` |
+| 2. Choose, when forced | The same screen, mounted by App for an account that owes a factor. It adds the required paragraph. There is no skip and no cancel control. The one way out is the ghost button `devices.forget` under the frame (all three set-up views have it): it opens a confirm (`devices.forgetTitle`, `devices.forgetBody`, `devices.confirmForget`, `devices.working`, `signin.cancel`) that sends `forgetBrowser` and nothing else. It clears this browser; it never marks the factor as set and never reaches the shell. | `factor.choose.required`, `devices.forget`, `devices.forgetTitle`, `devices.forgetBody`, `devices.confirmForget`, `devices.working` |
 | 3. Passkey unusable | The passkey card is disabled and shows its reason. The app card stays selectable. | `factor.choose.passkeyOff` |
 | 4. No-password account | Only the passkey card, preselected, with its reason. | `factor.choose.noPassword` |
 | 5. TOTP loading | The app step while the setup key is made. | `factor.totp.loading` |
@@ -54,6 +54,8 @@ The QR code is above the setup key at 160 px. The backup codes are in one column
 - After a cancelled or refused WebAuthn ceremony, focus goes to the button that started it.
 - Dialogs open on their first field, else Cancel, never the destructive button. They close to the row button that opened them.
 - After a removal, focus goes to that group's add button.
+- `devices.forget` on a set-up view: Cancel, Escape or the close button return focus to it; the confirm opens on Cancel; a refused wipe shows `factor.error.other` in the dialog and focus goes to Cancel.
+- A refused `factorSetupDone` (state 13) is read by status and code: 429 is `factor.error.tooMany`, a dropped connection `factor.error.network`, anything else `factor.error.other` with the code. It is a `role="alert"` banner above the frame; focus stays on the button that was pressed.
 
 ## Announcements
 

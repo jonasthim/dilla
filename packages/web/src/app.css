@@ -155,3 +155,4 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-factor-ack { display: flex; align-items: center; gap: var(--row-gap); min-height: 24px; }
 .dw-factor-ack > input { width: 24px; height: 24px; flex: none; }
 @media (max-width: 30rem) { .dw-factor-key .d-qr { width: 160px; height: 160px; } }
+.dw-factor-exit { display: flex; justify-content: center; padding: var(--row-gap); }
