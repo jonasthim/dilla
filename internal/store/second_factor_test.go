@@ -133,6 +133,109 @@ func TestTheMigrationBackfillsTheOwedFlag(t *testing.T) {
 	})
 }
 
+// The rollback of docs/deploy §3 (web3.6 review I1): `dillad migrate down --to=16` drops only
+// users.factor_owed. The accounts, TOTP secrets, passkeys and backup codes are kept, so web3.5
+// runs on the data as before; a second upgrade's backfill marks the account without a factor again.
+func TestMigratingDownTo16KeepsTheFactorsAndDropsOnlyTheMark(t *testing.T) {
+	ctx := context.Background()
+	t.Run("sqlite", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "down-to-16.db")
+		write, err := sqlite.OpenWrite(path)
+		if err != nil {
+			t.Fatalf("OpenWrite: %v", err)
+		}
+		p, err := goose.NewProvider(goose.DialectSQLite3, write, sqlitemigrations.FS)
+		if err != nil {
+			t.Fatalf("provider: %v", err)
+		}
+		read, err := sqlite.OpenRead(path)
+		if err != nil {
+			t.Fatalf("OpenRead: %v", err)
+		}
+		repo := sqlite.New(write, read)
+		t.Cleanup(func() { repo.Close() })
+		checkDownTo16(ctx, t, p, repo, write, false)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		dsn := os.Getenv("DILLA_TEST_PG")
+		if dsn == "" {
+			t.Skip("DILLA_TEST_PG is unset: no local Postgres server on this box; CI's postgres service container runs the Postgres leg")
+		}
+		db, err := postgres.Open(freshPostgresDSN(t, dsn), 4, time.Hour)
+		if err != nil {
+			t.Fatalf("postgres Open: %v", err)
+		}
+		p, err := goose.NewProvider(goose.DialectPostgres, db, pgmigrations.FS)
+		if err != nil {
+			t.Fatalf("provider: %v", err)
+		}
+		repo := postgres.New(db)
+		t.Cleanup(func() { repo.Close() })
+		checkDownTo16(ctx, t, p, repo, db, true)
+	})
+}
+
+func checkDownTo16(ctx context.Context, t *testing.T, p *goose.Provider, repo store.Repository, db *sql.DB, pg bool) {
+	t.Helper()
+	if _, err := p.UpTo(ctx, 17); err != nil {
+		t.Fatalf("up to 17: %v", err)
+	}
+	withTOTP := factorUser(ctx, t, repo, 0, false)
+	putTOTP(ctx, t, repo, withTOTP, true)
+	if err := repo.PutRecoveryCodes(ctx, withTOTP, [][]byte{bytes.Repeat([]byte{0x51}, 32)}, 1); err != nil {
+		t.Fatalf("PutRecoveryCodes: %v", err)
+	}
+	withPasskey := factorUser(ctx, t, repo, 0, false)
+	putPasskey(ctx, t, repo, withPasskey, "dilla.example", bytes.Repeat([]byte{0x52}, 32))
+	bare := factorUser(ctx, t, repo, 0, true)
+
+	if _, err := p.DownTo(ctx, 16); err != nil {
+		t.Fatalf("down to 16: %v", err)
+	}
+	count := func(q string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		return n
+	}
+	for q, want := range map[string]int{
+		"SELECT COUNT(*) FROM users":                                       3,
+		"SELECT COUNT(*) FROM totp_secrets WHERE confirmed_at IS NOT NULL": 1,
+		"SELECT COUNT(*) FROM webauthn_credentials":                        1,
+		"SELECT COUNT(*) FROM recovery_codes":                              1,
+	} {
+		if got := count(q); got != want {
+			t.Errorf("after the down migration, %s = %d, want %d", q, got, want)
+		}
+	}
+	column := "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'factor_owed'"
+	if pg {
+		column = "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'factor_owed'"
+	}
+	if got := count(column); got != 0 {
+		t.Fatalf("users.factor_owed survived the down migration")
+	}
+
+	if _, err := p.Up(ctx); err != nil {
+		t.Fatalf("the second upgrade: %v", err)
+	}
+	for _, c := range []struct {
+		name string
+		user id.ID
+		want bool
+	}{
+		{"a confirmed TOTP", withTOTP, false},
+		{"a passkey", withPasskey, false},
+		{"no factor", bare, true},
+	} {
+		if got := owed(ctx, t, repo, c.user); got != c.want {
+			t.Errorf("%s: factor_owed = %v after the second upgrade, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func checkBackfill(ctx context.Context, t *testing.T, p *goose.Provider, repo store.Repository, db *sql.DB, pg bool) {
 	t.Helper()
 	if _, err := p.UpTo(ctx, 16); err != nil {

@@ -419,10 +419,52 @@ Add `--check-args` to the same command first: it checks the arguments and change
 
 It checks the new binary and core against `SHA256SUMS` the same way, replaces only those two
 files, restarts `dilla` and runs doctor. The previous pair stays beside them as `dillad.prev` and
-`dilla_core_wasi.wasm.prev`. If the restart fails, it puts them back and restarts again. It never
-runs init and never touches `dilla.toml` or `/var/lib/dillad`, and it refuses mode flags. It does
-not rewrite `/etc/systemd/system/dilla.service` either: when a release changes `deploy/dilla.service`,
-install the new unit yourself and run `systemctl daemon-reload`.
+`dilla_core_wasi.wasm.prev`. It never runs init and never touches `dilla.toml`, and it refuses mode
+flags. It does not rewrite `/etc/systemd/system/dilla.service` either: when a release changes
+`deploy/dilla.service`, install the new unit yourself and run `systemctl daemon-reload`.
+
+Before it replaces anything, it reads the database's schema version with the installed binary
+(`dillad migrate status`) and refuses the upgrade if it cannot. If the restart fails, it rolls
+back:
+
+1. It stops `dilla`, which systemd would otherwise keep restarting.
+2. If the new binary migrated the database before it failed, it takes the database back to the
+   version it read, with the **new** binary:
+   `dillad migrate down --to=<that version> --i-know-what-i-am-doing`. This is the only time it
+   writes to `/var/lib/dillad`.
+3. It puts the previous pair back and restarts.
+
+A `dillad` refuses to start on a database newer than its own migrations, so if step 2 fails it
+does not start the previous binary. It leaves `dilla` stopped with the new binary in place and
+prints the ways out, which are the manual rollback below.
+
+#### Rolling back by hand
+
+`dillad.prev` alone does not start on a database that the newer binary has migrated: it exits
+with "database schema N is newer than this binary's highest migration M: refusing to start". To
+go back one release:
+
+1. Stop the service: `systemctl stop dilla`.
+2. Find the schema the previous binary reads. `runuser -u dillad -- /usr/local/bin/dillad.prev migrate status --config=/etc/dilla/dilla.toml`
+   prints `current N, target M`. `M` is that version.
+3. Take the database down to `M` with the **new** binary, which is the only one that knows the
+   way down:
+   `runuser -u dillad -- /usr/local/bin/dillad migrate down --to=M --i-know-what-i-am-doing --config=/etc/dilla/dilla.toml`.
+   Skip this step when `N` is already `M`.
+4. Put the previous pair back:
+   `cp -p /usr/local/bin/dillad.prev /usr/local/bin/dillad` and
+   `cp -p /usr/local/bin/dilla_core_wasi.wasm.prev /usr/local/bin/dilla_core_wasi.wasm`.
+5. Start it again: `systemctl start dilla`.
+
+Always do step 3 before step 4. An older `dillad doctor` does not catch a database left too new: the web-3.5 doctor
+reports `OK database schema version 17` on a web-3.6 database. Only `serve` refuses it.
+
+If step 3 fails on SQLite, there is a fallback: the copy `dillad serve` takes before it migrates,
+`<db.path>.pre-migration-<unix time>` beside the database (`db.pre_migration_backup`, on by
+default). With `dilla` stopped, remove the database's `-wal`, `-shm` and `-journal` files and
+move that copy over the database file. Then do steps 4 and 5. Everything written since the upgrade is lost.
+
+What a down migration removes is listed per release under "Client data version per release" in §5.
 
 #### Behind Pangolin
 
@@ -555,6 +597,9 @@ factor up, until it adds one. This section is what the operator does about that.
   confirmed TOTP secret and no passkey. Those people are not signed out; every browser of theirs stops at "Add a
   second factor" until they add one. Tell your members before you upgrade, and ask them to open Settings → Sign-in
   afterwards.
+- **Reload every open dilla tab after upgrading to web-3.6.** A tab loaded from web-3.5 does not know the new
+  refusal. For an account that owes a factor, it shows "Connection lost. Reconnecting…" indefinitely, and a send shows
+  a raw `E_FACTOR_REQUIRED`. A reload loads the web-3.6 client, which shows "Add a second factor". Tell your members.
 - At every start, before it serves, `dillad serve` reconciles the flag both ways. It marks any live human account
   that holds no usable factor and logs "accounts without a usable second factor now owe one", and it clears the flag
   from any marked account that holds a usable factor and logs "accounts that hold a usable second factor no longer
@@ -627,15 +672,32 @@ is newer than the one it knows (web-3.6 onwards) and shows "This version of dill
 this browser" with both numbers: "That data needs data version {found}; this version of dilla reads up to
 {supported}. Update to the newer version of dilla, or ask the host of this server."
 
-| Release | Store schema | Note |
-|---|---|---|
-| web-3.4 | 4 | |
-| web-3.5 | 4 | Three additive tables |
-| web-3.6 | 4 | A client now refuses a store newer than it knows |
+| Release | Store schema (browser) | Database schema (dillad) | Note |
+|---|---|---|---|
+| web-3.4 | 4 | 16 | |
+| web-3.5 | 4 | 16 | Three additive tables in the browser store |
+| web-3.6 | 4 | 17 | A client now refuses a store newer than it knows; migration `00017_second_factor` |
 
-The number is the same in all three, and the instance's migrations in these releases only add tables and a column.
-**Rolling the server back across these releases is safe**: browsers keep working, and a person is not asked for
-anything new. An older dillad does not enforce the second factor.
+**The browser side.** The store schema is the same in all three, so a browser keeps working across a server
+rollback between these releases, and a person is not asked for anything new.
+
+**The server side is not automatic.** `dillad serve` refuses to start on a database schema newer than its own, so
+the web-3.5 binary (`dillad.prev`) does not start on a database that web-3.6 has migrated to 17. Migrate down first:
+use the procedure in §3, "Rolling back by hand". Stop dilla, run `dillad migrate down --to=16
+--i-know-what-i-am-doing` with the web-3.6 binary, put `dillad.prev` back and start it. `install.sh --upgrade` does
+the same by itself when the new binary fails to start. Do not rely on the web-3.5 `dillad doctor` to catch a
+missed step: it reports `OK database schema version 17` and does not say that the schema is newer than it knows.
+
+Going down from 17 to 16 drops only the `users.factor_owed` column. The second-factor tables (TOTP secrets, passkeys,
+backup codes) are older than web-3.6 and are kept with their rows. web-3.5 then runs on the data as it did before,
+with these differences:
+
+- It no longer requires a second factor. An account without one signs in and works without one.
+- A person who set up an authenticator app is still asked for its code at sign-in.
+- It has no backup-code sign-in, so someone who has lost the app cannot sign in with a backup code until you upgrade
+  again.
+
+If you upgrade to web-3.6 again, migration 00017 again marks every account that holds no factor.
 
 ## Capacity
 
