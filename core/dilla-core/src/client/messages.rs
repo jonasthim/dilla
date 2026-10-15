@@ -320,6 +320,51 @@ pub fn mentions_me_with_roles(body: &str, user_id: &[u8; 16], roles: &[[u8; 16]]
         })
 }
 
+/// `mentions_me_with_roles` with `<@everyone>`/`<@here>` counted only when `broadcast_ok`: the
+/// sender may `mention_everyone` in the group, or the group has no known role view (web3.5 R1,
+/// protocol/04 § Semantics). A direct `<@own>` or an own-role token counts either way.
+pub fn mentions_me_gated(
+    body: &str,
+    user_id: &[u8; 16],
+    roles: &[[u8; 16]],
+    broadcast_ok: bool,
+) -> bool {
+    let has = |n: &[u8]| body.as_bytes().windows(n.len()).any(|w| w == n);
+    has(&mention_needle(user_id))
+        || roles.iter().any(|role| has(&mention_needle(role)))
+        || broadcast_ok && (has(b"<@everyone>") || has(b"<@here>"))
+}
+
+/// Whether `sender` counts for `<@everyone>`/`<@here>` in `group_id`: the group has no known role
+/// view (`app_authority_known`), or the view gives `sender` `mention_everyone` (bit 18).
+pub(super) fn broadcast_ok(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    sender: &[u8; 16],
+) -> Result<bool, StorageError> {
+    c.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM app_authority_known WHERE group_id = ?1) \
+         OR EXISTS (SELECT 1 FROM app_authority WHERE group_id = ?1 AND bit = 18 AND user_id = ?2)",
+        params![group_id.as_slice(), sender.as_slice()],
+        |r| r.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// The own role ids of `group_id`'s community, as the mention flag reads them.
+pub(super) fn own_roles_of(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+) -> Result<Vec<[u8; 16]>, StorageError> {
+    let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id = r.community_id WHERE g.group_id = ?1 ORDER BY r.role_id")?;
+    q.query_map([group_id.as_slice()], |row| row.get(0))?
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
+}
+
+/// Upper bound on each id list `authority_set` takes.
+const AUTHORITY_MAX_IDS: usize = 4096;
+
 /// `mentions_me`'s needle for one user: "<@" + the 32 lower-case hex characters + ">".
 pub(super) fn mention_needle(user_id: &[u8; 16]) -> [u8; 35] {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -980,6 +1025,85 @@ impl ClientCore {
     }
 }
 
+impl ClientCore {
+    /// Replaces `group_id`'s role view (web3.5 R1): `pinners` and `broadcasters` are 0..=4096
+    /// concatenated 16-byte user ids the host-served view allows `pin_messages` (bit 3) and
+    /// `mention_everyone` (bit 18) in the group's channel now. In one unit it replaces the rows,
+    /// marks the view known, refolds every pinned or unpinned target of the group, and recomputes
+    /// the mention flag of every other user's readable message naming `<@everyone>`/`<@here>`.
+    ///
+    /// The view is the host's claim, not something MLS authenticates: it decides only which pins
+    /// and broadcast mentions this device counts, never which messages it shows.
+    pub fn authority_set(
+        &mut self,
+        group_id: &[u8; 16],
+        pinners: &[u8],
+        broadcasters: &[u8],
+    ) -> Result<(), ClientError> {
+        let own = self.own()?;
+        let fits = |ids: &[u8]| ids.len().is_multiple_of(16) && ids.len() / 16 <= AUTHORITY_MAX_IDS;
+        if !fits(pinners) || !fits(broadcasters) {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "pinners and broadcasters must be 0..=4096 ids of 16 bytes",
+            ));
+        }
+        let g = group_id.as_slice();
+        self.write_dyn(&mut |c| {
+            c.execute("DELETE FROM app_authority WHERE group_id = ?1", [g])?;
+            for (bit, ids) in [(3i64, pinners), (18, broadcasters)] {
+                for id in ids.as_chunks::<16>().0 {
+                    c.execute(
+                        "INSERT OR IGNORE INTO app_authority (group_id, bit, user_id) VALUES (?1, ?2, ?3)",
+                        params![g, bit, id.as_slice()],
+                    )?;
+                }
+            }
+            // The core keeps no clock of its own (every call that needs the time is handed it).
+            c.execute(
+                "INSERT INTO app_authority_known (group_id, set_at) VALUES (?1, 0) \
+                 ON CONFLICT (group_id) DO UPDATE SET set_at = excluded.set_at",
+                [g],
+            )?;
+            let targets: Vec<Vec<u8>> = {
+                let mut q = c.prepare(
+                    "SELECT DISTINCT reply_to FROM app_messages WHERE group_id = ?1 AND type IN (5, 6) AND reply_to IS NOT NULL",
+                )?;
+                q.query_map([g], |r| r.get(0))?
+                    .collect::<Result<_, _>>()?
+            };
+            for target in targets {
+                if let Ok(target) = <[u8; 16]>::try_from(target.as_slice()) {
+                    fold::refold(c, group_id, &target, &fold::FoldScope::Pin, None, Some(&own))?;
+                }
+            }
+            let roles = own_roles_of(c, group_id)?;
+            let rows: Vec<(i64, [u8; 16], String, i64)> = {
+                let mut q = c.prepare(
+                    "SELECT seq, sender_user, body, mention FROM app_messages WHERE group_id = ?1 \
+                     AND status = 0 AND type = 0 AND sender_user IS NOT NULL AND sender_user <> ?2 \
+                     AND (instr(body, '<@everyone>') > 0 OR instr(body, '<@here>') > 0)",
+                )?;
+                q.query_map(params![g, own.user_id.as_slice()], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?
+            };
+            for (seq, sender, body, was) in rows {
+                let ok = broadcast_ok(c, group_id, &sender)?;
+                let now = i64::from(mentions_me_gated(&body, &own.user_id, &roles, ok));
+                if now != was {
+                    c.execute(
+                        "UPDATE app_messages SET mention = ?3 WHERE group_id = ?1 AND seq = ?2",
+                        params![g, seq, now],
+                    )?;
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
 #[cfg(test)]
 mod mention_tests {
     use super::mentions_me;
@@ -1003,6 +1127,29 @@ mod mention_tests {
             (String::new(), false),
         ] {
             assert_eq!(mentions_me(&body, &ME), want, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn a_broadcast_counts_only_when_the_sender_may_send_one() {
+        use super::mentions_me_gated;
+        let me = "a1".repeat(16);
+        let role = [0x3c; 16];
+        for (body, ok, want) in [
+            ("<@everyone> standup".to_owned(), true, true),
+            ("<@everyone> standup".to_owned(), false, false),
+            ("x<@here>y".to_owned(), true, true),
+            ("x<@here>y".to_owned(), false, false),
+            (format!("<@everyone> <@{me}>"), false, true),
+            (format!("<@here> <@{}>", "3c".repeat(16)), false, true),
+            ("<@Everyone>".to_owned(), true, false),
+            (String::new(), true, false),
+        ] {
+            assert_eq!(
+                mentions_me_gated(&body, &ME, &[role], ok),
+                want,
+                "{body:?} {ok}"
+            );
         }
     }
 }

@@ -113,6 +113,8 @@ export interface CorePort {
   purges(): PurgeRow[];
   purgeDone(groupId: Id, seq: bigint): void;
   ownRolesSet(communityId: Id, roleIds: Id[]): void;
+  /** web3.5 R1 (ABI 10): the group's role view: who may pin and who may send @everyone/@here there now; 0..=4096 ids each. */
+  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[]): void;
   settings(): Record<string, string>; settingPut(k: string, v: string): void; settingDelete(k: string): void;
   sealedObjects(): SealedObjects; stateSealedUploaded(): void;
   /** BACKUPS-RECOVERY-03: whether this device's own sealed state object carries the list it accepted as the newest. */
@@ -265,6 +267,7 @@ export interface CoreHandle {
       purges(): Uint8Array;
       purge_done(group_id: Uint8Array, seq: bigint): void;
       own_roles_set(community_id: Uint8Array, role_ids: Uint8Array): void;
+      authority_set(group_id: Uint8Array, pinners: Uint8Array, broadcasters: Uint8Array): void;
       call_group_create(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, external_sender_pub: Uint8Array): Uint8Array;
       call_group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
       call_media_epoch(group_id: Uint8Array): Uint8Array;
@@ -466,6 +469,18 @@ export function wrapCore(handle: CoreHandle): CorePort {
       const joined = new Uint8Array(roleIds.length * 16);
       roleIds.forEach((id, index) => joined.set(id, index * 16));
       handle.own_roles_set(communityId, joined);
+    }),
+    authoritySet: (groupId, pinners, broadcasters) => call(() => {
+      const join = (ids: Id[]): Uint8Array => {
+        if (ids.length > 4096 || ids.some((id) => id.length !== 16))
+          throw new CoreError('E_CORE_INPUT', 'pinners and broadcasters must be 0..=4096 ids of 16 bytes');
+        const joined = new Uint8Array(ids.length * 16);
+        ids.forEach((id, index) => joined.set(id, index * 16));
+        return joined;
+      };
+      const p = join(pinners);
+      const b = join(broadcasters);
+      handle.authority_set(groupId, p, b);
     }),
     settings: () => call(() => decoded('settings', handle.settings(), (v) => Object.fromEntries(arr(v).map((row) => {
       const a = arr(row, 2); return [str(field(a, 0)), str(field(a, 1))];

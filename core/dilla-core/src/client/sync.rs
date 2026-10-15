@@ -9,8 +9,8 @@ use super::groups::{
 };
 use super::messages::{
     REASON_OWN_UNKNOWN, REASON_PRUNED, REASON_SENDER_MISMATCH, STATUS_CANNOT_DECRYPT,
-    STATUS_DELETED, STATUS_OK, StoredMessage, insert_message, mentions_me_with_roles,
-    refold_insert,
+    STATUS_DELETED, STATUS_OK, StoredMessage, broadcast_ok, insert_message, mentions_me_gated,
+    own_roles_of, refold_insert,
 };
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
@@ -360,10 +360,8 @@ impl ClientCore {
                                 "SELECT 1 FROM app_messages WHERE group_id=?1 AND seq=?2 AND status=1 AND reason IN ('E_DEVICE_LIST_STALE','E_UMK_CHANGED','E_CREDENTIAL','E_DEVICE_UNLISTED','E_TIER_MISMATCH')",
                                 params![id.as_slice(), *seq as i64], |_| Ok(1_i64)).optional()?.is_some();
                             if !still_pending { return Ok(()); }
-                            let roles: Vec<[u8; 16]> = {
-                                let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id=r.community_id WHERE g.group_id=?1 ORDER BY r.role_id")?;
-                                q.query_map([id.as_slice()], |row| row.get(0))?.collect::<Result<_, _>>()?
-                            };
+                            let roles = own_roles_of(c, id)?;
+                            let broadcast = broadcast_ok(c, id, sender.user_id.as_bytes())?;
                             c.execute("DELETE FROM app_messages WHERE group_id=?1 AND seq=?2", params![id.as_slice(), *seq as i64])?;
                             insert_message(c, &StoredMessage {
                                 group_id: id, seq: *seq, epoch: *epoch, recv_ts: *recv_ts,
@@ -375,7 +373,7 @@ impl ClientCore {
                                 reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes), body: &envelope.body,
                                 envelope: Some(envelope_bytes), franking_tag: franking,
                                 mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
-                                    && mentions_me_with_roles(&envelope.body, &own.user_id, &roles),
+                                    && mentions_me_gated(&envelope.body, &own.user_id, &roles, broadcast),
                             })?;
                             refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
                                 sender.device_id.as_bytes(), Some(&own))?;
@@ -841,10 +839,8 @@ impl ClientCore {
                                     .transpose()?;
                                 u.with_conn(|c| {
                                     if let Some(r) = application.as_ref() {
-                                        let roles: Vec<[u8; 16]> = {
-                                            let mut q = c.prepare("SELECT r.role_id FROM app_roles r JOIN app_groups g ON g.community_id = r.community_id WHERE g.group_id = ?1 ORDER BY r.role_id")?;
-                                            q.query_map([id.as_slice()], |row| row.get(0))?.collect::<Result<_, _>>()?
-                                        };
+                                        let roles = own_roles_of(c, id)?;
+                                        let broadcast = broadcast_ok(c, id, r.sender.user_id.as_bytes())?;
                                         let sender_member = group.member_at(r.sender_leaf);
                                         let msg = StoredMessage {
                                             group_id: id,
@@ -867,7 +863,7 @@ impl ClientCore {
                                             franking_tag: &m.franking_tag,
                                             mention: r.envelope.kind.as_u8() == 0
                                                 && r.sender.user_id.as_bytes() != &own.user_id
-                                                && mentions_me_with_roles(&r.envelope.body, &own.user_id, &roles),
+                                                && mentions_me_gated(&r.envelope.body, &own.user_id, &roles, broadcast),
                                         };
                                         insert_message(c, &msg)?;
                                         refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;

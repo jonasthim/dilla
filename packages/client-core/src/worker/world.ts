@@ -265,6 +265,7 @@ export function world(opts: {
       calls.push(`core.purgeDone(${String(seq)})`); state.purges = state.purges.filter((p) => p.seq !== seq);
     }),
     ownRolesSet: vi.fn((_c: Uint8Array, _ids: Uint8Array[]): void => {}),
+    authoritySet: vi.fn((_g: Uint8Array, _pinners: Uint8Array[], _broadcasters: Uint8Array[]): void => {}),
     trustVerify: vi.fn((_u: Uint8Array, _k: Uint8Array): void => {}),
     safetyNumberFor: vi.fn((_u: Uint8Array, _k: Uint8Array): string => Array.from({ length: 12 }, () => '12345').join(' ')),
     sendBlockCode: vi.fn((_g: Uint8Array): TrustBlock | null => null),

@@ -968,6 +968,8 @@ export class ModelCore implements CorePort {
   private readonly purgeRows = new Map<string, PurgeRow>();
   /** app_roles: community hex → the own role ids (L-CORE-35). */
   private readonly roles = new Map<string, Id[]>();
+  /** app_authority / app_authority_known (web3.5 R1): group hex → user hexes allowed pin_messages / mention_everyone. */
+  private readonly authority = new Map<string, { pinners: Set<string>; broadcasters: Set<string> }>();
 
   constructor(readonly me: Peer) {
     // F3: the own pin is this device's own credential key, verified from signup on; it never takes a pending change.
@@ -1578,6 +1580,40 @@ export class ModelCore implements CorePort {
     this.roles.set(toHex(communityId), [...new Map(roleIds.map((r) => [toHex(r), r.slice()])).values()]);
   }
 
+  /** web3.5 R1 `authority_set`: replaces the group's role view, refolds every pinned or unpinned target and recomputes
+   *  the mention flag of every other user's readable row naming <@everyone>/<@here>. The group need not be held. */
+  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[]): void {
+    const bad = (ids: Id[]): boolean => ids.length > 4096 || ids.some((r) => !(r instanceof Uint8Array) || r.length !== 16);
+    if (bad(pinners) || bad(broadcasters)) throw coreError('E_CORE_INPUT', 'pinners and broadcasters must be 0..=4096 ids of 16 bytes');
+    this.authority.set(toHex(groupId), { pinners: new Set(pinners.map(toHex)), broadcasters: new Set(broadcasters.map(toHex)) });
+    const g = this.gs.get(toHex(groupId));
+    if (g === undefined) return;
+    const targets = new Map<string, Id>();
+    for (const r of g.rows.values()) if (r.type !== null && (r.type === 5 || r.type === 6) && r.replyTo !== null) targets.set(toHex(r.replyTo), r.replyTo);
+    for (const target of targets.values()) this.refold(g, target, null);
+    for (const r of [...g.rows.values()]) {
+      if (r.status !== 0 || r.type !== 0 || r.senderUser === null || same(r.senderUser, this.me.user)) continue;
+      if (!r.body.includes('<@everyone>') && !r.body.includes('<@here>')) continue;
+      const mention = this.mentionOf(g, r.body, r.senderUser);
+      if (mention !== r.mention) g.rows.set(r.seq, { ...r, mention });
+    }
+  }
+
+  /** A pin or unpin counts from any member while the group's view is unknown, else only from a pinner (bit 3). */
+  private mayPin(g: MGroup, user: Id | null): boolean {
+    const view = this.authority.get(toHex(g.groupId));
+    return view === undefined || (user !== null && view.pinners.has(toHex(user)));
+  }
+
+  /** messages.rs mentions_me_gated: <@everyone>/<@here> count only from a broadcaster (bit 18) or while the view is unknown. */
+  private mentionOf(g: MGroup, body: string, sender: Id): boolean {
+    const view = this.authority.get(toHex(g.groupId));
+    const me = toHex(this.me.user);
+    const roles = this.roleHexes(g);
+    if (view === undefined || view.broadcasters.has(toHex(sender))) return mentionsMe(body, me, roles);
+    return body.includes(`<@${me}>`) || roles.some((role) => body.includes(`<@${role}>`));
+  }
+
   /** L-CORE-34: displayable rows (type null or 0) with the fold applied. */
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] {
     const g = this.must(groupId);
@@ -1838,8 +1874,8 @@ export class ModelCore implements CorePort {
     g.rows.set(seq, {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: v.user, senderDevice: v.device, senderKind: 0, senderTier: 0,
       msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, editBody: null, editSeq: 0n,
-      // L-CORE-35: only a type-0 row of another user, against the roles known now; never recomputed later.
-      mention: v.type === 0 && !same(v.user, this.me.user) && mentionsMe(v.body, toHex(this.me.user), this.roleHexes(g)),
+      // L-CORE-35: only a type-0 row of another user, against the roles known now; recomputed later only by authoritySet.
+      mention: v.type === 0 && !same(v.user, this.me.user) && this.mentionOf(g, v.body, v.user),
       attachments: v.type === 0 ? v.attachments : [], hasEnvelope: true,
     });
     this.refoldInsert(g, seq, v.type, v.msgId, v.replyTo, v.user, v.device);
@@ -1965,8 +2001,8 @@ export class ModelCore implements CorePort {
     for (const [k, r] of latest) if (r.type === 3 && r.senderUser !== null) present.set(k, { user: r.senderUser, emoji: r.body, seq: r.seq });
     if (present.size > 0) g.reactions.set(key, present);
     else g.reactions.delete(key);
-    // Step 5: the highest-seq pin or unpin decides.
-    const pin = this.foldsOf(g, target, [5, 6], t.seq).pop();
+    // Step 5: the highest-seq pin or unpin that counts (web3.5 R1: from a pinner once the view is known) decides.
+    const pin = this.foldsOf(g, target, [5, 6], t.seq).filter((r) => this.mayPin(g, r.senderUser)).pop();
     if (pin !== undefined && pin.type === 5 && pin.senderUser !== null) g.pins.set(key, { target: target.slice(), seq: pin.seq, byUser: pin.senderUser });
     else g.pins.delete(key);
   }

@@ -4,6 +4,7 @@ import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecor
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
   type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest,
   type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch } from '../core-port';
+import { toHex } from '../hex';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
 export const FAKE_RECOVERY_KEY = '0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJK';
@@ -406,6 +407,12 @@ export class FakeCore implements CorePort {
   purges(): PurgeRow[] { return this.notModelled('purges'); }
   purgeDone(groupId: Id, seq: bigint): void { return this.notModelled('purgeDone', groupId, seq); }
   ownRolesSet(communityId: Id, roleIds: Id[]): void { return this.notModelled('ownRolesSet', communityId, roleIds); }
+  /** web3.5 R1: every authoritySet call, in hex, in call order (C4 reads it). */
+  readonly authoritySets: { groupId: string; pinners: string[]; broadcasters: string[] }[] = [];
+  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[]): void {
+    this.enter('authoritySet');
+    this.authoritySets.push({ groupId: toHex(groupId), pinners: pinners.map(toHex), broadcasters: broadcasters.map(toHex) });
+  }
   // web-3 call groups (L-TS-55) are group-half methods: ModelCore models them (lesson f); here they are not modelled.
   callGroupCreate(groupId: Id, communityId: Id | null, channelId: Id, policyVersion: bigint, externalSenderPub: Uint8Array): Uint8Array {
     return this.notModelled('callGroupCreate', groupId, communityId, channelId, policyVersion, externalSenderPub);

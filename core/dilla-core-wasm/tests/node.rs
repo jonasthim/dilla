@@ -7,8 +7,8 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
 use dilla_core_wasm::facade::{
-    client_js_error, community_arg, core_open, fixed_arg, login_arg, media_epoch_out, purpose_arg,
-    role_ids_arg,
+    authority_ids_arg, client_js_error, community_arg, core_open, fixed_arg, login_arg,
+    media_epoch_out, purpose_arg, role_ids_arg,
 };
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
@@ -274,7 +274,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
 fn the_version_getters_agree_with_dilla_core_on_wasm() {
     assert_eq!(core_version(), dilla_core::CORE_VERSION);
     assert_eq!(abi_version(), BROWSER_ABI_VERSION);
-    assert_eq!(BROWSER_ABI_VERSION, 9);
+    assert_eq!(BROWSER_ABI_VERSION, 10);
 }
 
 /// L-WASM-34: `call_media_epoch` hands its CBOR to JavaScript as a copy made straight from the
@@ -672,6 +672,36 @@ fn the_wasm_bindgen_surface_round_trips_every_envelope_vector_with_its_name() {
     }
     let first = envelope_decode_json(&unhex(cases[0]["cbor"].as_str().unwrap())).unwrap();
     assert!(first.contains("\"name\":\"wolf-capes.jpg\""), "{first}");
+}
+
+/// web3.5 R1: authority_set's pinners and broadcasters are each 0..=4096 ids of 16 bytes, refused
+/// in the facade before the core is borrowed; the detail names the list and length, never the bytes.
+#[wasm_bindgen_test]
+fn authority_ids_are_zero_to_4096_ids_of_sixteen_bytes() {
+    assert_eq!(authority_ids_arg("pinners", &[]), Ok(()));
+    assert_eq!(authority_ids_arg("pinners", &[0x5a; 16]), Ok(()));
+    assert_eq!(
+        authority_ids_arg("broadcasters", &vec![0x5a; 4096 * 16]),
+        Ok(())
+    );
+    let short = authority_ids_arg("pinners", &[0x5a; 15]).unwrap_err();
+    assert_eq!(
+        short,
+        ClientError {
+            code: "E_CORE_INPUT",
+            detail: "pinners: expected 0..=4096 ids of 16 bytes, got 15 bytes".to_owned()
+        }
+    );
+    assert!(
+        !short.detail.contains("5a"),
+        "the detail must not echo the ids"
+    );
+    assert_eq!(
+        authority_ids_arg("broadcasters", &vec![0x5a; 4097 * 16])
+            .unwrap_err()
+            .detail,
+        "broadcasters: expected 0..=4096 ids of 16 bytes, got 65552 bytes"
+    );
 }
 
 /// L-WASM-30: own_roles_set's role ids are 0..=64 ids of 16 bytes, refused in the facade before the

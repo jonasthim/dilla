@@ -649,6 +649,8 @@ fn open_creates_app_schema_v4_and_reopens_idempotently() {
     assert_eq!(
         names,
         [
+            "app_authority",
+            "app_authority_known",
             "app_device_lists",
             "app_groups",
             "app_groups_by_target",

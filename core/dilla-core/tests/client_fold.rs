@@ -1231,6 +1231,10 @@ fn the_views_need_an_identity() {
         code(core.own_roles_set(&COMMUNITY, &[])),
         "E_CORE_NO_IDENTITY"
     );
+    assert_eq!(
+        code(core.authority_set(&GROUP, &[], &[])),
+        "E_CORE_NO_IDENTITY"
+    );
 }
 
 /// FACTS-SECURITY-03 and lesson e: a device that never held the target (the delivery service's
@@ -2067,4 +2071,231 @@ fn the_new_calls_need_an_identity() {
     );
     assert_eq!(code(fresh.purges()), "E_CORE_NO_IDENTITY");
     assert_eq!(code(fresh.purge_done(&GROUP, 1)), "E_CORE_NO_IDENTITY");
+}
+
+// ---------------------------------------------------------------------------------------------
+// web3.5 R1: the role view the host serves gates pins and `<@everyone>`/`<@here>` (protocol/04
+// § Semantics). The view is advisory input: it decides only what this device counts.
+
+/// (msg id, pinned seq, pinned by) of each pin, newest first.
+fn pin_keys(me: &Core) -> Vec<([u8; 16], u64, [u8; 16])> {
+    pins(me)
+        .into_iter()
+        .map(|p| (p.msg_id, p.pinned_seq, p.by_user))
+        .collect()
+}
+
+fn mentions_in(me: &Core, group: &[u8; 16]) -> u64 {
+    activity(&me.core)
+        .into_iter()
+        .find(|a| &a.group_id == group)
+        .expect("activity row")
+        .mentions
+}
+
+#[test]
+fn pins_count_only_from_members_allowed_to_pin_now() {
+    const A: [u8; 16] = [0x72; 16];
+    const B: [u8; 16] = [0x73; 16];
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let mut reader = join(&mut relay, &mut me, &mut [&mut peer], 0xd4, 0xd5);
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "a"), 3);
+    me.sync(&relay);
+    me.core
+        .authority_set(&GROUP, &PEER_USER, &[])
+        .expect("the peer may pin");
+    assert_eq!(post(&mut peer, &mut relay, 0xa1, Pin, Some(A), ""), 4);
+    assert_eq!(post(&mut reader, &mut relay, 0xa2, Unpin, Some(A), ""), 5);
+    assert_eq!(post(&mut peer, &mut relay, 0x73, Message, None, "b"), 6);
+    assert_eq!(post(&mut reader, &mut relay, 0xa3, Pin, Some(B), ""), 7);
+    me.sync(&relay);
+    assert_eq!(
+        pin_keys(&me),
+        vec![(A, 4, PEER_USER)],
+        "an unauthorized unpin leaves the pin; an unauthorized pin is ignored"
+    );
+    assert_eq!(row_at(&me, 6).pinned, 0);
+
+    me.core
+        .authority_set(&GROUP, &[], &[])
+        .expect("nobody may pin");
+    assert_eq!(pin_keys(&me), vec![], "removing the pinner unpins");
+    assert_eq!(row_at(&me, 3).pinned, 0);
+
+    me.core
+        .authority_set(&GROUP, &PEER_USER, &[])
+        .expect("the peer again");
+    assert_eq!(pin_keys(&me), vec![(A, 4, PEER_USER)], "restoring re-pins");
+
+    me.core
+        .authority_set(&GROUP, &[PEER_USER, READER_USER].concat(), &[])
+        .expect("both may pin");
+    assert_eq!(
+        pin_keys(&me),
+        vec![(B, 7, READER_USER)],
+        "the reader's unpin and pin count once the reader may pin"
+    );
+    assert_eq!(
+        count(
+            &me,
+            "SELECT count(*) FROM app_authority_known WHERE set_at = 0"
+        ),
+        1,
+        "one known row per group, at the core's clock (none: 0)"
+    );
+}
+
+#[test]
+fn a_group_without_a_role_view_keeps_the_former_pin_rule() {
+    const A: [u8; 16] = [0x72; 16];
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let mut reader = join(&mut relay, &mut me, &mut [&mut peer], 0xd4, 0xd5);
+    me.core
+        .authority_set(&OTHER_GROUP, &PEER_USER, &PEER_USER)
+        .expect("another group's view");
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "a"), 3);
+    assert_eq!(post(&mut reader, &mut relay, 0xa1, Pin, Some(A), ""), 4);
+    assert_eq!(
+        post(&mut reader, &mut relay, 0x74, Message, None, "<@everyone>"),
+        5
+    );
+    me.sync(&relay);
+    assert_eq!(
+        pin_keys(&me),
+        vec![(A, 4, READER_USER)],
+        "any member pins where no view is known"
+    );
+    assert_eq!(
+        row_at(&me, 5).mention,
+        1,
+        "and any member's @everyone counts"
+    );
+}
+
+#[test]
+fn everyone_and_here_count_only_from_members_allowed_them() {
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let own_token = format!("<@{}>", "a1".repeat(16));
+    assert_eq!(
+        post(
+            &mut peer,
+            &mut relay,
+            0x71,
+            Message,
+            None,
+            "<@everyone> standup"
+        ),
+        2
+    );
+    me.sync(&relay);
+    assert_eq!(row_at(&me, 2).mention, 1, "no view yet: the former rule");
+    assert_eq!(mentions_in(&me, &GROUP), 1);
+
+    me.core
+        .authority_set(&GROUP, &[], &[])
+        .expect("the peer may not");
+    assert_eq!(row_at(&me, 2).mention, 0, "a held row is recomputed");
+    assert_eq!(mentions_in(&me, &GROUP), 0, "the badge follows");
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x72, Message, None, "<@here> ping"),
+        3
+    );
+    assert_eq!(
+        post(
+            &mut peer,
+            &mut relay,
+            0x73,
+            Message,
+            None,
+            &format!("<@everyone> and {own_token}")
+        ),
+        4
+    );
+    me.sync(&relay);
+    assert_eq!(
+        (row_at(&me, 3).mention, row_at(&me, 4).mention),
+        (0, 1),
+        "a direct mention still counts"
+    );
+    assert_eq!(mentions_in(&me, &GROUP), 1);
+
+    me.core
+        .authority_set(&GROUP, &[], &PEER_USER)
+        .expect("the peer may");
+    assert_eq!(
+        (
+            row_at(&me, 2).mention,
+            row_at(&me, 3).mention,
+            row_at(&me, 4).mention
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(mentions_in(&me, &GROUP), 3);
+
+    me.core
+        .authority_set(&GROUP, &[], &[])
+        .expect("the peer may not again");
+    assert_eq!(
+        (
+            row_at(&me, 2).mention,
+            row_at(&me, 3).mention,
+            row_at(&me, 4).mention
+        ),
+        (0, 0, 1)
+    );
+    assert_eq!(mentions_in(&me, &GROUP), 1);
+
+    me.core
+        .authority_set(&GROUP, &[], &PEER_USER)
+        .expect("the peer may");
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x74, Message, None, "<@everyone>"),
+        5
+    );
+    me.sync(&relay);
+    assert_eq!(row_at(&me, 5).mention, 1, "counted on arrival");
+}
+
+#[test]
+fn authority_set_takes_at_most_4096_ids_of_16_bytes_each() {
+    let (_i, _relay, mut me, _peer) = fold_start();
+    let full: Vec<u8> = (0..4096u32)
+        .flat_map(|i| {
+            let mut id = [0u8; 16];
+            id[..4].copy_from_slice(&i.to_be_bytes());
+            id
+        })
+        .collect();
+    me.core
+        .authority_set(&GROUP, &full, &full)
+        .expect("4096 ids each");
+    assert_eq!(count(&me, "SELECT count(*) FROM app_authority"), 8192);
+    let too_many = [full.as_slice(), &[0xff; 16]].concat();
+    let refusal = Err(ClientError {
+        code: "E_CORE_INPUT",
+        detail: "pinners and broadcasters must be 0..=4096 ids of 16 bytes".into(),
+    });
+    for (pinners, broadcasters) in [
+        (too_many.as_slice(), &[][..]),
+        (&[][..], too_many.as_slice()),
+        (&[0u8; 15][..], &[][..]),
+        (&[][..], &[0u8; 15][..]),
+    ] {
+        assert_eq!(
+            me.core.authority_set(&GROUP, pinners, broadcasters),
+            refusal
+        );
+    }
+    assert_eq!(
+        count(&me, "SELECT count(*) FROM app_authority"),
+        8192,
+        "a refusal writes nothing"
+    );
+    assert_eq!(
+        count(
+            &me,
+            "SELECT count(*) FROM app_authority WHERE bit NOT IN (3, 18)"
+        ),
+        0
+    );
 }
