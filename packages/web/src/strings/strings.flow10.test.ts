@@ -12,6 +12,7 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-10 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
+    expect(pairs.length).toBe(127);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
@@ -20,8 +21,7 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
     const added = Object.keys(en).filter(k => /^(factor|factorSignin|factorSettings)\./.test(k));
     expect(added.filter(k => !listed.has(k))).toEqual([]);
   });
-  // T1 writes the sections
-  it.skip('sections: States, Keyboard map, Focus rules and Announcements have content, and States has 22 or more rows', () => {
+  it('sections: States, Keyboard map, Focus rules and Announcements have content, and States has 22 or more rows', () => {
     const body = (title: string) => {
       const start = doc.indexOf(`## ${title}\n`);
       expect(start, title).toBeGreaterThanOrEqual(0);
@@ -33,9 +33,21 @@ describe('flow 10 (v0.1.0-web3.6, second factor)', () => {
     const rows = body('States').split('\n').filter(l => l.startsWith('|') && !/^\|[-| ]+\|$/.test(l));
     expect(rows.length - 1).toBeGreaterThanOrEqual(22);
   });
-  const LOWER: readonly string[] = [];
+  const LOWER: readonly string[] = [
+    'factor.choose.app',
+    'factor.choose.passkey',
+    'factorSettings.nav',
+    'factorSettings.totp.add',
+    'factorSettings.totp.remove',
+    'factorSettings.totp.removeLabel',
+    'factorSettings.passkeys.add',
+    'factorSettings.passkeys.remove',
+    'factorSettings.passkeys.removeLabel',
+    'factorSettings.codes.make',
+  ];
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
+    expect(LOWER.length).toBe(10);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

@@ -52,12 +52,13 @@ prefilled); otherwise to `/`.
 | 2 | identity | `onboarding.identity.title` | `TextField` username, display name, password (only when `instance.passwordSignup`), `Button` Back and Continue |
 | 3 | recovery key | `onboarding.keys.title` | two paragraphs, `RecoveryKey` (see `02-recovery-key.md`), `Button` Back and Continue |
 | 4 | this browser | `onboarding.browser.title` | four paragraphs, `Banner` on a refusal, `Button` Back and Create account |
-| 5 | done | `onboarding.done.title` | one paragraph, `Button` Open dilla (`onboarding.done.next`) |
+| 5 | second factor | flow 10 (`factor.choose.title`) | the second-factor flow, see `10-second-factor.md`; there is no skip |
+| 6 | done | `onboarding.done.title` | one paragraph, `Button` Open dilla (`onboarding.done.next`) |
 
-Five steps, each one `OnboardingFrame` whose step line is `onboarding.step`. Each of the first four is one
+Six steps, each one `OnboardingFrame` whose step line is `onboarding.step`. Each of the first four is one
 `<form noValidate>`: `Enter` in a field submits the step, as does its forward button (`type="submit"`:
 `Continue` on steps 1–3, `Create account` on step 4); `Back` is `type="button"`, comes first in the
-footer and never submits. Step 5's only button is `Open dilla`.
+footer and never submits. Step 5 is flow 10's. Step 6's only button is `Open dilla`.
 
 ## Wireframes at 1280 × 800
 
@@ -363,7 +364,7 @@ are no single-key shortcuts.
 
 | key | text | where |
 |---|---|---|
-| `onboarding.step` | `Step {n} of 5` | step line, steps 1–5 |
+| `onboarding.step` | `Step {n} of 6` | step line, steps 1–6 |
 | `onboarding.back` | `Back` | button, first in the footer of steps 2–4 |
 | `onboarding.next` | `Continue` | button, forward on steps 1–3 |
 | `onboarding.connect.title` | `Join {instance}` | step heading, step 1 |

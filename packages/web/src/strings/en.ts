@@ -79,7 +79,7 @@ export const en = {
   'boot.error.detail': 'Error {code}. Reload the page to try again.',
   'boot.error.action': 'Reload',
   'dialog.close': 'Close',
-  'onboarding.step': 'Step {n} of 5',
+  'onboarding.step': 'Step {n} of 6',
   'onboarding.back': 'Back',
   'onboarding.next': 'Continue',
   'onboarding.connect.title': 'Join {instance}',

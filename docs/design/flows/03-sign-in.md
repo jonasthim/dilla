@@ -75,6 +75,8 @@ crosses twice for such an account, each time inside one command); none is ever s
 | 3 | second factor | `signin.totp.title` | one paragraph, `TextField` code, `Button` Cancel and Continue |
 | 4 | done | `signin.done.title` | one paragraph, `Button` `signin.done.next` |
 
+Step 3 has four forms, all in flow 10 (`10-second-factor.md`): an authenticator code, a passkey, a backup code, or the set-up for an account that has no second factor yet.
+
 Four steps, each one `OnboardingFrame` whose step line is `signin.step`. The second-factor step is counted
 even when it is skipped, so the numbers never change: an account without a second factor goes 1 → 2 → 4.
 Each of the first three is one `<form noValidate>`: `Enter` in a field submits the step, as does its

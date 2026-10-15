@@ -414,7 +414,7 @@ describe('App sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
-    expect(screen.getByText('Step 5 of 5')).toBeInTheDocument();
+    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
     expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
     expect(screen.queryByText('Step 4 of 4')).toBeNull();
   });
