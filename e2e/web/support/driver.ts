@@ -105,6 +105,8 @@ export class WebDriver {
   async leave(channelId?: string): Promise<{ group_id: string }> {
     return this.strip(await this.request<{ group_id: string; id: number; ok: boolean }>('leave', channelId === undefined ? {} : { channel_id: channelId }));
   }
+  /** The owner gives @everyone `bits` through the roles API (flow 09); answers the new mask. */
+  async allowEveryone(bits: number): Promise<{ allow: number }> { return this.strip(await this.request<{ allow: number; id: number; ok: boolean }>('allow_everyone', { bits })); }
   async typing(channelId: string, on: boolean): Promise<void> {
     await this.request('typing', { channel: channelId, on });
   }

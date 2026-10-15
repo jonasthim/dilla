@@ -316,6 +316,13 @@ fn call(
             }
             r.send(bytes)
         }
+        ("PATCH", Some((content_type, bytes))) => {
+            let mut r = agent.patch(url).content_type(content_type);
+            if let Some(b) = &bearer {
+                r = r.header("Authorization", b);
+            }
+            r.send(bytes)
+        }
         (method, _) => {
             return Err(DsError::Protocol(format!(
                 "no {method} request shape in the testkit client"
@@ -1641,6 +1648,55 @@ impl HttpDs {
                 Ok(id)
             },
         )
+    }
+
+    /// What the owner's roles tab does to give everyone a right (flow 09): `GET /v1/communities/{id}/roles` finds
+    /// @everyone (position 0), then `PATCH /v1/roles/{everyone}` `[null, null, null, allow | bits, null, null, null]`.
+    /// Answers the new mask.
+    pub fn allow_everyone(&self, community: &[u8; 16], bits: u64) -> Result<u64, DsError> {
+        let path = format!("/v1/communities/{}/roles", hex::encode(community));
+        let roles = get_with(&self.agent, &self.base, &self.token, &path)?;
+        let (everyone, allow) = decode_strict(&roles, |d| {
+            let mut found = None;
+            for _ in 0..d.array_len()? {
+                d.array(8)?;
+                let id = d.bytes_exact::<16>()?;
+                d.text()?;
+                d.uint()?;
+                let position = d.uint()?;
+                let allow = d.uint()?;
+                d.uint()?;
+                d.uint()?;
+                d.uint()?;
+                if position == 0 {
+                    found = Some((id, allow));
+                }
+            }
+            Ok(found)
+        })
+        .map_err(protocol)?
+        .ok_or_else(|| DsError::Protocol(format!("GET {path}: no @everyone role")))?;
+        let mask = allow | bits;
+        let body = encode(|e| {
+            e.array(7)
+                .null()
+                .null()
+                .null()
+                .uint(mask)
+                .null()
+                .null()
+                .null();
+        });
+        let role_path = format!("/v1/roles/{}", hex::encode(everyone));
+        let (status, out) = call(
+            &self.agent,
+            "PATCH",
+            &self.url(&role_path),
+            Some(&self.token),
+            Some(("application/cbor", &body)),
+        )?;
+        check_status(status, &out)?;
+        Ok(mask)
     }
 
     /// POST /v1/communities/{id}/channels [0, 0, 0, null, name, "", 0, 0].
