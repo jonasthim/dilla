@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -859,5 +860,101 @@ func TestTheRoleRoutesRecheckUnderTheLock(t *testing.T) {
 		if c.unchanged() {
 			t.Fatalf("control: the %s wrote nothing", c.name)
 		}
+	}
+}
+
+// S2 round 2: the in-transaction re-check covers more than the actor's own roles. (a) A grant
+// whose community turns on require_mod_2fa, and whose role gains a moderator bit, between the
+// checks and the transaction is refused for a target with no second factor. (b) A patch or delete
+// of a role moved to or above the actor's highest role in that window is refused. Nothing is
+// written, and each request undisturbed (the control) succeeds.
+func TestTheRoleRoutesRecheckTheRoleAndTheCommunityUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewRoles(hooked, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	target, _ := joinAs(t, e, cid, "target")
+	// The mod holds manage_messages, so the role gaining it passes checkBits and only the
+	// second-factor rule can refuse the grant.
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5,
+		api.PermViewChannel|api.PermManageRoles|api.PermManageMessages)
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+	low := createRole(t, e, cid, ownerTok, "low", 2, 0)
+	role := func() (store.RoleRow, bool) {
+		r, err := e.Repo.GetRole(t.Context(), low)
+		return r, err == nil
+	}
+	setRole := func(position uint64, allow api.Bits) {
+		r, ok := role()
+		if !ok {
+			t.Fatal("low is gone")
+		}
+		r.Position, r.Allow = position, uint64(allow)
+		if err := e.Repo.PutRole(t.Context(), r); err != nil {
+			t.Errorf("PutRole: %v", err)
+		}
+	}
+	setMod2FA := func(v uint8) {
+		com, err := e.Repo.GetCommunity(t.Context(), cid)
+		if err != nil {
+			t.Fatalf("GetCommunity: %v", err)
+		}
+		if err := e.Repo.UpdateCommunityMeta(t.Context(), cid, com.Name, com.MinAccountAgeSeconds, v); err != nil {
+			t.Errorf("UpdateCommunityMeta: %v", err)
+		}
+	}
+
+	// (a) grant.
+	grantPath := "/v1/communities/" + cid.String() + "/members/" + target.String() + "/roles/" + low.String()
+	hooked.arm(func() {
+		setMod2FA(1)
+		setRole(2, api.PermManageMessages)
+	})
+	status, body := e.Do(http.MethodPut, grantPath, modTok, nil)
+	if status != http.StatusForbidden || !strings.Contains(errDetail(t, body), "second factor") {
+		t.Fatalf("grant after require_mod_2fa and a moderator bit = %d %q, want 403 for the second factor",
+			status, errDetail(t, body))
+	}
+	if held, _ := e.Repo.ListMemberRoles(t.Context(), cid, target); slices.Contains(held, low) {
+		t.Fatal("the refused grant wrote")
+	}
+	setMod2FA(0)
+	setRole(2, 0)
+	if status, body := e.Do(http.MethodPut, grantPath, modTok, nil); status != http.StatusNoContent {
+		t.Fatalf("control: grant undisturbed = %d (%x)", status, body)
+	}
+
+	// (b) patch and delete of a role moved to, and above, the mod's own position.
+	for _, position := range []uint64{5, 6} {
+		hooked.arm(func() { setRole(position, 0) })
+		status, body := e.Do(http.MethodPatch, "/v1/roles/"+low.String(), modTok, []any{"bytt", nil, nil, nil, nil, nil, nil})
+		if status != http.StatusForbidden && status != http.StatusConflict {
+			t.Fatalf("patch of a role moved to %d = %d (%x), want 403 or 409", position, status, body)
+		}
+		if r, _ := role(); r.Name != "low" {
+			t.Fatalf("the refused patch wrote %q", r.Name)
+		}
+		setRole(2, 0)
+		hooked.arm(func() { setRole(position, 0) })
+		if status, body := e.Do(http.MethodDelete, "/v1/roles/"+low.String(), modTok, nil); status != http.StatusForbidden {
+			t.Fatalf("delete of a role moved to %d = %d (%x), want 403", position, status, body)
+		}
+		if _, ok := role(); !ok {
+			t.Fatal("the refused delete wrote")
+		}
+		setRole(2, 0)
+	}
+	if status, body := e.Do(http.MethodPatch, "/v1/roles/"+low.String(), modTok, []any{"bytt", nil, nil, nil, nil, nil, nil}); status != http.StatusNoContent {
+		t.Fatalf("control: patch undisturbed = %d (%x)", status, body)
+	}
+	if status, body := e.Do(http.MethodDelete, "/v1/roles/"+low.String(), modTok, nil); status != http.StatusNoContent {
+		t.Fatalf("control: delete undisturbed = %d (%x)", status, body)
+	}
+	if _, ok := role(); ok {
+		t.Fatal("control: the delete wrote nothing")
 	}
 }
