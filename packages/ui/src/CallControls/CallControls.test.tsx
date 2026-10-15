@@ -69,10 +69,85 @@ describe('CallControls', () => {
     expect(screen.getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-pressed');
     rerender(<CallControls {...base} muted deafened camera sharing />);
     for (const name of ['mute', 'deafen', 'camera', 'share screen']) {
-      const b = screen.getByRole('button', { name });
-      expect(b).toHaveAttribute('aria-pressed', 'true');
-      expect(within(b).getByText('[x]')).toHaveAttribute('aria-hidden', 'true');
+      expect(screen.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
     }
+  });
+
+  // Voice controls as icons (plan 2026-10-15, VI-1): the name is the label via aria-label, the icon is decorative,
+  // and the voice toolbar drops the Button primitive's [x] / [ ] mark; the swapped glyph carries the state instead.
+  it('each control is an icon button named by its label, with no [x] mark', () => {
+    render(<CallControls {...base} muted />);
+    for (const name of ['mute', 'deafen', 'camera', 'share screen', 'leave']) {
+      const b = screen.getByRole('button', { name });
+      expect(b).toHaveAttribute('aria-label', name);
+      expect(b.querySelectorAll('svg[aria-hidden="true"]')).toHaveLength(1);
+      expect(b.textContent).not.toMatch(/\[[x ]\]/);
+    }
+  });
+
+  it('a toggle swaps its glyph with its state, and leave is always phone-off', () => {
+    const icon = (name: string) => screen.getByRole('button', { name }).querySelector('svg')?.getAttribute('data-icon');
+    const { rerender } = render(<CallControls {...base} />);
+    expect(['mute', 'deafen', 'camera', 'share screen', 'leave'].map(icon)).toEqual(['mic', 'headphones', 'video-off', 'monitor-up', 'phone-off']);
+    rerender(<CallControls {...base} muted deafened camera sharing />);
+    expect(['mute', 'deafen', 'camera', 'share screen', 'leave'].map(icon)).toEqual(['mic-off', 'headphone-off', 'video', 'monitor-x', 'phone-off']);
+  });
+
+  it('pressed toggles carry a tint: danger for mute and deafen, accent for camera and share; leave is the danger variant', () => {
+    render(<CallControls {...base} muted deafened camera sharing />);
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveAttribute('data-tint', 'danger');
+    expect(screen.getByRole('button', { name: 'deafen' })).toHaveAttribute('data-tint', 'danger');
+    expect(screen.getByRole('button', { name: 'camera' })).toHaveAttribute('data-tint', 'accent');
+    expect(screen.getByRole('button', { name: 'share screen' })).toHaveAttribute('data-tint', 'accent');
+    expect(screen.getByRole('button', { name: 'leave' })).toHaveAttribute('data-variant', 'danger');
+  });
+
+  it('the tooltip shows the label on keyboard focus, with the shortcut as the description, and Escape hides it', async () => {
+    const onLeave = vi.fn();
+    const outer = vi.fn();
+    render(<div onKeyDown={e => { outer(e.key); }}><CallControls {...base} onLeave={onLeave} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }} /></div>);
+    const mute = screen.getByRole('button', { name: 'mute' });
+    const tip = () => mute.querySelector<HTMLElement>('[role="tooltip"]');
+    expect(tip()).not.toBeVisible();
+    await userEvent.keyboard('{Tab}');
+    expect(mute).toHaveFocus();
+    expect(tip()).toBeVisible();
+    expect(tip()).toHaveTextContent('mute');
+    expect(tip()).toHaveTextContent('Ctrl+Shift+M');
+    // Described by the shortcut alone, so the name is not read twice; never a title attribute.
+    expect(mute).toHaveAccessibleDescription('Ctrl+Shift+M');
+    expect(mute).toHaveAccessibleName('mute');
+    expect(mute).not.toHaveAttribute('title');
+    await userEvent.keyboard('{Escape}');
+    expect(tip()).not.toBeVisible();
+    expect(mute).toHaveFocus();
+    expect(onLeave).not.toHaveBeenCalled();
+    expect(outer).toHaveBeenCalledWith('Escape');
+    // Moving on shows the next control's tooltip; camera has no shortcut, so it has no description.
+    await userEvent.keyboard('{ArrowRight}{ArrowRight}');
+    const camera = screen.getByRole('button', { name: 'camera' });
+    expect(camera).toHaveFocus();
+    expect(camera.querySelector('[role="tooltip"]')).toBeVisible();
+    expect(camera.querySelector('[role="tooltip"]')).toHaveTextContent('camera');
+    expect(camera).not.toHaveAttribute('aria-describedby');
+    expect(tip()).not.toBeVisible();
+  });
+
+  it('the tooltip shows on hover and hides when the pointer leaves; a click on it does not press the control', async () => {
+    const onLeave = vi.fn();
+    render(<CallControls {...base} onLeave={onLeave} />);
+    const leave = screen.getByRole('button', { name: 'leave' });
+    const tip = leave.querySelector<HTMLElement>('[role="tooltip"]');
+    expect(tip).not.toBeVisible();
+    await userEvent.hover(leave);
+    expect(tip).toBeVisible();
+    expect(tip).toHaveTextContent('leave');
+    await userEvent.unhover(leave);
+    expect(tip).not.toBeVisible();
+    // The tooltip is hoverable (it sits inside the button), so a click on it must not leave the call.
+    await userEvent.hover(leave);
+    if (tip) await userEvent.click(tip);
+    expect(onLeave).not.toHaveBeenCalled();
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

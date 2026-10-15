@@ -71,6 +71,74 @@ describe('VoiceDock', () => {
     expect(screen.getByRole('button', { name: 'deafen' })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+D Meta+Shift+D');
   });
 
+  // Plan 2026-10-15 (VI-1): all five voice controls in the dock, in the stage's order.
+  const five: VoiceDockProps = {
+    ...dock, labels: { ...dock.labels, camera: 'camera', share: 'share screen' },
+    camera: false, sharing: false, canCamera: true, canShare: true, onCamera: () => {}, onShare: () => {},
+  };
+
+  it('with camera and share handlers, the dock holds mute, deafen, camera, share and leave in that order', async () => {
+    const handlers = { onMute: vi.fn(), onDeafen: vi.fn(), onCamera: vi.fn(), onShare: vi.fn(), onLeave: vi.fn() };
+    render(<VoiceDock {...five} {...handlers} />);
+    const buttons = within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button');
+    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['mute', 'deafen', 'camera', 'share screen', 'leave']);
+    for (const b of buttons) await userEvent.click(b);
+    for (const fn of Object.values(handlers)) expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('without camera and share handlers, the dock keeps its three controls', () => {
+    render(<VoiceDock {...dock} />);
+    const buttons = within(screen.getByRole('toolbar', { name: 'voice controls' })).getAllByRole('button');
+    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['mute', 'deafen', 'leave']);
+  });
+
+  it('camera and share are pressed toggles whose glyph follows the state', () => {
+    const icon = (name: string) => screen.getByRole('button', { name }).querySelector('svg')?.getAttribute('data-icon');
+    const { rerender } = render(<VoiceDock {...five} />);
+    expect(screen.getByRole('button', { name: 'camera' })).toHaveAttribute('aria-pressed', 'false');
+    expect(['mute', 'deafen', 'camera', 'share screen', 'leave'].map(icon)).toEqual(['mic', 'headphones', 'video-off', 'monitor-up', 'phone-off']);
+    rerender(<VoiceDock {...five} muted deafened camera sharing />);
+    expect(screen.getByRole('button', { name: 'camera' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'share screen' })).toHaveAttribute('aria-pressed', 'true');
+    expect(['mute', 'deafen', 'camera', 'share screen', 'leave'].map(icon)).toEqual(['mic-off', 'headphone-off', 'video', 'monitor-x', 'phone-off']);
+  });
+
+  it('camera and share are inert under the stage rules: no camera, no capture, or joining (busy); the rest stay live', async () => {
+    const onCamera = vi.fn();
+    const onShare = vi.fn();
+    const { rerender } = render(<VoiceDock {...five} canCamera={false} canShare={false} onCamera={onCamera} onShare={onShare} />);
+    for (const name of ['camera', 'share screen']) {
+      const b = screen.getByRole('button', { name });
+      expect(b).toHaveAttribute('aria-disabled', 'true');
+      expect(b).not.toBeDisabled();
+      await userEvent.click(b);
+    }
+    expect(onCamera).not.toHaveBeenCalled();
+    expect(onShare).not.toHaveBeenCalled();
+    rerender(<VoiceDock {...five} busy onCamera={onCamera} onShare={onShare} />);
+    expect(screen.getByRole('button', { name: 'camera' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'share screen' })).toHaveAttribute('aria-disabled', 'true');
+    for (const name of ['mute', 'deafen', 'leave']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    rerender(<VoiceDock {...five} onCamera={onCamera} onShare={onShare} />);
+    for (const name of ['camera', 'share screen']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('the shortcuts show in the mute and deafen tooltips and describe those controls', async () => {
+    render(<VoiceDock {...five} shortcuts={{ mute: '⌘⇧M', deafen: '⌘⇧D' }} />);
+    await userEvent.keyboard('{Tab}');
+    const mute = screen.getByRole('button', { name: 'mute' });
+    expect(mute).toHaveAccessibleDescription('⌘⇧M');
+    expect(mute.querySelector('[role="tooltip"]')).toBeVisible();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByRole('button', { name: 'deafen' })).toHaveAccessibleDescription('⌘⇧D');
+  });
+
+  it.each(['mesh', 'light', 'high-contrast'])('passes axe with all five controls in %s', async theme => {
+    document.documentElement.dataset.theme = theme;
+    const { container } = render(<div className="d-root"><VoiceDock {...five} muted camera canShare={false} /></div>);
+    expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><VoiceDock {...(meta.args as VoiceDockProps)} /></div>);

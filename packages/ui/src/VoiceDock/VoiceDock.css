@@ -1,4 +1,5 @@
-.d-voice-dock { display: grid; gap: 0.5rem; padding: 0.625rem 0.75rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); min-width: 0; }
+/* 0.625rem each side: five 40 px controls with 4 px gaps (216 px) fit in one row of the 240 px sidebar. */
+.d-voice-dock { display: grid; gap: 0.5rem; padding: 0.625rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); min-width: 0; }
 .d-voice-dock__where { display: flex; align-items: center; gap: 0.5rem; margin: 0; min-width: 0; font-size: var(--text-sm); color: var(--fg); }
 .d-voice-dock__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-voice-dock__glyph { color: var(--accent); }
@@ -6,4 +7,6 @@
 .d-voice-dock[data-phase="paused"] { border-color: var(--warn); }
 .d-voice-dock[data-phase="paused"] .d-voice-dock__glyph { color: var(--warn); }
 .d-voice-dock__meter { display: flex; }
-.d-voice-dock__controls .d-voice-toolbar__control { flex: 1 1 auto; }
+/* The controls share the row; under 48rem their 44 px minimum no longer fits five abreast, so the row wraps and
+   never scrolls. */
+.d-voice-dock__controls .d-voice-toolbar__control { flex: 1 1 0; }

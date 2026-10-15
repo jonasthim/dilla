@@ -26,6 +26,7 @@ const meta = {
       region: 'call controls', mute: 'mute', deafen: 'deafen', camera: 'camera',
       share: 'share screen', leave: 'leave',
     },
+    shortcuts: { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' },
     onMute: () => {}, onDeafen: () => {}, onCamera: () => {}, onShare: () => {}, onLeave: () => {},
   },
   // Each control is at least 40 × 40 CSS px (44 × 44 under 48rem of viewport), flow 06.
@@ -41,3 +42,12 @@ export const CameraAndSharing: Story = { args: { camera: true, sharing: true } }
 export const Joining: Story = { args: { busy: true } };
 /** Paused (RV-3): camera and share are aria-disabled until the call continues. */
 export const Paused: Story = { args: { canCamera: false, canShare: false } };
+/** Keyboard focus on mute shows its tooltip above it: the label and the shortcut. */
+export const TooltipOnFocus: Story = {
+  args: { muted: true },
+  decorators: [Story => <div style={{ paddingTop: 40 }}><Story /></div>],
+  play: ({ canvasElement }) => {
+    expectVoiceTargets(canvasElement, 'CallControls');
+    canvasElement.querySelector<HTMLButtonElement>('[role="toolbar"] button')?.focus();
+  },
+};

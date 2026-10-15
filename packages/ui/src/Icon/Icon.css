@@ -1,0 +1,2 @@
+/* An icon is drawn in its control's text colour and never shrinks inside a flex row. */
+.d-icon { display: block; flex: none; color: inherit; }

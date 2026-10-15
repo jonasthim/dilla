@@ -10,9 +10,10 @@ const meta = {
     phase: 'connected', where: 'harbour', muted: false, deafened: false, announcement: '',
     labels: {
       region: 'voice controls', connecting: 'connecting', connected: 'in {where}', reconnecting: 'reconnecting', paused: 'paused in {where}',
-      mute: 'mute', deafen: 'deafen', leave: 'leave',
+      mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
     },
-    onMute: () => {}, onDeafen: () => {}, onLeave: () => {},
+    camera: false, sharing: false, canCamera: true, canShare: true, shortcuts: { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' },
+    onMute: () => {}, onDeafen: () => {}, onCamera: () => {}, onShare: () => {}, onLeave: () => {},
   },
   // The dock's width is the sidebar's (240 px).
   decorators: [Story => <div style={{ width: 240 }}><Story /></div>],
@@ -26,8 +27,26 @@ export const Connected: Story = { args: { announcement: 'You joined harbour.', m
 export const Connecting: Story = { args: { phase: 'connecting' } };
 export const Reconnecting: Story = { args: { phase: 'reconnecting', meter: <AudioMeter level={0} label="input level" /> } };
 export const MutedAndDeafened: Story = { args: { muted: true, deafened: true, announcement: 'Sound off.', meter: <AudioMeter level={0} label="input level" /> } };
-/** Paused (RV-3): the dock says so; the banner with its action lives on the stage. */
-export const Paused: Story = { args: { phase: 'paused' } };
+/** Camera on and sharing: both glyphs swap (video, monitor-x) and take the accent tint. */
+export const CameraAndSharing: Story = { args: { camera: true, sharing: true, meter: <AudioMeter level={4} label="input level" /> } };
+/** Paused (RV-3): the dock says so, and camera and share are aria-disabled as on the stage; the banner with its action
+ *  lives on the stage. */
+export const Paused: Story = { args: { phase: 'paused', canCamera: false, canShare: false } };
+/** Joining: camera and share wait for the session (the stage's busy); mute, deafen and leave stay live. */
+export const Joining: Story = { args: { phase: 'connecting', busy: true } };
+/** Keyboard focus on mute shows its tooltip: the label and the shortcut. */
+export const TooltipOnFocus: Story = {
+  args: { muted: true },
+  play: ({ canvasElement }) => {
+    expectVoiceTargets(canvasElement, 'VoiceDock');
+    canvasElement.querySelector<HTMLButtonElement>('[role="toolbar"] button')?.focus();
+  },
+};
+/** Before the web app wires camera and share (VI-2), the dock keeps its three controls. */
+export const WithoutCameraAndShare: Story = {
+  args: { onCamera: undefined, onShare: undefined, labels: { region: 'voice controls', connecting: 'connecting', connected: 'in {where}',
+    reconnecting: 'reconnecting', paused: 'paused in {where}', mute: 'mute', deafen: 'deafen', leave: 'leave' } },
+};
 /** A DM call: `{where}` is the DM's name, and the outgoing ring is announced through the dock's status region. */
 export const DmRinging: Story = { args: { where: 'ada', announcement: 'ringing ada' } };
 /** Rejoining (WB a11y m8): the dock stays at connecting while the join waits for its earlier Remove; the status region
