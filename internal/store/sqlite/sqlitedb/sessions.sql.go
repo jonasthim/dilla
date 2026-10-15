@@ -117,7 +117,8 @@ func (q *Queries) DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsBy
 }
 
 const getSessionByHash = `-- name: GetSessionByHash :one
-SELECT token_hash, device_id, user_id, scope, tier, created, expires, idle_expires FROM sessions WHERE token_hash = ? AND expires > ? AND idle_expires > ?
+SELECT s.token_hash, s.device_id, s.user_id, s.scope, s.tier, s.created, s.expires, s.idle_expires, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
+WHERE s.token_hash = ? AND s.expires > ? AND s.idle_expires > ?
 `
 
 type GetSessionByHashParams struct {
@@ -126,9 +127,23 @@ type GetSessionByHashParams struct {
 	IdleExpires int64
 }
 
-func (q *Queries) GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (Sessions, error) {
+type GetSessionByHashRow struct {
+	TokenHash   []byte
+	DeviceID    id.ID
+	UserID      id.ID
+	Scope       int64
+	Tier        int64
+	Created     int64
+	Expires     int64
+	IdleExpires int64
+	FactorOwed  int64
+}
+
+// The account's factor_owed rides along on the one primary-key join, so Sessions.Resolve learns
+// whether the account owes a second factor without a second query (web3.6 S1).
+func (q *Queries) GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (GetSessionByHashRow, error) {
 	row := q.db.QueryRowContext(ctx, getSessionByHash, arg.TokenHash, arg.Expires, arg.IdleExpires)
-	var i Sessions
+	var i GetSessionByHashRow
 	err := row.Scan(
 		&i.TokenHash,
 		&i.DeviceID,
@@ -138,6 +153,7 @@ func (q *Queries) GetSessionByHash(ctx context.Context, arg GetSessionByHashPara
 		&i.Created,
 		&i.Expires,
 		&i.IdleExpires,
+		&i.FactorOwed,
 	)
 	return i, err
 }

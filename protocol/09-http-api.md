@@ -26,7 +26,7 @@ identifier is `400 E_INVALID_REQUEST`; a well-formed but unknown one is `404 E_N
 Every endpoint in this document except the ones marked `—` requires a device session exactly as
 `02-delivery-service.md`'s `§ Device sessions` defines: `Authorization: Bearer <token>` resolved to
 a `sessions` row by `SHA-256(token)`; no cookie and therefore no CSRF surface on `/v1`. The `Auth`
-column below uses four scopes:
+column below uses these scopes:
 
 | scope | meaning |
 |---|---|
@@ -34,14 +34,21 @@ column below uses four scopes:
 | `P` | `pending` also accepted |
 | `V` | `provisional` also accepted |
 | `A` | an `enrolled` session whose user holds the instance-admin flag |
+| `F` | an `enrolled` session whose account owes a second factor is also accepted |
 | `—` | no session required |
+
+An account owes a second factor until it holds a confirmed TOTP secret or a passkey (`02`
+§ Device sessions item 8). Every `E` route not marked `E, F` answers such an account's `enrolled`
+session `403 E_FACTOR_REQUIRED`, as do the `E or V` routes; the `P` routes admit it, and the
+gateway refuses it (close `4003`). A table without an `Auth` column says its scope in the sentence
+before it ("every route below is `E`").
 
 ## Accounts and devices
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/accounts` | — | `[code(tstr), username(tstr), display(tstr), umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64), password(tstr\|null), device(array)]` where `device = [device_id(bstr16), dsk_pub(bstr32), tier(uint), signer_tier(uint), credential(bstr)]` | `[user_id(bstr16), device_id(bstr16), token(tstr), expires(uint)]` |
-| `GET /v1/accounts/me` | E | — | `[user_id, username, display, kind, flags, created]` |
+| `GET /v1/accounts/me` | E, F | — | `[user_id, username, display, kind, flags, created]` |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
 | `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7) and, `device cap reached`, at 8 live devices; `429 E_RATE_LIMITED` with `retry_after_ms` past 3 live rows created in the hour; it never evicts; `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
@@ -118,7 +125,7 @@ on its revocations (`02` § Device sessions item 6).
 |---|---|---|---|
 | `POST /v1/devices/{device_id}/sessions/challenge` | — | `[]` | `201 [nonce(bstr32), expires(uint)]` |
 | `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, registration\|credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
-| `DELETE /v1/devices/{device_id}/sessions` | E | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
+| `DELETE /v1/devices/{device_id}/sessions` | E, F | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
 | `POST /v1/gateway/ticket` | E | `[]` | `201 [ticket(tstr), expires(uint)]` — single use, 30 s |
 
 The full session issuance and lifetime rules — scopes, lifetimes, revocation — are
@@ -183,12 +190,12 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 |---|---|---|---|
 | `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs_totp(uint)]` |
 | `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr)]` | `204` |
-| `POST /v1/auth/totp/enroll` | E | `[]` | `[secret(tstr), otpauth_url(tstr)]` |
-| `POST /v1/auth/totp/confirm` | E | `[code(tstr)]` | `[recovery_codes([tstr])]` |
+| `POST /v1/auth/totp/enroll` | E, F | `[]` | `[secret(tstr), otpauth_url(tstr)]` |
+| `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[recovery_codes([tstr])]` |
 | `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]` |
 | `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]` |
-| `POST /v1/auth/passkey/register/begin` | E | `[]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
-| `POST /v1/auth/passkey/register/finish` | E | `[ceremony_id(bstr16), response(tstr)]` | `[cred_id(bstr)]` |
+| `POST /v1/auth/passkey/register/begin` | E, F | `[]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
+| `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr)]` | `[cred_id(bstr)]` |
 | `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]` |
 | `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]` | `[assertion(tstr)]` |
 | `GET /v1/auth/oidc/start` | — | — | `302` to the IdP, PKCE `S256`, state cookie `__Secure-dilla-oidc` scoped to this route only |
@@ -271,7 +278,7 @@ community answers `404` to everyone.
   many succeed.
   The one exception is the join that follows a sign-up with the same invite, which spends nothing
   (§ Invites, one use per person).
-- `require_mod_2fa = 1` refuses (`403 E_FORBIDDEN`) a grant of a role whose `allow` carries any
+- `require_mod_2fa = 1` refuses (`403 E_TARGET_NO_FACTOR`) a grant of a role whose `allow` carries any
   moderation bit (manage messages, kick, ban, manage channels, manage roles, manage community,
   administrator) to a user who holds neither a confirmed TOTP secret nor a passkey for this
   instance's relying party.
@@ -1097,8 +1104,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 ### Reports
 
 A report reveals one message to the instance's admins so they can verify what was sent (`04` §
-Franking). Filing is `E` for any enrolled session; the queue and its status are instance-admin only
-(§ Flags), `403 E_FORBIDDEN` for anyone else.
+Franking). Every route below is `E`: filing is open to any enrolled session; the queue and its
+status are instance-admin only (§ Flags), `403 E_FORBIDDEN` for anyone else.
 
 | Method and path | Request | Response |
 |---|---|---|

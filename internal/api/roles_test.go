@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/api"
@@ -915,9 +914,9 @@ func TestTheRoleRoutesRecheckTheRoleAndTheCommunityUnderTheLock(t *testing.T) {
 		setRole(2, api.PermManageMessages)
 	})
 	status, body := e.Do(http.MethodPut, grantPath, modTok, nil)
-	if status != http.StatusForbidden || !strings.Contains(errDetail(t, body), "second factor") {
-		t.Fatalf("grant after require_mod_2fa and a moderator bit = %d %q, want 403 for the second factor",
-			status, errDetail(t, body))
+	if code := e.ErrCode(body); status != http.StatusForbidden || code != "E_TARGET_NO_FACTOR" {
+		t.Fatalf("grant after require_mod_2fa and a moderator bit = %d %s, want 403 E_TARGET_NO_FACTOR",
+			status, code)
 	}
 	if held, _ := e.Repo.ListMemberRoles(t.Context(), cid, target); slices.Contains(held, low) {
 		t.Fatal("the refused grant wrote")

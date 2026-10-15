@@ -579,6 +579,9 @@ func seedOne(ctx context.Context, s *dillad.Server, req SeedRequest) (SeedRespon
 	if req.Bot {
 		user.Kind = kindBot
 	}
+	// A seeded human owes a second factor exactly as one POST /v1/accounts registers does (web3.6
+	// S1, fixture reachability): the control route has no option that marks an account satisfied.
+	user.FactorOwed = user.Kind == kindHuman
 	var err error
 	if user.UMKPub, err = hexField("umk_pub", req.UMKPub, 32); err != nil {
 		return SeedResponse{}, err

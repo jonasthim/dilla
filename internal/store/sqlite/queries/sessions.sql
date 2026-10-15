@@ -3,7 +3,10 @@ INSERT INTO sessions (token_hash, device_id, user_id, scope, tier, created, expi
 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetSessionByHash :one
-SELECT * FROM sessions WHERE token_hash = ? AND expires > ? AND idle_expires > ?;
+-- The account's factor_owed rides along on the one primary-key join, so Sessions.Resolve learns
+-- whether the account owes a second factor without a second query (web3.6 S1).
+SELECT s.*, u.factor_owed FROM sessions s JOIN users u ON u.id = s.user_id
+WHERE s.token_hash = ? AND s.expires > ? AND s.idle_expires > ?;
 
 -- name: TouchSession :exec
 UPDATE sessions SET idle_expires = ? WHERE token_hash = ?;

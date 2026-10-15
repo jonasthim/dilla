@@ -13,8 +13,8 @@ import (
 )
 
 const createUser = `-- name: CreateUser :exec
-INSERT INTO users (id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO users (id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateUserParams struct {
@@ -30,6 +30,7 @@ type CreateUserParams struct {
 	Created    int64
 	DisabledAt sql.NullInt64
 	DeletedAt  sql.NullInt64
+	FactorOwed int64
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
@@ -46,12 +47,13 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 		arg.Created,
 		arg.DisabledAt,
 		arg.DeletedAt,
+		arg.FactorOwed,
 	)
 	return err
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at FROM users WHERE id = ?
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE id = ?
 `
 
 type GetUserParams struct {
@@ -74,12 +76,13 @@ func (q *Queries) GetUser(ctx context.Context, arg GetUserParams) (Users, error)
 		&i.Created,
 		&i.DisabledAt,
 		&i.DeletedAt,
+		&i.FactorOwed,
 	)
 	return i, err
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at FROM users WHERE username = ?
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE username = ?
 `
 
 type GetUserByUsernameParams struct {
@@ -102,12 +105,13 @@ func (q *Queries) GetUserByUsername(ctx context.Context, arg GetUserByUsernamePa
 		&i.Created,
 		&i.DisabledAt,
 		&i.DeletedAt,
+		&i.FactorOwed,
 	)
 	return i, err
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at FROM users WHERE id > ? ORDER BY id LIMIT ?2
+SELECT id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed FROM users WHERE id > ? ORDER BY id LIMIT ?2
 `
 
 type ListUsersParams struct {
@@ -137,6 +141,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, 
 			&i.Created,
 			&i.DisabledAt,
 			&i.DeletedAt,
+			&i.FactorOwed,
 		); err != nil {
 			return nil, err
 		}
@@ -149,6 +154,45 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const markFactorOwedWithoutFactor = `-- name: MarkFactorOwedWithoutFactor :execrows
+UPDATE users SET factor_owed = 1
+ WHERE kind = 0 AND deleted_at IS NULL AND factor_owed = 0
+   AND id NOT IN (SELECT t.user_id FROM totp_secrets t WHERE t.confirmed_at IS NOT NULL)
+   AND id NOT IN (SELECT w.user_id FROM webauthn_credentials w WHERE w.rp_id = ?1)
+`
+
+type MarkFactorOwedWithoutFactorParams struct {
+	RpID string
+}
+
+// The boot reconcile (web3.6 S1, ruling P2): every live human account that holds no confirmed
+// TOTP secret and no passkey registered for the instance's rp_id owes a second factor. It only
+// ever sets the flag: an account that owes one stays owed until a factor is added.
+func (q *Queries) MarkFactorOwedWithoutFactor(ctx context.Context, arg MarkFactorOwedWithoutFactorParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markFactorOwedWithoutFactor, arg.RpID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setFactorOwed = `-- name: SetFactorOwed :execrows
+UPDATE users SET factor_owed = ? WHERE id = ?
+`
+
+type SetFactorOwedParams struct {
+	FactorOwed int64
+	ID         id.ID
+}
+
+func (q *Queries) SetFactorOwed(ctx context.Context, arg SetFactorOwedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setFactorOwed, arg.FactorOwed, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setUserDisabled = `-- name: SetUserDisabled :exec

@@ -9,6 +9,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 	"github.com/jonasthim/dilla/internal/store/sqlite"
 	sqlitemigrations "github.com/jonasthim/dilla/internal/store/sqlite/migrations"
@@ -133,8 +134,21 @@ func TestAReferenceStoredBeforeTheMigrationIsConfirmed(t *testing.T) {
 	}
 	repo := sqlite.New(write, read)
 	t.Cleanup(func() { repo.Close() })
-	ch := seedChannel(ctx, t, repo)
-	dev := seedDevice(ctx, t, repo, seedUser(ctx, t, repo).ID)
+	// users has no factor_owed column before 00017, so the repository's CreateUser cannot write
+	// the owner and the uploader at schema 13: both rows are written by hand.
+	cid := id.New()
+	if err := repo.CreateCommunity(ctx, store.CommunityRow{
+		ID: cid, Owner: userBefore17(ctx, t, write, "owner", 0), Name: "c", PolicyJSON: []byte(`{}`),
+		PolicyVersion: 1, Created: 1,
+	}); err != nil {
+		t.Fatalf("CreateCommunity: %v", err)
+	}
+	channel := channelIn(cid, 0, 0, 0, "files", 0)
+	if err := repo.CreateChannel(ctx, channel); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	ch := channel.ID
+	dev := seedDevice(ctx, t, repo, userBefore17(ctx, t, write, "uploader", 0))
 	x := digest(0xd1)
 	if err := repo.PutBlob(ctx, store.BlobRow{BlobID: x, Size: 10, StorageRef: "fs:x", Created: 1}); err != nil {
 		t.Fatalf("PutBlob: %v", err)

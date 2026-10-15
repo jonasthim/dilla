@@ -74,9 +74,13 @@ type Querier interface {
 	DeleteSession(ctx context.Context, arg DeleteSessionParams) error
 	DeleteSessionsByDevice(ctx context.Context, arg DeleteSessionsByDeviceParams) (int64, error)
 	DeleteSessionsByUser(ctx context.Context, arg DeleteSessionsByUserParams) (int64, error)
+	DeleteTOTP(ctx context.Context, arg DeleteTOTPParams) error
 	// Fix wave I2: a kick, ban or leave drops the user's own (kind 1) overwrites in every channel of
 	// the community, in the transaction that removes the membership.
 	DeleteUserOverwrites(ctx context.Context, arg DeleteUserOverwritesParams) (int64, error)
+	// Only the caller's own row: a credential id another account holds deletes nothing.
+	DeleteWebauthnCredential(ctx context.Context, arg DeleteWebauthnCredentialParams) (int64, error)
+	DeleteWebauthnCredentialsByUser(ctx context.Context, arg DeleteWebauthnCredentialsByUserParams) error
 	DeleteWelcome(ctx context.Context, arg DeleteWelcomeParams) error
 	// A deleted message is not edited: its envelope and body are gone for good. The franking tag and
 	// the id of the key that made it move with the bytes (Plan 2 task 9): a tag over an envelope the
@@ -118,7 +122,9 @@ type Querier interface {
 	GetReadState(ctx context.Context, arg GetReadStateParams) (int64, error)
 	GetReport(ctx context.Context, arg GetReportParams) (Reports, error)
 	GetRole(ctx context.Context, arg GetRoleParams) (Roles, error)
-	GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (Sessions, error)
+	// The account's factor_owed rides along on the one primary-key join, so Sessions.Resolve learns
+	// whether the account owes a second factor without a second query (web3.6 S1).
+	GetSessionByHash(ctx context.Context, arg GetSessionByHashParams) (GetSessionByHashRow, error)
 	GetSetting(ctx context.Context, arg GetSettingParams) ([]byte, error)
 	GetTOTP(ctx context.Context, arg GetTOTPParams) (TotpSecrets, error)
 	GetUser(ctx context.Context, arg GetUserParams) (Users, error)
@@ -232,6 +238,10 @@ type Querier interface {
 	// Sets the mark only when no reference is left, and only when it is not already set, so a
 	// repeated delete cannot push collection back.
 	MarkBlobUnreferenced(ctx context.Context, arg MarkBlobUnreferencedParams) error
+	// The boot reconcile (web3.6 S1, ruling P2): every live human account that holds no confirmed
+	// TOTP secret and no passkey registered for the instance's rp_id owes a second factor. It only
+	// ever sets the flag: an account that owes one stays owed until a factor is added.
+	MarkFactorOwedWithoutFactor(ctx context.Context, arg MarkFactorOwedWithoutFactorParams) (int64, error)
 	// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
 	// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the
 	// DELETE, so the high-water records exactly what delivery retention took.
@@ -357,6 +367,7 @@ type Querier interface {
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
 	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error
+	SetFactorOwed(ctx context.Context, arg SetFactorOwedParams) (int64, error)
 	// Invariant 11's restore half, and MONOTONE. `dillad restore` names the generation it read out of
 	// the backup's manifest; a backup taken before an earlier restore would otherwise walk the number
 	// BACKWARDS, and the generation is exactly what invalidates outstanding resume tokens, so a

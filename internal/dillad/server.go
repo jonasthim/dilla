@@ -115,6 +115,18 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dillad: read instance row (has `dillad init` run?): %w", err)
 	}
+	// The second-factor reconcile (web3.6 S1, ruling P2), once per start, after the migrations and
+	// before anything is served: a live human account that holds no confirmed TOTP secret and no
+	// passkey under this instance's rp_id owes a second factor. It closes what the 00017 backfill
+	// cannot see: an rp_id change (passkeys under the old one no longer count), an archive restored
+	// from before 00017, and drift. It only ever sets the flag; adding a factor clears it.
+	owed, err := o.Repo.MarkFactorOwedWithoutFactor(ctx, o.Config.Auth.WebAuthn.RPID)
+	if err != nil {
+		return nil, fmt.Errorf("dillad: reconcile the accounts that owe a second factor: %w", err)
+	}
+	if owed > 0 {
+		o.Log.InfoContext(ctx, "dillad: accounts without a usable second factor now owe one", "accounts", owed)
+	}
 	keys, err := instanceKeys(instance)
 	if err != nil {
 		return nil, err

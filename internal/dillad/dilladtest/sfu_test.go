@@ -367,13 +367,15 @@ func openCallOn(t *testing.T, h *Host) ([]any, id.ID, id.ID) {
 		return hex.EncodeToString(p)
 	}
 	device := id.New()
-	if _, err := SeedUsers(ctx, h.Server(), []SeedRequest{{
+	seeded, err := SeedUsers(ctx, h.Server(), []SeedRequest{{
 		Username: "caller", Display: "caller", UMKPub: key(), SSKPub: key(),
 		SigUMKSSK: hex.EncodeToString(make([]byte, 64)),
 		Devices:   []Device{{DeviceID: device.String(), DSKPub: key(), Credential: "01"}},
-	}}); err != nil {
+	}})
+	if err != nil {
 		t.Fatalf("SeedUsers: %v", err)
 	}
+	satisfyFactor(t, h, seeded[0].UserID)
 	call := func(method, path string, body any) []any {
 		t.Helper()
 		status, raw, err := h.AsDevice(ctx, device, method, path, body)

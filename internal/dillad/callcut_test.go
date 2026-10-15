@@ -66,7 +66,7 @@ func TestRevokingADeviceCutsItFromLiveCallsAtOnce(t *testing.T) {
 	}
 	defer srv.Shutdown(context.Background())
 	h := srv.Handler()
-	tok := accountToken(t, h, code)
+	tok := accountToken(t, srv, code)
 	rec := call(t, h, http.MethodPost, "/v1/communities", tok, []any{"lounge", []byte("{}"), uint64(0), uint64(0)})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /v1/communities = %d", rec.Code)

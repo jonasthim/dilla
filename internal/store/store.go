@@ -85,6 +85,12 @@ type Accounts interface {
 	ListUsers(ctx context.Context, after id.ID, limit int32) ([]UserRow, error)
 	SetUserDisabled(ctx context.Context, userID id.ID, at *int64) error
 	TombstoneUser(ctx context.Context, userID id.ID, at int64) error // keeps username (R36)
+	// SetFactorOwed writes users.factor_owed (web3.6 S1); ErrNotFound for an unknown user.
+	SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error
+	// MarkFactorOwedWithoutFactor sets factor_owed on every live human account that holds no
+	// confirmed TOTP secret and no passkey registered for rpID, and returns how many it set. It
+	// only ever sets the flag, never clears it (the boot reconcile, ruling P2).
+	MarkFactorOwedWithoutFactor(ctx context.Context, rpID string) (int64, error)
 }
 
 type Devices interface {
@@ -126,8 +132,12 @@ type Auth interface {
 	GetPasswordCredential(ctx context.Context, userID id.ID) (string, error)
 	PutTOTP(ctx context.Context, t TOTPRow) error
 	GetTOTP(ctx context.Context, userID id.ID) (TOTPRow, error)
+	// DeleteTOTP drops the user's TOTP secret, confirmed or not; no row is not an error.
+	DeleteTOTP(ctx context.Context, userID id.ID) error
 	ConsumeTOTPCounter(ctx context.Context, userID id.ID, counter int64) error
 	PutRecoveryCodes(ctx context.Context, userID id.ID, hashes [][]byte, created int64) error
+	// DeleteRecoveryCodes drops every recovery code of the user, used or not.
+	DeleteRecoveryCodes(ctx context.Context, userID id.ID) error
 	ConsumeRecoveryCode(ctx context.Context, userID id.ID, hash []byte, at int64) error
 	CountRecoveryCodes(ctx context.Context, userID id.ID) (int64, error)
 	// PutWebauthnUser is INSERT ... ON CONFLICT (rp_id, user_id) DO NOTHING: a
@@ -142,6 +152,11 @@ type Auth interface {
 	ListWebauthnCredentials(ctx context.Context, userID id.ID, rpID string) ([]WebauthnCredentialRow, error)
 	GetWebauthnCredential(ctx context.Context, credID []byte) (WebauthnCredentialRow, error)
 	UpdateWebauthnCredential(ctx context.Context, credID []byte, signCount int64, flags []byte, lastUsed int64) error
+	// DeleteWebauthnCredential deletes one credential, only when userID holds it, and returns how
+	// many rows went (0 or 1): another account's credential id deletes nothing.
+	DeleteWebauthnCredential(ctx context.Context, userID id.ID, credID []byte) (int64, error)
+	// DeleteWebauthnCredentialsByUser deletes every credential of the user, under every rp_id.
+	DeleteWebauthnCredentialsByUser(ctx context.Context, userID id.ID) error
 	PutCeremony(ctx context.Context, c CeremonyRow) error
 	TakeCeremony(ctx context.Context, ceremonyID id.ID, now int64) (CeremonyRow, error) // single use
 	PruneCeremonies(ctx context.Context, now int64) (int64, error)

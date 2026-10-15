@@ -85,3 +85,13 @@ SELECT count(*) FROM login_attempts WHERE user_id = $1 AND ok = 0 AND at >= $2;
 
 -- name: ClearLoginFailures :exec
 DELETE FROM login_attempts WHERE user_id = $1 AND ok = 0;
+
+-- name: DeleteTOTP :exec
+DELETE FROM totp_secrets WHERE user_id = $1;
+
+-- name: DeleteWebauthnCredential :execrows
+-- Only the caller's own row: a credential id another account holds deletes nothing.
+DELETE FROM webauthn_credentials WHERE user_id = $1 AND cred_id = $2;
+
+-- name: DeleteWebauthnCredentialsByUser :exec
+DELETE FROM webauthn_credentials WHERE user_id = $1;

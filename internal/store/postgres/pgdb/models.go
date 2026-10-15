@@ -431,6 +431,7 @@ type Users struct {
 	Created    int64
 	DisabledAt sql.NullInt64
 	DeletedAt  sql.NullInt64
+	FactorOwed int64
 }
 
 type VoiceSessions struct {

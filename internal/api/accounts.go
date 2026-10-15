@@ -153,6 +153,9 @@ func (d Deps) CreateAccount(w http.ResponseWriter, r *http.Request) {
 		ID: id.New(), Username: handle, Display: display, Kind: kindHuman,
 		UMKPub: req.UMKPub, SSKPub: req.SSKPub, SigUMKSSK: req.SigUMKSSK, Created: now,
 	}
+	// Every human account owes a second factor until it adds one (web3.6 S1): its enrolled
+	// sessions reach only protocol/09's `F` and `P` routes until then.
+	user.FactorOwed = user.Kind == kindHuman
 	device := store.DeviceRow{
 		ID: req.Device.DeviceID, UserID: user.ID, DSKPub: req.Device.DSKPub,
 		Tier: req.Device.Tier, SignerTier: req.Device.SignerTier,

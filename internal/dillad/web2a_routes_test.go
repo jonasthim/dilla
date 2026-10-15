@@ -137,6 +137,8 @@ func TestTwoBrowsersEnrolByAssertionAndARevokingListEndsOne(t *testing.T) {
 	alice, tok0 := accountWithKeys(t, h, code, "alice", password, d0, ssk)
 	bob, bobTok := accountWithKeys(t, h, mintInvite(t, srv), "bob", password, newTestDevice(t),
 		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x6b}, 32)))
+	satisfyFactor(t, srv, alice)
+	satisfyFactor(t, srv, bob)
 	own := "/v1/users/" + alice.String() + "/device-list"
 	bobs := "/v1/users/" + bob.String() + "/device-list"
 	must := func(rec *httptest.ResponseRecorder, want int, what string) *httptest.ResponseRecorder {
@@ -299,6 +301,7 @@ func TestTheWebTwoARoutesAreMeteredPerDevice(t *testing.T) {
 	d0 := newTestDevice(t)
 	alice, tok0 := accountWithKeys(t, h, code, "alice", "correct horse battery staple", d0,
 		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x5a}, 32)))
+	satisfyFactor(t, srv, alice)
 	own := "/v1/users/" + alice.String() + "/device-list"
 	for i := 0; i < rate.ReadBurst; i++ {
 		path := own

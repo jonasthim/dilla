@@ -259,6 +259,7 @@ func TestInviteRevokeEndsTheInviteAndListNamesItsStatus(t *testing.T) {
 func TestUserDisableDeletesSessionsAndTheGatewayDropsTheSocket(t *testing.T) {
 	h := newCLIHarness(t)
 	uid := h.SeedUser(t, "alice")
+	h.SeedFactor(t, uid)
 	tok := h.SeedSession(t, uid)
 	conn := h.OpenGatewayConn(t, uid) // a real gateway session against a real serve
 	if code, _ := h.Run(t, "admin", "user", "disable", "--id="+uid.String(), "--config="+h.ConfigPath); code != 0 {

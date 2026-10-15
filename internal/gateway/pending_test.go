@@ -34,13 +34,16 @@ func scopedSession(h *harness, device id.ID, s auth.Session) string {
 // nonEnrolled are the sessions the gateway refuses (branch review REGISTRATION-DEVICES-01): a
 // pending one, and a provisional one with or without a pairing group. Before the fix a provisional
 // session minted by purpose 2 on a row a password holder registered reached `ready` and was fanned
-// every `message.plain` of the user's readable channels, because fan-out is keyed by user.
+// every `message.plain` of the user's readable channels, because fan-out is keyed by user. An
+// enrolled session whose account owes a second factor is refused the same way (web3.6 S1,
+// protocol/02 § Device sessions item 8).
 func nonEnrolled() map[string]auth.Session {
 	group := id.New()
 	return map[string]auth.Session{
 		"pending":                  {Scope: auth.ScopePending},
 		"provisional":              {Scope: auth.ScopeProvisional},
 		"provisional with a group": {Scope: auth.ScopeProvisional, PairingGroup: &group},
+		"enrolled, factor owed":    {Scope: auth.ScopeEnrolled, FactorOwed: true},
 	}
 }
 

@@ -106,6 +106,16 @@ func seedQuietGroup(t *testing.T, s *dillad.Server, groupID id.ID) [2]coldMember
 			}); err != nil {
 				return err
 			}
+			// Each account holds a confirmed TOTP secret: the restart's second-factor reconcile
+			// (web3.6 S1) marks an account without one as owing it, and an owed session is refused
+			// the gateway and the upload this test makes.
+			confirmed := now
+			if err := tx.PutTOTP(ctx, store.TOTPRow{
+				UserID: m.user, Secret: bytes.Repeat([]byte{5}, 20), Digits: 6, Period: 30,
+				Algorithm: "SHA1", ConfirmedAt: &confirmed, Created: now,
+			}); err != nil {
+				return err
+			}
 			if err := tx.CreateDevice(ctx, store.DeviceRow{
 				ID: m.device, UserID: m.user, DSKPub: bytes.Repeat([]byte{4}, 32),
 				CredentialBlob: []byte{0x01}, LastSeen: now, Created: now,

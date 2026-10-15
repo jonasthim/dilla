@@ -239,15 +239,17 @@ func TestNewBuildsTheWasmRuntimeFromTheCorePath(t *testing.T) {
 	}
 }
 
-// accountToken redeems the bootstrap invite and returns the account's first device session.
-func accountToken(t *testing.T, h http.Handler, code string) string {
+// accountToken redeems the bootstrap invite and returns the account's first device session. The
+// account's second factor is satisfied (satisfyFactor), so the session reaches every enrolled
+// route; factor_owed_test.go is where an owed account is exercised.
+func accountToken(t *testing.T, srv *dillad.Server, code string) string {
 	t.Helper()
 	dev := newTestDevice(t)
 	body, err := cborx.Marshal(newAccountRequest(code, "jonas", dev))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	res := post(t, h, "/v1/accounts", body)
+	res := post(t, srv.Handler(), "/v1/accounts", body)
 	if res.Code != http.StatusOK {
 		t.Fatalf("POST /v1/accounts = %d: %s", res.Code, res.Body.String())
 	}
@@ -259,6 +261,7 @@ func accountToken(t *testing.T, h http.Handler, code string) string {
 	if !ok || token == "" {
 		t.Fatalf("no session token in the account response: %#v", account)
 	}
+	satisfyFactor(t, srv, idOf(t, account[0]))
 	return token
 }
 
@@ -275,7 +278,7 @@ func newGreetedServer(t *testing.T) (*dillad.Server, *httptest.Server, string) {
 	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
-	return s, ts, accountToken(t, s.Handler(), code)
+	return s, ts, accountToken(t, s, code)
 }
 
 // readFrame reads one gateway frame and returns its opcode and payload.
@@ -558,7 +561,7 @@ func newGreetedServerAt(t *testing.T) (*dillad.Server, *httptest.Server, string,
 	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
-	return s, ts, accountToken(t, s.Handler(), code), clk
+	return s, ts, accountToken(t, s, code), clk
 }
 
 // dialReady opens a gateway connection and takes it through hello, identify and ready.

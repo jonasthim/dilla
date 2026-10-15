@@ -131,7 +131,9 @@ func requireSecondFactor(ctx context.Context, repo store.Repository, userID id.I
 	if len(creds) > 0 {
 		return nil
 	}
-	return server.Errorf(server.CodeForbidden,
+	// E_TARGET_NO_FACTOR, not E_FORBIDDEN (web3.6): the actor is permitted; the TARGET lacks a
+	// second factor, and the client tells the two apart by code.
+	return server.Errorf(server.CodeTargetNoFactor,
 		"this community requires a second factor before a moderator role is granted")
 }
 

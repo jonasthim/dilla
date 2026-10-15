@@ -92,6 +92,10 @@ func TestTheSeedRouteCreatesAnAccountWhoseSessionsResolve(t *testing.T) {
 	if session.DeviceID != device || session.UserID.String() != out[0].UserID {
 		t.Fatalf("the session names %s/%s, want the seeded device and user", session.UserID, session.DeviceID)
 	}
+	// Fixture reachability (web3.6 S1): a seeded human owes a second factor, as a sign-up does.
+	if !session.FactorOwed {
+		t.Fatal("a seeded human account does not owe a second factor; a real sign-up does")
+	}
 }
 
 // postJSON posts v to the control listener and answers the status.
