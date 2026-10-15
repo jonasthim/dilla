@@ -7,6 +7,7 @@ import type { Ring } from '@dilla/client-core';
 
 const A = 'a1'.repeat(16);
 const GEN = 'c3'.repeat(16);
+const ROLE = 'f7'.repeat(16);
 const RAND = 'd4'.repeat(16);
 const DM = '9a'.repeat(16);
 const ch = (id: string, name: string): ChannelSummary =>
@@ -63,8 +64,38 @@ describe('shouldNotify per server (web3.5 WA5)', () => {
     expect(shouldNotify(notice({ kind: 'mention', body: 'hey <@here>' }), 0, c)).toBe(false);
     expect(shouldNotify(notice({ kind: 'mention', body: `hey <@everyone> <@${ME.id}>` }), 0, c)).toBe(true);
     expect(shouldNotify(notice({ kind: 'mention', body: 'hey <@everyone>' }), 0, ctx({ settings: {}, me: ME.id, roles: [] }))).toBe(true);
+    // a direct role mention is kept
+    expect(shouldNotify(notice({ kind: 'mention', body: `<@everyone> <@${ROLE}>` }), 0, ctx({ settings, me: ME.id, roles: [ROLE] }))).toBe(true);
+    expect(shouldNotify(notice({ kind: 'mention', body: `<@everyone> <@${ROLE}>` }), 0, c)).toBe(false);
     // as a plain message it follows the message rules: all notifies it
     expect(shouldNotify(notice({ kind: 'mention', body: 'hey <@everyone>' }), 0, ctx({ settings: { ...settings, ...server('all') }, me: ME.id, roles: [] }))).toBe(true);
+  });
+});
+
+describe('startNotifier under @everyone suppression (web3.5 WA5 fix)', () => {
+  const suppress = { [`everyone.community.${A}`]: '1' };
+  const run = (setup: (h: ReturnType<typeof harness>) => void, bodies: string[]) => {
+    const h = harness();
+    h.fake.set('settings', suppress);
+    setup(h);
+    h.fake.set('notices', { nextId: 0, items: [] });
+    const stop = h.start();
+    h.fake.set('notices', { nextId: bodies.length, items: bodies.map((body, id) => notice({ id, kind: 'mention', body })) });
+    stop();
+    return Note.made.length;
+  };
+  const withRole = (h: ReturnType<typeof harness>) => {
+    h.fake.set('account', account());
+    h.fake.set(`members:${A}`, [{ userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [ROLE] }]);
+  };
+  it('notifies a role mention and a user mention, not a broadcast alone', () => {
+    expect(run(withRole, [`<@${ROLE}>`, `<@${ME.id}>`, '<@everyone>'])).toBe(2);
+  });
+  it('fails open when the own user is unknown', () => {
+    expect(run(h => h.fake.set(`members:${A}`, []), ['<@everyone>'])).toBe(1);
+  });
+  it('fails open when the community members are not loaded', () => {
+    expect(run(h => h.fake.set('account', account()), ['<@everyone>'])).toBe(1);
   });
 });
 

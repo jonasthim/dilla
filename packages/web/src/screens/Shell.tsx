@@ -698,7 +698,8 @@ export function Shell(): React.JSX.Element {
   );
 
   useSounds({ rings, room: call.channelId === null ? undefined : voiceSlice?.[call.channelId], inCall: call.channelId,
-    deafened: call.state?.deafened ?? false, settings: settings ?? {}, selfId: self?.id ?? null });
+    deafened: call.state?.deafened ?? false, settings: settings ?? {}, selfId: self?.id ?? null,
+    ringCommunity: id => (railSlices.flat() as ChannelSummary[]).find(c => c.id === id)?.communityId });
   // A ring is answered in its DM: the DM opens and its call is joined (leaving the current voice first, useCall's join).
   const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}}
     inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}

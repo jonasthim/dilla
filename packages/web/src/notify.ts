@@ -13,7 +13,7 @@ import { mergeMembers, nameBook, plainBody } from './screens/shell-model.ts';
 export interface NotificationHandle { onclick: ((ev: Event) => unknown) | null; close(): void; }
 export interface NotificationCtor { readonly permission: NotificationPermission; new (title: string, options: NotificationOptions): NotificationHandle; }
 export interface NotifyContext { permission: PermissionState; settings: Readonly<Record<string, string>>; visible: boolean; onScreen: string | null;
-  /** The person's own user id and role ids, for a server that ignores @everyone and @here (WA5); both unset reads as no direct mention. */
+  /** The person's own user id and role ids, for a server that ignores @everyone and @here (WA5); either unset keeps every mention (fails open). */
   me?: string; roles?: readonly string[]; }
 
 /** L-TS-25's decision for one notice; kind is the channel's for the mode: 0 a community channel, 3 | 4 a DM. */
@@ -26,8 +26,9 @@ export function shouldNotify(notice: Notice, kind: 0 | 3 | 4, ctx: NotifyContext
   const mode = effectiveNotifyMode(ctx.settings, notice.channelId, kind, server);
   if (mode === 'all') return true;
   // A server that ignores @everyone and @here turns a broadcast-only mention into a plain message.
+  // It fails open: with the own user or roles unknown, a mention is never demoted.
   const broadcastOnly = notice.kind === 'mention' && server !== undefined && suppressesEveryone(ctx.settings, server)
-    && !mentionsDirectly(notice.body, ctx.me ?? '', ctx.roles ?? []);
+    && ctx.me !== undefined && ctx.roles !== undefined && !mentionsDirectly(notice.body, ctx.me, ctx.roles);
   return mode === 'mentions' && !broadcastOnly && (notice.kind === 'mention' || notice.kind === 'dm');
 }
 
@@ -69,12 +70,13 @@ export function startNotifier(deps: NotifierDeps): () => void {
     const kind: 0 | 3 | 4 = item.communityId === null
       ? client.get('dms')?.find(d => d.id === item.channelId)?.kind ?? 3
       : 0;
-    const communityMembers = item.communityId === null ? [] : client.get(`members:${item.communityId}`) ?? [];
+    const communityMembers = item.communityId === null ? undefined : client.get(`members:${item.communityId}`);
     const self = client.get('account')?.user ?? null;
     const selfId = self?.id;
+    const ownMember = communityMembers?.find(m => m.userId === selfId);
     const ctx: NotifyContext = {
       me: selfId,
-      roles: [...nameBook(self, communityMembers).ownRoles],
+      roles: ownMember === undefined ? undefined : [...ownMember.roleIds],
       permission: Ctor?.permission ?? 'unsupported',
       settings: client.get('settings') ?? {},
       visible: deps.visible(),
