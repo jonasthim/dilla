@@ -48,12 +48,13 @@ function setup(entries: OverwriteSummary[] = [], access: Partial<CommunityAccess
   </CoreProvider></div>);
   return { fake, user, view, announce };
 }
+const ALLOW_MODS = ow(0, MODS, PERM.viewChannel, 0);
 const toggle = () => screen.getByRole('switch', { name: 'private channel' });
 const disclosure = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}`) });
 
 describe('the channel permissions section', () => {
   it('asks before making the channel private, and sends setChannelPrivate(true)', async () => {
-    const { fake, user } = setup();
+    const { fake, user } = setup([ALLOW_MODS]);
     fake.handler = c => {
       if (c.m === 'setChannelPrivate') fake.set(`overwrites:${SERVER}`, { [CH]: [ow(0, EVERYONE, 0, PERM.viewChannel)] });
       return Promise.resolve(null);
@@ -76,7 +77,7 @@ describe('the channel permissions section', () => {
     await waitFor(() => expect(fake.callsOf('setChannelPrivate')).toEqual([{ m: 'setChannelPrivate', channelId: CH, private: false }]));
   });
   it('maps the would-lose refusal to its copy, keeps confirm enabled, and returns focus to the toggle on cancel', async () => {
-    const { fake, user } = setup();
+    const { fake, user } = setup([ALLOW_MODS]);
     fake.handler = () => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }));
     await user.click(toggle());
     await user.click(screen.getByRole('button', { name: 'Make private' }));
@@ -86,8 +87,34 @@ describe('the channel permissions section', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(toggle()).toHaveFocus());
   });
-  it('maps 403 and 404 refusals of the toggle', async () => {
+  it('does not ask the instance when making private would hide the channel from me, and says so at once', async () => {
     const { fake, user } = setup();
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Make private' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That change would hide the channel from you.');
+    expect(fake.callsOf('setChannelPrivate')).toEqual([]);
+  });
+  it('lets the owner make it private without an allowing entry', async () => {
+    const { fake, user } = setup([], { owner: true });
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Make private' }));
+    await waitFor(() => expect(fake.callsOf('setChannelPrivate')).toHaveLength(1));
+  });
+  it('lets an administrator make it private without an allowing entry', async () => {
+    const { fake, user } = setup();
+    fake.publish(`roles:${SERVER}`, ROLES.map(r => (r.id === MODS ? { ...r, allow: r.allow | PERM.administrator } : r)));
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Make private' }));
+    await waitFor(() => expect(fake.callsOf('setChannelPrivate')).toHaveLength(1));
+  });
+  it('lets someone with an allowing entry of their own make it private', async () => {
+    const { fake, user } = setup([ow(1, ME.id, PERM.viewChannel, 0)]);
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Make private' }));
+    await waitFor(() => expect(fake.callsOf('setChannelPrivate')).toHaveLength(1));
+  });
+  it('maps 403 and 404 refusals of the toggle', async () => {
+    const { fake, user } = setup([ALLOW_MODS]);
     fake.handler = () => Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403 }));
     await user.click(toggle());
     await user.click(screen.getByRole('button', { name: 'Make private' }));
@@ -144,7 +171,7 @@ describe('the channel permissions section', () => {
     expect(fake.callsOf('setOverwrite').map(c => c.deny)).toEqual([PERM.sendMessages, PERM.sendMessages | PERM.attachFiles]);
   });
   it('returns focus to the switch after a confirm that succeeds', async () => {
-    const { fake, user } = setup();
+    const { fake, user } = setup([ALLOW_MODS]);
     fake.handler = c => {
       if (c.m === 'setChannelPrivate') fake.set(`overwrites:${SERVER}`, { [CH]: [ow(0, EVERYONE, 0, PERM.viewChannel)] });
       return Promise.resolve(null);

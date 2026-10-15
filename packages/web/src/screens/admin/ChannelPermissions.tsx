@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button, ConfirmDialog, PermissionGrid, Select, Toggle, type PermissionGridGroup, type PermValue } from '@dilla/ui';
 import {
-  COMMUNITY_BITS, PERM_BY_KEY, PERM_GROUPS, channelBitsOf, isPrivate, type MemberSummary, type OverwriteSummary, type RoleSummary,
+  COMMUNITY_BITS, PERM, PERM_BY_KEY, PERM_GROUPS, channelBitsOf, isPrivate, resolveCommunity, type MemberSummary, type OverwriteSummary, type RoleSummary,
 } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
@@ -9,6 +9,8 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { forbidden, shownName, statusIs, useRun, type SectionProps } from './shared.ts';
 
+/** What the instance would answer a change that hides the channel from its own author. */
+const HIDDEN = Object.assign(new Error('hidden'), { code: 'E_INVALID_REQUEST', detail: '', status: 400, retryAfterMs: null });
 const NO_ROLES: readonly RoleSummary[] = [];
 const NO_MEMBERS: readonly MemberSummary[] = [];
 const NO_ENTRIES: readonly OverwriteSummary[] = [];
@@ -160,6 +162,19 @@ export function ChannelPermissions({ channelId, communityId, announce }: { chann
     focusEntry.current = null;
   });
 
+  // Mirrors the worker's own check, so the common refusal needs no request: a person who is not the owner or an
+  // administrator keeps the channel only through some entry here that allows viewing it.
+  const wouldHideFromMe = (): boolean => {
+    if (owner || me === null || community === null || everyoneId === '') return false;
+    const member = members.find(m => m.userId === me);
+    if (member === undefined) return false;
+    const base = resolveCommunity({ owner: community.owner, everyoneId, roles, held: member.roleIds }, me);
+    if ((base & PERM.administrator) !== 0) return false;
+    const held = new Set(member.roleIds);
+    return !entries.some(o => (o.allow & PERM.viewChannel) !== 0
+      && ((o.kind === 1 && o.targetId === me) || (o.kind === 0 && o.targetId !== everyoneId && held.has(o.targetId))));
+  };
+
   const closeAsk = () => {
     if (confirm.busy) return;
     confirm.reset();
@@ -170,7 +185,7 @@ export function ChannelPermissions({ channelId, communityId, announce }: { chann
   const confirmAsk = () => {
     if (asking === null) return;
     const makePrivate = asking === 'private';
-    void confirm.run(() => client.call({ m: 'setChannelPrivate', channelId, private: makePrivate }), refusalText)
+    void confirm.run(() => (makePrivate && wouldHideFromMe() ? Promise.reject(HIDDEN) : client.call({ m: 'setChannelPrivate', channelId, private: makePrivate })), refusalText)
       .then(ok => { if (ok) { announce(t('chperm.saved', { name: channelLabel })); setAsking(null); document.getElementById(toggleId)?.focus(); } });
   };
 
