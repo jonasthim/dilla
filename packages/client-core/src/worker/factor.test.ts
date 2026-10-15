@@ -33,6 +33,7 @@ async function answered(w: World, id: number): Promise<unknown> {
 }
 
 const factors = (w: World): FactorsState | undefined => w.last<FactorsState>('factors');
+const plain = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) => (typeof x === 'bigint' ? x.toString() : x)) ?? '';
 
 describe('the factor-setup phase (web3.6 C2)', () => {
   it('a signup owing a factor stops at factor-setup; factorSetupDone refuses while owed, then enters ready and joins', async () => {
@@ -68,6 +69,36 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     // A second factorSetupDone is not accepted in ready.
     w.call(6, { m: 'factorSetupDone', invite: null });
     expect(await answered(w, 6)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+  });
+
+  it('a signup left at factor-setup keeps its invite across a reload: factorSetupDone joins it, then forgets it', async () => {
+    // Web3.6 E3 finding: the invite lived in worker memory only, so the forced screen after a reload joined nothing.
+    const w = world({ phase: 0, owed: true });
+    w.routes.getInvite.mockImplementation(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
+    await toKeys(w);
+    w.call(3, SUBMIT);
+    expect(await answered(w, 3)).toMatchObject({ ok: true, value: { factorOwed: true } });
+    // Kept in the account's store, never in the page's settings slice, and nothing sent while owed.
+    expect(Object.values(w.state.settings).some((v) => v.includes('friends-code'))).toBe(true);
+    expect(plain(w.posted)).not.toContain('friends-code');
+    expect(w.routes.joinCommunity).not.toHaveBeenCalled();
+
+    // The page closes; a new worker opens the same store and boots into the forced set-up.
+    const r = world({ phase: 2, owed: true });
+    r.state.settings = { ...w.state.settings };
+    r.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(r.account()?.phase).toBe('factor-setup'));
+    expect(r.account()?.factorSetup).toEqual({ origin: 'required' });
+    r.call(2, { m: 'factorSetupDone', invite: null });
+    expect(await answered(r, 2)).toMatchObject({ ok: false, error: { code: 'E_FACTOR_REQUIRED' } });
+    expect(r.routes.joinCommunity).not.toHaveBeenCalled();
+    expect(Object.values(r.state.settings).some((v) => v.includes('friends-code'))).toBe(true);
+    r.state.owed = false;
+    r.call(3, { m: 'factorSetupDone', invite: null });
+    expect(await answered(r, 3)).toEqual({ t: 'ret', id: 3, ok: true, value: { communityId: toHex(COMMUNITY), joinError: null } });
+    expect(r.routes.joinCommunity).toHaveBeenCalledWith(COMMUNITY, 'friends-code');
+    expect(r.state.settings).toEqual({});
+    expect(plain(r.last('settings'))).not.toContain('friends-code');
   });
 
   it('factorSetupDone without a pending join redeems the invite it is given', async () => {
@@ -181,6 +212,31 @@ describe('the global E_FACTOR_REQUIRED hook (web3.6 C2)', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(tickets.n).toBe(1);
     expect(Sock.all).toHaveLength(0);
+  });
+
+  it('an operator reset never shows factor-setup over the old factors: the slice says owed, with nothing held, first', async () => {
+    // Web3.6 E3 finding: the page took the ready account's TOTP for a factor already in place and skipped the choice.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let answer: (r: Response) => void = () => {};
+    const { w } = socketWorld(() => new Promise<Response>((resolve) => { answer = resolve; }));
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready');
+    expect(factors(w)).toMatchObject({ owed: false, totp: { confirmedAt: 1_700_000_000 } });
+    // The fresh read is held back, so what the page sees with the new phase is what the worker published before it.
+    let release: () => void = () => {};
+    w.routes.getFactors.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => { resolve({ owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true }); };
+    }));
+    w.state.owed = true;
+    answer(await owedTicket());
+    await until(() => w.account()?.phase === 'factor-setup');
+    const first = w.posted.findIndex((m) => m.t === 'slice' && m.name === 'account' && (m.value as AccountState).phase === 'factor-setup');
+    const before = w.posted.slice(0, first).filter((m) => m.t === 'slice' && m.name === 'factors').at(-1);
+    expect(before?.t === 'slice' ? before.value : undefined).toEqual({ owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
+    release();
+    await until(() => w.routes.getFactors.mock.calls.length >= 2);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(factors(w)).toEqual({ owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
   });
 
   it('the reset chain: a socket closed 4003 reconnects once, the ticket answers E_FACTOR_REQUIRED, and the hook fires', async () => {

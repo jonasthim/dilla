@@ -28,7 +28,7 @@ import {
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
-import { isSettingKey, isSettingValue } from '../state/settings';
+import { PENDING_JOIN_KEY, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
 import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
@@ -747,7 +747,7 @@ export class Controller {
       randomId: () => crypto.getRandomValues(new Uint8Array(16)),
       me: () => this.me,
       instance: () => this.instance,
-      settings: () => this.core?.settings() ?? {},
+      settings: () => pageSettings(this.core?.settings() ?? {}),
       nameOf: (user) => this.nameOf(user),
       refreshLeaves: (g) => this.refreshCallLeaves(g),
       serial: (g, job) => (this.sync === null ? job() : this.sync.runOnGroup(g, job)),
@@ -1264,7 +1264,7 @@ export class Controller {
     }
     if (this.revoked()) return;
     // (i)
-    this.slices.set('settings', core.settings());
+    this.slices.set('settings', pageSettings(core.settings()));
     this.publishBadges();
     if (this.slices.get('notices') === undefined) this.slices.set('notices', this.noticesState);
     // C4 fix round 1: the removals slice is present from ready on, as notices is.
@@ -1512,18 +1512,55 @@ export class Controller {
       throw e;
     }
     if (this.phase !== 'ready') return { communityId: null, joinError: null };
-    const pending = this.pendingJoin;
+    // The join a signup kept: in memory, else in the store (a page closed at the factor step and opened again).
+    const pending = this.pendingJoin ?? this.storedPendingJoin();
     this.pendingJoin = null;
     let communityId: Id | null = null;
     let invite = '';
     if (pending !== null) ({ communityId, invite } = pending);
-    else if (rawInvite !== null && rawInvite.trim() !== '') {
-      invite = rawInvite.trim();
-      try { communityId = (await this.routes.getInvite(invite)).communityId; }
-      catch (e) { return { communityId: null, joinError: errorOf(e) }; }
+    else {
+      this.dropStoredPendingJoin();
+      if (rawInvite !== null && rawInvite.trim() !== '') {
+        invite = rawInvite.trim();
+        try { communityId = (await this.routes.getInvite(invite)).communityId; }
+        catch (e) { return { communityId: null, joinError: errorOf(e) }; }
+      }
     }
-    if (communityId === null) return { communityId: null, joinError: null };
-    return this.joinAfterReady(communityId, invite);
+    if (communityId === null) { this.dropStoredPendingJoin(); return { communityId: null, joinError: null }; }
+    const joined = await this.joinAfterReady(communityId, invite);
+    // Spent once tried: a refused join is the signup's result, shown now, and is never tried again at a later set-up.
+    this.dropStoredPendingJoin();
+    return joined;
+  }
+
+  /** A signup stopped at factor-setup: the join waits in memory and in the account's store (one row, one invite), so a
+   *  reload at the forced screen still joins it. Nothing reaches the instance until factorSetupDone finds the debt paid. */
+  private keepPendingJoin(join: { communityId: Id | null; invite: string }): void {
+    this.pendingJoin = join;
+    const core = this.core;
+    if (core === null) return;
+    try {
+      if (join.communityId === null || join.invite === '') core.settingDelete(PENDING_JOIN_KEY);
+      else core.settingPut(PENDING_JOIN_KEY, JSON.stringify({ communityId: toHex(join.communityId), invite: join.invite }));
+    } catch { /* too long for the row, or the store refused: the join is kept in memory only */ }
+  }
+
+  /** The stored join, or null when there is none or the row is not one this worker wrote. */
+  private storedPendingJoin(): { communityId: Id; invite: string } | null {
+    let raw: string | undefined;
+    try { raw = this.core?.settings()[PENDING_JOIN_KEY]; } catch { return null; }
+    if (raw === undefined) return null;
+    try {
+      const v = JSON.parse(raw) as unknown;
+      if (typeof v !== 'object' || v === null) return null;
+      const { communityId, invite } = v as Record<string, unknown>;
+      if (typeof communityId !== 'string' || !/^[0-9a-f]{32}$/.test(communityId) || typeof invite !== 'string' || invite === '') return null;
+      return { communityId: fromHex(communityId), invite };
+    } catch { return null; }
+  }
+
+  private dropStoredPendingJoin(): void {
+    try { this.core?.settingDelete(PENDING_JOIN_KEY); } catch { /* the next set-up finds no row it can read either way */ }
   }
 
   /** The global hook (HttpDeps.onRefusal): a ready account the instance now finds owing (an operator reset) stops its
@@ -1540,6 +1577,11 @@ export class Controller {
     this.sync = null;
     // Contract 6: what each ready reads once is read again at the next.
     this.fetchedLeaves.clear();
+    // Web3.6 E3 finding: the factors the ready account held are gone (a reset removes the TOTP secret, the passkeys
+    // and the backup codes, protocol/09 § Admin), so the slice says so before the phase moves. The page never shows the
+    // forced set-up over the old factors, which it would take for one already in place; the read below replaces this.
+    const held = this.slices.get('factors');
+    this.slices.set('factors', { ...NO_FACTORS, owed: true, hasPassword: held?.hasPassword ?? true });
     this.setAccount({ phase: 'factor-setup', factorSetup: { origin: 'required' }, error: null });
     void this.barrier.track(this.routes.getFactors().then((f) => {
       if (this.phase === 'factor-setup') this.slices.set('factors', factorsState(f));
@@ -1601,7 +1643,7 @@ export class Controller {
     }
     // web3.6: the join waits for the factor; factorSetupDone makes it.
     if (this.phase === 'factor-setup') {
-      this.pendingJoin = { communityId, invite };
+      this.keepPendingJoin({ communityId, invite });
       return { communityId: null, joinError: null, factorOwed: true };
     }
     if (this.phase !== 'ready' || communityId === null) return { communityId: null, joinError: null };
@@ -2383,7 +2425,7 @@ export class Controller {
       if (!isSettingValue(key, value)) throw new Refusal('E_BAD_INPUT', `value is not allowed for ${key}`);
       core.settingPut(key, value);
     }
-    this.slices.set('settings', core.settings());
+    this.slices.set('settings', pageSettings(core.settings()));
     return Promise.resolve(null);
   }
 

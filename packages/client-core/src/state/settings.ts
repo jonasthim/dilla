@@ -1,6 +1,16 @@
 // The device-local settings the worker accepts (L-TS-25): three key shapes and the values each admits.
 // Anything else is refused, so the settings table never becomes a general store (architect ruling 14).
 
+/** web3.6 E3: the one row the worker itself keeps in the same device-local table: the server a sign-up left at the factor
+ *  step is to join, so a reload keeps it. Not a setting: isSettingKey refuses it, and pageSettings leaves it out. */
+export const PENDING_JOIN_KEY = 'signup.pendingJoin';
+
+/** The settings slice: every row but the worker's own. */
+export function pageSettings(rows: Record<string, string>): Record<string, string> {
+  if (!(PENDING_JOIN_KEY in rows)) return rows;
+  return Object.fromEntries(Object.entries(rows).filter(([k]) => k !== PENDING_JOIN_KEY));
+}
+
 export const SETTINGS = {
   notifyDefault: 'notify.default',                           // 'dms-mentions' (default) | 'everything' | 'nothing'
   notifyChannel: (hex: string) => `notify.channel.${hex}`,   // 'all' | 'mentions' | 'nothing'
