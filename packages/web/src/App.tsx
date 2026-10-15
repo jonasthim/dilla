@@ -70,9 +70,11 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const reloaded = useRef(false);
   const reload = props.reload;
   const phase = account?.phase;
+  // Walk M9: the forced screen holds dilla as the shell does, so a tab that asks for it ("Use this tab") is answered there too.
+  const holdsDilla = phase === 'ready' || (phase === 'factor-setup' && account?.factorSetup?.origin === 'required');
   useEffect(() => {
     const instance = diagnostics?.instance;
-    if (phase !== 'ready' || !instance || !/^[0-9a-f]{32}$/.test(instance) || typeof BroadcastChannel === 'undefined') return;
+    if (!holdsDilla || !instance || !/^[0-9a-f]{32}$/.test(instance) || typeof BroadcastChannel === 'undefined') return;
     const channel = new BroadcastChannel(`dilla-core:${instance}`);
     const onMessage = (event: MessageEvent) => {
       const data: unknown = event.data;
@@ -93,7 +95,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     };
     channel.addEventListener('message', onMessage);
     return () => { channel.removeEventListener('message', onMessage); channel.close(); };
-  }, [client, diagnostics?.instance, phase]);
+  }, [client, diagnostics?.instance, holdsDilla]);
   // Product walk I7: the tabs say, content-free, whether this browser's dilla is in a call ({t:'voice', instance, on}),
   // so a tab about to take over warns before it ends that call. The tab that holds dilla says it on every change and
   // when asked ({t:'voice?', instance}); a waiting tab asks once and keeps the last answer.

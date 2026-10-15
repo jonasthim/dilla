@@ -6,7 +6,7 @@
 // accessible name, with the copy keys of flow 10 through copy().
 import { expect, type Page, type LaunchOptions, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type TestInfo, type ViewportSize } from '@playwright/test';
 import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectComposerReady, expectHeading, expectShell,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectComposerReady, expectHeading, expectShell, splash,
   keyText, newAccount, nextButton, openChannel, railItem, railNav, readRecoveryKey, sendText, signInToLoginStep,
   signUp, submitButton, test, type Account, type Guard,
 } from './support/app';
@@ -178,6 +178,25 @@ test('an operator reset reaches a live page with no reload', async ({ page }) =>
   await setUpAgain(page, ada);
   await expectComposerReady(page, 'general');
   await sendText(page, 'general', 'after the set-up');
+});
+
+// Walk M9, fixed: "Use this tab" in a second tab answered "Close the other tab" while the first was on the forced screen,
+// which did not answer the hand-over. The forced screen now hands dilla over as the shell does.
+test('a second tab takes dilla over from a tab on the forced screen', async ({ page, context }) => {
+  const h = started();
+  const ada = await adaInTheShell(page, h);
+  await resetFactors(h.control, ada.username);
+  await expectForced(page);
+  const second = await context.newPage();
+  await second.goto('/');
+  await expect(splash(second, COPY.otherTab)).toBeVisible({ timeout: WAIT });
+  await second.getByRole('button', { name: copy('tabs.use'), exact: true }).click();
+  await expectForced(second);
+  await expect(page.getByRole('heading', { name: copy('tabs.paused'), exact: true })).toBeVisible({ timeout: WAIT });
+  await setUpAgain(second, ada);
+  await openChannel(second, 'Asgard Crew', 'general');
+  await expectComposerReady(second, 'general');
+  await second.close();
 });
 
 test('after a reset, a fresh browser takes the password and then the set-up, not a code', async ({

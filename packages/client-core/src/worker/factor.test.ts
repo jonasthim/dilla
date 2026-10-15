@@ -6,7 +6,7 @@ import { toHex } from '../hex';
 import type { AccountState, FactorsState } from '../state/types';
 import { ACCEPTS } from './controller';
 import type { CborInput } from '../cbor';
-import { COMMUNITY, DEVICE, INSTANCE_DOC, INSTANCE_ID, PASSWORD, RECOVERY_KEY, SUBMIT, USER, cbor, refusal, toReady, world, type World } from './world';
+import { COMMUNITY, DEVICE, INSTANCE_DOC, INSTANCE_ID, LOCK, PASSWORD, RECOVERY_KEY, SUBMIT, USER, cbor, refusal, toReady, world, type World } from './world';
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -140,7 +140,7 @@ describe('the factor-setup phase (web3.6 C2)', () => {
   });
 
   it('factor-setup accepts factorSetupDone, forgetBrowser and the five enrol commands (C3)', () => {
-    expect(ACCEPTS['factor-setup']).toEqual(['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish']);
+    expect(ACCEPTS['factor-setup']).toEqual(['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish', 'resign']);
     expect(ACCEPTS['signin-passkey']).toEqual(['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel']);
     // C2 review finding 8: the two sign-in rows the wave widened.
     expect(ACCEPTS['signin-login']).toEqual(['signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel']);
@@ -377,6 +377,28 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
       registrationMode: 0, authMethods: [0, 2], policyVersion: 1n, externalSenderPub: new Uint8Array(32).fill(2) }));
     await toReady(w);
     expect(w.account()?.instance).toMatchObject({ passwordSignup: true, passkeys: true, totp: false } satisfies Partial<NonNullable<AccountState['instance']>>);
+  });
+});
+
+describe('walk M9: "Use this tab" while this tab is on the forced screen', () => {
+  it('a worker at factor-setup resigns: it releases the store and the lock, says released, and waits as other-tab', async () => {
+    const w = world({ phase: 2, owed: true });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('factor-setup'));
+    // The tab that asked: it waits for the lock this worker holds.
+    let releaseB: () => void = () => {};
+    const grantedB = new Promise<void>((resolve) => {
+      void w.locks.request(LOCK, {}, () => { resolve(); return new Promise<void>((done) => { releaseB = done; }); });
+    });
+    w.call(2, { m: 'resign', nonce: 'aa'.repeat(16) });
+    expect(await answered(w, 2)).toEqual({ t: 'ret', id: 2, ok: true, value: { released: true } });
+    expect(w.posted.some((m) => m.t === 'released')).toBe(true);
+    expect(w.core.pause).toHaveBeenCalled();
+    await grantedB;
+    expect(w.account()?.phase).toBe('other-tab');
+    // Once the other tab lets go, this one leads again and is back at the forced set-up.
+    releaseB();
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('factor-setup'));
   });
 });
 

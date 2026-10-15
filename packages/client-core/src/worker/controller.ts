@@ -343,7 +343,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'signin-passkey': ['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
   // web3.6: a person owing a factor enrols one (the five that need no step-up) and reads the list; the rest need a factor held.
-  'factor-setup': ['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish'],
+  // Walk M9: a tab on the forced screen hands the store to a tab that asks ("Use this tab"), as a ready one does.
+  'factor-setup': ['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish', 'resign'],
   'ready': [
     'joinCommunity',
     'selectCommunity',

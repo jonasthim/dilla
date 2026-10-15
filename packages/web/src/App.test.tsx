@@ -158,6 +158,46 @@ describe('App', () => {
       expect(fake.callsOf('resign')).toHaveLength(2);
     } finally { vi.unstubAllGlobals(); }
   });
+  // Walk M9: "Use this tab" in a second tab failed while this one was on the forced screen: nothing here listened.
+  it('hands over from the forced screen, and shows it again once this tab leads again', async () => {
+    const channels: { name: string; posted: unknown[]; listeners: Set<(event: { data: unknown }) => void> }[] = [];
+    class FakeChannel {
+      readonly listeners = new Set<(event: { data: unknown }) => void>();
+      readonly posted: unknown[] = [];
+      constructor(readonly name: string) { channels.push(this); }
+      postMessage(value: unknown): void { this.posted.push(value); }
+      addEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.add(cb); }
+      removeEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.delete(cb); }
+      close(): void {}
+    }
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    try {
+      const instance = 'ab'.repeat(16);
+      const nonce = '01'.repeat(16);
+      const fake = new FakeClient();
+      fake.handler = c => c.m === 'resign' ? Promise.resolve({ released: true }) : Promise.resolve(null);
+      fake.set('account', account({ phase: 'factor-setup', factorSetup: { origin: 'required' } }));
+      fake.set('factors', { owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
+      fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 1, errors: [] });
+      render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+      expect(screen.getByRole('heading', { level: 1, name: 'Add a second factor' })).toBeInTheDocument();
+      const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0);
+      expect(leader).toBeDefined();
+      await act(async () => {
+        for (const cb of [...leader!.listeners]) cb({ data: { t: 'takeover', instance, nonce } });
+        fake.set('account', account({ phase: 'other-tab' }));
+        await Promise.resolve();
+      });
+      expect(fake.callsOf('resign')).toEqual([{ m: 'resign', nonce }]);
+      expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
+      const forwarded = channels.filter(c => c.name.startsWith('dilla-core:') && c.posted.length > 0);
+      expect(forwarded.map(c => c.posted)).toEqual([[{ t: 'released', instance, nonce }]]);
+      act(() => fake.set('account', account({ phase: 'loading' })));
+      act(() => fake.set('account', account({ phase: 'factor-setup', factorSetup: { origin: 'required' } })));
+      expect(screen.queryByRole('heading', { name: 'This tab is paused' })).toBeNull();
+      expect(screen.getByRole('heading', { level: 1, name: 'Add a second factor' })).toBeInTheDocument();
+    } finally { vi.unstubAllGlobals(); }
+  });
   // Product walk I7: "Use this tab" ended the other tab's call without a word. The tab that holds dilla says, content-free,
   // whether it is in a call; the waiting tab warns before taking over, and keeping the call takes nothing over.
   describe('a call in the other tab (product walk I7)', () => {
