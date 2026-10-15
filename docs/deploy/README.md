@@ -7,8 +7,8 @@ container image, a systemd unit, set up by hand or by the install script, and a 
 helper), the TLS modes, and the backup and restore runbook.
 
 `dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
-directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay and the
-blob tree, and prints one line per check. By default its `udp` leg reads WARN "not probed": dillad
+directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay, the
+blob tree and the passkey settings (`webauthn`), and prints one line per check. By default its `udp` leg reads WARN "not probed": dillad
 runs no reflector, so the leg never proves the UDP forward, which can only be checked from outside.
 With `doctor.udp_probe = false` the leg reads OK "skipped", and with `livekit.enabled = false` OK
 with no media port to reach. Run it after every change.
@@ -514,6 +514,12 @@ sudo -u dillad dillad restore --config=/etc/dilla/dilla.toml --from=/srv/backups
 sudo systemctl start dilla
 ```
 
+`dillad backup verify --from=<archive>` is the integrity check to run on every archive before you rely on it,
+and again after copying it off the host. It reads the archive without writing anything, checks each member
+against the SHA-256 in the manifest, and on a damaged or truncated archive prints the failure and exits 65
+(`dillad restore --dry-run` runs the same check). Put it after the backup in whatever schedules your backups, and
+alert on a non-zero exit.
+
 `--include-blobs` is the default; `--include-blobs=false` leaves the attachment files out. A backup
 with a missing blob file is refused unless `--allow-gaps` names the gaps in its manifest, and
 `restore` refuses such an archive, or one from another instance, without `--force`.
@@ -535,6 +541,98 @@ show a resync notice while they catch up.
 In Compose, run the same verbs with `docker compose run --rm dillad backup ...` or
 `docker compose run --rm dillad restore ...` against the stopped service. Mount a directory for
 `--out` and `--from`, and own it 65532:65532.
+
+## 5. Operating a required second factor
+
+From web-3.6 every human account needs a second factor: a confirmed authenticator app (TOTP) or a passkey. The
+instance enforces it: an account without one is refused by every route and by the gateway except the ones that set a
+factor up, until it adds one. This section is what the operator does about that. What people see is in the
+[user guide](../user/getting-started.md#second-factor).
+
+### What happens when you upgrade
+
+- The migration (`00017_second_factor`) adds `users.factor_owed` and marks every live human account that holds no
+  confirmed TOTP secret and no passkey. Those people are not signed out; every browser of theirs stops at "Add a
+  second factor" until they add one. Tell your members before you upgrade, and ask them to open Settings → Sign-in
+  afterwards.
+- At every start `dillad serve` marks again any live human account that holds no usable factor, and logs
+  "accounts without a usable second factor now owe one". A usable passkey is one registered under the current
+  `auth.webauthn.rp_id`, so changing `rp_id` (below) makes every account whose only factor is a passkey owe a new one,
+  and so does restoring an archive made before web-3.6. The reconcile only ever sets the flag; adding a factor clears
+  it.
+- There is no switch that turns the requirement off.
+
+### The configuration it needs
+
+- **`auth.methods`** must include `totp` or `passkey` (the default is `password`, `totp`, `passkey`). With
+  neither, the configuration is refused, because no account could ever hold a factor. `dillad doctor` warns if
+  `totp` is missing, since passkeys are then the only factor and a passkey that stops working locks a new browser out.
+- **`auth.totp.recovery_codes`** is how many backup codes a person gets, from 1 to 16 (default 10). It is
+  checked at start.
+- **`auth.webauthn.rp_id`** defaults to `instance.domain`. It must be a domain name, never an IP address, and
+  **a passkey is bound to it for good**: change it and the passkeys already registered stop counting.
+- **`auth.webauthn.rp_origins`** lists the origins a browser may use, and defaults to `https://<instance.domain>` plus
+  `http.trusted_origins`. The browser's origin includes its port, and the host of each `http` or `https` entry
+  must be `rp_id` or a subdomain of it.
+
+Behind a proxy (`tls.mode = "behind_proxy"`) the address the browser uses is the proxy's, so set both explicitly when
+the public address is not `https://<instance.domain>` on 443. An instance reached at `https://chat.example.org:8443`:
+
+```toml
+[auth.webauthn]
+rp_id = "chat.example.org"
+rp_origins = ["https://chat.example.org:8443"]
+```
+
+`rp_id` has no port; the origin has one. If the browser's origin is not in `rp_origins`, passkeys fail and the
+client can say "Passkeys do not work at this address of {instance}. Use an authenticator app, and tell the operator."
+Authenticator apps keep working.
+
+### The `webauthn` leg of `dillad doctor`
+
+`dillad doctor` reads the passkey settings and contacts nothing. It reads red when `rp_id` is an IP address or an
+`rp_origins` entry's host is neither `rp_id` nor a subdomain of it. It reads WARN when `auth.methods` lacks `totp`,
+and **it reads WARN on every instance with `tls.mode = "behind_proxy"`**: "set auth.webauthn.rp_origins to the public
+origin, with its port". That warning is expected. It is a prompt to check `rp_id` and `rp_origins` once, not a
+fault, and it does not go away. Otherwise it reads OK with the `rp_id` and the number of origins.
+
+### A person has lost their factor: `dillad admin user reset-factors`
+
+```sh
+sudo -u dillad dillad admin user reset-factors --config=/etc/dilla/dilla.toml --username=mira --yes
+```
+
+It takes `--id=ID` or `--username=NAME`, and `--yes` (it refuses without it, because it cannot be undone). It
+removes the person's authenticator app, every passkey and every backup code, marks the account as owing a factor and
+writes a `user.factors_reset` audit row, all in one transaction. A bot account and a deleted account are refused.
+
+- **Verify the person first, out of band.** The reset removes the check that stands between a stolen password and a
+  new browser: whoever signs in next with the password and the recovery key sets up a new factor. Confirm it is
+  them in some other way than dilla (a voice call, in person). If the account may be compromised, **disable it
+  instead** (`dillad admin user disable`), which deletes its sessions, and sort out the account before you enable it.
+- **Sessions are kept.** The person is not signed out, and each of their browsers meets "Add a second factor" before
+  it does anything else. Their recovery key still works, so they can also sign in on a new browser with the password
+  and the recovery key and set up a factor there.
+- **Live connections close within one heartbeat.** `dillad admin` is another process from `dillad serve`, so it
+  closes no socket itself; the serving process notices the owed account on its next liveness tick and closes the
+  connection. The heartbeat interval is `gateway.heartbeat_interval` (30 s by default).
+
+### Client data version per release
+
+The web client keeps its data in the browser, in a store with a schema number. A client refuses a store whose number
+is newer than the one it knows (web-3.6 onwards) and shows "This version of dilla is too old for the data saved in
+this browser" with both numbers: "That data needs data version {found}; this version of dilla reads up to
+{supported}. Update to the newer version of dilla, or ask the host of this server."
+
+| Release | Store schema | Note |
+|---|---|---|
+| web-3.4 | 4 | |
+| web-3.5 | 4 | Three additive tables |
+| web-3.6 | 4 | A client now refuses a store newer than it knows |
+
+The number is the same in all three, and the instance's migrations in these releases only add tables and a column.
+**Rolling the server back across these releases is safe**: browsers keep working, and a person is not asked for
+anything new. An older dillad does not enforce the second factor.
 
 ## Capacity
 
