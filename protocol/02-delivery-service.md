@@ -804,6 +804,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 400 | `E_ENVELOPE_TYPE` | the type byte names no envelope type this version knows | do not retry unchanged |
 | 400 | `E_ENVELOPE_LIMIT` | a field or list exceeds a `protocol/04` § Limits bound | shrink the field and resend |
 | 401 | `E_UNAUTHENTICATED` | no device session, or an expired or revoked one | establish a session (`§ Device sessions`) |
+| 401 | `E_PASSKEY_UNKNOWN` | the passkey is not registered on this instance | use another sign-in |
 | 403 | `E_FORBIDDEN` | the session is authenticated but not permitted | none |
 | 403 | `E_CHANNEL_MODE` | the operation is not allowed for this channel's mode | use the surface the mode does allow |
 | 403 | `E_FACTOR_REQUIRED` | the session's account owes a second factor | add one (`09` § Second factors) |
@@ -855,8 +856,10 @@ the caller's device is the call group's only current leaf, decided under the gro
 `E_FACTOR_REQUIRED`, `E_TARGET_NO_FACTOR` and `E_STEP_UP` came with web3.6, the required second
 factor: an account that owes one (§ Device sessions item 8), a `require_mod_2fa` grant to a user
 who holds none (`09` § Communities), and a factor change without a valid step-up. Each is 403 and
-distinct, so a client tells the three apart by code, never by detail. None is a delivery-service
-code.
+distinct, so a client tells the three apart by code, never by detail. `E_PASSKEY_UNKNOWN` (401)
+came with them: a passkey login whose credential this instance does not hold (`09` § Second
+factors), distinct from `E_UNAUTHENTICATED` so the client can say which. None is a
+delivery-service code.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

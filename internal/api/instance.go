@@ -15,7 +15,8 @@ import (
 // max_ciphertext_bytes before it has a session to ask with.
 func registerInstance(m *server.Mux, d Deps) {
 	if d.Config != nil && d.Config.Instance.Discovery == "session" {
-		m.Handle("GET /v1/instance", d.enrolled(d.InstanceDocument))
+		// `E, F`: a client setting up a factor reads auth_methods from here (web3.6).
+		m.Handle("GET /v1/instance", d.owedOK(d.InstanceDocument))
 	} else {
 		m.Handle("GET /v1/instance", http.HandlerFunc(d.InstanceDocument))
 	}

@@ -89,7 +89,7 @@ func TestAssertionRegistrationRejectsAnotherUsersDeviceID(t *testing.T) {
 	}
 	registration := []any{existing.ID, []byte(pub), uint64(1), uint64(1), []byte{1}}
 	rec := postCBOR(h, "/v1/devices/"+existing.ID.String()+"/sessions",
-		establishBody(t, h, deps, existing.ID, priv, registration, []byte(deps.Assertions.Issue(owner.ID, false))))
+		establishBody(t, h, deps, existing.ID, priv, registration, []byte(deps.Assertions.Issue(owner.ID, 0))))
 	wantListRefusal(t, rec, http.StatusConflict, "E_INVALID_REQUEST", "device_id already exists")
 	row, err := deps.Repo.GetDevice(t.Context(), existing.ID)
 	if err != nil || row.UserID == owner.ID {
@@ -104,7 +104,7 @@ func TestAssertionRegistrationRejectsCrossUserIDEvenWithTheExistingKey(t *testin
 	listerOf(t, deps).list(owner.ID, listed)
 	registration := []any{existing.ID, existing.DSKPub, uint64(1), uint64(1), []byte{1}}
 	rec := postCBOR(h, "/v1/devices/"+existing.ID.String()+"/sessions",
-		establishBody(t, h, deps, existing.ID, existingKey, registration, []byte(deps.Assertions.Issue(owner.ID, false))))
+		establishBody(t, h, deps, existing.ID, existingKey, registration, []byte(deps.Assertions.Issue(owner.ID, 0))))
 	wantListRefusal(t, rec, http.StatusConflict, "E_INVALID_REQUEST", "device_id already exists")
 }
 

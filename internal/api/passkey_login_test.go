@@ -2,11 +2,11 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
-	"github.com/pquerna/otp/totp"
-
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/id"
 )
 
 // The whole ceremony, both legs, on the real routes: register a discoverable
@@ -62,7 +62,10 @@ func TestAPasskeyRegistersAndThenLogsInWithoutAUsername(t *testing.T) {
 		t.Fatalf("the stored flags read back as %+v, not the ones the authenticator set", flags)
 	}
 
-	assertion := passkeyLogin(t, h, device)
+	assertion, needs := passkeyLoginNeeds(t, h, device)
+	if needs != 0 {
+		t.Fatalf("a UV passkey login: needs = %d, want 0", needs)
+	}
 	got, needsSecondFactor := spendAssertion(t, deps, assertion)
 	if got != user.ID {
 		t.Fatalf("the passkey login named %s, want %s", got, user.ID)
@@ -84,76 +87,151 @@ func TestAPasskeyRegistersAndThenLogsInWithoutAUsername(t *testing.T) {
 	}
 }
 
-// A passkey is not a licence to skip a confirmed TOTP.
-//
-// auth.webauthn.user_verification defaults to "preferred" (config/defaults.go),
-// so `validateLogin`'s shouldVerifyUser is false and a ceremony that proves
-// possession ONLY is accepted — which is exactly what the authenticator below
-// performs. facts-auth.md §3.6: a passkey counts as two factors only when user
-// verification actually happened, "the requirement is a request, the flag is
-// the evidence". An account that confirmed TOTP is forced through
-// /v1/auth/totp/verify on the password path, and the passkey path must not be
-// the way around it.
-//
-// The route's response shape is untouched — protocol/09 gives it one element,
-// [assertion], with no needs_totp — so this is asserted where the client feels
-// it: the assertion the login hands back is one /v1/auth/totp/verify accepts.
-func TestAPasskeyLoginDoesNotSkipAConfirmedTOTP(t *testing.T) {
-	h, deps := newPasskeyAPI(t)
+// A passkey counts alone only when THIS assertion verified the user. On an
+// instance that set user_verification = "preferred", a credential registered
+// with UV and later used with presence only owes a code: the stored credential's
+// UV flag is latched (webauthn@v0.18.2 CredentialFlags.Update), so it must not be
+// what decides. The control is the same credential with UV.
+func TestAPossessionOnlyPasskeyLoginOwesACode(t *testing.T) {
+	h, deps := newPasskeyAPIUV(t, "preferred")
 	user, _, token := seedAPISession(t, deps)
-	// A possession-only authenticator: UP set, UV clear.
-	device := newVirtualAuthenticator(t, deps.Domain, false)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
 	enrolPasskey(t, h, token, device)
-	secret, _ := enrolTOTP(t, h, deps, token)
 
-	assertion := passkeyLogin(t, h, device)
-
-	code, err := totp.GenerateCode(secret, deps.Clock.Now())
-	if err != nil {
-		t.Fatalf("GenerateCode: %v", err)
+	if _, needs := passkeyLoginNeeds(t, h, device); needs != 0 {
+		t.Fatalf("a UV passkey login: needs = %d, want 0", needs)
 	}
-	body, _ := cborx.Marshal([]any{assertion, code})
-	res := postCBOR(h, "/v1/auth/totp/verify", body)
-	if res.Code != http.StatusOK {
-		t.Fatalf("totp/verify answered %d for a passkey assertion: the passkey login "+
-			"skipped the account's confirmed second factor", res.Code)
+	device.userVerified = false
+	assertion, needs := passkeyLoginNeeds(t, h, device)
+	if needs != 1 {
+		t.Fatalf("a presence-only passkey login: needs = %d, want 1", needs)
 	}
-	var out []any
-	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
-		t.Fatalf("decode totp/verify: %v", err)
-	}
-	if len(out) != 1 {
-		t.Fatalf("totp/verify returned %d elements, want [assertion]", len(out))
-	}
-	upgraded, ok := out[0].(string)
-	if !ok || upgraded == "" {
-		t.Fatalf("totp/verify assertion = %#v", out[0])
-	}
-	got, needsSecondFactor := spendAssertion(t, deps, upgraded)
-	if got != user.ID {
-		t.Fatalf("the upgraded assertion names %s, want %s", got, user.ID)
-	}
-	if needsSecondFactor {
-		t.Fatal("the assertion still owes a second factor after totp/verify")
+	if got, owes := spendAssertion(t, deps, assertion); got != user.ID || !owes {
+		t.Fatalf("the presence-only assertion = %s owing %v, want %s owing a factor", got, owes, user.ID)
 	}
 }
 
-// The same, one level down: the assertion the passkey route issues for an
-// account with a confirmed TOTP is marked as owing a second factor. Asserted
-// directly, so a regression names the cause rather than a 401 three routes
-// later.
-func TestAPasskeyAssertionOwesASecondFactorWhenTOTPIsConfirmed(t *testing.T) {
+// Under the default user_verification = "required" a presence-only assertion
+// is refused outright; the UV control logs in owing nothing.
+func TestARequiredInstanceRefusesAPossessionOnlyPasskey(t *testing.T) {
+	h, deps := newPasskeyAPI(t)
+	if deps.Config.Auth.WebAuthn.UserVerification != "required" {
+		t.Fatalf("user_verification defaults to %q, want \"required\"", deps.Config.Auth.WebAuthn.UserVerification)
+	}
+	_, _, token := seedAPISession(t, deps)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	enrolPasskey(t, h, token, device)
+
+	device.userVerified = false
+	if res := passkeyLoginRaw(t, h, device); res.Code != http.StatusUnauthorized {
+		t.Fatalf("a presence-only login on a required instance = %d, want 401", res.Code)
+	}
+	device.userVerified = true
+	if _, needs := passkeyLoginNeeds(t, h, device); needs != 0 {
+		t.Fatalf("the UV control: needs = %d, want 0", needs)
+	}
+}
+
+// A passkey this instance does not hold is E_PASSKEY_UNKNOWN, so the client can
+// say "this passkey is not registered here" rather than "it failed".
+func TestADeletedPasskeyIsUnknown(t *testing.T) {
 	h, deps := newPasskeyAPI(t)
 	user, _, token := seedAPISession(t, deps)
-	device := newVirtualAuthenticator(t, deps.Domain, false)
-	enrolPasskey(t, h, token, device)
-	enrolTOTP(t, h, deps, token)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	credID := enrolPasskey(t, h, token, device)
 
-	got, needsSecondFactor := spendAssertion(t, deps, passkeyLogin(t, h, device))
-	if got != user.ID {
-		t.Fatalf("the passkey login named %s, want %s", got, user.ID)
+	if res := passkeyLoginRaw(t, h, device); res.Code != http.StatusOK {
+		t.Fatalf("the credential before the delete = %d, want 200", res.Code)
 	}
-	if !needsSecondFactor {
-		t.Fatal("a passkey login issued a complete assertion for an account with a confirmed TOTP")
+	if n, err := deps.Repo.DeleteWebauthnCredential(t.Context(), user.ID, credID); err != nil || n != 1 {
+		t.Fatalf("DeleteWebauthnCredential = %d, %v", n, err)
+	}
+	res := passkeyLoginRaw(t, h, device)
+	if res.Code != http.StatusUnauthorized || errorCode(t, res) != "E_PASSKEY_UNKNOWN" {
+		t.Fatalf("a deleted passkey = %d %s, want 401 E_PASSKEY_UNKNOWN", res.Code, errorCode(t, res))
+	}
+}
+
+// stepUpCeremony begins a passkey step-up for the session token holds.
+func stepUpCeremony(t *testing.T, h http.Handler, token string) (id.ID, string) {
+	t.Helper()
+	empty, _ := cborx.Marshal([]any{})
+	res := postCBORAuth(h, "/v1/auth/stepup/passkey/begin", empty, token)
+	if res.Code != http.StatusOK {
+		t.Fatalf("stepup/passkey/begin = %d (%x)", res.Code, res.Body.Bytes())
+	}
+	return ceremonyAndOptions(t, res.Body.Bytes())
+}
+
+// A step-up ceremony is kind 1 with its user set: login/finish refuses it, and
+// the step-up finish refuses a login ceremony and another user's step-up.
+func TestAStepUpCeremonyIsNotALoginAndALoginIsNotAStepUp(t *testing.T) {
+	h, deps := newPasskeyAPI(t)
+	_, _, token := seedAPISession(t, deps)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	enrolPasskey(t, h, token, device)
+
+	// A step-up ceremony sent to login/finish.
+	ceremony, options := stepUpCeremony(t, h, token)
+	body, _ := cborx.Marshal([]any{ceremony, device.login(t, options)})
+	if res := postCBOR(h, "/v1/auth/passkey/login/finish", body); res.Code != http.StatusUnauthorized {
+		t.Fatalf("a step-up ceremony at login/finish = %d, want 401", res.Code)
+	}
+	// Its control: a login ceremony there.
+	if res := passkeyLoginRaw(t, h, device); res.Code != http.StatusOK {
+		t.Fatalf("a login ceremony at login/finish = %d, want 200", res.Code)
+	}
+
+	// A login ceremony sent to stepup/passkey/finish.
+	empty, _ := cborx.Marshal([]any{})
+	res := postCBOR(h, "/v1/auth/passkey/login/begin", empty)
+	ceremony, options = ceremonyAndOptions(t, res.Body.Bytes())
+	body, _ = cborx.Marshal([]any{ceremony, device.login(t, options)})
+	res = postCBORAuth(h, "/v1/auth/stepup/passkey/finish", body, token)
+	if res.Code != http.StatusForbidden || errorCode(t, res) != "E_STEP_UP" {
+		t.Fatalf("a login ceremony at stepup/passkey/finish = %d, want 403 E_STEP_UP", res.Code)
+	}
+
+	// Another user's step-up ceremony, finished from this session.
+	_, _, otherToken := seedAPISession(t, deps)
+	otherDevice := newVirtualAuthenticator(t, deps.Domain, true)
+	enrolPasskey(t, h, otherToken, otherDevice)
+	ceremony, options = stepUpCeremony(t, h, otherToken)
+	body, _ = cborx.Marshal([]any{ceremony, otherDevice.login(t, options)})
+	res = postCBORAuth(h, "/v1/auth/stepup/passkey/finish", body, token)
+	if res.Code != http.StatusForbidden || errorCode(t, res) != "E_STEP_UP" {
+		t.Fatalf("another user's step-up ceremony = %d, want 403 E_STEP_UP", res.Code)
+	}
+
+	// The control: this user's own step-up ceremony mints a token.
+	ceremony, options = stepUpCeremony(t, h, token)
+	body, _ = cborx.Marshal([]any{ceremony, device.login(t, options)})
+	stepUpToken(t, postCBORAuth(h, "/v1/auth/stepup/passkey/finish", body, token))
+}
+
+// A passkey's name is 1-64 bytes of UTF-8 without control characters. The
+// refusals do not spend the ceremony, so the control finishes the same one.
+func TestAPasskeyNameIsOneToSixtyFourBytes(t *testing.T) {
+	h, deps := newPasskeyAPI(t)
+	_, _, token := seedAPISession(t, deps)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	begin, _ := cborx.Marshal([]any{nil})
+	res := postCBORAuth(h, "/v1/auth/passkey/register/begin", begin, token)
+	if res.Code != http.StatusOK {
+		t.Fatalf("register/begin = %d", res.Code)
+	}
+	ceremony, options := ceremonyAndOptions(t, res.Body.Bytes())
+	response := device.register(t, options)
+	finish := func(name string) int {
+		body, _ := cborx.Marshal([]any{ceremony, response, name})
+		return postCBORAuth(h, "/v1/auth/passkey/register/finish", body, token).Code
+	}
+	for _, bad := range []string{"", strings.Repeat("a", 65), "tab\there", "\xff\xfe"} {
+		if got := finish(bad); got != http.StatusBadRequest {
+			t.Fatalf("name %q = %d, want 400", bad, got)
+		}
+	}
+	if got := finish(strings.Repeat("a", 64)); got != http.StatusOK {
+		t.Fatalf("a 64-byte name = %d, want 200", got)
 	}
 }

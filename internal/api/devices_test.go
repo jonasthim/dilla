@@ -64,7 +64,7 @@ func pendingSession(t *testing.T, h http.Handler, d api.Deps, user id.ID) (id.ID
 	device := id.New()
 	reg := []any{device, []byte(pub), uint64(1), uint64(1), bytes.Repeat([]byte{0}, 10)}
 	rec := postCBOR(h, "/v1/devices/"+device.String()+"/sessions",
-		establishBody(t, h, d, device, priv, reg, []byte(d.Assertions.Issue(user, false))))
+		establishBody(t, h, d, device, priv, reg, []byte(d.Assertions.Issue(user, 0))))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("pending registration = %d %x", rec.Code, rec.Body.Bytes())
 	}

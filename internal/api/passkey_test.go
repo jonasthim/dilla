@@ -18,19 +18,51 @@ import (
 // copied per route and a field set afterwards would reach no handler.
 func newPasskeyAPI(t *testing.T) (http.Handler, api.Deps) {
 	t.Helper()
+	h, d, _ := newPasskeyAPIFull(t, "", false)
+	return h, d
+}
+
+// newPasskeyAPIUV is newPasskeyAPI on an instance whose
+// auth.webauthn.user_verification is uv ("required" is the default).
+func newPasskeyAPIUV(t *testing.T, uv string) (http.Handler, api.Deps) {
+	t.Helper()
+	h, d, _ := newPasskeyAPIFull(t, uv, false)
+	return h, d
+}
+
+// newPasskeyAPIHooked is newPasskeyAPI whose handlers reach the store through a
+// beforeTx, for the in-transaction re-check tests.
+func newPasskeyAPIHooked(t *testing.T) (http.Handler, api.Deps, *beforeTx) {
+	t.Helper()
+	return newPasskeyAPIFull(t, "", true)
+}
+
+// newPasskeyAPIFull writes the relying party into the shared Config too, so the
+// handlers' "holds a factor" reads the rp_id the ceremonies file credentials
+// under, exactly as the composition root's defaulting does.
+func newPasskeyAPIFull(t *testing.T, uv string, hooked bool) (http.Handler, api.Deps, *beforeTx) {
+	t.Helper()
 	_, d := newTestAPI(t)
-	c := d.Config.Auth.WebAuthn
+	c := &d.Config.Auth.WebAuthn
 	c.RPID = d.Domain
 	c.RPDisplayName = d.Domain
 	c.RPOrigins = []string{"https://" + d.Domain}
-	pk, err := auth.NewPasskeys(auth.ConfigFromDilla(c), d.Repo, d.Clock)
+	if uv != "" {
+		c.UserVerification = uv
+	}
+	pk, err := auth.NewPasskeys(auth.ConfigFromDilla(*c), d.Repo, d.Clock)
 	if err != nil {
 		t.Fatalf("NewPasskeys: %v", err)
 	}
 	d.Passkeys = pk
+	var hook *beforeTx
+	if hooked {
+		hook = &beforeTx{Repository: d.Repo}
+		d.Repo = hook
+	}
 	m := server.NewMux()
 	api.Register(m, d)
-	return m, d
+	return m, d, hook
 }
 
 // An instance with no relying party configured still MOUNTS the four routes —
@@ -66,7 +98,7 @@ func TestThePasskeyRoutesRefuseWhenNoRelyingPartyIsConfigured(t *testing.T) {
 // against somebody else's account.
 func TestPasskeyRegisterBeginNeedsASessionAndReturnsCreationOptions(t *testing.T) {
 	h, deps := newPasskeyAPI(t)
-	empty, _ := cborx.Marshal([]any{})
+	empty, _ := cborx.Marshal([]any{nil})
 	if res := postCBOR(h, "/v1/auth/passkey/register/begin", empty); res.Code != http.StatusUnauthorized {
 		t.Fatalf("an unauthenticated register/begin answered %d, want 401", res.Code)
 	}
@@ -167,13 +199,14 @@ func TestPasskeyLoginBeginIsUnauthenticatedAndNamesNoAccount(t *testing.T) {
 func TestAPasskeyFinishWithAnUnknownCeremonyIsRefused(t *testing.T) {
 	h, deps := newPasskeyAPI(t)
 	_, _, token := seedAPISession(t, deps)
-	body, _ := cborx.Marshal([]any{id.New(), "{}"})
+	body, _ := cborx.Marshal([]any{id.New(), "{}", "name"})
+	login, _ := cborx.Marshal([]any{id.New(), "{}"})
 
 	res := postCBORAuth(h, "/v1/auth/passkey/register/finish", body, token)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("register/finish on an unknown ceremony answered %d, want 400", res.Code)
 	}
-	res = postCBOR(h, "/v1/auth/passkey/login/finish", body)
+	res = postCBOR(h, "/v1/auth/passkey/login/finish", login)
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("login/finish on an unknown ceremony answered %d, want 401", res.Code)
 	}
@@ -186,7 +219,7 @@ func TestAPasskeyFinishWithAnUnknownCeremonyIsRefused(t *testing.T) {
 func TestAPasskeyCeremonyIsSpentOnceItIsTaken(t *testing.T) {
 	h, deps := newPasskeyAPI(t)
 	_, _, token := seedAPISession(t, deps)
-	empty, _ := cborx.Marshal([]any{})
+	empty, _ := cborx.Marshal([]any{nil})
 	res := postCBORAuth(h, "/v1/auth/passkey/register/begin", empty, token)
 	if res.Code != http.StatusOK {
 		t.Fatalf("register/begin answered %d", res.Code)
@@ -198,7 +231,7 @@ func TestAPasskeyCeremonyIsSpentOnceItIsTaken(t *testing.T) {
 	ceremony := out[0].([]byte)
 	var cid id.ID
 	copy(cid[:], ceremony)
-	body, _ := cborx.Marshal([]any{cid, "{}"})
+	body, _ := cborx.Marshal([]any{cid, "{}", "name"})
 	first := postCBORAuth(h, "/v1/auth/passkey/register/finish", body, token)
 	second := postCBORAuth(h, "/v1/auth/passkey/register/finish", body, token)
 	if first.Code != http.StatusBadRequest || second.Code != http.StatusBadRequest {

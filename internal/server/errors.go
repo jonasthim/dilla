@@ -84,6 +84,10 @@ const (
 	CodeFactorRequired Code = "E_FACTOR_REQUIRED"
 	CodeTargetNoFactor Code = "E_TARGET_NO_FACTOR"
 	CodeStepUp         Code = "E_STEP_UP"
+	// CodePasskeyUnknown is 401: a passkey login whose credential this instance does not hold
+	// (web3.6). Distinct from E_UNAUTHENTICATED so the client can say "this passkey is not
+	// registered here" without reading a detail.
+	CodePasskeyUnknown Code = "E_PASSKEY_UNKNOWN"
 	// CodeUnsupportedMedia is not in the table: a wrong Content-Type is answered
 	// with 415 and E_INVALID_REQUEST, because the table's rule is "malformed
 	// request" and a client that sent JSON has exactly that problem.
@@ -113,7 +117,7 @@ func (e *Error) Status() int {
 	case CodeInvalidRequest, CodeBindingInvalid, CodeVersion,
 		CodeEnvelopeShape, CodeEnvelopeType, CodeEnvelopeLimit:
 		return http.StatusBadRequest
-	case CodeUnauthenticated:
+	case CodeUnauthenticated, CodePasskeyUnknown:
 		return http.StatusUnauthorized
 	case CodeForbidden, CodeLeafNotCurrent, CodeModeReadable, CodeNotUploader,
 		CodeProvisionalOutsidePairing, CodeChannelMode,

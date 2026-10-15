@@ -321,6 +321,9 @@ func (c *Config) Validate() error {
 			add("auth.methods: %q is not one of password, totp, passkey, oidc", m)
 		}
 	}
+	if len(c.Auth.Methods) > 0 && !slices.Contains(c.Auth.Methods, "totp") && !slices.Contains(c.Auth.Methods, "passkey") {
+		add("auth.methods must include totp or passkey: every account needs a second factor")
+	}
 	if slices.Contains(c.Auth.Methods, "oidc") && !c.Auth.OIDC.Enabled {
 		add("auth.methods lists oidc but auth.oidc.enabled is false")
 	}

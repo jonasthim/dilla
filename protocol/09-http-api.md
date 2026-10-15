@@ -188,16 +188,16 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs_totp(uint)]` |
+| `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs(uint)]` (`needs`: § Second factors) |
 | `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr)]` | `204` |
-| `POST /v1/auth/totp/enroll` | E, F | `[]` | `[secret(tstr), otpauth_url(tstr)]` |
-| `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[recovery_codes([tstr])]` |
-| `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]` |
-| `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]` |
-| `POST /v1/auth/passkey/register/begin` | E, F | `[]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
-| `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr)]` | `[cred_id(bstr)]` |
+| `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]` (§ Second factors) |
+| `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]` (§ Second factors) |
+| `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 only |
+| `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 or 2 |
+| `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
+| `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]` (§ Second factors) |
 | `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]` |
-| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]` | `[assertion(tstr)]` |
+| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]` | `[assertion(tstr), needs(uint 0\|1)]` (§ Second factors) |
 | `GET /v1/auth/oidc/start` | — | — | `302` to the IdP, PKCE `S256`, state cookie `__Secure-dilla-oidc` scoped to this route only |
 | `GET /v1/auth/oidc/callback` | — | — | `302` back to the client with a one-time `assertion` |
 
@@ -205,6 +205,51 @@ The `assertion` is a short-lived one-time **enrolment assertion**: it proves hos
 by `POST /v1/devices/{device_id}/sessions`, sent as the token's UTF-8 bytes in a bstr (element 4).
 With a registration array in element 3 it registers the device; either way the minted session is
 `pending`. It is never a session token and never reaches `/v1` beyond that one endpoint.
+
+### Second factors
+
+Every human account holds a second factor: a TOTP authenticator, or a passkey. The routes below
+enrol, use, list and remove them. Where a row repeats one of § Auth ceremonies, this one is the
+full contract.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/auth/password/login` | — | `[username, password]` | `[assertion(tstr), needs(uint)]`: `0` nothing owed; `1` a TOTP code or a backup code (`/totp/verify`, `/recovery/verify`); `2` the account has passkeys and no TOTP: a passkey login, or a backup code |
+| `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]`; `403 E_STEP_UP` when the account holds a factor and `stepup` is missing or not valid; `403 E_FORBIDDEN` over a confirmed secret (unchanged) |
+| `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]`: 10 when the account held no unused code, else `[]`; clears `factor_owed` in the same transaction; `403 E_STEP_UP` when a factor appeared since an enroll that carried no step-up |
+| `POST /v1/auth/recovery/verify` | — | `[assertion, code]` | `[assertion]`; accepts an assertion owing `needs` 1 **or 2** |
+| `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]`; the user's credentials are excluded |
+| `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id, response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]`; `name` is 1–64 bytes of UTF-8 without control characters (`400` otherwise); clears `factor_owed`; `403 E_STEP_UP` as for confirm |
+| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold |
+| `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint)]` |
+| `POST /v1/auth/stepup` | E | `[method(uint 0 password\|1 totp\|2 backup code), secret(tstr)]` | `201 [stepup(tstr), expires(uint)]`; a wrong secret is `403 E_STEP_UP`; `429 E_RATE_LIMITED` with `retry_after_ms` past the step-up ledger's free attempts |
+| `POST /v1/auth/stepup/passkey/begin` | E | `[]` | `[ceremony_id, options]` (this user's credentials only; UV required) |
+| `POST /v1/auth/stepup/passkey/finish` | E | `[ceremony_id, response]` | `201 [stepup, expires]` |
+| `POST /v1/auth/factors/remove` | E | `[stepup(tstr), kind(uint 0 totp\|1 passkey), cred_id(bstr\|null)]` | `204`; `409 E_INVALID_REQUEST` when it is the account's last factor; `404 E_NOT_FOUND` for a credential that isn't the caller's; `403 E_STEP_UP` |
+| `POST /v1/auth/recovery/codes` | E | `[stepup(tstr)]` | `[backup_codes([tstr])]`; every earlier code stops working |
+
+- **"Holds a factor"** means a confirmed TOTP secret, or at least one passkey registered for this
+  instance's `rp_id`. Backup codes are not a factor. The wire and the server call them recovery
+  codes; people are shown them as **backup codes**, and they are never the recovery key of
+  `03-identity.md`.
+- An account that holds no factor **owes** one (`factor_owed`, § Sessions). The TOTP confirm and
+  the passkey finish write the factor, clear `factor_owed` and mint backup codes in one
+  transaction under the account's lock.
+- **Step-up:** required by enroll, register/begin, remove and codes exactly when the caller's
+  account holds a factor; a token is single-use, bound to the session that minted it, and lives
+  300 s; only the routes above spend one. The confirm and finish re-check the rule under the
+  account's lock: when a factor appeared since a begin that carried no valid step-up, they write
+  nothing and answer `403 E_STEP_UP`. The record of what a begin carried lives in memory, so after
+  a restart the person confirms again. Step-up failures are counted on a ledger of their own, never
+  on the account's password lockout.
+- **A step-up passkey ceremony is not a login ceremony,** nor the reverse: `login/finish` refuses a
+  step-up's ceremony (`401`), and `stepup/passkey/finish` refuses a login's or another account's
+  (`403 E_STEP_UP`).
+- **The last factor** cannot be removed (`409`), also when two devices remove the last two at once.
+- **OIDC callback:** the assertion owes a factor whenever the account holds one (`needs` as for the
+  password login).
+- **Passkeys count alone only with user verification** (`auth.webauthn.user_verification`, default
+  `required`), read from each assertion's own authenticator data.
 
 ## Communities and content
 
@@ -1282,7 +1327,7 @@ but valid envelope before the validator ever saw it); `PUT /v1/backups/0/0` 256 
 
 | Method and path | Auth | Request | Response | Errors |
 |---|---|---|---|---|
-| `GET /v1/instance` | — or E (`instance.discovery`) | — | the discovery document below | `401` |
+| `GET /v1/instance` | — or E, F (`instance.discovery`) | — | the discovery document below | `401` |
 | `GET /v1/instance/limits` | — | — | the limits array below | — |
 
 The discovery document is an eleven-element array, in this order:

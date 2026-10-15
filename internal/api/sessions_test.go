@@ -342,7 +342,7 @@ func TestElementThreeIsARegistrationArrayOnlyWhenLoginIsPresent(t *testing.T) {
 	u, dev, priv := seedAPIDevice(t, deps)
 	lister.list(u.ID, dev)
 	path := func(d id.ID) string { return "/v1/devices/" + d.String() + "/sessions" }
-	assertion := func() []byte { return []byte(deps.Assertions.Issue(u.ID, false)) }
+	assertion := func() []byte { return []byte(deps.Assertions.Issue(u.ID, 0)) }
 
 	// No login: the testkit's bstr credential is ignored.
 	rec := postCBOR(h, path(dev.ID), establishBody(t, h, deps, dev.ID, priv, []byte{0xa1, 0x01}, nil))
@@ -440,7 +440,7 @@ func TestAStolenPasswordCannotRegisterADeviceForAUserWithNoList(t *testing.T) {
 	newID := id.New()
 	reg := []any{newID, []byte(pub), uint64(1), uint64(1), []byte{0}}
 	rec := postCBOR(h, "/v1/devices/"+newID.String()+"/sessions",
-		establishBody(t, h, deps, newID, priv, reg, []byte(deps.Assertions.Issue(u.ID, false))))
+		establishBody(t, h, deps, newID, priv, reg, []byte(deps.Assertions.Issue(u.ID, 0))))
 	if rec.Code != http.StatusUnauthorized || refusalCode(t, rec) != "E_UNAUTHENTICATED" {
 		t.Fatalf("registration for a no-list user = %d %q, want 401 E_UNAUTHENTICATED", rec.Code, refusalCode(t, rec))
 	}

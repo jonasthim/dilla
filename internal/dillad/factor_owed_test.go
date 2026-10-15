@@ -214,6 +214,8 @@ func TestTheSweepReadsTheDocumentedRoutes(t *testing.T) {
 		"POST /v1/gateway/ticket", "POST /v1/communities", "POST /v1/keypackages", "GET /v1/welcomes",
 		"PUT /v1/backups/0/0", "POST /v1/groups", "GET /v1/devices", "DELETE /v1/accounts/me",
 		"POST /v1/auth/password", "POST /v1/reports", "POST /v1/dms",
+		"POST /v1/auth/stepup", "POST /v1/auth/stepup/passkey/begin", "POST /v1/auth/stepup/passkey/finish",
+		"POST /v1/auth/factors/remove", "POST /v1/auth/recovery/codes",
 	} {
 		if !refused[want] {
 			t.Errorf("the sweep does not refuse %s", want)
@@ -224,6 +226,7 @@ func TestTheSweepReadsTheDocumentedRoutes(t *testing.T) {
 		"GET /v1/users/" + x + "/device-list", "GET /v1/backups", "GET /v1/backups/0/0",
 		"POST /v1/auth/totp/enroll", "POST /v1/auth/totp/confirm",
 		"POST /v1/auth/passkey/register/begin", "POST /v1/auth/passkey/register/finish",
+		"GET /v1/auth/factors",
 	} {
 		if !allowed[want] {
 			t.Errorf("the sweep does not admit %s", want)

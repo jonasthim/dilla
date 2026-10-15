@@ -125,6 +125,7 @@ const WIRE_CODES: &[&str] = &[
     "E_MODE_READABLE",
     "E_NOT_FOUND",
     "E_NOT_UPLOADER",
+    "E_PASSKEY_UNKNOWN",
     "E_PROVISIONAL_OUTSIDE_PAIRING",
     "E_PRUNED",
     "E_RATE_LIMITED",

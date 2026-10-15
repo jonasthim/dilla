@@ -231,6 +231,20 @@ func TestValidationRules(t *testing.T) {
 		c.LiveKit.Enabled = false
 		return c
 	}
+	// web3.6: every account needs a second factor, so an instance must offer one.
+	t.Run("auth.methods must include totp or passkey", func(t *testing.T) {
+		c := base()
+		c.Derive()
+		c.Auth.Methods = []string{"password"}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "auth.methods must include totp or passkey: every account needs a second factor") {
+			t.Fatalf("auth.methods = [password]: Validate = %v, want the second-factor error", err)
+		}
+		c.Auth.Methods = []string{"password", "totp"}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("auth.methods = [password, totp]: Validate = %v, want nil", err)
+		}
+	})
 	t.Run("behind_proxy needs trusted_proxy_cidrs", func(t *testing.T) {
 		c := base()
 		c.TLS.Mode = config.TLSModeBehindProxy

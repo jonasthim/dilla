@@ -74,6 +74,14 @@ type Deps struct {
 	Throttle   *auth.Throttle
 	Assertions *Assertions
 
+	// StepUps holds the step-up tokens the factor-changing routes spend (protocol/09 § Second
+	// factors). Register builds one when it is nil; it is memory only, like Assertions.
+	StepUps *StepUps
+
+	// enrolments remembers whether each enrolment in flight began with a valid step-up, for the
+	// confirm and finish legs' re-check under the user lock. Register builds it.
+	enrolments *enrolments
+
 	// Passkeys runs the four WebAuthn ceremonies. It is nil when `passkey` is
 	// not in auth.methods — go-webauthn refuses a config with no RPOrigins, so
 	// an instance that never configured a relying party has no Passkeys to
@@ -153,6 +161,12 @@ func Register(m *server.Mux, d Deps) {
 	if d.StateMeter == nil {
 		d.StateMeter = NewStateMeter(d.Clock, StateBytesPerDevicePerDay)
 	}
+	if d.StepUps == nil {
+		d.StepUps = NewStepUps(d.Clock, StepUpTTL)
+	}
+	if d.enrolments == nil {
+		d.enrolments = newEnrolments(d.Clock, enrolmentTTL)
+	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 
@@ -192,6 +206,16 @@ func Register(m *server.Mux, d Deps) {
 	// inside the handler exactly as the ceremonies above do.
 	m.Handle("GET /v1/auth/oidc/start", http.HandlerFunc(d.StartOIDC))
 	m.Handle("GET /v1/auth/oidc/callback", http.HandlerFunc(d.CallbackOIDC))
+
+	// Second factors (protocol/09 § Second factors). The list is `E, F`: an owed account reads
+	// what it has while it sets one up. Step-up, removal and fresh backup codes are `E`: an owed
+	// account holds nothing to step up with or remove.
+	m.Handle("GET /v1/auth/factors", d.owedOK(d.Factors))
+	m.Handle("POST /v1/auth/stepup", d.enrolled(d.StepUp))
+	m.Handle("POST /v1/auth/stepup/passkey/begin", d.enrolled(d.BeginPasskeyStepUp))
+	m.Handle("POST /v1/auth/stepup/passkey/finish", d.enrolled(d.FinishPasskeyStepUp))
+	m.Handle("POST /v1/auth/factors/remove", d.enrolled(d.RemoveFactor))
+	m.Handle("POST /v1/auth/recovery/codes", d.enrolled(d.RecoveryCodes))
 
 	// Accounts. Every one of these is an enrolled session; GET is also an owed one's (`E, F`).
 	m.Handle("GET /v1/accounts/me", d.owedOK(d.GetMe))

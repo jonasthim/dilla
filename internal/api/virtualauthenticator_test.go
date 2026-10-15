@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
@@ -209,16 +210,25 @@ func (a *virtualAuthenticator) login(t *testing.T, options string) string {
 }
 
 // enrolPasskey walks /v1/auth/passkey/register/{begin,finish} for the session
-// `token` holds and returns the credential id the route reports.
+// `token` holds, with no step-up token, and returns the credential id the route
+// reports.
 func enrolPasskey(t *testing.T, h http.Handler, token string, a *virtualAuthenticator) []byte {
 	t.Helper()
-	empty, _ := cborx.Marshal([]any{})
-	res := postCBORAuth(h, "/v1/auth/passkey/register/begin", empty, token)
+	credID, _ := enrolPasskeyWith(t, h, token, a, nil)
+	return credID
+}
+
+// enrolPasskeyWith is enrolPasskey with a step-up token (nil sends null) and the
+// backup codes the finish leg answers alongside the credential id.
+func enrolPasskeyWith(t *testing.T, h http.Handler, token string, a *virtualAuthenticator, stepup any) ([]byte, []any) {
+	t.Helper()
+	begin, _ := cborx.Marshal([]any{stepup})
+	res := postCBORAuth(h, "/v1/auth/passkey/register/begin", begin, token)
 	if res.Code != http.StatusOK {
 		t.Fatalf("register/begin answered %d: %q", res.Code, res.Body.String())
 	}
 	ceremony, options := ceremonyAndOptions(t, res.Body.Bytes())
-	body, _ := cborx.Marshal([]any{ceremony, a.register(t, options)})
+	body, _ := cborx.Marshal([]any{ceremony, a.register(t, options), "My passkey"})
 	res = postCBORAuth(h, "/v1/auth/passkey/register/finish", body, token)
 	if res.Code != http.StatusOK {
 		t.Fatalf("register/finish answered %d: %q", res.Code, res.Body.String())
@@ -227,19 +237,49 @@ func enrolPasskey(t *testing.T, h http.Handler, token string, a *virtualAuthenti
 	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode register/finish: %v", err)
 	}
-	if len(out) != 1 {
-		t.Fatalf("register/finish returned %d elements, want [cred_id]", len(out))
+	if len(out) != 2 {
+		t.Fatalf("register/finish returned %d elements, want [cred_id, backup_codes]", len(out))
 	}
 	credID, ok := out[0].([]byte)
 	if !ok {
 		t.Fatalf("cred_id = %#v, want a byte string", out[0])
 	}
-	return credID
+	codes, ok := out[1].([]any)
+	if !ok {
+		t.Fatalf("backup_codes = %#v, want an array", out[1])
+	}
+	return credID, codes
 }
 
-// passkeyLogin walks /v1/auth/passkey/login/{begin,finish} and returns the
-// assertion the finish leg issues.
-func passkeyLogin(t *testing.T, h http.Handler, a *virtualAuthenticator) string {
+// passkeyLoginNeeds walks /v1/auth/passkey/login/{begin,finish} and returns the
+// assertion the finish leg issues with the `needs` it answers.
+func passkeyLoginNeeds(t *testing.T, h http.Handler, a *virtualAuthenticator) (string, uint64) {
+	t.Helper()
+	res := passkeyLoginRaw(t, h, a)
+	if res.Code != http.StatusOK {
+		t.Fatalf("login/finish answered %d: %q", res.Code, res.Body.String())
+	}
+	var out []any
+	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode login/finish: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("login/finish returned %d elements, want [assertion, needs]", len(out))
+	}
+	assertion, ok := out[0].(string)
+	if !ok || assertion == "" {
+		t.Fatalf("assertion = %#v, want a text string", out[0])
+	}
+	needs, ok := out[1].(uint64)
+	if !ok {
+		t.Fatalf("needs = %#v, want a uint", out[1])
+	}
+	return assertion, needs
+}
+
+// passkeyLoginRaw walks both login legs and returns the finish leg's response
+// as it came, for the refusal rows.
+func passkeyLoginRaw(t *testing.T, h http.Handler, a *virtualAuthenticator) *httptest.ResponseRecorder {
 	t.Helper()
 	empty, _ := cborx.Marshal([]any{})
 	res := postCBOR(h, "/v1/auth/passkey/login/begin", empty)
@@ -248,22 +288,7 @@ func passkeyLogin(t *testing.T, h http.Handler, a *virtualAuthenticator) string 
 	}
 	ceremony, options := ceremonyAndOptions(t, res.Body.Bytes())
 	body, _ := cborx.Marshal([]any{ceremony, a.login(t, options)})
-	res = postCBOR(h, "/v1/auth/passkey/login/finish", body)
-	if res.Code != http.StatusOK {
-		t.Fatalf("login/finish answered %d: %q", res.Code, res.Body.String())
-	}
-	var out []any
-	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
-		t.Fatalf("decode login/finish: %v", err)
-	}
-	if len(out) != 1 {
-		t.Fatalf("login/finish returned %d elements, want [assertion]", len(out))
-	}
-	assertion, ok := out[0].(string)
-	if !ok || assertion == "" {
-		t.Fatalf("assertion = %#v, want a text string", out[0])
-	}
-	return assertion
+	return postCBOR(h, "/v1/auth/passkey/login/finish", body)
 }
 
 // ceremonyAndOptions decodes the [ceremony_id, options] both begin legs answer.

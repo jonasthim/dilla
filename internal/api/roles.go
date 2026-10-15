@@ -117,19 +117,9 @@ func (h *Roles) Register(mux *server.Mux) {
 // webauthn_credentials on (rp_id, user_id), so ListWebauthnCredentials with an
 // empty rp_id matches nothing and the passkey branch could never succeed.
 func requireSecondFactor(ctx context.Context, repo store.Repository, userID id.ID, rpID string) error {
-	t, err := repo.GetTOTP(ctx, userID)
-	switch {
-	case err == nil && t.ConfirmedAt != nil:
-		return nil
-	case err != nil && !errors.Is(err, store.ErrNotFound):
+	holds, err := holdsFactor(ctx, repo, userID, rpID)
+	if err != nil || holds {
 		return err
-	}
-	creds, err := repo.ListWebauthnCredentials(ctx, userID, rpID)
-	if err != nil {
-		return err
-	}
-	if len(creds) > 0 {
-		return nil
 	}
 	// E_TARGET_NO_FACTOR, not E_FORBIDDEN (web3.6): the actor is permitted; the TARGET lacks a
 	// second factor, and the client tells the two apart by code.
