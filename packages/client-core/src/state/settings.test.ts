@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue } from './settings';
+import { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, isSettingValue, suppressesEveryone } from './settings';
 
 it('accepts only bounded device-local appearance and search choices', () => {
   const choices = [
@@ -121,5 +121,58 @@ describe('voice and sound settings (L-TS-54)', () => {
 
   it('defaults to voice activity, noise suppression on, full volume and both sounds on', () => {
     expect(VOICE_DEFAULTS).toEqual({ mode: 'vad', pttKey: null, noise: 'on', volume: '100', soundVoice: 'on', soundRing: 'on' });
+  });
+});
+
+// web3.5: per-server notification, mute and @everyone switches.
+describe('community settings (web3.5)', () => {
+  const COM = 'cd'.repeat(16);
+  const OTHER = 'ef'.repeat(16);
+
+  it('names the three keys and validates keys and values', () => {
+    expect(SETTINGS.notifyCommunity(COM)).toBe(`notify.community.${COM}`);
+    expect(SETTINGS.muteCommunity(COM)).toBe(`mute.community.${COM}`);
+    expect(SETTINGS.everyoneCommunity(COM)).toBe(`everyone.community.${COM}`);
+    for (const key of [SETTINGS.notifyCommunity(COM), SETTINGS.muteCommunity(COM), SETTINGS.everyoneCommunity(COM)]) {
+      expect(isSettingKey(key)).toBe(true);
+      expect(isSettingKey(`${key}0`)).toBe(false);
+      expect(isSettingKey(key.slice(0, -1))).toBe(false);
+      expect(isSettingKey(key.toUpperCase())).toBe(false);
+    }
+    for (const v of ['all', 'mentions', 'nothing']) expect(isSettingValue(SETTINGS.notifyCommunity(COM), v)).toBe(true);
+    expect(isSettingValue(SETTINGS.notifyCommunity(COM), 'everything')).toBe(false);
+    expect(isSettingValue(SETTINGS.notifyCommunity(COM), '1')).toBe(false);
+    for (const key of [SETTINGS.muteCommunity(COM), SETTINGS.everyoneCommunity(COM)]) {
+      expect(isSettingValue(key, '1')).toBe(true);
+      expect(isSettingValue(key, '0')).toBe(false);
+      expect(isSettingValue(key, 'all')).toBe(false);
+    }
+  });
+
+  it('resolves channel over community over default', () => {
+    const s = { 'notify.default': 'everything', [SETTINGS.notifyCommunity(COM)]: 'mentions', [SETTINGS.notifyChannel(HEX)]: 'nothing' };
+    expect(effectiveNotifyMode(s, HEX, 0, COM)).toBe('nothing');
+    const noChannel = { 'notify.default': 'everything', [SETTINGS.notifyCommunity(COM)]: 'mentions' };
+    expect(effectiveNotifyMode(noChannel, HEX, 0, COM)).toBe('mentions');
+    expect(effectiveNotifyMode(noChannel, HEX, 0)).toBe('all');
+    expect(effectiveNotifyMode(noChannel, HEX, 0, OTHER)).toBe('all');
+    expect(effectiveNotifyMode(noChannel, HEX, 0, 'zz')).toBe('all');
+    expect(effectiveNotifyMode({ [SETTINGS.notifyCommunity(COM)]: 'loud' }, HEX, 0, COM)).toBe('mentions');
+  });
+
+  it('mutes by community alone', () => {
+    const s = { [SETTINGS.muteCommunity(COM)]: '1' };
+    expect(isMuted(s, HEX, COM)).toBe(true);
+    expect(isMuted(s, HEX)).toBe(false);
+    expect(isMuted(s, HEX, OTHER)).toBe(false);
+    expect(isMuted({ [SETTINGS.muteChannel(HEX)]: '1' }, HEX, COM)).toBe(true);
+    expect(isMuted({ [SETTINGS.muteCommunity(COM)]: '0' }, HEX, COM)).toBe(false);
+  });
+
+  it('suppresses @everyone per community', () => {
+    expect(suppressesEveryone({ [SETTINGS.everyoneCommunity(COM)]: '1' }, COM)).toBe(true);
+    expect(suppressesEveryone({ [SETTINGS.everyoneCommunity(COM)]: '1' }, OTHER)).toBe(false);
+    expect(suppressesEveryone({}, COM)).toBe(false);
+    expect(suppressesEveryone({ [SETTINGS.everyoneCommunity(COM)]: '0' }, COM)).toBe(false);
   });
 });

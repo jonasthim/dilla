@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeMentions, mentionQuery, mentionsMe, splitMentions, type MentionMember } from './mentions';
+import { encodeMentions, mentionQuery, mentionsDirectly, mentionsMe, roleHandle, splitMentions, type MentionMember } from './mentions';
 
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
@@ -71,5 +71,58 @@ describe('mentionsMe (L-CORE-35 over hex)', () => {
     expect(mentionsMe(`<@${B}>`, A, [ROLE])).toBe(false);
     expect(mentionsMe(`<@${A.toUpperCase()}>`, A, [])).toBe(false);
     expect(mentionsMe('@ada', A, [])).toBe(false);
+  });
+});
+
+describe('mentionsDirectly (web3.5)', () => {
+  it('ignores the broadcast tokens', () => {
+    expect(mentionsDirectly('<@everyone>', A, [])).toBe(false);
+    expect(mentionsDirectly('<@here>', A, [])).toBe(false);
+    expect(mentionsDirectly(`<@${A}>`, A, [])).toBe(true);
+    expect(mentionsDirectly(`<@${ROLE}>`, A, [ROLE])).toBe(true);
+    expect(mentionsDirectly(`<@${ROLE}>`, A, [])).toBe(false);
+  });
+});
+
+describe('roleHandle', () => {
+  it('lower-cases, collapses whitespace to dashes and normalises to NFC', () => {
+    expect(roleHandle('Game  Night')).toBe('game-night');
+    expect(roleHandle(' Mods ')).toBe('mods');
+    expect(roleHandle('Modérateurs')).toBe('modérateurs');
+    expect(roleHandle('Modérateurs')).toBe('modérateurs');
+  });
+});
+
+describe('encodeMentions with roles (web3.5)', () => {
+  const R1 = '51'.repeat(16);
+  const R2 = '52'.repeat(16);
+  it('writes a role token for its handle', () => {
+    expect(encodeMentions('hi @game-night', MEMBERS, true, [{ roleId: R1, handle: 'game-night' }])).toBe(`hi <@${R1}>`);
+    expect(encodeMentions('@Modérateurs.', MEMBERS, true, [{ roleId: R1, handle: 'modérateurs' }])).toBe(`<@${R1}>.`);
+  });
+  it('leaves @everyone alone without broadcast, and an unknown handle', () => {
+    expect(encodeMentions('@everyone', MEMBERS, false)).toBe('@everyone');
+    expect(encodeMentions('@everyone', MEMBERS, false, [{ roleId: R1, handle: 'crew' }])).toBe('@everyone');
+    expect(encodeMentions('@game-nights', MEMBERS, true, [{ roleId: R1, handle: 'game-night' }])).toBe('@game-nights');
+  });
+  it('the longest match wins', () => {
+    const roles = [{ roleId: R1, handle: 'game' }, { roleId: R2, handle: 'game-night' }];
+    expect(encodeMentions('@game-night', MEMBERS, true, roles)).toBe(`<@${R2}>`);
+    expect(encodeMentions('@game ok', MEMBERS, true, roles)).toBe(`<@${R1}> ok`);
+  });
+  it('breaks ties broadcast > member > role', () => {
+    expect(encodeMentions('@crew', [{ userId: A, username: 'crew' }], true, [{ roleId: R1, handle: 'crew' }])).toBe(`<@${A}>`);
+    expect(encodeMentions('@here', MEMBERS, true, [{ roleId: R1, handle: 'here' }])).toBe('<@here>');
+    expect(encodeMentions('@here', [{ userId: A, username: 'here' }], true)).toBe('<@here>');
+    expect(encodeMentions('@here', MEMBERS, false, [{ roleId: R1, handle: 'here' }])).toBe(`<@${R1}>`);
+  });
+  it('a longer member beats a shorter role', () => {
+    expect(encodeMentions('@bob.smith', MEMBERS, true, [{ roleId: R1, handle: 'bob' }])).toBe(`<@${B}>`);
+  });
+});
+
+describe('mentionQuery with Unicode (web3.5)', () => {
+  it('keeps letters beyond ASCII in the query', () => {
+    expect(mentionQuery('hi @modé', 8)).toEqual({ start: 3, query: 'modé' });
   });
 });
