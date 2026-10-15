@@ -5,7 +5,7 @@
 import type { Id } from '../core-port';
 import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { PERM_ALL, ROLE_COLOR_MAX, ROLE_NAME_MAX_BYTES } from '../http/routes';
+import { OVERWRITES_PER_CREATE_MAX, PERM_ALL, ROLE_COLOR_MAX, ROLE_NAME_MAX_BYTES } from '../http/routes';
 import type { NewOverwrite, OverwriteRow, RoleRow, Routes } from '../http/routes';
 import type { OverwriteSummary, RoleSummary, SliceName, SliceTypes } from '../state/types';
 import type { Command } from '../worker/protocol';
@@ -71,12 +71,18 @@ export const ROLES_VALIDATORS: Record<RolesMethod, ((c: Record<string, unknown>)
   setChannelPrivate: undefined,
 };
 
-/** The `private` field of createChannel: `{ roleIds }` of at most 100 ids; a reason or null. */
+/** Roles a private create can open the channel to: the @everyone entry and, for a member who is neither owner nor
+ *  administrator, her own entry take two of the instance's overwrites per create. */
+const PRIVATE_ROLES_MAX = OVERWRITES_PER_CREATE_MAX - 2;
+const PRIVATE_ROLES_REASON = `a private channel can be opened to at most ${String(PRIVATE_ROLES_MAX)} roles`;
+
+/** The `private` field of createChannel: `{ roleIds }` of 32-hex ids, at most one fewer than the instance's cap (the
+ *  owner's create has no self entry; a member's is checked again with it); a reason or null. */
 export function privateProblem(v: unknown): string | null {
-  const bad = 'roleIds must be at most 100 ids';
-  if (typeof v !== 'object' || v === null) return bad;
+  if (typeof v !== 'object' || v === null) return 'roleIds must be an array of ids';
   const { roleIds } = v as { roleIds?: unknown };
-  return Array.isArray(roleIds) && roleIds.length <= 100 && roleIds.every((r) => typeof r === 'string' && ID.test(r)) ? null : bad;
+  if (!Array.isArray(roleIds) || !roleIds.every((r) => typeof r === 'string' && ID.test(r))) return 'roleIds must be an array of ids';
+  return roleIds.length > OVERWRITES_PER_CREATE_MAX - 1 ? PRIVATE_ROLES_REASON : null;
 }
 
 const statusOf = (e: unknown): number | null => (e instanceof DillaHttpError ? e.status : null);
@@ -239,7 +245,11 @@ export class RolesController {
 
   async setChannelPrivate(channelId: string, makePrivate: boolean): Promise<null> {
     const communityId = this.communityOfChannel(channelId);
-    if (this.deps.get(`overwrites:${communityId}`) === undefined) await this.deps.loadAccess(communityId);
+    // Never act on stale or missing overwrites: read them now, and refuse when they cannot be read.
+    await this.deps.loadAccess(communityId);
+    if (this.deps.get(`permissions:${communityId}`)?.overwritesLoaded !== true) {
+      throw this.deps.refusal('E_BAD_INPUT', 'the channel permissions could not be read');
+    }
     const { everyoneId, owner } = await this.access(communityId);
     const entries = this.deps.get(`overwrites:${communityId}`)?.[channelId] ?? [];
     const everyone = entries.find((o) => o.kind === 0 && o.targetId === everyoneId);
@@ -268,6 +278,7 @@ export class RolesController {
     }
     const me = this.deps.me();
     if (me !== null && !owner && !this.administrator(communityId)) out.push({ kind: 1, targetId: me.userId, allow: PERM.viewChannel, deny: 0 });
+    if (out.length > OVERWRITES_PER_CREATE_MAX) throw this.deps.refusal('E_BAD_INPUT', PRIVATE_ROLES_REASON);
     return out;
   }
 

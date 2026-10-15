@@ -54,8 +54,8 @@ describe('roles: input checks', () => {
     ['an overwrite deny out of range', { m: 'setOverwrite', channelId: CH, kind: 0, targetId: HEX.a, allow: 0, deny: 0x1000000 }, 'deny must be an integer 0..16777215'],
     ['an overwrite allow out of range', { m: 'setOverwrite', channelId: CH, kind: 0, targetId: HEX.a, allow: 0.5, deny: 0 }, 'allow must be an integer 0..16777215'],
     ['an overlapping allow and deny', { m: 'setOverwrite', channelId: CH, kind: 0, targetId: HEX.a, allow: 3, deny: 2 }, 'allow and deny overlap'],
-    ['private roleIds that are not ids', { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: ['nope'] } }, 'roleIds must be at most 100 ids'],
-    ['more than 100 private roleIds', { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: Array<string>(101).fill(HEX.a) } }, 'roleIds must be at most 100 ids'],
+    ['private roleIds that are not ids', { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: ['nope'] } }, 'roleIds must be an array of ids'],
+    ['more than 99 private roleIds', { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: Array<string>(100).fill(HEX.a) } }, 'a private channel can be opened to at most 98 roles'],
   ];
   it.each(bad)('refuses %s with E_BAD_INPUT and its reason', async (_label, command, reason) => {
     const w = world();
@@ -252,5 +252,122 @@ describe('roles: overwrites and private channels', () => {
     const w = await ready();
     await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'open' });
     expect(w.routes.createChannel.mock.calls[0]?.[1].overwrites).toBeUndefined();
+  });
+});
+
+describe('roles: fix round 1', () => {
+  const many = (n: number): string[] => Array.from({ length: n }, (_, i) => toHex(id16(0x80 + i)));
+  it('a private create with 99 roles by a non-owner (a self entry makes 101) is refused without a request; the owner may use 99', async () => {
+    const m = await ready({ owner: false, top: 5, bits: 0xffn });
+    expect(await run(m, { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: many(99) } }))
+      .toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(m.routes.createChannel).not.toHaveBeenCalled();
+    const o = await ready();
+    expect(await run(o, { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: many(99) } })).toMatchObject({ ok: true });
+    expect(o.routes.createChannel.mock.calls[0]?.[1].overwrites).toHaveLength(100);
+  });
+
+  it('setChannelPrivate refuses, and sends nothing, when the overwrites cannot be read', async () => {
+    const w = await ready({ overwrites: [ow(0, EVERYONE, 0, 2)] });
+    w.routes.listOverwrites.mockRejectedValue(refusal(500, 'E_INTERNAL'));
+    expect(await run(w, { m: 'setChannelPrivate', channelId: CH, private: true })).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(await run(w, { m: 'setChannelPrivate', channelId: CH, private: false })).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.routes.putOverwrite).not.toHaveBeenCalled();
+    expect(w.routes.deleteOverwrite).not.toHaveBeenCalled();
+  });
+  it('setChannelPrivate reads the overwrites fresh instead of acting on the cached ones', async () => {
+    const w = await ready();
+    w.routes.listOverwrites.mockResolvedValue([ow(0, EVERYONE, 0, 2)]);
+    await run(w, { m: 'setChannelPrivate', channelId: CH, private: true });
+    expect(w.routes.putOverwrite).toHaveBeenCalledWith(CHANNEL, 0, EVERYONE, { allow: 0, deny: 3 });
+  });
+
+  it('overwritesLoaded: true after a good read, false after a failed one (the overwrites slice keeps its value), false from forget', async () => {
+    const w = await ready({ overwrites: [ow(0, EVERYONE, 0, 1)] });
+    expect(w.last<CommunityAccess>(`permissions:${CID}`)?.overwritesLoaded).toBe(true);
+    w.routes.listOverwrites.mockRejectedValue(refusal(500, 'E_INTERNAL'));
+    await run(w, { m: 'kickMember', communityId: CID, userId: HEX.stranger });
+    expect(w.last<CommunityAccess>(`permissions:${CID}`)?.overwritesLoaded).toBe(false);
+    expect(w.last<Record<string, OverwriteSummary[]>>(`overwrites:${CID}`)?.[CH]).toHaveLength(1);
+    await run(w, { m: 'leaveCommunity', communityId: CID });
+    expect(w.last<CommunityAccess>(`permissions:${CID}`)?.overwritesLoaded).toBe(false);
+  });
+  it('overwritesLoaded is false when the very first overwrites read fails', async () => {
+    const w = world();
+    w.routes.listRoles.mockResolvedValue([row(EVERYONE, 0)]);
+    w.routes.listOverwrites.mockRejectedValue(refusal(500, 'E_INTERNAL'));
+    await toReady(w);
+    await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)?.everyoneId).toBe(HEX.everyone));
+    expect(w.last<CommunityAccess>(`permissions:${CID}`)?.overwritesLoaded).toBe(false);
+  });
+
+  it('an access read that began before a later one does not publish over it', async () => {
+    const w = await ready();
+    let release: (rows: RoleRow[]) => void = () => undefined;
+    w.routes.listRoles.mockImplementationOnce(() => new Promise<RoleRow[]>((resolve) => { release = resolve; }));
+    next += 1;
+    const first = next;
+    w.call(first, { m: 'kickMember', communityId: CID, userId: HEX.stranger });
+    await vi.waitFor(() => expect(w.routes.listRoles.mock.calls.length).toBeGreaterThan(1));
+    w.routes.listRoles.mockResolvedValue([row(EVERYONE, 0), row(A, 1), row(B, 2), row(id16(0x43), 3)]);
+    await run(w, { m: 'kickMember', communityId: CID, userId: HEX.stranger });
+    expect(w.last<RoleSummary[]>(`roles:${CID}`)).toHaveLength(4);
+    release([row(EVERYONE, 0)]);
+    await vi.waitFor(() => expect(w.ret(first)).toBeDefined());
+    expect(w.last<RoleSummary[]>(`roles:${CID}`)).toHaveLength(4);
+  });
+
+  it('grantRole shows the changed members in the roles slice before the ret', async () => {
+    const w = await ready();
+    const changed = [{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: [A] }];
+    w.routes.listMembers.mockImplementation(() => new Promise((resolve) => { setTimeout(() => { resolve(changed); }, 30); }));
+    await run(w, { m: 'grantRole', communityId: CID, userId: HEX.user, roleId: HEX.a });
+    const ret = w.posted.findIndex((m) => m.t === 'ret' && m.id === next);
+    const before = w.posted.slice(0, ret).filter((m) => m.t === 'slice' && m.name === `roles:${CID}`).map((m) => (m as { value: RoleSummary[] }).value);
+    expect(before.at(-1)?.find((r) => r.id === HEX.a)?.members).toBe(1);
+  });
+  it('setChannelPrivate(true) moves VIEW out of the @everyone allow: VIEW|2 becomes allow 2', async () => {
+    const w = await ready({ overwrites: [ow(0, EVERYONE, PERM.viewChannel | 2, 4)] });
+    await run(w, { m: 'setChannelPrivate', channelId: CH, private: true });
+    expect(w.routes.putOverwrite).toHaveBeenCalledWith(CHANNEL, 0, EVERYONE, { allow: 2, deny: 5 });
+  });
+  it('a private create dedupes the role ids and skips @everyone', async () => {
+    const w = await ready();
+    await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: [HEX.a, HEX.a, HEX.everyone] } });
+    expect(w.routes.createChannel.mock.calls[0]?.[1].overwrites).toEqual([
+      { kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.viewChannel }, { kind: 0, targetId: A, allow: PERM.viewChannel, deny: 0 },
+    ]);
+  });
+  it('a non-owner administrator gets no self entry on a private create', async () => {
+    const w = await ready({ owner: false, top: 5, bits: BigInt(PERM.administrator) });
+    await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: [] } });
+    expect(w.routes.createChannel.mock.calls[0]?.[1].overwrites).toEqual([{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.viewChannel }]);
+  });
+  it('setChannelPrivate(true) as a non-owner whose own member entry allows view is let through', async () => {
+    const w = await ready({ owner: false, top: 5, bits: 0xffn, overwrites: [ow(1, USER, PERM.viewChannel, 0)] });
+    await run(w, { m: 'setChannelPrivate', channelId: CH, private: true });
+    expect(w.routes.putOverwrite).toHaveBeenCalled();
+  });
+  it('a 403 re-reads the access on a private create, createRole, updateRole and moveRole', async () => {
+    const w = await ready({ owner: false, top: 9, bits: 0xffn });
+    const attempts: [string, () => void, Record<string, unknown>][] = [
+      ['createChannel', () => w.routes.createChannel.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN')), { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: [] } }],
+      ['createRole', () => w.routes.createRole.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN')), { m: 'createRole', communityId: CID, name: 'x', color: 0, hoist: false, mentionable: false, allow: 0 }],
+      ['updateRole', () => w.routes.patchRole.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN')), { m: 'updateRole', communityId: CID, roleId: HEX.a, name: 'n', color: null, hoist: null, mentionable: null, allow: null }],
+      ['moveRole', () => w.routes.patchRole.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN')), { m: 'moveRole', communityId: CID, roleId: HEX.a, direction: 'up' }],
+    ];
+    for (const [label, arm, command] of attempts) {
+      arm();
+      const perms = w.routes.getPermissions.mock.calls.length;
+      expect(await run(w, command), label).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } });
+      expect(w.routes.getPermissions.mock.calls.length, label).toBeGreaterThan(perms);
+    }
+  });
+  it('a 404 on deleteRole reads the members again', async () => {
+    const w = await ready();
+    w.routes.deleteRole.mockRejectedValueOnce(refusal(404, 'E_NOT_FOUND'));
+    const members = w.routes.listMembers.mock.calls.length;
+    await run(w, { m: 'deleteRole', communityId: CID, roleId: HEX.a });
+    expect(w.routes.listMembers.mock.calls.length).toBe(members + 1);
   });
 });

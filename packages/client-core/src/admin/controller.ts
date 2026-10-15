@@ -104,18 +104,40 @@ export class AdminController {
 
   // ---- access ----
 
-  /** Reads the caller's permissions and the roles of a server, and publishes both; a failed read publishes neither and
-   *  leaves what the page already holds. Never throws. */
+  /** Reads the caller's permissions, the roles and the overwrites of a server, and publishes them; a failed read publishes
+   *  nothing and leaves what the page already holds, except that a failed overwrites read alone clears `overwritesLoaded`.
+   *  Never throws. Reads are sequenced per server: one that began before a later one never publishes, and it resolves
+   *  once the newest has. */
   async loadAccess(communityId: string): Promise<void> {
+    const seq = (this.accessSeq.get(communityId) ?? 0) + 1;
+    this.accessSeq.set(communityId, seq);
+    const job = this.readAccess(communityId, seq);
+    this.accessJob.set(communityId, job);
+    await job;
+    // Superseded: wait for the newest read, so the caller sees its slices when this resolves.
+    let latest = this.accessJob.get(communityId);
+    while (latest !== undefined && latest !== job) {
+      await latest;
+      const again = this.accessJob.get(communityId);
+      if (again === latest) break;
+      latest = again;
+    }
+  }
+  private readonly accessSeq = new Map<string, number>();
+  private readonly accessJob = new Map<string, Promise<void>>();
+
+  private async readAccess(communityId: string, seq: number): Promise<void> {
     try {
       const id = fromHex(communityId);
       const [perms, roles, overwrites] = await Promise.all([this.deps.routes.getPermissions(id), this.deps.routes.listRoles(id),
         this.deps.routes.listOverwrites(id).catch(() => null)]);
+      if (this.accessSeq.get(communityId) !== seq) return;
       const me = this.deps.me();
       if (me === null || !this.deps.listed(communityId)) return;
       const owner = (this.deps.get('communities') ?? []).find((c: CommunitySummary) => c.id === communityId)?.owner === toHex(me.userId);
       const everyone = roles.find((r) => r.position === 0);
-      this.deps.publish(`permissions:${communityId}`, { ...accessOf(perms.bits, perms.top, owner), everyoneId: everyone === undefined ? '' : toHex(everyone.id) });
+      this.deps.publish(`permissions:${communityId}`, { ...accessOf(perms.bits, perms.top, owner),
+        everyoneId: everyone === undefined ? '' : toHex(everyone.id), overwritesLoaded: overwrites !== null });
       this.deps.accessRead(communityId, roles, perms.bits, overwrites);
     } catch { /* the slices stay as they were (absent before the first read) */ }
   }
@@ -127,6 +149,7 @@ export class AdminController {
     this.deps.publish(`invites:${communityId}`, []);
     this.deps.publish(`overwrites:${communityId}`, {});
     this.deps.accessForgotten(communityId);
+    this.accessSeq.set(communityId, (this.accessSeq.get(communityId) ?? 0) + 1);   // a read in flight no longer publishes
     // A slice has no "absent" value: a server the caller left reads as no access at all.
     this.deps.publish(`permissions:${communityId}`, { ...accessOf(0n, 0, false), loaded: false });
   }

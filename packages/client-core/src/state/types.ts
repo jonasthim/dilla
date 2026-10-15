@@ -139,7 +139,9 @@ export const RINGS_EMPTY: RingsState = [];
 export interface CommunityAccess { top: number; owner: boolean; manageCommunity: boolean; manageChannels: boolean;
   kickMembers: boolean; banMembers: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean;
   /** The id of the position-0 role (@everyone); '' until the roles are read. */
-  everyoneId: string }
+  everyoneId: string;
+  /** Whether the last read of the overwrites succeeded; the `overwrites:` slice keeps its last value for display only. */
+  overwritesLoaded: boolean }
 /** One role with its permission bits; `members` counts the member rows that hold it (every member for @everyone, 0 while
  *  the member list is absent). */
 export interface RoleSummary { id: string; name: string; color: number; position: number; hoist: boolean; mentionable: boolean;

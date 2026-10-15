@@ -87,7 +87,7 @@ describe('AdminController: access', () => {
     await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)).toBeDefined());
     expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
       top: 2 ** 31, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true, createInvite: true,
-      manageRoles: true, loaded: true, everyoneId: '',
+      manageRoles: true, loaded: true, everyoneId: '', overwritesLoaded: true,
     });
     expect(w.last<RoleSummary[]>(`roles:${CID}`)).toEqual([
       { id: toHex(id16(0x31)), name: 'mods', color: 0xff0000, position: 5, hoist: true, mentionable: false, allow: 0, deny: 0, members: 0 },
@@ -306,7 +306,7 @@ describe('AdminController: server and channel edits', () => {
     expect(w.last<unknown[]>(`roles:${CID}`)).toEqual([]);
     expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
       top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
-      manageRoles: false, loaded: false, everyoneId: '',
+      manageRoles: false, loaded: false, everyoneId: '', overwritesLoaded: false,
     });
   });
 
@@ -422,7 +422,7 @@ describe('AdminController: fix round 1', () => {
     expect(await run(w, { m: 'transferOwnership', communityId: CID, userId: STRANGER_HEX })).toMatchObject({ ok: true, value: null });
     await vi.waitFor(() => expect(w.last<CommunityAccess>(`permissions:${CID}`)).toEqual({
       top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false, createInvite: false,
-      manageRoles: false, loaded: true, everyoneId: '',
+      manageRoles: false, loaded: true, everyoneId: '', overwritesLoaded: true,
     }));
   });
 
