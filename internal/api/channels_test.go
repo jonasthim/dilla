@@ -847,6 +847,68 @@ func TestAPrivateCreateRechecksUnderTheLock(t *testing.T) {
 	}
 }
 
+// S2 round 2: a creator's self entry is a member overwrite, and like any other it goes with the
+// membership. A moderator who made a private channel visible to themself by a self entry, then is
+// kicked, banned (and unbanned) or leaves, and rejoins, does not see the channel again.
+func TestASelfEntryEndsWithTheMembership(t *testing.T) {
+	for _, how := range []string{"kick", "ban", "leave"} {
+		t.Run(how, func(t *testing.T) {
+			f := privateEnv(t)
+			status, body := createWith(f.e, f.cid, f.mTok, "mods", 0,
+				[]any{ow(0, f.everyone, 0, api.PermViewChannel), ow(1, f.mod, api.PermViewChannel, 0)})
+			if status != http.StatusCreated {
+				t.Fatalf("mod create = %d (%x)", status, body)
+			}
+			ch := createdID(t, body)
+			if !lists(t, f.e, f.cid, f.mTok, ch) {
+				t.Fatal("the creator does not list its channel")
+			}
+			member := "/v1/communities/" + f.cid.String() + "/members/" + f.mod.String()
+			ban := "/v1/communities/" + f.cid.String() + "/bans/" + f.mod.String()
+			type step struct {
+				method, path, tok string
+				body              any
+			}
+			steps := map[string][]step{
+				"kick": {{http.MethodDelete, member, f.ownerTok, nil}},
+				// Banned, then unbanned so the rejoin is admitted.
+				"ban":   {{http.MethodPut, ban, f.ownerTok, []any{"", nil}}, {http.MethodDelete, ban, f.ownerTok, nil}},
+				"leave": {{http.MethodPost, "/v1/communities/" + f.cid.String() + "/leave", f.mTok, []any{}}},
+			}[how]
+			for _, s := range steps {
+				if status, body := f.e.Do(s.method, s.path, s.tok, s.body); status != http.StatusNoContent {
+					t.Fatalf("%s %s = %d (%x)", s.method, s.path, status, body)
+				}
+			}
+			for _, o := range mustOverwrites(t, f.e, ch) {
+				if o.TargetKind == 1 && o.TargetID == f.mod {
+					t.Fatalf("the self entry outlived the %s: %+v", how, o)
+				}
+			}
+			if members, _ := listChannelMembers(t, f.e, ch); slices.Contains(members, f.mod) {
+				t.Fatalf("channel_members still lists the creator after the %s", how)
+			}
+			joinCommunity(t, f.e, f.cid, f.mTok)
+			if lists(t, f.e, f.cid, f.mTok, ch) {
+				t.Fatalf("after the %s and a rejoin the creator lists the private channel", how)
+			}
+			if status, _ := f.e.Do(http.MethodGet, "/v1/channels/"+ch.String(), f.mTok, nil); status != http.StatusNotFound {
+				t.Fatalf("after the %s and a rejoin GET channel = %d, want 404", how, status)
+			}
+		})
+	}
+}
+
+// mustOverwrites reads a channel's stored overwrites.
+func mustOverwrites(t *testing.T, e *env, ch id.ID) []store.OverwriteRow {
+	t.Helper()
+	ow, err := e.Repo.ListOverwrites(t.Context(), ch)
+	if err != nil {
+		t.Fatalf("ListOverwrites: %v", err)
+	}
+	return ow
+}
+
 // S2 round 2: channel PATCH and DELETE take manage_channels again inside their transaction under
 // the community row lock. A moderator demoted between the route's checks and its transaction is
 // 403 and nothing is written; the same request undisturbed (the control) succeeds. The PATCH is

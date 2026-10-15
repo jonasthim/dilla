@@ -333,7 +333,8 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
     exception to the rank rule makes this possible for a non-owner: a kind `1` entry naming the
     creator themself, allowing only `view_channel` and denying none, is allowed; any other entry
     on oneself takes the rank rule (`403`). Such an entry is an ordinary member overwrite
-    afterwards, and keeps the channel visible to its holder after a demotion.
+    afterwards: it keeps the channel visible to its holder after a demotion, and goes with the
+    membership like every member overwrite (§ Roles).
 
   The create's audit records `channel.create` and one `channel.overwrite.put` per entry, and
   `community_changed` (`02`) is sent once.
@@ -405,7 +406,9 @@ community answers `404 E_NOT_FOUND`.
 - **Overwrites.** `{kind}` is `0` (the target is a role of the channel's community) or `1` (the
   target is a member of it); anything else is `400`, and an unknown target is `404`. An overwrite
   may not allow and deny the same bit, nor carry a community-wide bit (§ Permissions), both `400`.
-  A second `PUT` for the same target replaces the pair.
+  A second `PUT` for the same target replaces the pair. A member's own overwrites (kind `1`) in
+  every channel of the community are deleted with the membership, in the same transaction as a
+  kick, a ban or a leave, so a member who rejoins starts without them.
 - **No self-lockout.** A `PUT` or `DELETE` after which its author, neither the owner nor a holder
   of `administrator`, would no longer hold `view_channel` in the channel is `400`. It is checked
   after every rule above, so their `403` comes first, and an overwrite on oneself is no exception
