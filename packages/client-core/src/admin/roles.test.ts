@@ -192,6 +192,15 @@ describe('roles: overwrites and private channels', () => {
     expect(r).toMatchObject({ ok: false });
     expect(w.routes.getPermissions.mock.calls.length).toBe(perms + 1);
   });
+  it('a 400 on putOverwrite or on a private create reaches the page as E_INVALID_REQUEST with its status', async () => {
+    const w = await ready();
+    w.routes.putOverwrite.mockRejectedValueOnce(refusal(400, 'E_INVALID_REQUEST'));
+    expect(await run(w, { m: 'setOverwrite', channelId: CH, kind: 0, targetId: HEX.a, allow: 0, deny: PERM.kickMembers }))
+      .toMatchObject({ ok: false, error: { code: 'E_INVALID_REQUEST', status: 400 } });
+    w.routes.createChannel.mockRejectedValueOnce(refusal(400, 'E_INVALID_REQUEST'));
+    expect(await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', private: { roleIds: [HEX.a] } }))
+      .toMatchObject({ ok: false, error: { code: 'E_INVALID_REQUEST', status: 400 } });
+  });
   it('setChannelPrivate(true) keeps the other deny bits of @everyone', async () => {
     const w = await ready({ overwrites: [ow(0, EVERYONE, 0, 2)] });
     await run(w, { m: 'setChannelPrivate', channelId: CH, private: true });

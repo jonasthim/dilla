@@ -59,6 +59,23 @@ describe('the resolver against protocol/vectors/permissions.json', () => {
   }
 });
 
+describe('resolver pins beyond the vectors', () => {
+  it('equal_position_tie_by_id: reversing the roles array gives the same answers (the id breaks the tie)', () => {
+    const c = file.cases.find((v) => v.name === 'equal_position_tie_by_id') as Vector;
+    const overwrites: PermOverwrite[] = c.overwrites.map((o) => ({ kind: o.kind, targetId: o.target, allow: o.allow, deny: o.deny }));
+    const roles = c.roles.map((r) => ({ id: r.id, position: r.position, allow: r.allow, deny: r.deny }));
+    const input = { owner: c.owner, everyoneId: c.everyone, held: c.held, roles };
+    const reversed = { ...input, roles: roles.slice().reverse() };
+    expect(resolveCommunity(reversed, c.user)).toBe(c.community);
+    expect(resolveChannel(reversed, overwrites, c.user)).toBe(c.channel);
+  });
+  it('a base without view stays 0 even when a member overwrite allows view (the base 0 short-circuit)', () => {
+    const input = { owner: 'aa', everyoneId: 'ee', roles: [{ id: 'ee', position: 0, allow: PERM.sendMessages, deny: 0 }], held: [] as string[] };
+    expect(resolveCommunity(input, 'bb')).toBe(0);
+    expect(resolveChannel(input, [{ kind: 1, targetId: 'bb', allow: PERM.viewChannel, deny: 0 }], 'bb')).toBe(0);
+  });
+});
+
 describe('channelBitsOf', () => {
   const s = { owner: 'aa', everyoneId: 'ee', roles: [{ id: 'ee', position: 0, allow: 3, deny: 0 }], members: [{ userId: 'bb', roleIds: [] }],
     overwrites: [] as PermOverwrite[] };

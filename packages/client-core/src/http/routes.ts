@@ -103,6 +103,11 @@ function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
   return toHex(v);
 }
+/** An id given by the caller, checked as input (E_ROUTE_INPUT), not decoded (E_CBOR_SHAPE). */
+function inputId(name: string, v: Uint8Array): Uint8Array {
+  id(name, v);
+  return v;
+}
 function digest(name: string, v: Uint8Array): string {
   if (v.length !== 32) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 32 bytes');
   return toHex(v);
@@ -214,15 +219,9 @@ function flag(v: CborValue): boolean {
 function bits(v: CborValue): number {
   return Number(u64(v) & BigInt(PERM_ALL));
 }
-/** Overwrite bits are exact: anything past the 24 bits is E_CBOR_RANGE. */
-function overwriteBits(v: CborValue): number {
-  const n = u53(v);
-  if (n > PERM_ALL) throw new CborError('E_CBOR_RANGE', 'permission bits above 0x' + PERM_ALL.toString(16));
-  return n;
-}
 function overwriteRow(value: CborValue): OverwriteRow {
   const a = atLeast(value, 5);
-  return { channelId: bin(a[0], 16), kind: oneOf(a[1], [0, 1] as const), targetId: bin(a[2], 16), allow: overwriteBits(a[3]), deny: overwriteBits(a[4]) };
+  return { channelId: bin(a[0], 16), kind: oneOf(a[1], [0, 1] as const), targetId: bin(a[2], 16), allow: bits(a[3]), deny: bits(a[4]) };
 }
 function permBits(field: string, v: number): number {
   return between(field, v, 0, PERM_ALL);
@@ -333,7 +332,7 @@ export class Routes {
     if (overwrites.length > OVERWRITES_PER_CREATE_MAX) throw new RangeError('E_ROUTE_INPUT: overwrites must be at most ' + String(OVERWRITES_PER_CREATE_MAX));
     // A non-empty list is the ninth element, so the channel is private from birth; an empty one keeps the eight-element form.
     if (overwrites.length > 0) {
-      fields.push(overwrites.map((o) => [Number(kindOf(o.kind)), bin(o.targetId, 16), permBits('allow', o.allow), permBits('deny', o.deny)]));
+      fields.push(overwrites.map((o) => [Number(kindOf(o.kind)), inputId('targetId', o.targetId), permBits('allow', o.allow), permBits('deny', o.deny)]));
     }
     const body = encode(fields);
     const raw = await this.body('POST', `/v1/communities/${id('communityId', communityId)}/channels`, 'write', false, { body });

@@ -1250,6 +1250,7 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
       () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x1000000, deny: 0 }),
       () => routes.deleteOverwrite(CHANNEL, 2 as 0, TARGET),
       () => routes.grantRole(new Uint8Array(15), TARGET, ROLE_2),
+      () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ kind: 0, targetId: new Uint8Array(15), allow: 0, deny: 1 }] }),
     ];
     for (const [i, attempt] of attempts.entries()) await expect(attempt(), `attempt ${i}`).rejects.toThrow(/^E_ROUTE_INPUT: /);
     expect(t.seen).toHaveLength(0);
@@ -1271,15 +1272,17 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
     expect([seen.method, seen.url]).toEqual(['GET', `https://dilla.test/v1/communities/${hex(COMMUNITY)}/overwrites`]);
     expect([http.requests[0].bucket, http.requests[0].idempotent]).toEqual(['read', true]);
   });
-  it('listOverwrites refuses a kind of 2, bits past PERM_ALL, a short row and 10 001 rows', async () => {
+  it('an overwrite row keeps only the 24 permission bits, as a role row does', async () => {
+    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 8, 0x1000000 + 1]]), (r) => r.listOverwrites(COMMUNITY));
+    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: 8, deny: 1 }]);
+  });
+  it('listOverwrites refuses a kind of 2, a short row and 10 001 rows', async () => {
     const bad = async (reply: Response, code: string) => {
       const { t, routes } = setup();
       t.replies.push(reply);
       await expect(routes.listOverwrites(COMMUNITY)).rejects.toMatchObject({ code });
     };
     await bad(cborReply(200, [[CHANNEL, 2, ROLE, 0, 0]]), 'E_CBOR_RANGE');
-    await bad(cborReply(200, [[CHANNEL, 0, ROLE, 0x1000000, 0]]), 'E_CBOR_RANGE');
-    await bad(cborReply(200, [[CHANNEL, 0, ROLE, 0, 0x1000000]]), 'E_CBOR_RANGE');
     await bad(cborReply(200, [[CHANNEL, 0, ROLE, 0]]), 'E_CBOR_SHAPE');
     await bad(cborReply(200, Array.from({ length: 10_001 }, () => [CHANNEL, 0, ROLE, 0, 0])), 'E_CBOR_SHAPE');
     const { t, routes } = setup();
