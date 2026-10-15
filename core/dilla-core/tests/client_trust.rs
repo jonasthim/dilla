@@ -248,6 +248,49 @@ fn a_sender_without_signed_history_stays_pending_and_unsearchable() {
     );
 }
 
+/// web3.5 R1: a message released from pending history takes its mention flag by the role view
+/// known at release: `<@everyone>` from a sender who may not send it counts only with a direct
+/// mention.
+#[test]
+fn a_released_pending_message_applies_the_broadcast_gate() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    let (_, plain) = bob.send(&mut relay, &GROUP, "<@everyone> late", NOW + 1);
+    let direct = format!("<@everyone> and <@{}>", "a1".repeat(16));
+    let (_, named) = bob.send(&mut relay, &GROUP, &direct, NOW + 2);
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, plain).status, 1);
+    alice
+        .core
+        .authority_set(&GROUP, &[], &[])
+        .expect("bob may not broadcast");
+    let (history, head) = list_wire(&bob);
+    alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history,
+            &head,
+            NOW + 3,
+        )
+        .expect("ingest");
+    assert_eq!(
+        alice
+            .core
+            .revalidate_pending(&GROUP, relay.leaf_of(bob.device), 256)
+            .expect("revalidate"),
+        2
+    );
+    let (p, n) = (alice.row_at(&GROUP, plain), alice.row_at(&GROUP, named));
+    assert_eq!((p.status, n.status), (0, 0), "both released");
+    assert_eq!(
+        (p.mention, n.mention),
+        (0, 1),
+        "the broadcast is gated; the direct mention counts"
+    );
+}
+
 #[test]
 fn untrusted_message_does_not_abort_a_batch_with_an_honest_message() {
     let (_, mut relay, mut alice, mut bob) = alice_and_bob();

@@ -94,6 +94,20 @@ describe('FakeCore identity', () => {
 });
 
 describe('FakeCore group half', () => {
+  it('records every authoritySet call in hex, in order, and logs it (web3.5 R1)', () => {
+    const core = member();
+    const a = new Uint8Array(16).fill(0xa1);
+    const b = new Uint8Array(16).fill(0xb2);
+    core.authoritySet(GROUP, [a, b], [b]);
+    core.authoritySet(GROUP, [], []);
+    const hex = (x: Uint8Array): string => Array.from(x, (v) => v.toString(16).padStart(2, '0')).join('');
+    expect(core.authoritySets).toEqual([
+      { groupId: hex(GROUP), pinners: [hex(a), hex(b)], broadcasters: [hex(b)] },
+      { groupId: hex(GROUP), pinners: [], broadcasters: [] },
+    ]);
+    expect(core.calls.filter((c) => c === 'authoritySet')).toHaveLength(2);
+  });
+
   it('throws not modelled for every group, commit, send, outbox and timeline method, and logs the call', () => {
     const core = member();
     const apply = caught(() => core.groupApply(GROUP, new Uint8Array([0x80]), new Uint8Array([0x80]), 1n));

@@ -153,6 +153,56 @@ fn a_registration_that_lost_is_discarded_and_leaves_nothing() {
     assert_eq!(a.group(&OTHER_GROUP).map(|g| g.state), Some(2));
 }
 
+/// web3.5 R1: a discarded group takes its role view with it, so a later group with the same id
+/// starts under the former rule until the view is pushed again.
+#[test]
+fn a_discarded_group_leaves_no_authority_rows() {
+    let instance = Instance::generate();
+    let mut a = ready_core(0xa1, "alice");
+    a.core
+        .group_create(
+            &GROUP,
+            Some(&COMMUNITY),
+            &CHANNEL,
+            POLICY,
+            &instance.public(),
+        )
+        .expect("create");
+    a.core
+        .authority_set(&GROUP, &[0xe5; 16], &[0xe5; 16])
+        .expect("a view");
+    a.core
+        .authority_set(&OTHER_GROUP, &[0xe5; 16], &[])
+        .expect("another group's view");
+    a.core.group_discard(&GROUP).expect("discard");
+    let rows = |sql: &str| -> i64 {
+        a.probe
+            .lock()
+            .expect("lock")
+            .query_row(sql, [GROUP.as_slice()], |r| r.get(0))
+            .expect("count")
+    };
+    assert_eq!(
+        rows("SELECT count(*) FROM app_authority WHERE group_id = ?1"),
+        0
+    );
+    assert_eq!(
+        rows("SELECT count(*) FROM app_authority_known WHERE group_id = ?1"),
+        0
+    );
+    let other: i64 = a
+        .probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT (SELECT count(*) FROM app_authority) + (SELECT count(*) FROM app_authority_known)",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(other, 2, "another group's view stays");
+}
+
 #[test]
 fn an_external_join_reaches_active_and_both_sides_read_each_other() {
     let instance = Instance::generate();
