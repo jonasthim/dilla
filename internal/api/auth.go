@@ -742,15 +742,6 @@ func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method 
 		return
 	}
 	userID, needs, ok := d.Assertions.SpendNeeds(req.Assertion)
-	if ok && accept(needs) {
-		// The account's lockout holds here too: guesses at the code are charged to the account
-		// ledger below, and a locked account is refused before its code is looked at. The
-		// assertion is already spent.
-		if locked := d.Throttle.LockedFor(userID); locked > 0 {
-			server.WriteError(w, server.RateLimitedAfter(locked))
-			return
-		}
-	}
 	if !ok || !accept(needs) {
 		// An unknown, expired, replayed or already-cleared assertion, or one owing
 		// something this route cannot clear, is one answer: there is nothing here
@@ -758,16 +749,32 @@ func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method 
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
+	// The guess is counted on the account ledger BEFORE the code is compared, in one step
+	// with the lockout check (auth.Throttle.Begin), so a burst of assertions minted while the
+	// account was unlocked cannot all reach the comparison, and a locked account is refused
+	// before its code is looked at. The assertion is already spent.
+	attempt, locked := d.Throttle.Begin(userID)
+	if locked > 0 {
+		server.WriteError(w, server.RateLimitedAfter(locked))
+		return
+	}
 	if err := check(userID, req.Code); err != nil {
 		if !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrConflict) {
+			// Undecided: a store failure is not a guess, and refunds only itself.
+			attempt.Pass()
 			server.WriteError(w, d.storeError(r, err))
 			return
 		}
 		d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, method, false)
-		server.WriteError(w, d.failure(userID, ip))
+		if locked := attempt.Fail(ip); locked > 0 {
+			server.WriteError(w, server.RateLimitedAfter(locked))
+			return
+		}
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	d.Throttle.Clear(userID)
+	// A complete login: the guess is refunded and the account's ledger cleared.
+	attempt.Pass(userID)
 	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, method, true)
 	d.write(w, r, http.StatusOK, []any{d.Assertions.Upgrade(userID)})
 }

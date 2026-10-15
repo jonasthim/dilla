@@ -77,6 +77,11 @@ Stated plainly in the product's documentation and onboarding:
   broadcast mention, give pin or broadcast rights to any member, or serve different views to
   different members or devices so their pins differ. It cannot read or forge a message, and the
   view never decides which messages are shown.
+- Anyone who knows a username can lock that account's failed-login ledger with wrong passwords
+  (at the per-handle rate). On an instance whose `auth.webauthn.user_verification` is not
+  `required`, that lockout also refuses the owner's presence-only passkey login, because it would
+  still owe a code the lockout forbids guessing. A passkey login with user verification (the
+  default) is the whole login and still works; the lockout ages out over the observation window.
 - The instance may withhold newer device-list history on first sight. Trust on first use cannot
   prove that the served signed head is the newest, so first sight is not called verified.
 - A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in

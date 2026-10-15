@@ -21,6 +21,7 @@ import (
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -1464,5 +1465,193 @@ func TestConcurrentStepUpGuessesAreCountedBeforeTheyAreChecked(t *testing.T) {
 	limit := int64(deps.Config.Auth.Lockout.FreeAttempts + 1)
 	if got := checked.Load(); got > limit || got == 0 {
 		t.Fatalf("%d of %d concurrent wrong step-ups reached the password check, want 1..%d", got, n, limit)
+	}
+}
+
+// --- second-factor verify reserves its guess (re-review round) ---
+
+// wrongTOTP is a six-digit code that matches the secret in none of the windows the skew admits.
+func wrongTOTP(t *testing.T, secret string, now time.Time) string {
+	t.Helper()
+	near := map[string]bool{}
+	for _, off := range []time.Duration{-60 * time.Second, -30 * time.Second, 0, 30 * time.Second, 60 * time.Second} {
+		c, err := totp.GenerateCode(secret, now.Add(off))
+		if err != nil {
+			t.Fatalf("GenerateCode: %v", err)
+		}
+		near[c] = true
+	}
+	for i := 0; ; i++ {
+		c := fmt.Sprintf("%06d", (i*7919)%1000000)
+		if !near[c] {
+			return c
+		}
+	}
+}
+
+// totpCountRepo counts the TOTP secret reads (one per code comparison) while armed, and stalls
+// each, so concurrent verifies overlap inside the check.
+type totpCountRepo struct {
+	store.Repository
+	armed *atomic.Bool
+	n     *atomic.Int64
+}
+
+func (c totpCountRepo) GetTOTP(ctx context.Context, u id.ID) (store.TOTPRow, error) {
+	if c.armed.Load() {
+		c.n.Add(1)
+		time.Sleep(30 * time.Millisecond)
+	}
+	return c.Repository.GetTOTP(ctx, u)
+}
+
+// I1: a burst of needs-1 assertions minted while the account was unlocked, spent at once on
+// wrong codes: each guess is counted before its code is compared, so at most free_attempts+1
+// reach the comparison.
+func TestConcurrentSecondFactorGuessesAreCountedBeforeTheyAreChecked(t *testing.T) {
+	armed, compared := &atomic.Bool{}, &atomic.Int64{}
+	h, deps := newTestAPIFull(t, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 1000
+		c.Limits.Rate.LoginFailedBurst = 1000
+	}, func(d *api.Deps) { d.Repo = totpCountRepo{Repository: d.Repo, armed: armed, n: compared} })
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	secret, _ := enrolTOTP(t, h, deps, token)
+
+	const k = 20
+	assertions := make([]string, 0, k)
+	for range k {
+		a, needs := needsOf(t, h, u.Username, pw)
+		if needs != 1 {
+			t.Fatalf("needs = %d, want 1", needs)
+		}
+		assertions = append(assertions, a)
+	}
+	wrong := wrongTOTP(t, secret, deps.Clock.Now())
+	armed.Store(true)
+	var wg sync.WaitGroup
+	for _, a := range assertions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, _ := cborx.Marshal([]any{a, wrong})
+			postCBOR(h, "/v1/auth/totp/verify", body)
+		}()
+	}
+	wg.Wait()
+	limit := int64(deps.Config.Auth.Lockout.FreeAttempts + 1)
+	if got := compared.Load(); got > limit || got == 0 {
+		t.Fatalf("%d of %d concurrent wrong codes reached the comparison, want 1..%d", got, k, limit)
+	}
+}
+
+// I2: an assertion minted while the account was unlocked does not outlive a lockout that lands
+// after it: the correct code is refused 429. The control spends the same kind of assertion on an
+// account that was not locked in between.
+func TestTheVerifyRefusesALockedAccountEvenForAnEarlierAssertion(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 1000
+		c.Limits.Rate.LoginFailedBurst = 1000
+	})
+	run := func(lock bool) int {
+		u, _, token := seedAPISession(t, deps)
+		pw := seedPassword(t, deps, u, "correct horse battery staple")
+		secret, _ := enrolTOTP(t, h, deps, token)
+		assertion, _ := needsOf(t, h, u.Username, pw)
+		if lock {
+			for i := 0; i <= deps.Config.Auth.Lockout.FreeAttempts; i++ {
+				login(t, h, u.Username, "not the password")
+			}
+			if deps.Throttle.LockedFor(u.ID) == 0 {
+				t.Fatal("free_attempts+1 wrong passwords did not lock the account")
+			}
+		}
+		code, _ := totp.GenerateCode(secret, deps.Clock.Now())
+		body, _ := cborx.Marshal([]any{assertion, code})
+		return postCBOR(h, "/v1/auth/totp/verify", body).Code
+	}
+	if got := run(true); got != http.StatusTooManyRequests {
+		t.Fatalf("the correct code on an earlier assertion of a now-locked account = %d, want 429", got)
+	}
+	if got := run(false); got != http.StatusOK {
+		t.Fatalf("the control (no lock in between) = %d, want 200", got)
+	}
+}
+
+// failingHasher answers E_RATE_LIMITED (its concurrency bound) while fail is set: a request that
+// ends before its guess is decided.
+type failingHasher struct {
+	testHasher
+	fail *atomic.Bool
+}
+
+func (h failingHasher) Verify(ctx context.Context, pw, phc string) (bool, bool, error) {
+	if h.fail.Load() {
+		return false, false, server.Errorf(server.CodeRateLimited, "the hasher is busy")
+	}
+	return h.testHasher.Verify(ctx, pw, phc)
+}
+
+// M1 (a): a step-up that ends before its guess is decided (the hasher refused) is not counted,
+// and it refunds no one else's guess: the wrong guesses on either side of it add up exactly.
+func TestAnUndecidedStepUpNeitherCountsNorRefunds(t *testing.T) {
+	fail := &atomic.Bool{}
+	h, deps := newTestAPIFull(t, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 1000 },
+		func(d *api.Deps) { d.Hasher = failingHasher{fail: fail} })
+	u, _, token := seedAPISession(t, deps)
+	seedPassword(t, deps, u, "correct horse battery staple")
+	free := deps.Config.Auth.Lockout.FreeAttempts
+	for i := 1; i < free; i++ {
+		if res := stepUpRaw(h, token, stepUpPassword, "not it"); res.Code != http.StatusForbidden {
+			t.Fatalf("wrong guess %d = %d, want 403", i, res.Code)
+		}
+	}
+	fail.Store(true)
+	for i := 0; i < 3; i++ {
+		if res := stepUpRaw(h, token, stepUpPassword, "not it"); res.Code != http.StatusTooManyRequests {
+			t.Fatalf("undecided step-up %d = %d, want the hasher's 429", i, res.Code)
+		}
+	}
+	fail.Store(false)
+	if res := stepUpRaw(h, token, stepUpPassword, "not it"); res.Code != http.StatusForbidden {
+		t.Fatalf("wrong guess %d (the undecided ones not counted) = %d, want 403", free, res.Code)
+	}
+	if res := stepUpRaw(h, token, stepUpPassword, "not it"); res.Code != http.StatusTooManyRequests {
+		t.Fatalf("wrong guess %d (none of the earlier ones refunded) = %d, want 429", free+1, res.Code)
+	}
+}
+
+// M1 (b): a password login that still owes a code does not clear the account ledger, so wrong
+// codes after correct passwords accumulate: past free_attempts the right password and the right
+// code are refused. The control stops one round short.
+func TestWrongCodesAfterTheRightPasswordAccumulate(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 1000
+		c.Limits.Rate.LoginFailedBurst = 1000
+	})
+	free := deps.Config.Auth.Lockout.FreeAttempts
+	run := func(rounds int) int {
+		u, _, token := seedAPISession(t, deps)
+		pw := seedPassword(t, deps, u, "correct horse battery staple")
+		secret, _ := enrolTOTP(t, h, deps, token)
+		wrong := wrongTOTP(t, secret, deps.Clock.Now())
+		for range rounds {
+			assertion, _ := needsOf(t, h, u.Username, pw)
+			body, _ := cborx.Marshal([]any{assertion, wrong})
+			postCBOR(h, "/v1/auth/totp/verify", body)
+		}
+		status, out := login(t, h, u.Username, pw)
+		if status != http.StatusOK {
+			return status
+		}
+		code, _ := totp.GenerateCode(secret, deps.Clock.Now())
+		body, _ := cborx.Marshal([]any{out[0].(string), code})
+		return postCBOR(h, "/v1/auth/totp/verify", body).Code
+	}
+	if got := run(free + 1); got != http.StatusTooManyRequests {
+		t.Fatalf("the right password and code after %d wrong codes = %d, want 429", free+1, got)
+	}
+	if got := run(free - 1); got != http.StatusOK {
+		t.Fatalf("the control (%d wrong codes) = %d, want 200", free-1, got)
 	}
 }
