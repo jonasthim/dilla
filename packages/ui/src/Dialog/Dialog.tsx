@@ -33,11 +33,29 @@ export function focusReturnTarget(opener: HTMLElement | null, fallback?: () => H
 
 const AUTOFOCUS = '[data-autofocus]:not(:disabled)';
 
+/** Whether `e` is hidden inside `root`: by the `hidden` attribute, or by display:none or visibility:hidden on it or an ancestor. */
+function hiddenIn(e: HTMLElement, root: HTMLElement): boolean {
+  for (let n: HTMLElement | null = e; n !== null && n !== root; n = n.parentElement) {
+    if (n.hidden) return true;
+    const style = getComputedStyle(n);
+    if (style.display === 'none' || style.visibility === 'hidden') return true;
+  }
+  return false;
+}
+
+/** The first enabled, shown element inside the dialog marked `data-autofocus`, or null. */
+function marked(root: HTMLElement): HTMLElement | null {
+  return Array.from(root.querySelectorAll<HTMLElement>(AUTOFOCUS)).find(e => !hiddenIn(e, root)) ?? null;
+}
+
 export function Dialog({ open, title, onClose, children, footer, closeLabel, describedBy, initialFocus = 'dialog', returnFocus }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   // What had focus when the dialog opened, and the latest fallback (read at close time, so never stale).
   const opener = useRef<HTMLElement | null>(null);
+  // Where the dialog put focus on opening when nothing inside was marked yet (contents still loading): a marked element
+  // that arrives later takes focus from it, unless the user has moved focus since.
+  const provisional = useRef<HTMLElement | null>(null);
   const fallback = useRef(returnFocus);
   fallback.current = returnFocus;
   // Focus goes back only when it was in the dialog (or was dropped on the body by the dialog leaving the document);
@@ -64,11 +82,23 @@ export function Dialog({ open, title, onClose, children, footer, closeLabel, des
     const el = ref.current; if (!el) return;
     if (open && !el.open) {
       el.showModal();
-      const marked = el.querySelector<HTMLElement>(AUTOFOCUS);
-      (marked ?? (initialFocus === 'close' ? el.querySelector<HTMLElement>('.d-dialog__footer button') : null) ?? el).focus();
+      const target = marked(el);
+      const start = target ?? (initialFocus === 'close' ? el.querySelector<HTMLElement>('.d-dialog__footer button') : null) ?? el;
+      start.focus();
+      provisional.current = target === null ? start : null;
     }
-    if (!open && el.open) giveBack(el);
+    if (!open && el.open) { provisional.current = null; giveBack(el); }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  // After every render while open: a marked element that has just arrived takes over a provisional start, once.
+  useEffect(() => {
+    const el = ref.current; const start = provisional.current;
+    if (!el || !el.open || start === null) return;
+    if (document.activeElement !== start) { provisional.current = null; return; }
+    const target = marked(el);
+    if (target === null) return;
+    provisional.current = null;
+    target.focus();
+  });
   // A dialog torn down while open (a flow mounted only while it shows) hands focus back too: by then the element has
   // left the document and the browser has put focus on the body.
   useEffect(() => {

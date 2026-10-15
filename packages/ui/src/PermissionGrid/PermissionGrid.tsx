@@ -13,6 +13,8 @@ export interface PermissionGridProps {
   values: Readonly<Record<string, PermValue>>;
   labels: { allow: string; inherit: string; deny: string };
   onChange(id: string, v: PermValue): void;
+  /** The level of each group's heading (default 3): one below the heading the grid sits under. */
+  headingLevel?: 2 | 3 | 4 | 5 | 6;
 }
 
 const ORDER: readonly PermValue[] = ['allow', 'inherit', 'deny'];
@@ -73,13 +75,14 @@ function TriRow({ base, row, value, labels, onChange }: RowProps) {
  * Layout: the grid measures its own width (a container query), so it must sit in a block-level container, or in a flex
  * or grid item that has a width of its own (`flex: 1`, `min-width: 0`). It is never sized by its content.
  */
-export function PermissionGrid({ label, groups, mode, values, labels, onChange }: PermissionGridProps) {
+export function PermissionGrid({ label, groups, mode, values, labels, onChange, headingLevel = 3 }: PermissionGridProps) {
   const uid = useId();
+  const Heading = `h${headingLevel}` as const;
   return (
     <div role="group" aria-label={label} className="d-permission-grid">
       {groups.map(group => (
         <section key={group.id} className="d-permission-grid__group">
-          <h3 className="d-permission-grid__title">{group.title}</h3>
+          <Heading className="d-permission-grid__title">{group.title}</Heading>
           {group.rows.map(row => {
             const base = `${uid}-${group.id}-${row.id}`;
             const value = values[row.id] ?? 'inherit';

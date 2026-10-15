@@ -167,3 +167,66 @@ describe('Dialog focus', () => {
     expect(screen.getByRole('button', { name: 'edit' })).toHaveFocus();
   });
 });
+
+describe('Dialog late initial focus', () => {
+  function Late({ ready, extra }: { ready: boolean; extra?: boolean }) {
+    return <><button>{'opener'}</button>
+      <Dialog open title="Roles" closeLabel="Done" initialFocus="close" onClose={() => {}}>
+        {ready ? <input type="checkbox" aria-label="crew" data-autofocus="" /> : <p>Loading…</p>}
+        {extra ? <button>{'other'}</button> : null}
+      </Dialog></>;
+  }
+  it('moves to a marked element that arrives later while focus is still where the dialog put it', () => {
+    const { rerender } = render(<Late ready={false} />);
+    expect(screen.getByRole('button', { name: 'Done' })).toHaveFocus();
+    rerender(<Late ready />);
+    expect(screen.getByRole('checkbox', { name: 'crew' })).toHaveFocus();
+  });
+  it('leaves focus alone when the user moved it before the marked element arrived', () => {
+    const { rerender } = render(<Late ready={false} extra />);
+    screen.getByRole('button', { name: 'other' }).focus();
+    rerender(<Late ready extra />);
+    expect(screen.getByRole('button', { name: 'other' })).toHaveFocus();
+  });
+});
+describe('Dialog focus, review minors', () => {
+  it('skips a hidden data-autofocus element for the next shown one', () => {
+    render(<Dialog open title="Edit" onClose={() => {}}>
+      <div hidden><input aria-label="gone" data-autofocus="" /></div>
+      <input aria-label="styled away" style={{ display: 'none' }} data-autofocus="" />
+      <input aria-label="name" data-autofocus="" />
+    </Dialog>);
+    expect(screen.getByRole('textbox', { name: 'name' })).toHaveFocus();
+  });
+  it('falls back to the dialog when every marked element is hidden', () => {
+    render(<Dialog open title="Edit" onClose={() => {}}><div hidden><input aria-label="gone" data-autofocus="" /></div></Dialog>);
+    expect(screen.getByRole('dialog', { name: 'Edit' })).toHaveFocus();
+  });
+  it('leaves focus where a flow already moved it outside the dialog when it closes', () => {
+    function Moved({ open }: { open: boolean }) {
+      return <><button>{'opener'}</button><button>{'elsewhere'}</button>
+        {open ? <Dialog open title="Edit" onClose={() => {}}><p>x</p></Dialog> : null}</>;
+    }
+    const { rerender } = render(<Moved open={false} />);
+    screen.getByRole('button', { name: 'opener' }).focus();
+    rerender(<Moved open />);
+    screen.getByRole('button', { name: 'elsewhere' }).focus();
+    rerender(<Moved open={false} />);
+    expect(screen.getByRole('button', { name: 'elsewhere' })).toHaveFocus();
+  });
+  it('a nested dialog closing returns focus to its opener inside the outer dialog, which stays open', () => {
+    function Nested({ inner }: { inner: boolean }) {
+      return <Dialog open title="Settings" onClose={() => {}}>
+        <button>{'new role'}</button>
+        {inner ? <Dialog open title="New role" onClose={() => {}}><input aria-label="name" data-autofocus="" /></Dialog> : null}
+      </Dialog>;
+    }
+    const { rerender } = render(<Nested inner={false} />);
+    screen.getByRole('button', { name: 'new role' }).focus();
+    rerender(<Nested inner />);
+    expect(screen.getByRole('textbox', { name: 'name' })).toHaveFocus();
+    rerender(<Nested inner={false} />);
+    expect(screen.getByRole('button', { name: 'new role' })).toHaveFocus();
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+  });
+});

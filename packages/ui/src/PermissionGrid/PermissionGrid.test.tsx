@@ -163,3 +163,10 @@ describe('PermissionGrid', () => {
     await expectNoAxeViolations(toggle.container);
   });
 });
+describe('PermissionGrid heading level', () => {
+  it('uses headingLevel for its group headings, so it can sit under a deeper heading', () => {
+    render(<PermissionGrid label="Permissions" groups={GROUPS} mode="tri" values={{}} labels={LABELS} onChange={() => {}} headingLevel={5} />);
+    expect(screen.getAllByRole('heading', { level: 5 }).map(h => h.textContent)).toEqual(['General', 'Text']);
+    expect(screen.queryAllByRole('heading', { level: 3 })).toHaveLength(0);
+  });
+});
