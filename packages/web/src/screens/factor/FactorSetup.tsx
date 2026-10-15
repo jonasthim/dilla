@@ -69,6 +69,9 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   const mounted = useRef(true);
   // A request made for a screen the person has left (Back, or a newer request) must not write into the new one.
   const generation = useRef(0);
+  const completed = useRef(false);
+  // Set once this mount has added a factor itself: only a factor found already in place (a reload) ends the set-up unasked.
+  const addedHere = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -81,6 +84,19 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   useEffect(() => {
     if (focusRequest !== null) rootRef.current?.querySelector<HTMLElement>(`#${focusRequest.id}`)?.focus();
   }, [focusRequest]);
+
+  // A reload after a factor was confirmed but before the set-up ended: the factor is in place, so it is not offered again.
+  // The backup codes shown before the reload are gone; Settings, under sign-in, makes new ones.
+  const held = factors !== undefined && (factors.totp !== null || factors.passkeys.length > 0);
+  const heldKind: 'totp' | 'passkey' = factors?.totp != null ? 'totp' : 'passkey';
+  useEffect(() => {
+    if (step === 'choose' && held && !addedHere.current && !completed.current) {
+      addedHere.current = true;
+      finish(heldKind);
+    }
+    // finish reads only props and refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, held, heldKind]);
 
   const requestFocus = (id: string) => setFocusRequest(f => ({ id, n: (f?.n ?? 0) + 1 }));
   const fail = (shown: Pick<Problem, 'key' | 'vars'>) => setProblem(p => ({ ...shown, n: (p?.n ?? 0) + 1 }));
@@ -105,6 +121,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   };
   /** The factor is in place: show the codes, or skip them when the account already held some. */
   const added = (which: 'totp' | 'passkey', backupCodes: string[]) => {
+    addedHere.current = true;
     setKey(null);
     setKind(which);
     setCode('');
@@ -115,9 +132,17 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     finish(which);
   };
   const finish = (which: 'totp' | 'passkey') => {
-    if (origin !== 'required') { onDone({ kind: which }); return; }
+    setKind(which);
+    setCodes([]);
+    if (origin !== 'required') { complete(which); return; }
     setStep('done');
     announce(t('factor.added'));
+  };
+  /** onDone fires once, however often Enter or the button is pressed. */
+  const complete = (which: 'totp' | 'passkey') => {
+    if (completed.current) return;
+    completed.current = true;
+    onDone({ kind: which });
   };
 
   const beginTotp = () => {
@@ -129,7 +154,6 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
       const r = v as { secret: string; uri: string };
       setKey({ secret: r.secret, uri: r.uri });
       setBusy(false);
-      requestFocus(FIELD_CODE);
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
@@ -207,7 +231,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
       case 'totp': submitTotp(); break;
       case 'passkey': submitPasskey(); break;
       case 'codes': if (acknowledged) finish(kind); break;
-      case 'done': onDone({ kind }); break;
+      case 'done': complete(kind); break;
     }
   };
 
@@ -286,7 +310,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         <p>{t('factor.codes.notKey')}</p>
         <CodeList codes={codes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
           onCopy={() => { copy(codes.join('\n'), 'factor.codes.copied'); }} onPrint={() => { browser.print(); }} />
-        <div>
+        <div className="dw-factor-ack">
           <input id="factor-ack" type="checkbox" checked={acknowledged} onChange={(e) => { setAcknowledged(e.currentTarget.checked); }} />
           {' '}
           <label htmlFor="factor-ack">{t('factor.codes.ack')}</label>

@@ -15,7 +15,7 @@ const ME = { id: 'bb'.repeat(16), username: 'ada' };
 const CEREMONY = 'cd'.repeat(16);
 const BACKUP = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const SECRET = 'JBSWY3DPEHPK3PXP';
-const OPTIONS = JSON.stringify({ publicKey: { challenge: 'Zm9v', rpId: 'dilla.test', userVerification: 'preferred' } });
+const OPTIONS = JSON.stringify({ publicKey: { challenge: 'Zm9vYmFyLWNoYWxsZW5nZS1fLQ', rpId: 'dilla.test', userVerification: 'preferred' } });
 const NO_FACTORS: FactorsState = { owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true };
 
 const get = vi.fn<(o: { publicKey: { userVerification: string } }) => Promise<unknown>>();

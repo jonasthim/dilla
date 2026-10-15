@@ -49,6 +49,8 @@ const URL_ALPHABET = /^[A-Za-z0-9_-]*={0,2}$/;
 function fromBase64Url(s: unknown, what: string): ArrayBuffer {
   if (typeof s !== 'string' || !URL_ALPHABET.test(s)) throw bad(`${what} is not base64url`);
   const body = s.replace(/=+$/, '');
+  // Padding, when present, must complete the last group of four.
+  if (body.length !== s.length && s.length % 4 !== 0) throw bad(`${what} is not base64url`);
   if (body.length % 4 === 1) throw bad(`${what} is not base64url`);
   const standard = body.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (body.length % 4)) % 4);
   let binary: string;
@@ -87,6 +89,13 @@ function descriptors(list: unknown, what: string): PublicKeyCredentialDescriptor
     if (Array.isArray(d.transports)) out.transports = d.transports.filter((x): x is AuthenticatorTransport => typeof x === 'string');
     return out;
   });
+}
+
+/** The challenge, decoded. WebAuthn asks for at least 16 random bytes; a shorter one is not an instance's challenge. */
+function challengeOf(pk: Json): ArrayBuffer {
+  const challenge = fromBase64Url(pk.challenge, 'challenge');
+  if (challenge.byteLength < 16) throw bad('challenge is shorter than 16 bytes');
+  return challenge;
 }
 
 function credentialsApi(): CredentialsContainer {
@@ -130,7 +139,7 @@ export async function createPasskey(optionsJson: string): Promise<string> {
   if (!isObject(pk.rp) || !isObject(pk.user)) throw bad('no rp or user');
   const publicKey = {
     ...(pk as unknown as Partial<PublicKeyCredentialCreationOptions>),
-    challenge: fromBase64Url(pk.challenge, 'challenge'),
+    challenge: challengeOf(pk),
     user: { ...(pk.user as unknown as PublicKeyCredentialUserEntity), id: fromBase64Url(pk.user.id, 'user id') },
     rp: pk.rp as unknown as PublicKeyCredentialRpEntity,
     authenticatorSelection: { ...(isObject(pk.authenticatorSelection) ? pk.authenticatorSelection : {}), userVerification: 'required' },
@@ -153,7 +162,7 @@ export async function getPasskey(optionsJson: string): Promise<string> {
   const pk = publicKeyOf(optionsJson);
   const publicKey = {
     ...(pk as unknown as Partial<PublicKeyCredentialRequestOptions>),
-    challenge: fromBase64Url(pk.challenge, 'challenge'),
+    challenge: challengeOf(pk),
     userVerification: 'required',
   } as PublicKeyCredentialRequestOptions;
   const allow = descriptors(pk.allowCredentials, 'allowCredentials');

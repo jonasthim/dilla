@@ -15,7 +15,7 @@ const SECRET = 'JBSWY3DPEHPK3PXP';
 const URI = `otpauth://totp/dilla.test:ada?secret=${SECRET}&issuer=dilla.test`;
 const CODES = ['AAAAABBBBBCCCCCDDDDDEEEEEF', 'GGGGGHHHHHIIIIIJJJJJKKKKKL'];
 const OPTIONS = JSON.stringify({ publicKey: {
-  challenge: 'Zm9v', rp: { name: 'dilla.test', id: 'dilla.test' }, user: { id: 'AQID', name: 'ada', displayName: 'ada' },
+  challenge: 'Zm9vYmFyLWNoYWxsZW5nZS1fLQ', rp: { name: 'dilla.test', id: 'dilla.test' }, user: { id: 'AQID', name: 'ada', displayName: 'ada' },
   pubKeyCredParams: [{ type: 'public-key', alg: -7 }], authenticatorSelection: { userVerification: 'preferred' },
 } });
 
@@ -239,13 +239,20 @@ describe('authenticator app', () => {
     expect(screen.queryByRole('img')).toBeNull();
   });
   it('keeps the secret out of the URL, the storage and the console', async () => {
-    const log = vi.spyOn(console, 'log');
+    const consoles = (['log', 'info', 'warn', 'error', 'debug'] as const).map(m => vi.spyOn(console, m));
     const setItem = vi.spyOn(Storage.prototype, 'setItem');
     const { user } = setup();
     await toTotp(user);
     expect(window.location.href).not.toContain(SECRET);
     expect(setItem).not.toHaveBeenCalled();
-    expect(log).not.toHaveBeenCalled();
+    expect(consoles.map(c => c.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
+    await user.type(codeField(), '123456');
+    await user.click(button('Continue'));
+    await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
+    expect(document.body.textContent).toContain('AAAAA BBBBB');
+    expect(window.location.href).not.toContain('AAAAA');
+    expect(setItem).not.toHaveBeenCalled();
+    expect(consoles.map(c => c.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
   });
   it('has no axe violations on the code step', async () => {
     const { user, view } = setup();
@@ -493,5 +500,75 @@ describe('what the page sends', () => {
     release({ backupCodes: [] });
     await Promise.resolve();
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe('focus stays on each step\'s heading', () => {
+  it('keeps the heading focused once the QR code and the setup key have rendered', async () => {
+    const { user } = setup();
+    await toTotp(user);
+    expect(h1()).toHaveTextContent(en['factor.totp.title']);
+    expect(h1()).toHaveFocus();
+    expect(codeField()).not.toHaveFocus();
+  });
+  it('focuses the heading on every step change, not only on first mount', async () => {
+    create.mockResolvedValue(credential());
+    const { user } = setup({ origin: 'required', stepLabel: '' });
+    expect(h1()).toHaveFocus();
+    await toTotp(user);
+    expect(h1()).toHaveFocus();
+    await user.click(button('Back'));
+    expect(h1()).toHaveTextContent(en['factor.choose.title']);
+    expect(h1()).toHaveFocus();
+    await toPasskey(user);
+    expect(h1()).toHaveTextContent(en['factor.passkey.title']);
+    expect(h1()).toHaveFocus();
+    await user.click(button(en['factor.passkey.submit']));
+    await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
+    expect(h1()).toHaveFocus();
+    await user.click(screen.getByRole('checkbox', { name: en['factor.codes.ack'] }));
+    await user.click(button('Continue'));
+    expect(h1()).toHaveTextContent(en['factor.done.title']);
+    expect(h1()).toHaveFocus();
+  });
+});
+
+describe('a reload after the factor was confirmed', () => {
+  const HELD: FactorsState = { owed: false, totp: { confirmedAt: 5 }, passkeys: [], backupCodesLeft: 8, hasPassword: true };
+  it('ends a sign-up set-up at once, without offering another factor', async () => {
+    const { onDone, fake } = setup({}, { factors: HELD });
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith({ kind: 'totp' }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toEqual([]);
+  });
+  it('goes to the done step for the forced screen, and says passkey for a passkey', async () => {
+    const { announce, onDone } = setup({ origin: 'required', stepLabel: '' },
+      { factors: { ...HELD, totp: null, passkeys: [{ id: 'aa', name: 'x', created: 1, lastUsed: null }] } });
+    expect(await screen.findByText(en['factor.done.passkey'])).toBeInTheDocument();
+    expect(announce).toHaveBeenCalledWith(en['factor.added']);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(screen.queryByRole('radio')).toBeNull();
+  });
+  it('acts when the factors arrive after mount, but never for a factor this mount added itself', async () => {
+    const { fake, user, onDone } = setup({}, { factors: undefined });
+    fake.publish('factors', { ...NO_FACTORS });
+    expect(h1()).toHaveTextContent(en['factor.choose.title']);
+    await toTotp(user);
+    fake.publish('factors', HELD);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(h1()).toHaveTextContent(en['factor.totp.title']);
+    fake.publish('factors', { ...HELD, totp: null });
+    expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe('finishing', () => {
+  it('calls onDone once however often Continue and Open dilla are pressed', async () => {
+    const { user, onDone } = setup({ origin: 'required', stepLabel: '' }, { handler: (c) => c.m === 'factorTotpConfirm' ? Promise.resolve({ backupCodes: [] }) : happy(c, new FakeClient()) });
+    await toTotp(user);
+    await user.type(codeField(), '123456');
+    await user.click(button('Continue'));
+    await user.dblClick(await screen.findByRole('button', { name: en['factor.done.next'] }));
+    expect(onDone).toHaveBeenCalledTimes(1);
   });
 });

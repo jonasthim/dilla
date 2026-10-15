@@ -82,6 +82,30 @@ describe('createPasskey', () => {
     await expect(createPasskey(JSON.stringify(doc))).rejects.toMatchObject({ kind: 'other' });
     expect(create).not.toHaveBeenCalled();
   });
+  it.each([['standard alphabet', 'ab+/ab+/ab+/ab+/ab+/ab'], ['length mod 4 is 1', 'AAAAAAAAAAAAAAAAAAAAA'], ['empty', ''],
+    ['too short', 'Zm9vYg'], ['over-padded', 'Zm9vYmFyLWNoYWxsZW5nZS1fLQ==='], ['wrong padding', 'Zm9vYmFyLWNoYWxsZW5nZS1fLQ=']])(
+    'refuses a challenge that is %s before the browser is asked', async (...row) => {
+    const challenge = row[1];
+    const create = vi.fn();
+    install({ create });
+    const doc = JSON.parse(CREATE) as { publicKey: Record<string, unknown> };
+    doc.publicKey.challenge = challenge;
+    await expect(createPasskey(JSON.stringify(doc))).rejects.toMatchObject({ kind: 'other' });
+    expect(create).not.toHaveBeenCalled();
+    const get = vi.fn();
+    install({ get });
+    const login = JSON.parse(GET) as { publicKey: Record<string, unknown> };
+    login.publicKey.challenge = challenge;
+    await expect(getPasskey(JSON.stringify(login))).rejects.toMatchObject({ kind: 'other' });
+    expect(get).not.toHaveBeenCalled();
+  });
+  it('encodes a buffer longer than one chunk without losing a byte', async () => {
+    const long = new Uint8Array(0x8000 * 2 + 5).map((_, i) => i % 251);
+    install({ create: () => Promise.resolve(created({ rawId: long.buffer }) as unknown as Credential) });
+    const out = JSON.parse(await createPasskey(CREATE)) as { rawId: string };
+    const back = Uint8Array.from(atob(out.rawId.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+    expect(back).toEqual(long);
+  });
   it.each([['not json'], ['{}'], ['{"publicKey":null}'], ['{"publicKey":{"challenge":"!!"}}']])('refuses the malformed document %s', async (doc) => {
     const create = vi.fn();
     install({ create });
