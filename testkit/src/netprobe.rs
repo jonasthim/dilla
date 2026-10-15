@@ -20,8 +20,11 @@
 //!   group (side a merges side b's external commit here), starts (or joins) the DM's call and
 //!   writes the start JSON the probe page loads.
 //!
-//! Public routes only: nothing here calls `/debug/*` or a test host's control listener, so the
-//! probe runs against a real instance as it runs against `dilla-testhost`. The testkit speaks
+//! Public routes only, with one exception: the account's authenticator-app enrolment (every account
+//! owes a second factor) reads `/debug/clock` when `DILLA_TESTKIT_CONTROL` names a test host's
+//! control listener, and the machine's clock otherwise. A real instance runs on real time, and the
+//! one confirm is the only code spent (`start` re-establishes with the device key), so the probe
+//! runs against a real instance as it runs against `dilla-testhost`. The testkit speaks
 //! plain `http://` only; against a TLS instance both verbs go through the probe page's dev server,
 //! which proxies `/v1`, `/gateway` and `/rtc` to it (`packages/media/vite.probe.config.ts`).
 
@@ -801,7 +804,7 @@ fn enrol(
     }
     // Every account owes a second factor, and an owed session reaches nothing else (not even the
     // gateway): enrol an authenticator app before the first connection.
-    let totp = HttpDs::enrol_second_factor(base, &enrolled.token)?;
+    let totp = HttpDs::enrol_second_factor(base, &enrolled.token, true)?;
     let mut ds = HttpDs::with_session(base, client.device_id(), enrolled.token)?;
     ds.set_totp(totp);
     ds.set_session_expires(enrolled.expires);

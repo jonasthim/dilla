@@ -9,7 +9,7 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 
-/// The step length in seconds (`auth.totp.period`'s default, which the test host runs with).
+/// The step length in seconds: the testkit assumes `auth.totp.period = 30`, the default the test host runs with.
 pub const PERIOD: u64 = 30;
 /// The instance accepts the counters this far either side of its own (`auth.totp.skew`).
 pub const SKEW: u64 = 1;
@@ -71,7 +71,7 @@ fn base32_decode(s: &str) -> Result<Vec<u8>, String> {
             b'A'..=b'Z' => ch - b'A',
             b'a'..=b'z' => ch - b'a',
             b'2'..=b'7' => ch - b'2' + 26,
-            _ => return Err(format!("{:?} is not base32", char::from(ch))),
+            _ => return Err("the secret is not base32".into()),
         };
         acc = (acc << 5) | u32::from(v);
         bits += 5;
@@ -98,9 +98,27 @@ mod tests {
     }
 
     #[test]
+    fn the_other_rfc_6238_sha1_rows() {
+        // Low six digits of RFC 6238 appendix B: 07081804, 89005924, 69279037.
+        for (t, want) in [
+            (1_111_111_109u64, "081804"),
+            (1_234_567_890, "005924"),
+            (2_000_000_000, "279037"),
+        ] {
+            assert_eq!(code(RFC_SECRET, t / PERIOD).unwrap(), want, "T = {t}");
+        }
+    }
+
+    #[test]
     fn base32_decodes_the_rfc_secret_and_refuses_a_stray_character() {
         assert_eq!(base32_decode(RFC_SECRET).unwrap(), b"12345678901234567890");
         assert!(base32_decode("GEZD1").is_err());
+        // Lowercase and `=` padding decode to the same bytes.
+        assert_eq!(
+            base32_decode(&RFC_SECRET.to_lowercase()).unwrap(),
+            base32_decode(RFC_SECRET).unwrap()
+        );
+        assert_eq!(base32_decode("MFRGG===").unwrap(), b"abc");
     }
 
     #[test]
