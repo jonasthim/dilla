@@ -1,0 +1,4 @@
+.d-qr { display: block; max-width: 100%; height: auto; flex-shrink: 0; }
+.d-qr__light { fill: var(--surface); }
+.d-qr__dark { fill: var(--fg); }
+@media print { .d-qr__light { fill: Canvas; } .d-qr__dark { fill: CanvasText; } }
