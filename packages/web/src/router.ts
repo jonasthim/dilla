@@ -3,6 +3,7 @@ import { errorOf, type UiError } from './core/errors.ts';
 
 export type SettingsSection =
   | 'devices'
+  | 'signin'
   | 'notifications'
   | 'appearance'
   | 'voice'
@@ -23,7 +24,7 @@ export const SETTINGS_FROM = 'settingsFrom';
 export const SETTINGS_COMPARE = 'compareUser';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
-const SETTINGS_SECTION = /^\/settings\/(devices|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
+const SETTINGS_SECTION = /^\/settings\/(devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 
 /**

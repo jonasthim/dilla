@@ -3,6 +3,8 @@ import { routeOf, useRoute, type SettingsSection } from '../router.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
 import { Devices } from './settings/Devices.tsx';
+import { SignInFactors } from './settings/SignInFactors.tsx';
+import { useAnnouncer } from './announcer.ts';
 import { Notifications } from './settings/Notifications.tsx';
 import { Privacy } from './settings/Privacy.tsx';
 import { Diagnostics } from './settings/Diagnostics.tsx';
@@ -30,6 +32,7 @@ function compareState(record: TrustSummary): 'first-seen' | 'changed' | 'verifie
 
 const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
   { id: 'devices', key: 'settings.nav.devices' },
+  { id: 'signin', key: 'factorSettings.nav' },
   { id: 'notifications', key: 'settings.nav.notifications' },
   { id: 'appearance', key: 'settings.nav.appearance' },
   { id: 'voice', key: 'settings.nav.voice' },
@@ -49,6 +52,8 @@ export function Settings(): React.JSX.Element {
   const records = useSlice('trust') ?? [];
   const diagnostics = useSlice('diagnostics');
   const account = useSlice('account');
+  // One polite live region for the sections that announce (Sign-in). It sits inside the modal frame: outside it, assistive tech cannot see it.
+  const { text: announcement, announce } = useAnnouncer();
   const [comparison, setComparison] = useState<{ record: TrustSummary; umk: string; number: string | null; error: CompareError | null } | null>(null);
   // After an approval the compared row changes under the dialog, so focus goes to the Privacy heading (W-11, P7).
   const focusHeading = useRef(false);
@@ -92,7 +97,7 @@ export function Settings(): React.JSX.Element {
 
   const select = (id: string) => {
     switch (id) {
-      case 'devices': case 'notifications': case 'appearance': case 'voice': case 'privacy': case 'keyboard': case 'diagnostics':
+      case 'devices': case 'signin': case 'notifications': case 'appearance': case 'voice': case 'privacy': case 'keyboard': case 'diagnostics':
         if (id !== 'privacy') setComparison(null);
         navigate({ name: 'settings', section: id, from }, true);
         break;
@@ -105,7 +110,7 @@ export function Settings(): React.JSX.Element {
     <SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
       nav={<SettingsNav label={t('settings.nav.label')} items={NAV.map(i => ({ id: i.id, label: t(i.key) }))}
         activeId={section} onSelect={select} />}>
-      {section === 'devices' ? <Devices /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
+      {section === 'devices' ? <Devices /> : section === 'signin' ? <SignInFactors announce={announce} /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
         : section === 'voice' ? <Voice />
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
           : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
@@ -130,6 +135,7 @@ export function Settings(): React.JSX.Element {
           }).catch((e: unknown) => failCompare(userId, umk, compareError(errorOf(e).code, 'verify')));
         }}
         onClose={() => setComparison(null)} />
+      <p className="d-sr-only" role="status" aria-live="polite" data-testid="settings-announcer">{announcement}</p>
     </SettingsFrame>
   );
 }

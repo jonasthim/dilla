@@ -44,6 +44,7 @@ describe('parseRoute', () => {
     ['/settings/privacy', '', { settingsFrom: null, compareUser: 'ab'.repeat(16) }, { name: 'settings', section: 'privacy', from: null, compare: 'ab'.repeat(16) }],
     ['/settings/privacy', '', { settingsFrom: null, compareUser: 'not-hex' }, { name: 'settings', section: 'privacy', from: null }],
     ['/settings/diagnostics', '', null, { name: 'settings', section: 'diagnostics', from: null }],
+    ['/settings/signin', '', null, { name: 'settings', section: 'signin', from: null }],
     ['/settings/', '', null, { name: 'root' }],
   ];
   it.each(cases)('%s%s', (path, search, state, want) => {

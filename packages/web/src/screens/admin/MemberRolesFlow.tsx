@@ -69,7 +69,9 @@ export function MemberRolesFlow({ communityId, userId, onClose, announce }: Memb
       setBusyId(null);
     }).catch((e: unknown) => {
       const err = errorOf(e);
-      const message = forbidden(err) ? t('roles.assign.error.forbidden', { role: r.name })
+      // The server names a target with no second factor by its own code; checked before the generic 403 (never by detail).
+      const message = err.code === 'E_TARGET_NO_FACTOR' ? t('roles.assign.error.twoFactor', { name })
+        : forbidden(err) ? t('roles.assign.error.forbidden', { role: r.name })
         : statusIs(err, 404) ? (latestRoles.current?.some(x => x.id === id) === false ? t('roles.error.gone') : t('roles.assign.error.gone', { name }))
           : t('roles.assign.error.other', { code: err.code });
       // The refusal and the end of busy land in one update.

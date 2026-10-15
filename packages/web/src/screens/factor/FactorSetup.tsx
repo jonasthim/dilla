@@ -2,10 +2,12 @@
 // step, a sign-in on a new browser, and the forced screen for an account that owes one. There is no skip and no cancel in
 // any origin; Back only returns to the choice. The TOTP secret, the otpauth URI and the backup codes come back from the
 // commands and live in this component's state only: never a slice, the URL, storage or a log, and gone when it unmounts.
-// No step-up is sent from here: the instance lets an account that holds no factor add its first without one.
+// No step-up is sent from the three origins: the instance lets an account that holds no factor add its first without one.
+// Settings → Sign-in mounts it a fourth way, `embedded`: it renders its own Dialog (a title per step), starts at the
+// app or the passkey step, has no choice and no Back, and sends the step-up token its host holds as `stepup`.
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Banner, Button, ChoiceCards, CodeList, OnboardingFrame, QrCode, TextField } from '@dilla/ui';
+import { Banner, Button, ChoiceCards, CodeList, Dialog, OnboardingFrame, QrCode, TextField } from '@dilla/ui';
 import { browser } from '../../browser.ts';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
@@ -16,7 +18,7 @@ import { PasskeyError, createPasskey, passkeysUsable } from '../../webauthn.ts';
 export interface FactorSetupResult { kind: 'totp' | 'passkey' }
 
 export interface FactorSetupProps {
-  origin: 'signup' | 'signin' | 'required';
+  origin: 'signup' | 'signin' | 'required' | 'settings';
   stepLabel: string;
   instanceName: string;
   username: string;
@@ -24,6 +26,9 @@ export interface FactorSetupProps {
   /** May return a promise: while it is pending, and once it resolved, a second press does nothing; if it rejects the button
    *  is armed again, so the same press retries. */
   onDone: (result: FactorSetupResult) => void | Promise<void>;
+  /** Settings → Sign-in: the add-a-factor dialog. `stepup` is spent once by the begin; a refusal of it (403 E_STEP_UP, from
+   *  whichever call) hands the person back to the host with `onStepUpLost`. `onClose` is Cancel, Escape and the close button. */
+  embedded?: { stepup: string; start: 'app' | 'passkey'; onClose: () => void; onStepUpLost: () => void };
 }
 
 type Step = 'choose' | 'totp' | 'passkey' | 'codes' | 'done';
@@ -47,14 +52,14 @@ export function sharedRefusal(e: UiError): Pick<Problem, 'key' | 'vars'> | null 
 }
 
 export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
-  const { origin, stepLabel, instanceName, username, announce, onDone } = props;
+  const { origin, stepLabel, instanceName, username, announce, onDone, embedded } = props;
   const client = useCore();
   const account = useSlice('account');
   const factors = useSlice('factors');
   const hasPassword = factors?.hasPassword ?? true;
   const usable = passkeysUsable(account?.instance);
 
-  const [step, setStep] = useState<Step>('choose');
+  const [step, setStep] = useState<Step>(embedded === undefined ? 'choose' : embedded.start === 'app' ? 'totp' : 'passkey');
   const [choice, setChoice] = useState<Choice>('app');
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
@@ -83,6 +88,23 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   useEffect(() => {
     if (!factorsKnown) client.call({ m: 'refreshFactors' }).catch(() => undefined);
   }, [client, factorsKnown]);
+  // Embedded: the app's begin is sent once per mount (a second would find the token spent), and each step's title takes focus.
+  const started = useRef(false);
+  useEffect(() => {
+    if (embedded?.start !== 'app' || started.current) return;
+    started.current = true;
+    beginTotp();
+    // beginTotp reads props and refs; this runs once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (embedded === undefined) return;
+    const title = rootRef.current?.querySelector<HTMLElement>('.d-dialog__title');
+    title?.setAttribute('tabindex', '-1');
+    title?.focus();
+    // The title follows the step only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
   useEffect(() => {
     if (focusRequest !== null) rootRef.current?.querySelector<HTMLElement>(`#${focusRequest.id}`)?.focus();
   }, [focusRequest]);
@@ -101,6 +123,12 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   }, [step, held, heldKind]);
 
   const requestFocus = (id: string) => setFocusRequest(f => ({ id, n: (f?.n ?? 0) + 1 }));
+  /** A refused step-up token (spent, expired, from another session): the host asks for a new one. True when it was one. */
+  const stepUpLost = (e: UiError): boolean => {
+    if (embedded === undefined || e.status !== 403 || e.code !== 'E_STEP_UP') return false;
+    embedded.onStepUpLost();
+    return true;
+  };
   const fail = (shown: Pick<Problem, 'key' | 'vars'>) => setProblem(p => ({ ...shown, n: (p?.n ?? 0) + 1 }));
   const live = (g: number): boolean => mounted.current && generation.current === g;
 
@@ -155,7 +183,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     goTo('totp');
     setBusy(true);
     const g = generation.current;
-    client.call({ m: 'factorTotpBegin', stepup: null }).then((v) => {
+    client.call({ m: 'factorTotpBegin', stepup: embedded?.stepup ?? null }).then((v) => {
       if (!live(g)) return;
       const r = v as { secret: string; uri: string };
       setKey({ secret: r.secret, uri: r.uri });
@@ -163,6 +191,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
+      if (stepUpLost(err)) return;
       fail(sharedRefusal(err) ?? { key: 'factor.error.other', vars: { code: err.code } });
       setBusy(false);
     });
@@ -183,6 +212,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
+      if (stepUpLost(err)) return;
       setBusy(false);
       if (err.status === 400 && err.code === 'E_INVALID_REQUEST') {
         setCode('');
@@ -205,7 +235,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     const g = generation.current;
     const run = async () => {
       try {
-        const begin = await client.call({ m: 'factorPasskeyBegin', stepup: null }) as { ceremonyId: string; options: string };
+        const begin = await client.call({ m: 'factorPasskeyBegin', stepup: embedded?.stepup ?? null }) as { ceremonyId: string; options: string };
         if (!live(g)) return;
         // The options come from the instance's begin and nowhere else; the page makes no challenge of its own.
         const response = await createPasskey(begin.options);
@@ -215,6 +245,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         added('passkey', done.backupCodes);
       } catch (e) {
         if (!live(g)) return;
+        if (stepUpLost(errorOf(e))) return;
         setBusy(false);
         fail(passkeyProblem(e, instanceName));
         requestFocus(BUTTON_PASSKEY);
@@ -245,15 +276,25 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     <Banner key={problem.n} tone="danger">{t(problem.key, problem.vars)}</Banner>
   );
   const blocked = busy ? { 'aria-disabled': true as const } : {};
-  const frame = (title: string, foot: ReactNode, children: ReactNode) => (
+  const frame = (title: string, foot: ReactNode, children: ReactNode) => embedded === undefined ? (
     <form noValidate onSubmit={onSubmit}>
       <OnboardingFrame title={title} stepLabel={stepLabel} footer={foot}>
         {banner}
         {children}
       </OnboardingFrame>
     </form>
+  ) : (
+    <form noValidate onSubmit={onSubmit}>
+      <Dialog open title={title} closeLabel={t(step === 'codes' ? 'dialog.close' : 'factorSettings.cancel')} onClose={embedded.onClose} footer={foot}>
+        <div className="dw-factor-embedded">
+          {banner}
+          {children}
+        </div>
+      </Dialog>
+    </form>
   );
-  const back = <Button variant="ghost" type="button" onClick={() => { if (!busy) toChoose(); }} {...blocked}>{t('factor.back')}</Button>;
+  const back = embedded !== undefined ? null
+    : <Button variant="ghost" type="button" onClick={() => { if (!busy) toChoose(); }} {...blocked}>{t('factor.back')}</Button>;
 
   let content: React.JSX.Element;
   if (step === 'choose') {
