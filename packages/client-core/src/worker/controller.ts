@@ -1168,6 +1168,19 @@ export class Controller {
    *  an account that owes a second factor stops at factor-setup (`origin` says why) with no backup PUT, no KeyPackage and
    *  no socket: the instance refuses them all until a factor is added (protocol/09 scope F). */
   private async enterReady(origin: FactorSetupOrigin): Promise<void> {
+    try { await this.enterReadyOnce(origin); }
+    catch (e) {
+      // Final review M5: a reset (or a CLI sweep) landing after the gate read answers E_FACTOR_REQUIRED while the phase is
+      // not yet ready, which the global hook ignores. The account owes a factor: stop the gateway and engine the steps
+      // after the gate built, and take the forced set-up, as the hook does, rather than the error screen.
+      const me = this.me;
+      if (errorOf(e).code !== 'E_FACTOR_REQUIRED' || this.revoked() || this.wiping || this.storeCleared || me === null) throw e;
+      this.onFactorRequired();
+      await this.enterFactorSetup('required', me.userId, me.deviceId);
+    }
+  }
+
+  private async enterReadyOnce(origin: FactorSetupOrigin): Promise<void> {
     const core = this.requireCore();
     const session = this.session;
     if (session === null) throw new CoreError('E_CORE_STATE', 'no session');

@@ -333,6 +333,18 @@ describe('adding a factor', () => {
     await confirmPassword(user);
     expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
   });
+  it('refuses a passkey name over 64 bytes before the begin (final review M3)', async () => {
+    const { fake, user } = setup({ ...ONLY_TOTP });
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));
+    await confirmPassword(user);
+    const dialog = await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
+    const name = within(dialog).getByRole('textbox', { name: en['factor.passkey.name'] });
+    await user.clear(name);
+    await user.type(name, '山田'.repeat(11));
+    await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
+    expect(await within(dialog).findByText(en['factor.error.nameLong'])).toBeInTheDocument();
+    expect(fake.callsOf('factorPasskeyBegin')).toEqual([]);
+  });
   it('opens the passkey step after the step-up, without a choice or a Back', async () => {
     const { fake, user } = setup({ ...ONLY_TOTP });
     await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));

@@ -302,6 +302,26 @@ describe('passkey', () => {
     expect(create).not.toHaveBeenCalled();
     expect(fake.callsOf('factorPasskeyBegin')).toEqual([]);
   });
+  it('refuses a name of wide characters that is over 64 bytes before the browser or the instance is asked (final review M3)', async () => {
+    const { fake, user } = setup();
+    await toPasskey(user);
+    const name = screen.getByRole('textbox', { name: en['factor.passkey.name'] });
+    await user.clear(name);
+    // 22 characters, 66 bytes.
+    await user.type(name, '山田'.repeat(11));
+    await user.click(button(en['factor.passkey.submit']));
+    expect(await screen.findByText(en['factor.error.nameLong'])).toBeInTheDocument();
+    expect(name).toHaveFocus();
+    expect(create).not.toHaveBeenCalled();
+    expect(fake.callsOf('factorPasskeyBegin')).toEqual([]);
+  });
+  it('does not call a worker-local refusal a dropped connection (final review M3)', async () => {
+    create.mockResolvedValue(credential());
+    const { user } = setup({}, { handler: (c) => c.m === 'factorPasskeyFinish' ? Promise.reject(refusal({ code: 'E_BAD_INPUT' })) : happy(c, new FakeClient()) });
+    await toPasskey(user);
+    await user.click(button(en['factor.passkey.submit']));
+    expect(await screen.findByRole('alert')).not.toHaveTextContent(en['factor.error.network']);
+  });
   it('shows Add passkey as busy while the browser asks', async () => {
     let finish: (v: unknown) => void = () => undefined;
     create.mockReturnValue(new Promise(r => { finish = r; }));
@@ -586,6 +606,29 @@ describe('a reload after the factor was confirmed', () => {
     expect(h1()).toHaveTextContent(en['factor.totp.title']);
     fake.publish('factors', { ...HELD, totp: null });
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe('another device added a factor first (final review M4)', () => {
+  const HELD: FactorsState = { owed: false, totp: null, passkeys: [{ id: 'aa', name: 'x', created: 1, lastUsed: null }], backupCodesLeft: 8, hasPassword: true };
+  const stale = (fake: FakeClient, c: Command, after: FactorsState): Promise<unknown> => {
+    if (c.m === 'factorTotpBegin') return Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 }));
+    if (c.m === 'refreshFactors') { fake.publish('factors', after); return Promise.resolve(null); }
+    return Promise.resolve(null);
+  };
+  it('ends a forced set-up as already in place, with no raw code', async () => {
+    const { fake, user } = setup({ origin: 'required', stepLabel: '' }, { handler: (c, f) => stale(f, c, HELD) });
+    await user.click(button('Continue'));
+    expect(await screen.findByText(en['factor.done.passkey'])).toBeInTheDocument();
+    expect(screen.queryByText(/E_STEP_UP/)).toBeNull();
+    expect(fake.callsOf('refreshFactors').length).toBeGreaterThan(0);
+  });
+  it('goes back to the choice, with no raw code, when the account still owes', async () => {
+    const { user } = setup({ origin: 'required', stepLabel: '' }, { handler: (c, f) => stale(f, c, { ...NO_FACTORS }) });
+    await user.click(button('Continue'));
+    await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.choose.title']); });
+    expect(screen.queryByText(/E_STEP_UP/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });
 

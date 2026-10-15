@@ -381,6 +381,19 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
 });
 
 // C2 review fix round 1.
+describe('final review M5: an owed state met in the middle of enterReady', () => {
+  it('a reset landing after the gate read routes to factor-setup (origin required) and stops the gateway, not the error screen', async () => {
+    const w = world({ phase: 2 });
+    w.routes.listCommunities.mockImplementationOnce(() => { w.state.owed = true; return Promise.reject(refusal(403, 'E_FACTOR_REQUIRED')); });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).not.toBe('loading'));
+    await vi.waitFor(() => expect(w.gateway.stops).toBeGreaterThan(0));
+    expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'required' }, error: null });
+    expect(w.sync.stop).toHaveBeenCalled();
+    expect(factors(w)?.owed).toBe(true);
+  });
+});
+
 describe('C2 review: an owed account on a new browser, the double submit, the hook\'s filter', () => {
   it('an owed account signing in on a new browser (needs 0) whose state upload is refused stops at factor-setup with origin signin, then reaches ready', async () => {
     // D5: an operator reset keeps the password and the recovery key. The login owes nothing, the enrolment writes the core

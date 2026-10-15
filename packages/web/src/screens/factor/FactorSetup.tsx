@@ -46,7 +46,13 @@ const FIELD_NAME = 'factor-passkey-name';
 const BUTTON_PASSKEY = 'factor-passkey-submit';
 const KIND_GROUP = 'factor-kind';
 
-const codePoints = (s: string): number => [...s].length;
+const NAME_MAX_BYTES = 64;
+const CONTROL = /\p{Cc}/u;
+const UTF8 = new TextEncoder();
+
+/** The worker's rule for a passkey's name (1..64 characters and 64 UTF-8 bytes, no control character), checked before the
+ *  authenticator makes a credential the instance would then refuse to register. */
+const nameFits = (s: string): boolean => [...s].length <= NAME_MAX && UTF8.encode(s).length <= NAME_MAX_BYTES && !CONTROL.test(s);
 
 /** A finished set-up the worker refused because the account still owes a factor (its read of the factors found none). */
 export const stillOwed = (e: unknown): boolean => errorOf(e).code === 'E_FACTOR_REQUIRED';
@@ -54,7 +60,7 @@ export const stillOwed = (e: unknown): boolean => errorOf(e).code === 'E_FACTOR_
 /** The refusals every request shares, by status and code only (never by detail). Null: the caller's own rows apply. */
 export function sharedRefusal(e: UiError): Pick<Problem, 'key' | 'vars'> | null {
   if (e.status === 429) return { key: 'factor.error.tooMany', vars: { seconds: Math.max(1, Math.ceil((e.retryAfterMs ?? 1000) / 1000)) } };
-  if (e.status === 0) return { key: 'factor.error.network', vars: {} };
+  if (e.status === 0 && (e.code === 'E_NETWORK' || e.code === 'E_UNAVAILABLE')) return { key: 'factor.error.network', vars: {} };
   return null;
 }
 
@@ -138,6 +144,15 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     embedded.onStepUpLost('expired');
     return true;
   };
+  /** The set-up origins send no step-up, so a 403 E_STEP_UP there means the account now holds a factor (another device
+   *  added one). The factors are read again and the choice shows, which ends the set-up as already in place when the
+   *  account owes nothing. True when it was one. */
+  const factorAppeared = (e: UiError): boolean => {
+    if (embedded !== undefined || e.status !== 403 || e.code !== 'E_STEP_UP') return false;
+    const g = generation.current;
+    void client.call({ m: 'refreshFactors' }).catch(() => undefined).then(() => { if (live(g) && !completed.current) toChoose(); });
+    return true;
+  };
   /** Embedded: the begin spent the token and the add did not go on, so a retry here would only be refused. */
   const handBack = (): boolean => {
     if (embedded === undefined) return false;
@@ -216,7 +231,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
-      if (stepUpLost(err) || handBack()) return;
+      if (stepUpLost(err) || factorAppeared(err) || handBack()) return;
       fail(sharedRefusal(err) ?? { key: 'factor.error.other', vars: { code: err.code } });
       setBusy(false);
     });
@@ -237,7 +252,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
-      if (stepUpLost(err)) return;
+      if (stepUpLost(err) || factorAppeared(err)) return;
       setBusy(false);
       if (err.status === 400 && err.code === 'E_INVALID_REQUEST') {
         setCode('');
@@ -253,7 +268,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     if (busy) return;
     const trimmed = passkeyName.trim();
     if (trimmed === '') { setNameError('factor.error.required'); requestFocus(FIELD_NAME); return; }
-    if (codePoints(trimmed) > NAME_MAX) { setNameError('factor.error.nameLong'); requestFocus(FIELD_NAME); return; }
+    if (!nameFits(trimmed)) { setNameError('factor.error.nameLong'); requestFocus(FIELD_NAME); return; }
     setNameError(null);
     setProblem(null);
     setBusy(true);
@@ -271,7 +286,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         added('passkey', done.backupCodes);
       } catch (e) {
         if (!live(g)) return;
-        if (stepUpLost(errorOf(e)) || handBack()) return;
+        if (stepUpLost(errorOf(e)) || factorAppeared(errorOf(e)) || handBack()) return;
         setBusy(false);
         fail(passkeyProblem(e, instanceName));
         requestFocus(BUTTON_PASSKEY);
