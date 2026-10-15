@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-14 ("web-3.3"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-14 ("web-3.5"): starting a server, inviting people and adding
 channels, signing up, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), contacts and safety numbers, search, settings and a second tab, and what the client cannot do
@@ -223,6 +223,135 @@ A person who is kicked, banned, or whose server is deleted sees a banner, "You a
 dialog open for that server closes. A banned person who tries an invite link again sees "This server does not let your account join."
 until the ban ends or is lifted. See also
 [You are no longer a member](#you-are-no-longer-a-member).
+
+## Roles and private channels
+
+Roles decide what people may do and, with private channels, who can see what. You need **manage roles** to make and
+edit roles, and **manage channels** to change a channel. The owner can do everything here.
+
+### Make and edit roles
+
+In **server settings**, **roles** sits between **channels** and **invites**. It shows only to someone whose roles
+include manage roles. The list is "Roles": "Roles group what people may do. A higher role outranks the ones below it,
+and you can change only roles below your own highest role. Everyone in the server, and the host, can see every role,
+its permissions and who holds it." Each row has the role's colour dot, its name and "{count} members", with **edit**,
+**move up**, **move down** and **delete**. "@everyone" is last: "Everyone in the server holds this role. Its
+permissions are where every member starts." A role at or above your highest role says "above your highest role" and
+has no buttons. The screen announces "{name} moved." after a move.
+
+**new role** (or **edit** on a row) opens "New role in {server}" (or "Edit {name}"):
+
+- "Role name": up to 100 bytes. Everyone in the server, and the host, can read it.
+- "Colour": a row of swatches (no colour, red, orange, amber, green, teal, cyan, blue, indigo, purple, pink, brown,
+  grey). The colour shows as a dot beside the names of people who hold the role. The arrow keys move between swatches.
+- **show separately in the member list** gives the role its own group in the member list, highest first.
+- **anyone can mention this role** lets any member write `@` and the role's name. "People who may mention @everyone
+  can mention any role."
+- "Permissions": four groups (General, Members, Text, Voice), each permission with a hint. A permission you do not
+  hold is switched off: "You do not hold this permission, so you cannot give or take it."
+
+**Create** or **Save** says "Creating…" or "Saving…", then "{name} created." or "{name} saved." A refusal shows in the
+dialog: "Give the role a name.", "That name is too long. A role name is up to 100 bytes.", "You cannot change this
+role. It is at or above your highest role, or it carries a permission you do not hold.", "Someone else moved this
+role at the same time. Check it and save again.", "This server already has 250 roles, the most it can hold." or
+"This role no longer exists."
+
+**delete** asks "Delete {name}?": "Everyone who holds it loses it, and with it any channel it opened for them. This
+cannot be undone." Focus starts on **Cancel**. **Delete** says "Deleting…", then "{name} deleted."
+
+### Permissions that do nothing yet
+
+Some permissions are in the editor so that a later version can use them. In this version these have no effect:
+**manage messages**, **view audit log**, **bypass slow mode**, **mute members**, **move members** and **manage
+nicknames**. **add reactions** has no effect in channels the host cannot read. The rest work, with two caveats:
+
+- **send messages** is checked only by members' apps. They hide the message box, and the sender's app is what stops
+  a message. See [Who checks the rules](#who-checks-the-rules).
+- **read message history** opens the files sent in a channel. It never shows someone messages sent before they
+  joined the channel.
+
+**administrator** gives every permission in every channel, whatever the channel's settings say. Give it only to people
+you would trust with the whole server.
+
+### Give roles to people
+
+Open the member list, open **actions for {name}** and choose **roles**. The dialog "Roles of {name}" says "Tick a
+role to give it to {name}, untick it to take it away. Each change applies at once." A role at or above your highest
+role is switched off: "{role} is at or above your highest role." Each change is announced: "{role} given to
+{name}." or "{role} taken from {name}." If there is nothing you can give, it says "There are no roles you can give
+yet. Make one in Server settings, under roles." A refusal shows in the dialog and the box returns to how it was:
+"You cannot give or take {role}. …", "{name} needs a second sign-in factor before they can hold a moderator role in
+this server." or "{name} is no longer in this server." **Done** closes it. The dialog ends with "Roles decide who can
+see private channels. People who lose a channel keep the messages they already have; people who gain one see only
+messages sent after they join it."
+
+### Private channels
+
+A private channel can be seen only by the owner, administrators, and the roles and people you name. The host still
+knows who is in it.
+
+- **When you make it.** In the new-channel dialog, turn on **private channel**: "Only you, the owner, administrators
+  and the roles you tick can see it." Under "Roles that can see it" tick the roles to add; only roles below your own
+  are listed, or it says "There are no roles below yours to add. You can add people later in the channel's
+  permissions." A private channel can be opened to at most 98 roles at creation: "A private channel can be opened to
+  at most 98 roles. Untick some and try again." You keep seeing a private channel you made until someone removes
+  your entry, or you leave or are removed.
+- **Later.** In the channel's settings (**edit channel**), "Permissions" has the **private channel** toggle. Turning
+  it on asks "Make #{name} private?": "People who are not given access leave the channel now. They keep the messages
+  they already have." Turning it off asks "Open #{name} to everyone?": "Everyone in {server} joins the channel. They
+  see only messages sent after they join." Both confirms start on **Cancel**. A private channel carries the tag
+  "private".
+- **A change that would hide the channel from you** is refused unless you are the owner or an administrator: "That
+  change would hide the channel from you. Give access to a role you hold first."
+
+People who lose a channel keep the messages they already have. Someone who gains one sees only messages sent after
+they join it, whatever their roles. A channel that leaves your list, because it was hidden from you or deleted, is
+announced as "#{name} is no longer available to you."; the app cannot tell which it was.
+
+### Per-channel settings
+
+"Permissions" in a channel's settings has "Who has settings here": the entries that change what the channel's
+defaults allow, each a role (or "@everyone") or a person ("member"). **add a role or person** ("Role or person")
+adds an entry; **remove** drops it ("No role or person has settings of their own here yet."). For each permission an
+entry chooses **allow**, **default** or **deny**. It saves with "Saving…", then "Permissions of #{name} saved." A
+refusal shows in the section: "You cannot change this. The role or person is at or above your highest role, or the
+change names a permission you do not hold here.", "This channel no longer exists." or "Could not read who can see
+this channel. Close this and open it again."
+
+### A channel you cannot post in
+
+Without **send messages** in a channel, the message box stays but is read-only, with the reason: "You cannot send
+messages in #{name}." Your draft stays in the box.
+
+### Role mentions
+
+Type `@` and the start of a role's name: the list offers the roles you may mention, each with the note "role". A
+role mention shows as the role's name. It notifies the people who hold the role.
+
+### Pins, @everyone and @here
+
+Who may pin, and who may notify everyone, follows the sender's rights **now**:
+
+- **Pins** follow the pinner's current right to pin messages in that channel. A pin shows only while the person who
+  pinned it may pin there: "A pin shows while the person who pinned it may pin in this channel." If someone loses the
+  right, their pins and unpins stop counting, and an earlier pin by someone else can come back.
+- **@everyone and @here** notify you only when the sender may mention them. A message that mentions you directly,
+  by `@` and your name, always notifies you.
+
+### Who checks the rules
+
+The roles, pins and mentions above are checked by members' apps, not by the host. The host does not see your messages
+and cannot read or change them, but it carries each server's role information. A host that behaves badly could hide
+pins and @everyone, or show different members different views of who holds which role. Nothing in the group checks
+or signs the role view. In this version "who may send" is checked only by members' apps. The
+[design](../superpowers/specs/2026-09-23-dilla-design.md) describes what the host can and cannot do.
+
+### Notifications for a server
+
+Under **notifications**, "Servers" has one row for each server: "A server's setting applies to its channels unless a
+channel has its own." Choose **default**, **all messages**, **mentions** or **nothing**; **mute server** silences it;
+**ignore @everyone and @here** drops those mentions, whoever sent them. A direct `@` mention of you always notifies.
+A channel's own setting beats the server's.
 
 ## 1. Open the invite
 
@@ -556,7 +685,8 @@ people comes from it.
 Under **notifications**, "Desktop notifications show while a dilla tab is open. Nothing is shown when every
 tab is closed." Choose **turn on** to ask the browser for permission. The default "notify me about" choices
 are "direct messages and mentions", "every message" and "nothing". "Per channel" lets you choose "default",
-"all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge.
+"all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge. "Servers" sets
+the same for a whole server ([Notifications for a server](#notifications-for-a-server)).
 
 ![Notification permission before opt-in](screenshots/settings-notifications.png)
 
@@ -621,8 +751,8 @@ unpin](screenshots/conversation-pins.png)
 **pin** pins a message for everyone in the conversation, and it shows "pinned". **pinned** in the channel header
 opens "Pinned in #{channel}" ("Pinned with {name}" in a direct message): each pinned message with its author, its
 time, its first words and "pinned by {name}", with **go to message** and **unpin**. With nothing pinned it says
-"Nothing is pinned here yet." In this version anyone in the conversation can pin and unpin any message; the list
-says who pinned each one.
+"Nothing is pinned here yet." In a channel, who may pin follows the pinner's current right ([Pins, @everyone and @here](#pins-everyone-and-here)); the
+list says who pinned each one.
 
 ### Mentions
 
@@ -634,8 +764,8 @@ picks, Escape closes the list. Typing a member's whole `@username` works too. Th
 the text you typed, so it always shows their current name. A message that mentions you is marked, counts in the
 mention badge and notifies you as your notification settings say (section 8). `@everyone` mentions everyone in the
 channel; typing `@here` does the same (the client does not know who is online, so it offers no separate entry);
-direct messages offer neither. A mention of a role shows as "@role" and counts as a mention of you once this browser has loaded the
-server's member list.
+direct messages offer neither. A mention of a role shows as the role's name and counts as a mention of you once this browser has loaded the
+server's member list ([Role mentions](#role-mentions)).
 
 ### Images and files
 
@@ -810,22 +940,26 @@ and when the other tab closes it takes over by itself.
 
 ![The hand-over at 360 pixels wide](screenshots/tabs-handover-phone.png)
 
-## 11. Known limits (2026-10-14)
+## 11. Known limits (2026-10-15)
 
 - No native phone or desktop app. A second browser needs the recovery key and the password (and the code,
   for an account with a second factor). A new browser does not get messages from before it joined. Devices have
   no names, and the password cannot be changed from the web client.
-- The web client cannot create or edit roles, and it has no profile screens. The "invite link" button always makes a
+- The web client has no profile screens. The "invite link" button always makes a
   link for 10 uses and 7 days; choose other limits under server settings → invites ([Run your
   server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or ban gives no way to
   tell the person why.
+- Roles and private channels: who may send, pin or mention everyone is checked only by members' apps, and the role
+  view is not verified by the group ([Who checks the rules](#who-checks-the-rules)). People who gain a channel see
+  only messages sent after they join it. Six permissions have no effect yet ([Permissions that do nothing
+  yet](#permissions-that-do-nothing-yet)).
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
 - No threads, link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
   Only the latest version of an edited message is shown. A browser sends and opens files of at most 25 MB, and
   plays only the listed audio and video types. Received link previews are not shown.
-- Who may pin, unpin or mention everyone is not checked yet: anyone in a conversation can. The pins list names who
-  pinned each message. Only the author can delete a message.
+- Roles, pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Six
+  permissions have no effect yet. Only the author can delete a message.
 - No presence. Notifications require an open tab and browser permission.
 - Search opens only from the keyboard (Control/⌘+K, Control+/); a phone or tablet without a keyboard cannot open it yet.
   Search finds only text this browser holds, never files.
