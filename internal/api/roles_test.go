@@ -609,3 +609,122 @@ func TestMembersReadTheOverwritesTheyCanSee(t *testing.T) {
 		t.Errorf("unknown community = %d, want 404", status)
 	}
 }
+
+// S2: an overwrite PUT or DELETE that would hide the channel from its own author is refused,
+// unless the author is the owner or holds administrator. 403 keeps its precedence, and there is
+// no self-target exception on PUT.
+func TestNoOneLocksThemselfOutOfAChannel(t *testing.T) {
+	f := privateEnv(t)
+	owPath := func(ch id.ID, kind string, target id.ID) string {
+		return "/v1/channels/" + ch.String() + "/overwrites/" + kind + "/" + target.String()
+	}
+	do := func(name, method, path, tok string, body any, want int, detail string) {
+		t.Helper()
+		status, resp := f.e.Do(method, path, tok, body)
+		if status != want {
+			t.Fatalf("%s = %d, want %d (%x)", name, status, want, resp)
+		}
+		if detail != "" && errDetail(t, resp) != detail {
+			t.Fatalf("%s detail = %q, want %q", name, errDetail(t, resp), detail)
+		}
+	}
+	denyView := []any{uint64(0), uint64(api.PermViewChannel)}
+
+	// PUT @everyone deny view by a mod with no other access: refused; by the owner: done.
+	ch, _, _ := newChannel(t, f.e, f.cid, f.ownerTok, 0, 0, 0, "allmänt")
+	everyone := owPath(ch, "0", f.everyone)
+	do("mod PUT that hides", http.MethodPut, everyone, f.mTok, denyView, http.StatusBadRequest, "you would lose this channel")
+	do("mod PUT with a bit it lacks", http.MethodPut, everyone, f.mTok,
+		[]any{uint64(api.PermPinMessages), uint64(api.PermViewChannel)}, http.StatusForbidden, "")
+	do("mod PUT on itself", http.MethodPut, owPath(ch, "1", f.mod), f.mTok,
+		[]any{uint64(api.PermViewChannel), uint64(0)}, http.StatusForbidden, "")
+	if ow, _ := f.e.Repo.ListOverwrites(t.Context(), ch); len(ow) != 0 {
+		t.Fatalf("a refused PUT wrote %+v", ow)
+	}
+	do("owner PUT", http.MethodPut, everyone, f.ownerTok, denyView, http.StatusNoContent, "")
+
+	// An administrator is exempt like the owner.
+	admin := createRole(t, f.e, f.cid, f.ownerTok, "admin", 3, api.PermAdministrator)
+	grant(t, f.e, f.cid, f.ownerTok, f.b, admin, http.StatusNoContent)
+	other, _, _ := newChannel(t, f.e, f.cid, f.ownerTok, 0, 0, 0, "annat")
+	do("admin PUT", http.MethodPut, owPath(other, "0", f.everyone), f.bTok, denyView, http.StatusNoContent, "")
+
+	// With @everyone denied, a lower role's overwrite is what gives the mod the channel. The mod
+	// may change @everyone again, but may not DELETE that role overwrite; the owner may.
+	viewers := createRole(t, f.e, f.cid, f.ownerTok, "viewers", 2, 0)
+	grant(t, f.e, f.cid, f.ownerTok, f.mod, viewers, http.StatusNoContent)
+	do("owner opens to viewers", http.MethodPut, owPath(ch, "0", viewers), f.ownerTok,
+		[]any{uint64(api.PermViewChannel), uint64(0)}, http.StatusNoContent, "")
+	do("mod PUT kept by viewers", http.MethodPut, everyone, f.mTok,
+		[]any{uint64(0), uint64(api.PermViewChannel | api.PermSendMessages)}, http.StatusNoContent, "")
+	do("mod PUT that replaces viewers' allow", http.MethodPut, owPath(ch, "0", viewers), f.mTok,
+		[]any{uint64(0), uint64(0)}, http.StatusBadRequest, "you would lose this channel")
+	do("mod DELETE that hides", http.MethodDelete, owPath(ch, "0", viewers), f.mTok, nil,
+		http.StatusBadRequest, "you would lose this channel")
+	if ow, _ := f.e.Repo.ListOverwrites(t.Context(), ch); len(ow) != 2 {
+		t.Fatalf("a refused change touched the overwrites: %+v", ow)
+	}
+	do("owner DELETE", http.MethodDelete, owPath(ch, "0", viewers), f.ownerTok, nil, http.StatusNoContent, "")
+}
+
+// S2: the self-lockout rule is decided inside the transaction against the overwrites as they
+// stand. The mod sees a private channel through two roles; while its DELETE of one of them is
+// between the checks and the transaction, the owner removes the other. The DELETE is refused.
+func TestTheSelfLockoutRuleRechecksUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewChannels(e.Repo, e.DS, e.Clk, 10, log).Register(e.Mux)
+	api.NewRoles(hooked, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5, api.PermViewChannel|api.PermManageRoles)
+	viewers := createRole(t, e, cid, ownerTok, "viewers", 2, 0)
+	helpers := createRole(t, e, cid, ownerTok, "helpers", 3, 0)
+	for _, r := range []id.ID{modRole, viewers, helpers} {
+		grant(t, e, cid, ownerTok, mod, r, http.StatusNoContent)
+	}
+	var ch id.ID
+	path := func(target id.ID) string {
+		return "/v1/channels/" + ch.String() + "/overwrites/0/" + target.String()
+	}
+	private := func(name string) {
+		t.Helper()
+		ch, _, _ = newChannel(t, e, cid, ownerTok, 0, 0, 0, name)
+		for target, pair := range map[id.ID][]any{
+			roles[0].ID: {uint64(0), uint64(api.PermViewChannel)},
+			viewers:     {uint64(api.PermViewChannel), uint64(0)},
+			helpers:     {uint64(api.PermViewChannel), uint64(0)},
+		} {
+			if status, body := e.Do(http.MethodPut, path(target), ownerTok, pair); status != http.StatusNoContent {
+				t.Fatalf("owner PUT = %d (%x)", status, body)
+			}
+		}
+	}
+	// Control: undisturbed, the DELETE passes, viewers still showing the channel to the mod, so
+	// the refusal below could only come from the check inside the transaction.
+	private("kontroll")
+	if status, body := e.Do(http.MethodDelete, path(helpers), modTok, nil); status != http.StatusNoContent {
+		t.Fatalf("mod DELETE undisturbed = %d (%x), want 204", status, body)
+	}
+	private("hemligt")
+
+	hooked.arm(func() {
+		if err := e.Repo.DeleteOverwrite(t.Context(), ch, 0, viewers); err != nil {
+			t.Errorf("concurrent delete: %v", err)
+		}
+	})
+	status, body := e.Do(http.MethodDelete, path(helpers), modTok, nil)
+	if status != http.StatusBadRequest || errDetail(t, body) != "you would lose this channel" {
+		t.Fatalf("mod DELETE raced to lockout = %d (%x), want 400", status, body)
+	}
+	if ow, _ := e.Repo.ListOverwrites(t.Context(), ch); len(ow) != 2 {
+		t.Fatalf("overwrites = %+v, want @everyone and helpers", ow)
+	}
+}
