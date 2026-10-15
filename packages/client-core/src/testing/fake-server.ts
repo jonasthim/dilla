@@ -29,6 +29,29 @@ export interface LoggedRequest { method: string; path: string; query: string; au
 export type Reply = { status: number; body?: CborInput } | 'network' | 'lose';
 interface Account { userId: Uint8Array; username: string; display: string }
 
+// ---- web3.6: second factors (flow 10) ----
+/** The code the fake accepts for a TOTP enrolment, a TOTP login and a TOTP step-up. */
+export const FAKE_TOTP_CODE = '123456';
+/** The setup key the fake's enrol answers. */
+export const FAKE_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
+export const FAKE_STEP_UP_EXPIRES_S = 300;
+const STEP_UP_FREE_ATTEMPTS = 5;
+const BACKUP_CODES = 10;
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+/** What one account holds: an app (totpCode), passkeys, unused backup codes, and the owed flag. */
+export interface FakeFactorState {
+  owed: boolean;
+  totpCode: string | null;
+  passkeys: { credId: Uint8Array; name: string; created: number; lastUsed: number | null }[];
+  codes: string[];
+}
+/** Routes an owed account may still call (protocol/09 scope F, and the P routes that pass by their scope). */
+const OWED_OK = [
+  /^GET \/v1\/accounts\/me$/, /^GET \/v1\/auth\/factors$/, /^POST \/v1\/auth\/totp\/(enroll|confirm)$/,
+  /^POST \/v1\/auth\/passkey\/register\/(begin|finish)$/, /^DELETE \/v1\/devices\/[0-9a-f]{32}\/sessions$/,
+  /^(PUT|GET) \/v1\/users\/[0-9a-f]{32}\/device-list$/, /^GET \/v1\/backups(\/[01]\/0)?$/,
+];
+
 function reply(status: number, body?: CborInput): Response {
   if (body === undefined) return new Response(null, { status, headers: { 'X-Dilla-Generation': '1' } });
   return new Response(new Uint8Array(encode(body)), {
@@ -55,7 +78,19 @@ export class FakeServer {
   readonly passwords = new Map<string, { password: string; totp: string | null }>();
   /** Every assertion issued, including ones subsequently spent. */
   readonly assertions: string[] = [];
-  private readonly activeAssertions = new Map<string, { user: string; needsTotp: boolean }>();
+  private readonly activeAssertions = new Map<string, { user: string; needs: 0 | 1 | 2 }>();
+  /** When true, an account created through POST /v1/accounts is owed a second factor, as dillad does. */
+  factorRequired = false;
+  private readonly factorStates = new Map<string, FakeFactorState>();
+  /** Step-up tokens: token → the username and the session token they were issued to. Single use. */
+  private readonly stepUps = new Map<string, { username: string; session: string }>();
+  private readonly stepUpFailures = new Map<string, number>();
+  /** Open WebAuthn ceremonies: the id (hex) → what it is for and for whom. */
+  private readonly ceremonies = new Map<string, { kind: 'register' | 'login' | 'stepup'; username: string | null }>();
+  private stepUpN = 0;
+  private ceremonyN = 0;
+  private credN = 0;
+  private codeN = 0;
   readonly backups = new Map<string, { object: Uint8Array; created: bigint }>();
   readonly listHistory = new Map<string, { version: bigint; blob: Uint8Array; sig: Uint8Array; prev: Uint8Array }[]>();
   readonly revoked = new Map<string, number>();
@@ -123,6 +158,50 @@ export class FakeServer {
   }
   setPassword(username: string, password: string, totp: string | null = null): void {
     this.passwords.set(username, { password, totp });
+  }
+  /** What the account holds; created empty. */
+  factorsOf(username: string): FakeFactorState {
+    let state = this.factorStates.get(username);
+    if (state === undefined) {
+      state = { owed: false, totpCode: null, passkeys: [], codes: [] };
+      this.factorStates.set(username, state);
+    }
+    return state;
+  }
+  /** Marks the account as owing a second factor (a legacy account, an abandoned sign-up, an operator reset). */
+  setOwed(username: string, owed = true): void {
+    this.factorsOf(username).owed = owed;
+  }
+  /** A passkey the account already holds; its response string for the fake's login is `credIdHex(credId)`. */
+  addPasskey(username: string, name: string): Uint8Array {
+    const credId = new Uint8Array(32).fill(0xc0);
+    credId[0] = ++this.credN;
+    this.factorsOf(username).passkeys.push({ credId, name, created: this.nowS, lastUsed: null });
+    return credId;
+  }
+  /** Unused backup codes the account holds (the fake keeps them in the clear). */
+  backupCodesOf(username: string): readonly string[] {
+    return this.factorsOf(username).codes;
+  }
+  private totpOf(username: string): string | null {
+    return this.factorsOf(username).totpCode ?? this.passwords.get(username)?.totp ?? null;
+  }
+  private needsOf(username: string): 0 | 1 | 2 {
+    if (this.totpOf(username) !== null) return 1;
+    return this.factorsOf(username).passkeys.length > 0 ? 2 : 0;
+  }
+  private holdsFactor(username: string): boolean {
+    return this.needsOf(username) !== 0;
+  }
+  private mintCodes(username: string): string[] {
+    const codes = Array.from({ length: BACKUP_CODES }, () => {
+      let n = ++this.codeN;
+      let tail = '';
+      while (n > 0) { tail = BASE32[26 + (n % 6)] + tail; n = Math.floor(n / 6); }
+      return tail.padStart(26, 'A');
+    });
+    this.factorsOf(username).codes = codes;
+    return codes;
   }
   publishList(userId: Uint8Array, entries: readonly { deviceId: Uint8Array; revokedAt?: bigint | null }[], at: bigint = BigInt(this.nowS)): bigint {
     const user = toHex(userId);
@@ -295,8 +374,8 @@ export class FakeServer {
       const password = str(body[1] ?? null);
       const stored = this.passwords.get(username);
       if (stored === undefined || stored.password !== password) return refuse(401, 'E_UNAUTHENTICATED');
-      const assertion = this.assertion(username, stored.totp !== null);
-      return reply(200, [assertion, stored.totp === null ? 0 : 1]);
+      const needs = this.needsOf(username);
+      return reply(200, [this.assertion(username, needs), needs]);
     }
     if (line === 'POST /v1/auth/totp/verify') {
       const body = arr(decode(r.body), 2);
@@ -304,9 +383,43 @@ export class FakeServer {
       const code = str(body[1] ?? null);
       const assertion = this.activeAssertions.get(value);
       this.activeAssertions.delete(value);
-      if (assertion === undefined || !assertion.needsTotp || this.passwords.get(assertion.user)?.totp !== code)
+      if (assertion === undefined || assertion.needs !== 1 || this.totpOf(assertion.user) !== code)
         return refuse(401, 'E_UNAUTHENTICATED');
-      return reply(200, [this.assertion(assertion.user, false)]);
+      return reply(200, [this.assertion(assertion.user, 0)]);
+    }
+    if (line === 'POST /v1/auth/recovery/verify') {
+      const body = arr(decode(r.body), 2);
+      const value = str(body[0] ?? null);
+      const code = str(body[1] ?? null);
+      const assertion = this.activeAssertions.get(value);
+      this.activeAssertions.delete(value);
+      if (assertion === undefined || assertion.needs === 0) return refuse(401, 'E_UNAUTHENTICATED');
+      const state = this.factorsOf(assertion.user);
+      const at = state.codes.indexOf(code);
+      if (at < 0) return refuse(401, 'E_UNAUTHENTICATED');
+      state.codes.splice(at, 1);
+      return reply(200, [this.assertion(assertion.user, 0)]);
+    }
+    if (line === 'POST /v1/auth/passkey/login/begin') {
+      const id = `c-${++this.ceremonyN}`;
+      this.ceremonies.set(id, { kind: 'login', username: null });
+      return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
+    }
+    if (line === 'POST /v1/auth/passkey/login/finish') {
+      const body = arr(decode(r.body), 2);
+      const ceremony = this.takeCeremony(body[0] ?? null, 'login');
+      const response = str(body[1] ?? null);
+      if (ceremony === null) return refuse(401, 'E_UNAUTHENTICATED');
+      // The fake's authenticator answers with the credential id in hex, and ":nouv" when it did not verify the user.
+      const [credHex, flagText] = response.split(':');
+      for (const account of this.accounts.values()) {
+        const held = this.factorsOf(account.username).passkeys.find((k) => toHex(k.credId) === credHex);
+        if (held === undefined) continue;
+        held.lastUsed = this.nowS;
+        const needs = flagText === 'nouv' ? 1 : 0;
+        return reply(200, [this.assertion(account.username, needs), needs]);
+      }
+      return refuse(401, 'E_PASSKEY_UNKNOWN');
     }
     if (line === 'GET /v1/instance/limits') {
       return reply(200, [131072, 104857600, 4, 2, 32, 8, 1073741824, 30000, 131584, 30, 30]);
@@ -323,6 +436,12 @@ export class FakeServer {
     const device = r.auth === null ? undefined : this.tokens.get(r.auth);
     const user = device === undefined ? undefined : this.devices.get(device);
     if (device === undefined || user === undefined || this.revoked.has(device)) return refuse(401, 'E_UNAUTHENTICATED');
+    const username = this.accounts.get(user)?.username;
+    if (username !== undefined) {
+      if (this.factorsOf(username).owed && !OWED_OK.some((re) => re.test(line))) return refuse(403, 'E_FACTOR_REQUIRED');
+      const factorRoute = this.factorRoute(r, line, username);
+      if (factorRoute !== null) return factorRoute;
+    }
     const callRoute = this.callRoute(r, line);
     if (callRoute !== null) return callRoute;
     const list =/^(PUT|GET) \/v1\/users\/([0-9a-f]{32})\/device-list$/.exec(line);
@@ -459,15 +578,140 @@ export class FakeServer {
     const userId = this.register(username, deviceId, dskPub);
     this.tiers.set(toHex(deviceId), Number(arr(b[7] ?? null, 5)[2]) as 0 | 1);
     const account = this.accounts.get(toHex(userId));
-    if (account !== undefined) account.display = display;
+    if (account !== undefined) {
+      account.display = display;
+      if (this.factorRequired) this.factorsOf(account.username).owed = true;
+    }
     return reply(200, [userId, deviceId, this.mint(toHex(deviceId), 0), this.nowS + SESSION_S]);
   }
 
-  private assertion(user: string, needsTotp: boolean): string {
+  private assertion(user: string, needs: 0 | 1 | 2): string {
     const value = `asrt-${++this.assertionN}`;
     this.assertions.push(value);
-    this.activeAssertions.set(value, { user, needsTotp });
+    this.activeAssertions.set(value, { user, needs });
     return value;
+  }
+  private ceremonyBytes(id: string): Uint8Array {
+    const out = new Uint8Array(16);
+    out.set(new TextEncoder().encode(id.slice(0, 16)));
+    return out;
+  }
+  private takeCeremony(raw: CborValue, kind: 'register' | 'login' | 'stepup'): { username: string | null } | null {
+    if (!(raw instanceof Uint8Array)) return null;
+    const id = new TextDecoder().decode(raw).replace(/\0+$/, '');
+    const open = this.ceremonies.get(id);
+    this.ceremonies.delete(id);
+    return open !== undefined && open.kind === kind ? open : null;
+  }
+  private spendStepUp(token: CborValue, username: string, session: string | null): boolean {
+    if (typeof token !== 'string') return false;
+    const held = this.stepUps.get(token);
+    // Only its own session spends it: another session's attempt is refused and does not burn the owner's token.
+    if (held === undefined || held.username !== username || held.session !== session) return false;
+    this.stepUps.delete(token);
+    return true;
+  }
+  private issueStepUp(username: string, session: string | null): Response {
+    const token = `su-${++this.stepUpN}`;
+    this.stepUps.set(token, { username, session: session ?? '' });
+    return reply(201, [token, this.nowS + FAKE_STEP_UP_EXPIRES_S]);
+  }
+
+  /** The second-factor routes of protocol/09 § Second factors that need a session. */
+  private factorRoute(r: LoggedRequest, line: string, username: string): Response | null {
+    if (!line.startsWith('GET /v1/auth/factors') && !line.startsWith('POST /v1/auth/')) return null;
+    const state = this.factorsOf(username);
+    const session = r.auth;
+    let body: CborValue[] = [];
+    if (r.method === 'POST') {
+      try { body = arr(decode(r.body)); } catch { return refuse(400, 'E_INVALID_REQUEST'); }
+    }
+    const held = this.holdsFactor(username);
+    switch (line) {
+      case 'GET /v1/auth/factors':
+        return reply(200, [state.owed ? 1 : 0, this.totpOf(username) === null ? null : NOW_S,
+          state.passkeys.map((k) => [k.credId, k.name, k.created, k.lastUsed]), state.codes.length, this.passwords.has(username) ? 1 : 0]);
+      case 'POST /v1/auth/totp/enroll':
+        if (this.totpOf(username) !== null) return refuse(403, 'E_FORBIDDEN');
+        if (held && !this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        return reply(200, [FAKE_TOTP_SECRET, `otpauth://totp/dilla:${username}?secret=${FAKE_TOTP_SECRET}&issuer=dilla`]);
+      case 'POST /v1/auth/totp/confirm': {
+        if (body[0] !== FAKE_TOTP_CODE) return refuse(401, 'E_UNAUTHENTICATED');
+        state.totpCode = FAKE_TOTP_CODE;
+        state.owed = false;
+        return reply(200, [state.codes.length === 0 ? this.mintCodes(username) : []]);
+      }
+      case 'POST /v1/auth/passkey/register/begin': {
+        if (held && !this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        const id = `r-${++this.ceremonyN}`;
+        this.ceremonies.set(id, { kind: 'register', username });
+        return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
+      }
+      case 'POST /v1/auth/passkey/register/finish': {
+        const ceremony = this.takeCeremony(body[0] ?? null, 'register');
+        if (ceremony === null || ceremony.username !== username) return refuse(401, 'E_UNAUTHENTICATED');
+        const name = body[2];
+        if (typeof name !== 'string' || name.length < 1 || new TextEncoder().encode(name).length > 64) return refuse(400, 'E_INVALID_REQUEST');
+        const credId = this.addPasskey(username, name);
+        state.owed = false;
+        return reply(200, [credId, state.codes.length === 0 ? this.mintCodes(username) : []]);
+      }
+      case 'POST /v1/auth/stepup': {
+        const failures = this.stepUpFailures.get(username) ?? 0;
+        if (failures >= STEP_UP_FREE_ATTEMPTS) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
+        const secret = body[1];
+        let ok = false;
+        if (body[0] === 0n) ok = this.passwords.get(username)?.password === secret;
+        else if (body[0] === 1n) ok = this.totpOf(username) === secret;
+        else if (body[0] === 2n && typeof secret === 'string') {
+          const at = state.codes.indexOf(secret);
+          if (at >= 0) { state.codes.splice(at, 1); ok = true; }
+        } else return refuse(400, 'E_INVALID_REQUEST');
+        if (!ok) { this.stepUpFailures.set(username, failures + 1); return refuse(403, 'E_STEP_UP'); }
+        this.stepUpFailures.delete(username);
+        return this.issueStepUp(username, session);
+      }
+      case 'POST /v1/auth/stepup/passkey/begin': {
+        if (state.passkeys.length === 0) return refuse(403, 'E_STEP_UP');
+        const id = `s-${++this.ceremonyN}`;
+        this.ceremonies.set(id, { kind: 'stepup', username });
+        return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
+      }
+      case 'POST /v1/auth/stepup/passkey/finish': {
+        const ceremony = this.takeCeremony(body[0] ?? null, 'stepup');
+        if (ceremony === null || ceremony.username !== username) return refuse(403, 'E_STEP_UP');
+        const credHex = typeof body[1] === 'string' ? body[1].split(':')[0] : null;
+        if (!state.passkeys.some((k) => toHex(k.credId) === credHex)) return refuse(403, 'E_STEP_UP');
+        return this.issueStepUp(username, session);
+      }
+      case 'POST /v1/auth/factors/remove': {
+        if (!this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        const kind = body[1];
+        const cred = body[2];
+        if (kind === 0n) {
+          if (this.totpOf(username) === null) return refuse(404, 'E_NOT_FOUND');
+          const keep = state.passkeys.length > 0;
+          if (!keep) return refuse(409, 'E_INVALID_REQUEST', 'it is the last factor');
+          state.totpCode = null;
+          const stored = this.passwords.get(username);
+          if (stored !== undefined) stored.totp = null;
+          return reply(204);
+        }
+        if (kind === 1n && cred instanceof Uint8Array) {
+          const at = state.passkeys.findIndex((k) => same(k.credId, cred));
+          if (at < 0) return refuse(404, 'E_NOT_FOUND');
+          if (state.passkeys.length === 1 && this.totpOf(username) === null) return refuse(409, 'E_INVALID_REQUEST', 'it is the last factor');
+          state.passkeys.splice(at, 1);
+          return reply(204);
+        }
+        return refuse(400, 'E_INVALID_REQUEST');
+      }
+      case 'POST /v1/auth/recovery/codes':
+        if (!this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        return reply(200, [this.mintCodes(username)]);
+      default:
+        return null;
+    }
   }
   private mint(deviceHex: string, scope: 0 | 1): string {
     this.sessions += 1;
@@ -496,7 +740,7 @@ export class FakeServer {
       }
       const assertion = this.activeAssertions.get(login);
       this.activeAssertions.delete(login);
-      if (assertion === undefined || assertion.needsTotp) return refuse(401, 'E_UNAUTHENTICATED');
+      if (assertion === undefined || assertion.needs !== 0) return refuse(401, 'E_UNAUTHENTICATED');
       const account = [...this.accounts].find(([, value]) => value.username === assertion.user);
       if (account === undefined) return refuse(401, 'E_UNAUTHENTICATED');
       if (user !== undefined) {

@@ -21,7 +21,9 @@ export interface Challenge { nonce: Uint8Array; expires: bigint; }
 export interface EstablishedSession { token: string; scope: 0 | 1 | 2; userId: Uint8Array; deviceId: Uint8Array;
   expires: bigint; idleExpires: bigint; generation: bigint; }
 export interface DeviceListRecord { version: bigint; blob: Uint8Array; raw: Uint8Array; }
-export interface PasswordLogin { assertion: string; needsTotp: boolean; }
+/** What a login assertion still owes (protocol/09 § Second factors): 0 nothing, 1 a TOTP code or a backup code, 2 a passkey
+ *  login or a backup code (the account has passkeys and no app). */
+export interface PasswordLogin { assertion: string; needs: 0 | 1 | 2; }
 export interface BackupItem { kind: 0 | 1; chunkSeq: number; size: number; created: bigint; }
 export interface BackupObject { object: Uint8Array; created: bigint; }
 export interface BackupStored { blobId: Uint8Array; size: number; created: boolean; }
@@ -98,6 +100,19 @@ export interface OverwriteRow { channelId: Uint8Array; kind: 0 | 1; targetId: Ui
 export interface NewOverwrite { kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
 export interface RolePatch { name?: string; color?: number; position?: number; allow?: number; deny?: number; hoist?: boolean; mentionable?: boolean }
 export interface NewRole { name: string; color: number; position: number; allow: number; deny: number; hoist: boolean; mentionable: boolean }
+
+// ---- web3.6: second factors (flow 10) ----
+/** The instance's own bounds (internal/api auth.go): backup codes in one answer, passkeys on one account, a passkey name. */
+export const BACKUP_CODES_MAX = 16;
+export const PASSKEYS_MAX = 1024;
+export const PASSKEY_NAME_MAX_BYTES = 64;
+export interface PasskeyRow { credId: Uint8Array; name: string; created: number; lastUsed: number | null }
+export interface Factors { owed: boolean; totp: number | null; passkeys: PasskeyRow[]; backupCodesLeft: number; hasPassword: boolean }
+export interface TotpEnrol { secret: string; uri: string }
+export interface Ceremony { ceremonyId: Uint8Array; options: string }
+export interface PasskeyRegistered { credId: Uint8Array; backupCodes: string[] }
+export interface PasskeyLogin { assertion: string; needs: 0 | 1 }
+export interface StepUpToken { token: string; expires: bigint }
 
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
@@ -251,6 +266,25 @@ function inviteRow(value: CborValue): InviteRow {
     maxUses: u53(a[4]), uses: u53(a[5]), created: u64(a[6]), expires: u64(a[7]), revokedAt: opt(a[8], u64) };
 }
 
+function oneOfInput<T extends number>(name: string, v: T, allowed: readonly T[]): T {
+  if (!allowed.includes(v)) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be one of ' + allowed.join(','));
+  return v;
+}
+function backupCodes(v: CborValue): string[] {
+  return bounded(v, BACKUP_CODES_MAX, 'backup codes').map(str);
+}
+function ceremony(v: CborValue): Ceremony {
+  const a = atLeast(v, 2);
+  return { ceremonyId: bin(a[0], 16), options: str(a[1]) };
+}
+function stepUpToken(raw: Uint8Array): StepUpToken {
+  const a = atLeast(decode(raw), 2);
+  return { token: str(a[0]), expires: u64(a[1]) };
+}
+function passkeyRow(value: CborValue): PasskeyRow {
+  const a = atLeast(value, 4);
+  return { credId: bin(a[0]), name: str(a[1]), created: u53(a[2]), lastUsed: opt(a[3], u53) };
+}
 export class Routes {
   constructor(private readonly http: HttpClient) {}
 
@@ -543,7 +577,7 @@ export class Routes {
   async passwordLogin(username: string, password: string): Promise<PasswordLogin> {
     const a = atLeast(decode(await this.body('POST', '/v1/auth/password/login', 'none', false,
       { body: encode([username, password]), auth: false, retry429: false })), 2);
-    return { assertion: str(a[0]), needsTotp: oneOf(a[1], [0, 1]) === 1 };
+    return { assertion: str(a[0]), needs: oneOf(a[1], [0, 1, 2]) };
   }
   async totpVerify(assertion: string, code: string): Promise<{ assertion: string }> {
     const a = atLeast(decode(await this.body('POST', '/v1/auth/totp/verify', 'none', false,
@@ -704,5 +738,78 @@ export class Routes {
   async declineCall(callId: Uint8Array, ringTs: number): Promise<void> {
     if (!Number.isSafeInteger(ringTs) || ringTs < 0) throw new RangeError('E_ROUTE_INPUT: ringTs must be a non-negative integer');
     await this.body('POST', callPath(callId, '/decline'), 'write', true, { body: encode([ringTs]), ok: [204] });
+  }
+
+  // ---- web3.6: second factors (flow 10) ----
+  /** POST /v1/auth/recovery/verify: [assertion, code] → [assertion]; accepts an assertion owing needs 1 or 2. */
+  async recoveryVerify(assertion: string, code: string): Promise<{ assertion: string }> {
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/recovery/verify', 'none', false,
+      { body: encode([assertion, code]), auth: false, retry429: false })), 1);
+    return { assertion: str(a[0]) };
+  }
+  /** GET /v1/auth/factors: [owed, totp confirmed_at | null, [[cred_id, name, created, last_used | null]], backup_codes_left, password]. */
+  async getFactors(): Promise<Factors> {
+    const a = atLeast(decode(await this.body('GET', '/v1/auth/factors', 'read', true)), 5);
+    return { owed: flag(a[0]), totp: opt(a[1], u53), passkeys: bounded(a[2], PASSKEYS_MAX, 'passkeys').map(passkeyRow),
+      backupCodesLeft: u53(a[3]), hasPassword: flag(a[4]) };
+  }
+  /** POST /v1/auth/totp/enroll: [stepup | null] → [secret, otpauth_url]. The secret is returned, never kept. */
+  async totpEnroll(stepup: string | null): Promise<TotpEnrol> {
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/totp/enroll', 'write', false, { body: encode([stepup]) })), 2);
+    return { secret: str(a[0]), uri: str(a[1]) };
+  }
+  /** POST /v1/auth/totp/confirm: [code] → [backup_codes]; the list is empty when the account already held unused codes. */
+  async totpConfirm(code: string): Promise<string[]> {
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/totp/confirm', 'write', false, { body: encode([code]) })), 1);
+    return backupCodes(a[0]);
+  }
+  /** POST /v1/auth/passkey/register/begin: [stepup | null] → [ceremony_id, options]. */
+  async passkeyRegisterBegin(stepup: string | null): Promise<Ceremony> {
+    return ceremony(decode(await this.body('POST', '/v1/auth/passkey/register/begin', 'write', false, { body: encode([stepup]) })));
+  }
+  /** POST /v1/auth/passkey/register/finish: [ceremony_id, response, name] → [cred_id, backup_codes]. */
+  async passkeyRegisterFinish(ceremonyId: Uint8Array, response: string, name: string): Promise<PasskeyRegistered> {
+    const body = encode([inputId('ceremonyId', ceremonyId), response, checkedName('name', name, PASSKEY_NAME_MAX_BYTES)]);
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/passkey/register/finish', 'write', false, { body })), 2);
+    return { credId: bin(a[0]), backupCodes: backupCodes(a[1]) };
+  }
+  /** POST /v1/auth/passkey/login/begin: [] → [ceremony_id, options]; unauthenticated and discoverable. */
+  async passkeyLoginBegin(): Promise<Ceremony> {
+    return ceremony(decode(await this.body('POST', '/v1/auth/passkey/login/begin', 'none', false,
+      { body: encode([]), auth: false, retry429: false })));
+  }
+  /** POST /v1/auth/passkey/login/finish: [ceremony_id, response] → [assertion, needs]; needs 1 when the authenticator did
+   *  not verify the user. A passkey this instance does not hold is 401 E_PASSKEY_UNKNOWN. */
+  async passkeyLoginFinish(ceremonyId: Uint8Array, response: string): Promise<PasskeyLogin> {
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/passkey/login/finish', 'none', false,
+      { body: encode([inputId('ceremonyId', ceremonyId), response]), auth: false, retry429: false })), 2);
+    return { assertion: str(a[0]), needs: oneOf(a[1], [0, 1]) };
+  }
+  /** POST /v1/auth/stepup: [method, secret] → 201 [stepup, expires]; method 0 password, 1 code, 2 backup code. A wrong
+   *  secret is 403 E_STEP_UP. A 429 is not waited out: the person decides when to try again. */
+  async stepUp(method: 0 | 1 | 2, secret: string): Promise<StepUpToken> {
+    const body = encode([oneOfInput('method', method, [0, 1, 2]), secret]);
+    return stepUpToken(await this.body('POST', '/v1/auth/stepup', 'write', false, { body, retry429: false }));
+  }
+  /** POST /v1/auth/stepup/passkey/begin: [] → [ceremony_id, options] (this account's passkeys, user verification required). */
+  async stepUpPasskeyBegin(): Promise<Ceremony> {
+    return ceremony(decode(await this.body('POST', '/v1/auth/stepup/passkey/begin', 'write', false, { body: encode([]) })));
+  }
+  /** POST /v1/auth/stepup/passkey/finish: [ceremony_id, response] → 201 [stepup, expires]. */
+  async stepUpPasskeyFinish(ceremonyId: Uint8Array, response: string): Promise<StepUpToken> {
+    const body = encode([inputId('ceremonyId', ceremonyId), response]);
+    return stepUpToken(await this.body('POST', '/v1/auth/stepup/passkey/finish', 'write', false, { body, retry429: false }));
+  }
+  /** POST /v1/auth/factors/remove: [stepup, kind, cred_id | null] → 204; kind 0 the app (no cred_id), 1 a passkey. The last
+   *  factor is 409 E_INVALID_REQUEST. */
+  async removeFactor(stepup: string, kind: 0 | 1, credId: Uint8Array | null): Promise<void> {
+    oneOfInput('kind', kind, [0, 1]);
+    if ((kind === 1) !== (credId !== null)) throw new RangeError('E_ROUTE_INPUT: credId is for a passkey and only for a passkey');
+    await this.body('POST', '/v1/auth/factors/remove', 'write', false, { body: encode([stepup, kind, credId]), ok: [204] });
+  }
+  /** POST /v1/auth/recovery/codes: [stepup] → [backup_codes]; every earlier code stops working. */
+  async regenerateBackupCodes(stepup: string): Promise<string[]> {
+    const a = atLeast(decode(await this.body('POST', '/v1/auth/recovery/codes', 'write', false, { body: encode([stepup]) })), 1);
+    return backupCodes(a[0]);
   }
 }

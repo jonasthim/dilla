@@ -25,8 +25,8 @@ export class Enrol {
     this.factorOwed = false;
     const answer = await this.deps.routes.passwordLogin(username, password);
     this.assertion = answer.assertion;
-    this.factorOwed = answer.needsTotp;
-    return { needsTotp: answer.needsTotp };
+    this.factorOwed = answer.needs !== 0;
+    return { needsTotp: answer.needs !== 0 };
   }
 
   async totp(code: string): Promise<void> {
