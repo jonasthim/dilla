@@ -126,3 +126,43 @@ describe('mentionQuery with Unicode (web3.5)', () => {
     expect(mentionQuery('hi @modé', 8)).toEqual({ start: 3, query: 'modé' });
   });
 });
+
+describe('encodeMentions edge cases (fix round 1)', () => {
+  const R1 = '51'.repeat(16);
+  const role = (handle: string) => [{ roleId: R1, handle }];
+  it('ends a mention before CJK text', () => {
+    expect(encodeMentions('@ada你好', MEMBERS, true)).toBe(`<@${A}>你好`);
+    expect(encodeMentions('@ada こんにちは', MEMBERS, true)).toBe(`<@${A}> こんにちは`);
+    expect(encodeMentions('@adaカタカナ', MEMBERS, true)).toBe(`<@${A}>カタカナ`);
+    expect(encodeMentions('@ada안녕', MEMBERS, true)).toBe(`<@${A}>안녕`);
+    expect(encodeMentions('@王小明你好', [{ userId: A, username: '王小明' }], true)).toBe(`<@${A}>你好`);
+    expect(encodeMentions('@ada\u{20000}', MEMBERS, true)).toBe(`<@${A}>\u{20000}`);
+  });
+  it('treats combining marks as part of the name', () => {
+    expect(encodeMentions('@ab\u0301', MEMBERS, true, role('ab'))).toBe('@ab\u0301');
+    expect(encodeMentions('@ab\u0301', MEMBERS, true, role('ab\u0301'))).toBe(`<@${R1}>`);
+    expect(encodeMentions('@mode\u0301', MEMBERS, true, role('mode'))).toBe('@modé');
+  });
+  it('matches NFD text against NFC handles and names', () => {
+    expect(encodeMentions('@Mode\u0301rateurs', MEMBERS, true, role('modérateurs'))).toBe(`<@${R1}>`);
+    expect(encodeMentions('@Jose\u0301', [{ userId: A, username: 'José' }], true)).toBe(`<@${A}>`);
+    expect(encodeMentions('@Josée', [{ userId: A, username: 'Jose\u0301e' }], true)).toBe(`<@${A}>`);
+    expect(encodeMentions('@Modérateurs', MEMBERS, true, role('Mode\u0301rateurs'))).toBe(`<@${R1}>`);
+    expect(encodeMentions('@ada\u{1D4B3}', MEMBERS, true)).toBe('@ada\u{1D4B3}');
+    expect(encodeMentions('@ada.你好', MEMBERS, true)).toBe(`<@${A}>.你好`);
+    expect(encodeMentions('@MODÉRATEURS', MEMBERS, true, role('Modérateurs'))).toBe(`<@${R1}>`);
+  });
+  it('does not split a longer name', () => {
+    expect(encodeMentions('@bob.smith', MEMBERS, true, [{ roleId: R1, handle: 'bob' }])).toBe(`<@${B}>`);
+    expect(encodeMentions('@bob.smith', [{ userId: A, username: 'bob' }], true)).toBe('@bob.smith');
+    expect(encodeMentions('@bob..x', [{ userId: A, username: 'bob' }], true)).toBe('@bob..x');
+    expect(encodeMentions('@game-night', MEMBERS, true, [{ roleId: R1, handle: 'game' }, { roleId: R1, handle: 'game-nights' }])).toBe('@game-night');
+    expect(encodeMentions('@modé', MEMBERS, true, role('mod'))).toBe('@modé');
+  });
+});
+
+describe('mentionQuery with combining marks', () => {
+  it('stays open on NFD text', () => {
+    expect(mentionQuery('@mode\u0301', 6)).toEqual({ start: 0, query: 'mode\u0301' });
+  });
+});

@@ -158,6 +158,7 @@ describe('community settings (web3.5)', () => {
     expect(effectiveNotifyMode(noChannel, HEX, 0, OTHER)).toBe('all');
     expect(effectiveNotifyMode(noChannel, HEX, 0, 'zz')).toBe('all');
     expect(effectiveNotifyMode({ [SETTINGS.notifyCommunity(COM)]: 'loud' }, HEX, 0, COM)).toBe('mentions');
+    expect(effectiveNotifyMode({ [SETTINGS.notifyCommunity(COM)]: 'loud' }, HEX, 3, COM)).toBe('all');
   });
 
   it('mutes by community alone', () => {
