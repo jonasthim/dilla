@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import {
   COPY, HOST, TEST_TIMEOUT, WAIT, copy, expectAccessible, expectHeading, expectShell, instanceInvite,
   joinCommunity, messageRow, nextButton, openChannel, railNav, readManifest, readRecoveryKey, splash, submitButton,
-  tag, test,
+  tag, test, completeFactorStep, newAccount,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -106,6 +106,7 @@ test('every state of the slice passes axe with target-size, in all three themes,
   await expectHeading(page, COPY.deviceTitle);
   await expectAccessible(page, 'onboarding: what this browser keeps');
   await submitButton(page).click();
+  await completeFactorStep(page, newAccount(), (state) => expectAccessible(page, `onboarding: second factor ${state}`));
   await expectHeading(page, COPY.doneTitle);
   await expectAccessible(page, 'onboarding: done');
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();

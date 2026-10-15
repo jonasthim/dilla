@@ -1,7 +1,8 @@
 import { expect } from '@playwright/test';
+import { nextCode } from './support/totp';
 import {
   CLASS, COPY, TEST_TIMEOUT, WAIT, channelsNav, composerBox, copy, expectComposerReady, expectShell,
-  heading, instanceInvite, logRegion, messageRow, nextButton, railItem, railNav, submitButton, tabTo, tag, test,
+  heading, instanceInvite, logRegion, messageRow, nextButton, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -35,6 +36,27 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   await press('Enter');
   await expect(heading(page, COPY.deviceTitle)).toBeFocused({ timeout: WAIT });
   await tabTo(page, submitButton(page));
+  await press('Enter');
+  // web3.6 step 5, by keyboard: the authenticator app is the default choice.
+  const account = newAccount();
+  await expect(heading(page, 'factor.choose.title')).toBeFocused({ timeout: WAIT });
+  await tabTo(page, page.getByRole('radio', { name: new RegExp(escapeRegExp(copy('factor.choose.app'))) }));
+  await tabTo(page, page.getByRole('button', { name: copy('factor.choose.next'), exact: true }));
+  await press('Enter');
+  await expect(heading(page, 'factor.totp.title')).toBeFocused({ timeout: WAIT });
+  const setupKey = page.getByLabel(copy('factor.totp.key'), { exact: true });
+  await expect(setupKey).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
+  account.totpSecret = await setupKey.inputValue();
+  await tabTo(page, page.getByLabel(copy('factor.totp.code'), { exact: true }));
+  await page.keyboard.type(await nextCode(account.control, account));
+  await tabTo(page, page.getByRole('button', { name: copy('factor.totp.submit'), exact: true }));
+  await press('Enter');
+  await expect(heading(page, 'factor.codes.title')).toBeFocused({ timeout: WAIT });
+  const ackCodes = page.getByRole('checkbox', { name: copy('factor.codes.ack'), exact: true });
+  await tabTo(page, ackCodes);
+  await press('Space');
+  await expect(ackCodes).toBeChecked();
+  await tabTo(page, page.getByRole('button', { name: copy('factor.codes.next'), exact: true }));
   await press('Enter');
   await expect(heading(page, COPY.doneTitle)).toBeFocused({ timeout: WAIT });
   await tabTo(page, page.getByRole('button', { name: copy(COPY.finish), exact: true }));

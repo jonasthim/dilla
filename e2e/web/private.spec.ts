@@ -135,7 +135,7 @@ test('private channels run from an empty instance: create, gain, lose, make priv
   const h = started();
 
   // 1. Ada starts "Midgard Crew", Björn joins through her invite, and Ada makes the role "Staff".
-  await signUp(page, h.invite.split(',')[0], instance, OWNER);
+  await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
   await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
   const start = dialogOf(page, 'create.server.title');
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
@@ -162,7 +162,7 @@ test('private channels run from an empty instance: create, gain, lose, make priv
     await expect(openLink).toHaveAttribute('href', /^\/welcome\?invite=[^&\s]+$/);
     await guard.attach(second);
     await openLink.click();
-    await completeSignUp(page2, newAccount(FRIEND), instance);
+    await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
     await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
     await openChannel(page2, SERVER, 'general');
     await expect(memberRow(page, FRIEND)).toBeVisible({ timeout: WAIT });

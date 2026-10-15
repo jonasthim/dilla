@@ -3,6 +3,7 @@ import type { HarnessApi, HarnessResult, SpikeRecord } from '../../packages/clie
 import type { AccountState, Command } from '../../packages/client-core/src/index';
 import { WebDriver, instanceInvite, testHostUrl, testkitEnv } from './support/driver';
 import { expect, test } from './support/persistent';
+import { completeFactor } from './support/totp';
 
 // SP-W201 (plan web-2a task 13): a measurement, opt-in, never a CI gate (architect ruling 21).
 const SPIKE = process.env.DILLA_SPIKE === '1';
@@ -64,6 +65,7 @@ test('SP-W201: join-all and the load-free core at 200 groups', async ({ page, re
       m: 'signupSubmit', invite: instanceInvite(), username, display: 'Spike',
       password: keys.instance!.passwordSignup ? 'spike password 1' : null, recoveryKeyAcknowledged: true,
     });
+    await completeFactor(page, process.env.DILLA_TESTKIT_CONTROL ?? 'http://127.0.0.1:8454');
     await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
 
     await page.evaluate((c) => { (window as unknown as HarnessWindow).dilla.spike.watchActive(c); }, s.community_id);

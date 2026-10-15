@@ -134,7 +134,7 @@ export async function instanceName(): Promise<string> {
 
 /** Signs a fresh account up in this person's page and joins the peer's community with its invite. */
 export async function onboard(person: Person, peer: VoicePeer, display: string): Promise<Account> {
-  const account = await signUp(person.page, instanceInvite(), await instanceName(), display);
+  const account = await signUp(person.page, instanceInvite(), await instanceName(), display, process.env.DILLA_TESTKIT_CONTROL);
   const page = person.page;
   await railNav(page).getByRole('button', { name: copy('shell.rail.join'), exact: true }).click();
   const dialog = page.getByRole('dialog', { name: copy('join.title'), exact: true });

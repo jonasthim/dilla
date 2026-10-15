@@ -4,6 +4,7 @@ import { REPO_ROOT } from './support/host';
 import { expect, test } from './support/persistent';
 import { WebDriver, testHostUrl, testkitEnv } from './support/driver';
 import { injectAxe, runAxe } from './support/axe';
+import { totp } from './support/totp';
 
 const HEX32 = /^[0-9a-f]{32}$/;
 const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -97,4 +98,13 @@ test('the harness build is served by its manifest: the wasm as application/wasm,
   expect(fallback.status()).toBe(200);
   expect(await fallback.text()).toContain('name="dilla-harness"');
   expect((await request.get('/dilla-manifest.json')).status()).toBe(404);
+});
+
+// RFC 6238 appendix B, SHA-1, secret "12345678901234567890", 8 digits.
+test('totp() reproduces the RFC 6238 SHA-1 vectors', () => {
+  const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+  expect(totp(secret, 59, 8)).toBe('94287082');
+  expect(totp(secret, 1111111109, 8)).toBe('07081804');
+  expect(totp(secret, 1234567890, 8)).toBe('89005924');
+  expect(totp(secret, 59)).toBe('287082');
 });

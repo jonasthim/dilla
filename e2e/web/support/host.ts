@@ -7,7 +7,7 @@ import { parseInvite } from './driver.ts';
 
 /** L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const TESTHOST_BIN = join(REPO_ROOT, 'target', 'dilla-testhost');
 export const WASI_CORE = join(REPO_ROOT, 'internal', 'mlswasi', 'testdata', 'dilla_core_wasi.wasm');
@@ -17,6 +17,7 @@ export function hostArgs(c: HostConfig, dataDir: string): string[] {
   return ['-listen', `127.0.0.1:${c.port}`, '-control', `127.0.0.1:${c.control}`,
     '-core', WASI_CORE, '-log-level', 'warn', '-data-dir', dataDir, '-production-acl',
     ...(c.webRoot === null ? [] : ['-web-root', join(REPO_ROOT, c.webRoot)]),
+    ...(c.webauthnOrigin === undefined ? [] : ['-webauthn-origin', c.webauthnOrigin]),
     ...(c.sfu === undefined ? [] : ['-sfu', '-sfu-port', String(c.sfu.port), '-sfu-udp-port', String(c.sfu.udpPort),
       ...(c.sfu.departureTimeout === undefined ? [] : ['-sfu-departure-timeout', String(c.sfu.departureTimeout)])]),
   ];
