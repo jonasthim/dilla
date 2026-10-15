@@ -777,3 +777,87 @@ func TestTheSelfLockoutRuleRechecksUnderTheLock(t *testing.T) {
 		t.Fatalf("overwrites = %+v, want @everyone and helpers", ow)
 	}
 }
+
+// I-2: every role route takes its decision again inside its transaction under the community row
+// lock. For each route, a moderator demoted after the route's checks and before its transaction
+// is refused 403 and nothing is written; the same request undisturbed (the control) succeeds, so
+// the 403 can only come from the check inside the transaction.
+func TestTheRoleRoutesRecheckUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewRoles(hooked, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	target, _ := joinAs(t, e, cid, "target")
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5, api.PermViewChannel|api.PermManageRoles)
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+	low := createRole(t, e, cid, ownerTok, "low", 2, 0)
+
+	roleCount := func() int {
+		roles, err := e.Repo.ListRoles(t.Context(), cid)
+		if err != nil {
+			t.Fatalf("ListRoles: %v", err)
+		}
+		return len(roles)
+	}
+	holdsLow := func() bool {
+		held, err := e.Repo.ListMemberRoles(t.Context(), cid, target)
+		if err != nil {
+			t.Fatalf("ListMemberRoles: %v", err)
+		}
+		return slices.Contains(held, low)
+	}
+	lowName := func() string {
+		role, err := e.Repo.GetRole(t.Context(), low)
+		if err != nil {
+			return "<gone>"
+		}
+		return role.Name
+	}
+	grantPath := "/v1/communities/" + cid.String() + "/members/" + target.String() + "/roles/" + low.String()
+	cases := []struct {
+		name, method, path string
+		body               any
+		ok                 int
+		unchanged          func() bool // true while the refused request has written nothing
+	}{
+		{"create", http.MethodPost, "/v1/communities/" + cid.String() + "/roles",
+			[]any{"ny", uint64(0), uint64(3), uint64(0), uint64(0), uint64(0), uint64(0)}, http.StatusCreated,
+			func() bool { return roleCount() == 3 }},
+		{"patch", http.MethodPatch, "/v1/roles/" + low.String(),
+			[]any{"lägre", nil, nil, nil, nil, nil, nil}, http.StatusNoContent,
+			func() bool { return lowName() == "low" }},
+		{"grant", http.MethodPut, grantPath, nil, http.StatusNoContent,
+			func() bool { return !holdsLow() }},
+		{"revoke", http.MethodDelete, grantPath, nil, http.StatusNoContent,
+			func() bool { return holdsLow() }},
+		{"delete", http.MethodDelete, "/v1/roles/" + low.String(), nil, http.StatusNoContent,
+			func() bool { return lowName() == "lägre" }},
+	}
+	for _, c := range cases {
+		hooked.arm(func() {
+			if err := e.Repo.DeleteMemberRole(t.Context(), cid, mod, modRole); err != nil {
+				t.Errorf("demote: %v", err)
+			}
+		})
+		status, body := e.Do(c.method, c.path, modTok, c.body)
+		if status != http.StatusForbidden {
+			t.Fatalf("%s by a mod demoted before the transaction = %d (%x), want 403", c.name, status, body)
+		}
+		if !c.unchanged() {
+			t.Fatalf("the refused %s wrote", c.name)
+		}
+		if err := e.Repo.PutMemberRole(t.Context(), cid, mod, modRole); err != nil {
+			t.Fatalf("re-promote: %v", err)
+		}
+		if status, body := e.Do(c.method, c.path, modTok, c.body); status != c.ok {
+			t.Fatalf("control: %s undisturbed = %d (%x), want %d", c.name, status, body, c.ok)
+		}
+		if c.unchanged() {
+			t.Fatalf("control: the %s wrote nothing", c.name)
+		}
+	}
+}
