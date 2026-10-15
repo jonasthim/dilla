@@ -74,6 +74,7 @@ function PhoneDrawer({ children }: { children: ReactNode }) {
       <style>{`
         .sb-phone-drawer .d-voice-dock { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.375rem 0.75rem; padding: 0.5rem; border-radius: 0; }
         .sb-phone-drawer .d-voice-dock__where { align-self: center; }
+        .sb-phone-drawer .d-voice-dock__where:not(:has(+ .d-voice-dock__meter)) { grid-column: 1 / -1; }
         .sb-phone-drawer .d-voice-dock__controls { grid-column: 1 / -1; }
       `}</style>
       <div style={{ background: 'var(--bg-2)', borderRight: '1px solid var(--hairline)', borderTop: '1px solid var(--hairline)' }}>{children}</div>
@@ -87,3 +88,19 @@ export const PhoneConnected: Story = { ...phone, args: { meter: <AudioMeter leve
 export const PhoneMutedAndDeafened: Story = { ...phone, args: { muted: true, deafened: true, meter: <AudioMeter level={0} label="input level" /> } };
 export const PhoneCameraAndSharing: Story = { ...phone, args: { camera: true, sharing: true, meter: <AudioMeter level={4} label="input level" /> } };
 export const PhonePaused: Story = { ...phone, args: { phase: 'paused', canCamera: false, canShare: false, meter: <AudioMeter level={0} label="input level" /> } };
+/** Paused with no meter in the phone drawer: the status takes the whole where/meter row, so "paused in harbour" shows
+ *  in full (it still ends in an ellipsis when a long name does not fit). */
+export const PhonePausedNoMeter: Story = {
+  ...phone,
+  args: { phase: 'paused', canCamera: false, canShare: false },
+  play: ({ canvasElement }) => {
+    expectVoiceTargets(canvasElement, 'VoiceDock');
+    expectOneRow(canvasElement, 'VoiceDock');
+    const text = canvasElement.querySelector<HTMLElement>('.d-voice-dock__text');
+    if (text === null) throw new Error('VoiceDock: no status text');
+    if (text.textContent !== 'paused in harbour') throw new Error(`VoiceDock: the status says "${text.textContent ?? ''}"`);
+    if (text.scrollWidth > text.clientWidth) {
+      throw new Error(`VoiceDock: "paused in harbour" is cut off (${String(text.scrollWidth)} px in ${String(text.clientWidth)} px)`);
+    }
+  },
+};
