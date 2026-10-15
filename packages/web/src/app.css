@@ -144,3 +144,4 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-role-rows { padding-left: 0; }
 .dw-role-form { display: flex; flex-direction: column; gap: var(--group-gap); min-width: 0; }
 .dw-admin-tag { color: var(--fg-2); font-size: var(--text-xs); }
+.dw-composer-cannot { margin: 0; padding: var(--row-gap) var(--group-gap); color: var(--fg-2); }

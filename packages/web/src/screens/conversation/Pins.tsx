@@ -12,7 +12,7 @@ export function PinsButton(p: { onOpen(): void }): React.JSX.Element {
 }
 
 export interface PinsPanelProps { channelId: string; open: boolean; title: string; book: NameBook; items: readonly TimelineItem[];
-  now: number; onClose(): void; onJump(msgId: string): void; onError(e: unknown): void }
+  now: number; /** Under the title; absent in a DM, where nothing is gated. */ note?: string | undefined; onClose(): void; onJump(msgId: string): void; onError(e: unknown): void }
 
 export function PinsPanel(p: PinsPanelProps): React.JSX.Element {
   const client = useCore();
@@ -32,7 +32,7 @@ export function PinsPanel(p: PinsPanelProps): React.JSX.Element {
     (buttons[pendingFocus.current] ?? document.querySelector<HTMLButtonElement>('dialog.d-dialog .d-dialog__footer button'))?.focus();
     pendingFocus.current = null;
   }, [p.open, pins]);
-  return <PinsDialog open={p.open} title={p.title} closeLabel={t('shell.pins.close')} onClose={() => p.onClose()}
+  return <PinsDialog open={p.open} title={p.title} note={p.note} closeLabel={t('shell.pins.close')} onClose={() => p.onClose()}
     emptyLabel={t('shell.pins.empty')} items={(pins ?? []).map((pin, i) => ({
       id: pin.msgId, author: authorName({ senderUser: pin.senderUser, senderDevice: null }, p.book.members, p.book.self),
       time: messageTime(pin.ts, p.now), excerpt: plainBody(pin.excerpt, p.book),

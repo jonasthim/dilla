@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import type { ChannelSummary, DeviceSummary, MemberSummary } from '@dilla/client-core';
+import type { ChannelSummary, DeviceSummary, MemberSummary, RoleSummary } from '@dilla/client-core';
 import { formatDay, formatTime } from '../strings/index.ts';
 import {
   authorName, badgeLabel, bodyParts, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
-  mentionCandidates, mentionMembers, mentionOptions, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
+  mentionCandidates, mentionMembers, mentionOptions, mentionRoles, offeredRoles, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
   stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, userName, joinFailureKey, micNoticeKey, isVoice,
 } from './shell-model.ts';
 
@@ -264,5 +264,45 @@ describe('voice (flow 06)', () => {
     expect(isVoice({ kind: 1, mode: 0 })).toBe(true);
     expect(isVoice({ kind: 1, mode: 1 })).toBe(false);
     expect(isVoice({ kind: 0, mode: 0 })).toBe(false);
+  });
+});
+
+describe('role mentions (flow 09)', () => {
+  const role = (id: string, name: string, over: Partial<RoleSummary> = {}): RoleSummary =>
+    ({ id, name, color: 0, position: 3, hoist: false, mentionable: true, allow: 0, deny: 0, members: 0, ...over });
+  const GAME = '71'.repeat(16);
+  const MODS = '72'.repeat(16);
+  const HIDDEN = '73'.repeat(16);
+  const EVERYONE = '70'.repeat(16);
+  const SELF = { id: 'bb'.repeat(16), username: 'ada' };
+  const roles = [role(EVERYONE, '@everyone', { position: 0, mentionable: true }), role(GAME, 'Game Night', { color: 0x336699 }),
+    role(MODS, 'Modérateurs', { mentionable: false }), role(HIDDEN, 'Quiet', { mentionable: false })];
+  const m = (userId: string, username: string): MemberSummary => ({ userId, username, display: '', kind: 0, roleIds: [] });
+
+  it('offers the mentionable roles, or every role but @everyone with the broadcast right', () => {
+    expect(offeredRoles(roles, false).map(r => r.name)).toEqual(['Game Night']);
+    expect(offeredRoles(roles, true).map(r => r.name)).toEqual(['Game Night', 'Modérateurs', 'Quiet']);
+    expect(mentionRoles(offeredRoles(roles, true))[1]).toEqual({ roleId: MODS, handle: 'modérateurs' });
+  });
+  it('lists role options after the members and before @everyone, within the eight', () => {
+    const offered = offeredRoles(roles, true);
+    expect(mentionOptions('mod', [], true, offered)).toEqual([
+      { id: `r-${MODS}`, primary: '@Modérateurs', secondary: 'role', insert: '@modérateurs ' },
+    ]);
+    const all = mentionOptions('', [m('28'.repeat(16), 'bob')], true, offered).map(o => o.id);
+    expect(all).toEqual([`m-${'28'.repeat(16)}`, `r-${GAME}`, `r-${MODS}`, `r-${HIDDEN}`, 'b-everyone']);
+    const many = Array.from({ length: 8 }, (_, i) => m(String(i).repeat(32), `u${i}`));
+    expect(mentionOptions('', many, false, offered).map(o => o.id.slice(0, 2))).toEqual(['m-', 'm-', 'm-', 'm-', 'm-', 'm-', 'm-', 'm-']);
+    expect(mentionOptions('g', [], false, offeredRoles(roles, false)).map(o => o.id)).toEqual([`r-${GAME}`]);
+  });
+  it('shows a known role with its name and colour, and keeps the generic label for an unknown one', () => {
+    const book = nameBook(SELF, [{ ...m(SELF.id, 'ada'), roleIds: [GAME, '99'.repeat(16)] }], roles);
+    expect(bodyParts(`<@${GAME}> <@${'99'.repeat(16)}>`, book)).toEqual([
+      { kind: 'mention', label: '@Game Night', me: true, broadcast: false, color: 0x336699 },
+      { kind: 'text', text: ' ' },
+      { kind: 'mention', label: '@role', me: true, broadcast: false },
+    ]);
+    expect(plainBody(`<@${GAME}>`, book)).toBe('@Game Night');
+    expect(editableText(`<@${GAME}>`, book)).toBe('@game-night');
   });
 });

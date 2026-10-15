@@ -1,3 +1,4 @@
+.d-pins-dialog__note { margin: 0 0 0.75rem; font-size: var(--text-sm); color: var(--fg-2); }
 .d-pins-dialog__empty { margin: 0; color: var(--fg-2); }
 .d-pins-dialog__list { display: grid; gap: 0.75rem; max-height: 60vh; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
 .d-pins-dialog__item { display: grid; gap: 0.25rem; padding-top: 0.75rem; border-top: 1px solid var(--hairline); }

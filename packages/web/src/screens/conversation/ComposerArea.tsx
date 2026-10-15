@@ -1,17 +1,18 @@
 // The open conversation's draft, mentions, replies and file tray.
 import { useId, useLayoutEffect, useRef, useState } from 'react';
-import { encodeMentions, mentionQuery, type MemberSummary, type MentionMember, type TimelineItem } from '@dilla/client-core';
+import { encodeMentions, mentionQuery, PERM, type MemberSummary, type MentionMember, type RoleSummary, type TimelineItem } from '@dilla/client-core';
 import { Composer, MentionList, ReplyChip } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
-import { editableText, mentionOptions, type NameBook } from '../shell-model.ts';
+import { editableText, mentionOptions, mentionRoles, offeredRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, TrayList } from './Attachments.tsx';
 import type { ConversationAction, ConversationUi } from './Conversation.tsx';
 
 export interface OutgoingMessage { raw: string; text: string; replyTo: string | null; attachments: readonly string[] }
 export interface ComposerAreaProps { channelId: string; label: string; placeholder: string; blocked: string | null;
-  broadcast: boolean; encodeWith: readonly MentionMember[]; candidates: readonly MemberSummary[]; items: readonly TimelineItem[];
+  /** Today's broadcast rule; `bits` (what I may do here, null while unknown) overrides it once known. */
+  broadcast: boolean; bits?: number | null; roles?: readonly RoleSummary[]; channelName?: string; encodeWith: readonly MentionMember[]; candidates: readonly MemberSummary[]; items: readonly TimelineItem[];
   book: NameBook; draft: string; onDraft(text: string): void; ui: ConversationUi; dispatch(a: ConversationAction): void;
   onSend(m: OutgoingMessage): void; onError(e: unknown): void }
 
@@ -25,9 +26,13 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingCaret = useRef<number | null>(null);
   const id = useId().replace(/:/g, '-');
+  const bits = p.bits ?? null;
+  const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : p.broadcast;
+  const offered = offeredRoles(p.roles ?? [], broadcast);
+  const roleMentions = mentionRoles(offered);
   const query = mentionQuery(p.draft, caret);
   const queryEnded = query === null;
-  const options = query === null ? [] : mentionOptions(query.query, p.candidates, p.broadcast);
+  const options = query === null ? [] : mentionOptions(query.query, p.candidates, broadcast, offered);
   const open = query !== null && options.length > 0 && query.start !== dismissed;
   const index = Math.min(active, options.length - 1);
   const listId = `${id}-mentions`;
@@ -72,9 +77,13 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       return;
     }
     p.dispatch({ type: 'trayError', text: null });
-    p.onSend({ raw: value, text: encodeMentions(value, p.encodeWith, p.broadcast), replyTo: p.ui.reply?.msgId ?? null,
+    p.onSend({ raw: value, text: encodeMentions(value, p.encodeWith, broadcast, roleMentions), replyTo: p.ui.reply?.msgId ?? null,
       attachments: tray.map(a => a.id) });
   };
+  // Advisory: the instance decides, and W2b enforces it. The draft stays in the shell's store.
+  if (bits !== null && (bits & PERM.sendMessages) === 0) {
+    return <p className="dw-composer-cannot" role="status">{t('chperm.cannotSend', { name: p.channelName ?? '' })}</p>;
+  }
   return <>
     <input ref={inputRef} className="dw-attach-input" type="file" multiple hidden
       onChange={e => { void attachFiles(client, p.channelId, Array.from(e.currentTarget.files ?? []), a => p.dispatch(a)); e.currentTarget.value = ''; }} />
@@ -95,7 +104,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
           options={options.map(o => ({ id: optionId(o), primary: o.primary, secondary: o.secondary }))}
           activeId={optionId(options[index])} onPick={picked => { const found = options.find(o => optionId(o) === picked); if (found) insert(found); }} /> : null}
       </>}
-      measure={value => new TextEncoder().encode(encodeMentions(value, p.encodeWith, p.broadcast)).length}
+      measure={value => new TextEncoder().encode(encodeMentions(value, p.encodeWith, broadcast, roleMentions)).length}
       combobox={{ expanded: open, controls: listId, activeDescendant: open ? optionId(options[index]) : null, onKey }}
       onCaret={setCaret} onArrowUpEmpty={() => {
         const item = [...p.items].reverse().find(i => i.senderUser === p.book.self?.id && i.state === 'ok' && i.msgId !== null && i.seq !== null);

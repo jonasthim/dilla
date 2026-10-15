@@ -1,12 +1,12 @@
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
-import { encodeMentions, type MentionMember, type TimelineItem, type TimelineState } from '@dilla/client-core';
+import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
 import { Banner, Button, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { t } from '../../strings/index.ts';
 import { madeHere } from '../Create.tsx';
-import { authorName, editableText, excerpt, plainBody, type NameBook } from '../shell-model.ts';
+import { authorName, editableText, excerpt, mentionRoles, offeredRoles, plainBody, withRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { MessageItem, type RowEvent } from './MessageItem.tsx';
 import { PinsPanel } from './Pins.tsx';
@@ -53,11 +53,16 @@ export function focusComposer(): void { document.querySelector<HTMLTextAreaEleme
 export function focusLog(): void { document.querySelector<HTMLElement>('[role="log"]')?.focus(); }
 
 export interface ConversationProps { channelId: string; logKey: string; label: string; timeline: TimelineState | undefined;
-  book: NameBook; encodeWith: readonly MentionMember[]; broadcast: boolean; pinsTitle: string; ui: ConversationUi;
+  book: NameBook; encodeWith: readonly MentionMember[]; broadcast: boolean; bits?: number | null; roles?: readonly RoleSummary[]; pinsTitle: string; ui: ConversationUi;
   dispatch(a: ConversationAction): void; loadingEarlier: boolean; onLoadEarlier(): void; onError(e: unknown): void }
 
-export function Conversation(p: ConversationProps): React.JSX.Element {
+export function Conversation(props: ConversationProps): React.JSX.Element {
   const client = useCore();
+  // Role names and colours, and the broadcast right, once known; until then the shell's own book and rule stand.
+  const bits = props.bits ?? null;
+  const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : props.broadcast;
+  const roleMentions = mentionRoles(offeredRoles(props.roles ?? [], broadcast));
+  const p = { ...props, book: withRoles(props.book, props.roles ?? []), broadcast };
   const items = p.timeline?.items ?? [];
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const active = items.some(i => i.key === activeKey) ? activeKey : items.at(-1)?.key ?? null;
@@ -203,9 +208,9 @@ export function Conversation(p: ConversationProps): React.JSX.Element {
       : t(madeHere(client, p.channelId) ? 'shell.log.emptyMade' : 'shell.log.empty')}
       earlier={p.timeline?.hasEarlier ? { label: t('shell.log.earlier'), onLoad: () => p.onLoadEarlier() } : undefined}
       busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}>
-      {items.map(item => <MessageItem key={item.key} item={item} channelId={p.channelId} book={p.book} now={now}
+      {items.map(item => <MessageItem key={item.key} item={item} channelId={p.channelId} book={p.book} now={now} bits={bits}
         active={item.key === active} flash={item.key === flashKey} editing={p.ui.editing?.msgId === item.msgId ? p.ui.editing.value : null}
-        editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast)).length}
+        editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast, roleMentions)).length}
         rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
         onEvent={onRowEvent} onJumpPointerDown={keepJumpPointerStable} onEditChange={value => p.dispatch({ type: 'editChange', value })}
         onEditSave={value => {
@@ -213,7 +218,7 @@ export function Conversation(p: ConversationProps): React.JSX.Element {
           const start = editableText(item.body, p.book);
           p.dispatch({ type: 'editDone' });
           rowEls.current.get(item.key)?.focus();
-          if (value !== start && item.msgId) command({ m: 'editMessage', channelId: p.channelId, msgId: item.msgId, text: encodeMentions(value, p.encodeWith, p.broadcast) });
+          if (value !== start && item.msgId) command({ m: 'editMessage', channelId: p.channelId, msgId: item.msgId, text: encodeMentions(value, p.encodeWith, p.broadcast, roleMentions) });
         }}
         onEditCancel={() => { p.dispatch({ type: 'editDone' }); rowEls.current.get(item.key)?.focus(); }}
         onOpenImage={(index, opener) => openImage(item, index, opener)} onError={e => p.onError(e)} />)}
@@ -237,7 +242,7 @@ export function Conversation(p: ConversationProps): React.JSX.Element {
         deleted.current = { key: deleteFor.key };
         setDeleteFor(null);
       }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>
-    <PinsPanel channelId={p.channelId} open={p.ui.pinsOpen} title={p.pinsTitle} book={p.book} items={items} now={now}
+    <PinsPanel channelId={p.channelId} open={p.ui.pinsOpen} title={p.pinsTitle} note={bits !== null ? t('perm.pinsNote') : undefined} book={p.book} items={items} now={now}
       onClose={() => p.dispatch({ type: 'pins', open: false })} onJump={jump} onError={e => p.onError(e)} />
     {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}
       onIndex={index => setLightbox(s => s ? { ...s, index } : null)} onClose={closeLightbox} onError={e => p.onError(e)} /> : null}

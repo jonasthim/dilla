@@ -9,6 +9,8 @@ export interface PinsDialogProps {
   closeLabel: string;
   onClose(): void;
   emptyLabel: string;
+  /** A line under the title, before the pins (why a pin may disappear). */
+  note?: string | undefined;
   items: readonly {
     id: string; author: string; time: string; excerpt: string; pinnedBy: string; jumpLabel: string; onJump(): void;
     unpinLabel: string; onUnpin(): void;
@@ -38,9 +40,10 @@ function PinItem({ item }: { item: PinsDialogProps['items'][number] }) {
  * pinned it, and the jump and unpin buttons, both described by the excerpt. A jump is the caller's to finish (it
  * closes the dialog and flashes the row).
  */
-export function PinsDialog({ open, title, closeLabel, onClose, emptyLabel, items }: PinsDialogProps) {
+export function PinsDialog({ open, title, closeLabel, onClose, emptyLabel, note, items }: PinsDialogProps) {
   return (
     <Dialog open={open} title={title} onClose={onClose} closeLabel={closeLabel}>
+      {note ? <p className="d-pins-dialog__note">{note}</p> : null}
       {items.length === 0 ? (
         <p className="d-pins-dialog__empty">{emptyLabel}</p>
       ) : (

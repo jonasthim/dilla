@@ -1,7 +1,7 @@
 // The shell's pure rules: which channels are listed and in what order, which one opens by default,
 // what web-1 cannot open, who wrote a row, why the composer is blocked and how a row's time reads.
-import { isMuted, splitMentions } from '@dilla/client-core';
-import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, MentionMember, TimelineItem, VoiceParticipant } from '@dilla/client-core';
+import { isMuted, roleHandle, splitMentions } from '@dilla/client-core';
+import type { BadgeState, ChannelGroupState, ChannelSummary, DeviceSummary, MemberSummary, MentionMember, MentionRole, RoleSummary, TimelineItem, VoiceParticipant } from '@dilla/client-core';
 import type { BodyPart, VoiceParticipantView, VoiceStateLabels } from '@dilla/ui';
 import { baseRoute, type Route } from '../router.ts';
 import { formatDay, formatTime, t, type StringKey } from '../strings/index.ts';
@@ -154,14 +154,30 @@ export interface NameBook {
   members: readonly MemberSummary[];
   roles: ReadonlySet<string>;
   ownRoles: ReadonlySet<string>;
+  /** The roles whose name and colour are known (the `roles:` slice); absent where only member rows were read. */
+  roleInfo?: ReadonlyMap<string, { name: string; color: number }>;
 }
 
-export function nameBook(self: NameBook['self'], members: readonly MemberSummary[]): NameBook {
-  return {
+export function nameBook(self: NameBook['self'], members: readonly MemberSummary[], roles: readonly RoleSummary[] = []): NameBook {
+  return withRoles({
     self, members,
     roles: new Set(members.flatMap(m => m.roleIds)),
     ownRoles: new Set(members.find(m => m.userId === self?.id)?.roleIds ?? []),
-  };
+  }, roles);
+}
+
+/** The book with the names and colours of `roles`; the same book while there are none. */
+export function withRoles(book: NameBook, roles: readonly RoleSummary[]): NameBook {
+  return roles.length === 0 ? book : { ...book, roleInfo: new Map(roles.map(r => [r.id, { name: r.name, color: r.color }])) };
+}
+
+/** The roles a person may mention here: the mentionable ones, or every role but @everyone (position 0) with the broadcast right. */
+export function offeredRoles(roles: readonly RoleSummary[], broadcast: boolean): RoleSummary[] {
+  return roles.filter(r => r.position > 0 && (broadcast || r.mentionable));
+}
+
+export function mentionRoles(roles: readonly RoleSummary[]): MentionRole[] {
+  return roles.map(r => ({ roleId: r.id, handle: roleHandle(r.name) }));
 }
 
 export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefined)[]): MemberSummary[] {
@@ -183,6 +199,8 @@ export function bodyParts(body: string, book: NameBook): BodyPart[] {
     const member = book.members.find(m => m.userId === id);
     if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false };
     if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false };
+    const known = book.roleInfo?.get(id);
+    if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: book.ownRoles.has(id), broadcast: false, color: known.color };
     if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: book.ownRoles.has(id), broadcast: false };
     return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false };
   });
@@ -199,6 +217,8 @@ export function editableText(body: string, book: NameBook): string {
     const member = book.members.find(m => m.userId === part.target && m.username !== '');
     if (member !== undefined) return `@${member.username}`;
     if (book.self?.id === part.target) return `@${book.self.username}`;
+    const role = book.roleInfo?.get(part.target);
+    if (role !== undefined) return `@${roleHandle(role.name)}`;
     return `<@${part.target}>`;
   }).join('');
 }
@@ -216,7 +236,7 @@ export function mentionMembers(members: readonly MemberSummary[]): MentionMember
 }
 
 export interface MentionOption { id: string; primary: string; secondary: string; insert: string }
-export function mentionOptions(query: string, candidates: readonly MemberSummary[], broadcast: boolean): MentionOption[] {
+export function mentionOptions(query: string, candidates: readonly MemberSummary[], broadcast: boolean, roles: readonly RoleSummary[] = []): MentionOption[] {
   const q = query.toLowerCase();
   const by = (key: 'username' | 'display') => (a: MemberSummary, b: MemberSummary) =>
     a[key].localeCompare(b[key], undefined, { sensitivity: 'base' });
@@ -225,6 +245,10 @@ export function mentionOptions(query: string, candidates: readonly MemberSummary
   const result = [...username, ...display].slice(0, 8).map(m => ({
     id: `m-${m.userId}`, primary: m.display || m.username, secondary: `@${m.username}`, insert: `@${m.username} `,
   }));
+  // Roles follow the members and fill what is left of the eight; @everyone comes last.
+  for (const r of roles.filter(x => roleHandle(x.name).startsWith(q)).slice(0, 8 - result.length)) {
+    result.push({ id: `r-${r.id}`, primary: t('mention.role', { name: r.name }), secondary: t('mention.role.secondary'), insert: `@${roleHandle(r.name)} ` });
+  }
   if (broadcast && 'everyone'.startsWith(q)) result.push({ id: 'b-everyone', primary: '@everyone', secondary: t('shell.composer.mentionEveryone'), insert: '@everyone ' });
   return result;
 }

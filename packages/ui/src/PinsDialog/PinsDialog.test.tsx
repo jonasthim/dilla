@@ -53,4 +53,11 @@ describe('PinsDialog', () => {
       emptyLabel="Nothing is pinned here yet." items={[item(1), item(2)]} /></div>);
     await expectNoAxeViolations(container);
   });
+  it('shows a note under the title, before the pins, only when given', () => {
+    const { rerender } = render(<PinsDialog open title="Pinned" closeLabel="Close" onClose={() => {}} emptyLabel="none" note="A pin may go." items={[item(1)]} />);
+    const dialog = screen.getByRole('dialog', { name: 'Pinned' });
+    expect(within(dialog).getByText('A pin may go.')).toBeInTheDocument();
+    rerender(<PinsDialog open title="Pinned" closeLabel="Close" onClose={() => {}} emptyLabel="none" items={[item(1)]} />);
+    expect(screen.queryByText('A pin may go.')).toBeNull();
+  });
 });
