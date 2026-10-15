@@ -43,7 +43,7 @@ import { isTestHook, isToWorker, type Command, type FromWorker } from './protoco
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
-import { ROLES_VALIDATORS } from '../admin/roles';
+import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -228,6 +228,14 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'loadBans',
   'loadInvites',
   'revokeInvite',
+  'createRole',
+  'updateRole',
+  'moveRole',
+  'deleteRole',
+  'grantRole',
+  'revokeRole',
+  'setOverwrite',
+  'setChannelPrivate',
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
@@ -235,9 +243,17 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId')[]>> = {
   selectCommunity: ['communityId'],
   createChannel: ['communityId'],
+  createRole: ['communityId'],
+  updateRole: ['communityId', 'roleId'],
+  moveRole: ['communityId', 'roleId'],
+  deleteRole: ['communityId', 'roleId'],
+  grantRole: ['communityId', 'userId', 'roleId'],
+  revokeRole: ['communityId', 'userId', 'roleId'],
+  setOverwrite: ['channelId', 'targetId'],
+  setChannelPrivate: ['channelId'],
   createInvite: ['communityId'],
   openChannel: ['channelId'],
   closeChannel: ['channelId'],
@@ -346,6 +362,14 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'loadBans',
     'loadInvites',
     'revokeInvite',
+    'createRole',
+    'updateRole',
+    'moveRole',
+    'deleteRole',
+    'grantRole',
+    'revokeRole',
+    'setOverwrite',
+    'setChannelPrivate',
   ],
 };
 
@@ -391,6 +415,7 @@ function invalid(command: Record<string, unknown>): string | null {
     if (command.kind !== 'text' && command.kind !== 'voice') return 'kind is not text or voice';
     const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, CHANNEL_NAME_MAX_BYTES);
     if (problem !== null) return `name ${problem}`;
+    if (command.private !== undefined) { const p = privateProblem(command.private); if (p !== null) return p; }
   }
   if (m === 'createInvite') {
     const { maxUses, ttlSeconds } = command;
@@ -598,6 +623,8 @@ export class Controller {
   private readonly calls: CallController;
   /** web3.4: server admin and moderation (flow 08). */
   private readonly admin: AdminController;
+  /** Wave 2a: roles, overwrites and private channels (flow 09). */
+  private readonly rolesCtl: RolesController;
   /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
   private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
   private readonly ownInCall = new Set<string>();
@@ -684,6 +711,19 @@ export class Controller {
       // C4 fix round 2: the local drop outranks a list read already in flight, which still lists the server.
       dropCommunity: (communityId) => { this.listWritten(); this.dropCommunity(communityId); },
       track: (job) => { void this.barrier.track(job).catch(() => undefined); },
+      accessRead: (communityId, roles, bits, overwrites) => { this.rolesCtl.accessRead(communityId, roles, bits, overwrites); },
+      accessForgotten: (communityId) => { this.rolesCtl.forget(communityId); },
+      refusal: (code, detail) => new Refusal(code, detail),
+    });
+    this.rolesCtl = new RolesController({
+      routes: this.routes,
+      me: () => this.me,
+      get: (name) => this.slices.get(name),
+      publish: (name, value) => { this.slices.set(name, value); },
+      listed: (communityId) => this.listed(communityId),
+      communityOf: (channelId) => this.channels.get(channelId)?.communityId ?? null,
+      reloadMembers: (communityId) => this.reloadMembers(communityId),
+      loadAccess: (communityId) => this.admin.loadAccess(communityId),
       refusal: (code, detail) => new Refusal(code, detail),
     });
   }
@@ -782,7 +822,7 @@ export class Controller {
       case 'joinCommunity': return this.joinCommunity(command.invite);
       case 'selectCommunity': return this.selectCommunity(command.communityId);
       case 'createCommunity': return this.createCommunity(command.name);
-      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name);
+      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'openChannel': return this.openChannel(command.channelId);
@@ -839,6 +879,14 @@ export class Controller {
       case 'loadBans': return this.admin.loadBans(command.communityId);
       case 'loadInvites': return this.admin.loadInvites(command.communityId);
       case 'revokeInvite': return this.admin.revokeInvite(command.communityId, command.inviteId);
+      case 'createRole': return this.rolesCtl.createRole(command.communityId, command.name, command.color, command.hoist, command.mentionable, command.allow);
+      case 'updateRole': return this.rolesCtl.updateRole(command.communityId, command.roleId, command.name, command.color, command.hoist, command.mentionable, command.allow);
+      case 'moveRole': return this.rolesCtl.moveRole(command.communityId, command.roleId, command.direction);
+      case 'deleteRole': return this.rolesCtl.deleteRole(command.communityId, command.roleId);
+      case 'grantRole': return this.rolesCtl.grantRole(command.communityId, command.userId, command.roleId);
+      case 'revokeRole': return this.rolesCtl.revokeRole(command.communityId, command.userId, command.roleId);
+      case 'setOverwrite': return this.rolesCtl.setOverwrite(command.channelId, command.kind, command.targetId, command.allow, command.deny);
+      case 'setChannelPrivate': return this.rolesCtl.setChannelPrivate(command.channelId, command.private);
       case 'resign': return this.resign(command.nonce);
     }
   }
@@ -1665,13 +1713,16 @@ export class Controller {
   /** POST /v1/communities/{id}/channels at the position after the server's last channel. The channel is published as
    *  created before the answer, then the server's lists are read again; a text channel's group is registered by the
    *  first device that opens it (sync/channel.ts), a voice channel's call group at its first call. */
-  private async createChannel(communityId: string, kind: NewChannelKind, channelName: string): Promise<{ channelId: string }> {
+  private async createChannel(communityId: string, kind: NewChannelKind, channelName: string, priv?: { roleIds: string[] }): Promise<{ channelId: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     let position = 0;
     for (const known of this.channels.values()) {
       if (known.communityId === communityId) position = Math.max(position, known.row.position + 1);
     }
-    const created = await this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position });
+    // A private channel is private from birth: the overwrites go in the create (wave 2a).
+    const overwrites = priv === undefined ? undefined : await this.rolesCtl.privateOverwrites(communityId, priv.roleIds);
+    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position })
+      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position, overwrites }));
     // A list read that began before this create answers without the channel: loadCommunity reads again (structureRev).
     this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1);
     const channelId = toHex(created.id);
@@ -1683,6 +1734,7 @@ export class Controller {
     this.publishChannels(communityId);
     // Not awaited (WB I1): the answer does not wait on a list read that may hang; the row is already published.
     void this.barrier.track(this.loadCommunity(communityId).catch(() => { /* the row stays as created; the next ready reads the list */ }));
+    if (overwrites !== undefined) await this.admin.loadAccess(communityId);   // the page sees the overwrites with the ret
     return { channelId };
   }
 
@@ -1751,6 +1803,7 @@ export class Controller {
     this.publishTrust();
     // Web-3 task 10, concern 4: a voice participant the lists lacked is named now.
     this.calls.membersChanged();
+    this.rolesCtl.membersChanged(communityId);
     // Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once.
     const core = this.core;
     const me = this.me;

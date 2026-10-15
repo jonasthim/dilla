@@ -10,7 +10,7 @@ export function accessOf(bits: bigint, top: number, owner: boolean): CommunityAc
   const has = (bit: number): boolean => all || (bits & BigInt(bit)) !== 0n;
   return { top, owner, manageCommunity: has(PERM.manageCommunity), manageChannels: has(PERM.manageChannels),
     kickMembers: has(PERM.kickMembers), banMembers: has(PERM.banMembers), createInvite: has(PERM.createInvite),
-    manageRoles: has(PERM.manageRoles), loaded: true };
+    manageRoles: has(PERM.manageRoles), loaded: true, everyoneId: '' };
 }
 
 /** The highest role position among `roleIds`; 0 with none. A role id the client has no row for counts as just under the

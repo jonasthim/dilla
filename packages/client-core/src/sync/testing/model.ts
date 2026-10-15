@@ -37,7 +37,7 @@ import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
-import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, OWNER_TOP, nameProblem, type Routes } from '../../http/routes';
+import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, OWNER_TOP, nameProblem, type NewOverwrite, type OverwriteRow, type RoleRow, type Routes } from '../../http/routes';
 import { mentionsMe } from '../../state/mentions';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from '../../testing/fake-list';
 
@@ -74,6 +74,9 @@ export function at<T>(a: readonly T[], i: number): T {
   return v;
 }
 
+function sameOverwrite(o: OverwriteRow, channelId: Uint8Array, kind: 0 | 1, targetId: Uint8Array): boolean {
+  return same(o.channelId, channelId) && o.kind === kind && same(o.targetId, targetId);
+}
 function same(a: Uint8Array, b: Uint8Array): boolean {
   return toHex(a) === toHex(b);
 }
@@ -2071,7 +2074,9 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   // and its channels through the client path.
   | 'listCommunities' | 'createCommunity' | 'createChannel' | 'createInvite'
   // web3.4: the caller's own permissions and the roles list, as the instance resolves them for the model's servers.
-  | 'getPermissions' | 'listRoles';
+  | 'getPermissions' | 'listRoles'
+  // wave 2a (flow 09): roles and channel overwrites, ruled by the owner alone in the model.
+  | 'listOverwrites' | 'createRole' | 'patchRole' | 'deleteRole' | 'grantRole' | 'revokeRole' | 'putOverwrite' | 'deleteOverwrite';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** The @everyone base of a new server (internal/api everyoneRoleAllow): view, send, attach, react, history, connect, speak, video,
  *  screen share and create invite. Every defined permission bit is below 2^30. */
@@ -2214,6 +2219,9 @@ export class ModelDs {
   /** Created servers: community hex → its name, its owner's and its members' user hexes. */
   private readonly communities = new Map<string, { id: Id; name: string; owner: string; members: Set<string> }>();
   private readonly owners = new Map<string, string>();
+  /** Wave 2a: the roles (besides @everyone) and channel overwrites of each created server, by community hex. */
+  private readonly roleRows = new Map<string, RoleRow[]>();
+  private readonly overwriteRows = new Map<string, OverwriteRow[]>();
   private readonly devices = new Map<string, Id>();
   private readonly users = new Map<string, Id>();
   private readonly keyPackageDevs = new Set<string>();
@@ -2637,7 +2645,44 @@ export class ModelDs {
         this.memberOf(d, communityId);
         const everyone = communityId.slice();
         everyone[0] = 0xc7;
-        return [{ id: everyone, name: '@everyone', color: 0, position: 0, allow: Number(MODEL_EVERYONE_ALLOW), deny: 0, hoist: false, mentionable: false }];
+        return [{ id: everyone, name: '@everyone', color: 0, position: 0, allow: Number(MODEL_EVERYONE_ALLOW), deny: 0, hoist: false, mentionable: false },
+          ...(this.roleRows.get(toHex(communityId)) ?? [])];
+      }),
+      listOverwrites: (communityId) => this.call(d, 'listOverwrites', null, null, () => {
+        this.memberOf(d, communityId);
+        return this.overwriteRows.get(toHex(communityId)) ?? [];
+      }),
+      createRole: (communityId, role) => this.call(d, 'createRole', null, null, () => {
+        this.ownerOf(d, communityId);
+        this.counter += 1;
+        const roleId = idOf(0xc8, this.counter);
+        const rows = this.roleRows.get(toHex(communityId)) ?? [];
+        rows.push({ id: roleId, name: role.name, color: role.color, position: role.position, allow: role.allow, deny: role.deny,
+          hoist: role.hoist, mentionable: role.mentionable });
+        this.roleRows.set(toHex(communityId), rows);
+        return { roleId };
+      }),
+      patchRole: (roleId, patch) => this.call(d, 'patchRole', null, null, () => {
+        const row = this.roleOf(d, roleId);
+        Object.assign(row, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+      }),
+      deleteRole: (roleId) => this.call(d, 'deleteRole', null, null, () => {
+        const row = this.roleOf(d, roleId);
+        for (const [c, rows] of this.roleRows) this.roleRows.set(c, rows.filter((r) => r !== row));
+      }),
+      grantRole: (communityId) => this.call(d, 'grantRole', null, null, () => { this.ownerOf(d, communityId); }),
+      revokeRole: (communityId) => this.call(d, 'revokeRole', null, null, () => { this.ownerOf(d, communityId); }),
+      putOverwrite: (channelId, kind, targetId, bits) => this.call(d, 'putOverwrite', null, null, () => {
+        const communityId = this.ownerOfChannel(d, channelId);
+        const rows = (this.overwriteRows.get(toHex(communityId)) ?? []).filter((o) => !sameOverwrite(o, channelId, kind, targetId));
+        rows.push({ channelId, kind, targetId, allow: bits.allow, deny: bits.deny });
+        this.overwriteRows.set(toHex(communityId), rows);
+      }),
+      deleteOverwrite: (channelId, kind, targetId) => this.call(d, 'deleteOverwrite', null, null, () => {
+        const communityId = this.ownerOfChannel(d, channelId);
+        const rows = this.overwriteRows.get(toHex(communityId)) ?? [];
+        if (!rows.some((o) => sameOverwrite(o, channelId, kind, targetId))) throw httpError(404, 'E_NOT_FOUND');
+        this.overwriteRows.set(toHex(communityId), rows.filter((o) => !sameOverwrite(o, channelId, kind, targetId)));
       }),
       postGroup: (body) => this.call(d, 'postGroup', null, null, () => this.postGroup(d, body)),
       getGroupInfo: (id) =>
@@ -2803,7 +2848,7 @@ export class ModelDs {
   }
   /** POST /v1/communities/{id}/channels: only the owner holds ManageChannels (no role grants it in the model); a voice
    *  channel is also a channel calls may start in. */
-  private createChannel(d: string, communityId: Id, channel: { kind: 'text' | 'voice'; name: string; position: number }):
+  private createChannel(d: string, communityId: Id, channel: { kind: 'text' | 'voice'; name: string; position: number; overwrites?: readonly NewOverwrite[] }):
     { id: Id; mode: number; visibility: number } {
     const c = this.memberOf(d, communityId);
     if (c.owner !== this.owners.get(d)) throw httpError(403, 'E_FORBIDDEN');
@@ -2813,7 +2858,31 @@ export class ModelDs {
     const kind = channel.kind === 'voice' ? 1 : 0;
     this.channels.set(toHex(channelId), { communityId, channelId, created: { kind, name: channel.name, position: channel.position } });
     if (kind === 1) this.voiceChannels.set(toHex(channelId), communityId);
+    // The ninth element: the channel is private from birth.
+    if (channel.overwrites !== undefined && channel.overwrites.length > 0) {
+      const rows = this.overwriteRows.get(toHex(communityId)) ?? [];
+      for (const o of channel.overwrites) rows.push({ channelId, kind: o.kind, targetId: o.targetId, allow: o.allow, deny: o.deny });
+      this.overwriteRows.set(toHex(communityId), rows);
+    }
     return { id: channelId, mode: 0, visibility: 0 };
+  }
+  /** Only the owner holds ManageRoles in the model. */
+  private ownerOf(d: string, communityId: Id): void {
+    const c = this.memberOf(d, communityId);
+    if (c.owner !== this.owners.get(d)) throw httpError(403, 'E_FORBIDDEN');
+  }
+  private ownerOfChannel(d: string, channelId: Id): Id {
+    const known = this.channels.get(toHex(channelId));
+    if (known === undefined) throw httpError(404, 'E_NOT_FOUND');
+    this.ownerOf(d, known.communityId);
+    return known.communityId;
+  }
+  private roleOf(d: string, roleId: Id): RoleRow {
+    for (const [c, rows] of this.roleRows) {
+      const row = rows.find((r) => same(r.id, roleId));
+      if (row !== undefined) { this.ownerOf(d, this.communities.get(c)!.id); return row; }
+    }
+    throw httpError(404, 'E_NOT_FOUND');
   }
 
   private channelRows(communityId: Uint8Array): {

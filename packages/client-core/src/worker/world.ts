@@ -8,7 +8,7 @@ import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescripto
 import { type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { OWNER_TOP, type BanRow, type InviteRow, type Instance, type RoleRow, type Routes } from '../http/routes';
+import { OWNER_TOP, type BanRow, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow, type Routes } from '../http/routes';
 import type { AccountState, BadgeState, ChannelSummary, ConnectionState, NoticesState, TimelineState } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { Controller, type ControllerDeps, type ControllerParts } from './controller';
@@ -312,7 +312,7 @@ export function world(opts: {
       state.created.push({ id: NEW_COMMUNITY, name });
       return Promise.resolve({ id: NEW_COMMUNITY, roleEveryone: ROLE_EVERYONE, policyVersion: 1n });
     }),
-    createChannel: vi.fn((communityId: Uint8Array, c: { kind: 'text' | 'voice'; name: string; position: number }) => {
+    createChannel: vi.fn((communityId: Uint8Array, c: { kind: 'text' | 'voice'; name: string; position: number; overwrites?: readonly NewOverwrite[] }) => {
       calls.push('createChannel');
       const id = new Uint8Array(16).fill(0x60 + state.newChannels.length);
       state.newChannels.push({ communityId, row: { id, kind: c.kind === 'voice' ? 1 : 0, mode: 0, visibility: 0, parentId: null,
@@ -343,6 +343,15 @@ export function world(opts: {
     listBans: vi.fn((_id: Uint8Array) => Promise.resolve([] as BanRow[])),
     listInvites: vi.fn((_id: Uint8Array) => Promise.resolve([] as InviteRow[])),
     revokeInvite: vi.fn((_id: Uint8Array) => Promise.resolve()),
+    // wave 2a (flow 09): roles and overwrites; like the admin routes, none of them pushes into `calls`.
+    listOverwrites: vi.fn((_id: Uint8Array) => Promise.resolve([] as OverwriteRow[])),
+    createRole: vi.fn((_id: Uint8Array, _role: NewRole) => Promise.resolve({ roleId: new Uint8Array(16).fill(0x91) })),
+    patchRole: vi.fn((_id: Uint8Array, _patch: RolePatch) => Promise.resolve()),
+    deleteRole: vi.fn((_id: Uint8Array) => Promise.resolve()),
+    grantRole: vi.fn((_c: Uint8Array, _user: Uint8Array, _role: Uint8Array) => Promise.resolve()),
+    revokeRole: vi.fn((_c: Uint8Array, _user: Uint8Array, _role: Uint8Array) => Promise.resolve()),
+    putOverwrite: vi.fn((_ch: Uint8Array, _kind: 0 | 1, _target: Uint8Array, _bits: { allow: number; deny: number }) => Promise.resolve()),
+    deleteOverwrite: vi.fn((_ch: Uint8Array, _kind: 0 | 1, _target: Uint8Array) => Promise.resolve()),
     putBlob: vi.fn((_c: Uint8Array, blobId: Uint8Array, stored: Uint8Array) => {
       calls.push(`putBlob(${toHex(blobId).slice(0, 8)})`); state.blobs.set(toHex(blobId), stored);
       return Promise.resolve({ created: true, size: stored.length });
