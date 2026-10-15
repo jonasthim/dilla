@@ -3,15 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { PERM, type RoleSummary } from '@dilla/client-core';
+import { PERM, type PinnedItem, type RoleSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
-import { GEN, MEMBERS, OTHER_ROLE, PEER, P1, peerRow, timeline } from '../../test/conversation.tsx';
+import { GEN, MEMBERS, O1, OTHER_ROLE, PEER, P1, ownRow, peerRow, timeline } from '../../test/conversation.tsx';
 import { mentionCandidates, mentionMembers, nameBook } from '../shell-model.ts';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
-import { Conversation, INITIAL_UI } from './Conversation.tsx';
+import { Conversation, INITIAL_UI, type ConversationUi } from './Conversation.tsx';
 
 const GAME = '71'.repeat(16);
 const MODS = '72'.repeat(16);
@@ -105,15 +105,15 @@ describe('the send hint', () => {
   });
 });
 
-function log(over: { bits?: number | null; items?: ReturnType<typeof peerRow>[]; pinsOpen?: boolean } = {}) {
+function log(over: { bits?: number | null; items?: ReturnType<typeof peerRow>[]; pinsOpen?: boolean; pins?: PinnedItem[]; editing?: ConversationUi['editing'] } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
-  fake.set(`pins:${GEN}`, []);
+  fake.set(`pins:${GEN}`, over.pins ?? []);
   const book = nameBook({ id: ME.id, username: 'ada' }, MEMBERS, ROLES);
   const items = over.items ?? [peerRow(P1, '1', 'theirs')];
   const view = render(<div className="d-root"><CoreProvider client={fake}>
     <Conversation channelId={GEN} logKey="k" label="log" timeline={timeline(items)} book={book} encodeWith={[]} broadcast bits={over.bits ?? null} roles={ROLES}
-      pinsTitle="Pinned in #general" ui={{ ...INITIAL_UI, pinsOpen: over.pinsOpen ?? false }} dispatch={vi.fn()} loadingEarlier={false}
+      pinsTitle="Pinned in #general" ui={{ ...INITIAL_UI, pinsOpen: over.pinsOpen ?? false, editing: over.editing ?? null }} dispatch={vi.fn()} loadingEarlier={false}
       onLoadEarlier={vi.fn()} onError={vi.fn()} />
   </CoreProvider></div>);
   return { fake, view };
@@ -150,5 +150,38 @@ describe('role labels in the log', () => {
     const mention = within(row(P1)).getByText('@Game Night');
     expect(mention.querySelector('.d-role-dot')?.getAttribute('style')).toContain('#336699');
     expect(within(row(P1)).getByText('@role').querySelector('.d-role-dot')).toBeNull();
+  });
+});
+
+describe('unpin in the pins dialog', () => {
+  const pin: PinnedItem = { msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: 1700000000 };
+  const unpin = () => within(screen.getByRole('dialog', { name: 'Pinned in #general' })).queryByRole('button', { name: 'unpin' });
+  it('hides unpin without the pin right, and keeps jump', () => {
+    log({ bits: SEND, pinsOpen: true, pins: [pin] });
+    expect(unpin()).toBeNull();
+    expect(within(screen.getByRole('dialog', { name: 'Pinned in #general' })).getByRole('button', { name: 'go to message' })).toBeInTheDocument();
+  });
+  it('shows unpin with the right, and while the bits are unknown', () => {
+    log({ bits: SEND | PERM.pinMessages, pinsOpen: true, pins: [pin] });
+    expect(unpin()).not.toBeNull();
+  });
+  it('shows unpin while the bits are unknown', () => {
+    log({ bits: null, pinsOpen: true, pins: [pin] });
+    expect(unpin()).not.toBeNull();
+  });
+});
+
+describe('editing a message that holds a role mention', () => {
+  it('keeps the token of a role the person could not newly mention', async () => {
+    const user = userEvent.setup();
+    const { fake } = log({ bits: SEND, items: [ownRow(O1, '2', `hi <@${MODS}>`)], editing: { msgId: O1, value: 'hi @modérateurs ok' } });
+    await user.click(screen.getByRole('button', { name: 'save' }));
+    expect(fake.callsOf('editMessage')).toEqual([{ m: 'editMessage', channelId: GEN, msgId: O1, text: `hi <@${MODS}> ok` }]);
+  });
+  it('does not encode a role handle that was not in the message and may not be mentioned', async () => {
+    const user = userEvent.setup();
+    const { fake } = log({ bits: SEND, items: [ownRow(O1, '2', 'hi')], editing: { msgId: O1, value: 'hi @modérateurs' } });
+    await user.click(screen.getByRole('button', { name: 'save' }));
+    expect(fake.callsOf('editMessage')[0]?.text).toBe('hi @modérateurs');
   });
 });

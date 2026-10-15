@@ -176,8 +176,27 @@ export function offeredRoles(roles: readonly RoleSummary[], broadcast: boolean):
   return roles.filter(r => r.position > 0 && (broadcast || r.mentionable));
 }
 
-export function mentionRoles(roles: readonly RoleSummary[]): MentionRole[] {
-  return roles.map(r => ({ roleId: r.id, handle: roleHandle(r.name) }));
+/** For an edit: the offered roles plus every role the message already mentions, so no token is lost by saving. */
+export function editRoles(roles: readonly RoleSummary[], broadcast: boolean, body: string): RoleSummary[] {
+  return roles.filter(r => r.position > 0 && (broadcast || r.mentionable || body.includes(`<@${r.id}>`)));
+}
+
+/** Roles in the order they are offered (position, highest first, then name), without any whose handle is already taken by
+ *  @everyone, @here, a member (broadcast beats member beats role) or a role before it. */
+function reachable(roles: readonly RoleSummary[], members: readonly { username: string }[]): { role: RoleSummary; handle: string }[] {
+  const taken = new Set(['everyone', 'here', ...members.map(m => m.username.normalize('NFC').toLowerCase())]);
+  const out: { role: RoleSummary; handle: string }[] = [];
+  for (const role of [...roles].sort((a, b) => b.position - a.position || a.name.localeCompare(b.name))) {
+    const handle = roleHandle(role.name);
+    if (handle === '' || taken.has(handle)) continue;
+    taken.add(handle);
+    out.push({ role, handle });
+  }
+  return out;
+}
+
+export function mentionRoles(roles: readonly RoleSummary[], members: readonly { username: string }[] = []): MentionRole[] {
+  return reachable(roles, members).map(({ role, handle }) => ({ roleId: role.id, handle }));
 }
 
 export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefined)[]): MemberSummary[] {
@@ -237,7 +256,7 @@ export function mentionMembers(members: readonly MemberSummary[]): MentionMember
 
 export interface MentionOption { id: string; primary: string; secondary: string; insert: string }
 export function mentionOptions(query: string, candidates: readonly MemberSummary[], broadcast: boolean, roles: readonly RoleSummary[] = []): MentionOption[] {
-  const q = query.toLowerCase();
+  const q = query.normalize('NFC').toLowerCase();
   const by = (key: 'username' | 'display') => (a: MemberSummary, b: MemberSummary) =>
     a[key].localeCompare(b[key], undefined, { sensitivity: 'base' });
   const username = candidates.filter(m => m.username.toLowerCase().startsWith(q)).sort(by('username'));
@@ -246,8 +265,8 @@ export function mentionOptions(query: string, candidates: readonly MemberSummary
     id: `m-${m.userId}`, primary: m.display || m.username, secondary: `@${m.username}`, insert: `@${m.username} `,
   }));
   // Roles follow the members and fill what is left of the eight; @everyone comes last.
-  for (const r of roles.filter(x => roleHandle(x.name).startsWith(q)).slice(0, 8 - result.length)) {
-    result.push({ id: `r-${r.id}`, primary: t('mention.role', { name: r.name }), secondary: t('mention.role.secondary'), insert: `@${roleHandle(r.name)} ` });
+  for (const { role: r, handle } of reachable(roles, candidates).filter(x => x.handle.startsWith(q)).slice(0, 8 - result.length)) {
+    result.push({ id: `r-${r.id}`, primary: t('mention.role', { name: r.name }), secondary: t('mention.role.secondary'), insert: `@${handle} ` });
   }
   if (broadcast && 'everyone'.startsWith(q)) result.push({ id: 'b-everyone', primary: '@everyone', secondary: t('shell.composer.mentionEveryone'), insert: '@everyone ' });
   return result;

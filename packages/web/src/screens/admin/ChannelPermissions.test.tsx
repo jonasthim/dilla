@@ -31,7 +31,7 @@ const ACCESS: CommunityAccess = { top: 5, owner: false, manageCommunity: false, 
 const CHANNEL: ChannelSummary = { id: CH, communityId: SERVER, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, group: 'active' };
 const ow = (kind: 0 | 1, targetId: string, allow: number, deny: number): OverwriteSummary => ({ kind, targetId, allow, deny });
 
-function setup(entries: OverwriteSummary[] = [], access: Partial<CommunityAccess> = {}) {
+function setup(entries: OverwriteSummary[] = [], access: Partial<CommunityAccess> = {}, without: string[] = []) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: OWNER }]);
@@ -40,6 +40,7 @@ function setup(entries: OverwriteSummary[] = [], access: Partial<CommunityAccess
   fake.set(`roles:${SERVER}`, ROLES);
   fake.set(`permissions:${SERVER}`, { ...ACCESS, ...access });
   fake.set(`overwrites:${SERVER}`, entries.length === 0 ? {} : { [CH]: entries });
+  for (const name of without) fake.set(name as `roles:${string}`, undefined as never);
   const announce = vi.fn();
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}>
@@ -76,7 +77,7 @@ describe('the channel permissions section', () => {
   });
   it('maps the would-lose refusal to its copy, keeps confirm enabled, and returns focus to the toggle on cancel', async () => {
     const { fake, user } = setup();
-    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT' }));
+    fake.handler = () => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }));
     await user.click(toggle());
     await user.click(screen.getByRole('button', { name: 'Make private' }));
     const alert = await screen.findByRole('alert');
@@ -95,18 +96,69 @@ describe('the channel permissions section', () => {
     await user.click(screen.getByRole('button', { name: 'Make private' }));
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This channel no longer exists.'));
   });
-  it('maps a 400 of the instance to the same copy', async () => {
+  it('maps the worker’s own E_BAD_INPUT to the unread copy, and not to the hidden one', async () => {
     const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
-    fake.handler = () => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }));
+    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT' }));
     await user.click(disclosure('Players'));
     await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That change would hide the channel from you.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not read who can see this channel.');
   });
-  it('shows the gate as unknown, with no private toggle, while the overwrites are not loaded', () => {
+  it('maps a 400 that is not E_INVALID_REQUEST to the generic copy', async () => {
+    const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
+    fake.handler = () => Promise.reject(refusal({ code: 'E_OTHER', status: 400 }));
+    await user.click(disclosure('Players'));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the permissions (E_OTHER). Try again.');
+  });
+  it('says the read failed once the access is read but the overwrites are not, with no private toggle', () => {
     setup([], { overwritesLoaded: false });
     expect(screen.queryByRole('switch')).toBeNull();
-    expect(screen.getByRole('status')).toHaveTextContent('Loading roles…');
+    expect(screen.getByRole('status')).toHaveTextContent('Could not read who can see this channel. Close this and open it again.');
     expect(screen.queryByText('No role or person has settings of their own here yet.')).toBeNull();
+  });
+  it('shows the loading line, never public or none, while the access is unread, absent, or the overwrites are absent', () => {
+    for (const [access, without] of [[{ loaded: false, overwritesLoaded: false }, []], [{}, [`permissions:${SERVER}`]], [{}, [`overwrites:${SERVER}`]]] as const) {
+      const { view } = setup([], access, [...without]);
+      expect(screen.queryByRole('switch')).toBeNull();
+      expect(screen.getByRole('status')).toHaveTextContent('Loading roles…');
+      expect(screen.queryByText('No role or person has settings of their own here yet.')).toBeNull();
+      view.unmount();
+    }
+  });
+  it('applies two quick changes in order, the second reading what the first wrote', async () => {
+    const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
+    let release: () => void = () => undefined;
+    const first = new Promise<void>(r => { release = r; });
+    fake.handler = async c => {
+      if (c.m !== 'setOverwrite') return null;
+      if (fake.callsOf('setOverwrite').length === 1) await first;
+      fake.set(`overwrites:${SERVER}`, { [CH]: [ow(0, PLAYERS, c.allow, c.deny)] });
+      return null;
+    };
+    await user.click(disclosure('Players'));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'attach files' })).getByRole('radio', { name: 'deny' }));
+    expect(fake.callsOf('setOverwrite')).toHaveLength(1);
+    release();
+    await waitFor(() => expect(fake.callsOf('setOverwrite')).toHaveLength(2));
+    expect(fake.callsOf('setOverwrite').map(c => c.deny)).toEqual([PERM.sendMessages, PERM.sendMessages | PERM.attachFiles]);
+  });
+  it('returns focus to the switch after a confirm that succeeds', async () => {
+    const { fake, user } = setup();
+    fake.handler = c => {
+      if (c.m === 'setChannelPrivate') fake.set(`overwrites:${SERVER}`, { [CH]: [ow(0, EVERYONE, 0, PERM.viewChannel)] });
+      return Promise.resolve(null);
+    };
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Make private' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(toggle()).toHaveFocus();
+  });
+  it('moves focus to the new entry’s disclosure after add', async () => {
+    const { user } = setup([ow(0, PLAYERS, 0, 0)]);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Role or person' }), 'Bob');
+    await user.click(screen.getByRole('button', { name: 'add a role or person' }));
+    expect(disclosure('Bob')).toHaveFocus();
   });
   it('lists @everyone first, then roles highest first, then members', () => {
     setup([ow(1, BOB, 0, PERM.sendMessages), ow(0, PLAYERS, PERM.pinMessages, 0), ow(0, COUNCIL, 0, PERM.attachFiles), ow(0, EVERYONE, 0, PERM.viewChannel)]);

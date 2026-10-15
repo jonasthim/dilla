@@ -305,4 +305,18 @@ describe('role mentions (flow 09)', () => {
     expect(plainBody(`<@${GAME}>`, book)).toBe('@Game Night');
     expect(editableText(`<@${GAME}>`, book)).toBe('@game-night');
   });
+  it('matches a decomposed query against a composed handle', () => {
+    expect(mentionOptions('mode\u0301', [], false, [role(MODS, 'Modérateurs')]).map(o => o.id)).toEqual([`r-${MODS}`]);
+  });
+  it('sorts roles by position, highest first, then by name', () => {
+    const rs = [role('a1'.repeat(16), 'Beta', { position: 2 }), role('a2'.repeat(16), 'Alpha', { position: 2 }), role('a3'.repeat(16), 'Zed', { position: 7 })];
+    expect(mentionOptions('', [], false, rs).map(o => o.primary)).toEqual(['@Zed', '@Alpha', '@Beta']);
+  });
+  it('leaves out a role whose handle a member, @everyone, @here or an earlier role already takes', () => {
+    const bob = m('28'.repeat(16), 'bob');
+    const rs = [role('a1'.repeat(16), 'Bob', { position: 9 }), role('a2'.repeat(16), 'Everyone', { position: 8 }), role('a3'.repeat(16), 'here', { position: 7 }),
+      role('a4'.repeat(16), 'Staff', { position: 6 }), role('a5'.repeat(16), 'staff', { position: 5 })];
+    expect(mentionOptions('', [bob], false, rs).map(o => o.id)).toEqual([`m-${bob.userId}`, `r-${'a4'.repeat(16)}`]);
+    expect(mentionRoles(rs, [bob]).map(r => r.roleId)).toEqual(['a4'.repeat(16)]);
+  });
 });

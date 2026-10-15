@@ -29,7 +29,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const bits = p.bits ?? null;
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : p.broadcast;
   const offered = offeredRoles(p.roles ?? [], broadcast);
-  const roleMentions = mentionRoles(offered);
+  const roleMentions = mentionRoles(offered, p.encodeWith);
   const query = mentionQuery(p.draft, caret);
   const queryEnded = query === null;
   const options = query === null ? [] : mentionOptions(query.query, p.candidates, broadcast, offered);

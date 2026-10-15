@@ -16,7 +16,7 @@ describe('flow 09 (v0.1.0-web3.5, roles and private channels)', () => {
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
-    expect(pairs.length).toBe(177);
+    expect(pairs.length).toBe(179);
     const listed = new Set(pairs.map(([key]) => key));
     const added = Object.keys(en).filter(k => /^(roles|perm|chperm|mention|serverNotify)\./.test(k));
     expect(added.filter(k => !listed.has(k))).toEqual([]);

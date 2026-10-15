@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button, ConfirmDialog, PermissionGrid, Select, Toggle, type PermissionGridGroup, type PermValue } from '@dilla/ui';
 import {
   COMMUNITY_BITS, PERM_BY_KEY, PERM_GROUPS, channelBitsOf, isPrivate, type MemberSummary, type OverwriteSummary, type RoleSummary,
@@ -30,9 +30,10 @@ function channelGroups(disabledFor: (bit: number) => boolean): PermissionGridGro
 /** The copy of a refusal of an overwrite change. The instance decides every request again; this only words its answer. */
 function refusalText(e: UiError): string {
   if (forbidden(e)) return t('chperm.error.forbidden');
-  // The detail text is never read (protocol/02). An invalid-request refusal of an overwrite change, or the worker's own
-  // refusal before any request, is the one rule the instance and the worker share: the change would hide the channel.
-  if (e.status === 400 || e.code === 'E_INVALID_REQUEST' || e.code === 'E_BAD_INPUT') return t('chperm.error.hidden');
+  // The detail text is never read (protocol/02). Only the instance's own invalid-request refusal is its lockout rule; the
+  // worker's E_BAD_INPUT means the page's overwrites could not be trusted.
+  if (e.status === 400 && e.code === 'E_INVALID_REQUEST') return t('chperm.error.hidden');
+  if (e.code === 'E_BAD_INPUT') return t('chperm.error.unread');
   if (statusIs(e, 404)) return t('chperm.error.gone');
   return t('chperm.error.other', { code: e.code });
 }
@@ -67,6 +68,8 @@ export function ChannelPermissions({ channelId, communityId, announce }: { chann
   const queue = useRef<Promise<void>>(Promise.resolve());
   const headingRef = useRef<HTMLHeadingElement>(null);
   const toggleId = `${base}-private`;
+  const focusEntry = useRef<string | null>(null);
+  const entryButton = (k: string) => `${base}-entry-${k.replace(':', '-')}`;
 
   const community = communities?.find(c => c.id === communityId) ?? null;
   const channel = channels?.find(c => c.id === channelId) ?? null;
@@ -147,8 +150,15 @@ export function ChannelPermissions({ channelId, communityId, announce }: { chann
     const entry = { kind: k === '1' ? 1 as const : 0 as const, targetId: rest.join(':') };
     setAdded(a => [...a, entry]);
     setOpen(key(entry.kind, entry.targetId));
+    focusEntry.current = key(entry.kind, entry.targetId);
     setChoice(null);
   };
+
+  useEffect(() => {
+    if (focusEntry.current === null) return;
+    document.getElementById(entryButton(focusEntry.current))?.focus();
+    focusEntry.current = null;
+  });
 
   const closeAsk = () => {
     if (confirm.busy) return;
@@ -164,11 +174,13 @@ export function ChannelPermissions({ channelId, communityId, announce }: { chann
       .then(ok => { if (ok) { announce(t('chperm.saved', { name: channelLabel })); setAsking(null); document.getElementById(toggleId)?.focus(); } });
   };
 
-  if (access === undefined || !access.overwritesLoaded) {
+  // Unknown is never read as public or as "none": missing data shows a loading line, a failed overwrites read says so.
+  if (access === undefined || !access.loaded || !access.overwritesLoaded || byChannel === undefined) {
+    const failed = access !== undefined && access.loaded && !access.overwritesLoaded;
     return (
       <section className="dw-settings-section" aria-labelledby={`${base}-title`}>
         <h3 id={`${base}-title`}>{t('chperm.title')}</h3>
-        <p role="status">{t('roles.loading')}</p>
+        <p role="status">{failed ? t('chperm.error.unread') : t('roles.loading')}</p>
       </section>
     );
   }
@@ -193,7 +205,7 @@ export function ChannelPermissions({ channelId, communityId, announce }: { chann
             return (
               <li key={entry.key} className="dw-admin-group">
                 <div className="dw-admin-row">
-                  <Button variant="ghost" aria-expanded={shown} aria-controls={panel} onClick={() => setOpen(shown ? null : entry.key)}>
+                  <Button variant="ghost" id={entryButton(entry.key)} aria-expanded={shown} aria-controls={panel} onClick={() => setOpen(shown ? null : entry.key)}>
                     {entry.name}{entry.member ? <> <span>{t('chperm.member')}</span></> : null}
                   </Button>
                   {entry.kind === 0 && entry.targetId === everyoneId ? null : (

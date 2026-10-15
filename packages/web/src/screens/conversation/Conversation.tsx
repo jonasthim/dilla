@@ -6,7 +6,7 @@ import { useCore } from '../../core/context.tsx';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { t } from '../../strings/index.ts';
 import { madeHere } from '../Create.tsx';
-import { authorName, editableText, excerpt, mentionRoles, offeredRoles, plainBody, withRoles, type NameBook } from '../shell-model.ts';
+import { authorName, editableText, excerpt, editRoles, mentionRoles, plainBody, withRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { MessageItem, type RowEvent } from './MessageItem.tsx';
 import { PinsPanel } from './Pins.tsx';
@@ -61,7 +61,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
   // Role names and colours, and the broadcast right, once known; until then the shell's own book and rule stand.
   const bits = props.bits ?? null;
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : props.broadcast;
-  const roleMentions = mentionRoles(offeredRoles(props.roles ?? [], broadcast));
+  const roleMentionsFor = (body: string) => mentionRoles(editRoles(props.roles ?? [], broadcast, body), props.encodeWith);
   const p = { ...props, book: withRoles(props.book, props.roles ?? []), broadcast };
   const items = p.timeline?.items ?? [];
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -210,7 +210,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
       busy={p.timeline === undefined || p.loadingEarlier} onKeyDown={rowKey}>
       {items.map(item => <MessageItem key={item.key} item={item} channelId={p.channelId} book={p.book} now={now} bits={bits}
         active={item.key === active} flash={item.key === flashKey} editing={p.ui.editing?.msgId === item.msgId ? p.ui.editing.value : null}
-        editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast, roleMentions)).length}
+        editMeasure={v => new TextEncoder().encode(encodeMentions(v, p.encodeWith, p.broadcast, roleMentionsFor(item.body))).length}
         rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
         onEvent={onRowEvent} onJumpPointerDown={keepJumpPointerStable} onEditChange={value => p.dispatch({ type: 'editChange', value })}
         onEditSave={value => {
@@ -218,7 +218,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
           const start = editableText(item.body, p.book);
           p.dispatch({ type: 'editDone' });
           rowEls.current.get(item.key)?.focus();
-          if (value !== start && item.msgId) command({ m: 'editMessage', channelId: p.channelId, msgId: item.msgId, text: encodeMentions(value, p.encodeWith, p.broadcast, roleMentions) });
+          if (value !== start && item.msgId) command({ m: 'editMessage', channelId: p.channelId, msgId: item.msgId, text: encodeMentions(value, p.encodeWith, p.broadcast, roleMentionsFor(item.body)) });
         }}
         onEditCancel={() => { p.dispatch({ type: 'editDone' }); rowEls.current.get(item.key)?.focus(); }}
         onOpenImage={(index, opener) => openImage(item, index, opener)} onError={e => p.onError(e)} />)}
@@ -242,7 +242,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         deleted.current = { key: deleteFor.key };
         setDeleteFor(null);
       }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>
-    <PinsPanel channelId={p.channelId} open={p.ui.pinsOpen} title={p.pinsTitle} note={bits !== null ? t('perm.pinsNote') : undefined} book={p.book} items={items} now={now}
+    <PinsPanel channelId={p.channelId} open={p.ui.pinsOpen} title={p.pinsTitle} note={bits !== null ? t('perm.pinsNote') : undefined} canUnpin={bits === null || (bits & PERM.pinMessages) !== 0} book={p.book} items={items} now={now}
       onClose={() => p.dispatch({ type: 'pins', open: false })} onJump={jump} onError={e => p.onError(e)} />
     {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}
       onIndex={index => setLightbox(s => s ? { ...s, index } : null)} onClose={closeLightbox} onError={e => p.onError(e)} /> : null}

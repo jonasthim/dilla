@@ -15,6 +15,8 @@ export const INVITE_MAX_USES = 10;
 export const INVITE_TTL_DAYS = 7;
 export const INVITE_TTL_S = INVITE_TTL_DAYS * 24 * 3600;
 /** What a new server starts with, in order: #general, then the voice channel general. */
+/** The most roles a private channel can be opened to (the worker refuses more). */
+const PRIVATE_ROLES_MAX = 98;
 const STARTERS: readonly { kind: NewChannelKind; name: string }[] = [{ kind: 'text', name: 'general' }, { kind: 'voice', name: 'general' }];
 
 const UTF8 = new TextEncoder();
@@ -348,6 +350,7 @@ export function CreateChannelFlow(props: {
         // Only the instance's E_INVALID_REQUEST is about the name; the worker's E_BAD_INPUT here is not (review M7).
         const code = errorOf(e).code;
         fail(code === 'E_FORBIDDEN' ? t('create.channel.error.forbidden')
+          : code === 'E_BAD_INPUT' && sendPrivate ? t('chperm.create.tooMany')
           : code === 'E_INVALID_REQUEST' ? t('create.channel.error.refused')
             : t('create.channel.error.other', { code }));
       } finally {
@@ -368,7 +371,12 @@ export function CreateChannelFlow(props: {
         <Toggle id="dw-create-private" label={t('chperm.create.private')} showLabel hint={t('chperm.create.privateHint')} checked={priv}
           onChange={on => { setPriv(on); setError(null); }} />
         {priv ? <CheckList label={t('chperm.create.roles')} emptyLabel={t('chperm.create.noRoles')} busyId={null}
-          items={offered.map(r => ({ id: r.id, label: r.name, color: r.color, checked: ticked.includes(r.id), disabled: false }))}
+          items={offered.map(r => {
+            const checked = ticked.includes(r.id);
+            // At most PRIVATE_ROLES_MAX roles: the rows past it are disabled, so the instance's refusal is unreachable.
+            const full = !checked && ticked.length >= PRIVATE_ROLES_MAX;
+            return { id: r.id, label: r.name, color: r.color, checked, disabled: full, ...(full ? { detail: t('chperm.create.tooMany') } : {}) };
+          })}
           onToggle={(id, on) => setTicked(list => (on ? [...list.filter(x => x !== id), id] : list.filter(x => x !== id)))} /> : null}
       </> : null}
     </CreateChannel>

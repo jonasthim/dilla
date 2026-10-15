@@ -694,9 +694,9 @@ describe('CreateChannelFlow, private create', () => {
   const LOWER = 'b4'.repeat(16);
   const HIGH = 'b3'.repeat(16);
   const role = (id: string, name: string, position: number) => ({ id, name, color: 0, position, hoist: false, mentionable: false, allow: 0, deny: 0, members: 0 });
-  function setup(opts: { manageRoles?: boolean; roles?: ReturnType<typeof role>[] } = {}) {
+  function setup(opts: { manageRoles?: boolean; owner?: boolean; roles?: ReturnType<typeof role>[] } = {}) {
     const fake = client();
-    fake.set(`permissions:${SERVER}`, { top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
+    fake.set(`permissions:${SERVER}`, { top: 5, owner: opts.owner ?? false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
       createInvite: false, manageRoles: opts.manageRoles ?? true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true });
     fake.set(`roles:${SERVER}`, opts.roles ?? [role(EVERYONE, '@everyone', 0), role(LOWER, 'Newcomers', 1), role(LOW, 'Players', 2), role(HIGH, 'Council', 9)]);
     fake.handler = () => Promise.resolve({ channelId: TEXT });
@@ -743,13 +743,41 @@ describe('CreateChannelFlow, private create', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'open' }]));
   });
-  it('words a refusal of too many roles with its code', async () => {
+  it('offers every role but @everyone to the owner, whatever the positions', async () => {
+    const { user } = setup({ owner: true });
+    await user.click(privateSwitch());
+    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Council', 'Players', 'Newcomers']);
+  });
+  it('caps the ticks at 98 roles, disabling the rest with the too-many hint', async () => {
+    const roles = [role(EVERYONE, '@everyone', 0), ...Array.from({ length: 100 }, (_, i) => role(`${String(i + 16).padStart(2, '0')}`.repeat(16), `R${String(i).padStart(3, '0')}`, 1))];
+    const { fake, user } = setup({ owner: true, roles });
+    await user.click(privateSwitch());
+    const boxes = screen.getAllByRole<HTMLInputElement>('checkbox');
+    expect(boxes).toHaveLength(100);
+    for (const box of boxes.slice(0, 98)) await user.click(box);
+    expect(boxes.filter(b => b.checked)).toHaveLength(98);
+    expect(boxes[98]).toBeDisabled();
+    expect(boxes[98]).toHaveAccessibleDescription('A private channel can be opened to at most 98 roles. Untick some and try again.');
+    expect(boxes[0]).toBeEnabled();
+    await user.type(nameField('Channel name'), 'staff');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect((fake.calls[0] as { private: { roleIds: string[] } }).private.roleIds).toHaveLength(98));
+  }, 30000);
+  it('words the worker’s E_BAD_INPUT of a private create as the too-many copy', async () => {
     const { fake, user } = setup();
-    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT', detail: 'a private channel can be opened to at most 98 roles' }));
+    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT' }));
     await user.click(privateSwitch());
     await user.type(nameField('Channel name'), 'staff');
     await user.click(screen.getByRole('button', { name: 'Create' }));
-    expect(await screen.findByText('Could not add the channel (E_BAD_INPUT). Try again.')).toBeInTheDocument();
+    expect(await screen.findByText('A private channel can be opened to at most 98 roles. Untick some and try again.')).toBeInTheDocument();
+  });
+  it('words any other refusal of a private create with its code', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_NETWORK' }));
+    await user.click(privateSwitch());
+    await user.type(nameField('Channel name'), 'staff');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Could not add the channel (E_NETWORK). Try again.')).toBeInTheDocument();
   });
   it('has no serious axe violations with the roles listed', async () => {
     const { user, view } = setup();

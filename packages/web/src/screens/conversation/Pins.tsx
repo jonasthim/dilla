@@ -12,7 +12,7 @@ export function PinsButton(p: { onOpen(): void }): React.JSX.Element {
 }
 
 export interface PinsPanelProps { channelId: string; open: boolean; title: string; book: NameBook; items: readonly TimelineItem[];
-  now: number; /** Under the title; absent in a DM, where nothing is gated. */ note?: string | undefined; onClose(): void; onJump(msgId: string): void; onError(e: unknown): void }
+  now: number; /** Under the title; absent in a DM, where nothing is gated. */ note?: string | undefined; /** False hides the unpin buttons (the viewer may not pin here). */ canUnpin?: boolean; onClose(): void; onJump(msgId: string): void; onError(e: unknown): void }
 
 export function PinsPanel(p: PinsPanelProps): React.JSX.Element {
   const client = useCore();
@@ -38,9 +38,11 @@ export function PinsPanel(p: PinsPanelProps): React.JSX.Element {
       time: messageTime(pin.ts, p.now), excerpt: plainBody(pin.excerpt, p.book),
       pinnedBy: t('shell.pins.by', { name: authorName({ senderUser: pin.pinnedBy, senderDevice: null }, p.book.members, p.book.self) }),
       jumpLabel: t('shell.pins.jump'), onJump: () => p.onJump(pin.msgId),
-      unpinLabel: t('shell.message.unpin'), onUnpin: () => {
-        pendingFocus.current = i;
-        client.call({ m: 'pin', channelId: p.channelId, msgId: pin.msgId, on: false }).catch(e => p.onError(e));
-      },
+      ...(p.canUnpin === false ? {} : {
+        unpinLabel: t('shell.message.unpin'), onUnpin: () => {
+          pendingFocus.current = i;
+          client.call({ m: 'pin', channelId: p.channelId, msgId: pin.msgId, on: false }).catch(e => p.onError(e));
+        },
+      }),
     }))} />;
 }

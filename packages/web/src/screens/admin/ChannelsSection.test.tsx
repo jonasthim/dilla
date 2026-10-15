@@ -280,4 +280,18 @@ describe('private channels in the channels tab', () => {
     await user.click(btn('edit lobby'));
     expect(within(await screen.findByRole('dialog', { name: 'Edit #lobby' })).queryByRole('heading', { name: en['chperm.title'] })).toBeNull();
   });
+  it('closes only the confirm on Escape, leaving the channel dialog open, and returns focus to the switch', async () => {
+    const { fake, user } = setup();
+    fake.publish(`permissions:${SERVER}`, access());
+    fake.publish(`roles:${SERVER}`, []);
+    fake.publish(`members:${SERVER}`, []);
+    fake.publish(`overwrites:${SERVER}`, {});
+    await user.click(btn('edit lobby'));
+    await user.click(await screen.findByRole('switch', { name: en['chperm.private'] }));
+    expect(await screen.findByRole('dialog', { name: 'Make #lobby private?' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Make #lobby private?' })).toBeNull());
+    expect(screen.getByRole('dialog', { name: 'Edit #lobby' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: en['chperm.private'] })).toHaveFocus();
+  });
 });

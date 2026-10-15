@@ -21,8 +21,8 @@ Roles, the permission editor, role assignment, channel permissions, private chan
 | Assign given, taken and refused | Given and taken are announced politely. Refusals show a `role=alert` error in the dialog and the checkbox returns to its prior state. | `roles.assign.given`, `roles.assign.taken`, `roles.assign.error.forbidden`, `roles.assign.error.twoFactor`, `roles.assign.error.gone`, `roles.assign.error.other` |
 | Channel permissions, public | A section in channel settings with the private toggle off, the list of entries (@everyone, roles, people) each with allow, default and deny per permission, an add control and a remove button per entry. | `chperm.title`, `chperm.private`, `chperm.privateHint`, `chperm.who`, `chperm.everyone`, `chperm.member`, `chperm.add`, `chperm.addLabel`, `chperm.remove`, `chperm.removeLabel`, `chperm.none`, `perm.allow`, `perm.inherit`, `perm.deny` |
 | Channel permissions, private, and confirms | The toggle on, the private tag beside the channel name. Turning it on or off opens a confirm that opens on Cancel; saving shows the busy label, then the saved announcement. | `chperm.privateTag`, `chperm.makePrivate.title`, `chperm.makePrivate.body`, `chperm.makePrivate.confirm`, `chperm.makePublic.title`, `chperm.makePublic.body`, `chperm.makePublic.confirm`, `chperm.cancel`, `chperm.busy`, `chperm.saved` |
-| Permission refusals | A `role=alert` error in the section or confirm. | `chperm.error.forbidden`, `chperm.error.hidden`, `chperm.error.gone`, `chperm.error.other` |
-| Create private | In the create-channel dialog, a private toggle and, when on, a checklist of roles below the viewer's, or the no-roles note. | `chperm.create.private`, `chperm.create.privateHint`, `chperm.create.roles`, `chperm.create.noRoles` |
+| Permission refusals | A `role=alert` error in the section or confirm. | `chperm.error.forbidden`, `chperm.error.hidden`, `chperm.error.gone`, `chperm.error.unread`, `chperm.error.other` |
+| Create private | In the create-channel dialog, a private toggle and, when on, a checklist of roles below the viewer's, or the no-roles note. | `chperm.create.private`, `chperm.create.privateHint`, `chperm.create.roles`, `chperm.create.noRoles`, `chperm.create.tooMany` |
 | Lost access and cannot send | A channel the viewer can no longer see is left with a polite announcement. In a channel where the viewer lacks send messages the message box is hidden and says so. | `chperm.lostAccess`, `chperm.cannotSend` |
 | Role mention and pins | The composer offers roles as `@name` with the secondary "role". A rendered role mention shows its name. A pin whose pinner may not pin there is hidden, and the pins list carries the note. | `mention.role`, `mention.role.secondary`, `perm.pinsNote` |
 | Server notification rows | One row per server in notification settings: mode (default, all messages, mentions, nothing), mute, and ignore @everyone and @here. | `serverNotify.title`, `serverNotify.body`, `serverNotify.mode.default`, `serverNotify.mode.all`, `serverNotify.mode.mentions`, `serverNotify.mode.nothing`, `serverNotify.mute`, `serverNotify.suppressEveryone` |
@@ -233,6 +233,7 @@ All are polite, through the shell announcer. Dialog errors are `role=alert`.
 - `chperm.error.forbidden='You cannot change this. The role or person is at or above your highest role, or the change names a permission you do not hold here.'`
 - `chperm.error.hidden='That change would hide the channel from you. Give access to a role you hold first.'`
 - `chperm.error.gone='This channel no longer exists.'`
+- `chperm.error.unread='Could not read who can see this channel. Close this and open it again.'`
 - `chperm.error.other='Could not save the permissions ({code}). Try again.'`
 - `chperm.create.private='private channel'`
 - `chperm.create.privateHint='Only you, the owner, administrators and the roles you tick can see it.'`
@@ -240,6 +241,7 @@ All are polite, through the shell announcer. Dialog errors are `role=alert`.
 - `chperm.create.noRoles='There are no roles below yours to add. You can add people later in the channel’s permissions.'`
 - `chperm.privateTag='private'`
 - `chperm.lostAccess='You can no longer see #{name}.'`
+- `chperm.create.tooMany='A private channel can be opened to at most 98 roles. Untick some and try again.'`
 - `chperm.cannotSend='You cannot send messages in #{name}.'`
 - `mention.role='@{name}'`
 - `mention.role.secondary='role'`
