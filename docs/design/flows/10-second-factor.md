@@ -56,6 +56,8 @@ The QR code is above the setup key at 160 px. The backup codes are in one column
 - After a removal, focus goes to that group's add button.
 - `devices.forget` on a set-up view: Cancel, Escape or the close button return focus to it; the confirm opens on Cancel; a refused wipe shows `factor.error.other` in the dialog and focus goes to Cancel.
 - A refused `factorSetupDone` (state 13) is read by status and code: 429 is `factor.error.tooMany`, a dropped connection `factor.error.network`, anything else `factor.error.other` with the code. It is a `role="alert"` banner above the frame; focus stays on the button that was pressed.
+- `E_FACTOR_REQUIRED` (the account still owes a factor: the worker's fresh read found none, as after an operator reset) shows no banner: the set-up goes back to the choice, whose own copy says a factor is owed, and the title takes focus.
+- The set-up skips to its end unasked (a reload after the factor was confirmed) only when the `factors` slice says the account owes nothing; a slice that still says owed shows the choice.
 
 ## Announcements
 

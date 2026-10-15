@@ -147,10 +147,9 @@ test('a sign-up left at the factor choice meets the forced screen on reopening',
   await cleoReopens({ page, guard, playwright, browserName, launchOptions, headless, channel, viewport }, testInfo, false);
 });
 
-// FINDING (web3.6 E3): the invite a sign-up was to join is held in the worker's memory only (controller.ts pendingJoin), so a
-// page closed at the factor choice loses it, and the forced screen's factorSetupDone sends invite null. Cleo ends in the shell
-// with no server. Flip to test() when the invite survives a reload.
-test.fixme('a sign-up left at the factor choice joins the invited server after the forced set-up', async ({ page, guard, playwright, browserName, launchOptions, headless, channel, viewport }, testInfo) => {
+// Web3.6 E3 finding, fixed: the invite a sign-up was to join lived in the worker's memory only, so a page closed at the factor
+// choice lost it. The worker now keeps it in the account's store until the join after the set-up.
+test('a sign-up left at the factor choice joins the invited server after the forced set-up', async ({ page, guard, playwright, browserName, launchOptions, headless, channel, viewport }, testInfo) => {
   await cleoReopens({ page, guard, playwright, browserName, launchOptions, headless, channel, viewport }, testInfo, true);
 });
 
@@ -167,12 +166,10 @@ async function adaInTheShell(page: Page, h: StartedHost): Promise<Account> {
   return ada;
 }
 
-// FINDING (web3.6 E3): after an operator reset the live page lands on the forced screen with the `factors` slice still holding
-// the old authenticator app (controller.ts onFactorRequired reads the new state only after the phase change). FactorSetup's
-// "already in place" effect (FactorSetup.tsx, `held`) takes that stale slice for a factor set up before a reload and jumps to
-// the done step, so Ada never sees the choice and "Open dilla" is refused with the account still owing. Flip to test() when the
-// forced screen waits for the fresh read.
-test.fixme('an operator reset reaches a live page with no reload', async ({ page }) => {
+// Web3.6 E3 finding, fixed: after an operator reset the live page reached the forced screen with the `factors` slice still
+// holding the old authenticator app, which FactorSetup took for a factor already in place. The worker now publishes the owed
+// state before the phase, and FactorSetup trusts only a slice that says nothing is owed.
+test('an operator reset reaches a live page with no reload', async ({ page }) => {
   const h = started();
   const ada = await adaInTheShell(page, h);
   await resetFactors(h.control, ada.username);

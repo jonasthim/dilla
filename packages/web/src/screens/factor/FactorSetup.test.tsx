@@ -549,6 +549,33 @@ describe('a reload after the factor was confirmed', () => {
     expect(onDone).not.toHaveBeenCalled();
     expect(screen.queryByRole('radio')).toBeNull();
   });
+  it('never takes a slice that says owed for a factor in place: the choice shows (an operator reset, a stale slice)', async () => {
+    const { announce, onDone } = setup({ origin: 'required', stepLabel: '' }, { factors: { ...HELD, owed: true } });
+    await Promise.resolve();
+    expect(h1()).toHaveTextContent(en['factor.choose.title']);
+    expect(screen.getAllByRole('radio').length).toBeGreaterThan(0);
+    expect(announce).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+  it('a done set-up the worker refuses as still owed goes back to the choice, and the next one finishes', async () => {
+    const onDone = vi.fn<FactorSetupProps['onDone']>()
+      .mockImplementationOnce(() => Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED' })))
+      .mockImplementation(() => Promise.resolve());
+    const { fake, user } = setup({ origin: 'required', stepLabel: '', onDone }, { factors: HELD });
+    expect(await screen.findByText(en['factor.done.totp'])).toBeInTheDocument();
+    // The worker reads the factors again before it refuses: the account owes one and holds none.
+    fake.publish('factors', { ...NO_FACTORS });
+    await user.click(button(en['factor.done.next']));
+    await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.choose.title']); });
+    expect(onDone).toHaveBeenCalledTimes(1);
+    await toTotp(user);
+    await user.type(codeField(), '123456');
+    await user.click(button('Continue'));
+    await user.click(await screen.findByRole('checkbox', { name: en['factor.codes.ack'] }));
+    await user.click(button('Continue'));
+    await user.click(await screen.findByRole('button', { name: en['factor.done.next'] }));
+    expect(onDone).toHaveBeenCalledTimes(2);
+  });
   it('acts when the factors arrive after mount, but never for a factor this mount added itself', async () => {
     const { fake, user, onDone } = setup({}, { factors: undefined });
     fake.publish('factors', { ...NO_FACTORS });

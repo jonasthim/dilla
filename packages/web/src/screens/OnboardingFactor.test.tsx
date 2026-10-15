@@ -122,14 +122,17 @@ describe('step 5: the second factor', () => {
     expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
   });
 
-  it('shows the instance’s refusal when the factor is still owed, and stays on the codes', async () => {
-    const script: Script = (c, f) => c.m === 'factorSetupDone' ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED', status: 403 })) : base(c, f);
-    const { user } = setup(script);
+  it('goes back to the choice, at the same step and with no error line, when the factor is still owed', async () => {
+    // web3.6 E3: the worker refuses E_FACTOR_REQUIRED with no HTTP status; the choice's own copy says what is owed.
+    const script: Script = (c, f) => c.m === 'factorSetupDone' ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED' })) : base(c, f);
+    const { user, fake } = setup(script);
     await toFactor(user);
     await throughApp(user);
     await user.click(button('Continue'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_FACTOR_REQUIRED). Try again.');
-    expect(h1()).toHaveTextContent('Your backup codes');
+    await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.choose.title']); });
+    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
   });
 
   it('resumes at the factor step when the page was reloaded there', () => {

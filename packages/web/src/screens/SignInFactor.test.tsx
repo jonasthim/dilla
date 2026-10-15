@@ -314,9 +314,10 @@ describe('set-up on a new browser (flow 10 state 1, origin signin)', () => {
     expect(screen.getByText('Step 4 of 4')).toBeInTheDocument();
   });
 
-  it('shows the instance’s refusal when the factor is still owed', async () => {
+  it('goes back to the choice, with no error line, when the factor is still owed', async () => {
+    // web3.6 E3: the worker refuses E_FACTOR_REQUIRED with no HTTP status; the choice's own copy says what is owed.
     const script: Script = c => c.m === 'factorSetupDone'
-      ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED', status: 403 }))
+      ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED' }))
       : Promise.resolve({ secret: SECRET, uri: 'otpauth://totp/x', backupCodes: [BACKUP] });
     const { user, fake } = setup('factor-setup', script, { factorSetup: { origin: 'signin' }, user: ME });
     fake.set('factors', NO_FACTORS);
@@ -325,8 +326,9 @@ describe('set-up on a new browser (flow 10 state 1, origin signin)', () => {
     await user.type(field(en['factor.totp.code']), '123456{Enter}');
     await user.click(await screen.findByRole('checkbox'));
     await user.click(button('Continue'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_FACTOR_REQUIRED). Try again.');
-    expect(h1()).toHaveTextContent('Your backup codes');
+    await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.choose.title']); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
   });
 
   it('retries factorSetupDone from the same button after a refusal, once at a time', async () => {

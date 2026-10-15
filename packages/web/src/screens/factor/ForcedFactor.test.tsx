@@ -65,17 +65,32 @@ describe('the forced screen', () => {
     await waitFor(() => { expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument(); });
   });
 
-  it('shows the refusal and stays when the instance still finds the factor owed', async () => {
-    const script: Script = (c, f) => c.m === 'factorSetupDone' ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED', status: 403 })) : happy(c, f);
-    const { user } = setup(script);
+  it('goes back to the choice, with no connection line, when the instance still finds the factor owed', async () => {
+    // Web3.6 E3 finding: the worker refuses a done set-up E_FACTOR_REQUIRED with no HTTP status (status 0, as
+    // factor.test.ts pins it), which the page showed as a dropped connection, and the person was left at the done step.
+    const script: Script = (c, f) => c.m === 'factorSetupDone' ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED' })) : happy(c, f);
+    const { fake, user } = setup(script);
     await user.click(button('Continue'));
     await screen.findByRole('img', { name: /QR code/ });
     await user.type(screen.getByRole('textbox', { name: en['factor.totp.code'] }), '123456{Enter}');
     await user.click(await screen.findByRole('checkbox', { name: en['factor.codes.ack'] }));
     await user.click(button('Continue'));
     await user.click(button('Open dilla'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_FACTOR_REQUIRED). Try again.');
-    expect(h1()).toHaveTextContent('Second factor added');
+    await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.choose.title']); });
+    expect(screen.getByText(en['factor.choose.required'].replace('{instance}', 'dilla.test'))).toBeInTheDocument();
+    expect(screen.queryByText(en['factor.error.network'])).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
+  });
+
+  it('an operator reset on a live page shows the choice, never the done step, while the old factors are still in the slice', async () => {
+    // Web3.6 E3 finding: a slice that says owed is never taken for a factor already in place.
+    const { fake } = setup();
+    fake.publish('factors', { owed: true, totp: { confirmedAt: 5 }, passkeys: [], backupCodesLeft: 8, hasPassword: true });
+    await Promise.resolve();
+    expect(h1()).toHaveTextContent(en['factor.choose.title']);
+    expect(screen.queryByText(en['factor.done.title'])).toBeNull();
+    expect(fake.callsOf('factorSetupDone')).toEqual([]);
   });
 });
 
@@ -214,10 +229,11 @@ describe('retry after a refused finish', () => {
     const { fake, user } = await toOpen((c, f) => {
       if (c.m !== 'factorSetupDone') return happy(c, f);
       n += 1;
-      return n === 1 ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED', status: 403 })) : happy(c, f);
+      // A refusal that is not the debt (still owed goes back to the choice: see above) keeps the done step and its button.
+      return n === 1 ? Promise.reject(refusal({ code: 'E_INTERNAL', status: 500 })) : happy(c, f);
     });
     await user.click(button('Open dilla'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('E_FACTOR_REQUIRED');
+    expect(await screen.findByRole('alert')).toHaveTextContent('E_INTERNAL');
     await user.click(button('Open dilla'));
     await waitFor(() => { expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument(); });
     expect(fake.callsOf('factorSetupDone')).toHaveLength(2);

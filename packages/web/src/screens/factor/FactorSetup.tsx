@@ -48,6 +48,9 @@ const KIND_GROUP = 'factor-kind';
 
 const codePoints = (s: string): number => [...s].length;
 
+/** A finished set-up the worker refused because the account still owes a factor (its read of the factors found none). */
+export const stillOwed = (e: unknown): boolean => errorOf(e).code === 'E_FACTOR_REQUIRED';
+
 /** The refusals every request shares, by status and code only (never by detail). Null: the caller's own rows apply. */
 export function sharedRefusal(e: UiError): Pick<Problem, 'key' | 'vars'> | null {
   if (e.status === 429) return { key: 'factor.error.tooMany', vars: { seconds: Math.max(1, Math.ceil((e.retryAfterMs ?? 1000) / 1000)) } };
@@ -115,7 +118,9 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
 
   // A reload after a factor was confirmed but before the set-up ended: the factor is in place, so it is not offered again.
   // The backup codes shown before the reload are gone; Settings, under sign-in, makes new ones.
-  const held = factors !== undefined && (factors.totp !== null || factors.passkeys.length > 0);
+  // Only a slice that says the account owes nothing is trusted: one that still says owed (an operator reset, read before
+  // the worker's fresh read) shows the choice. When in doubt, the choice.
+  const held = factors !== undefined && factors.owed === false && (factors.totp !== null || factors.passkeys.length > 0);
   const heldKind: 'totp' | 'passkey' = factors?.totp != null ? 'totp' : 'passkey';
   useEffect(() => {
     if (step === 'choose' && held && !addedHere.current && !completed.current) {
@@ -187,7 +192,16 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     let pending: void | Promise<void>;
     try { pending = onDone(which === 'passkey' && addedName.current !== undefined ? { kind: which, name: addedName.current } : { kind: which }); } catch (e) { completed.current = false; throw e; }
     if (pending === undefined) { setCodes([]); return; }
-    pending.then(() => { if (mounted.current) setCodes([]); }, () => { completed.current = false; });
+    pending.then(() => { if (mounted.current) setCodes([]); }, (e: unknown) => {
+      completed.current = false;
+      // The instance still finds the account owing (its factor is gone): back to the choice, which says so.
+      if (stillOwed(e) && mounted.current) {
+        addedHere.current = false;
+        setCodes([]);
+        setAcknowledged(false);
+        toChoose();
+      }
+    });
   };
 
   const beginTotp = () => {
