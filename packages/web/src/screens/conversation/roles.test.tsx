@@ -1,6 +1,6 @@
 // Flow 09 in the conversation: role mentions in the composer, the send hint, pins by right, and role labels in the log.
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { PERM, type PinnedItem, type RoleSummary } from '@dilla/client-core';
@@ -21,20 +21,21 @@ const role = (id: string, name: string, over: Partial<RoleSummary> = {}): RoleSu
 const ROLES = [role(EVERYONE, '@everyone', { position: 0 }), role(GAME, 'Game Night', { color: 0x336699 }), role(MODS, 'Modérateurs', { mentionable: false })];
 const SEND = PERM.viewChannel | PERM.sendMessages;
 
-function composer(over: { bits?: number | null; broadcast?: boolean } = {}) {
+function composer(over: { bits?: number | null; broadcast?: boolean; draft?: string; items?: ReturnType<typeof ownRow>[] } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   const sent: OutgoingMessage[] = [];
+  const dispatched: { type: string }[] = [];
   const book = nameBook({ id: ME.id, username: 'ada' }, MEMBERS, ROLES);
   function Harness() {
-    const [draft, setDraft] = useState('');
+    const [draft, setDraft] = useState(over.draft ?? '');
     return <ComposerArea channelId={GEN} label="message #general" placeholder="message #general" blocked={null} broadcast={over.broadcast ?? true}
       bits={over.bits ?? null} roles={ROLES} channelName="general" encodeWith={mentionMembers(MEMBERS)} candidates={mentionCandidates(MEMBERS, ME.id)}
-      items={[]} book={book} draft={draft} onDraft={setDraft} ui={INITIAL_UI} dispatch={() => undefined} onSend={m => sent.push(m)} onError={() => undefined} />;
+      items={over.items ?? []} book={book} draft={draft} onDraft={setDraft} ui={INITIAL_UI} dispatch={a => dispatched.push(a)} onSend={m => sent.push(m)} onError={() => undefined} />;
   }
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}><Harness /></CoreProvider></div>);
-  return { user, view, sent };
+  return { user, view, sent, dispatched };
 }
 const box = () => screen.getByRole('textbox', { name: 'message #general' });
 const optionNames = () => within(screen.getByRole('listbox')).getAllByRole('option').map(o => o.textContent);
@@ -95,6 +96,32 @@ describe('the send hint', () => {
     expect(box()).toHaveAttribute('readonly');
     expect(box()).toHaveAccessibleDescription('You cannot send messages in #general.');
   });
+  it('sends nothing on Enter or the send button while it cannot send', async () => {
+    const { user, sent } = composer({ bits: PERM.viewChannel, draft: 'hello' });
+    box().focus();
+    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('button', { name: 'send' }));
+    expect(sent).toEqual([]);
+    expect(box()).toHaveValue('hello');
+  });
+  it('inserts no mention from the list while it cannot send', async () => {
+    const { user } = composer({ bits: PERM.viewChannel, draft: '@ga' });
+    box().focus();
+    await user.keyboard('{End}{Enter}');
+    expect(box()).toHaveValue('@ga');
+  });
+  it('does not open the edit of my last message on ArrowUp while it cannot send, but does when it can', async () => {
+    const mine = [ownRow(O1, '3', 'my words')];
+    const blocked = composer({ bits: PERM.viewChannel, items: mine });
+    blocked.view.container.querySelector('textarea')?.focus();
+    await blocked.user.keyboard('{ArrowUp}');
+    expect(blocked.dispatched.filter(a => a.type === 'edit')).toEqual([]);
+    blocked.view.unmount();
+    const open = composer({ bits: SEND, items: mine });
+    open.view.container.querySelector('textarea')?.focus();
+    await open.user.keyboard('{ArrowUp}');
+    expect(open.dispatched.filter(a => a.type === 'edit')).toHaveLength(1);
+  });
   it('keeps the composer with send, and with unknown bits', () => {
     composer({ bits: SEND });
     expect(box()).toBeInTheDocument();
@@ -120,6 +147,25 @@ function log(over: { bits?: number | null; items?: ReturnType<typeof peerRow>[];
 }
 const row = (id: string) => document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${id}"]`) as HTMLElement;
 const actions = (id: string) => within(within(row(id)).getByRole('toolbar', { name: 'actions for this message' })).getAllByRole('button').map(b => b.textContent);
+
+describe('files dropped on the conversation', () => {
+  const drop = () => {
+    const zone = document.querySelector<HTMLElement>('.dw-conversation');
+    if (zone === null) throw new Error('no .dw-conversation');
+    fireEvent.drop(zone, { dataTransfer: { types: ['Files'], files: [new File(['a'], 'a.txt', { type: 'text/plain' })] } });
+  };
+  it('are attached with the right to send', async () => {
+    const { fake } = log({ bits: SEND });
+    drop();
+    await waitFor(() => expect(fake.callsOf('attachFiles')).toHaveLength(1));
+  });
+  it('are not attached while sending is not allowed', async () => {
+    const { fake } = log({ bits: PERM.viewChannel });
+    drop();
+    await new Promise(r => setTimeout(r, 20));
+    expect(fake.callsOf('attachFiles')).toEqual([]);
+  });
+});
 
 describe('pins by right', () => {
   it('hides the pin item without the pin right, and shows it with the right or with unknown bits', () => {

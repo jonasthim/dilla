@@ -1,6 +1,6 @@
 // W-Shell: the shell wires the channel bits, roles, lost access and the role flows (web3.5, flow 09).
 import { afterEach, describe, it, expect } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -47,6 +47,21 @@ function setup(opts: { acc?: Partial<CommunityAccess>; base?: number; overwrites
   return { fake, user };
 }
 const box = () => screen.getByRole('textbox', { name: 'message #general' });
+// Waits in real time outside act, so React flushes each announcer step instead of batching them.
+const pause = (ms = 450) => {
+  const until = Date.now() + ms;
+  return waitFor(() => { if (Date.now() < until) throw new Error('waiting'); }, { timeout: ms + 1000, interval: 25 });
+};
+// Every non-empty text the shell's announcer shows, in order.
+function listen(): string[] {
+  const seen: string[] = [];
+  const node = screen.getByTestId('shell-announcer');
+  const note = () => { if (node.textContent) seen.push(node.textContent); };
+  new MutationObserver(note).observe(node, { childList: true, characterData: true, subtree: true });
+  note();
+  return seen;
+}
+const DENY_SEND = (id: string) => ({ [id]: [{ kind: 0 as const, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }] });
 const announcer = () => screen.getByTestId('shell-announcer');
 const wide = () => {
   window.matchMedia = ((query: string) => ({ matches: true, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
@@ -106,6 +121,30 @@ describe('the pins panel', () => {
   });
 });
 
+describe('the cannot-send memo', () => {
+  it('is kept while the permissions slice is re-read, so it is told once', async () => {
+    const { fake } = setup({ overwrites: DENY_SEND(GEN) });
+    const seen = listen();
+    await pause();
+    const had = fake.get(`permissions:${A}`);
+    act(() => { fake.publish(`permissions:${A}`, undefined as never); });
+    await pause();
+    act(() => { fake.publish(`permissions:${A}`, had as CommunityAccess); });
+    await pause();
+    expect(seen).toEqual(['You cannot send messages in #general.']);
+  });
+  it('is told again on returning to the channel', async () => {
+    const { user } = setup({ overwrites: { ...DENY_SEND(GEN), ...DENY_SEND(LOBBY) } });
+    const seen = listen();
+    await pause();
+    await user.click(screen.getByRole('button', { name: /lobby/ }));
+    await pause();
+    await user.click(screen.getByRole('button', { name: /general/ }));
+    await pause();
+    expect(seen).toEqual(['You cannot send messages in #general.', 'You cannot send messages in #lobby.', 'You cannot send messages in #general.']);
+  });
+});
+
 describe('lost access', () => {
   it('announces, moves to the first listed channel, keeps the draft and closes the channel dialog', async () => {
     const { fake, user } = setup({ acc: { manageChannels: true } });
@@ -113,7 +152,7 @@ describe('lost access', () => {
     await user.click(screen.getByRole('button', { name: 'edit channel' }));
     expect(screen.getByRole('dialog', { name: 'Edit #general' })).toBeInTheDocument();
     act(() => { fake.publish(`channels:${A}`, [ch(LOBBY, 'lobby', 1)]); });
-    expect(await screen.findByText('You can no longer see #general.', { selector: '[data-testid="shell-announcer"]' })).toBeInTheDocument();
+    expect(await screen.findByText('#general is no longer available to you.', { selector: '[data-testid="shell-announcer"]' })).toBeInTheDocument();
     expect(window.location.pathname).toBe(`/c/${A}/${LOBBY}`);
     expect(screen.queryByRole('dialog')).toBeNull();
     act(() => { fake.publish(`channels:${A}`, [ch(GEN, 'general', 0), ch(LOBBY, 'lobby', 1)]); });
@@ -121,10 +160,27 @@ describe('lost access', () => {
     await user.click(screen.getByRole('button', { name: /general/ }));
     expect(box()).toHaveValue('still here');
   });
-  it('says nothing when the whole server leaves the list', () => {
+  it('says nothing when the whole server leaves the list', async () => {
     const { fake } = setup();
-    act(() => { fake.publish('communities', []); });
-    expect(announcer()).toHaveTextContent('');
+    const seen = listen();
+    act(() => { fake.publish('communities', []); fake.publish(`channels:${A}`, []); });
+    await pause();
+    expect(seen).toEqual([]);
+  });
+  it('words a deleted channel the same neutral way, without saying it was hidden', async () => {
+    const { fake } = setup();
+    const seen = listen();
+    act(() => { fake.publish(`channels:${A}`, [ch(LOBBY, 'lobby', 1)]); });
+    await pause();
+    expect(seen).toEqual(['#general is no longer available to you.']);
+    expect(seen[0]).not.toMatch(/see|hidden|deleted/);
+  });
+  it('tells the lost channel first and the new channel being read-only after it, both', async () => {
+    const { fake } = setup({ overwrites: DENY_SEND(LOBBY) });
+    const seen = listen();
+    act(() => { fake.publish(`channels:${A}`, [ch(LOBBY, 'lobby', 1)]); });
+    await pause(600);
+    expect(seen).toEqual(['#general is no longer available to you.', 'You cannot send messages in #lobby.']);
   });
 });
 

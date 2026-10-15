@@ -23,7 +23,7 @@ Roles, the permission editor, role assignment, channel permissions, private chan
 | Channel permissions, private, and confirms | The toggle on, the private tag beside the channel name. Turning it on or off opens a confirm that opens on Cancel; saving shows the busy label, then the saved announcement. | `chperm.privateTag`, `chperm.makePrivate.title`, `chperm.makePrivate.body`, `chperm.makePrivate.confirm`, `chperm.makePublic.title`, `chperm.makePublic.body`, `chperm.makePublic.confirm`, `chperm.cancel`, `chperm.busy`, `chperm.saved` |
 | Permission refusals | A `role=alert` error in the section or confirm. | `chperm.error.forbidden`, `chperm.error.hidden`, `chperm.error.gone`, `chperm.error.unread`, `chperm.error.other` |
 | Create private | In the create-channel dialog, a private toggle and, when on, a checklist of roles below the viewer's, or the no-roles note. | `chperm.create.private`, `chperm.create.privateHint`, `chperm.create.roles`, `chperm.create.noRoles`, `chperm.create.tooMany` |
-| Lost access and cannot send | A channel the viewer can no longer see is left with a polite announcement. In a channel where the viewer lacks send messages the message box is hidden and says so. | `chperm.lostAccess`, `chperm.cannotSend` |
+| Lost access and cannot send | A channel that leaves the list (hidden from the viewer, or deleted: the client cannot tell which) is left with a polite, neutral announcement. In a channel where the viewer lacks send messages the message box stays, read-only, with the reason, and the state is announced once. | `chperm.lostAccess`, `chperm.cannotSend` |
 | Role mention and pins | The composer offers roles as `@name` with the secondary "role". A rendered role mention shows its name. A pin whose pinner may not pin there is hidden, and the pins list carries the note. | `mention.role`, `mention.role.secondary`, `perm.pinsNote` |
 | Server notification rows | One row per server in notification settings: mode (default, all messages, mentions, nothing), mute, and ignore @everyone and @here. | `serverNotify.title`, `serverNotify.body`, `serverNotify.mode.default`, `serverNotify.mode.all`, `serverNotify.mode.mentions`, `serverNotify.mode.nothing`, `serverNotify.mute`, `serverNotify.suppressEveryone` |
 
@@ -240,7 +240,7 @@ All are polite, through the shell announcer. Dialog errors are `role=alert`.
 - `chperm.create.roles='Roles that can see it'`
 - `chperm.create.noRoles='There are no roles below yours to add. You can add people later in the channel’s permissions.'`
 - `chperm.privateTag='private'`
-- `chperm.lostAccess='You can no longer see #{name}.'`
+- `chperm.lostAccess='#{name} is no longer available to you.'`
 - `chperm.create.tooMany='A private channel can be opened to at most 98 roles. Untick some and try again.'`
 - `chperm.cannotSend='You cannot send messages in #{name}.'`
 - `mention.role='@{name}'`

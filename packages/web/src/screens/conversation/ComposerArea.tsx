@@ -105,8 +105,9 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
           activeId={optionId(options[index])} onPick={picked => { const found = options.find(o => optionId(o) === picked); if (found) insert(found); }} /> : null}
       </>}
       measure={value => new TextEncoder().encode(encodeMentions(value, p.encodeWith, broadcast, roleMentions)).length}
-      combobox={{ expanded: open, controls: listId, activeDescendant: open ? optionId(options[index]) : null, onKey }}
+      combobox={{ expanded: open, controls: listId, activeDescendant: open ? optionId(options[index]) : null, onKey: key => blocked === null && onKey(key) }}
       onCaret={setCaret} onArrowUpEmpty={() => {
+        if (blocked !== null) return;
         const item = [...p.items].reverse().find(i => i.senderUser === p.book.self?.id && i.state === 'ok' && i.msgId !== null && i.seq !== null);
         if (item?.msgId) p.dispatch({ type: 'edit', msgId: item.msgId, value: editableText(item.body, p.book) });
       }}

@@ -386,7 +386,7 @@ chperm.error.gone='This channel no longer exists.'  chperm.error.other='Could no
 chperm.create.private='private channel'  chperm.create.privateHint='Only you, the owner, administrators and the roles you tick can see it.'
 chperm.create.roles='Roles that can see it'
 chperm.create.noRoles='There are no roles below yours to add. You can add people later in the channel’s permissions.'
-chperm.privateTag='private'  chperm.lostAccess='You can no longer see #{name}.'
+chperm.privateTag='private'  chperm.lostAccess='#{name} is no longer available to you.'
 chperm.cannotSend='You cannot send messages in #{name}.'
 mention.role='@{name}'  mention.role.secondary='role'
 serverNotify.title='Servers'  serverNotify.body='A server’s setting applies to its channels unless a channel has its own.'

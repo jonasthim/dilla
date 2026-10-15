@@ -200,6 +200,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
     onDragOver={e => { if (fileDrag(e)) e.preventDefault(); }}
     onDragLeave={e => { if (fileDrag(e)) setDragDepth(n => Math.max(0, n - 1)); }}
     onDrop={e => { if (!fileDrag(e)) return; e.preventDefault(); setDragDepth(0);
+      if (bits !== null && (bits & PERM.sendMessages) === 0) return;
       void attachFiles(client, p.channelId, Array.from(e.dataTransfer.files), a => p.dispatch(a)); }}>
     {p.ui.notice !== null ? <Banner tone="info">{t(p.ui.notice)} <Button variant="ghost" onClick={() => {
       noticeDismissed.current = true; p.dispatch({ type: 'notice', notice: null });

@@ -31,6 +31,6 @@ export const chperm = {
   'chperm.create.noRoles': 'There are no roles below yours to add. You can add people later in the channel’s permissions.',
   'chperm.create.tooMany': 'A private channel can be opened to at most 98 roles. Untick some and try again.',
   'chperm.privateTag': 'private',
-  'chperm.lostAccess': 'You can no longer see #{name}.',
+  'chperm.lostAccess': '#{name} is no longer available to you.',
   'chperm.cannotSend': 'You cannot send messages in #{name}.',
 } as const;

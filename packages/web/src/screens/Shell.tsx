@@ -485,15 +485,21 @@ export function Shell(): React.JSX.Element {
     announce(t('chperm.lostAccess', { name: seen.name }));
     setEditChannelId(open => (open === seen.id ? null : open));
   }, [overlay, channel, channels, communityId, channelId, communities, announce]);
-  // The composer's cannot-send state is spoken once for each channel it is entered in (the draft and focus stay).
+  // The composer's cannot-send state is spoken once for each channel it is entered in (the draft and focus stay). The memo
+  // resets on a channel change, or once the bits are known and allow sending; unknown bits (a slice re-read) never reset it.
   const cannotSend = bits !== null && (bits & PERM.sendMessages) === 0;
-  const cannotTold = useRef<string | null>(null);
+  const canSend = bits !== null && !cannotSend;
+  const cannotTold = useRef<{ channelId: string | null; told: boolean }>({ channelId: null, told: false });
+  const openName = channel?.name ?? '';
+  const openChannelId = channel?.id ?? null;
   useEffect(() => {
-    if (!cannotSend || channel === null) { cannotTold.current = null; return; }
-    if (cannotTold.current === channel.id) return;
-    cannotTold.current = channel.id;
-    announce(t('chperm.cannotSend', { name: channel.name }));
-  }, [cannotSend, channel, announce]);
+    const memo = cannotTold.current;
+    if (memo.channelId !== openChannelId) { memo.channelId = openChannelId; memo.told = false; }
+    if (canSend) memo.told = false;
+    if (!cannotSend || memo.told) return;
+    memo.told = true;
+    announce(t('chperm.cannotSend', { name: openName }));
+  }, [cannotSend, canSend, openChannelId, openName, announce]);
 
   // (5) The channel or DM that can open is opened, and closed when it is left.
   useEffect(() => {
