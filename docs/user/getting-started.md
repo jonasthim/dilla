@@ -1,7 +1,7 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-14 ("web-3.5"): starting a server, inviting people and adding
+one. It describes the web client as it is on 2026-10-15 ("web-3.5"): starting a server, inviting people and adding
 channels, signing up, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), contacts and safety numbers, search, settings and a second tab, and what the client cannot do
@@ -234,7 +234,7 @@ edit roles, and **manage channels** to change a channel. The owner can do everyt
 In **server settings**, **roles** sits between **channels** and **invites**. It shows only to someone whose roles
 include manage roles. The list is "Roles": "Roles group what people may do. A higher role outranks the ones below it,
 and you can change only roles below your own highest role. Everyone in the server, and the host, can see every role,
-its permissions and who holds it." Each row has the role's colour dot, its name and "{count} members", with **edit**,
+its permissions and who holds it." Each row has the role's name and "{count} members" (no colour dot), with **edit**,
 **move up**, **move down** and **delete**. "@everyone" is last: "Everyone in the server holds this role. Its
 permissions are where every member starts." A role at or above your highest role says "above your highest role" and
 has no buttons. The screen announces "{name} moved." after a move.
@@ -243,10 +243,12 @@ has no buttons. The screen announces "{name} moved." after a move.
 
 - "Role name": up to 100 bytes. Everyone in the server, and the host, can read it.
 - "Colour": a row of swatches (no colour, red, orange, amber, green, teal, cyan, blue, indigo, purple, pink, brown,
-  grey). The colour shows as a dot beside the names of people who hold the role. The arrow keys move between swatches.
+  grey). The colour shows as a dot beside the names of people who hold the role in the member list. The arrow keys
+  move between swatches.
 - **show separately in the member list** gives the role its own group in the member list, highest first.
-- **anyone can mention this role** lets any member write `@` and the role's name. "People who may mention @everyone
-  can mention any role."
+- **anyone can mention this role** marks the role mentionable. Anyone can mention a role marked mentionable; other
+  roles can be mentioned only by members allowed to mention @everyone. "People who may mention @everyone can mention
+  any role."
 - "Permissions": four groups (General, Members, Text, Voice), each permission with a hint. A permission you do not
   hold is switched off: "You do not hold this permission, so you cannot give or take it."
 
@@ -281,9 +283,9 @@ role is switched off: "{role} is at or above your highest role." Each change is 
 {name}." or "{role} taken from {name}." If there is nothing you can give, it says "There are no roles you can give
 yet. Make one in Server settings, under roles." A refusal shows in the dialog and the box returns to how it was:
 "You cannot give or take {role}. …", "{name} needs a second sign-in factor before they can hold a moderator role in
-this server." or "{name} is no longer in this server." **Done** closes it. The dialog ends with "Roles decide who can
-see private channels. People who lose a channel keep the messages they already have; people who gain one see only
-messages sent after they join it."
+this server." or "{name} is no longer in this server." **Done** closes it. Between the opening text and the list of
+roles, the dialog says "Roles decide who can see private channels. People who lose a channel keep the messages they
+already have; people who gain one see only messages sent after they join it."
 
 ### Private channels
 
@@ -299,8 +301,8 @@ knows who is in it.
 - **Later.** In the channel's settings (**edit channel**), "Permissions" has the **private channel** toggle. Turning
   it on asks "Make #{name} private?": "People who are not given access leave the channel now. They keep the messages
   they already have." Turning it off asks "Open #{name} to everyone?": "Everyone in {server} joins the channel. They
-  see only messages sent after they join." Both confirms start on **Cancel**. A private channel carries the tag
-  "private".
+  see only messages sent after they join." Both confirms start on **Cancel**. In server settings, under **channels**, a
+  private channel carries the tag "private"; the sidebar channel list does not show it.
 - **A change that would hide the channel from you** is refused unless you are the owner or an administrator: "That
   change would hide the channel from you. Give access to a role you hold first."
 
@@ -326,7 +328,8 @@ messages in #{name}." Your draft stays in the box.
 ### Role mentions
 
 Type `@` and the start of a role's name: the list offers the roles you may mention, each with the note "role". A
-role mention shows as the role's name. It notifies the people who hold the role.
+role mention shows as the role's name. It notifies the people who hold the role. Anyone can mention a role marked
+mentionable; other roles can be mentioned only by members allowed to mention @everyone.
 
 ### Pins, @everyone and @here
 
@@ -336,7 +339,8 @@ Who may pin, and who may notify everyone, follows the sender's rights **now**:
   pinned it may pin there: "A pin shows while the person who pinned it may pin in this channel." If someone loses the
   right, their pins and unpins stop counting, and an earlier pin by someone else can come back.
 - **@everyone and @here** notify you only when the sender may mention them. A message that mentions you directly,
-  by `@` and your name, always notifies you.
+  by `@` and your name, notifies you unless the server or channel is muted or set to nothing (see
+  [Notifications for a server](#notifications-for-a-server)).
 
 ### Who checks the rules
 
@@ -344,14 +348,33 @@ The roles, pins and mentions above are checked by members' apps, not by the host
 and cannot read or change them, but it carries each server's role information. A host that behaves badly could hide
 pins and @everyone, or show different members different views of who holds which role. Nothing in the group checks
 or signs the role view. In this version "who may send" is checked only by members' apps. The
-[design](../superpowers/specs/2026-09-23-dilla-design.md) describes what the host can and cannot do.
+[threat model](../../protocol/08-threat-model.md#residual-trust) describes what the host can still see and do.
 
 ### Notifications for a server
 
 Under **notifications**, "Servers" has one row for each server: "A server's setting applies to its channels unless a
 channel has its own." Choose **default**, **all messages**, **mentions** or **nothing**; **mute server** silences it;
-**ignore @everyone and @here** drops those mentions, whoever sent them. A direct `@` mention of you always notifies.
-A channel's own setting beats the server's.
+**ignore @everyone and @here** stops the desktop notification for @everyone and @here in this server, whoever sent
+them; the mention badge and the highlighted row still count an @everyone or @here the sender was allowed to send. A
+direct `@` mention of you (by your name or one of your roles) is not affected by it. It notifies unless the server or
+channel is muted, or the mode that applies is **nothing**; with **mentions** it notifies, and with **all messages**
+every message does. A channel's own setting beats the server's.
+
+### Upgrading from an earlier version
+
+Before web-3.5 anyone could pin and anyone could write @everyone. In web-3.5 the default @everyone role has neither
+**pin messages** nor **mention @everyone and @here**, and a server made earlier keeps that stored default. After the
+upgrade, in an existing server:
+
+- only the owner, administrators and members with a role that grants **pin messages** can pin and unpin;
+- pins that other members made earlier are hidden until the owner grants the right through a role; they come back when
+  it is granted, because a pin shows while the person who pinned it may pin;
+- @everyone and @here from members without **mention @everyone and @here** do not notify.
+
+To give everyone the old behaviour back, the owner opens
+**server settings**, **roles**, **edit** on the "@everyone" row, switches on **pin messages** and **mention @everyone
+and @here** under "Text" and chooses **Save**. To give them to some people only, make a role with them and give it
+from the member list.
 
 ## 1. Open the invite
 
