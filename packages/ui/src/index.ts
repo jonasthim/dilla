@@ -141,3 +141,5 @@ export { ChannelSettings } from './ChannelSettings/ChannelSettings.tsx';
 export type { ChannelSettingsProps } from './ChannelSettings/ChannelSettings.tsx';
 export { CodeList } from './CodeList/CodeList.tsx';
 export type { CodeListProps } from './CodeList/CodeList.tsx';
+export { ChoiceCards } from './ChoiceCards/ChoiceCards.tsx';
+export type { ChoiceCardsProps, ChoiceCardOption } from './ChoiceCards/ChoiceCards.tsx';
