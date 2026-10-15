@@ -1,7 +1,7 @@
 //! Stable client error codes at the caller boundary.
 
 use crate::ProtocolError;
-use crate::mls::{MlsError, StorageError, TxError};
+use crate::mls::{DillaStorage, MlsError, StorageError, TxError};
 
 pub(crate) const E_CORE_INPUT: &str = "E_CORE_INPUT";
 pub(crate) const E_CORE_LIMIT: &str = "E_CORE_LIMIT";
@@ -77,13 +77,32 @@ impl From<StorageError> for ClientError {
 
 /// The one mapping of a storage error, out of line so that each `?` carries one call instead of
 /// its own copy of the match (wasm size).
+///
+/// An OpenMLS store a newer build wrote (`UnsupportedStorage` with this codec and a provider
+/// version above this build's) is `E_STORE_NEWER` too, with the provider versions as its numbers.
+/// Another codec, or a version that is not a newer number, stays `E_CORE_STORAGE`.
 #[inline(never)]
 fn storage_error(e: StorageError) -> ClientError {
-    match e {
-        StorageError::StoreNewer { found, supported } => ClientError::new(
+    let newer = |found: u32, supported: u32| {
+        ClientError::new(
             E_STORE_NEWER,
             format!("found {found}, supported {supported}"),
-        ),
+        )
+    };
+    match e {
+        StorageError::StoreNewer { found, supported } => newer(found, supported),
+        StorageError::UnsupportedStorage {
+            ref version,
+            ref codec,
+        } if codec == DillaStorage::CODEC => {
+            match (
+                version.parse::<u32>(),
+                DillaStorage::PROVIDER_VERSION.parse::<u32>(),
+            ) {
+                (Ok(found), Ok(supported)) if found > supported => newer(found, supported),
+                _ => ClientError::new(E_CORE_STORAGE, e.to_string()),
+            }
+        }
         other => ClientError::new(E_CORE_STORAGE, other.to_string()),
     }
 }

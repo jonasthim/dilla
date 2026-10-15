@@ -179,6 +179,9 @@ impl ClientCore {
 
     pub fn open(conn: ConnHandle) -> Result<Self, ClientError> {
         let provider = DillaProvider::new(conn);
+        // C4x: a store a newer client wrote is refused (E_STORE_NEWER) by a read before any
+        // migration, the OpenMLS storage's included, can create or change anything in it.
+        provider.storage().read(schema::refuse_newer)?;
         provider.storage().exec("PRAGMA secure_delete = ON")?;
         provider.storage().migrate()?;
         let version = provider

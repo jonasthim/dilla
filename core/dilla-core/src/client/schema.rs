@@ -346,7 +346,7 @@ UPDATE app_meta SET v = x'02' WHERE k = 'schema';
 /// before `APP_SCHEMA`, whose `CREATE ... IF NOT EXISTS` would otherwise recreate in a newer
 /// client's store whatever its migrations dropped. A store with no `app_meta` table or no schema
 /// row passes (a fresh store), and so does a malformed row, which `migrate_conn` refuses as before.
-fn refuse_newer(c: &rusqlite::Connection) -> Result<(), StorageError> {
+pub(crate) fn refuse_newer(c: &rusqlite::Connection) -> Result<(), StorageError> {
     let has_meta: bool = c.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_meta')",
         [],
