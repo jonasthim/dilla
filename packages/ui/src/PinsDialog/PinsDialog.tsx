@@ -13,7 +13,8 @@ export interface PinsDialogProps {
   note?: string | undefined;
   items: readonly {
     id: string; author: string; time: string; excerpt: string; pinnedBy: string; jumpLabel: string; onJump(): void;
-    unpinLabel: string; onUnpin(): void;
+    /** Both absent: the viewer may not unpin here, so no button is drawn. */
+    unpinLabel?: string | undefined; onUnpin?: (() => void) | undefined;
   }[];
 }
 
@@ -29,7 +30,7 @@ function PinItem({ item }: { item: PinsDialogProps['items'][number] }) {
       <div className="d-pins-dialog__foot">
         <p className="d-pins-dialog__by">{item.pinnedBy}</p>
         <Button variant="default" aria-describedby={excerptId} onClick={() => item.onJump()}>{item.jumpLabel}</Button>
-        <Button variant="ghost" aria-describedby={excerptId} onClick={() => item.onUnpin()}>{item.unpinLabel}</Button>
+        {item.onUnpin && item.unpinLabel ? <Button variant="ghost" aria-describedby={excerptId} onClick={() => item.onUnpin?.()}>{item.unpinLabel}</Button> : null}
       </div>
     </li>
   );

@@ -14,6 +14,15 @@ describe('Dialog', () => {
     await userEvent.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+  it('closes only the inner dialog when Escape is pressed inside a nested one', async () => {
+    const outer = vi.fn();
+    const inner = vi.fn();
+    render(<Dialog open title="Outer" onClose={outer}><Dialog open title="Inner" onClose={inner}><Button>inside</Button></Dialog></Dialog>);
+    screen.getByRole('button', { name: 'inside' }).focus();
+    await userEvent.keyboard('{Escape}');
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+  });
   it('is described by the element whose id describedBy names', () => {
     render(<Dialog open title="Ban Astrid?" describedBy="why" onClose={() => {}}><p id="why">They cannot join again.</p></Dialog>);
     expect(screen.getByRole('dialog', { name: 'Ban Astrid?' })).toHaveAccessibleDescription('They cannot join again.');

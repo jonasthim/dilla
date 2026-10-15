@@ -60,4 +60,12 @@ describe('PinsDialog', () => {
     rerender(<PinsDialog open title="Pinned" closeLabel="Close" onClose={() => {}} emptyLabel="none" items={[item(1)]} />);
     expect(screen.queryByText('A pin may go.')).toBeNull();
   });
+  it('shows no unpin button for an item without one', () => {
+    const { onUnpin: _a, unpinLabel: _b, ...locked } = item(1);
+    render(<PinsDialog open title="Pinned" closeLabel="Close" onClose={() => {}} emptyLabel="none" items={[locked, item(2)]} />);
+    const rows = screen.getAllByRole('listitem');
+    expect(within(rows[0]!).queryByRole('button', { name: 'unpin' })).toBeNull();
+    expect(within(rows[0]!).getAllByRole('button').map(b => b.textContent)).toEqual(['go to message']);
+    expect(within(rows[1]!).getByRole('button', { name: 'unpin' })).toBeInTheDocument();
+  });
 });

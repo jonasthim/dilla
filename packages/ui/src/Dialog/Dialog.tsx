@@ -27,7 +27,7 @@ export function Dialog({ open, title, onClose, children, footer, closeLabel, des
   return (
     <dialog ref={ref} className="d-dialog" aria-labelledby={titleId} aria-describedby={open ? describedBy : undefined} aria-modal="true" tabIndex={-1}
       onCancel={e => { e.preventDefault(); onClose(); }}
-      onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } }}
+      onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>
       {/* Contents exist only while open: a closed dialog leaks no hidden text. */}
       {open ? (
