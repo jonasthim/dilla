@@ -3,15 +3,26 @@
 import type { TrustBlock } from '../core-port';
 export type { TrustBlock };
 export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'paused-error' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error'
-  | 'signin-login' | 'signin-totp' | 'signin-key' | 'enrolling' | 'cleared';
+  | 'signin-login' | 'signin-totp' | 'signin-key' | 'enrolling' | 'cleared'
+  // web3.6: a login owing a passkey (needs 2); an account that owes a second factor before the shell.
+  | 'signin-passkey' | 'factor-setup';
+/** Why the factor-setup phase was entered: a fresh signup, a sign-in on this browser, or an account found owing (a boot,
+ *  a reload, an operator reset). */
+export type FactorSetupOrigin = 'signup' | 'signin' | 'required';
 export interface AccountState {
   phase: BootPhase;
-  instance: { id: string; name: string; registrationMode: 0 | 1 | 2; passwordSignup: boolean } | null;
+  /** passwordSignup, totp and passkeys: auth_methods holds 0, 1 and 2. */
+  instance: { id: string; name: string; registrationMode: 0 | 1 | 2; passwordSignup: boolean; totp: boolean; passkeys: boolean } | null;
   user: { id: string; username: string } | null;
   deviceId: string | null;
   recoveryKey: string[] | null;                 // 13 groups of 4; only while phase is 'signup-keys' or 'registering'
   error: WorkerError | null;                    // the last signup, sign-in or boot error
-  signIn: { username: string | null; needsTotp: boolean } | null;   // set during signin-*; null otherwise
+  /** Set during signin-*; null otherwise. `factor` is what the code step asks after: 'totp' after a login owing an app code
+   *  (needs 1), 'passkey' after a login owing a passkey (needs 2) and after a passkey that did not verify the user (the
+   *  copy says why a code is asked); `needsTotp` is kept equal to `factor === 'totp'`. */
+  signIn: { username: string | null; needsTotp: boolean; factor: 'totp' | 'passkey' | null } | null;
+  /** web3.6: set while the phase is factor-setup; null otherwise. */
+  factorSetup: { origin: FactorSetupOrigin } | null;
   /** BACKUPS-RECOVERY-04: the instance holds a root object this account did not seal (E_ROOT_MISMATCH at ready), so
    *  the recovery key cannot open it until the operator resets it; cleared by a later matching check and by a wipe. */
   rootMismatch: boolean;
@@ -153,10 +164,15 @@ export interface BanSummary { userId: string; name: string; reason: string; byUs
 export interface InviteSummary { id: string; createdBy: string | null; maxUses: number; uses: number; created: number; expires: number }
 /** A server the caller was removed from, to be told once. */
 export interface RemovalNotice { id: number; communityId: string; name: string }
+/** web3.6: the account's second factors (GET /v1/auth/factors). Never a secret: the TOTP secret, the otpauth URI and the
+ *  backup codes travel only in command results. `totp` is null without a confirmed app; a passkey `id` is its credential
+ *  id in lower-case hex; times are unix seconds. */
+export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | null;
+  passkeys: { id: string; name: string; created: number; lastUsed: number | null }[]; backupCodesLeft: number; hasPassword: boolean }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
-  | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals';
+  | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
@@ -164,7 +180,7 @@ export interface SliceTypes { account: AccountState; connection: ConnectionState
   [k: `permissions:${string}`]: CommunityAccess; [k: `roles:${string}`]: RoleSummary[];
   /** channel id (hex) → its overwrites; a channel with none is absent. */
   [k: `overwrites:${string}`]: Record<string, OverwriteSummary[]>; [k: `bans:${string}`]: BanSummary[];
-  [k: `invites:${string}`]: InviteSummary[]; removals: RemovalNotice[];
+  [k: `invites:${string}`]: InviteSummary[]; removals: RemovalNotice[]; factors: FactorsState;
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
   trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState;
   call: CallState; voice: VoiceState; rings: RingsState }

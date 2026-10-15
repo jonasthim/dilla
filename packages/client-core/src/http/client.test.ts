@@ -450,3 +450,39 @@ describe('bounded bodies (FACTS-SECURITY-13)', () => {
     expect(r.body).toEqual(new Uint8Array(32).fill(7));
   });
 });
+
+// web3.6 C2: the global refusal hook the worker turns into its factor-setup phase on E_FACTOR_REQUIRED.
+describe('onRefusal', () => {
+  it('is told the code of a refusal once, just before it is thrown, after the retries', async () => {
+    const t = fakeTransport();
+    const seen: string[] = [];
+    const client = new HttpClient({ ...t.deps, onRefusal: (code) => { seen.push(`${code}@${String(t.seen.length)}`); } });
+    t.replies.push(refusal(503, 'E_UNAVAILABLE', '', 10), refusal(403, 'E_FACTOR_REQUIRED'));
+    expect(await failure(client.request(GET_READ))).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+    expect(seen).toEqual(['E_FACTOR_REQUIRED@2']);
+  });
+
+  it('is not told of a success, a network failure, or an answer the request accepts', async () => {
+    const t = fakeTransport();
+    const seen: string[] = [];
+    const client = new HttpClient({ ...t.deps, onRefusal: (code) => { seen.push(code); } });
+    t.replies.push(cborReply(200, []));
+    await client.request(GET_READ);
+    t.replies.push(new TypeError('offline'));
+    expect(await failure(client.request(POST_WRITE))).toMatchObject({ status: 0, code: 'E_NETWORK' });
+    t.replies.push(refusal(404, 'E_NOT_FOUND'));
+    await client.request({ ...GET_READ, ok: [200, 404] });
+    expect(seen).toEqual([]);
+    // Control: the same 404 not accepted is a refusal.
+    t.replies.push(refusal(404, 'E_NOT_FOUND'));
+    await failure(client.request(GET_READ));
+    expect(seen).toEqual(['E_NOT_FOUND']);
+  });
+
+  it('a hook that throws does not replace the refusal', async () => {
+    const t = fakeTransport();
+    const client = new HttpClient({ ...t.deps, onRefusal: () => { throw new Error('hook failed'); } });
+    t.replies.push(refusal(403, 'E_FACTOR_REQUIRED'));
+    expect(await failure(client.request(GET_READ))).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+  });
+});

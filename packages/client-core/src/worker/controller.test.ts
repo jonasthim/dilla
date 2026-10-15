@@ -21,7 +21,8 @@ describe('Controller', () => {
     // after the failed attempt, so this wait outlasts the grace (vi.waitFor's default is 1000 ms).
     await vi.waitFor(() => expect(h.account()?.phase).toBe('other-tab'), { timeout: LEADER.otherTabGraceMs + 3_000 });
     expect(h.ret(1)).toEqual({ t: 'ret', id: 1, ok: true, value: null });
-    expect(h.account()?.instance).toEqual({ id: INSTANCE_HEX, name: 'dilla.test', registrationMode: 0, passwordSignup: true });
+    expect(h.account()?.instance).toEqual({ id: INSTANCE_HEX, name: 'dilla.test', registrationMode: 0, passwordSignup: true, totp: false,
+      passkeys: false });
     expect(h.connection()).toEqual({ status: 'offline', generation: null });
     release();
     await vi.waitFor(() => expect(h.account()?.phase).toBe('unsupported'));
@@ -2037,7 +2038,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: null, needsTotp: false }, error: null });
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual([]);
     w.call(3, LOGIN);
-    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needsTotp: false } }));
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
     expect(w.core.recoveryKeyCheck).toHaveBeenCalledWith(RECOVERY_KEY);
     expect(w.enrol.login).toHaveBeenCalledWith('web', PASSWORD);
     expect(w.enrol.register).toHaveBeenCalledWith(INSTANCE_ID);
@@ -2054,9 +2055,9 @@ describe('Controller sign-in (L-TS-23)', () => {
 
   it('asks for the second factor when the login needs one', async () => {
     const w = world({ phase: 0 });
-    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needsTotp: true }); });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     await toKeyStep(w);
-    expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needsTotp: true } });
+    expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } });
     expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', needsTotp: true } });
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(4, { m: 'signInTotp', code: '12345', recoveryKey: RECOVERY_KEY });
@@ -2103,7 +2104,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: { code: 'E_FORBIDDEN', status: 403 } });
     // Once a device was removed elsewhere, the next login (with the key) registers the kept enrolment again.
     w.call(5, LOGIN);
-    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needsTotp: false } }));
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 0 } }));
     expect(w.enrol.register).toHaveBeenCalledTimes(2);
     expect(w.account()?.phase).toBe('ready');
   });
@@ -2125,7 +2126,7 @@ describe('Controller sign-in (L-TS-23)', () => {
 
   it('a refused TOTP returns to signin-login with the username kept', async () => {
     const w = world({ phase: 0 });
-    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needsTotp: true }); });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     w.enrol.totp.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
     await toKeyStep(w);
     expect(w.account()?.phase).toBe('signin-totp');
@@ -2143,7 +2144,7 @@ describe('Controller sign-in (L-TS-23)', () => {
 
   it('a second factor without a held assertion crosses as E_NO_ASSERTION and returns to signin-login', async () => {
     const w = world({ phase: 0 });
-    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needsTotp: true }); });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     w.enrol.totp.mockImplementationOnce(() => Promise.reject(new Error('E_NO_ASSERTION')));
     await toKeyStep(w);
     w.call(4, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
@@ -2196,7 +2197,7 @@ describe('Controller sign-in (L-TS-23)', () => {
 
   it('the login is sent only once the key is held: a malformed key is refused before the login, which then mints its assertion seconds before the registration', async () => {
     const w = world({ phase: 0 });
-    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needsTotp: true }); });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     await toLoginStep(w);
     w.core.recoveryKeyCheck.mockImplementationOnce(() => { w.calls.push('core.recoveryKeyCheck'); throw new CoreError('E_RECOVERY_KEY', ''); });
     w.call(3, { ...LOGIN, recoveryKey: 'Z'.repeat(52) });
@@ -2205,7 +2206,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_RECOVERY_KEY' } });
     expect(w.enrol.login).not.toHaveBeenCalled();
     w.call(4, LOGIN);
-    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needsTotp: true } }));
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needs: 1 } }));
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
@@ -2357,7 +2358,7 @@ describe('Controller sign-in (L-TS-23)', () => {
 
   it('signInCancel resets the enrolment and returns to needs-signup', async () => {
     const w = world({ phase: 0 });
-    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needsTotp: true }); });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     await toKeyStep(w);
     w.call(4, { m: 'signInCancel' });
     await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
@@ -2368,7 +2369,7 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('a sign-in step in flight refuses a second one', async () => {
     const w = world({ phase: 0 });
     let release!: () => void;
-    w.enrol.login.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ needsTotp: false }); }));
+    w.enrol.login.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ needs: 0 }); }));
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('needs-signup'));
     w.call(2, { m: 'signInBegin' });
@@ -2378,7 +2379,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     release();
-    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needsTotp: false } }));
+    await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
   });
 
   it('a boot in phase 3 with a recorded user resumes at the key step and takes the username from the account', async () => {
@@ -2387,7 +2388,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('signin-key'));
     expect(w.enrol.fetch).toHaveBeenCalledWith(USER);
-    expect(w.account()?.signIn).toEqual({ username: null, needsTotp: false });
+    expect(w.account()?.signIn).toEqual({ username: null, needsTotp: false, factor: null });
     w.call(2, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
     expect(w.enrol.complete).toHaveBeenCalledWith(RECOVERY_KEY, FETCHED, '');
@@ -3142,7 +3143,7 @@ describe('Controller pre-flight rulings (task 14)', () => {
     w.enrol.complete.mockImplementationOnce(() => { w.calls.push('enrol.complete'); return Promise.reject(OLDER_LIST()); });
     await toLoginStep(w);
     w.call(4, LOGIN);
-    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needsTotp: false } }));
+    await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needs: 0 } }));
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual([
       'enrol.login', 'enrol.register', 'enrol.fetch', 'enrol.complete', 'enrol.fetch', 'enrol.complete',
     ]);

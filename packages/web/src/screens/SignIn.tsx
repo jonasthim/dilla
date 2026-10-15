@@ -157,7 +157,9 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     run('login', client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password, recoveryKey: key }), (value) => {
       setPassword('');
       // With a second factor owed, the key goes again with the code; otherwise the browser is enrolled.
-      if (!(typeof value === 'object' && value !== null && (value as { needsTotp?: unknown }).needsTotp === true)) setKey('');
+      // web3.6: a login owing a code (needs 1) or a passkey (needs 2) keeps the key for the step that follows.
+      const needs = typeof value === 'object' && value !== null ? (value as { needs?: unknown }).needs : undefined;
+      if (needs !== 1 && needs !== 2) setKey('');
     });
   };
   const submitTotp = () => {

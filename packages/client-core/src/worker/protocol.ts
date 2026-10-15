@@ -4,6 +4,7 @@ import type { CallKeys, CallStatsReport, SliceName, WorkerError } from '../state
 export type Command =
   | { m: 'start' }
   | { m: 'signupBegin' }
+  // → { communityId, joinError }; with factorOwed: true (and no join yet) when the account stops at factor-setup.
   | { m: 'signupSubmit'; invite: string; username: string; display: string; password: string | null; recoveryKeyAcknowledged: true }
   | { m: 'signupReset' }
   | { m: 'resetDevice' }
@@ -26,8 +27,13 @@ export type Command =
   | { m: 'signInBegin' }                                         // needs-signup → signin-login
   // The key is entered first and travels with the command that registers (coordinator ruling on concern 3): the login
   // is sent only once the key is held, and its assertion is spent seconds later.
-  | { m: 'signInLogin'; username: string; password: string; recoveryKey: string }   // signin-login → signin-totp | ready
+  | { m: 'signInLogin'; username: string; password: string; recoveryKey: string }   // → { needs }: 1 signin-totp, 2 signin-passkey, 0 ready
   | { m: 'signInTotp'; code: string; recoveryKey: string }      // signin-totp → ready
+  // web3.6 (flow 10). The ceremony runs in the page (navigator.credentials); the worker holds no WebAuthn state.
+  | { m: 'signInPasskeyBegin' }                                  // signin-login|totp|passkey → { ceremonyId (32 hex), options (JSON) }
+  | { m: 'signInPasskey'; ceremonyId: string; response: string; recoveryKey: string }  // → { needs }: 1 signin-totp, 0 ready
+  | { m: 'signInBackupCode'; code: string; recoveryKey: string } // signin-totp|passkey → ready; a refusal: signin-login
+  | { m: 'factorSetupDone'; invite: string | null }              // factor-setup → ready → { communityId, joinError }
   | { m: 'signInKey'; recoveryKey: string }                      // signin-key (a registered enrolment) → ready
   | { m: 'signInCancel' }                                        // signin-* → needs-signup
   | { m: 'refreshDevices' }                                      // ready: GET /v1/devices + own list → slice devices

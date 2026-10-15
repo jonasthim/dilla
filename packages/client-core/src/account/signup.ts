@@ -3,9 +3,10 @@ import { CoreError, type CorePort, type Id } from '../core-port';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { DeviceListRecord, Routes } from '../http/routes';
-import { refillKeyPackages } from './keypackages';
 import type { Session } from './session';
 
+/** A signup ends with the device list published. Its first KeyPackages (POST /v1/keypackages, refused while the account
+ *  owes a second factor, web3.6) are the worker's, once enterReady has passed the factor gate. */
 export class Signup {
   constructor(private readonly deps: { core: CorePort; routes: Routes; session: Session; now(): number }) {}
   begin(instanceId: Id): string[] {
@@ -20,8 +21,6 @@ export class Signup {
     core.sessionStore({ token: acc.token, expires: acc.expires, idleExpires: acc.expires });
     core.signupComplete(acc.userId, input.username, this.nowS());
     await publishDeviceList(core, routes);
-    const limits = await routes.getLimits();
-    await refillKeyPackages(core, routes, 0, { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold });
   }
   async resume(): Promise<0 | 2 | 'revoked'> {
     const { core, routes, session } = this.deps;
@@ -35,8 +34,6 @@ export class Signup {
     const me = await routes.getAccountMe();
     core.signupComplete(me.userId, me.username, this.nowS());
     await publishDeviceList(core, routes);
-    const limits = await routes.getLimits();
-    await refillKeyPackages(core, routes, 0, { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold });
     return 2;
   }
   private nowS(): bigint { return BigInt(Math.floor(this.deps.now() / 1000)); }
