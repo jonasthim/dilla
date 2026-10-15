@@ -688,6 +688,76 @@ describe('CreateChannelFlow', () => {
   });
 });
 
+describe('CreateChannelFlow, private create', () => {
+  const EVERYONE = 'e0'.repeat(16);
+  const LOW = 'b2'.repeat(16);
+  const LOWER = 'b4'.repeat(16);
+  const HIGH = 'b3'.repeat(16);
+  const role = (id: string, name: string, position: number) => ({ id, name, color: 0, position, hoist: false, mentionable: false, allow: 0, deny: 0, members: 0 });
+  function setup(opts: { manageRoles?: boolean; roles?: ReturnType<typeof role>[] } = {}) {
+    const fake = client();
+    fake.set(`permissions:${SERVER}`, { top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: opts.manageRoles ?? true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true });
+    fake.set(`roles:${SERVER}`, opts.roles ?? [role(EVERYONE, '@everyone', 0), role(LOWER, 'Newcomers', 1), role(LOW, 'Players', 2), role(HIGH, 'Council', 9)]);
+    fake.handler = () => Promise.resolve({ channelId: TEXT });
+    const onDone = vi.fn();
+    const r = mount(fake, <CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={onDone} onClose={vi.fn()} />);
+    return { fake, onDone, ...r };
+  }
+  const privateSwitch = () => screen.getByRole('switch', { name: 'private channel' });
+
+  it('offers the private switch only with the manage-roles right', () => {
+    setup({ manageRoles: false });
+    expect(screen.queryByRole('switch', { name: 'private channel' })).toBeNull();
+  });
+  it('lists only the roles below mine once private is on, and sends the ticked ones', async () => {
+    const { fake, user } = setup();
+    expect(screen.queryByRole('group', { name: 'Roles that can see it' })).toBeNull();
+    await user.click(privateSwitch());
+    const group = screen.getByRole('group', { name: 'Roles that can see it' });
+    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Players', 'Newcomers']);
+    await user.click(screen.getByRole('checkbox', { name: 'Players' }));
+    expect(group).toBeInTheDocument();
+    await user.type(nameField('Channel name'), 'staff');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'staff', private: { roleIds: [LOW] } }]));
+  });
+  it('creates a private channel for nobody but me when no role is ticked', async () => {
+    const { fake, user } = setup();
+    await user.click(privateSwitch());
+    await user.type(nameField('Channel name'), 'staff');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls[0]).toMatchObject({ private: { roleIds: [] } }));
+  });
+  it('says there are no lower roles to add', async () => {
+    const { user } = setup({ roles: [role(EVERYONE, '@everyone', 0), role(HIGH, 'Council', 9)] });
+    await user.click(privateSwitch());
+    expect(screen.getByText('There are no roles below yours to add. You can add people later in the channel’s permissions.')).toBeInTheDocument();
+  });
+  it('does not send private when the switch is off, even after ticking and switching back', async () => {
+    const { fake, user } = setup();
+    await user.click(privateSwitch());
+    await user.click(screen.getByRole('checkbox', { name: 'Players' }));
+    await user.click(privateSwitch());
+    await user.type(nameField('Channel name'), 'open');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'open' }]));
+  });
+  it('words a refusal of too many roles with its code', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT', detail: 'a private channel can be opened to at most 98 roles' }));
+    await user.click(privateSwitch());
+    await user.type(nameField('Channel name'), 'staff');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Could not add the channel (E_BAD_INPUT). Try again.')).toBeInTheDocument();
+  });
+  it('has no serious axe violations with the roles listed', async () => {
+    const { user, view } = setup();
+    await user.click(privateSwitch());
+    await expectNoAxeViolations(view.container);
+  });
+});
+
 describe('InviteFlow', () => {
   const URL = 'https://chat.example.org/i/7KQ2';
   function setup(answer: () => Promise<unknown> = () => Promise.resolve({ url: URL, code: '7KQ2', expires: 1_900_000_000 }),

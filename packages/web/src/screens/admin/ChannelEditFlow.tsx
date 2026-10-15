@@ -4,13 +4,17 @@ import type { ChannelSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { t } from '../../strings/index.ts';
 import { CHANNEL_NAME_MAX_BYTES, channelName, nameProblem } from '../Create.tsx';
-import { forbidden, refused, statusIs, useRun } from './shared.ts';
+import { ChannelPermissions } from './ChannelPermissions.tsx';
+import { forbidden, refused, statusIs, useRun, type Announce } from './shared.ts';
+import { useSlice } from '../../core/use-slice.ts';
 
 const TOPIC_MAX_BYTES = 1024;
 const UTF8 = new TextEncoder();
 // Control characters other than line break and tab (the instance refuses them in a topic).
 const TOPIC_CONTROL = /[\p{Cc}]/u;
 const topicHasControl = (s: string): boolean => [...s].some(c => c !== '\n' && c !== '\t' && TOPIC_CONTROL.test(c));
+
+const NO_ANNOUNCE: Announce = () => undefined;
 
 interface Draft { id: string; name: string; topic: string; parent: string }
 
@@ -19,13 +23,14 @@ interface Draft { id: string; name: string; topic: string; parent: string }
  * category; `parent` is sent as `keep` when it is unchanged, `top` for no category, else the category's id. Only the fields
  * that changed are sent; nothing changed closes the dialog without a request. `channel` null keeps the dialog closed.
  */
-export function ChannelEditFlow({ channel, categories, onClose }: {
-  channel: ChannelSummary | null; categories: readonly ChannelSummary[]; onClose: () => void;
+export function ChannelEditFlow({ channel, categories, announce, onClose }: {
+  channel: ChannelSummary | null; categories: readonly ChannelSummary[]; announce?: Announce | undefined; onClose: () => void;
 }): React.JSX.Element {
   const client = useCore();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [local, setLocal] = useState<{ message: string; n: number } | null>(null);
   const action = useRun();
+  const access = useSlice(`permissions:${channel?.communityId ?? ''}`);
   const kind = channel === null ? 'text' : channel.kind === 2 ? 'category' : channel.kind === 1 ? 'voice' : 'text';
   const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId != null && categories.some(c => c.id === channel.parentId) ? channel.parentId : 'top' };
   const current = draft?.id === initial.id ? draft : initial;
@@ -68,6 +73,9 @@ export function ChannelEditFlow({ channel, categories, onClose }: {
       labels={{ title, name: t('admin.channel.name'), nameHint: t('admin.channel.nameHint'), topic: t('admin.channel.topic'),
         topicHint: t('admin.channel.topicHint'), category: t('admin.channel.category'), submit: t('admin.channel.save'),
         busy: t('admin.channel.saving'), close: t('admin.cancel') }}
-      onSubmit={submit} onClose={close} />
+      onSubmit={submit} onClose={close}>
+      {channel !== null && kind !== 'category' && access?.manageRoles === true
+        ? <ChannelPermissions channelId={channel.id} communityId={channel.communityId} announce={announce ?? NO_ANNOUNCE} /> : null}
+    </ChannelSettings>
   );
 }

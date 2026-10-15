@@ -245,3 +245,39 @@ describe('fix round 1: focus and the category select', () => {
     expect(within(dialog).getByRole('combobox', { name: en['admin.channel.category'] })).toHaveValue('top');
   });
 });
+
+describe('private channels in the channels tab', () => {
+  const EVERYONE = 'e0'.repeat(16);
+  const access = (over: Record<string, unknown> = {}) => ({ top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false,
+    banMembers: false, createInvite: false, manageRoles: true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true, ...over });
+  it('tags a private channel with chperm.privateTag, and no other', () => {
+    const { fake } = setup();
+    fake.publish(`permissions:${SERVER}`, access());
+    fake.publish(`overwrites:${SERVER}`, { [DEV]: [{ kind: 0, targetId: EVERYONE, allow: 0, deny: 1 }] });
+    const rows = within(screen.getByRole('list', { name: 'Talk' })).getAllByRole('listitem');
+    expect(rows[1]).toHaveTextContent(`#dev${en['chperm.privateTag']}`);
+    expect(rows[0]).not.toHaveTextContent(en['chperm.privateTag']);
+  });
+  it('tags nothing while the overwrites are not loaded', () => {
+    const { fake } = setup();
+    fake.publish(`permissions:${SERVER}`, access({ overwritesLoaded: false }));
+    fake.publish(`overwrites:${SERVER}`, { [DEV]: [{ kind: 0, targetId: EVERYONE, allow: 0, deny: 1 }] });
+    expect(screen.queryByText(en['chperm.privateTag'])).toBeNull();
+  });
+  it('shows the permissions of a channel in its edit dialog with the manage-roles right, and not for a category', async () => {
+    const { fake, user } = setup();
+    fake.publish(`permissions:${SERVER}`, access());
+    fake.publish(`roles:${SERVER}`, []);
+    await user.click(btn('edit lobby'));
+    expect(await within(await screen.findByRole('dialog', { name: 'Edit #lobby' })).findByRole('heading', { name: en['chperm.title'] })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await user.click(btn('edit Talk'));
+    expect(within(await screen.findByRole('dialog', { name: 'Edit category Talk' })).queryByRole('heading', { name: en['chperm.title'] })).toBeNull();
+  });
+  it('hides the permissions without the manage-roles right', async () => {
+    const { fake, user } = setup();
+    fake.publish(`permissions:${SERVER}`, access({ manageRoles: false }));
+    await user.click(btn('edit lobby'));
+    expect(within(await screen.findByRole('dialog', { name: 'Edit #lobby' })).queryByRole('heading', { name: en['chperm.title'] })).toBeNull();
+  });
+});
