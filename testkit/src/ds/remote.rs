@@ -1313,15 +1313,17 @@ fn enrol_second_factor_on(
                 e.array(1).text(&code);
             }),
         )?;
-        decode_strict(&out, |d: &mut Decoder<'_>| {
+        let backup_codes = decode_strict(&out, |d: &mut Decoder<'_>| {
             d.array(1)?;
-            d.skip()?;
-            Ok(())
+            (0..array_or_null(d)?)
+                .map(|_| Ok(d.text()?.to_owned()))
+                .collect()
         })
         .map_err(protocol)?;
         Ok(Some(TotpState {
             secret,
             last_counter: counter,
+            backup_codes,
         }))
     }
 }
@@ -1395,13 +1397,18 @@ impl HttpDs {
         Ok(code)
     }
 
-    /// `POST /v1/auth/stepup [1, code]` → `[stepup, expires]`: a step-up token from this account's TOTP.
+    /// `POST /v1/auth/stepup [method, secret]` → `[stepup, expires]`. It spends a backup code (method 2) while one is
+    /// left, which never moves the test host's shared clock, and falls back to a TOTP code (method 1).
     pub fn step_up(&mut self) -> Result<String, TestkitError> {
-        let code = self.next_totp_code()?;
+        let backup = self.totp.as_mut().and_then(|s| s.backup_codes.pop());
+        let (method, secret) = match backup {
+            Some(code) => (2, code),
+            None => (1, self.next_totp_code()?),
+        };
         let token = self.post_decoded(
             "/v1/auth/stepup",
             &encode(|e| {
-                e.array(2).uint(1).text(&code);
+                e.array(2).uint(method).text(&secret);
             }),
             |d: &mut Decoder<'_>| {
                 d.array(2)?;

@@ -21,6 +21,9 @@ pub struct TotpState {
     pub secret: String,
     /// The counter of the last code the instance accepted.
     pub last_counter: u64,
+    /// The unused backup codes `POST /v1/auth/totp/confirm` answered. A step-up spends one of these, not a
+    /// TOTP code: on a frozen test host a TOTP pick past `c+1` moves the shared clock 30 s.
+    pub backup_codes: Vec<String>,
 }
 
 /// The six-digit code for `counter` under a base32 `secret_b32`.
