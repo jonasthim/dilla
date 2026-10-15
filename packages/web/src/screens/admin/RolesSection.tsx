@@ -40,6 +40,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
   const refocus = useRef<{ id: string; direction: 'up' | 'down' } | null>(null);
   const focusNew = useRef(false);
   const focusNewButton = () => actions.current?.querySelector('button')?.focus();
+  const newButton = () => actions.current?.querySelector('button');
 
   const live = target !== null && target.kind === 'delete' ? roles?.find(r => r.id === target.id) : undefined;
   // A role that vanishes while its confirm is open (deleted elsewhere) closes the confirm.
@@ -133,7 +134,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
       )}
       {target?.kind === 'new' || target?.kind === 'edit'
         ? <RoleEditorFlow communityId={communityId} roleId={target.kind === 'edit' ? target.id : null}
-          announce={announce} onClose={() => setTarget(null)} />
+          announce={announce} onClose={() => setTarget(null)} returnFocus={newButton} />
         : null}
       <DeleteRole communityId={communityId} role={target?.kind === 'delete' ? live ?? null : null} announce={announce}
         onDone={() => { focusNew.current = true; setTarget(null); }} onClose={() => setTarget(null)} />

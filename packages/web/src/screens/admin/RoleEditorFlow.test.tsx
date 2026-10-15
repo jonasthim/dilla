@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { PERM } from '@dilla/client-core';
 import { refusal } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
-import { ADMINS, EVERY, MODS, OWNER_ACCESS, SERVER, harness, role, type HarnessOptions } from '../../test/roles-harness.tsx';
+import { ADMINS, EVERY, MODS, OWNER_ACCESS, ROLES, SERVER, harness, role, type HarnessOptions } from '../../test/roles-harness.tsx';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { en } from '../../strings/index.ts';
 import { RolesSection } from './RolesSection.tsx';
@@ -185,5 +185,50 @@ describe('RoleEditorFlow edit', () => {
       members: [{ userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [ADMINS] }] });
     await user.click(screen.getByRole('button', { name: 'edit mods' }));
     expect(dialog().getByRole('switch', { name: en['perm.send'] })).not.toHaveAttribute('aria-disabled');
+  });
+});
+
+describe('RoleEditorFlow focus', () => {
+  it('opens a new role on the name field', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: en['roles.new'] }));
+    expect(nameField()).toHaveFocus();
+  });
+  it('opens an existing role on the name field', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: 'edit mods' }));
+    expect(nameField()).toHaveFocus();
+  });
+  it('Escape closes the editor and focus goes back to the new role button, not the body', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: en['roles.new'] }));
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('button', { name: en['roles.new'] })).toHaveFocus();
+  });
+  it('after a create focus goes back to the new role button', async () => {
+    const { user, announce } = setup({ handler: created });
+    await user.click(screen.getByRole('button', { name: en['roles.new'] }));
+    await user.type(nameField(), 'helpers');
+    await user.click(dialog().getByRole('button', { name: en['roles.editor.create'] }));
+    await waitFor(() => expect(announce).toHaveBeenCalledWith('helpers created.'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('button', { name: en['roles.new'] })).toHaveFocus();
+  });
+  it('after a save focus goes back to that row\'s edit button', async () => {
+    const { user, announce } = setup();
+    await user.click(screen.getByRole('button', { name: 'edit mods' }));
+    await user.click(dialog().getByRole('switch', { name: en['roles.editor.mentionable'] }));
+    await user.click(dialog().getByRole('button', { name: en['roles.editor.save'] }));
+    await waitFor(() => expect(announce).toHaveBeenCalledWith('mods saved.'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('button', { name: 'edit mods' })).toHaveFocus();
+  });
+  it('a role deleted elsewhere while open closes the editor onto the new role button, not the body', async () => {
+    const { user, fake } = setup();
+    await user.click(screen.getByRole('button', { name: 'edit mods' }));
+    act(() => fake.set(`roles:${SERVER}`, ROLES.filter(r => r.id !== MODS)));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('button', { name: en['roles.new'] })).toHaveFocus();
   });
 });

@@ -116,3 +116,16 @@ describe('MemberRolesFlow', () => {
     await expectNoAxeViolations(screen.getByRole('dialog'));
   });
 });
+
+describe('MemberRolesFlow focus', () => {
+  it('opens on the first enabled checkbox', () => {
+    const roles = [role(EVERY, '@everyone', 0), role(ADMINS, 'admins', 9), role(MODS, 'mods', 3), role(CREW, 'crew', 2)];
+    setup({ roles, access: { ...OWNER_ACCESS, owner: false, top: 5 } });
+    expect(dialog().getByRole('checkbox', { name: 'mods' })).toHaveFocus();
+  });
+  it('opens on Done when no box is enabled', () => {
+    const roles = [role(EVERY, '@everyone', 0), role(ADMINS, 'admins', 9)];
+    setup({ roles, access: { ...OWNER_ACCESS, owner: false, top: 5 } });
+    expect(dialog().getByRole('button', { name: en['roles.assign.close'] })).toHaveFocus();
+  });
+});

@@ -1,6 +1,6 @@
 // Flow 08: the member pane. W3 mounts it in the shell's aside; it reads the members, roles and permissions slices.
 import { useEffect, useRef, useState } from 'react';
-import { MemberList, type MemberListGroup } from '@dilla/ui';
+import { MemberList, focusReturnTarget, type MemberListGroup } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { memberGroups, memberName, menuFor, type MenuAction } from './members-model.ts';
@@ -30,7 +30,8 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const [banOpen, setBanOpen] = useState(false);
   const [rolesFor, setRolesFor] = useState<string | null>(null);
 
-  // Where focus goes when a dialog closes: the row's trigger that opened it, else (a kicked member's row is gone) the pane.
+  // Where focus goes when a dialog closes: the row's trigger that opened it, or that member's trigger re-mounted in another
+  // group (a hoisted role given meanwhile), else (a kicked member's row is gone) the pane. The same rule as Dialog's own.
   const region = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const restore = useRef(false);
@@ -38,8 +39,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   useEffect(() => {
     if (anyOpen || !restore.current) return;
     restore.current = false;
-    const back = opener.current;
-    (back !== null && back.isConnected ? back : region.current)?.focus();
+    focusReturnTarget(opener.current, () => region.current)?.focus();
   }, [anyOpen]);
 
   const community = communities?.find(c => c.id === communityId);

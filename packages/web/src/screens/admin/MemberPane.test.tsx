@@ -224,3 +224,20 @@ describe('BanFlow', () => {
     await expectNoAxeViolations(document.body);
   });
 });
+
+describe('role assignment focus', () => {
+  it('Done after a grant that moves the member into a hoisted group returns focus to his re-mounted menu trigger', async () => {
+    const { user, fake } = setup(access({ manageRoles: true, top: 6 }));
+    fake.handler = c => {
+      if (c.m === 'grantRole') fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob', [MOD.id]), m(CAL, 'carol', [MOD.id])]);
+      return Promise.resolve(null);
+    };
+    const before = screen.getByRole('button', { name: 'actions for bob' });
+    await pick(user, 'bob', 'roles');
+    await user.click(within(screen.getByRole('dialog')).getByRole('checkbox', { name: 'mods' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'actions for bob' })).not.toBe(before));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('button', { name: 'actions for bob' })).toHaveFocus();
+  });
+});

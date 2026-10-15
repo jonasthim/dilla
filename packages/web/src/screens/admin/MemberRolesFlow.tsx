@@ -1,5 +1,6 @@
 // Flow 09: give and take roles from the member list. A Dialog (through its portal, so it works from the modal narrow
-// drawer) over a CheckList; every tick is one grantRole or revokeRole, applied at once.
+// drawer) over a CheckList; every tick is one grantRole or revokeRole, applied at once. It opens on the first enabled box,
+// else on Done.
 import { useEffect, useRef, useState } from 'react';
 import { CheckList, Dialog } from '@dilla/ui';
 import { resolveCommunity, type RoleSummary } from '@dilla/client-core';
@@ -85,16 +86,16 @@ export function MemberRolesFlow({ communityId, userId, onClose, announce }: Memb
 
   if (roles === undefined || members === undefined) {
     return (
-      <Dialog open title={t('roles.title')} closeLabel={t('roles.assign.close')} onClose={onClose}>
+      <Dialog open title={t('roles.title')} closeLabel={t('roles.assign.close')} initialFocus="close" onClose={onClose}>
         <p aria-busy="true">{t('roles.loading')}</p>
       </Dialog>
     );
   }
   return (
-    <Dialog open title={t('roles.assign.title', { name })} closeLabel={t('roles.assign.close')} onClose={onClose}>
+    <Dialog open title={t('roles.assign.title', { name })} closeLabel={t('roles.assign.close')} initialFocus="close" onClose={onClose}>
       <p>{t('roles.assign.body', { name })}</p>
       <p>{t('roles.access')}</p>
-      <CheckList label={t('roles.assign.title', { name })} items={items} busyId={busyId} emptyLabel={t('roles.assign.none')} onToggle={toggle} />
+      <CheckList label={t('roles.assign.title', { name })} items={items} busyId={busyId} emptyLabel={t('roles.assign.none')} onToggle={toggle} initialFocus />
       {problem !== null ? <p key={problem.n} role="alert" className="dw-admin-error">{problem.message}</p> : null}
     </Dialog>
   );

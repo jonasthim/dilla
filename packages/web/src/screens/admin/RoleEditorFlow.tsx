@@ -1,5 +1,5 @@
 // Flow 09: make or edit one role. A Dialog (mounted while it is open) over TextField, ColorSwatches, two Toggles and the
-// PermissionGrid; the dialog's close hands focus back to whatever opened it.
+// PermissionGrid; the dialog opens on the name field and its close hands focus back to whatever opened it.
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { Button, ColorSwatches, Dialog, PermissionGrid, TextField, Toggle, type PermValue } from '@dilla/ui';
 import { PERM_BY_KEY, PERM_GROUPS, resolveCommunity, type PermKey, type RoleSummary } from '@dilla/client-core';
@@ -21,6 +21,8 @@ export interface RoleEditorFlowProps {
   roleId: string | null;
   onClose: () => void;
   announce: Announce;
+  /** Where focus goes on close when the opener is gone (the edited role's row was deleted). */
+  returnFocus?: () => HTMLElement | null | undefined;
 }
 
 /** The bits `me` holds community-wide: everything for the owner and administrators, else the resolver's answer. */
@@ -34,7 +36,7 @@ const keyBits = (values: Readonly<Record<string, PermValue>>): number =>
 const valuesOf = (allow: number): Record<string, PermValue> =>
   Object.fromEntries((Object.keys(PERM_BY_KEY) as PermKey[]).map(k => [k, (allow & PERM_BY_KEY[k]) !== 0 ? 'allow' : 'inherit']));
 
-export function RoleEditorFlow({ communityId, roleId, onClose, announce }: RoleEditorFlowProps): React.JSX.Element {
+export function RoleEditorFlow({ communityId, roleId, onClose, announce, returnFocus }: RoleEditorFlowProps): React.JSX.Element {
   const client = useCore();
   const base = useId();
   const roles = useSlice(`roles:${communityId}`);
@@ -115,7 +117,7 @@ export function RoleEditorFlow({ communityId, roleId, onClose, announce }: RoleE
   const busyAttr = action.busy || undefined;
 
   return (
-    <Dialog open title={title} closeLabel={t('roles.editor.cancel')} onClose={close}
+    <Dialog open title={title} closeLabel={t('roles.editor.cancel')} onClose={close} returnFocus={returnFocus}
       footer={<Button variant="accent" type="submit" form={formId} aria-disabled={busyAttr}>
         {role === undefined ? t(action.busy ? 'roles.editor.creating' : 'roles.editor.create') : t(action.busy ? 'roles.editor.saving' : 'roles.editor.save')}
       </Button>}>
@@ -140,14 +142,16 @@ export function RoleEditorFlow({ communityId, roleId, onClose, announce }: RoleE
   );
 }
 
-/** The name field (disabled for @everyone, whose name is fixed): focus starts here, and a refusal of the name puts it back here. */
+/**
+ * The name field (disabled for @everyone, whose name is fixed): the Dialog opens on it (`initialFocus`; a disabled field
+ * leaves focus on the dialog), and a refusal of the name puts focus back here.
+ */
 function RoleName({ id, value, readOnly, error, attempt, onChange }: {
   id: string; value: string; readOnly: boolean; error: string | undefined; attempt: number; onChange: (v: string) => void;
 }): React.JSX.Element {
-  useEffect(() => { document.getElementById(id)?.focus(); }, [id]);
   useEffect(() => { if (error !== undefined) document.getElementById(id)?.focus(); }, [id, error, attempt]);
   return (
     <TextField id={id} label={t('roles.editor.name')} value={value} hint={t('roles.editor.nameHint')} error={error}
-      onChange={onChange} required={!readOnly} disabled={readOnly} autoComplete="off" spellCheck={false} />
+      onChange={onChange} required={!readOnly} disabled={readOnly} initialFocus={!readOnly} autoComplete="off" spellCheck={false} />
   );
 }
