@@ -324,6 +324,10 @@ func (c *Config) Validate() error {
 	if len(c.Auth.Methods) > 0 && !slices.Contains(c.Auth.Methods, "totp") && !slices.Contains(c.Auth.Methods, "passkey") {
 		add("auth.methods must include totp or passkey: every account needs a second factor")
 	}
+	// The client decodes at most 16 backup codes (web3.6), and a set of none would mint nothing.
+	if n := c.Auth.TOTP.RecoveryCodes; n < 1 || n > 16 {
+		add("auth.totp.recovery_codes is %d; the range is 1..16", n)
+	}
 	if slices.Contains(c.Auth.Methods, "oidc") && !c.Auth.OIDC.Enabled {
 		add("auth.methods lists oidc but auth.oidc.enabled is false")
 	}

@@ -993,7 +993,9 @@ func postLoginFrom(h http.Handler, path string, body []byte, addr string) *httpt
 // ledger: a thief guessing the password behind a stolen session cannot lock
 // the owner out of signing in.
 func TestStepUpFailuresLockOnlyTheStepUpLedger(t *testing.T) {
-	h, deps := newTestAPI(t)
+	// The address failure budget out of the way: what is under test is the step-up ledger
+	// (TestAStepUpRespectsTheAddressFailureBudget covers the budget).
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 100 })
 	u, _, token := seedAPISession(t, deps)
 	pw := seedPassword(t, deps, u, "correct horse battery staple")
 	free := deps.Config.Auth.Lockout.FreeAttempts
@@ -1085,5 +1087,274 @@ func TestAnOwedSessionReadsTheInstanceDocumentUnderSessionDiscovery(t *testing.T
 	// The control: the session really is owed.
 	if res := getAuth(h, "/v1/devices", token); res.Code != http.StatusForbidden || errorCode(t, res) != "E_FACTOR_REQUIRED" {
 		t.Fatalf("GET /v1/devices as an owed session = %d, want 403 E_FACTOR_REQUIRED", res.Code)
+	}
+}
+
+// --- web3.6 S2 review fix round 1 ---
+
+// stepUpFrom posts POST /v1/auth/stepup from a given client address.
+func stepUpFrom(h http.Handler, token string, method uint64, secret, addr string) *httptest.ResponseRecorder {
+	body, err := cborx.Marshal([]any{method, secret})
+	if err != nil {
+		panic("marshal step-up body: " + err.Error())
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/auth/stepup", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/cbor")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.RemoteAddr = addr
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// I1 (a): a step-up token lives StepUpTTL. The control is a token spent inside
+// it; the two differ only in how long they waited.
+func TestAStepUpTokenExpires(t *testing.T) {
+	h, deps := newTestAPI(t)
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	enrolTOTP(t, h, deps, token)
+
+	late := stepUp(t, h, token, stepUpPassword, pw)
+	advance(t, deps, api.StepUpTTL+time.Second)
+	res := newCodes(h, token, late)
+	if res.Code != http.StatusForbidden || errorCode(t, res) != "E_STEP_UP" {
+		t.Fatalf("a token spent %s after it was minted = %d, want 403 E_STEP_UP", api.StepUpTTL+time.Second, res.Code)
+	}
+
+	inTime := stepUp(t, h, token, stepUpPassword, pw)
+	advance(t, deps, api.StepUpTTL-time.Second)
+	if got := codesOf(t, newCodes(h, token, inTime)); len(got) != 10 {
+		t.Fatalf("a token spent inside its lifetime made %d codes, want 10", len(got))
+	}
+}
+
+// I1 (c): a confirm over an already-confirmed row is 404 and mints nothing; the
+// control is the first confirm (enrolTOTP), which answered 200 with ten codes.
+func TestConfirmingAConfirmedAuthenticatorIsNotFound(t *testing.T) {
+	h, deps := newTestAPI(t)
+	u, _, token := seedAPISession(t, deps)
+	secret, codes := enrolTOTP(t, h, deps, token)
+	// Spend one code, so a re-mint would show as a count of 10 again.
+	_ = stepUp(t, h, token, stepUpBackup, codes[0])
+
+	code, err := totp.GenerateCode(secret, deps.Clock.Now())
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+	confirm, _ := cborx.Marshal([]any{code})
+	res := postCBORAuth(h, "/v1/auth/totp/confirm", confirm, token)
+	if res.Code != http.StatusNotFound || errorCode(t, res) != "E_NOT_FOUND" {
+		t.Fatalf("a confirm over a confirmed authenticator = %d, want 404 E_NOT_FOUND", res.Code)
+	}
+	if n, err := deps.Repo.CountRecoveryCodes(t.Context(), u.ID); err != nil || n != 9 {
+		t.Fatalf("unused codes after the refused confirm = %d, %v; want 9 (nothing minted)", n, err)
+	}
+}
+
+// I1 (e): removing a passkey the caller does not hold is 404 and leaves it in
+// place; the control removes the caller's own.
+func TestRemovingAnotherAccountsPasskeyIsNotFound(t *testing.T) {
+	h, deps := newPasskeyAPI(t)
+	a, _, aToken := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, a, "correct horse battery staple")
+	enrolTOTP(t, h, deps, aToken)
+	own, _ := enrolPasskeyWith(t, h, aToken, newVirtualAuthenticator(t, deps.Domain, true),
+		stepUp(t, h, aToken, stepUpPassword, pw))
+	b, _, bToken := seedAPISession(t, deps)
+	theirs := enrolPasskey(t, h, bToken, newVirtualAuthenticator(t, deps.Domain, true))
+
+	res := removeFactor(h, aToken, stepUp(t, h, aToken, stepUpPassword, pw), 1, theirs)
+	if res.Code != http.StatusNotFound || errorCode(t, res) != "E_NOT_FOUND" {
+		t.Fatalf("removing another account's passkey = %d, want 404 E_NOT_FOUND", res.Code)
+	}
+	if row, err := deps.Repo.GetWebauthnCredential(t.Context(), theirs); err != nil || row.UserID != b.ID {
+		t.Fatalf("the other account's passkey = %+v, %v; want it untouched", row, err)
+	}
+	if res := removeFactor(h, aToken, stepUp(t, h, aToken, stepUpPassword, pw), 1, own); res.Code != http.StatusNoContent {
+		t.Fatalf("removing the caller's own passkey = %d, want 204", res.Code)
+	}
+}
+
+// M1: the TOTP enrolment record is bound to the secret its enroll wrote. A
+// racing second enrolment that replaced the secret between this enroll and its
+// confirm (the hook) does not inherit this enroll's step-up: the confirm
+// re-checks, finds a factor, and writes nothing. The control confirms the
+// secret this enroll wrote.
+func TestAConfirmInheritsAStepUpOnlyForItsOwnSecret(t *testing.T) {
+	h, deps, hook := newPasskeyAPIHooked(t)
+	const other = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+	setup := func() (store.UserRow, string, string) {
+		u, _, token := seedAPISession(t, deps)
+		pw := seedPassword(t, deps, u, "correct horse battery staple")
+		enrolPasskey(t, h, token, newVirtualAuthenticator(t, deps.Domain, true))
+		body, _ := cborx.Marshal([]any{stepUp(t, h, token, stepUpPassword, pw)})
+		res := postCBORAuth(h, "/v1/auth/totp/enroll", body, token)
+		if res.Code != http.StatusOK {
+			t.Fatalf("a stepped-up enroll = %d", res.Code)
+		}
+		var out []any
+		if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return u, token, out[0].(string)
+	}
+	confirm := func(token, secret string) *httptest.ResponseRecorder {
+		code, err := totp.GenerateCode(secret, deps.Clock.Now())
+		if err != nil {
+			t.Fatalf("GenerateCode: %v", err)
+		}
+		body, _ := cborx.Marshal([]any{code})
+		return postCBORAuth(h, "/v1/auth/totp/confirm", body, token)
+	}
+
+	u, token, _ := setup()
+	hook.arm(func() {
+		if err := deps.Repo.PutTOTP(context.Background(), store.TOTPRow{UserID: u.ID, Secret: []byte(other),
+			Digits: 6, Period: 30, Algorithm: "SHA1", Created: deps.Clock.Now().Unix()}); err != nil {
+			t.Errorf("PutTOTP: %v", err)
+		}
+	})
+	res := confirm(token, other)
+	if res.Code != http.StatusForbidden || errorCode(t, res) != "E_STEP_UP" {
+		t.Fatalf("confirming a secret another enrolment wrote = %d, want 403 E_STEP_UP", res.Code)
+	}
+	if row, err := deps.Repo.GetTOTP(t.Context(), u.ID); err != nil || row.ConfirmedAt != nil {
+		t.Fatalf("the TOTP row = %+v, %v; want it unconfirmed", row, err)
+	}
+
+	_, vToken, vSecret := setup()
+	if res := confirm(vToken, vSecret); res.Code != http.StatusOK {
+		t.Fatalf("confirming the stepped-up enroll's own secret = %d, want 200", res.Code)
+	}
+}
+
+// M2: the step-up ledger is per account and per client address, so the owner
+// stepping up from elsewhere does not hand a thief a fresh set of free
+// attempts. The control is the owner on the thief's own address, whose success
+// does clear that address's count.
+func TestAnOwnersStepUpElsewhereDoesNotResetAThiefsCount(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 100 })
+	const thiefAddr, ownerAddr = "203.0.113.9:4000", "198.51.100.7:4000"
+	free := deps.Config.Auth.Lockout.FreeAttempts
+	run := func(ownerFrom string) int {
+		u, _, thief := seedAPISession(t, deps)
+		owner := secondSession(t, deps, u)
+		pw := seedPassword(t, deps, u, "correct horse battery staple")
+		for i := 1; i < free; i++ {
+			if res := stepUpFrom(h, thief, stepUpPassword, "not it", thiefAddr); res.Code != http.StatusForbidden {
+				t.Fatalf("thief failure %d = %d, want 403", i, res.Code)
+			}
+		}
+		stepUpToken(t, stepUpFrom(h, owner, stepUpPassword, pw, ownerFrom))
+		stepUpFrom(h, thief, stepUpPassword, "not it", thiefAddr)
+		return stepUpFrom(h, thief, stepUpPassword, "not it", thiefAddr).Code
+	}
+	if got := run(ownerAddr); got != http.StatusTooManyRequests {
+		t.Fatalf("the thief's failure past free_attempts after the owner stepped up elsewhere = %d, want 429", got)
+	}
+	if got := run(thiefAddr); got != http.StatusForbidden {
+		t.Fatalf("the control (the owner on the same address) = %d, want 403", got)
+	}
+}
+
+// M2: a step-up respects the address failure budget the password login peeks:
+// an address that spent it on failed logins is refused 429 even with the right
+// password; the control steps up from another address.
+func TestAStepUpRespectsTheAddressFailureBudget(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) { c.Limits.Rate.LoginBurst = 100 })
+	const spent, fresh = "203.0.113.9:4000", "198.51.100.7:4000"
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	for i := 0; i < deps.Config.Limits.Rate.LoginFailedBurst; i++ {
+		other, _, _ := seedAPISession(t, deps)
+		seedPassword(t, deps, other, "correct horse battery staple")
+		body, _ := cborx.Marshal([]any{other.Username, "not the password"})
+		if res := postLoginFrom(h, "/v1/auth/password/login", body, spent); res.Code != http.StatusUnauthorized {
+			t.Fatalf("failed login %d = %d, want 401", i+1, res.Code)
+		}
+	}
+	if res := stepUpFrom(h, token, stepUpPassword, pw, spent); res.Code != http.StatusTooManyRequests {
+		t.Fatalf("a step-up from an address with no failure budget = %d, want 429", res.Code)
+	}
+	stepUpToken(t, stepUpFrom(h, token, stepUpPassword, pw, fresh))
+}
+
+// Wire 7: an account holds at most 1024 passkeys (the client's decode bound).
+// register/begin at the cap is 409 E_INVALID_REQUEST; the control is one below.
+func TestAnAccountHoldsAtMost1024Passkeys(t *testing.T) {
+	h, deps := newPasskeyAPI(t)
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	seedCredentials(t, deps, u.ID, 1024)
+	begin := func() *httptest.ResponseRecorder {
+		body, _ := cborx.Marshal([]any{stepUp(t, h, token, stepUpPassword, pw)})
+		return postCBORAuth(h, "/v1/auth/passkey/register/begin", body, token)
+	}
+	res := begin()
+	if res.Code != http.StatusConflict || errorCode(t, res) != "E_INVALID_REQUEST" {
+		t.Fatalf("register/begin at 1024 passkeys = %d, want 409 E_INVALID_REQUEST", res.Code)
+	}
+	if n, err := deps.Repo.DeleteWebauthnCredential(t.Context(), u.ID, credIDFor(u.ID, 0)); err != nil || n != 1 {
+		t.Fatalf("DeleteWebauthnCredential = %d, %v", n, err)
+	}
+	if res := begin(); res.Code != http.StatusOK {
+		t.Fatalf("register/begin at 1023 passkeys = %d, want 200", res.Code)
+	}
+}
+
+// Wire 7, under the lock: a passkey that reached the cap between begin and
+// finish (the hook) refuses the finish with 409; the control finishes at 1023.
+func TestThePasskeyCapIsRecheckedUnderTheLock(t *testing.T) {
+	h, deps, hook := newPasskeyAPIHooked(t)
+	finish := func(arm func(store.UserRow)) (store.UserRow, *httptest.ResponseRecorder) {
+		u, _, token := seedAPISession(t, deps)
+		pw := seedPassword(t, deps, u, "correct horse battery staple")
+		seedCredentials(t, deps, u.ID, 1023)
+		body, _ := cborx.Marshal([]any{stepUp(t, h, token, stepUpPassword, pw)})
+		res := postCBORAuth(h, "/v1/auth/passkey/register/begin", body, token)
+		if res.Code != http.StatusOK {
+			t.Fatalf("register/begin = %d", res.Code)
+		}
+		ceremony, options := ceremonyAndOptions(t, res.Body.Bytes())
+		device := newVirtualAuthenticator(t, deps.Domain, true)
+		body, _ = cborx.Marshal([]any{ceremony, device.register(t, options), "One more"})
+		if arm != nil {
+			hook.arm(func() { arm(u) })
+		}
+		return u, postCBORAuth(h, "/v1/auth/passkey/register/finish", body, token)
+	}
+	_, res := finish(func(u store.UserRow) {
+		seedCredentialAt(t, deps, u.ID, 5000)
+	})
+	if res.Code != http.StatusConflict || errorCode(t, res) != "E_INVALID_REQUEST" {
+		t.Fatalf("finish after the account reached 1024 passkeys = %d, want 409 E_INVALID_REQUEST", res.Code)
+	}
+	if _, res := finish(nil); res.Code != http.StatusOK {
+		t.Fatalf("the undisturbed finish at 1023 = %d, want 200", res.Code)
+	}
+}
+
+// credIDFor is the account's i-th seeded credential id.
+func credIDFor(uid id.ID, i int) []byte {
+	return append([]byte{0xc0, byte(i >> 8), byte(i)}, uid[:]...)
+}
+
+func seedCredentialAt(t *testing.T, d api.Deps, uid id.ID, i int) {
+	t.Helper()
+	cred := credIDFor(uid, i)
+	if err := d.Repo.PutWebauthnCredential(context.Background(), store.WebauthnCredentialRow{
+		CredID: cred, RPID: d.Domain, UserID: uid, PublicKey: []byte{1}, Flags: []byte{1},
+		Name: "seeded", Created: d.Clock.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("PutWebauthnCredential %d: %v", i, err)
+	}
+}
+
+// seedCredentials gives the account n passkey rows under the instance's rp_id.
+func seedCredentials(t *testing.T, d api.Deps, uid id.ID, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		seedCredentialAt(t, d, uid, i)
 	}
 }

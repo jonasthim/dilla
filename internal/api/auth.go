@@ -547,15 +547,22 @@ func (d Deps) EnrollTOTP(w http.ResponseWriter, r *http.Request) {
 		if err := refuseConfirmedTOTP(ctx, tx, sess.UserID); err != nil {
 			return err
 		}
-		return tx.PutTOTP(ctx, store.TOTPRow{
+		if err := tx.PutTOTP(ctx, store.TOTPRow{
 			UserID: sess.UserID, Secret: []byte(secret), Digits: uint64(p.Digits), //nolint:gosec // G115: TOTP digits are 6 or 8
 			Period: uint64(p.Period), Algorithm: p.Algorithm, Created: now,
-		})
+		}); err != nil {
+			return err
+		}
+		// Recorded under the lock, in the order the rows are written, and bound to this
+		// secret: a confirm inherits this step-up only for the secret this enroll wrote, never
+		// for one a racing enrolment put in the row since. A transaction that then fails to
+		// commit leaves a record bound to a secret no row holds, which nothing can match.
+		d.enrolments.record(totpEnrolment(sess.UserID), sess.UserID, steppedUp, []byte(secret))
+		return nil
 	}); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.enrolments.record(totpEnrolment(sess.UserID), sess.UserID, steppedUp)
 	d.write(w, r, http.StatusOK, []any{secret, url})
 }
 
@@ -602,7 +609,6 @@ func (d Deps) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	key := totpEnrolment(sess.UserID)
-	steppedUp := d.enrolments.steppedUp(key, sess.UserID)
 	var codes []string
 	if err := d.Repo.Tx(ctx, func(tx store.Repository) error {
 		if err := tx.LockUserForDeviceRegistration(ctx, sess.UserID); err != nil {
@@ -619,6 +625,8 @@ func (d Deps) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 		if !ok || counter <= row.LastCounter {
 			return server.Errorf(server.CodeInvalidRequest, "the code does not match this secret")
 		}
+		// The enroll's step-up counts only for the secret that enroll wrote (M1).
+		steppedUp := d.enrolments.steppedUp(key, sess.UserID, row.Secret)
 		if err := d.recheckStepUp(ctx, tx, sess.UserID, steppedUp); err != nil {
 			return err
 		}
@@ -784,7 +792,8 @@ func (d Deps) passkeys() (*auth.Passkeys, error) {
 // [stepup(tstr|null)] → [ceremony_id(bstr16), options(tstr)].
 //
 // The step-up rule is EnrollTOTP's, and what the begin carried is recorded under the ceremony id
-// for the finish. The account's own credentials are excluded in the options.
+// for the finish. The account's own credentials are excluded in the options. An account already
+// holding MaxPasskeys passkeys for this rp_id is 409 E_INVALID_REQUEST, before any token is spent.
 func (d Deps) BeginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -806,6 +815,10 @@ func (d Deps) BeginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	if err := d.refuseAtPasskeyCap(r.Context(), d.Repo, sess.UserID); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
 	steppedUp, err := d.requireStepUp(r.Context(), sess, req.StepUp)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
@@ -816,16 +829,18 @@ func (d Deps) BeginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	d.enrolments.record(passkeyEnrolment(ceremonyID), sess.UserID, steppedUp)
+	d.enrolments.record(passkeyEnrolment(ceremonyID), sess.UserID, steppedUp, nil)
 	d.write(w, r, http.StatusOK, []any{ceremonyID, string(options)})
 }
 
 // FinishPasskeyRegistration is POST /v1/auth/passkey/register/finish:
 // [ceremony_id(bstr16), response(tstr), name(tstr)] → [cred_id(bstr), backup_codes([tstr])].
 //
-// `name` is checked first, so a refused name does not spend the ceremony. The ceremony row carries
-// the user it was begun for, and a ceremony begun by another account is refused. The credential
-// is then written in ConfirmTOTP's one transaction under the user lock: the step-up re-check, the
+// `name` is checked first, so a refused name does not spend the ceremony. A ceremony this
+// instance recorded as begun by another account is refused before it is taken, so the account
+// that began it can still finish it; past a restart, when no record is left, the ceremony row's
+// own user decides after the take. The credential is then written in ConfirmTOTP's one
+// transaction under the user lock: the step-up re-check, the MaxPasskeys re-check (409), the
 // insert, factor_owed cleared, backup codes minted only when none is unused.
 func (d Deps) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
@@ -860,7 +875,13 @@ func (d Deps) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx := r.Context()
 	key := passkeyEnrolment(req.CeremonyID)
-	steppedUp := d.enrolments.steppedUp(key, sess.UserID)
+	if owner, ok := d.enrolments.owner(key); ok && owner != sess.UserID {
+		d.logf(r, "api: finish passkey registration", "err", "the ceremony was begun by another account")
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+			"the registration response was not accepted"))
+		return
+	}
+	steppedUp := d.enrolments.steppedUp(key, sess.UserID, nil)
 	d.enrolments.drop(key)
 	row, err := p.FinishRegistration(ctx, req.CeremonyID, []byte(req.Response), req.Name)
 	if err == nil && row.UserID != sess.UserID {
@@ -883,6 +904,9 @@ func (d Deps) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Request) 
 		if err := d.recheckStepUp(ctx, tx, sess.UserID, steppedUp); err != nil {
 			return err
 		}
+		if err := d.refuseAtPasskeyCap(ctx, tx, sess.UserID); err != nil {
+			return err
+		}
 		if err := tx.PutWebauthnCredential(ctx, row); err != nil {
 			return err
 		}
@@ -893,6 +917,24 @@ func (d Deps) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	d.write(w, r, http.StatusOK, []any{row.CredID, stringsAny(codes)})
+}
+
+// MaxPasskeys is how many passkeys an account may hold for this rp_id: the bound the client's
+// decode of GET /v1/auth/factors enforces.
+const MaxPasskeys = 1024
+
+// refuseAtPasskeyCap answers 409 E_INVALID_REQUEST when the account already holds MaxPasskeys
+// passkeys for this rp_id.
+func (d Deps) refuseAtPasskeyCap(ctx context.Context, repo store.Repository, userID id.ID) error {
+	creds, err := repo.ListWebauthnCredentials(ctx, userID, d.rpID())
+	if err != nil {
+		return err
+	}
+	if len(creds) >= MaxPasskeys {
+		return server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+			"this account already holds %d passkeys", MaxPasskeys))
+	}
+	return nil
 }
 
 // validPasskeyName is register/finish's rule for `name`: 1-64 bytes of UTF-8, no control
@@ -997,15 +1039,20 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(code, ""))
 		return
 	}
-	d.Throttle.Clear(userID)
-	if cerr := d.Repo.ClearLoginFailures(ctx, userID); cerr != nil {
-		d.logf(r, "api: ClearLoginFailures", "err", cerr)
-	}
-	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodPasskey, true)
 	needs := needsNothing
 	if !uv {
 		needs = needsCode
 	}
+	// The account's failed-login ledger is cleared only by a complete login. A presence-only
+	// assertion still owes a code, and verifySecondFactor clears the ledger once that is given;
+	// clearing it here would hand someone holding a PIN-less key a fresh lockout curve per login.
+	if needs == needsNothing {
+		d.Throttle.Clear(userID)
+		if cerr := d.Repo.ClearLoginFailures(ctx, userID); cerr != nil {
+			d.logf(r, "api: ClearLoginFailures", "err", cerr)
+		}
+	}
+	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodPasskey, true)
 	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(userID, needs), uint64(needs)})
 }
 
@@ -1293,7 +1340,16 @@ type enrolments struct {
 type enrolment struct {
 	userID    id.ID
 	steppedUp bool
+	secret    [32]byte // SHA-256 of the TOTP secret the enroll wrote; zero for a passkey
 	expires   time.Time
+}
+
+// secretHash is what a TOTP enrolment record is bound to; nil (a passkey's) is the zero hash.
+func secretHash(secret []byte) [32]byte {
+	if secret == nil {
+		return [32]byte{}
+	}
+	return sha256.Sum256(secret)
 }
 
 func newEnrolments(clk clock.Clock, ttl time.Duration) *enrolments {
@@ -1303,7 +1359,7 @@ func newEnrolments(clk clock.Clock, ttl time.Duration) *enrolments {
 func totpEnrolment(userID id.ID) string        { return "totp\x00" + userID.String() }
 func passkeyEnrolment(ceremonyID id.ID) string { return "passkey\x00" + ceremonyID.String() }
 
-func (e *enrolments) record(key string, userID id.ID, steppedUp bool) {
+func (e *enrolments) record(key string, userID id.ID, steppedUp bool, secret []byte) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.clk.Now()
@@ -1312,16 +1368,28 @@ func (e *enrolments) record(key string, userID id.ID, steppedUp bool) {
 			delete(e.items, k)
 		}
 	}
-	e.items[key] = enrolment{userID: userID, steppedUp: steppedUp, expires: now.Add(e.ttl)}
+	e.items[key] = enrolment{userID: userID, steppedUp: steppedUp, secret: secretHash(secret), expires: now.Add(e.ttl)}
 }
 
-// steppedUp reports whether the enrolment under key was begun by userID with a valid step-up and
-// has not expired.
-func (e *enrolments) steppedUp(key string, userID id.ID) bool {
+// steppedUp reports whether the enrolment under key was begun by userID with a valid step-up, for
+// this secret (nil for a passkey), and has not expired.
+func (e *enrolments) steppedUp(key string, userID id.ID, secret []byte) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	item, ok := e.items[key]
-	return ok && item.userID == userID && item.steppedUp && !e.clk.Now().After(item.expires)
+	return ok && item.userID == userID && item.steppedUp && item.secret == secretHash(secret) &&
+		!e.clk.Now().After(item.expires)
+}
+
+// owner is the account a live enrolment record under key was begun by.
+func (e *enrolments) owner(key string) (id.ID, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, ok := e.items[key]
+	if !ok || e.clk.Now().After(item.expires) {
+		return id.ID{}, false
+	}
+	return item.userID, true
 }
 
 func (e *enrolments) drop(key string) {
@@ -1419,15 +1487,32 @@ const (
 // stepUpLedger is the failure ledger step-ups of userID are charged to. It is NOT the account's
 // own (loginLedger's user id): a thief failing step-ups behind a stolen session must not lock the
 // owner's password login.
-func stepUpLedger(userID id.ID) id.ID {
-	return loginLedger(store.UserRow{}, false, "\x00stepup"+userID.String())
+//
+// It is keyed by the account AND the client address (web3.6 review M2): the owner stepping up
+// from elsewhere clears only the owner's own count, never a thief's.
+func stepUpLedger(userID id.ID, addrKey string) id.ID {
+	return loginLedger(store.UserRow{}, false, "\x00stepup"+userID.String()+"\x00"+addrKey)
+}
+
+// stepUpGate is the standing refusal before a step-up secret is looked at: the address's failure
+// budget, PEEKED as PasswordLogin peeks it, then the step-up ledger's lockout.
+func (d Deps) stepUpGate(r *http.Request, userID id.ID) (id.ID, error) {
+	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
+		return id.ID{}, server.RateLimitedAfter(wait)
+	}
+	ledger := stepUpLedger(userID, addrKey)
+	if locked := d.Throttle.LockedFor(ledger); locked > 0 {
+		return id.ID{}, server.RateLimitedAfter(locked)
+	}
+	return ledger, nil
 }
 
 // stepUpFailure charges a failed step-up to the step-up ledger and the address, and answers 403
 // E_STEP_UP, or 429 E_RATE_LIMITED once the ledger is past its free attempts.
-func (d Deps) stepUpFailure(r *http.Request, userID id.ID) error {
+func (d Deps) stepUpFailure(r *http.Request, ledger id.ID) error {
 	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
-	if locked := d.Throttle.RecordFailure(stepUpLedger(userID), ip); locked > 0 {
+	if locked := d.Throttle.RecordFailure(ledger, ip); locked > 0 {
 		return server.RateLimitedAfter(locked)
 	}
 	return stepUpRefusal()
@@ -1461,9 +1546,9 @@ func (d Deps) StepUp(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "method is 0, 1 or 2"))
 		return
 	}
-	ledger := stepUpLedger(sess.UserID)
-	if locked := d.Throttle.LockedFor(ledger); locked > 0 {
-		server.WriteError(w, server.RateLimitedAfter(locked))
+	ledger, err := d.stepUpGate(r, sess.UserID)
+	if err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	ctx := r.Context()
@@ -1473,7 +1558,7 @@ func (d Deps) StepUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !good {
-		server.WriteError(w, d.stepUpFailure(r, sess.UserID))
+		server.WriteError(w, d.stepUpFailure(r, ledger))
 		return
 	}
 	d.Throttle.Clear(ledger)
@@ -1583,14 +1668,14 @@ func (d Deps) FinishPasskeyStepUp(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	ledger := stepUpLedger(sess.UserID)
-	if locked := d.Throttle.LockedFor(ledger); locked > 0 {
-		server.WriteError(w, server.RateLimitedAfter(locked))
+	ledger, err := d.stepUpGate(r, sess.UserID)
+	if err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	if err := p.FinishStepUp(r.Context(), req.CeremonyID, []byte(req.Response), sess.UserID); err != nil {
 		d.logf(r, "api: finish passkey step-up", "err", err)
-		server.WriteError(w, d.stepUpFailure(r, sess.UserID))
+		server.WriteError(w, d.stepUpFailure(r, ledger))
 		return
 	}
 	d.Throttle.Clear(ledger)

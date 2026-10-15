@@ -8,6 +8,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
 )
@@ -42,7 +43,14 @@ func newPasskeyAPIHooked(t *testing.T) (http.Handler, api.Deps, *beforeTx) {
 // under, exactly as the composition root's defaulting does.
 func newPasskeyAPIFull(t *testing.T, uv string, hooked bool) (http.Handler, api.Deps, *beforeTx) {
 	t.Helper()
-	_, d := newTestAPI(t)
+	return newPasskeyAPITuned(t, uv, hooked, nil)
+}
+
+// newPasskeyAPITuned is newPasskeyAPIFull with a hook into the configuration, as
+// newTestAPIWithConfig has.
+func newPasskeyAPITuned(t *testing.T, uv string, hooked bool, tune func(*config.Config)) (http.Handler, api.Deps, *beforeTx) {
+	t.Helper()
+	_, d := newTestAPIWithConfig(t, tune)
 	c := &d.Config.Auth.WebAuthn
 	c.RPID = d.Domain
 	c.RPDisplayName = d.Domain

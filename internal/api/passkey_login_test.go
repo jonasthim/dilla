@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
 )
 
@@ -166,7 +167,9 @@ func stepUpCeremony(t *testing.T, h http.Handler, token string) (id.ID, string) 
 // A step-up ceremony is kind 1 with its user set: login/finish refuses it, and
 // the step-up finish refuses a login ceremony and another user's step-up.
 func TestAStepUpCeremonyIsNotALoginAndALoginIsNotAStepUp(t *testing.T) {
-	h, deps := newPasskeyAPI(t)
+	// The address failure budget out of the way: three refusals below charge it, and this test is
+	// about which ceremony each route takes, not about the budget.
+	h, deps, _ := newPasskeyAPITuned(t, "", false, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 100 })
 	_, _, token := seedAPISession(t, deps)
 	device := newVirtualAuthenticator(t, deps.Domain, true)
 	enrolPasskey(t, h, token, device)
@@ -233,5 +236,114 @@ func TestAPasskeyNameIsOneToSixtyFourBytes(t *testing.T) {
 	}
 	if got := finish(strings.Repeat("a", 64)); got != http.StatusOK {
 		t.Fatalf("a 64-byte name = %d, want 200", got)
+	}
+}
+
+// I1 (b): a registration ceremony finished from another account's session is
+// refused (400) and NOT spent: the account that began it finishes the same
+// ceremony, with the same response, as the control.
+func TestRegisterFinishRefusesAnotherAccountsCeremony(t *testing.T) {
+	h, deps := newPasskeyAPI(t)
+	a, _, aToken := seedAPISession(t, deps)
+	_, _, bToken := seedAPISession(t, deps)
+	begin, _ := cborx.Marshal([]any{nil})
+	res := postCBORAuth(h, "/v1/auth/passkey/register/begin", begin, aToken)
+	if res.Code != http.StatusOK {
+		t.Fatalf("register/begin = %d", res.Code)
+	}
+	ceremony, options := ceremonyAndOptions(t, res.Body.Bytes())
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	body, _ := cborx.Marshal([]any{ceremony, device.register(t, options), "Laptop"})
+
+	if res := postCBORAuth(h, "/v1/auth/passkey/register/finish", body, bToken); res.Code != http.StatusBadRequest {
+		t.Fatalf("finishing another account's ceremony = %d, want 400", res.Code)
+	}
+	if _, err := deps.Repo.GetWebauthnCredential(t.Context(), device.credID); err == nil {
+		t.Fatal("the refused finish stored a credential")
+	}
+	if res := postCBORAuth(h, "/v1/auth/passkey/register/finish", body, aToken); res.Code != http.StatusOK {
+		t.Fatalf("the account that began it finishing it = %d (%x), want 200", res.Code, res.Body.Bytes())
+	}
+	if row, err := deps.Repo.GetWebauthnCredential(t.Context(), device.credID); err != nil || row.UserID != a.ID {
+		t.Fatalf("the credential = %+v, %v; want it filed to the account that began the ceremony", row, err)
+	}
+}
+
+// I1 (d): a passkey registered under another rp_id is unknown at login and is
+// not a factor. The control is the same credential under this instance's rp_id.
+func TestAPasskeyUnderAnotherRelyingPartyIsNeitherALoginNorAFactor(t *testing.T) {
+	h, deps, _ := newPasskeyAPITuned(t, "", false, func(c *config.Config) { c.Limits.Rate.LoginBurst = 100 })
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	credID := enrolPasskey(t, h, token, device)
+
+	if res := passkeyLoginRaw(t, h, device); res.Code != http.StatusOK {
+		t.Fatalf("the control (this rp_id) = %d, want 200", res.Code)
+	}
+	if _, needs := needsOf(t, h, u.Username, pw); needs != 2 {
+		t.Fatalf("the control: a password login owes %d, want 2", needs)
+	}
+
+	row, err := deps.Repo.GetWebauthnCredential(t.Context(), credID)
+	if err != nil {
+		t.Fatalf("GetWebauthnCredential: %v", err)
+	}
+	if _, err := deps.Repo.DeleteWebauthnCredential(t.Context(), u.ID, credID); err != nil {
+		t.Fatalf("DeleteWebauthnCredential: %v", err)
+	}
+	row.RPID = "other.example"
+	if err := deps.Repo.PutWebauthnCredential(t.Context(), row); err != nil {
+		t.Fatalf("PutWebauthnCredential: %v", err)
+	}
+
+	res := passkeyLoginRaw(t, h, device)
+	if res.Code != http.StatusUnauthorized || errorCode(t, res) != "E_PASSKEY_UNKNOWN" {
+		t.Fatalf("a passkey under other.example = %d %s, want 401 E_PASSKEY_UNKNOWN", res.Code, errorCode(t, res))
+	}
+	if _, needs := needsOf(t, h, u.Username, pw); needs != 0 {
+		t.Fatalf("a password login of an account whose only passkey is under other.example owes %d, want 0", needs)
+	}
+	if f := getFactors(t, h, token); len(f[2].([]any)) != 0 {
+		t.Fatalf("factors list %d passkeys, want none under this rp_id", len(f[2].([]any)))
+	}
+}
+
+// M3: on an instance where a presence-only passkey login is possible
+// ("preferred"), it owes a code, and it must not clear the account's
+// failed-login lockout before that code is given. The control is the same
+// passkey with UV, which is the whole login and does clear it.
+func TestAPresenceOnlyPasskeyLoginDoesNotClearTheLockout(t *testing.T) {
+	h, deps, _ := newPasskeyAPITuned(t, "preferred", false, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 100
+		c.Limits.Rate.LoginFailedBurst = 100
+	})
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	enrolTOTP(t, h, deps, token)
+	device := newVirtualAuthenticator(t, deps.Domain, true)
+	enrolPasskeyWith(t, h, token, device, stepUp(t, h, token, stepUpPassword, pw))
+
+	for i := 0; i <= deps.Config.Auth.Lockout.FreeAttempts; i++ {
+		login(t, h, u.Username, "not the password")
+	}
+	if deps.Throttle.LockedFor(u.ID) == 0 {
+		t.Fatal("the account is not locked after free_attempts+1 wrong passwords")
+	}
+
+	device.userVerified = false
+	if _, needs := passkeyLoginNeeds(t, h, device); needs != 1 {
+		t.Fatalf("a presence-only login owes %d, want 1", needs)
+	}
+	if deps.Throttle.LockedFor(u.ID) == 0 {
+		t.Fatal("a presence-only passkey login, still owing a code, cleared the account's lockout")
+	}
+
+	device.userVerified = true
+	if _, needs := passkeyLoginNeeds(t, h, device); needs != 0 {
+		t.Fatalf("a UV login owes %d, want 0", needs)
+	}
+	if locked := deps.Throttle.LockedFor(u.ID); locked != 0 {
+		t.Fatalf("the control: a complete passkey login left the account locked for %s", locked)
 	}
 }
