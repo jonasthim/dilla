@@ -284,7 +284,7 @@ describe('new backup codes', () => {
     const shown = await screen.findByRole('dialog', { name: en['factorSettings.codes.newTitle'] });
     expect(within(shown).getByText(en['factorSettings.codes.newBody'])).toBeInTheDocument();
     expect(regionHome()).toBe(shown);
-    expect(within(shown).getAllByRole('listitem').map(li => li.textContent?.replace(/\s/g, ''))).toEqual(CODES);
+    expect(within(shown).getAllByRole('listitem').map(li => li.textContent?.replace(/[-\s]/g, ''))).toEqual(CODES);
     await waitFor(() => expect(watch.history).toEqual([en['factorSettings.codesMade']]));
     await user.click(within(shown).getByRole('button', { name: en['dialog.close'] }));
     await waitFor(() => expect(button(en['factorSettings.codes.make'])).toHaveFocus());

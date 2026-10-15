@@ -249,7 +249,7 @@ describe('authenticator app', () => {
     await user.type(codeField(), '123456');
     await user.click(button('Continue'));
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
-    expect(document.body.textContent).toContain('AAAAA BBBBB');
+    expect(document.body.textContent).toContain('AAAAA-BBBBB');
     expect(window.location.href).not.toContain('AAAAA');
     expect(setItem).not.toHaveBeenCalled();
     expect(consoles.map(c => c.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
@@ -381,7 +381,7 @@ describe('backup codes', () => {
     await toCodes(user);
     const list = screen.getByRole('list', { name: en['factor.codes.label'] });
     expect(list.tagName).toBe('OL');
-    expect(within(list).getAllByRole('listitem').map(li => li.textContent)).toEqual(['AAAAA BBBBB CCCCC DDDDD EEEEE F', 'GGGGG HHHHH IIIII JJJJJ KKKKK L']);
+    expect(within(list).getAllByRole('listitem').map(li => li.textContent)).toEqual(['AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-F', 'GGGGG-HHHHH-IIIII-JJJJJ-KKKKK-L']);
     expect(screen.getByText(en['factor.codes.notKey'])).toBeInTheDocument();
     const next = button('Continue');
     expect(next).toHaveAttribute('aria-disabled', 'true');
