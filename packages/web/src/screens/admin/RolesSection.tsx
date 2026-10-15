@@ -66,6 +66,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
     setMoveError(null);
     refocus.current = { id: r.id, direction };
     client.call({ m: 'moveRole', communityId, roleId: r.id, direction }).then(() => {
+      refocus.current = null;
       announce(t('roles.moved', { name: r.name }));
     }).catch((e: unknown) => {
       refocus.current = null;
@@ -78,6 +79,9 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
     setLoadError(null);
     client.call({ m: 'selectCommunity', communityId }).catch((e: unknown) => setLoadError(t('roles.error.load', { code: errorOf(e).code })));
   };
+  // A section opened before the roles arrived reads them once itself; only a failed read offers "try again".
+  const absent = roles === undefined;
+  useEffect(() => { if (absent) retry(); }, [absent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const controls = (r: RoleSummary) => {
     const at = movable.findIndex(x => x.id === r.id);
@@ -104,8 +108,10 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
       {roles === undefined ? (
         <div className="dw-settings-actions">
           <p aria-busy="true">{t('roles.loading')}</p>
-          <Button variant="ghost" onClick={retry}>{t('roles.retry')}</Button>
-          {loadError !== null ? <p role="alert" className="dw-admin-error">{loadError}</p> : null}
+          {loadError !== null ? <>
+            <p role="alert" className="dw-admin-error">{loadError}</p>
+            <Button variant="ghost" onClick={retry}>{t('roles.retry')}</Button>
+          </> : null}
         </div>
       ) : (
         <ul aria-label={t('roles.title')} className="dw-admin-rows dw-role-rows">
@@ -130,7 +136,7 @@ export function RolesSection({ communityId, announce }: SectionProps): React.JSX
           announce={announce} onClose={() => setTarget(null)} />
         : null}
       <DeleteRole communityId={communityId} role={target?.kind === 'delete' ? live ?? null : null} announce={announce}
-        onDone={() => { focusNew.current = true; setTarget(null); focusNewButton(); }} onClose={() => setTarget(null)} />
+        onDone={() => { focusNew.current = true; setTarget(null); }} onClose={() => setTarget(null)} />
     </section>
   );
 }

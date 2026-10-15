@@ -147,7 +147,7 @@ function RoleName({ id, value, readOnly, error, attempt, onChange }: {
   useEffect(() => { document.getElementById(id)?.focus(); }, [id]);
   useEffect(() => { if (error !== undefined) document.getElementById(id)?.focus(); }, [id, error, attempt]);
   return (
-    <TextField key={attempt} id={id} label={t('roles.editor.name')} value={value} hint={t('roles.editor.nameHint')} error={error}
+    <TextField id={id} label={t('roles.editor.name')} value={value} hint={t('roles.editor.nameHint')} error={error}
       onChange={onChange} required={!readOnly} disabled={readOnly} autoComplete="off" spellCheck={false} />
   );
 }

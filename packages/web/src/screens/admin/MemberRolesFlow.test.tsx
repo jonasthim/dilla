@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { PERM } from '@dilla/client-core';
 import { refusal } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
-import { ADMINS, CREW, EVERY, MODS, OWNER_ACCESS, SERVER, harness, role, type HarnessOptions } from '../../test/roles-harness.tsx';
+import { ADMINS, CREW, EVERY, MODS, OWNER_ACCESS, ROLES, SERVER, harness, role, type HarnessOptions } from '../../test/roles-harness.tsx';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { en } from '../../strings/index.ts';
 import { MemberRolesFlow } from './MemberRolesFlow.tsx';
@@ -18,6 +18,7 @@ function setup(options: HarnessOptions & { bobRoles?: string[] } = {}) {
   const view = h.mount(<MemberRolesFlow communityId={SERVER} userId={BOB} onClose={onClose} announce={h.announce} />);
   return { ...h, view, onClose };
 }
+const ROLES_WITHOUT_MODS = ROLES.filter(r => r.id !== MODS);
 const dialog = () => within(screen.getByRole('dialog'));
 
 describe('MemberRolesFlow', () => {
@@ -37,6 +38,7 @@ describe('MemberRolesFlow', () => {
     expect(admins).toBeDisabled();
     expect(admins).toHaveAccessibleDescription('admins is at or above your highest role.');
     expect(dialog().getByRole('checkbox', { name: 'mods' })).toBeDisabled();
+    expect(dialog().getByRole('checkbox', { name: 'mods' })).toHaveAccessibleDescription(en['roles.editor.notHeld']);
     expect(dialog().getByRole('checkbox', { name: 'crew' })).toBeEnabled();
   });
   it('grants then revokes, announcing each', async () => {
@@ -74,6 +76,32 @@ describe('MemberRolesFlow', () => {
       expect(await dialog().findByRole('alert')).toHaveTextContent(text);
     });
   }
+  it('maps a 404 to the role-gone copy when the role is no longer listed, else to the member-gone copy', async () => {
+    const { user } = setup({ handler: (c, f) => {
+      f.set(`roles:${SERVER}`, ROLES_WITHOUT_MODS);
+      return Promise.reject(refusal({ code: 'E_NOT_FOUND', status: 404 }));
+    } });
+    await user.click(dialog().getByRole('checkbox', { name: 'mods' }));
+    expect(await dialog().findByRole('alert')).toHaveTextContent(en['roles.error.gone']);
+  });
+  it('shows the loading line, not the empty note, while the roles are absent', () => {
+    setup({ roles: null });
+    expect(dialog().getByText(en['roles.loading'])).toBeInTheDocument();
+    expect(screen.queryByText(en['roles.assign.none'])).toBeNull();
+  });
+  it('shows no blank name while the members are absent', () => {
+    const h = harness();
+    h.fake.set(`members:${SERVER}`, undefined as never);
+    h.mount(<MemberRolesFlow communityId={SERVER} userId={BOB} onClose={() => undefined} announce={h.announce} />);
+    expect(screen.queryByRole('heading', { name: 'Roles of' })).toBeNull();
+    expect(dialog().getByText(en['roles.loading'])).toBeInTheDocument();
+  });
+  it('closes and announces when the member leaves while open', async () => {
+    const { fake, onClose, announce } = setup();
+    act(() => { fake.set(`members:${SERVER}`, members().slice(0, 1)); });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(announce).toHaveBeenCalledWith('Bob is no longer in this server.');
+  });
   it('says there is nothing to give when no role can be assigned', () => {
     setup({ roles: [role(EVERY, '@everyone', 0, { allow: 3 })] });
     expect(dialog().getByText(en['roles.assign.none'])).toBeInTheDocument();

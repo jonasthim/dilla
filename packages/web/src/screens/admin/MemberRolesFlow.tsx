@@ -1,6 +1,6 @@
 // Flow 09: give and take roles from the member list. A Dialog (through its portal, so it works from the modal narrow
 // drawer) over a CheckList; every tick is one grantRole or revokeRole, applied at once.
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CheckList, Dialog } from '@dilla/ui';
 import { resolveCommunity, type RoleSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
@@ -34,7 +34,20 @@ export function MemberRolesFlow({ communityId, userId, onClose, announce }: Memb
   const [problem, setProblem] = useState<{ message: string; n: number } | null>(null);
 
   const target = members?.find(m => m.userId === userId);
-  const name = target === undefined ? '' : memberName(target);
+  // The last name seen, so a member who leaves while this is open can still be named in the message.
+  const seen = useRef('');
+  if (target !== undefined) seen.current = memberName(target);
+  const name = seen.current;
+  const latestRoles = useRef(roles);
+  latestRoles.current = roles;
+  const left = target === undefined && members !== undefined;
+  const told = useRef(false);
+  useEffect(() => {
+    if (!left || told.current) return;
+    told.current = true;
+    announce(t('roles.assign.error.gone', { name }));
+    onClose();
+  });
   const everyoneId = access?.everyoneId ?? '';
   const list = assignable(roles ?? [], everyoneId);
   const mine = access?.owner === true ? ALL_BITS
@@ -56,7 +69,7 @@ export function MemberRolesFlow({ communityId, userId, onClose, announce }: Memb
     }).catch((e: unknown) => {
       const err = errorOf(e);
       const message = forbidden(err) ? t('roles.assign.error.forbidden', { role: r.name })
-        : statusIs(err, 404) ? t('roles.assign.error.gone', { name })
+        : statusIs(err, 404) ? (latestRoles.current?.some(x => x.id === id) === false ? t('roles.error.gone') : t('roles.assign.error.gone', { name }))
           : t('roles.assign.error.other', { code: err.code });
       // The refusal and the end of busy land in one update.
       setProblem(p => ({ message, n: (p?.n ?? 0) + 1 }));
@@ -70,6 +83,13 @@ export function MemberRolesFlow({ communityId, userId, onClose, announce }: Memb
       ...(rank ? { detail: t('roles.assign.locked', { role: r.name }) } : lacking(r) ? { detail: t('roles.editor.notHeld') } : {}) };
   });
 
+  if (roles === undefined || members === undefined) {
+    return (
+      <Dialog open title={t('roles.title')} closeLabel={t('roles.assign.close')} onClose={onClose}>
+        <p aria-busy="true">{t('roles.loading')}</p>
+      </Dialog>
+    );
+  }
   return (
     <Dialog open title={t('roles.assign.title', { name })} closeLabel={t('roles.assign.close')} onClose={onClose}>
       <p>{t('roles.assign.body', { name })}</p>

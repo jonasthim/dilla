@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import { refusal } from '../../test/fake-client.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
-import { ADMINS, CREW, MODS, OWNER_ACCESS, ROLES, SERVER, harness, type HarnessOptions } from '../../test/roles-harness.tsx';
+import { CREW, MODS, OWNER_ACCESS, ROLES, SERVER, harness, type HarnessOptions } from '../../test/roles-harness.tsx';
 import { en } from '../../strings/index.ts';
 import { RolesSection } from './RolesSection.tsx';
 
@@ -47,11 +47,17 @@ describe('RolesSection list', () => {
     setup({ roles: null });
     expect(screen.getByText(en['roles.loading'])).toBeInTheDocument();
   });
-  it('retries a load through selectCommunity and shows roles.error.load when it fails', async () => {
+  it('shows no retry beside a plain loading line, and reads once itself', async () => {
+    const { fake } = setup({ roles: null });
+    expect(screen.queryByRole('button', { name: en['roles.retry'] })).toBeNull();
+    await waitFor(() => expect(fake.callsOf('selectCommunity')).toHaveLength(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('after a failed read shows roles.error.load with a retry that selects the server again', async () => {
     const { fake, user } = setup({ roles: null, handler: () => Promise.reject(refusal({ code: 'E_NETWORK' })) });
-    await user.click(screen.getByRole('button', { name: en['roles.retry'] }));
-    expect(fake.callsOf('selectCommunity')).toEqual([{ m: 'selectCommunity', communityId: SERVER }]);
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the roles (E_NETWORK).');
+    await user.click(screen.getByRole('button', { name: en['roles.retry'] }));
+    expect(fake.callsOf('selectCommunity')).toEqual([{ m: 'selectCommunity', communityId: SERVER }, { m: 'selectCommunity', communityId: SERVER }]);
   });
   it('has no axe violations', async () => {
     const { view } = setup();
@@ -67,6 +73,17 @@ describe('RolesSection move', () => {
     await waitFor(() => expect(announce).toHaveBeenCalledWith('mods moved.'));
     await user.click(screen.getByRole('button', { name: 'move mods up' }));
     expect(fake.callsOf('moveRole')[1].direction).toBe('up');
+  });
+  it('keeps focus on the moved role: its button follows the row', async () => {
+    const { user } = setup({ handler: (c, f) => {
+      if (c.m === 'moveRole') {
+        f.set(`roles:${SERVER}`, ROLES.map(r => (r.id === MODS ? { ...r, position: 1 } : r.id === CREW ? { ...r, position: 5 } : r)));
+      }
+      return Promise.resolve(null);
+    } });
+    await user.click(screen.getByRole('button', { name: 'move mods down' }));
+    // mods is now the lowest role, so it can only move up: focus lands on that button.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'move mods up' })).toHaveFocus());
   });
   it('shows roles.error.move on a failure', async () => {
     const { user } = setup({ handler: () => Promise.reject(refusal({ code: 'E_NETWORK' })) });
@@ -94,6 +111,6 @@ describe('RolesSection delete', () => {
     await user.click(screen.getByRole('button', { name: en['roles.deleteConfirm'] }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete admins (E_NETWORK). Try again.');
     expect(screen.getByRole('button', { name: en['roles.deleteConfirm'] })).toBeEnabled();
-    expect(ADMINS).toBeTruthy();
+    expect(screen.getByRole('button', { name: en['roles.editor.cancel'] })).toHaveFocus();
   });
 });

@@ -47,6 +47,15 @@ describe('RoleEditorFlow create', () => {
     expect(dialog().getByText(en['roles.error.long'])).toBeInTheDocument();
     expect(fake.callsOf('createRole')).toHaveLength(0);
   });
+  it('keeps focus in the name field while typing after a name error', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: en['roles.new'] }));
+    await user.click(dialog().getByRole('button', { name: en['roles.editor.create'] }));
+    expect(dialog().getByText(en['roles.error.empty'])).toBeInTheDocument();
+    await user.keyboard('ab');
+    expect(nameField()).toHaveFocus();
+    expect(nameField()).toHaveValue('ab');
+  });
   it('sends an NFD name as NFC', async () => {
     const { fake, user } = setup({ handler: created });
     await user.click(screen.getByRole('button', { name: en['roles.new'] }));
@@ -92,7 +101,40 @@ describe('RoleEditorFlow refusals', () => {
   }
 });
 
+describe('RoleEditorFlow edit refusals', () => {
+  const edits: [string, Parameters<typeof refusal>[0], string][] = [
+    ['400 is not "full"', { code: 'E_INVALID_REQUEST', status: 400 }, 'Could not save the role (E_INVALID_REQUEST). Try again.'],
+    ['404', { code: 'E_NOT_FOUND', status: 404 }, en['roles.error.gone']],
+    ['409', { code: 'E_CONFLICT', status: 409 }, en['roles.error.conflict']],
+  ];
+  for (const [label, init, text] of edits) {
+    it(`maps ${label}`, async () => {
+      const { user } = setup({ handler: () => Promise.reject(refusal(init)) });
+      await user.click(screen.getByRole('button', { name: 'edit mods' }));
+      await user.click(dialog().getByRole('switch', { name: en['roles.editor.hoist'] }));
+      await user.click(dialog().getByRole('button', { name: en['roles.editor.save'] }));
+      expect(await dialog().findByRole('alert')).toHaveTextContent(text);
+    });
+  }
+});
+
 describe('RoleEditorFlow edit', () => {
+  it('sends a bit I do not hold unchanged in the mask, neither added nor stripped', async () => {
+    const roles = [role(EVERY, '@everyone', 0, { allow: PERM.viewChannel | PERM.pinMessages }),
+      role(MODS, 'mods', 1, { allow: PERM.banMembers | PERM.sendMessages })];
+    const { fake, user } = setup({ roles, access: { ...OWNER_ACCESS, owner: false, top: 5 } });
+    await user.click(screen.getByRole('button', { name: 'edit mods' }));
+    expect(dialog().getByRole('switch', { name: en['perm.ban'] })).toHaveAttribute('aria-disabled', 'true');
+    await user.click(dialog().getByRole('switch', { name: en['perm.pin'] }));
+    await user.click(dialog().getByRole('button', { name: en['roles.editor.save'] }));
+    expect(fake.callsOf('updateRole')[0].allow).toBe(PERM.banMembers | PERM.sendMessages | PERM.pinMessages);
+  });
+  it('has no axe violations in edit mode with disabled rows', async () => {
+    const roles = [role(EVERY, '@everyone', 0, { allow: PERM.viewChannel }), role(MODS, 'mods', 1)];
+    const { user } = setup({ roles, access: { ...OWNER_ACCESS, owner: false, top: 5 } });
+    await user.click(screen.getByRole('button', { name: 'edit mods' }));
+    await expectNoAxeViolations(screen.getByRole('dialog'));
+  });
   it('sends only the changed fields', async () => {
     const { fake, user, announce } = setup();
     await user.click(screen.getByRole('button', { name: 'edit mods' }));
