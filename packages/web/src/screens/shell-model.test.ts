@@ -97,6 +97,12 @@ describe('badges', () => {
     expect(rowBadge(BADGES, { [`mute.channel.${id('6')}`]: '1' }, id('6'))).toEqual({ unread: 0, mentions: 1, muted: true });
     expect(rowBadge(BADGES, {}, id('7'))).toEqual({ unread: 0, mentions: 0, muted: false });
     expect(rowBadge(undefined, undefined, id('5'))).toEqual({ unread: 0, mentions: 0, muted: false });
+    // a muted server mutes its channels (web3.5 WA5), and its row label says so
+    const server = id('a');
+    expect(rowBadge(BADGES, { [`mute.community.${server}`]: '1' }, id('6'), server)).toEqual({ unread: 0, mentions: 1, muted: true });
+    expect(rowBadge(BADGES, { [`mute.community.${server}`]: '1' }, id('5'), server)).toEqual({ unread: 0, mentions: 0, muted: true });
+    expect(rowBadge(BADGES, { [`mute.community.${server}`]: '1' }, id('5'))).toEqual({ unread: 3, mentions: 0, muted: false });
+    expect(badgeLabel({ name: 'general', unread: 0, mentions: 1, muted: true })).toBe('general, muted, mentions 1');
   });
   it('sums what is shown', () => {
     expect(sumBadges([{ unread: 3, mentions: 0, muted: false }, { unread: 0, mentions: 1, muted: true }, { unread: 2, mentions: 2, muted: false }]))

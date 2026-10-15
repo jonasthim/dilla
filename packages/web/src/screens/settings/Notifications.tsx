@@ -20,6 +20,12 @@ const MODES: readonly { value: string; key: StringKey }[] = [
   { value: 'mentions', key: 'notify.channel.mentions' },
   { value: 'nothing', key: 'notify.channel.nothing' },
 ];
+const SERVER_MODES: readonly { value: string; key: StringKey }[] = [
+  { value: 'default', key: 'serverNotify.mode.default' },
+  { value: 'all', key: 'serverNotify.mode.all' },
+  { value: 'mentions', key: 'serverNotify.mode.mentions' },
+  { value: 'nothing', key: 'serverNotify.mode.nothing' },
+];
 const PERMISSION_TEXT: Readonly<Record<Exclude<PermissionState, 'default'>, StringKey>> = {
   granted: 'notify.permission.granted',
   denied: 'notify.permission.denied',
@@ -87,6 +93,28 @@ export function Notifications(): React.JSX.Element {
         <Toggle id="sound-ring" label={t('settings.sound.ring')} checked={settings[SETTINGS.soundRing] !== 'off'}
           onChange={on => write(SETTINGS.soundRing, on ? 'on' : 'off')} />
       </SettingsRow>
+      <h3>{t('serverNotify.title')}</h3>
+      <p>{t('serverNotify.body')}</p>
+      <ul className="dw-notify-list">
+        {communities.map(community => (
+          <li key={community.id}>
+            <SettingsRow id={`notify-server-${community.id}`} label={community.name}>
+              <div className="dw-notify-controls">
+                <Segmented id={`notify-server-mode-${community.id}`} label={community.name}
+                  options={SERVER_MODES.map(o => ({ value: o.value, label: t(o.key) }))}
+                  value={settings[SETTINGS.notifyCommunity(community.id)] ?? 'default'}
+                  onChange={value => write(SETTINGS.notifyCommunity(community.id), value === 'default' ? null : value)} />
+                <Toggle id={`notify-server-mute-${community.id}`} label={t('serverNotify.mute')} showLabel
+                  checked={settings[SETTINGS.muteCommunity(community.id)] === '1'}
+                  onChange={on => write(SETTINGS.muteCommunity(community.id), on ? '1' : null)} />
+                <Toggle id={`notify-server-everyone-${community.id}`} label={t('serverNotify.suppressEveryone')} showLabel
+                  checked={settings[SETTINGS.everyoneCommunity(community.id)] === '1'}
+                  onChange={on => write(SETTINGS.everyoneCommunity(community.id), on ? '1' : null)} />
+              </div>
+            </SettingsRow>
+          </li>
+        ))}
+      </ul>
       <h3>{t('notify.channels.title')}</h3>
       <p>{t('notify.channels.body')}</p>
       <ul className="dw-notify-list">

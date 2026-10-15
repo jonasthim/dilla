@@ -98,9 +98,9 @@ export interface RowBadge { unread: number; mentions: number; muted: boolean; }
 
 /** The row's shown counts from the badges slice (zero when absent) and its mute setting. */
 export function rowBadge(badges: Readonly<Record<string, BadgeState>> | undefined, settings: Readonly<Record<string, string>> | undefined,
-  channelId: string): RowBadge {
+  channelId: string, communityId?: string): RowBadge {
   const b = badges?.[channelId];
-  const muted = settings !== undefined && isMuted(settings, channelId);
+  const muted = settings !== undefined && isMuted(settings, channelId, communityId);
   return { unread: muted ? 0 : b?.unread ?? 0, mentions: b?.mentions ?? 0, muted };
 }
 
