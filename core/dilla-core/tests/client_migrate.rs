@@ -1745,3 +1745,57 @@ fn a_v2_row_this_build_refuses_still_migrates() {
     drop(conn);
     std::fs::remove_file(&path).expect("cleanup");
 }
+
+/// The database file's bytes with every WAL frame checkpointed into it: anything a refused open
+/// wrote, in the file or in the WAL, shows up here.
+fn file_bytes(conn: &ConnHandle, path: &Path) -> Vec<u8> {
+    conn.lock()
+        .expect("lock")
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .expect("checkpoint");
+    std::fs::read(path).expect("read the store")
+}
+
+/// C4x (web3.6): a store a newer client moved to app schema 5 (a rollback from web3.7) is refused
+/// by `open` and by `migrate_app` with E_STORE_NEWER naming both numbers, and its bytes are
+/// exactly as the newer client left them.
+#[test]
+fn a_v5_store_is_refused_untouched() {
+    let (path, conn) = copy_of(V3_FIXTURE, "v5-refused");
+    drop(ClientCore::open(Arc::clone(&conn)).expect("v4 open"));
+    conn.lock()
+        .expect("lock")
+        .execute_batch("UPDATE app_meta SET v = x'05' WHERE k = 'schema'; DROP TABLE app_roles;")
+        .expect("simulate a v5 store");
+    let before = file_bytes(&conn, &path);
+
+    let error = match ClientCore::open(Arc::clone(&conn)) {
+        Ok(_) => panic!("a v5 store must not open"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        error,
+        ClientError {
+            code: "E_STORE_NEWER",
+            detail: "found 5, supported 4".into(),
+        }
+    );
+    assert_eq!(error.to_string(), "E_STORE_NEWER: found 5, supported 4");
+    match migrate_app(&DillaStorage::new(Arc::clone(&conn))) {
+        Err(dilla_core::mls::StorageError::StoreNewer { found, supported }) => {
+            assert_eq!((found, supported), (5, 4));
+        }
+        other => panic!("migrate_app must refuse a v5 store, got {other:?}"),
+    }
+    assert_eq!(dilla_core::client::APP_SCHEMA_SUPPORTED, 4);
+    assert!(
+        file_bytes(&conn, &path) == before,
+        "the refused store's bytes are unchanged"
+    );
+    assert_eq!(
+        meta_of(&conn.lock().expect("lock"), "schema"),
+        Some(vec![0x05])
+    );
+    drop(conn);
+    std::fs::remove_file(&path).expect("cleanup");
+}

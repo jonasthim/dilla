@@ -821,17 +821,28 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
              INSERT INTO app_meta (k, v) VALUES ('schema', x'05');",
         )
         .expect("seed");
-    let e = match ClientCore::open(c) {
+    let e = match ClientCore::open(Arc::clone(&c)) {
         Ok(_) => panic!("a newer schema must be refused"),
         Err(e) => e,
     };
+    // C4x (web3.6): its own code, with both numbers, and nothing created in the store.
     assert_eq!(
         e,
         ClientError {
-            code: "E_CORE_STATE",
-            detail: "app schema 5 is newer than this build".into()
+            code: "E_STORE_NEWER",
+            detail: "found 5, supported 4".into()
         }
     );
+    let app_tables: i64 = c
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'app%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("tables");
+    assert_eq!(app_tables, 1, "only the seeded app_meta");
 }
 
 // ---------------------------------------------------------------------------------------------

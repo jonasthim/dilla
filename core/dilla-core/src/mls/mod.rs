@@ -80,6 +80,14 @@ pub enum StorageError {
         "storage written by provider version {version} with codec {codec}; this build writes version 1 with codec cbor"
     )]
     UnsupportedStorage { version: String, codec: String },
+    /// The app schema in `app_meta` is newer than the highest this build migrates to: a newer
+    /// client wrote the store (a rollback). Returned before anything is written to it, so the
+    /// newer client still finds its store as it left it.
+    ///
+    /// The numbers are `u32` (a `found` above it reads as `u32::MAX`): a `u64` field would raise the
+    /// enum's alignment to 8 on wasm32 and re-lay every `Result<_, StorageError>` (about 11 kB).
+    #[error("app schema {found} is newer than this build, which supports up to {supported}")]
+    StoreNewer { found: u32, supported: u32 },
 }
 
 /// The serde codec the `StorageProvider` blobs use.

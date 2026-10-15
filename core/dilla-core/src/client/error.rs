@@ -18,6 +18,9 @@ pub(crate) const E_CORE_STORAGE: &str = "E_CORE_STORAGE";
 pub(crate) const E_CORE_RELOAD: &str = "E_CORE_RELOAD";
 pub(crate) const E_RECOVERY_KEY: &str = "E_RECOVERY_KEY";
 pub(crate) const E_BINDING: &str = "E_BINDING";
+/// The store was written by a newer client (`StorageError::StoreNewer`); the detail is exactly
+/// `found <n>, supported <m>`, which the worker reads at the core's boundary.
+pub(crate) const E_STORE_NEWER: &str = "E_STORE_NEWER";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientError {
@@ -54,7 +57,7 @@ impl From<MlsError> for ClientError {
     fn from(e: MlsError) -> Self {
         match e {
             MlsError::Protocol(e) => e.into(),
-            MlsError::Storage(e) => Self::new(E_CORE_STORAGE, e.to_string()),
+            MlsError::Storage(e) => e.into(),
             MlsError::Tx(s) => Self::new(E_CORE_STORAGE, s),
             MlsError::OpenMls(s) => Self::new(E_CORE_MLS, s),
             MlsError::NeedsReload => Self::new(E_CORE_RELOAD, ""),
@@ -68,7 +71,20 @@ impl From<MlsError> for ClientError {
 }
 impl From<StorageError> for ClientError {
     fn from(e: StorageError) -> Self {
-        Self::new(E_CORE_STORAGE, e.to_string())
+        storage_error(e)
+    }
+}
+
+/// The one mapping of a storage error, out of line so that each `?` carries one call instead of
+/// its own copy of the match (wasm size).
+#[inline(never)]
+fn storage_error(e: StorageError) -> ClientError {
+    match e {
+        StorageError::StoreNewer { found, supported } => ClientError::new(
+            E_STORE_NEWER,
+            format!("found {found}, supported {supported}"),
+        ),
+        other => ClientError::new(E_CORE_STORAGE, other.to_string()),
     }
 }
 impl From<TxError<ClientError>> for ClientError {
