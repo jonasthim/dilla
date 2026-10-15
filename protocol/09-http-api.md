@@ -37,10 +37,11 @@ column below uses these scopes:
 | `F` | an `enrolled` session whose account owes a second factor is also accepted |
 | `—` | no session required |
 
-An account owes a second factor until it holds a confirmed TOTP secret or a passkey (`02`
-§ Device sessions item 8). Every `E` route not marked `E, F` answers such an account's `enrolled`
-session `403 E_FACTOR_REQUIRED`, as do the `E or V` routes; the `P` routes admit it, and the
-gateway refuses it (close `4003`). A table without an `Auth` column says its scope in the sentence
+An account owes a second factor until it holds a confirmed TOTP secret or a passkey registered
+for this instance's `rp_id` (`02` § Device sessions item 8, § Second factors). Every `E` route
+not marked `E, F` answers such an account's sessions `403 E_FACTOR_REQUIRED`, as do the `E or V`
+routes, for a `provisional` session too; the `P` routes admit it, and the gateway refuses it
+(close `4003`). A table without an `Auth` column says its scope in the sentence
 before it ("every route below is `E`").
 
 ## Accounts and devices
@@ -1199,6 +1200,7 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
 | `DELETE /v1/admin/blobs/{blob_id}` | `[reason(tstr)]` | `204` |
 | `GET /v1/admin/audit?since=&limit=` | — | `[[actor(bstr 16)\|null, action(tstr), target(tstr), detail(tstr), at(uint)]]` |
 | `POST /v1/admin/users/{id}/disable` | `[disabled(uint)]` | `204` |
+| `GET /v1/admin/diagnostics` | — | `[[name(tstr), status(uint), detail(tstr), fix(tstr)]]` (below) |
 
 - **Purge.** `DELETE /v1/admin/blobs/{blob_id}` removes every reference to the blob in every
   channel, deletes it and unlinks the file at once, and records a tombstone, so a later `PUT`,

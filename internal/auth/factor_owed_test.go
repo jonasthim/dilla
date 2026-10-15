@@ -125,3 +125,32 @@ func TestTheOwedAllowListDoesNotWidenTheScope(t *testing.T) {
 		t.Fatalf("a pending session of an owed account on a `P` route = %d, want admitted", code)
 	}
 }
+
+// S1 review minor 2: the owed check is on every session of an owed account, not only an enrolled
+// one. A PROVISIONAL session of an owed account is refused the "E or V" routes it would otherwise
+// reach (today the delivery service refuses it anyway, having no pairing group; once pairing sets
+// one it must still find nothing). The control clears the flag.
+func TestAnOwedProvisionalSessionIsRefusedTheEOrVRoutes(t *testing.T) {
+	s, repo, _ := newSessions(t)
+	ctx := context.Background()
+	user, device, priv := seedDevice(t, repo)
+	if err := repo.SetFactorOwed(ctx, user, true); err != nil {
+		t.Fatalf("SetFactorOwed: %v", err)
+	}
+	tok, err := establishOnce(t, s, device, priv, auth.PurposeProvisional)
+	if err != nil || tok.Scope != auth.ScopeProvisional {
+		t.Fatalf("establish: scope %d, err %v; want provisional", tok.Scope, err)
+	}
+	eOrV := owedRoute{"E or V", false, auth.ScopeProvisional}
+	code, body, ran := serveOwed(t, s, eOrV, tok.Token)
+	if code != http.StatusForbidden || !bytes.Contains(body, []byte("E_FACTOR_REQUIRED")) || ran {
+		t.Fatalf("an owed provisional session on an `E or V` route = %d %x (ran %v), want 403 E_FACTOR_REQUIRED", code, body, ran)
+	}
+
+	if err := repo.SetFactorOwed(ctx, user, false); err != nil {
+		t.Fatalf("SetFactorOwed(false): %v", err)
+	}
+	if code, body, ran := serveOwed(t, s, eOrV, tok.Token); code != http.StatusNoContent || !ran {
+		t.Fatalf("the control (owed cleared) = %d %x, want admitted", code, body)
+	}
+}

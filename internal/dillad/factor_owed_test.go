@@ -234,6 +234,36 @@ func TestTheSweepReadsTheDocumentedRoutes(t *testing.T) {
 	}
 }
 
+// S1 review minor 1: the sweep reads the documents, so a route mounted without a document row
+// would escape it. Every /v1 pattern the composition root registers must be a row of protocol/09
+// or protocol/02 (path parameters compared by position, not by name).
+func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
+	srv, _, _ := newInstance(t)
+	defer srv.Shutdown(context.Background())
+	documented := map[string]bool{}
+	for _, doc := range []string{"09-http-api.md", "02-delivery-service.md"} {
+		for _, r := range docRoutes(t, doc) {
+			path, _, _ := strings.Cut(r.path, "?")
+			documented[r.method+" "+pathParameter.ReplaceAllString(path, "{}")] = true
+		}
+	}
+	anyParameter := regexp.MustCompile(`\{[A-Za-z_.]+\}`)
+	mounted := 0
+	for _, pattern := range srv.Mux().Patterns() {
+		method, path, ok := strings.Cut(pattern, " ")
+		if !ok || !strings.HasPrefix(path, "/v1/") {
+			continue
+		}
+		mounted++
+		if key := method + " " + anyParameter.ReplaceAllString(path, "{}"); !documented[key] {
+			t.Errorf("%s is mounted but no protocol/09 or protocol/02 table lists it, so the owed sweep never sends it", pattern)
+		}
+	}
+	if mounted < 50 {
+		t.Fatalf("only %d /v1 patterns were recorded; the mux is not reporting its routes", mounted)
+	}
+}
+
 // sweep sends every documented route with the bearer and an empty body, in a fixed order with
 // DELETE /v1/accounts/me last (an empty body is a valid one for it, and it ends the account), and
 // returns the routes that answered E_FACTOR_REQUIRED. alive asks that every route before that last

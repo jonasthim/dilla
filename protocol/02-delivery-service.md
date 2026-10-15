@@ -128,9 +128,10 @@ Every endpoint in this document requires a **device session**. A device session 
    A `device_id` is unique across the instance: `POST /v1/accounts`, `POST /v1/devices`, and
    assertion registration refuse a device id already held by another user with
    `409 E_INVALID_REQUEST`, even if that row is no longer listed.
-8. An `enrolled` session whose account owes a second factor (`09` § Second factors) reaches only
-   `09`'s `F` and `P` routes; every other route answers `403 E_FACTOR_REQUIRED`, and the gateway
-   refuses it as it refuses a `pending` session (close 4003).
+8. A session whose account owes a second factor (`09` § Second factors), whatever its scope,
+   reaches only `09`'s `F` and `P` routes (each still within its own scope); every other route,
+   the `E or V` ones included, answers `403 E_FACTOR_REQUIRED`, and the gateway refuses it as it
+   refuses a `pending` session (close 4003).
 
 Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, an
 unknown device without a registration assertion, an unknown or spent assertion, a user with no

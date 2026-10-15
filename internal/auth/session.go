@@ -965,7 +965,10 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 		// `want != ScopePending`, not `want == ScopeEnrolled`: the "E or V" routes (want =
 		// ScopeProvisional: POST /v1/keypackages and the welcomes) admit an enrolled session too,
 		// and an owed one must not reach them. Only the `P` routes and the `F` allow-list do.
-		if sess.Scope == ScopeEnrolled && sess.FactorOwed && want != ScopePending && !owedOK {
+		// Every scope of an owed account is checked, not only an enrolled one: a provisional
+		// session reaches the "E or V" routes as well (S1 review). A pending session never gets
+		// past the scope checks above to a non-`P` route anyway.
+		if sess.FactorOwed && want != ScopePending && !owedOK {
 			server.WriteError(w, server.Errorf(server.CodeFactorRequired, "the account owes a second factor"))
 			return
 		}
