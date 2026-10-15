@@ -428,15 +428,19 @@ Before it replaces anything, it reads the database's schema version with the ins
 back:
 
 1. It stops `dilla`, which systemd would otherwise keep restarting.
-2. If the new binary migrated the database before it failed, it takes the database back to the
-   version it read, with the **new** binary:
+2. It reads the schema version again with the **previous** binary. That binary loaded this
+   `dilla.toml` before the upgrade, and it reports a newer schema without refusing it. The new
+   binary may have failed on the config itself, before it migrated anything.
+3. If the new binary migrated the database before it failed, it takes the database back to the
+   version it read first, with the **new** binary:
    `dillad migrate down --to=<that version> --i-know-what-i-am-doing`. This is the only time it
-   writes to `/var/lib/dillad`.
-3. It puts the previous pair back and restarts.
+   writes to the database.
+4. It puts the previous pair back and restarts.
 
-A `dillad` refuses to start on a database newer than its own migrations, so if step 2 fails it
-does not start the previous binary. It leaves `dilla` stopped with the new binary in place and
-prints the ways out, which are the manual rollback below.
+A `dillad` refuses to start on a database newer than its own migrations. So if the second read
+fails, if `dilla` cannot be stopped before a down migration, or if the down migration fails, it
+does not start the previous binary. It leaves the new binary in place, says whether `dilla` is
+stopped, and prints the ways out, which are the manual rollback below.
 
 #### Rolling back by hand
 

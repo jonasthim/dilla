@@ -60,9 +60,11 @@ stub apt-get 'echo "apt-get $*" >>"'"$LOG"'"'
 stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; [ -z "${STUB_SYSTEMCTL_FAIL:-}" ] || exit 1
 # With FAKE_SCHEMA (a file holding the database schema version), a restart models dillad serve:
 # the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails when
-# STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema.
+# STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
+# FAKE_V2_CONFIG_FAIL, v2 refuses the config before it migrates anything.
 if [ "$1" = restart ] && [ -n "${FAKE_SCHEMA:-}" ]; then
 	if grep -q "^# fake dillad v2 for" "${DILLA_INSTALL_ROOT:-}/usr/local/bin/dillad"; then
+		[ -z "${FAKE_V2_CONFIG_FAIL:-}" ] || exit 1
 		[ -z "${STUB_RESTART_MIGRATES_TO:-}" ] || echo "$STUB_RESTART_MIGRATES_TO" >"$FAKE_SCHEMA"
 		[ -z "${STUB_FAIL_V2:-}" ] || exit 1
 	elif [ "$(cat "$FAKE_SCHEMA")" -gt 16 ]; then
@@ -80,6 +82,11 @@ cat >"$FAKE" <<'FAKE'
 #!/bin/sh
 # fake dillad for deploy/install_test.sh
 echo "dillad $*" >>"${FAKE_LOG:?}"
+# A newer release that refuses the installed dilla.toml refuses it in every verb (config.Load).
+if [ -n "${FAKE_V2_CONFIG_FAIL:-}" ] && grep -q "^# fake dillad v2 for" "$0"; then
+	echo "config: auth.methods must include totp or passkey" >&2
+	exit 78
+fi
 verb="$1"
 shift
 case "$verb" in
@@ -737,6 +744,29 @@ has "$ERR" "dillad.prev" || problems="$problems|stderr does not say where the pr
 if [ -z "$problems" ]; then pass "a failed down migration never starts the previous binary on the newer schema"; else
 	IFS='|'
 	fail "a failed down migration never starts the previous binary on the newer schema" $problems "stderr: $ERR" "log: $calls"
+	unset IFS
+fi
+
+# The new release refuses the installed dilla.toml (web3.6 refuses auth.methods without totp or
+# passkey): serve exits 78 before any migration, and so does every other verb of the new binary.
+# The database never moved, so the rollback reads it with the previous binary and puts it back.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+[ "$RC" -eq 0 ] || fail "the install before the config-refused case" "rc $RC" "stderr: $ERR"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade"
+echo 16 >"$TMP/schema"
+FAKE_SCHEMA="$TMP/schema" FAKE_V2_CONFIG_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+calls="$(cat "$LOG")"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero: the upgrade failed"
+has "$ERR" "the previous release is running" || problems="$problems|stderr does not say the previous release is running"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|the previous binary is not back"
+[ "$(cat "$TMP/schema")" = 16 ] || problems="$problems|the database is at schema $(cat "$TMP/schema"), want 16"
+has "$calls" "migrate down" && problems="$problems|a down migration ran although the database never moved"
+[ "$(printf '%s\n' "$calls" | grep -c 'systemctl restart dilla')" -eq 2 ] || problems="$problems|the previous binary was not restarted"
+if [ -z "$problems" ]; then pass "a new release that refuses the config rolls back to the previous release running"; else
+	IFS='|'
+	fail "a new release that refuses the config rolls back to the previous release running" $problems "stderr: $ERR" "log: $calls"
 	unset IFS
 fi
 
