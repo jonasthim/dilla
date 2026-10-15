@@ -451,9 +451,10 @@ func createOverwriteRow(ctx context.Context, repo store.Repository, cid, uid id.
 	if err := checkBits(have, allow, deny); err != nil {
 		return store.OverwriteRow{}, err
 	}
-	// The one exception to the rank rule: the creator's own entry, which only keeps bits they
-	// already hold (checkBits above) and denies nothing, so it creates no authority over anyone.
-	self := kind == overwriteUser && o.Target == uid && deny == 0
+	// The one exception to the rank rule: the creator's own entry allowing exactly view_channel
+	// and denying nothing, which only keeps the channel visible to them. Any other bit on oneself
+	// (manage_messages, pin, mute…) would outlive a demotion, so it takes the rank rule: 403.
+	self := kind == overwriteUser && o.Target == uid && allow == PermViewChannel && deny == 0
 	if !self && uid != owner && targetPos >= top {
 		return store.OverwriteRow{}, server.Errorf(server.CodeForbidden,
 			"an overwrite may target only a role or member below your highest role")

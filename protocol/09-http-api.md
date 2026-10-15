@@ -331,9 +331,9 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   - a category never takes overwrites at creation (`400`);
   - the creator must still see the channel with the overwrites applied (`400` otherwise). The one
     exception to the rank rule makes this possible for a non-owner: a kind `1` entry naming the
-    creator themself, allowing only bits they hold and denying none, is allowed. Such an entry is
-    an ordinary member overwrite afterwards, and keeps the channel visible to its holder after a
-    demotion.
+    creator themself, allowing only `view_channel` and denying none, is allowed; any other entry
+    on oneself takes the rank rule (`403`). Such an entry is an ordinary member overwrite
+    afterwards, and keeps the channel visible to its holder after a demotion.
 
   The create's audit records `channel.create` and one `channel.overwrite.put` per entry, and
   `community_changed` (`02`) is sent once.

@@ -610,6 +610,55 @@ func TestMembersReadTheOverwritesTheyCanSee(t *testing.T) {
 	}
 }
 
+// M-1: the overwrites list is ordered by channel_id, kind, target_id across channels and kinds,
+// not in the store's order. The channel with the lower id is put at the higher position, so
+// ListChannels (position, id) reads the channels in the opposite order to the answer's.
+func TestTheOverwritesListIsInFullOrder(t *testing.T) {
+	e, cid, ownerTok := channelEnv(t)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", slog.New(slog.DiscardHandler)).Register(e.Mux)
+	member, memberTok := e.NewUser("member")
+	joinCommunity(t, e, cid, memberTok)
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	everyone := roles[0].ID
+	roleA := createRole(t, e, cid, ownerTok, "a", 3, api.PermSendMessages)
+	x, _, _ := newChannel(t, e, cid, ownerTok, 0, 1, 0, "x")
+	y, _, _ := newChannel(t, e, cid, ownerTok, 0, 1, 0, "y")
+	byID := func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) }
+	chans := []id.ID{x, y}
+	slices.SortFunc(chans, byID)
+	low, high := chans[0], chans[1]
+	if status, body := e.Do(http.MethodPatch, "/v1/channels/"+low.String(), ownerTok,
+		[]any{nil, nil, nil, nil, nil, uint64(10), nil}); status != http.StatusNoContent {
+		t.Fatalf("PATCH position = %d (%x)", status, body)
+	}
+	if stored, _ := e.Repo.ListChannels(t.Context(), cid); len(stored) != 2 || stored[0].ID != high {
+		t.Fatalf("the store does not read the higher id first: %+v", stored)
+	}
+	targets := []id.ID{everyone, roleA}
+	slices.SortFunc(targets, byID)
+	var want []overwriteRow
+	for _, ch := range []id.ID{low, high} {
+		for _, target := range targets {
+			want = append(want, overwriteRow{ChannelID: ch, Kind: 0, TargetID: target, Deny: uint64(api.PermSendMessages)})
+		}
+		want = append(want, overwriteRow{ChannelID: ch, Kind: 1, TargetID: member, Deny: uint64(api.PermAddReactions)})
+	}
+	// Written in the reverse of the wanted order.
+	for i := len(want) - 1; i >= 0; i-- {
+		row := want[i]
+		path := "/v1/channels/" + row.ChannelID.String() + "/overwrites/" + strconv.FormatUint(row.Kind, 10) + "/" + row.TargetID.String()
+		if status, body := e.Do(http.MethodPut, path, ownerTok, []any{row.Allow, row.Deny}); status != http.StatusNoContent {
+			t.Fatalf("PUT %s = %d (%x)", path, status, body)
+		}
+	}
+	if got := listOverwriteRows(t, e, cid, ownerTok); !slices.Equal(got, want) {
+		t.Fatalf("overwrites = %+v\nwant %+v", got, want)
+	}
+}
+
 // S2: an overwrite PUT or DELETE that would hide the channel from its own author is refused,
 // unless the author is the owner or holds administrator. 403 keeps its precedence, and there is
 // no self-target exception on PUT.

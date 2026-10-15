@@ -635,7 +635,7 @@ func lists(t *testing.T, e *env, cid id.ID, tok string, ch id.ID) bool {
 }
 
 // privateFixture is notifyEnv plus a member "b" and a moderator "mod" holding a role at position 5
-// with view, send, manage_channels and manage_roles, and @everyone's id.
+// with view, send, manage_messages, manage_channels and manage_roles, and @everyone's id.
 type privateFixture struct {
 	e                    *env
 	gw                   *changedGW
@@ -656,7 +656,7 @@ func privateEnv(t *testing.T) privateFixture {
 	}
 	f.everyone = roles[0].ID
 	f.modRole = createRole(t, e, cid, ownerTok, "mod", 5,
-		api.PermViewChannel|api.PermSendMessages|api.PermManageChannels|api.PermManageRoles)
+		api.PermViewChannel|api.PermSendMessages|api.PermManageMessages|api.PermManageChannels|api.PermManageRoles)
 	grant(t, e, cid, ownerTok, f.mod, f.modRole, http.StatusNoContent)
 	gw.reset()
 	return f
@@ -741,6 +741,9 @@ func TestAPrivateCreateFollowsTheOverwriteRules(t *testing.T) {
 		{"no self entry", 0, []any{deny}, http.StatusBadRequest, "the channel would be hidden from you"},
 		{"the mod's own role", 0, []any{deny, self, ow(0, f.modRole, api.PermViewChannel, 0)}, http.StatusForbidden, ""},
 		{"a self deny", 0, []any{ow(1, f.mod, 0, api.PermSendMessages)}, http.StatusForbidden, ""},
+		// I-1: the mod holds manage_messages and send, so only the narrowed exemption refuses these.
+		{"a self entry beyond view", 0, []any{deny, ow(1, f.mod, api.PermViewChannel|api.PermManageMessages, 0)}, http.StatusForbidden, ""},
+		{"a self entry other than view", 0, []any{ow(1, f.mod, api.PermSendMessages, 0)}, http.StatusForbidden, ""},
 		{"kick_members", 0, []any{ow(0, f.everyone, api.PermKickMembers, 0)}, http.StatusBadRequest, ""},
 		{"a bit the mod lacks", 0, []any{ow(0, f.everyone, api.PermPinMessages, 0)}, http.StatusForbidden, ""},
 		{"a self allow of a bit the mod lacks", 0, []any{ow(1, f.mod, api.PermPinMessages, 0)}, http.StatusForbidden, ""},
