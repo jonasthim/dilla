@@ -1,8 +1,8 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-15 ("web-3.5"): starting a server, inviting people and adding
-channels, signing up, using the account in a second browser, devices, channels,
+one. It describes the web client as it is on 2026-10-15 ("web-3.6"): starting a server, inviting people and adding
+channels, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
 images and files), contacts and safety numbers, search, settings and a second tab, and what the client cannot do
 yet. Every quoted line is the text the screen shows;
@@ -21,7 +21,7 @@ This section is for the first person on a new instance. Whoever installed it got
 `dillad init` (or from the install script), shown once. It looks like `https://chat.example.org/i/<code>`, is valid
 for 24 hours and can be used once. It is an invite to the instance, not to a server.
 
-1. Open the bootstrap link and sign up: the same five steps as [an invited person](#2-sign-up-five-steps).
+1. Open the bootstrap link and sign up: the same six steps as [an invited person](#2-sign-up-six-steps).
 2. **Open dilla** opens the app, which has no server in it yet:
 
    ![The app on a new instance: the main pane says "You are not in a server yet" with the buttons Start a server
@@ -95,7 +95,7 @@ times and expires in 7 days. Anyone who has it can join Midgard Crew." and "Invi
 ![The invite dialog at 360 pixels wide: the link field, and copy link on the line under it](screenshots/create-invite-phone.png)
 
 Your friend opens the link and sees the instance's invite page ([1. Open the invite](#1-open-the-invite)), signs
-up in five steps, and lands in your server with its channels. They can message you from **direct messages**.
+up in six steps, and lands in your server with its channels. They can message you from **direct messages**.
 
 **Post your welcome after your friends have joined.** A friend does not see messages sent before their browser
 joined: that is how the end-to-end encryption works, since their browser was not yet a member when those messages
@@ -219,7 +219,11 @@ the owner can do it, and it cannot be undone.
 ### What a removed person sees
 
 A person who is kicked, banned, or whose server is deleted sees a banner, "You are no longer in {server}.", with
-**dismiss**. The server leaves their rail, the page moves to their first other server (or to the start page), and any
+**dismiss**.
+
+![Mira after the owner removed her from Midgard Crew: the banner "You are no longer in Midgard Crew." with the button dismiss at the top, and her other server, Bridge Watch, open](screenshots/shell-removed.png)
+
+The server leaves their rail, the page moves to their first other server (or to the start page), and any
 dialog open for that server closes. A banned person who tries an invite link again sees "This server does not let your account join."
 until the ban ends or is lifted. See also
 [You are no longer a member](#you-are-no-longer-a-member).
@@ -376,6 +380,102 @@ To give everyone the old behaviour back, the owner opens
 and @here** under "Text" and chooses **Save**. To give them to some people only, make a role with them and give it
 from the member list.
 
+## Second factor
+
+Every account on an instance has a second factor, and the instance enforces it: an account without one cannot use
+dilla until it adds one. The factor is what a new browser has to show when it signs in to your account. It does
+not guard your messages, and it is not your recovery key.
+
+You choose one of two kinds, and can have both:
+
+- **An authenticator app** on your phone, which shows a new six-digit code every 30 seconds. Signing in on a new
+  browser then takes your password and a code from the app.
+- **A passkey**: your phone, a security key or the computer confirms it is you with a fingerprint, your face or a
+  PIN. A passkey signs you in on its own. Keep a passkey on a computer only if no one else uses it.
+  A passkey works only at the address the instance is set up for; if it is not, the screen says "Passkeys do not
+  work at this address of {instance}. Use an authenticator app, and tell the operator." An account that has no
+  password can only use a passkey.
+
+### Setting it up
+
+At sign-up it is [step 5 of 6](#step-5-of-6-add-a-second-factor). The same screens appear when an account has none
+(see [After the upgrade](#after-the-upgrade-to-web-36)) and in Settings → Sign-in.
+
+![Step 5, authenticator app: the QR code, the setup key with Copy, and the field "Code from the app"](screenshots/onboarding-5-factor-app.png)
+
+For an app: "In the app, add an account and scan this code. If you cannot scan it, type the setup key instead." The
+**setup key** is the same secret as text, with a **Copy** button. Type the code the app shows now. A wrong one says
+"That code did not match. Type the code the app shows now, and check that your phone sets its clock automatically."
+(a phone whose clock is off by a minute or more makes every code wrong). For a passkey the button is **Add passkey**,
+and a cancelled prompt says "No passkey was added. Try again, or use an authenticator app."
+
+### Backup codes are not the recovery key
+
+![Step 5, backup codes: the list of codes, Print, Copy, and the box to tick](screenshots/onboarding-5-factor-codes.png)
+
+After the factor you get "Your backup codes", a list with **Print** and **Copy**. Each code signs you in once in
+place of your second factor, which is what you reach for when you lose your phone or your passkey. "Backup codes are
+not your recovery key. You still need the recovery key to add a browser." The recovery key (step 3 of the sign-up)
+is what adds a browser to your account; a backup code never does. Keep both away from this computer. The codes are shown once. A code is 26 letters and digits; hyphens and spaces do not matter when you type one. The number of
+codes is the instance's setting (10 unless the operator changed it).
+
+### Signing in on a new browser
+
+[Section 6](#6-use-your-account-in-a-second-browser) is the whole sign-in. In short, after the recovery key and your
+username and password, step 3 asks for the factor you set up:
+
+- an authenticator app: the six-digit code;
+- a passkey: the browser asks for it on **Use passkey**. Under the password field of step 2 there is also
+  **Sign in with a passkey**, which takes a passkey instead of the password. If the passkey did not check that it is
+  you, the instance also asks for your code;
+- a backup code: **Use a backup code instead**, instead of the code or the passkey. It works once, and the last
+  screen says how many you have left.
+
+**Browsers that are already set up do not ask again.** A browser that has been added to your account signs in with
+its own device key and does not ask for a code, so this browser is not asked again when you reload or come back.
+The factor guards signing in on a **new** browser, not message content.
+
+### Settings → Sign-in
+
+![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/settings-signin.png)
+
+Open **settings** in the server rail, then **sign-in**. "What {instance} asks for when you sign in on a new browser.
+Browsers that are already set up, like this one, do not ask again." The rows are:
+
+- **Password**: whether the account has one.
+- **Authenticator app**: **add authenticator app**, or **remove** when it is set up.
+- **Passkeys**: **add passkey**, and one row per passkey with its name, when it was added and when it was last used,
+  each with its own **remove**.
+- **Backup codes**: how many are left ("{count} backup codes left."), and **make new backup codes**. New codes make
+  the old ones stop working at once ("Make new backup codes?"); the new list is shown once. When none are left it
+  says "No backup codes left. Make new ones so you are not locked out."
+
+Every change starts with "Confirm it is you": type your password (or use a passkey, on an account without a
+password). **remove** is disabled while it is your only second factor: "This is your only second factor. Add another
+one before you remove it." The instance refuses it as well.
+
+### A lost phone or passkey
+
+There are three ways back, in this order of ease:
+
+1. **A browser that is still set up.** Open Settings → Sign-in there, add a new authenticator app or passkey, then
+   remove the old one.
+2. **A backup code.** On the new browser, step 3 of the sign-in has **Use a backup code instead**. Then add a new
+   factor in Settings → Sign-in and make new backup codes.
+3. **The operator.** Ask whoever runs {instance} to reset your second factor. They check that it is you before they
+   do (by a means other than dilla), and the reset removes your authenticator app, passkeys and backup codes.
+   You stay signed in where you were, and every browser then asks for a new factor before anything else. A new
+   browser still needs your password and your recovery key.
+
+### After the upgrade to web-3.6
+
+Before web-3.6 a second factor was optional. After the upgrade an account that has none is not signed out, but it is
+stopped at "Add a second factor" ("Your account does not have a second factor yet. {instance} now asks every account
+for one, so add it before you go on.") in every browser, before the app opens. There is no skip. The only other
+thing that screen offers is **forget this browser**, which clears dilla’s data from the browser and is not a way
+past it. An account that had an authenticator app before keeps it and its backup codes; **check Settings → Sign-in**
+after the upgrade to see what the account holds, and make new backup codes if you did not keep the old ones.
+
 ## 1. Open the invite
 
 An invite is a code or a link. A link to an instance looks like `https://chat.example.org/i/<code>`.
@@ -389,12 +489,12 @@ the invite is valid and how many more times it can be used. It never asks for a 
 does not use the invite. **Open dilla in this browser** starts the sign-up with the code filled in. You can
 also go to the instance's address and paste the code or the whole link in the first step.
 
-## 2. Sign up: five steps
+## 2. Sign up: six steps
 
-All five steps happen in the same tab. **Continue** (or Enter in a field) moves forward, **Back** goes back
+All six steps happen in the same tab. **Continue** (or Enter in a field) moves forward, **Back** goes back
 one step, and nothing is created on the instance until step 4.
 
-### Step 1 of 5: Join
+### Step 1 of 6: Join
 
 ![Step 1: "Join dilla.test" with the invite field filled in](screenshots/onboarding-1-invite.png)
 
@@ -403,7 +503,7 @@ received it." If the invite is refused when the account is created, you are brou
 invite is expired, used up or unknown. Ask for a new one." An instance that takes no new accounts shows
 "{instance} is not taking new accounts" instead of this step.
 
-### Step 2 of 5: Choose your name
+### Step 2 of 6: Choose your name
 
 ![Step 2: "Choose your name" with the username mira, the display name Mira and a password](screenshots/onboarding-2-name.png)
 
@@ -414,11 +514,11 @@ invite is expired, used up or unknown. Ask for a new one." An instance that take
 - **Display name (optional)**: "Up to 64 characters. Your username is shown when this is empty." This is
   the name shown on your messages.
 - **Password**: only when the instance offers passwords. "At least 8 characters." Keep it: a second browser
-  asks for this password and your recovery key.
+  asks for this password, your recovery key and the code of your second factor.
 
 Going forward from this step makes your keys. That can take a moment ("Making your keys").
 
-### Step 3 of 5: Your recovery key
+### Step 3 of 6: Your recovery key
 
 ![Step 3: "Your recovery key", thirteen groups of four characters, the box to tick and the Print
 button](screenshots/onboarding-3-recovery-key.png)
@@ -432,7 +532,7 @@ The screen says: "This key is the only way to get your account back or to add an
 
 Tick "I have written down or printed my recovery key" to continue ("Tick the box to continue.").
 
-### Step 4 of 5: What this browser keeps
+### Step 4 of 6: What this browser keeps
 
 ![Step 4: "What this browser keeps", four paragraphs and the Create account button](screenshots/onboarding-4-browser.png)
 
@@ -445,9 +545,26 @@ Tick "I have written down or printed my recovery key" to continue ("Tick the box
 
 **Create account** creates the account on the instance ("Creating your account on {instance}…").
 
-### Step 5 of 5: You’re in
+### Step 5 of 6: Add a second factor
 
-![Step 5: "You’re in", "You are mira on dilla.test" and the Open dilla button](screenshots/onboarding-5-done.png)
+![Step 5: "Add a second factor" with the choices authenticator app and passkey and the button Continue](screenshots/onboarding-5-factor-choose.png)
+
+"Every account on {instance} needs a second factor. Signing in on a new browser then takes your password and a code
+from an authenticator app, or a passkey on its own." Choose **authenticator app** or **passkey** and then
+**Continue**. The step is described in full under [Second factor](#second-factor). In short:
+
+- **authenticator app**: scan the QR code with an authenticator app, or type the setup key, then type the code the
+  app shows ("Code from the app").
+- **passkey**: your browser asks where to keep the passkey. You can name it ("Passkey name").
+- Then comes "Your backup codes". Write or print them, tick "I have written down or printed my backup codes" and
+  choose **Continue**.
+
+There is no way to skip this step. The account exists already (step 4 made it); if you close the tab here, the
+next time you open dilla in this browser it asks for the second factor before anything else.
+
+### Step 6 of 6: You’re in
+
+![Step 6: "You’re in", "You are mira on dilla.test" and the Open dilla button](screenshots/onboarding-5-done.png)
 
 "You are {username} on {instance}." **Open dilla** opens the app.
 
@@ -551,13 +668,10 @@ a channel's history starts when this browser joined it.
 
 ### You are no longer a member
 
-![A channel after its member was removed: the last message is "not sent" with E_NOT_FOUND, and under the
-message field "you cannot post in this channel and new messages will not arrive. Reload, or ask the
-host."](screenshots/shell-not-member.png)
-
-If you were removed from the server while the tab was open, the next message you send is
-"not sent" and the message field is blocked with "you cannot post in this channel and new messages will not
-arrive. Reload, or ask the host." Ask whoever runs the server for a new invite. Once you have joined again,
+If you were removed from the server while the tab was open, the page moves to your first other server and shows
+"You are no longer in {server}." ([What a removed person sees](#what-a-removed-person-sees)). If the page stays on
+the channel instead, the next message you send is "not sent" and the message field is blocked with "you cannot post in
+this channel and new messages will not arrive. Reload, or ask the host." Ask whoever runs the server for a new invite. Once you have joined again,
 reload the page: the channel opens again and new messages arrive. Messages sent while you were out are not
 shown.
 
@@ -580,8 +694,8 @@ a short code (for example `E_CORE_MLS`) instead of its text. Nothing in this ver
 ## 6. Use your account in a second browser
 
 You need three things: your username, your password and the recovery key you wrote down at sign-up. The
-sign-in has four steps, in this order: the recovery key, then your username and password, then the code of
-your second factor (only if the account has one), then done. Nothing is sent to the instance until the
+sign-in has four steps, in this order: the recovery key, then your username and password, then your second factor
+(a code, a passkey or a backup code), then done. Nothing is sent to the instance until the
 second step, and the key is never written to the browser's storage.
 
 ![Onboarding step 1 on a new browser, with the button "Use an existing account" under the invite
@@ -612,15 +726,32 @@ account instead** goes back to the sign-up.
 wrong pair says "That username and password did not work." and empties the password field. **Cancel** goes
 back to the sign-up.
 
-If the account has no second factor, this same step adds the browser to the account ("Adding this browser to
-your account…") and goes straight to step 4.
+Under the password, **Sign in with a passkey** (shown when this browser and the instance can use passkeys) signs in
+with a passkey instead of the password; it goes to step 3 or straight to step 4 as below.
+
+An account that has no second factor (one from before web-3.6, or one reset by the operator) goes from step 2 to
+"Add a second factor" as step 3, in place of the screen below; see [Second factor](#second-factor). There is no skip.
 
 ### Step 3 of 4: Your second factor
 
-Only for an account with a second factor: "Enter the six-digit code from your authenticator app." A wrong
-code sends you back to step 2 with "That code did not work. Sign in again with a fresh code.", because the
-instance has used up that login; type the password again and then a new code. A right code adds the
-browser and goes on to step 4.
+![Step 3: "Your second factor" with the six-digit code typed in](screenshots/signin-3-code.png)
+
+For an authenticator app: "Enter the six-digit code from your authenticator app." A wrong code sends you back to
+step 2 with "That code did not work. Sign in again with a fresh code.", because the instance has used up that login;
+type the password again and then a new code. A right code adds the browser and goes on to step 4.
+
+For an account whose factor is a passkey, step 3 is "Use your passkey": "This account signs in with a passkey. Your
+browser asks for it when you continue." The button is **Use passkey**. If the passkey did not check that it is you,
+the screen asks for your code as well: "This passkey did not check that it is you, so {instance} also asks for your
+code." A passkey the instance does not know says "{instance} does not know this passkey. It may belong to another
+account or another server."
+
+**Use a backup code instead** replaces either with one of your backup codes: "Type one of the backup codes you saved
+when you added your second factor. Each code works once." A backup code does not replace the recovery key from step 1.
+A code that did not work says "That backup code did not work. Sign in again and try another one." and takes you back
+to step 2. Under the code form: "Lost your phone? Use a backup code, or ask the operator of {instance} to reset your
+second factor." After a backup code, step 4 says "You have {count} backup codes left. Make new ones in Settings, under
+sign-in."
 
 ### Step 4 of 4: You’re in
 
@@ -638,6 +769,7 @@ browser and goes on to step 4.
 | "The account’s devices changed while you were signing in. Sign in again." | Another of your browsers changed the account's devices meanwhile. This browser's data was cleared; start again from **Use an existing account** |
 | "This account already has as many devices as {instance} allows. Remove one in Settings on another device first." | Remove a device in Settings → Devices on a browser you still have, then continue |
 | "Too many sign-in attempts. Try again in {seconds} s." | Wait that long, then continue |
+| "This browser cannot use passkeys here. Use a backup code instead, or sign in from a browser that can." | The account's factor is a passkey and this browser cannot run one at this address. Type a backup code, or use another browser |
 | "This account has no backup to recover from on {instance}. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again." | Open dilla in a browser that already holds the account and let it connect; then sign in here again |
 | "The connection dropped. Check it and try again." | Check the network and continue |
 
@@ -965,8 +1097,9 @@ and when the other tab closes it takes over by itself.
 
 ## 11. Known limits (2026-10-15)
 
-- No native phone or desktop app. A second browser needs the recovery key and the password (and the code,
-  for an account with a second factor). A new browser does not get messages from before it joined. Devices have
+- No native phone or desktop app. A second browser needs the recovery key and the password, and the second factor
+  every account has (a code, a passkey or a backup code). The factor guards signing in on a new browser, not message
+  content, and a browser that is already set up is not asked again. A new browser does not get messages from before it joined. Devices have
   no names, and the password cannot be changed from the web client.
 - The web client has no profile screens. The "invite link" button always makes a
   link for 10 uses and 7 days; choose other limits under server settings → invites ([Run your
@@ -1019,9 +1152,11 @@ audio file, the three join the voice channel "harbour" with Chromium's fake micr
 identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too. The own-account
 warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and
-message is made up, and the accounts are deleted with the test host. The account has no second factor, so
-step 3 of the sign-in has no screenshot, and the two warnings of sections 6 and 7 that need a second
-sign-in at the same moment or foreign recovery data are quoted, not shown. For section 5 the script removes mira on ada's authority through the instance's own route (the test host's
+message is made up, and the accounts are deleted with the test host. Every person sets up an authenticator app at sign-up, with codes computed for the test host's clock, and
+mira's second browser takes her code at step 3 of the sign-in; the passkey screens, the forced "Add a second factor"
+screen and the dialogs of Settings → Sign-in need a passkey or a reset account and are quoted, not shown. The two
+warnings of sections 6 and 7 that need a second sign-in at the same moment or foreign recovery data are quoted, not shown. For "What a
+removed person sees" the script removes mira on ada's authority through the instance's own route (the test host's
 `/debug/kick`), not through the member list. To re-shoot them (not part of CI):
 
 ```sh

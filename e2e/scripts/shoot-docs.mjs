@@ -24,8 +24,8 @@
 //   4c. (web-2c and web-3) the native peer's server "Bridge Watch": Privacy, the comparison, search, diagnostics, the
 //      peer's changed identity in the conversation, in Privacy and as a refused voice join, and a second tab;
 //   5. removes mira from the server on ada's authority (the owner's DELETE /v1/communities/{id}/members/{user},
-//      through the host's POST /debug/kick, since the web client has no kick yet) and shoots the "no longer a member"
-//      state. This is the one step not done through a client; the ids it needs are read from the host's database;
+//      through the host's POST /debug/kick, since the web client has no kick yet) and shoots the "You are no longer
+//      in ..." banner (shell-removed). This is the one step not done through a client; the ids it needs are read from the host's database;
 //   6. closes every browser, stops the host and deletes the temporary directories.
 //
 // The host runs its in-process LiveKit on 127.0.0.1:7888 (signalling, reached through the host's /rtc proxy) and
@@ -800,6 +800,12 @@ async function main(argv) {
     await byText(mira, 'button', 'notify.permission.ask').waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-notifications');
+    // web3.6: Settings -> Sign-in lists the factors mira set up at sign-up.
+    await byText(mira, 'button', 'factorSettings.nav').click();
+    await byText(mira, 'heading', 'factorSettings.title').waitFor({ timeout: WAIT });
+    await byText(mira, 'button', 'factorSettings.codes.make').waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('settings-signin');
     await byText(mira, 'button', 'settings.close').click();
 
     // Enter the second channel once so this browser joins its group, then leave it unopened on screen.
@@ -992,26 +998,12 @@ async function main(argv) {
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
 
-    // Mira is removed from the server with her tab open; her next message meets the lost membership.
+    // Mira is removed from the server with her tab open. Since the removal flow (web3.5) she is taken to another
+    // server and a banner says "You are no longer in ...", which is what the guide shows.
     await kickFromServer(controlUrl, path.join(scratch, 'host'), SERVER, PEOPLE.ada.username, PEOPLE.mira.username);
-    const box = composer(mira, 'general');
-    const notMember = mira.getByText(t('shell.composer.notMember'), { exact: true });
-    const lost = 'anyone still here?';
-    for (let i = 0; i < 20 && !(await notMember.isVisible()); i++) {
-      if ((await box.count()) > 0 && await box.isEnabled() && (await row(mira, 'general', lost).count()) === 0) {
-        await box.fill(lost);
-        await box.press('Enter');
-      }
-      await mira.waitForTimeout(1000);
-    }
-    // Since the removal flow (web3.5) a removed member is taken to another server with "You are no longer in ...", and
-    // the composer's not-member line only shows when the page stays on the channel; then the old image stays.
-    if (await notMember.isVisible()) {
-      await settle(mira);
-      await shoot('shell-not-member');
-    } else {
-      process.stderr.write('shoot-docs: shell-not-member not re-shot: the page left the channel on removal\n');
-    }
+    await mira.getByText(t('removed.notice', { server: SERVER }), { exact: true }).waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('shell-removed');
   } finally {
     if (peer !== null) await stop(peer.child);
     for (const c of contexts) await c.close().catch(() => undefined);
