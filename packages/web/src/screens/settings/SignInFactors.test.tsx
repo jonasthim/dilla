@@ -241,7 +241,7 @@ describe('removing a factor', () => {
     await confirmPassword(user);
     await user.click(within(await screen.findByRole('dialog', { name: removeTitle('laptop') })).getByRole('button', { name: en['factorSettings.removeConfirm'] }));
     const again = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
-    expect(within(again).getByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
+    expect(await within(again).findByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
     await confirmPassword(user, 'hunter3');
     await user.click(within(await screen.findByRole('dialog', { name: removeTitle('laptop') })).getByRole('button', { name: en['factorSettings.removeConfirm'] }));
     await waitFor(() => expect(fake.callsOf('removeFactor')).toHaveLength(2));
