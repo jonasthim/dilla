@@ -67,24 +67,48 @@ export function resolveCommunity(input: PermInput, userId: string): number {
   return finish(bits);
 }
 
+/** What resolveChannel needs of one user that no channel changes: the community bits and the held role ids in ascending
+ *  position (@everyone first). Resolved once per user, it serves every channel (web3.5 C4 fix round 1). */
+export interface ResolvedUser { userId: string; base: number; held: readonly string[] }
+
+export function resolveUser(input: PermInput, userId: string): ResolvedUser {
+  const held = heldRoles(input);
+  if (userId === input.owner) return { userId, base: PERM_ALL, held: held.map((r) => r.id) };
+  let bits = 0;
+  for (const r of held) bits = apply(bits, r.allow, r.deny);
+  return { userId, base: finish(bits), held: held.map((r) => r.id) };
+}
+
+/** One channel's overwrites by kind and target, each target's entries in list order. */
+export interface OverwriteIndex { roles: ReadonlyMap<string, readonly PermOverwrite[]>; users: ReadonlyMap<string, readonly PermOverwrite[]> }
+
+export function indexOverwrites(overwrites: readonly PermOverwrite[]): OverwriteIndex {
+  const roles = new Map<string, PermOverwrite[]>();
+  const users = new Map<string, PermOverwrite[]>();
+  for (const o of overwrites) {
+    const into = o.kind === 0 ? roles : o.kind === 1 ? users : null;
+    if (into === null) continue;
+    const list = into.get(o.targetId);
+    if (list === undefined) into.set(o.targetId, [o]); else list.push(o);
+  }
+  return { roles, users };
+}
+
+/** perm.go ResolveChannel from a resolved user and an indexed channel. */
+export function channelBitsFrom(u: ResolvedUser, index: OverwriteIndex): number {
+  const base = u.base;
+  if (base === PERM_ALL || base === 0) return base;
+  let bits = base;
+  for (const role of u.held) for (const o of index.roles.get(role) ?? []) bits = apply(bits, o.allow, o.deny);
+  for (const o of index.users.get(u.userId) ?? []) bits = apply(bits, o.allow, o.deny);
+  bits = (bits & ~COMMUNITY_BITS) | (base & COMMUNITY_BITS);
+  return finish(bits);
+}
+
 /** perm.go ResolveChannel: the overwrites of the held roles in ascending role position, then the user's own, then the
  *  community-scoped bits restored from the base. An overwrite counts only for its own kind and target. */
 export function resolveChannel(input: PermInput, overwrites: readonly PermOverwrite[], userId: string): number {
-  const base = resolveCommunity(input, userId);
-  if (base === PERM_ALL || base === 0) return base;
-  let bits = base;
-  for (const r of heldRoles(input)) {
-    for (const o of overwrites) {
-      if (o.kind !== 0 || o.targetId !== r.id) continue;
-      bits = apply(bits, o.allow, o.deny);
-    }
-  }
-  for (const o of overwrites) {
-    if (o.kind !== 1 || o.targetId !== userId) continue;
-    bits = apply(bits, o.allow, o.deny);
-  }
-  bits = (bits & ~COMMUNITY_BITS) | (base & COMMUNITY_BITS);
-  return finish(bits);
+  return channelBitsFrom(resolveUser(input, userId), indexOverwrites(overwrites));
 }
 
 /** The bits `userId` holds in a channel, or null when the user is not in `members` (unknown: the caller keeps today's
