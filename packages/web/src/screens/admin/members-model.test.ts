@@ -54,3 +54,22 @@ describe('menuFor', () => {
     expect(menuFor(lower, undefined, ctx)).toEqual(['message', 'compare']);
   });
 });
+
+describe('role assignment in the menu and the group colour', () => {
+  const ctx = { selfId: ME, ownerId: OWNER, roles: ROLES };
+  it('adds roles after compare and before kick only with manageRoles', () => {
+    const lower = m(CAL, 'carol');
+    expect(menuFor(lower, access({ manageRoles: true }), ctx)).toEqual(['message', 'compare', 'roles', 'kick', 'ban']);
+    expect(menuFor(lower, access({ manageRoles: false }), ctx)).toEqual(['message', 'compare', 'kick', 'ban']);
+    expect(menuFor(lower, access({ manageRoles: true, loaded: false }), ctx)).toEqual(['message', 'compare']);
+  });
+  it('colours a member by the highest coloured role, 0 giving null', () => {
+    const red: RoleSummary = { ...CREW, id: id(20), position: 3, color: 0xE5484D };
+    const blue: RoleSummary = { ...QUIET, id: id(21), position: 4, color: 0x0090FF };
+    const plain: RoleSummary = { ...MOD, id: id(22), position: 8, color: 0 };
+    const rows = memberGroups([m(BOB, 'bob', [red.id, blue.id, plain.id]), m(CAL, 'carol', [plain.id])], [red, blue, plain], OWNER, ME)
+      .flatMap(g => g.members);
+    expect(rows.find(r => r.userId === BOB)?.color).toBe(0x0090FF);
+    expect(rows.find(r => r.userId === CAL)?.color).toBeNull();
+  });
+});

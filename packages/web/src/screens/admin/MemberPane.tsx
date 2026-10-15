@@ -5,6 +5,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { memberGroups, memberName, menuFor, type MenuAction } from './members-model.ts';
 import { BanFlow, KickFlow, type ModTarget } from './Moderation.tsx';
+import { MemberRolesFlow } from './MemberRolesFlow.tsx';
 
 export interface MemberPaneProps {
   communityId: string;
@@ -27,12 +28,13 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const [ban, setBan] = useState<ModTarget | null>(null);
   const [kickOpen, setKickOpen] = useState(false);
   const [banOpen, setBanOpen] = useState(false);
+  const [rolesFor, setRolesFor] = useState<string | null>(null);
 
   // Where focus goes when a dialog closes: the row's trigger that opened it, else (a kicked member's row is gone) the pane.
   const region = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const restore = useRef(false);
-  const anyOpen = kickOpen || banOpen;
+  const anyOpen = kickOpen || banOpen || rolesFor !== null;
   useEffect(() => {
     if (anyOpen || !restore.current) return;
     restore.current = false;
@@ -49,7 +51,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const byId = new Map(list.map(m => [m.userId, m]));
 
   const labelOf: Record<MenuAction, string> = {
-    message: t('members.menu.message'), compare: t('members.menu.compare'), kick: t('members.menu.kick'), ban: t('members.menu.ban'),
+    message: t('members.menu.message'), compare: t('members.menu.compare'), roles: t('roles.menu.assign'), kick: t('members.menu.kick'), ban: t('members.menu.ban'),
   };
   const groups: MemberListGroup[] = memberGroups(list, roleList, ownerId, selfId).map(g => ({
     id: g.id,
@@ -57,7 +59,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     members: g.members.map(row => {
       const summary = byId.get(row.userId);
       const items = summary === undefined ? [] : menuFor(summary, access, ctx);
-      return { id: row.userId, name: row.name, tags: row.tags.map(tag => t(`members.${tag}`)), actionsLabel: t('members.actions', { name: row.name }),
+      return { id: row.userId, name: row.name, color: row.color, tags: row.tags.map(tag => t(`members.${tag}`)), actionsLabel: t('members.actions', { name: row.name }),
         actions: items.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' })) };
     }),
   }));
@@ -67,9 +69,10 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     if (row === undefined) return;
     const target = { userId, name: memberName(row) };
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    restore.current = action === 'kick' || action === 'ban';
+    restore.current = action === 'kick' || action === 'ban' || action === 'roles';
     if (action === 'message') props.onMessage(userId);
     else if (action === 'compare') props.onCompare(userId);
+    else if (action === 'roles') setRolesFor(userId);
     else if (action === 'kick') { setKick(target); setKickOpen(true); }
     else if (action === 'ban') { setBan(target); setBanOpen(true); }
   };
@@ -83,6 +86,9 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />
       <BanFlow open={banOpen} communityId={communityId} serverName={serverName} target={ban} announce={text => props.announce(text)}
         onClose={() => setBanOpen(false)} onDone={() => setBanOpen(false)} />
+      {rolesFor !== null
+        ? <MemberRolesFlow communityId={communityId} userId={rolesFor} announce={text => props.announce(text)} onClose={() => setRolesFor(null)} />
+        : null}
     </div>
   );
 }

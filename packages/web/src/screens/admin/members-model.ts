@@ -2,11 +2,20 @@
 import { canModerate, topOf, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
 
 export type MemberTag = 'owner' | 'you' | 'bot';
-export interface MemberRow { userId: string; name: string; tags: MemberTag[] }
+export interface MemberRow { userId: string; name: string; tags: MemberTag[]; /** The colour of the member's highest coloured role (any role, hoisted or not); null when none has one. */ color: number | null }
 /** `role` is null for the group of everyone who holds no hoisted role. */
 export interface MemberGroup { id: string; role: RoleSummary | null; members: MemberRow[] }
 
 export const memberName = (m: MemberSummary): string => (m.display !== '' ? m.display : m.username);
+
+/** The colour of the member's highest role that has one (by position); null when none has. */
+function colourOf(member: MemberSummary, roles: readonly RoleSummary[]): number | null {
+  let best: RoleSummary | null = null;
+  for (const r of roles) {
+    if (r.color !== 0 && member.roleIds.includes(r.id) && (best === null || r.position > best.position)) best = r;
+  }
+  return best?.color ?? null;
+}
 
 /**
  * Groups by each member's highest hoisted role (position, highest first); everyone else goes in the last, role-less
@@ -27,7 +36,7 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
     if (m.userId === ownerId) tags.push('owner');
     if (m.userId === selfId) tags.push('you');
     if (m.kind === 1) tags.push('bot');
-    const row: MemberRow = { userId: m.userId, name: memberName(m), tags };
+    const row: MemberRow = { userId: m.userId, name: memberName(m), tags, color: colourOf(m, roles) };
     if (best === null) plain.push(row);
     else {
       const list = buckets.get(best.id) ?? [];
@@ -42,7 +51,7 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
   return groups;
 }
 
-export type MenuAction = 'message' | 'compare' | 'kick' | 'ban';
+export type MenuAction = 'message' | 'compare' | 'roles' | 'kick' | 'ban';
 export interface MenuContext { selfId: string; ownerId: string; roles: readonly RoleSummary[] }
 
 /**
@@ -54,6 +63,7 @@ export function menuFor(member: MemberSummary, access: CommunityAccess | undefin
   if (member.userId !== ctx.selfId) out.push('message');
   out.push('compare');
   if (access !== undefined && access.loaded) {
+    if (access.manageRoles) out.push('roles');
     const may = canModerate({ me: ctx.selfId, target: member.userId, owner: ctx.ownerId, myTop: access.top, targetTop: topOf(member.roleIds, ctx.roles) });
     if (may && access.kickMembers) out.push('kick');
     if (may && access.banMembers) out.push('ban');

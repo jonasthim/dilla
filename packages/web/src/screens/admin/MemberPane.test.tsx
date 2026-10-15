@@ -69,6 +69,24 @@ describe('MemberPane', () => {
   });
 });
 
+describe('role assignment', () => {
+  it('offers roles only with manageRoles, opens the dialog and closes it with done', async () => {
+    const { user } = setup(access({ manageRoles: true }));
+    await user.click(screen.getByRole('button', { name: 'actions for bob' }));
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['message', 'compare safety numbers', 'roles', 'kick', 'ban']);
+    await user.click(screen.getByRole('menuitem', { name: 'roles' }));
+    const dialog = screen.getByRole('dialog', { name: 'Roles of bob' });
+    expect(within(dialog).getByRole('checkbox', { name: 'mods' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+  it('has no roles item without manageRoles', async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: 'actions for bob' }));
+    expect(screen.queryByRole('menuitem', { name: 'roles' })).toBeNull();
+  });
+});
+
 describe('KickFlow', () => {
   it('kicks, announces and closes', async () => {
     const { user, fake, announce } = setup();
