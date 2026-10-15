@@ -139,3 +139,5 @@ export { ManageList } from './ManageList/ManageList.tsx';
 export type { ManageListProps, ManageListRow } from './ManageList/ManageList.tsx';
 export { ChannelSettings } from './ChannelSettings/ChannelSettings.tsx';
 export type { ChannelSettingsProps } from './ChannelSettings/ChannelSettings.tsx';
+export { CodeList } from './CodeList/CodeList.tsx';
+export type { CodeListProps } from './CodeList/CodeList.tsx';
