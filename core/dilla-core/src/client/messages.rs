@@ -11,7 +11,6 @@ use crate::mls::StorageError;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::random::OpenMlsRand;
 use rusqlite::{OptionalExtension, params};
-use std::collections::BTreeSet;
 
 pub(crate) const OUTBOX_QUEUED: i64 = 0;
 pub(crate) const OUTBOX_IN_FLIGHT: i64 = 1;
@@ -365,6 +364,28 @@ pub(super) fn own_roles_of(
 
 /// Upper bound on each id list `authority_set` takes.
 const AUTHORITY_MAX_IDS: usize = 4096;
+
+/// `ids` sorted and deduplicated: `authority_set`'s id sets, kept as sorted vectors rather than a
+/// `BTreeSet` so the wasm build carries no extra B-tree code for them.
+fn sorted_ids(mut ids: Vec<[u8; 16]>) -> Vec<[u8; 16]> {
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// The ids in exactly one of the sorted sets `a` and `b`, sorted.
+fn changed_ids(a: &[[u8; 16]], b: &[[u8; 16]]) -> Vec<[u8; 16]> {
+    let only = |x: &[[u8; 16]], y: &[[u8; 16]]| {
+        x.iter()
+            .filter(|id| y.binary_search(id).is_err())
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let mut out = only(a, b);
+    out.extend(only(b, a));
+    out.sort_unstable();
+    out
+}
 
 /// `mentions_me`'s needle for one user: "<@" + the 32 lower-case hex characters + ">".
 pub(super) fn mention_needle(user_id: &[u8; 16]) -> [u8; 35] {
@@ -1053,9 +1074,7 @@ impl ClientCore {
             ));
         }
         let g = group_id.as_slice();
-        let ids_of = |ids: &[u8]| -> BTreeSet<[u8; 16]> {
-            ids.as_chunks::<16>().0.iter().copied().collect()
-        };
+        let ids_of = |ids: &[u8]| sorted_ids(ids.as_chunks::<16>().0.to_vec());
         let (new_p, new_b) = (ids_of(pinners), ids_of(broadcasters));
         let (dm, known, old_p, old_b) = self.read_one(|c| {
             let dm: bool = c
@@ -1074,18 +1093,14 @@ impl ClientCore {
                 )
                 .optional()?
                 .is_some();
-            let (mut p, mut b) = (BTreeSet::new(), BTreeSet::new());
+            let (mut p, mut b) = (Vec::new(), Vec::new());
             let mut q = c.prepare("SELECT bit, user_id FROM app_authority WHERE group_id = ?1")?;
             let rows = q.query_map([g], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, [u8; 16]>(1)?)))?;
             for row in rows {
                 let (bit, user) = row?;
-                if bit == 3 {
-                    p.insert(user);
-                } else {
-                    b.insert(user);
-                }
+                if bit == 3 { &mut p } else { &mut b }.push(user);
             }
-            Ok((dm, known, p, b))
+            Ok((dm, known, sorted_ids(p), sorted_ids(b)))
         })?;
         if dm {
             return Err(ClientError::new(
@@ -1099,9 +1114,8 @@ impl ClientCore {
         // A first view changes what counts for every sender; a later one only for the users whose
         // bit changed.
         let all = !known;
-        let pin_changed: BTreeSet<[u8; 16]> = old_p.symmetric_difference(&new_p).copied().collect();
-        let broadcast_changed: BTreeSet<[u8; 16]> =
-            old_b.symmetric_difference(&new_b).copied().collect();
+        let pin_changed = changed_ids(&old_p, &new_p);
+        let broadcast_changed = changed_ids(&old_b, &new_b);
         self.write_dyn(&mut |c| {
             c.execute("DELETE FROM app_authority WHERE group_id = ?1", [g])?;
             {
@@ -1128,16 +1142,18 @@ impl ClientCore {
                     q.query_map([g], |r| Ok((r.get(0)?, r.get(1)?)))?
                         .collect::<Result<_, _>>()?
                 };
-                let targets: BTreeSet<[u8; 16]> = folds
-                    .into_iter()
-                    .filter(|(_, sender)| {
-                        all || sender
-                            .as_deref()
-                            .and_then(|s| <[u8; 16]>::try_from(s).ok())
-                            .is_some_and(|s| pin_changed.contains(&s))
-                    })
-                    .filter_map(|(target, _)| <[u8; 16]>::try_from(target.as_slice()).ok())
-                    .collect();
+                let targets = sorted_ids(
+                    folds
+                        .into_iter()
+                        .filter(|(_, sender)| {
+                            all || sender
+                                .as_deref()
+                                .and_then(|s| <[u8; 16]>::try_from(s).ok())
+                                .is_some_and(|s| pin_changed.binary_search(&s).is_ok())
+                        })
+                        .filter_map(|(target, _)| <[u8; 16]>::try_from(target.as_slice()).ok())
+                        .collect(),
+                );
                 for target in targets {
                     fold::refold(c, group_id, &target, &fold::FoldScope::Pin, None, Some(&own))?;
                 }
@@ -1158,7 +1174,7 @@ impl ClientCore {
                 .collect::<Result<_, _>>()?
             };
             for (seq, sender, body, was) in rows {
-                if !all && !broadcast_changed.contains(&sender) {
+                if !all && broadcast_changed.binary_search(&sender).is_err() {
                     continue;
                 }
                 let ok = broadcast_ok(c, group_id, &sender)?;
