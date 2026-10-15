@@ -83,3 +83,12 @@ describe('TextField', () => {
     await expectNoAxeViolations(container);
   });
 });
+
+describe('TextField initial focus', () => {
+  it('marks its input for a dialog to open on with initialFocus, and only then', () => {
+    const { rerender } = render(<TextField id="n" label="role name" value="" onChange={() => {}} initialFocus />);
+    expect(screen.getByRole('textbox', { name: 'role name' })).toHaveAttribute('data-autofocus');
+    rerender(<TextField id="n" label="role name" value="" onChange={() => {}} />);
+    expect(screen.getByRole('textbox', { name: 'role name' })).not.toHaveAttribute('data-autofocus');
+  });
+});

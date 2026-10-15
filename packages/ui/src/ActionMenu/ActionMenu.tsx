@@ -12,6 +12,11 @@ export interface ActionMenuProps {
   onSelect(id: string): void;
   /** Where the popup sits when it was opened by a context menu: the pointer, clamped to the viewport. */
   at?: { x: number; y: number } | null;
+  /**
+   * A stable key for the trigger (`data-focus-key`): a Dialog opened from this menu finds the trigger by it on close,
+   * even when the row was re-mounted meanwhile.
+   */
+  focusKey?: string;
 }
 
 /**
@@ -19,7 +24,7 @@ export interface ActionMenuProps {
  * on the last. Arrows wrap, Home and End jump. Escape closes and refocuses the trigger, Tab closes and moves on, and a
  * pointerdown outside closes. `open` is the caller's, so a row can also open the menu from a context menu (`at`).
  */
-export function ActionMenu({ label, items, open, onOpenChange, onSelect, at }: ActionMenuProps) {
+export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey }: ActionMenuProps) {
   const base = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -117,7 +122,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at }: A
 
   return (
     <span ref={rootRef} className="d-action-menu">
-      <button ref={triggerRef} type="button" className="d-action-menu__trigger" aria-label={label} aria-haspopup="menu"
+      <button ref={triggerRef} type="button" className="d-action-menu__trigger" aria-label={label} aria-haspopup="menu" data-focus-key={focusKey}
         aria-expanded={open} aria-controls={open ? `${base}-menu` : undefined}
         onClick={() => onOpenChange(!open)} onKeyDown={onTriggerKey}>
         <span aria-hidden="true">⋯</span>

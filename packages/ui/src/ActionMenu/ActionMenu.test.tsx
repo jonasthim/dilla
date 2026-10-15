@@ -188,3 +188,10 @@ describe('ActionMenu', () => {
     }
   });
 });
+
+describe('ActionMenu focus key', () => {
+  it('puts focusKey on the trigger as data-focus-key, so a dialog can find a re-mounted trigger', () => {
+    render(<ActionMenu label="actions for Astrid" items={items} open={false} onOpenChange={() => {}} onSelect={() => {}} focusKey="member:u1" />);
+    expect(trigger()).toHaveAttribute('data-focus-key', 'member:u1');
+  });
+});

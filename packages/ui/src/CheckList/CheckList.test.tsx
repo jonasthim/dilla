@@ -104,3 +104,17 @@ describe('CheckList busy row', () => {
     expect(onToggle).not.toHaveBeenCalled();
   });
 });
+
+describe('CheckList initial focus', () => {
+  it('with initialFocus marks only the first enabled box for a dialog to open on', () => {
+    const items = [ITEMS[2]!, ITEMS[1]!, ITEMS[0]!];
+    setup({ items, initialFocus: true });
+    expect(screen.getByRole('checkbox', { name: 'owners' })).not.toHaveAttribute('data-autofocus');
+    expect(screen.getByRole('checkbox', { name: 'developers' })).toHaveAttribute('data-autofocus');
+    expect(screen.getByRole('checkbox', { name: 'moderators' })).not.toHaveAttribute('data-autofocus');
+  });
+  it('marks nothing without initialFocus', () => {
+    const { container } = setup();
+    expect(container.querySelector('[data-autofocus]')).toBeNull();
+  });
+});

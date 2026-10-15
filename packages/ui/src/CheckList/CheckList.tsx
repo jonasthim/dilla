@@ -10,6 +10,8 @@ export interface CheckListProps {
   busyId: string | null;
   emptyLabel: string;
   onToggle(id: string, checked: boolean): void;
+  /** Marks the first enabled box `data-autofocus`: a Dialog around the list opens on it. */
+  initialFocus?: boolean;
 }
 
 /**
@@ -18,8 +20,9 @@ export interface CheckListProps {
  * Toggle's disabled state is: it ignores clicks and keys but stays focusable, so focus never leaves while the change is
  * in flight. A locked row (`disabled`) is natively disabled.
  */
-export function CheckList({ label, items, busyId, emptyLabel, onToggle }: CheckListProps) {
+export function CheckList({ label, items, busyId, emptyLabel, onToggle, initialFocus }: CheckListProps) {
   const uid = useId();
+  const first = initialFocus ? items.find(i => !i.disabled)?.id : undefined;
   return (
     <fieldset className="d-check-list">
       <legend className="d-check-list__legend">{label}</legend>
@@ -35,6 +38,7 @@ export function CheckList({ label, items, busyId, emptyLabel, onToggle }: CheckL
               <li key={item.id} className="d-check-list__row" aria-busy={busy || undefined}>
                 <input id={inputId} type="checkbox" className="d-check-list__box" checked={item.checked} disabled={item.disabled}
                   aria-disabled={busy || undefined} aria-busy={busy || undefined} aria-describedby={item.detail ? detailId : undefined}
+                  data-autofocus={item.id === first ? '' : undefined}
                   onChange={e => { if (!busy) onToggle(item.id, e.currentTarget.checked); }} />
                 <label htmlFor={inputId} className="d-check-list__label">
                   {item.color ? <RoleDot color={item.color} /> : null}

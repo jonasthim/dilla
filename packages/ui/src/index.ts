@@ -11,7 +11,7 @@ export type { AvatarProps, Presence } from './Avatar/Avatar.tsx';
 export { ChannelRow } from './ChannelRow/ChannelRow.tsx';
 export type { ChannelRowProps } from './ChannelRow/ChannelRow.tsx';
 export { StatusBar, StatusChunk, Meter, BrandMark } from './StatusBar/StatusBar.tsx';
-export { Dialog } from './Dialog/Dialog.tsx';
+export { Dialog, focusReturnTarget } from './Dialog/Dialog.tsx';
 export type { DialogProps } from './Dialog/Dialog.tsx';
 export { TextField } from './TextField/TextField.tsx';
 export type { TextFieldProps } from './TextField/TextField.tsx';

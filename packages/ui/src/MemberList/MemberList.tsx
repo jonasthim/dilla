@@ -62,7 +62,7 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
                 <span className="d-member-list__name">{m.name}</span>
                 {m.tags.map(tag => <span key={tag} className="d-member-list__tag">{tag}</span>)}
                 {m.actions.length > 0 ? (
-                  <ActionMenu label={m.actionsLabel} items={m.actions} open={menu?.id === m.id} at={menu?.id === m.id ? menu.at : null}
+                  <ActionMenu label={m.actionsLabel} items={m.actions} focusKey={`member:${m.id}`} open={menu?.id === m.id} at={menu?.id === m.id ? menu.at : null}
                     onOpenChange={open => setMenu(open ? { id: m.id, at: null } : cur => (cur?.id === m.id ? null : cur))}
                     onSelect={id => onAction(m.id, id)} />
                 ) : null}
