@@ -43,6 +43,15 @@ const button = (scope: Page | Locator, key: string, vars?: Record<string, string
   scope.getByRole('button', { name: copy(key, vars), exact: true });
 const dialogOf = (page: Page, key: string) => page.getByRole('dialog', { name: copy(key), exact: true });
 
+/** Flow 10 at 1280 (walk M2): the backup codes stand in two columns, the second code beside the first. */
+async function expectTwoColumns(list: Locator): Promise<void> {
+  const [first, second] = await Promise.all([list.nth(0).boundingBox(), list.nth(1).boundingBox()]);
+  if (first === null || second === null) throw new Error('the backup codes are not on screen');
+  expect(Math.abs(first.y - second.y), 'the second code stands beside the first').toBeLessThan(2);
+  expect(second.x).toBeGreaterThan(first.x + first.width - 1);
+  for (const box of [first, second]) expect(box.height, 'a code on one line').toBeLessThan(40);
+}
+
 /** A code of a window far from the host's clock: well formed, never accepted, and it spends no counter of the account. */
 async function wrongCode(secret: string, control: string): Promise<string> {
   return totp(secret, (await hostNow(control)) + 3600);
@@ -107,6 +116,7 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
     } else {
       await expect(page.getByText(copy('factor.codes.notKey'), { exact: true })).toBeVisible();
       await expect(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li')).toHaveCount(10);
+      await expectTwoColumns(page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li'));
       await expectAccessible(page, 'second factor: backup codes');
     }
   });
@@ -170,13 +180,18 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
     await expectHeading(p, SIGNIN.loginTitle, { instance });
   });
 
-  // 6. Ada makes new codes: the step-up asks for the password, the confirmation, the new list; focus comes back to the button.
+  // 6. Ada makes new codes: "are you sure" first (walk M6), then the step-up asks for the password (a wrong one puts focus
+  // back in the field, walk M3), then the new list; focus comes back to the button.
   const dialog = await openSignIn(page);
   const make = button(dialog, 'factorSettings.codes.make');
   await expect(dialog.getByText(copy('factorSettings.codes.other', { count: 9 }), { exact: true })).toBeVisible({ timeout: WAIT });
+  const confirm = dialogOf(page, 'factorSettings.codes.makeTitle');
+  const stepUp = dialogOf(page, 'factorSettings.stepUp.title');
   // Escape in the step-up dialog closes it only: Settings stays open and the button gets focus back.
   await make.click();
-  const stepUp = dialogOf(page, 'factorSettings.stepUp.title');
+  await expect(confirm).toBeVisible({ timeout: WAIT });
+  await expect(stepUp).toHaveCount(0);
+  await button(confirm, 'factorSettings.codes.makeConfirm').click();
   await expect(stepUp).toBeVisible({ timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(stepUp).toBeHidden({ timeout: WAIT });
@@ -184,17 +199,21 @@ test('second factor: sign-up step 5, a code and a backup code on new browsers, a
   await expect(make).toBeFocused();
   // The real run.
   await make.click();
+  await button(confirm, 'factorSettings.codes.makeConfirm').click();
   await expect(stepUp).toBeVisible({ timeout: WAIT });
   await expectAccessible(page, 'second factor: step-up dialog');
-  await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(ada.password);
+  const password = stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true });
+  await password.fill(`${ada.password}-wrong`);
   await button(stepUp, 'factorSettings.stepUp.confirm').click();
-  const confirm = dialogOf(page, 'factorSettings.codes.makeTitle');
-  await expect(confirm).toBeVisible({ timeout: WAIT });
-  await button(confirm, 'factorSettings.codes.makeConfirm').click();
+  await expect(stepUp.getByText(copy('factorSettings.stepUp.failed'), { exact: true })).toBeVisible({ timeout: WAIT });
+  await expect(password).toBeFocused();
+  await password.fill(ada.password);
+  await button(stepUp, 'factorSettings.stepUp.confirm').click();
   const fresh = dialogOf(page, 'factorSettings.codes.newTitle');
   await expect(fresh).toBeVisible({ timeout: WAIT });
   const list = fresh.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li');
   await expect(list).toHaveCount(10);
+  await expectTwoColumns(list);
   const madeCodes = (await list.allInnerTexts()).map((c) => c.replace(/\s+/g, ''));
   expect(new Set(madeCodes).size).toBe(10);
   expect(madeCodes.some((c) => ada.backupCodes.includes(c))).toBe(false);

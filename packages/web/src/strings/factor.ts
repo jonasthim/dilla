@@ -2,7 +2,7 @@
 export const factor = {
   'factor.choose.title': 'Add a second factor',
   'factor.choose.body': 'Every account on {instance} needs a second factor. Signing in on a new browser then takes your password and a code from an authenticator app, or a passkey on its own.',
-  'factor.choose.required': 'Your account does not have a second factor yet. {instance} now asks every account for one, so add it before you go on.',
+  'factor.choose.required': 'Your account needs a second factor before you can continue. {instance} asks every account for one.',
   'factor.choose.label': 'Second factor',
   'factor.choose.app': 'authenticator app',
   'factor.choose.appHint': 'An app on your phone that shows a new six-digit code every 30 seconds.',

@@ -112,7 +112,7 @@ export const en = {
   'onboarding.browser.title': 'What this browser keeps',
   'onboarding.browser.device': 'This browser now holds the key of this device, in its storage for {instance}. The key never leaves this browser.',
   'onboarding.browser.clear': 'Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.',
-  'onboarding.browser.oneBrowser': 'To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it.',
+  'onboarding.browser.oneBrowser': 'To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.',
   'onboarding.browser.private': 'A private window forgets all of this when it closes.',
   'onboarding.browser.submit': 'Create account',
   'onboarding.browser.submitting': 'Creating account…',

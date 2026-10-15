@@ -232,7 +232,7 @@ describe('creating the account', () => {
     const paragraphs = [
       'This browser now holds the key of this device, in its storage for dilla.test. The key never leaves this browser.',
       'Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.',
-      'To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it.',
+      'To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.',
       'A private window forgets all of this when it closes.',
     ].map(text => screen.getByText(text));
     for (let i = 1; i < paragraphs.length; i++) {

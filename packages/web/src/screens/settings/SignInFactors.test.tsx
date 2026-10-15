@@ -147,7 +147,7 @@ describe('Settings → Sign-in rows', () => {
 describe('the step-up dialog', () => {
   it('asks for the password, sends it once and clears the field', async () => {
     const { fake, user } = setup(BOTH, (c, f) => c.m === 'stepUp' ? Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 })) : happy(c, f));
-    await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
     expect(within(stepUp()).getByText(en['factorSettings.stepUp.body'])).toBeInTheDocument();
     expect(within(stepUp()).getByLabelText(en['factorSettings.stepUp.password'])).toHaveAttribute('type', 'password');
     await confirmPassword(user);
@@ -157,13 +157,13 @@ describe('the step-up dialog', () => {
   });
   it('shows the rate limit with its seconds', async () => {
     const { user } = setup(BOTH, (c, f) => c.m === 'stepUp' ? Promise.reject(refusal({ code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 42_000 })) : happy(c, f));
-    await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
     await confirmPassword(user);
     expect(await within(stepUp()).findByRole('alert')).toHaveTextContent(en['factor.error.tooMany'].replace('{seconds}', '42'));
   });
   it('closes on Escape and leaves Settings open, with focus back on the opener', async () => {
     const { user } = setup();
-    const opener = await screen.findByRole('button', { name: en['factorSettings.codes.make'] });
+    const opener = await screen.findByRole('button', { name: 'remove laptop' });
     await user.click(opener);
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeNull();
@@ -175,22 +175,22 @@ describe('the step-up dialog', () => {
     vi.mocked(getPasskey).mockResolvedValueOnce('{"assertion":1}');
     const { fake, user } = setup({ ...BOTH, hasPassword: false }, (c, f) => c.m === 'stepUpPasskeyFinish' ? Promise.resolve({ token: 'tok-pk' }) : happy(c, f));
     await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
-    await user.click(within(stepUp()).getByRole('button', { name: en['factorSettings.stepUp.usePasskey'] }));
-    const confirm = await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] });
+    await user.click(within(await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] })).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
+    await user.click(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByRole('button', { name: en['factorSettings.stepUp.usePasskey'] }));
+    await screen.findByRole('dialog', { name: en['factorSettings.codes.newTitle'] });
     expect(fake.callsOf('stepUpPasskeyFinish')).toEqual([{ m: 'stepUpPasskeyFinish', ceremonyId: '11'.repeat(16), response: '{"assertion":1}' }]);
-    await user.click(within(confirm).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
     expect(fake.callsOf('regenerateBackupCodes')).toEqual([{ m: 'regenerateBackupCodes', stepup: 'tok-pk' }]);
   });
   it('keeps the passkey dialog open with a line when the ceremony is cancelled', async () => {
     vi.mocked(getPasskey).mockRejectedValueOnce(new PasskeyError('cancelled', 'no'));
     const { user } = setup({ ...BOTH, hasPassword: false });
-    await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
     await user.click(within(stepUp()).getByRole('button', { name: en['factorSettings.stepUp.usePasskey'] }));
     expect(await within(stepUp()).findByRole('alert')).toHaveTextContent(en['factorSettings.stepUp.passkeyFailed']);
   });
   it('offers a passkey, not a password, when the account has no password', async () => {
     const { fake, user } = setup({ ...BOTH, hasPassword: false });
-    await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
     expect(within(stepUp()).queryByLabelText(en['factorSettings.stepUp.password'])).toBeNull();
     expect(within(stepUp()).getByText(en['factorSettings.stepUp.passkeyBody'])).toBeInTheDocument();
     expect(within(stepUp()).getByRole('button', { name: en['factorSettings.stepUp.usePasskey'] })).toBeInTheDocument();
@@ -272,16 +272,16 @@ describe('removing a factor', () => {
 });
 
 describe('new backup codes', () => {
-  it('makes them after a step-up, shows the list, announces once and returns focus to the make button', async () => {
+  it('makes them after the confirm and a step-up, shows the list, announces once and returns focus to the make button', async () => {
     const { fake, user } = setup();
     const watch = watchLive();
     await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
-    await confirmPassword(user);
     const confirm = await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] });
     expect(within(confirm).getByText(en['factorSettings.codes.makeBody'])).toBeInTheDocument();
     await user.click(within(confirm).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
-    expect(fake.callsOf('regenerateBackupCodes')).toEqual([{ m: 'regenerateBackupCodes', stepup: 'tok-1' }]);
+    await confirmPassword(user);
     const shown = await screen.findByRole('dialog', { name: en['factorSettings.codes.newTitle'] });
+    expect(fake.callsOf('regenerateBackupCodes')).toEqual([{ m: 'regenerateBackupCodes', stepup: 'tok-1' }]);
     expect(within(shown).getByText(en['factorSettings.codes.newBody'])).toBeInTheDocument();
     expect(regionHome()).toBe(shown);
     expect(within(shown).getAllByRole('listitem').map(li => li.textContent?.replace(/[-\s]/g, ''))).toEqual(CODES);
@@ -292,12 +292,19 @@ describe('new backup codes', () => {
     expect(screen.queryByText(/AAAAA/)).toBeNull();
     watch.stop();
   });
-  it('asks again when the token expired', async () => {
-    const { user } = setup(BOTH, (c, f) => c.m === 'regenerateBackupCodes' ? Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 })) : happy(c, f));
+  it('asks again when the token expired, then makes them without asking "are you sure" twice', async () => {
+    let calls = 0;
+    const { fake, user } = setup(BOTH, (c, f) => {
+      if (c.m === 'regenerateBackupCodes') { calls += 1; if (calls === 1) return Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 })); }
+      return happy(c, f);
+    });
     await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
-    await confirmPassword(user);
     await user.click(within(await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] })).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
+    await confirmPassword(user);
     expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.expired'])).toBeInTheDocument();
+    await confirmPassword(user, 'hunter3');
+    expect(await screen.findByRole('dialog', { name: en['factorSettings.codes.newTitle'] })).toBeInTheDocument();
+    expect(fake.callsOf('regenerateBackupCodes')).toHaveLength(2);
   });
 });
 
@@ -364,7 +371,7 @@ describe('review fixes', () => {
       if (c.m === 'stepUp' && first) { first = false; return new Promise(r => { release = r; }); }
       return happy(c, f);
     });
-    await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
+    await user.click(await screen.findByRole('button', { name: 'remove the authenticator app' }));
     await confirmPassword(user);
     await user.keyboard('{Escape}');
     // Another action opens its own step-up while the first answer is still on its way.
@@ -373,7 +380,7 @@ describe('review fixes', () => {
     await new Promise(r => setTimeout(r, 20));
     expect(stepUp()).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: removeTitle('laptop') })).toBeNull();
-    expect(screen.queryByRole('dialog', { name: en['factorSettings.codes.makeTitle'] })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: en['factorSettings.removeTitle.totp'] })).toBeNull();
     await confirmPassword(user, 'second');
     await user.click(within(await screen.findByRole('dialog', { name: removeTitle('laptop') })).getByRole('button', { name: en['factorSettings.removeConfirm'] }));
     await waitFor(() => expect(fake.callsOf('removeFactor')).toEqual([{ m: 'removeFactor', stepup: 'tok-1', kind: 'passkey', credId: PK }]));
@@ -440,11 +447,11 @@ describe('review fixes', () => {
     const { user } = setup();
     await screen.findByText(en['factorSettings.password.set']);
     expect(regionHome()).toBeNull();
-    await user.click(button(en['factorSettings.codes.make']));
+    await user.click(button('remove laptop'));
     await waitFor(() => expect(regionHome()).toBe(stepUp()));
     await confirmPassword(user);
     // The dialog first, then the region: the region moves into it once it is shown, not before.
-    const made = await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] });
+    const made = await screen.findByRole('dialog', { name: removeTitle('laptop') });
     await waitFor(() => expect(regionHome()).toBe(made));
   });
   it('hands a failed app begin back to the password with the nothing-was-added notice', async () => {
@@ -453,14 +460,77 @@ describe('review fixes', () => {
     await confirmPassword(user);
     expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
   });
-  it('hands a cancelled passkey ceremony back to the password with the nothing-was-added notice', async () => {
-    vi.mocked(createPasskey).mockRejectedValueOnce(new PasskeyError('cancelled', 'no'));
-    const { user } = setup({ ...ONLY_TOTP }, (c, f) => addPasskeyScript(f, c) ?? happy(c, f));
+  it('hands a passkey the instance refused back to the password with the nothing-was-added notice', async () => {
+    vi.mocked(createPasskey).mockResolvedValueOnce('{"c":1}');
+    const { user } = setup({ ...ONLY_TOTP }, (c, f) => c.m === 'factorPasskeyFinish' ? Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }))
+      : addPasskeyScript(f, c) ?? happy(c, f));
     await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));
     await confirmPassword(user);
     const dialog = await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
     await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
     expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
+  });
+  it('walk I3: keeps the passkeys in their own group, with its heading and its add button after its rows, before the backup codes', async () => {
+    const { view } = setup();
+    await screen.findByText(en['factorSettings.password.set']);
+    const group = screen.getByRole('group', { name: en['factorSettings.passkeys'] });
+    expect(within(group).getByRole('heading', { level: 3, name: en['factorSettings.passkeys'] })).toBeInTheDocument();
+    expect(within(group).getByText('laptop')).toBeInTheDocument();
+    expect(within(group).getByText('phone')).toBeInTheDocument();
+    const add = within(group).getByRole('button', { name: en['factorSettings.passkeys.add'] });
+    const lastRow = within(group).getByRole('button', { name: 'remove phone' });
+    expect(lastRow.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(group).queryByText(en['factorSettings.totp'])).toBeNull();
+    expect(within(group).queryByText(en['factorSettings.codes'])).toBeNull();
+    const codes = screen.getByRole('button', { name: en['factorSettings.codes.make'] });
+    expect(add.compareDocumentPosition(codes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await expectNoAxeViolations(view.container);
+  });
+  it('walk M3: a wrong password puts focus back on the emptied password field', async () => {
+    const { user } = setup(BOTH, (c, f) => c.m === 'stepUp' ? Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 })) : happy(c, f));
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
+    await confirmPassword(user);
+    expect(await within(stepUp()).findByRole('alert')).toHaveTextContent(en['factorSettings.stepUp.failed']);
+    const field = within(stepUp()).getByLabelText(en['factorSettings.stepUp.password']);
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(field).toHaveValue('');
+  });
+  it('walk M6: make new codes asks "are you sure" first, then the password, then makes them without a second press', async () => {
+    const { fake, user } = setup();
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
+    const confirm = await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] });
+    expect(screen.queryByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeNull();
+    await user.click(within(confirm).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
+    expect(fake.callsOf('regenerateBackupCodes')).toEqual([]);
+    await confirmPassword(user);
+    expect(await screen.findByRole('dialog', { name: en['factorSettings.codes.newTitle'] })).toBeInTheDocument();
+    expect(fake.callsOf('regenerateBackupCodes')).toEqual([{ m: 'regenerateBackupCodes', stepup: 'tok-1' }]);
+  });
+  it('walk M6: cancelling the password after the confirm makes nothing', async () => {
+    const { fake, user } = setup();
+    const opener = await screen.findByRole('button', { name: en['factorSettings.codes.make'] });
+    await user.click(opener);
+    await user.click(within(await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] })).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
+    await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: en['factorSettings.codes.makeTitle'] })).toBeNull();
+    expect(fake.callsOf('regenerateBackupCodes')).toEqual([]);
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+  it('walk M7: a cancelled passkey prompt shows a banner in the add dialog, focus on Add passkey, and the next try asks for the password', async () => {
+    vi.mocked(createPasskey).mockRejectedValueOnce(new PasskeyError('cancelled', 'no'));
+    const { fake, user } = setup({ ...ONLY_TOTP }, (c, f) => addPasskeyScript(f, c) ?? happy(c, f));
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));
+    await confirmPassword(user);
+    const dialog = await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
+    await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(en['factor.error.cancelled']);
+    expect(screen.queryByRole('dialog', { name: en['factorSettings.stepUp.title'] })).toBeNull();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] })).toHaveFocus());
+    // The begin spent the token: the next try asks for the password again, saying nothing was added.
+    await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
+    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
+    expect(fake.callsOf('factorPasskeyBegin')).toHaveLength(1);
   });
   it('has no axe violations with the step-up, the remove confirm and the add dialog open', async () => {
     const { user, view } = setup({ ...BOTH });

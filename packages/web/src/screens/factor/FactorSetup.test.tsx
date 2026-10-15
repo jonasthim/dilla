@@ -90,7 +90,7 @@ describe('choose', () => {
   });
   it('says the account owes a factor when mounted for a required set-up', () => {
     setup({ origin: 'required', stepLabel: '' });
-    expect(screen.getByText(/Your account does not have a second factor yet. dilla.test now asks/)).toBeInTheDocument();
+    expect(screen.getByText('Your account needs a second factor before you can continue. dilla.test asks every account for one.')).toBeInTheDocument();
     expect(screen.queryByText(/Every account on dilla.test needs/)).toBeNull();
   });
   it.each(['signup', 'signin', 'required'] as const)('has no skip or cancel control for origin %s', (origin) => {
@@ -629,6 +629,71 @@ describe('another device added a factor first (final review M4)', () => {
     await waitFor(() => { expect(h1()).toHaveTextContent(en['factor.choose.title']); });
     expect(screen.queryByText(/E_STEP_UP/)).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('walk I1: a forced screen left open while another browser added the factor', () => {
+  const HELD: FactorsState = { owed: false, totp: null, passkeys: [{ id: 'aa', name: 'x', created: 1, lastUsed: null }], backupCodesLeft: 8, hasPassword: true };
+  it('finishes as already in place when the worker re-read the factors before it refused the begin', async () => {
+    // The worker's guarded call reads the factors again before it rethrows the 403, so the slice changes first.
+    const { fake, user } = setup({ origin: 'required', stepLabel: '' }, { handler: (c, f) => {
+      if (c.m === 'factorTotpBegin') { f.publish('factors', HELD); return Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 })); }
+      if (c.m === 'refreshFactors') { f.publish('factors', HELD); return Promise.resolve(null); }
+      return Promise.resolve(null);
+    } });
+    await user.click(button('Continue'));
+    expect(await screen.findByText(en['factor.done.passkey'])).toBeInTheDocument();
+    expect(screen.queryByText(/E_STEP_UP/)).toBeNull();
+    expect(fake.callsOf('factorTotpBegin')).toHaveLength(1);
+  });
+  it('Back returns to the choice even while a request is still out', async () => {
+    const { user } = setup({ origin: 'required', stepLabel: '' }, { handler: (c) => c.m === 'factorTotpBegin' ? new Promise(() => undefined) : happy(c, new FakeClient()) });
+    await user.click(button('Continue'));
+    expect(h1()).toHaveTextContent(en['factor.totp.title']);
+    await user.click(button('Back'));
+    expect(h1()).toHaveTextContent(en['factor.choose.title']);
+  });
+  it('Back returns to the choice while a passkey is being added, and a late answer does not move the screen', async () => {
+    let finish: (v: unknown) => void = () => undefined;
+    create.mockReturnValue(new Promise(r => { finish = r; }));
+    const { user } = setup({ origin: 'required', stepLabel: '' });
+    await toPasskey(user);
+    await user.click(button(en['factor.passkey.submit']));
+    await user.click(button('Back'));
+    expect(h1()).toHaveTextContent(en['factor.choose.title']);
+    finish(credential());
+    await Promise.resolve();
+    expect(h1()).toHaveTextContent(en['factor.choose.title']);
+  });
+  it('reads the factors again when the window gets focus on the choice, and ends as already in place', async () => {
+    const { fake } = setup({ origin: 'required', stepLabel: '' }, { handler: (c, f) => {
+      if (c.m === 'refreshFactors') { f.publish('factors', HELD); return Promise.resolve(null); }
+      return Promise.resolve(null);
+    } });
+    expect(fake.callsOf('refreshFactors')).toHaveLength(0);
+    window.dispatchEvent(new Event('focus'));
+    expect(await screen.findByText(en['factor.done.passkey'])).toBeInTheDocument();
+    expect(fake.callsOf('refreshFactors')).toHaveLength(1);
+  });
+  it('reads them once when the tab comes back, however many focus events come with it', async () => {
+    let release: (v: unknown) => void = () => undefined;
+    const { fake } = setup({ origin: 'required', stepLabel: '' }, { handler: (c) => c.m === 'refreshFactors' ? new Promise(r => { release = r; }) : Promise.resolve(null) });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('focus'));
+    expect(fake.callsOf('refreshFactors')).toHaveLength(1);
+    release(null);
+    await waitFor(() => { window.dispatchEvent(new Event('focus')); expect(fake.callsOf('refreshFactors')).toHaveLength(2); });
+  });
+  it('does not read on focus away from the choice, nor outside the forced screen', async () => {
+    const forced = setup({ origin: 'required', stepLabel: '' });
+    await toTotp(forced.user);
+    window.dispatchEvent(new Event('focus'));
+    expect(forced.fake.callsOf('refreshFactors')).toHaveLength(0);
+    forced.view.unmount();
+    const signup = setup();
+    window.dispatchEvent(new Event('focus'));
+    expect(signup.fake.callsOf('refreshFactors')).toHaveLength(0);
   });
 });
 

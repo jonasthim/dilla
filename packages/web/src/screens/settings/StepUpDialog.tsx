@@ -51,6 +51,13 @@ export function StepUpDialog({ open, hasPassword, notice: reason, live, onToken,
     setNotice(null);
   }, [open, reason]);
 
+  // Walk M3 (flow 10: a field error focuses the field): a refused password puts focus back in the emptied field. This runs
+  // after ConfirmDialog's own effect (a child's effects run first), which puts it on Cancel.
+  useEffect(() => {
+    if (open && hasPassword && !run.busy && run.error !== null) document.getElementById(FIELD)?.focus();
+    // The attempt count names each refusal, the same text twice included.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.attempt]);
   // Contract 1: the refusal and the end of busy are one update, so ConfirmDialog moves focus to Cancel.
   const refused = (message: string) => setRun(r => ({ busy: false, error: message, attempt: r.attempt + 1 }));
   const settle = (g: number, token: string) => {

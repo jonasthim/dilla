@@ -444,14 +444,14 @@ Browsers that are already set up, like this one, do not ask again." The rows are
 
 - **Password**: whether the account has one.
 - **Authenticator app**: **add authenticator app**, or **remove** when it is set up.
-- **Passkeys**: **add passkey**, and one row per passkey with its name, when it was added and when it was last used,
-  each with its own **remove**.
+- **Passkeys**: one row per passkey with its name, when it was added and when it was last used, each with its own
+  **remove**, then **add passkey**.
 - **Backup codes**: how many are left ("{count} backup codes left."), and **make new backup codes**. New codes make
-  the old ones stop working at once ("Make new backup codes?"); the new list is shown once. When none are left it
-  says "No backup codes left. Make new ones so you are not locked out."
+  the old ones stop working at once, so it asks "Make new backup codes?" first; the new list is shown once. When none
+  are left it says "No backup codes left. Make new ones so you are not locked out."
 
-Every change starts with "Confirm it is you": type your password (or use a passkey, on an account without a
-password). **remove** is disabled while it is your only second factor: "This is your only second factor. Add another
+Every change asks "Confirm it is you": type your password (or use a passkey, on an account without a password).
+Adding or removing a factor asks it first; making new backup codes asks it after you said yes. **remove** is disabled while it is your only second factor: "This is your only second factor. Add another
 one before you remove it." The instance refuses it as well.
 
 ### A lost phone or passkey
@@ -470,8 +470,9 @@ There are three ways back, in this order of ease:
 ### After the upgrade to web-3.6
 
 Before web-3.6 a second factor was optional. After the upgrade an account that has none is not signed out, but it is
-stopped at "Add a second factor" ("Your account does not have a second factor yet. {instance} now asks every account
-for one, so add it before you go on.") in every browser, before the app opens. There is no skip. The only other
+stopped at "Add a second factor" ("Your account needs a second factor before you can continue. {instance} asks every
+account for one.") in every browser, before the app opens. The same screen shows after an operator resets your second
+factor. There is no skip. The only other
 thing that screen offers is **forget this browser**, which clears dilla’s data from the browser and is not a way
 past it. An account that had an authenticator app before keeps it and its backup codes; **check Settings → Sign-in**
 after the upgrade to see what the account holds, and make new backup codes if you did not keep the old ones.
@@ -540,7 +541,7 @@ Tick "I have written down or printed my recovery key" to continue ("Tick the box
   browser."
 - "Clearing this site’s data removes the key and the messages kept here, and this browser stops being your
   device."
-- "To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it."
+- "To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it."
 - "A private window forgets all of this when it closes."
 
 **Create account** creates the account on the instance ("Creating your account on {instance}…").

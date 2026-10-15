@@ -136,6 +136,24 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     // finish reads only props and refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, held, heldKind]);
+  // Walk I1: the forced screen left open while another browser added the factor. When the window or the tab comes back to
+  // the choice, the factors are read once (never polled); a read that finds the account owes nothing ends the set-up above.
+  // Focus and visibility often come together: a read still out takes the second.
+  const reading = useRef(false);
+  useEffect(() => {
+    if (origin !== 'required' || step !== 'choose') return;
+    const reread = () => {
+      if (reading.current || document.visibilityState === 'hidden') return;
+      reading.current = true;
+      void client.call({ m: 'refreshFactors' }).catch(() => undefined).then(() => { reading.current = false; });
+    };
+    window.addEventListener('focus', reread);
+    document.addEventListener('visibilitychange', reread);
+    return () => {
+      window.removeEventListener('focus', reread);
+      document.removeEventListener('visibilitychange', reread);
+    };
+  }, [client, origin, step]);
 
   const requestFocus = (id: string) => setFocusRequest(f => ({ id, n: (f?.n ?? 0) + 1 }));
   /** A refused step-up token (spent, expired, from another session): the host asks for a new one. True when it was one. */
@@ -160,6 +178,8 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     return true;
   };
   const addedName = useRef<string | undefined>(undefined);
+  /** Embedded: a passkey begin has spent the step-up token. */
+  const tokenSpent = useRef(false);
   const fail = (shown: Pick<Problem, 'key' | 'vars'>) => setProblem(p => ({ ...shown, n: (p?.n ?? 0) + 1 }));
   const live = (g: number): boolean => mounted.current && generation.current === g;
 
@@ -266,6 +286,8 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
 
   const submitPasskey = () => {
     if (busy) return;
+    // Embedded: an earlier begin spent the token (the browser then ended the ceremony), so this try needs a new one.
+    if (tokenSpent.current && handBack()) return;
     const trimmed = passkeyName.trim();
     if (trimmed === '') { setNameError('factor.error.required'); requestFocus(FIELD_NAME); return; }
     if (!nameFits(trimmed)) { setNameError('factor.error.nameLong'); requestFocus(FIELD_NAME); return; }
@@ -276,6 +298,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     const g = generation.current;
     const run = async () => {
       try {
+        tokenSpent.current = embedded !== undefined;
         const begin = await client.call({ m: 'factorPasskeyBegin', stepup: embedded?.stepup ?? null }) as { ceremonyId: string; options: string };
         if (!live(g)) return;
         // The options come from the instance's begin and nowhere else; the page makes no challenge of its own.
@@ -286,7 +309,10 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         added('passkey', done.backupCodes);
       } catch (e) {
         if (!live(g)) return;
-        if (stepUpLost(errorOf(e)) || factorAppeared(errorOf(e)) || handBack()) return;
+        if (stepUpLost(errorOf(e)) || factorAppeared(errorOf(e))) return;
+        // Walk M7 (flow 10 state 11): the browser ending the ceremony (cancelled, wrong address, already there) is a banner
+        // in this dialog with focus on Add passkey; the next press asks for the password. The instance's refusals hand back.
+        if (!(e instanceof PasskeyError) && handBack()) return;
         setBusy(false);
         fail(passkeyProblem(e, instanceName));
         requestFocus(BUTTON_PASSKEY);
@@ -335,8 +361,9 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
       </Dialog>
     </form>
   );
+  // Back always returns to the choice, even with a request out: the step's generation moves, so a late answer is dropped.
   const back = embedded !== undefined ? null
-    : <Button variant="ghost" type="button" onClick={() => { if (!busy) toChoose(); }} {...blocked}>{t('factor.back')}</Button>;
+    : <Button variant="ghost" type="button" onClick={toChoose}>{t('factor.back')}</Button>;
 
   let content: React.JSX.Element;
   if (step === 'choose') {
@@ -397,8 +424,10 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         {...(acknowledged ? {} : { 'aria-disabled': true as const, 'aria-describedby': 'factor-ack-hint' })}>{t('factor.codes.next')}</Button>, <>
         <p>{t('factor.codes.body')}</p>
         <p>{t('factor.codes.notKey')}</p>
-        <CodeList codes={codes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
-          onCopy={() => { copy(codes.join('\n'), 'factor.codes.copied'); }} onPrint={() => { browser.print(); }} />
+        <div className="dw-factor-codes">
+          <CodeList codes={codes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
+            onCopy={() => { copy(codes.join('\n'), 'factor.codes.copied'); }} onPrint={() => { browser.print(); }} />
+        </div>
         <div className="dw-factor-ack">
           <input id="factor-ack" type="checkbox" checked={acknowledged} onChange={(e) => { setAcknowledged(e.currentTarget.checked); }} />
           {' '}

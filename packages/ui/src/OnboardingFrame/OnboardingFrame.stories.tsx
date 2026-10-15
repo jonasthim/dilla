@@ -26,7 +26,7 @@ export const WithError: Story = {
         <Banner tone="danger" action={{ label: 'Reload', onAction: () => {} }}>The connection dropped while creating your account. Reload the page to finish.</Banner>
         <p>This browser now holds the key of this device, in its storage for dilla.thim.dev. The key never leaves this browser.</p>
         <p>Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.</p>
-        <p>To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it.</p>
+        <p>To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.</p>
         <p>A private window forgets all of this when it closes.</p>
       </>
     ),

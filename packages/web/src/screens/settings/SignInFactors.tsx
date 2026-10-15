@@ -1,6 +1,7 @@
 // Settings → Sign-in (flow 10 state 5): the account's second factors, and adding, removing and making new backup codes.
 // Every change takes a step-up token. The flow is one dialog at a time: the step-up dialog closes (its focus goes back to the
 // button that opened the whole thing) and only then does the action dialog open, so each one's focus return is the same button.
+// Making new backup codes runs the other way round: "are you sure" first, then the step-up, then the codes are made.
 // The token lives in this component's state until the one command that spends it; the codes live there until their dialog closes.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Banner, Button, CodeList, ConfirmDialog, Dialog, FactorRow } from '@dilla/ui';
@@ -14,6 +15,7 @@ import { FactorSetup, sharedRefusal } from '../factor/FactorSetup.tsx';
 import { StepUpDialog } from './StepUpDialog.tsx';
 
 const TITLE_ID = 'signin-title';
+const PASSKEYS_ID = 'signin-passkeys';
 
 type Purpose =
   | { kind: 'totp' }
@@ -71,7 +73,19 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
     setPurpose(p);
     setPhase('stepup');
   };
+  /** Walk M6: making new codes asks "are you sure" first; the password comes after the person said yes, and the codes are
+   *  then made without a second press (`codesConfirmed`). */
+  const codesConfirmed = useRef(false);
+  const askCodes = () => {
+    action.reset();
+    setNotice(null);
+    codesConfirmed.current = false;
+    setToken(null);
+    setPurpose({ kind: 'codes' });
+    setPhase('action');
+  };
   const end = () => {
+    codesConfirmed.current = false;
     action.reset();
     setPhase('idle');
     setNext(null);
@@ -99,7 +113,12 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
 
   /** What a refused change shows, by status and code (never by detail). */
   const refusedChange = (e: UiError): string => {
-    if (e.status === 403 && e.code === 'E_STEP_UP') { lost('expired'); return t('factorSettings.stepUp.expired'); }
+    if (e.status === 403 && e.code === 'E_STEP_UP') {
+      // The person already said yes to new codes: once confirmed again, they are made.
+      if (purpose?.kind === 'codes') codesConfirmed.current = true;
+      lost('expired');
+      return t('factorSettings.stepUp.expired');
+    }
     // The instance spends the token before it decides, so after these three it is gone: re-read, and the next try steps up.
     if (e.status === 409) { refresh(); setToken(null); return t('factorSettings.error.only'); }
     if (e.status === 404 || (e.status === 403 && e.code === 'E_FORBIDDEN')) { refresh(); setToken(null); return t('factorSettings.error.changed'); }
@@ -121,7 +140,7 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
   };
   const regenerate = () => {
     if (purpose?.kind !== 'codes') return;
-    if (token === null) { lost(null); return; }
+    if (token === null) { codesConfirmed.current = true; lost(null); return; }
     const spent = token;
     void action.run(async () => {
       const made = await client.call({ m: 'regenerateBackupCodes', stepup: spent }) as { backupCodes: string[] };
@@ -133,6 +152,14 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
       setNext('codes');
     });
   };
+  // Back from the step-up with a token, after a yes: the confirm shows busy and the codes are made.
+  useEffect(() => {
+    if (phase !== 'action' || purpose?.kind !== 'codes' || token === null || !codesConfirmed.current) return;
+    codesConfirmed.current = false;
+    regenerate();
+    // regenerate reads the state these name.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, purpose, token]);
   // Spoken once the list is on screen, so the region it is spoken in is inside the modal that shows.
   useEffect(() => { if (phase === 'codes') announce(t('factorSettings.codesMade')); }, [phase, announce]);
   const copyCodes = () => { navigator.clipboard?.writeText(codes.join('\n')).then(() => { announce(t('factor.codes.copied')); }, () => undefined); };
@@ -177,22 +204,29 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
             {passkeys.length === 0 ? (
               <FactorRow title={t('factorSettings.passkeys')} detail={t('factorSettings.passkeys.none')}
                 action={addPasskey} actionLabel={t('factorSettings.passkeys.add')} />
-            ) : passkeys.map(k => (
-              <FactorRow key={k.id} title={k.name}
-                detail={k.lastUsed === null ? t('factorSettings.passkeys.unused', { created: formatDay(k.created) })
-                  : t('factorSettings.passkeys.used', { created: formatDay(k.created), used: formatDay(k.lastUsed) })}
-                action={() => { begin({ kind: 'remove', which: 'passkey', credId: k.id, name: k.name }); }}
-                actionLabel={t('factorSettings.passkeys.remove')} actionAriaLabel={t('factorSettings.passkeys.removeLabel', { name: k.name })}
-                {...(only === undefined ? {} : { disabledReason: only })} />
-            ))}
+            ) : (
+              // Walk I3 (flow 10 state 19): the passkeys are a group of their own, under its heading, with its add button
+              // after its rows, so a passkey never reads as part of the app above or the backup codes below.
+              <li className="dw-factor-group" role="group" aria-labelledby={PASSKEYS_ID}>
+                <h3 id={PASSKEYS_ID} className="dw-factor-group__title">{t('factorSettings.passkeys')}</h3>
+                <ul className="dw-factor-group__rows">
+                  {passkeys.map(k => (
+                    <FactorRow key={k.id} title={k.name}
+                      detail={k.lastUsed === null ? t('factorSettings.passkeys.unused', { created: formatDay(k.created) })
+                        : t('factorSettings.passkeys.used', { created: formatDay(k.created), used: formatDay(k.lastUsed) })}
+                      action={() => { begin({ kind: 'remove', which: 'passkey', credId: k.id, name: k.name }); }}
+                      actionLabel={t('factorSettings.passkeys.remove')} actionAriaLabel={t('factorSettings.passkeys.removeLabel', { name: k.name })}
+                      {...(only === undefined ? {} : { disabledReason: only })} />
+                  ))}
+                </ul>
+                <div className="dw-factor-group__actions"><Button onClick={addPasskey}>{t('factorSettings.passkeys.add')}</Button></div>
+              </li>
+            )}
             <FactorRow title={t('factorSettings.codes')}
               detail={factors.backupCodesLeft === 0 ? t('factorSettings.codes.none') : factors.backupCodesLeft === 1
                 ? t('factorSettings.codes.one') : t('factorSettings.codes.other', { count: factors.backupCodesLeft })}
-              action={() => { begin({ kind: 'codes' }); }} actionLabel={t('factorSettings.codes.make')} />
+              action={askCodes} actionLabel={t('factorSettings.codes.make')} />
           </ul>
-          {passkeys.length === 0 ? null : (
-            <div className="dw-settings-actions"><Button onClick={addPasskey}>{t('factorSettings.passkeys.add')}</Button></div>
-          )}
           <p>{t('factorSettings.lost', { instance })}</p>
         </>
       )}

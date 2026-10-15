@@ -147,7 +147,11 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   const removeApp = settings.getByRole('button', { name: copy('factorSettings.totp.removeLabel'), exact: true });
   await expect(removeApp).toBeFocused();
   await expect(removeApp).not.toHaveAttribute('aria-disabled', 'true');
-
+  // Walk I3: the passkey keeps its group, with the heading and its add button after its row.
+  const passkeys = settings.getByRole('group', { name: copy('factorSettings.passkeys'), exact: true });
+  await expect(passkeys.getByRole('heading', { name: copy('factorSettings.passkeys'), exact: true })).toBeVisible();
+  await expect(passkeys.getByText(PASSKEY, { exact: true })).toBeVisible();
+  await expect(button(passkeys, 'factorSettings.passkeys.add')).toBeVisible();
   await settings.getByRole('button', { name: copy('factorSettings.passkeys.removeLabel', { name: PASSKEY }), exact: true }).click();
   await stepUp(page, bjorn.password);
   const confirm = dialogOf(page, 'factorSettings.removeTitle.passkey', { name: PASSKEY });
