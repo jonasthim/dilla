@@ -8,11 +8,11 @@ import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { en, formatDay } from '../../strings/index.ts';
-import { liveRegions, watchRegion } from '../../test/live-regions.ts';
+import { liveRegions } from '../../test/live-regions.ts';
 import { Settings } from '../Settings.tsx';
-import { PasskeyError, getPasskey } from '../../webauthn.ts';
+import { PasskeyError, createPasskey, getPasskey } from '../../webauthn.ts';
 
-vi.mock('../../webauthn.ts', async (original) => ({ ...await original<typeof import('../../webauthn.ts')>(), getPasskey: vi.fn() }));
+vi.mock('../../webauthn.ts', async (original) => ({ ...await original<typeof import('../../webauthn.ts')>(), getPasskey: vi.fn(), createPasskey: vi.fn() }));
 
 const PK = 'ab'.repeat(16);
 const PK2 = 'cd'.repeat(16);
@@ -61,7 +61,25 @@ const removeTitle = (name: string) => en['factorSettings.removeTitle.passkey'].r
 async function confirmPassword(user: ReturnType<typeof userEvent.setup>, password = 'hunter2') {
   await user.type(within(stepUp()).getByLabelText(en['factorSettings.stepUp.password']), `${password}{Enter}`);
 }
-const region = () => liveRegions(screen.getByRole('dialog', { name: 'Settings' }))[0];
+/** Every non-empty text the page's polite regions held, in order. The page has exactly one region at any time. */
+function watchLive() {
+  const history: string[] = [];
+  let last = '';
+  const read = () => {
+    const text = liveRegions().map(r => r.textContent ?? '').join('');
+    if (text !== '' && text !== last) history.push(text);
+    last = text;
+  };
+  const observer = new MutationObserver(read);
+  observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+  return { history, stop: () => { observer.disconnect(); } };
+}
+/** The dialog the one region sits in (the topmost modal: the frame beneath is inert while another is open), null for the frame. */
+function regionHome(): HTMLElement | null {
+  const regions = liveRegions();
+  expect(regions).toHaveLength(1);
+  return (regions[0] as HTMLElement).closest('dialog:not(.d-settings-frame)');
+}
 
 describe('Settings → Sign-in rows', () => {
   it('lists the password, the app, each passkey and the backup codes, and refreshes the factors once', async () => {
@@ -168,7 +186,7 @@ describe('the step-up dialog', () => {
     const { user } = setup({ ...BOTH, hasPassword: false });
     await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
     await user.click(within(stepUp()).getByRole('button', { name: en['factorSettings.stepUp.usePasskey'] }));
-    expect(await within(stepUp()).findByRole('alert')).toHaveTextContent(en['factorSettings.error.other'].replace('{code}', 'E_PASSKEY'));
+    expect(await within(stepUp()).findByRole('alert')).toHaveTextContent(en['factorSettings.stepUp.passkeyFailed']);
   });
   it('offers a passkey, not a password, when the account has no password', async () => {
     const { fake, user } = setup({ ...BOTH, hasPassword: false });
@@ -183,7 +201,7 @@ describe('the step-up dialog', () => {
 describe('removing a factor', () => {
   it('steps up, removes the passkey with the token, announces it once and focuses the add-passkey button', async () => {
     const { fake, user } = setup();
-    const watch = watchRegion(region());
+    const watch = watchLive();
     await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
     await confirmPassword(user);
     const confirm = await screen.findByRole('dialog', { name: removeTitle('laptop') });
@@ -230,7 +248,7 @@ describe('removing a factor', () => {
     expect(fake.callsOf('stepUp').map(c => c.secret)).toEqual(['hunter2', 'hunter3']);
   });
   const refusals: [string, Parameters<typeof refusal>[0], string][] = [
-    ['409', { code: 'E_CONFLICT', status: 409, detail: 'anything' }, en['factorSettings.error.only']],
+    ['409', { code: 'E_INVALID_REQUEST', status: 409, detail: 'anything' }, en['factorSettings.error.only']],
     ['404', { code: 'E_NOT_FOUND', status: 404 }, en['factorSettings.error.changed']],
     ['403 E_FORBIDDEN', { code: 'E_FORBIDDEN', status: 403 }, en['factorSettings.error.changed']],
     ['other', { code: 'E_BOOM', status: 500 }, en['factorSettings.error.other'].replace('{code}', 'E_BOOM')],
@@ -246,7 +264,8 @@ describe('removing a factor', () => {
       // Contract 1: the refusal and the end of busy are one update, so focus is on Cancel, never on the destructive button.
       await waitFor(() => expect(within(confirm).getByRole('button', { name: en['factorSettings.cancel'] })).toHaveFocus());
       // A change made elsewhere (404, E_FORBIDDEN) re-reads the factors.
-      if (text === en['factorSettings.error.changed']) await waitFor(() => expect(fake.callsOf('refreshFactors')).toHaveLength(2));
+      // The instance spent the token before it decided, so 409 re-reads as well.
+      if (init.status !== 500) await waitFor(() => expect(fake.callsOf('refreshFactors')).toHaveLength(2));
       else expect(fake.callsOf('refreshFactors')).toHaveLength(1);
     });
   }
@@ -255,14 +274,16 @@ describe('removing a factor', () => {
 describe('new backup codes', () => {
   it('makes them after a step-up, shows the list, announces once and returns focus to the make button', async () => {
     const { fake, user } = setup();
-    const watch = watchRegion(region());
+    const watch = watchLive();
     await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
     await confirmPassword(user);
     const confirm = await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] });
     expect(within(confirm).getByText(en['factorSettings.codes.makeBody'])).toBeInTheDocument();
     await user.click(within(confirm).getByRole('button', { name: en['factorSettings.codes.makeConfirm'] }));
     expect(fake.callsOf('regenerateBackupCodes')).toEqual([{ m: 'regenerateBackupCodes', stepup: 'tok-1' }]);
-    const shown = await screen.findByRole('dialog', { name: en['factor.codes.title'] });
+    const shown = await screen.findByRole('dialog', { name: en['factorSettings.codes.newTitle'] });
+    expect(within(shown).getByText(en['factorSettings.codes.newBody'])).toBeInTheDocument();
+    expect(regionHome()).toBe(shown);
     expect(within(shown).getAllByRole('listitem').map(li => li.textContent?.replace(/\s/g, ''))).toEqual(CODES);
     await waitFor(() => expect(watch.history).toEqual([en['factorSettings.codesMade']]));
     await user.click(within(shown).getByRole('button', { name: en['dialog.close'] }));
@@ -320,5 +341,125 @@ describe('adding a factor', () => {
     expect(within(dialog).getByRole('textbox', { name: en['factor.passkey.name'] })).toHaveValue('Passkey 1');
     expect(within(dialog).queryByRole('button', { name: en['factor.back'] })).toBeNull();
     expect(fake.callsOf('factorPasskeyBegin')).toEqual([]);
+  });
+});
+
+describe('review fixes', () => {
+  it('drops a token that arrives after Escape: nothing opens, and the next action asks for the password again', async () => {
+    let release: (v: unknown) => void = () => undefined;
+    let first = true;
+    const { fake, user } = setup(BOTH, (c, f) => {
+      if (c.m === 'stepUp' && first) { first = false; return new Promise(r => { release = r; }); }
+      return happy(c, f);
+    });
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.codes.make'] }));
+    await confirmPassword(user);
+    await user.keyboard('{Escape}');
+    // Another action opens its own step-up while the first answer is still on its way.
+    await user.click(screen.getByRole('button', { name: 'remove laptop' }));
+    release({ token: 'late' });
+    await new Promise(r => setTimeout(r, 20));
+    expect(stepUp()).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: removeTitle('laptop') })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: en['factorSettings.codes.makeTitle'] })).toBeNull();
+    await confirmPassword(user, 'second');
+    await user.click(within(await screen.findByRole('dialog', { name: removeTitle('laptop') })).getByRole('button', { name: en['factorSettings.removeConfirm'] }));
+    await waitFor(() => expect(fake.callsOf('removeFactor')).toEqual([{ m: 'removeFactor', stepup: 'tok-1', kind: 'passkey', credId: PK }]));
+    expect(fake.callsOf('stepUp').map(c => c.secret)).toEqual(['hunter2', 'second']);
+  });
+  it('after a 409 the token is gone: the second Remove asks for the password without the expired notice', async () => {
+    let calls = 0;
+    const { fake, user } = setup(BOTH, (c, f) => {
+      if (c.m === 'removeFactor') { calls += 1; if (calls === 1) return Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 409 })); }
+      return happy(c, f);
+    });
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
+    await confirmPassword(user);
+    const confirm = await screen.findByRole('dialog', { name: removeTitle('laptop') });
+    await user.click(within(confirm).getByRole('button', { name: en['factorSettings.removeConfirm'] }));
+    await within(confirm).findByRole('alert');
+    await waitFor(() => expect(fake.callsOf('refreshFactors')).toHaveLength(2));
+    await user.click(within(confirm).getByRole('button', { name: en['factorSettings.removeConfirm'] }));
+    const again = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    expect(within(again).queryByText(en['factorSettings.stepUp.expired'])).toBeNull();
+    expect(fake.callsOf('removeFactor')).toHaveLength(1);
+  });
+  it('shows no stale alert in the confirm that follows asking for the password again', async () => {
+    let calls = 0;
+    const { user } = setup(BOTH, (c, f) => {
+      if (c.m === 'removeFactor') { calls += 1; if (calls === 1) return Promise.reject(refusal({ code: 'E_STEP_UP', status: 403 })); }
+      return happy(c, f);
+    });
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
+    await confirmPassword(user);
+    await user.click(within(await screen.findByRole('dialog', { name: removeTitle('laptop') })).getByRole('button', { name: en['factorSettings.removeConfirm'] }));
+    await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    await confirmPassword(user, 'again');
+    expect(within(await screen.findByRole('dialog', { name: removeTitle('laptop') })).queryByRole('alert')).toBeNull();
+  });
+  const addPasskeyScript = (f: FakeClient, c: Command): Promise<unknown> | undefined => {
+    if (c.m === 'factorPasskeyBegin') return Promise.resolve({ ceremonyId: '22'.repeat(16), options: '{}' });
+    if (c.m === 'factorPasskeyFinish') { f.set('factors', { ...ONLY_TOTP, passkeys: BOTH.passkeys.slice(0, 1) }); return Promise.resolve({ backupCodes: [] }); }
+    return undefined;
+  };
+  it('focuses the add-passkey button after the first passkey is added', async () => {
+    vi.mocked(createPasskey).mockResolvedValueOnce('{"c":1}');
+    const { user } = setup({ ...ONLY_TOTP }, (c, f) => addPasskeyScript(f, c) ?? happy(c, f));
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));
+    await confirmPassword(user);
+    const dialog = await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
+    await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: en['factor.passkey.title'] })).toBeNull());
+    await waitFor(() => expect(button(en['factorSettings.passkeys.add'])).toHaveFocus());
+  });
+  it('announces an add with the passkey name, in the one live region', async () => {
+    vi.mocked(createPasskey).mockResolvedValueOnce('{"c":1}');
+    const watch = watchLive();
+    const { user } = setup({ ...ONLY_TOTP }, (c, f) => addPasskeyScript(f, c) ?? happy(c, f));
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));
+    await confirmPassword(user);
+    const dialog = await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
+    expect(regionHome()).toBe(dialog);
+    await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
+    await waitFor(() => expect(watch.history).toEqual([en['factorSettings.added.passkey'].replace('{name}', 'Passkey 1')]));
+    watch.stop();
+  });
+  it('keeps the one live region in the topmost open modal', async () => {
+    const { user } = setup();
+    await screen.findByText(en['factorSettings.password.set']);
+    expect(regionHome()).toBeNull();
+    await user.click(button(en['factorSettings.codes.make']));
+    expect(regionHome()).toBe(stepUp());
+    await confirmPassword(user);
+    expect(regionHome()).toBe(await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] }));
+  });
+  it('hands a failed app begin back to the password with the nothing-was-added notice', async () => {
+    const { user } = setup({ ...ONLY_PASSKEY }, (c, f) => c.m === 'factorTotpBegin' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : happy(c, f));
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.totp.add'] }));
+    await confirmPassword(user);
+    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
+  });
+  it('hands a cancelled passkey ceremony back to the password with the nothing-was-added notice', async () => {
+    vi.mocked(createPasskey).mockRejectedValueOnce(new PasskeyError('cancelled', 'no'));
+    const { user } = setup({ ...ONLY_TOTP }, (c, f) => addPasskeyScript(f, c) ?? happy(c, f));
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));
+    await confirmPassword(user);
+    const dialog = await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
+    await user.click(within(dialog).getByRole('button', { name: en['factor.passkey.submit'] }));
+    expect(within(await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] })).getByText(en['factorSettings.stepUp.again'])).toBeInTheDocument();
+  });
+  it('has no axe violations with the step-up, the remove confirm and the add dialog open', async () => {
+    const { user, view } = setup({ ...BOTH });
+    await user.click(await screen.findByRole('button', { name: en['factorSettings.passkeys.add'] }));
+    await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
+    await expectNoAxeViolations(view.container);
+    await confirmPassword(user);
+    await screen.findByRole('dialog', { name: en['factor.passkey.title'] });
+    await expectNoAxeViolations(view.container);
+    await user.keyboard('{Escape}');
+    await user.click(await screen.findByRole('button', { name: 'remove laptop' }));
+    await confirmPassword(user);
+    await screen.findByRole('dialog', { name: removeTitle('laptop') });
+    await expectNoAxeViolations(view.container);
   });
 });

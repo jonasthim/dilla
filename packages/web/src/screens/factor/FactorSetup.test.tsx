@@ -417,7 +417,7 @@ describe('backup codes', () => {
     await screen.findByRole('heading', { level: 1, name: en['factor.codes.title'] });
     await user.click(screen.getByRole('checkbox', { name: en['factor.codes.ack'] }));
     await user.click(button('Continue'));
-    expect(onDone).toHaveBeenCalledWith({ kind: 'passkey' });
+    expect(onDone).toHaveBeenCalledWith({ kind: 'passkey', name: 'Passkey 1' });
   });
   it('skips the step when the account already holds codes, and ends at once for a sign-up', async () => {
     const { user, onDone } = setup({}, { handler: (c) => c.m === 'factorTotpConfirm' ? Promise.resolve({ backupCodes: [] }) : happy(c, new FakeClient()) });

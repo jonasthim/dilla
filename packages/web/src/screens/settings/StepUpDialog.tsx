@@ -12,8 +12,11 @@ import { sharedRefusal } from '../factor/FactorSetup.tsx';
 export interface StepUpDialogProps {
   open: boolean;
   hasPassword: boolean;
-  /** The last token was refused as spent or expired: say so above the field until the next attempt. */
-  expired: boolean;
+  /** Why the person is asked again, shown above the field until the next attempt: the last token ran out, or an add that
+   *  spent it ended without adding anything. */
+  notice: 'expired' | 'again' | null;
+  /** The page's one live region, shown here while this dialog is the topmost modal (the frame beneath is inert). */
+  live?: React.ReactNode;
   onToken: (token: string) => void;
   onClose: () => void;
 }
@@ -23,59 +26,67 @@ const IDLE: Run = { busy: false, error: null, attempt: 0 };
 const FIELD = 'stepup-password';
 
 /** A refused step-up, by status and code only. A ceremony the browser ended itself has no code of ours. */
-function say(e: UiError): string {
-  if (e.status === 403 && e.code === 'E_STEP_UP') return t('factorSettings.stepUp.failed');
+function say(e: UiError, hasPassword: boolean): string {
+  if (e.status === 403 && e.code === 'E_STEP_UP') return t(hasPassword ? 'factorSettings.stepUp.failed' : 'factorSettings.stepUp.passkeyFailed');
   const shared = sharedRefusal(e);
   if (shared !== null) return t(shared.key, shared.vars);
   return t('factorSettings.error.other', { code: e.code });
 }
 
-export function StepUpDialog({ open, hasPassword, expired, onToken, onClose }: StepUpDialogProps): React.JSX.Element {
+export function StepUpDialog({ open, hasPassword, notice: reason, live, onToken, onClose }: StepUpDialogProps): React.JSX.Element {
   const client = useCore();
   const [password, setPassword] = useState('');
   const [run, setRun] = useState<Run>(IDLE);
-  const [notice, setNotice] = useState(false);
+  const [notice, setNotice] = useState<'expired' | 'again' | null>(null);
   const running = useRef(false);
+  // Each press is an attempt. Cancel, Escape or a newer press ends it: a token that arrives for an ended attempt is dropped,
+  // never handed on, so closing the dialog grants nothing.
+  const attempt = useRef(0);
   useEffect(() => {
-    if (open) { setNotice(expired); return; }
+    if (open) { setNotice(reason); return; }
+    attempt.current += 1;
+    running.current = false;
     setPassword('');
     setRun(IDLE);
-    setNotice(false);
-  }, [open, expired]);
+    setNotice(null);
+  }, [open, reason]);
 
   // Contract 1: the refusal and the end of busy are one update, so ConfirmDialog moves focus to Cancel.
   const refused = (message: string) => setRun(r => ({ busy: false, error: message, attempt: r.attempt + 1 }));
-  const settle = (token: string) => {
+  const settle = (g: number, token: string) => {
+    if (g !== attempt.current) return;
     running.current = false;
     setRun(r => ({ busy: false, error: null, attempt: r.attempt }));
     onToken(token);
   };
-  const fail = (e: unknown) => {
+  const fail = (g: number, e: unknown) => {
+    if (g !== attempt.current) return;
     running.current = false;
     // The browser ending a ceremony (cancelled, no key) is not an answer of the instance: it has no code of ours.
-    refused(e instanceof PasskeyError ? t('factorSettings.error.other', { code: 'E_PASSKEY' }) : say(errorOf(e)));
+    refused(e instanceof PasskeyError ? t('factorSettings.stepUp.passkeyFailed') : say(errorOf(e), hasPassword));
   };
 
   const submit = () => {
     if (running.current) return;
     if (hasPassword && password === '') { refused(t('factor.error.required')); return; }
     running.current = true;
-    setNotice(false);
+    setNotice(null);
+    const g = ++attempt.current;
     setRun(r => ({ busy: true, error: null, attempt: r.attempt }));
     if (hasPassword) {
       const secret = password;
       setPassword('');
       client.call({ m: 'stepUp', method: 'password', secret }).then(
-        v => { settle((v as { token: string }).token); }, fail);
+        v => { settle(g, (v as { token: string }).token); }, (e: unknown) => { fail(g, e); });
       return;
     }
     const ceremony = async () => {
       const begin = await client.call({ m: 'stepUpPasskeyBegin' }) as { ceremonyId: string; options: string };
       const response = await getPasskey(begin.options);
       const done = await client.call({ m: 'stepUpPasskeyFinish', ceremonyId: begin.ceremonyId, response }) as { token: string };
-      settle(done.token);
+      settle(g, done.token);
     };
-    ceremony().catch(fail);
+    ceremony().catch((e: unknown) => { fail(g, e); });
   };
 
   return (
@@ -84,13 +95,14 @@ export function StepUpDialog({ open, hasPassword, expired, onToken, onClose }: S
       confirmLabel={t(hasPassword ? 'factorSettings.stepUp.confirm' : 'factorSettings.stepUp.usePasskey')}
       busyLabel={t('factorSettings.stepUp.working')} cancelLabel={t('factorSettings.cancel')}
       busy={run.busy} error={run.error} attempt={run.attempt} onConfirm={submit} onClose={onClose}>
-      {notice ? <Banner tone="warn">{t('factorSettings.stepUp.expired')}</Banner> : null}
+      {notice === null ? null : <Banner tone="warn">{t(notice === 'again' ? 'factorSettings.stepUp.again' : 'factorSettings.stepUp.expired')}</Banner>}
       {hasPassword ? (
         <form noValidate onSubmit={(e) => { e.preventDefault(); submit(); }}>
           <TextField id={FIELD} type="password" label={t('factorSettings.stepUp.password')} value={password}
             onChange={setPassword} autoComplete="current-password" required />
         </form>
       ) : null}
+      {live}
     </ConfirmDialog>
   );
 }

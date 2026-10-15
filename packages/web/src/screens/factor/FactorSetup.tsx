@@ -15,7 +15,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { PasskeyError, createPasskey, passkeysUsable } from '../../webauthn.ts';
 
-export interface FactorSetupResult { kind: 'totp' | 'passkey' }
+export interface FactorSetupResult { kind: 'totp' | 'passkey'; /** The passkey's name, when one was just added here. */ name?: string }
 
 export interface FactorSetupProps {
   origin: 'signup' | 'signin' | 'required' | 'settings';
@@ -28,7 +28,11 @@ export interface FactorSetupProps {
   onDone: (result: FactorSetupResult) => void | Promise<void>;
   /** Settings → Sign-in: the add-a-factor dialog. `stepup` is spent once by the begin; a refusal of it (403 E_STEP_UP, from
    *  whichever call) hands the person back to the host with `onStepUpLost`. `onClose` is Cancel, Escape and the close button. */
-  embedded?: { stepup: string; start: 'app' | 'passkey'; onClose: () => void; onStepUpLost: () => void };
+  embedded?: { stepup: string; start: 'app' | 'passkey'; onClose: () => void;
+    /** The token is spent. 'expired': it was refused; 'again': the add ended without adding anything. */
+    onStepUpLost: (why: 'expired' | 'again') => void;
+    /** The page's one live region, shown in this dialog (the frame beneath is inert while it is open). */
+    live?: ReactNode };
 }
 
 type Step = 'choose' | 'totp' | 'passkey' | 'codes' | 'done';
@@ -126,9 +130,16 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   /** A refused step-up token (spent, expired, from another session): the host asks for a new one. True when it was one. */
   const stepUpLost = (e: UiError): boolean => {
     if (embedded === undefined || e.status !== 403 || e.code !== 'E_STEP_UP') return false;
-    embedded.onStepUpLost();
+    embedded.onStepUpLost('expired');
     return true;
   };
+  /** Embedded: the begin spent the token and the add did not go on, so a retry here would only be refused. */
+  const handBack = (): boolean => {
+    if (embedded === undefined) return false;
+    embedded.onStepUpLost('again');
+    return true;
+  };
+  const addedName = useRef<string | undefined>(undefined);
   const fail = (shown: Pick<Problem, 'key' | 'vars'>) => setProblem(p => ({ ...shown, n: (p?.n ?? 0) + 1 }));
   const live = (g: number): boolean => mounted.current && generation.current === g;
 
@@ -174,7 +185,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     if (completed.current) return;
     completed.current = true;
     let pending: void | Promise<void>;
-    try { pending = onDone({ kind: which }); } catch (e) { completed.current = false; throw e; }
+    try { pending = onDone(which === 'passkey' && addedName.current !== undefined ? { kind: which, name: addedName.current } : { kind: which }); } catch (e) { completed.current = false; throw e; }
     if (pending === undefined) { setCodes([]); return; }
     pending.then(() => { if (mounted.current) setCodes([]); }, () => { completed.current = false; });
   };
@@ -191,7 +202,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     }).catch((e: unknown) => {
       if (!live(g)) return;
       const err = errorOf(e);
-      if (stepUpLost(err)) return;
+      if (stepUpLost(err) || handBack()) return;
       fail(sharedRefusal(err) ?? { key: 'factor.error.other', vars: { code: err.code } });
       setBusy(false);
     });
@@ -232,6 +243,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
     setNameError(null);
     setProblem(null);
     setBusy(true);
+    addedName.current = trimmed;
     const g = generation.current;
     const run = async () => {
       try {
@@ -245,7 +257,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         added('passkey', done.backupCodes);
       } catch (e) {
         if (!live(g)) return;
-        if (stepUpLost(errorOf(e))) return;
+        if (stepUpLost(errorOf(e)) || handBack()) return;
         setBusy(false);
         fail(passkeyProblem(e, instanceName));
         requestFocus(BUTTON_PASSKEY);
@@ -289,6 +301,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         <div className="dw-factor-embedded">
           {banner}
           {children}
+          {embedded.live}
         </div>
       </Dialog>
     </form>

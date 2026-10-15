@@ -22,7 +22,11 @@ type Purpose =
   | { kind: 'codes' };
 type Phase = 'idle' | 'stepup' | 'action' | 'codes';
 
-export function SignInFactors({ announce }: { announce: (text: string) => void }): React.JSX.Element {
+type Notice = 'expired' | 'again';
+
+/** `live` is the text of the page's one polite region (Settings owns the announcer). The region is rendered inside the topmost
+ *  open modal, because every modal above the frame makes the frame, and a region in it, inert for assistive tech. */
+export function SignInFactors({ announce, live }: { announce: (text: string) => void; live: string }): React.JSX.Element {
   const client = useCore();
   const factors = useSlice('factors');
   const account = useSlice('account');
@@ -33,11 +37,13 @@ export function SignInFactors({ announce }: { announce: (text: string) => void }
   // The dialog to open once the current one has closed and given its focus back.
   const [next, setNext] = useState<Phase | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [expired, setExpired] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [codes, setCodes] = useState<string[]>([]);
   const action = useRun();
   const rootRef = useRef<HTMLElement>(null);
   const focusAfter = useRef<string | null>(null);
+  const phaseRef = useRef<Phase>('idle');
+  phaseRef.current = phase;
 
   const refresh = useCallback(() => {
     setLoadError(null);
@@ -61,7 +67,7 @@ export function SignInFactors({ announce }: { announce: (text: string) => void }
 
   const begin = (p: Purpose) => {
     action.reset();
-    setExpired(false);
+    setNotice(null);
     setPurpose(p);
     setPhase('stepup');
   };
@@ -74,30 +80,36 @@ export function SignInFactors({ announce }: { announce: (text: string) => void }
     setCodes([]);
   };
   const gotToken = (tok: string) => {
+    // Only the open step-up dialog may hand a token on; a late one from a cancelled attempt is dropped there as well.
+    if (phaseRef.current !== 'stepup') return;
+    action.reset();
     setToken(tok);
-    setExpired(false);
+    setNotice(null);
     setPhase('idle');
     setNext('action');
   };
   /** The token was refused as spent or expired: back to the password, saying so. */
-  const lost = () => {
+  const lost = (why: Notice | null) => {
+    action.reset();
     setToken(null);
-    setExpired(true);
+    setNotice(why);
     setPhase('idle');
     setNext('stepup');
   };
 
   /** What a refused change shows, by status and code (never by detail). */
   const refusedChange = (e: UiError): string => {
-    if (e.status === 403 && e.code === 'E_STEP_UP') { lost(); return t('factorSettings.stepUp.expired'); }
-    if (e.status === 409) return t('factorSettings.error.only');
-    if (e.status === 404 || (e.status === 403 && e.code === 'E_FORBIDDEN')) { refresh(); return t('factorSettings.error.changed'); }
+    if (e.status === 403 && e.code === 'E_STEP_UP') { lost('expired'); return t('factorSettings.stepUp.expired'); }
+    // The instance spends the token before it decides, so after these three it is gone: re-read, and the next try steps up.
+    if (e.status === 409) { refresh(); setToken(null); return t('factorSettings.error.only'); }
+    if (e.status === 404 || (e.status === 403 && e.code === 'E_FORBIDDEN')) { refresh(); setToken(null); return t('factorSettings.error.changed'); }
     const shared = sharedRefusal(e);
     return shared !== null ? t(shared.key, shared.vars) : t('factorSettings.error.other', { code: e.code });
   };
 
   const remove = () => {
-    if (purpose?.kind !== 'remove' || token === null) return;
+    if (purpose?.kind !== 'remove') return;
+    if (token === null) { lost(null); return; }
     const { which, credId, name } = purpose;
     const spent = token;
     void action.run(() => client.call({ m: 'removeFactor', stepup: spent, kind: which, credId }), refusedChange).then(ok => {
@@ -108,19 +120,21 @@ export function SignInFactors({ announce }: { announce: (text: string) => void }
     });
   };
   const regenerate = () => {
-    if (purpose?.kind !== 'codes' || token === null) return;
+    if (purpose?.kind !== 'codes') return;
+    if (token === null) { lost(null); return; }
     const spent = token;
     void action.run(async () => {
       const made = await client.call({ m: 'regenerateBackupCodes', stepup: spent }) as { backupCodes: string[] };
       setCodes(made.backupCodes);
     }, refusedChange).then(ok => {
       if (!ok) return;
-      announce(t('factorSettings.codesMade'));
       setToken(null);
       setPhase('idle');
       setNext('codes');
     });
   };
+  // Spoken once the list is on screen, so the region it is spoken in is inside the modal that shows.
+  useEffect(() => { if (phase === 'codes') announce(t('factorSettings.codesMade')); }, [phase, announce]);
   const copyCodes = () => { navigator.clipboard?.writeText(codes.join('\n')).then(() => { announce(t('factor.codes.copied')); }, () => undefined); };
 
   const hasPassword = factors?.hasPassword ?? true;
@@ -134,6 +148,8 @@ export function SignInFactors({ announce }: { announce: (text: string) => void }
   const confirmOpen = phase === 'action' && (purpose?.kind === 'remove' || purpose?.kind === 'codes');
   const addOpen = phase === 'action' && token !== null && (purpose?.kind === 'totp' || purpose?.kind === 'passkey');
   const removing = purpose?.kind === 'remove' ? purpose : null;
+  const region = <p className="d-sr-only" role="status" aria-live="polite" data-testid="settings-announcer">{live}</p>;
+  const modalOpen = stepUpOpen || confirmOpen || addOpen || phase === 'codes';
 
   return (
     <section ref={rootRef} className="dw-settings-section" aria-labelledby={TITLE_ID}>
@@ -181,29 +197,35 @@ export function SignInFactors({ announce }: { announce: (text: string) => void }
         </>
       )}
 
-      <StepUpDialog open={stepUpOpen} hasPassword={hasPassword} expired={expired} onToken={gotToken} onClose={end} />
+      {modalOpen ? null : region}
+      <StepUpDialog open={stepUpOpen} hasPassword={hasPassword} notice={notice} live={region} onToken={gotToken} onClose={end} />
       <ConfirmDialog open={confirmOpen}
         title={purpose?.kind === 'codes' ? t('factorSettings.codes.makeTitle')
           : removing?.which === 'passkey' ? t('factorSettings.removeTitle.passkey', { name: removing.name }) : t('factorSettings.removeTitle.totp')}
         body={purpose?.kind === 'codes' ? t('factorSettings.codes.makeBody') : t('factorSettings.removeBody')}
         confirmLabel={purpose?.kind === 'codes' ? t('factorSettings.codes.makeConfirm') : t('factorSettings.removeConfirm')}
-        busyLabel={t('factorSettings.removeBusy')} cancelLabel={t('factorSettings.cancel')}
+        busyLabel={t(purpose?.kind === 'codes' ? 'factorSettings.codes.makeBusy' : 'factorSettings.removeBusy')} cancelLabel={t('factorSettings.cancel')}
         tone={purpose?.kind === 'codes' ? 'accent' : 'danger'}
         busy={action.busy} error={action.error} attempt={action.attempt}
-        onConfirm={purpose?.kind === 'codes' ? regenerate : remove} onClose={() => { if (!action.busy) end(); }} />
+        onConfirm={purpose?.kind === 'codes' ? regenerate : remove} onClose={() => { if (!action.busy) end(); }}>
+        {region}
+      </ConfirmDialog>
       {addOpen && token !== null && (purpose?.kind === 'totp' || purpose?.kind === 'passkey') ? (
         <FactorSetup origin="settings" stepLabel="" instanceName={instance} username={account?.user?.username ?? ''} announce={announce}
-          embedded={{ stepup: token, start: purpose.kind === 'totp' ? 'app' : 'passkey', onClose: end, onStepUpLost: lost }}
+          embedded={{ stepup: token, start: purpose.kind === 'totp' ? 'app' : 'passkey', onClose: end, onStepUpLost: lost, live: region }}
           onDone={(result) => {
-            announce(t(result.kind === 'totp' ? 'factor.done.totp' : 'factor.done.passkey'));
+            announce(result.kind === 'totp' ? t('factorSettings.added.totp') : t('factorSettings.added.passkey', { name: result.name ?? '' }));
+            // The opener may re-mount (the first passkey turns an unkeyed row into a keyed list): focus goes to the group's button.
+            focusAfter.current = t(result.kind === 'totp' ? 'factorSettings.totp.remove' : 'factorSettings.passkeys.add');
             end();
           }} />
       ) : null}
-      <Dialog open={phase === 'codes'} title={t('factor.codes.title')} closeLabel={t('dialog.close')} onClose={end}>
-        <p>{t('factor.codes.body')}</p>
+      <Dialog open={phase === 'codes'} title={t('factorSettings.codes.newTitle')} closeLabel={t('dialog.close')} onClose={end}>
+        <p>{t('factorSettings.codes.newBody')}</p>
         <p>{t('factor.codes.notKey')}</p>
         <CodeList codes={codes} label={t('factor.codes.label')} labels={{ copy: t('factor.codes.copy'), print: t('factor.codes.print') }}
           onCopy={copyCodes} onPrint={() => { browser.print(); }} />
+        {region}
       </Dialog>
     </section>
   );

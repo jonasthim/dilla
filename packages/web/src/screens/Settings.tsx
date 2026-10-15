@@ -110,7 +110,7 @@ export function Settings(): React.JSX.Element {
     <SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
       nav={<SettingsNav label={t('settings.nav.label')} items={NAV.map(i => ({ id: i.id, label: t(i.key) }))}
         activeId={section} onSelect={select} />}>
-      {section === 'devices' ? <Devices /> : section === 'signin' ? <SignInFactors announce={announce} /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
+      {section === 'devices' ? <Devices /> : section === 'signin' ? <SignInFactors announce={announce} live={announcement} /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
         : section === 'voice' ? <Voice />
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />
           : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
@@ -135,7 +135,7 @@ export function Settings(): React.JSX.Element {
           }).catch((e: unknown) => failCompare(userId, umk, compareError(errorOf(e).code, 'verify')));
         }}
         onClose={() => setComparison(null)} />
-      <p className="d-sr-only" role="status" aria-live="polite" data-testid="settings-announcer">{announcement}</p>
+      {section === 'signin' ? null : <p className="d-sr-only" role="status" aria-live="polite" data-testid="settings-announcer">{announcement}</p>}
     </SettingsFrame>
   );
 }

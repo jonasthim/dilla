@@ -76,7 +76,7 @@ describe('MemberRolesFlow', () => {
       expect(await dialog().findByRole('alert')).toHaveTextContent(text);
     });
   }
-  it('maps E_TARGET_NO_FACTOR to the second-factor copy by code, and a plain 403 whose detail says "second factor" to forbidden', async () => {
+  it('maps E_TARGET_NO_FACTOR to the second-factor copy by its code', async () => {
     const first = setup({ handler: () => Promise.reject(refusal({ code: 'E_TARGET_NO_FACTOR', status: 403 })) });
     await first.user.click(dialog().getByRole('checkbox', { name: 'mods' }));
     expect(await dialog().findByRole('alert')).toHaveTextContent(en['roles.assign.error.twoFactor'].replace('{name}', 'Bob'));

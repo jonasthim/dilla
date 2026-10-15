@@ -53,4 +53,11 @@ export const factorSettings = {
   'factorSettings.error.only': 'You cannot remove your only second factor.',
   'factorSettings.error.changed': 'Your sign-in settings changed on another device. Check them and try again.',
   'factorSettings.error.other': 'That did not work ({code}). Try again.',
+  'factorSettings.stepUp.passkeyFailed': 'Your passkey did not confirm it is you. Try again.',
+  'factorSettings.added.totp': 'Authenticator app added.',
+  'factorSettings.added.passkey': '{name} added.',
+  'factorSettings.codes.newTitle': 'Your new backup codes',
+  'factorSettings.codes.newBody': 'Your old backup codes no longer work. Each of these signs you in once in place of your second factor. Keep them with your recovery key, away from this computer.',
+  'factorSettings.codes.makeBusy': 'Making codes…',
+  'factorSettings.stepUp.again': 'Nothing was added. Confirm it is you again to try once more.',
 } as const;
