@@ -53,6 +53,11 @@ For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–
   goes away. Its bytes are sender-supplied and are decoded by the browser's media pipeline in the
   page: the same exposure as a decrypted image, which the page's image decoder parses. No player
   autoplays, and no decrypted attachment is kept in any store.
+- Local stores are never downgraded: a client refuses to open a local store written by a newer
+  client (an app schema above the one it knows, or a newer OpenMLS storage version) before any
+  migration or write, so an older client never rewrites or drops what a newer one stored, the
+  group state and keys included. It says so with both numbers and offers no reset, which would
+  delete those keys.
 
 Against adversary 4: forward secrecy and post-compromise security as above; recovery keys are never
 on devices except during signup or recovery.

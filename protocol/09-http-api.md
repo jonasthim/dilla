@@ -190,7 +190,7 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs(uint)]` (`needs`: § Second factors) |
-| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr)]` | `204`; a wrong `old` is `403 E_FORBIDDEN`, counted on the step-up ledgers (§ Second factors), so past their free attempts every attempt, the right one included, is `429 E_RATE_LIMITED`; `429` too, before any guess, while the client address's login failure budget is spent |
+| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr), stepup(tstr\|null)]`; the third element may be left out (a null `stepup`) | `204`; a wrong `old` is `403 E_FORBIDDEN`, counted on the step-up ledgers (§ Second factors), so past their free attempts every attempt, the right one included, is `429 E_RATE_LIMITED`; `429` too, before any guess, while the client address's login failure budget is spent. A **first** password (the account has none, `old` is null) needs a session established within `auth.session.reauth_window` (`403 E_FORBIDDEN` otherwise) and, when the account holds a second factor, a step-up token, spent after the window check (`403 E_STEP_UP` without a valid one); `stepup` is ignored when a password exists, where `old` is the step-up |
 | `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]` (§ Second factors) |
 | `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]` (§ Second factors) |
 | `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 only; `429 E_RATE_LIMITED` while the account is locked out (the assertion is spent) |
@@ -244,9 +244,12 @@ full contract.
   account holds a factor (checked and written in one transaction under the account's lock). An
   operator reset deletes the factors and sets the mark in one transaction under that lock, so
   neither clears a mark a reset set.
-- **Step-up:** required by enroll, register/begin, remove and codes exactly when the caller's
-  account holds a factor; a token is single-use, bound to the session that minted it, and lives
-  300 s; only the routes above spend one. The confirm and finish re-check the rule under the
+- **Step-up:** required by enroll, register/begin, remove and codes, and by a first password
+  (`POST /v1/auth/password` with no password on the account), exactly when the caller's account
+  holds a factor; a token is single-use, bound to the session that minted it, and lives 300 s;
+  only these routes spend one. A first password needs it because a browser can establish a fresh
+  session from its device key at will: the session's freshness alone would let a stolen browser
+  set a password and then step up with it (method 0). The confirm and finish re-check the rule under the
   account's lock: when a factor appeared since a begin that carried no valid step-up, they write
   nothing and answer `403 E_STEP_UP`. The record of what a begin carried lives in memory, so after
   a restart the person confirms again. Step-up guesses (the step-up routes and the old password of

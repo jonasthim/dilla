@@ -15,7 +15,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -383,7 +386,8 @@ func (d Deps) recordAttempt(r *http.Request, user store.UserRow, found bool, add
 	}
 }
 
-// ChangePassword is POST /v1/auth/password: [old(tstr|null), new(tstr)] → 204.
+// ChangePassword is POST /v1/auth/password: [old(tstr|null), new(tstr), stepup(tstr|null)?] → 204.
+// The third element is optional; a two-element body is a null step-up.
 //
 // protocol/09-http-api.md marks this route "E (step-up)", and it has two kinds
 // of account to step up. Where the account HAS a credential the old password is
@@ -394,6 +398,13 @@ func (d Deps) recordAttempt(r *http.Request, user store.UserRow, found bool, add
 // /v1/accounts/me does. An enrolled session alone must NOT be enough there
 // either: planting a password on a passkey-only account creates a second,
 // persistent login path that survives revoking the passkey.
+//
+// Nor is freshness enough once the account holds a second factor (web3.6 review
+// M7): a browser re-establishes a fresh session from its device key at will, so
+// a stolen browser could plant a password, step up with it (method 0) and add or
+// remove factors the passkey step-up was meant to guard. A first password on
+// such an account also spends a step-up token (403 E_STEP_UP otherwise), after
+// the freshness check, so a stale session leaves the token unspent.
 func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -410,13 +421,25 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		_   struct{} `cbor:",toarray"`
-		Old *string
-		New string
+		Old    *string
+		New    string
+		StepUp *string
 	}
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+	var body []cbor.RawMessage
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	if len(body) != 2 && len(body) != 3 {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the body is [old, new] or [old, new, stepup]"))
+		return
+	}
+	fields := []any{&req.Old, &req.New, &req.StepUp}
+	for i, raw := range body {
+		if err := cborx.Unmarshal(raw, fields[i]); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body element %d: %v", i, err))
+			return
+		}
 	}
 	if req.New == "" {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the new password is empty"))
@@ -466,6 +489,10 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		if window := int64(d.Config.Auth.Session.ReauthWindow.Value().Seconds()); now-row.Created > window {
 			server.WriteError(w, server.Errorf(server.CodeForbidden,
 				"setting a first password needs a session established in the last %d seconds", window))
+			return
+		}
+		if _, err := d.requireStepUp(ctx, sess, req.StepUp); err != nil {
+			server.WriteError(w, err)
 			return
 		}
 	}

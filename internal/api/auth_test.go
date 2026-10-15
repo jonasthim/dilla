@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -433,6 +434,68 @@ func TestSettingAFirstPasswordNeedsAFreshSession(t *testing.T) {
 	}
 	if status, _ := login(t, h, fresh.Username, "a brand new password"); status != http.StatusOK {
 		t.Fatalf("the password a fresh session set does not log in: %d", status)
+	}
+}
+
+// web3.6 review M7: on an account that holds a second factor, a fresh session is not enough to set
+// a first password. A browser can establish a fresh session from its device key at will, so the
+// window alone would let a stolen browser plant a password, step up with it (method 0) and add or
+// remove factors the passkey step-up was meant to guard. The first password takes a step-up
+// token, [old = null, new, stepup], minted by a factor the account holds.
+func TestAFirstPasswordOnAnAccountWithAFactorNeedsAStepUp(t *testing.T) {
+	h, deps := newTestAPI(t)
+	u, _, token := seedAPISession(t, deps)
+	_, codes := enrolTOTP(t, h, deps, token)
+
+	refused := func(name string, body []any) {
+		t.Helper()
+		b, err := cborx.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		res := postCBORAuth(h, "/v1/auth/password", b, token)
+		if res.Code != http.StatusForbidden || errorCode(t, res) != "E_STEP_UP" {
+			t.Fatalf("%s: status = %d (%x), want 403 E_STEP_UP", name, res.Code, res.Body.Bytes())
+		}
+		if _, err := deps.Repo.GetPasswordCredential(context.Background(), u.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%s: the refused request planted a credential anyway (%v)", name, err)
+		}
+	}
+	refused("no step-up element", []any{nil, "a brand new password"})
+	refused("a null step-up", []any{nil, "a brand new password", nil})
+	refused("an unknown step-up", []any{nil, "a brand new password", "not-a-token"})
+
+	stepup := stepUp(t, h, token, stepUpBackup, codes[0])
+	b, err := cborx.Marshal([]any{nil, "a brand new password", stepup})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if res := postCBORAuth(h, "/v1/auth/password", b, token); res.Code != http.StatusNoContent {
+		t.Fatalf("with a step-up: status = %d (%x), want 204", res.Code, res.Body.Bytes())
+	}
+	if status, _ := login(t, h, u.Username, "a brand new password"); status != http.StatusOK {
+		t.Fatalf("the password set with a step-up does not log in: %d", status)
+	}
+}
+
+// A first password with a step-up still needs a fresh session: the token does not stand in for
+// the window, and a refusal by the window leaves the token unspent.
+func TestAFirstPasswordWithAStepUpStillNeedsAFreshSession(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, _, token := seedAPISession(t, deps)
+	_, codes := enrolTOTP(t, h, deps, token)
+	advance(t, deps, deps.Config.Auth.Session.ReauthWindow.Value()+time.Second)
+	stepup := stepUp(t, h, token, stepUpBackup, codes[0])
+	b, err := cborx.Marshal([]any{nil, "a brand new password", stepup})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if res := postCBORAuth(h, "/v1/auth/password", b, token); res.Code != http.StatusForbidden || errorCode(t, res) != "E_FORBIDDEN" {
+		t.Fatalf("a stale session with a step-up = %d (%x), want 403 E_FORBIDDEN", res.Code, res.Body.Bytes())
+	}
+	// The token is unspent: the regenerate route takes it.
+	if res := newCodes(h, token, stepup); res.Code != http.StatusOK {
+		t.Fatalf("the token after the window's refusal = %d, want it unspent (200)", res.Code)
 	}
 }
 
