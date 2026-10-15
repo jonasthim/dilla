@@ -90,10 +90,10 @@ describe('role mentions in the composer', () => {
 });
 
 describe('the send hint', () => {
-  it('replaces the composer with chperm.cannotSend when the bits lack send', () => {
+  it('keeps the composer read-only with chperm.cannotSend as its reason when the bits lack send', () => {
     composer({ bits: PERM.viewChannel });
-    expect(screen.queryByRole('textbox')).toBeNull();
-    expect(screen.getByText('You cannot send messages in #general.')).toBeInTheDocument();
+    expect(box()).toHaveAttribute('readonly');
+    expect(box()).toHaveAccessibleDescription('You cannot send messages in #general.');
   });
   it('keeps the composer with send, and with unknown bits', () => {
     composer({ bits: SEND });

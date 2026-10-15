@@ -80,17 +80,17 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     p.onSend({ raw: value, text: encodeMentions(value, p.encodeWith, broadcast, roleMentions), replyTo: p.ui.reply?.msgId ?? null,
       attachments: tray.map(a => a.id) });
   };
-  // Advisory: the instance decides, and W2b enforces it. The draft stays in the shell's store.
-  if (bits !== null && (bits & PERM.sendMessages) === 0) {
-    return <p className="dw-composer-cannot" role="status">{t('chperm.cannotSend', { name: p.channelName ?? '' })}</p>;
-  }
+  // Advisory: the instance decides, and W2b enforces it. The composer stays mounted, read-only with its reason (the draft,
+  // the file tray, the reply chip and the focus all stay); the shell speaks the state once through its announcer.
+  const cannotSend = bits !== null && (bits & PERM.sendMessages) === 0;
+  const blocked = p.blocked ?? (cannotSend ? t('chperm.cannotSend', { name: p.channelName ?? '' }) : null);
   return <>
     <input ref={inputRef} className="dw-attach-input" type="file" multiple hidden
       onChange={e => { void attachFiles(client, p.channelId, Array.from(e.currentTarget.files ?? []), a => p.dispatch(a)); e.currentTarget.value = ''; }} />
     <Composer label={p.label} placeholder={p.placeholder} maxLength={4000} value={p.draft}
       onChange={text => { p.onDraft(text); setActive(0);
         setCaret(textareaRef.current?.selectionStart ?? text.length); }}
-      disabled={p.blocked !== null} disabledReason={p.blocked ?? undefined} onSend={send}
+      disabled={blocked !== null} disabledReason={blocked ?? undefined} onSend={send}
       sendLabel={t('shell.composer.send')}
       counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
       attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}

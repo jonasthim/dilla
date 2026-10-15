@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   AppShell, Banner, Button, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, SidebarTabs,
@@ -7,6 +8,7 @@ import {
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
+import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, readJoinError, useRoute } from '../router.ts';
 import { en, t, type StringKey } from '../strings/index.ts';
@@ -307,6 +309,9 @@ export function Shell(): React.JSX.Element {
   const book = useMemo(() => nameBook(self, channel !== null ? members ?? [] : allMembers), [self, channel, members, allMembers]);
   const encodeWith = mentionMembers(conversationMembers);
   const candidates = mentionCandidates(conversationMembers, self?.id ?? null);
+  // Fallback only: what I may do in the open channel (roles, overwrites, access), null while unknown and for a DM.
+  const bits = useChannelBits(channel === null ? null : communityId, channel?.id ?? null);
+  const roles = useSlice(`roles:${communityId ?? ''}`);
   const broadcast = channel !== null;
   const [ui, dispatch] = useConversationUi(targetId);
   const group: ChannelGroupState = channel !== null
@@ -464,6 +469,31 @@ export function Shell(): React.JSX.Element {
       navigate({ name: 'channel', communityId, channelId: null }, true);
     }
   }, [overlay, base.name, communityId, channelId, channels, ordered, channel, navigate]);
+
+  // (4b) Lost access: the open channel left the list while its server stays. Say so once; (4) takes the route to the server's
+  // first channel, the draft stays in its store, and a dialog about the channel closes. Not told for a server that left.
+  const openSeen = useRef<{ communityId: string; id: string; name: string } | null>(null);
+  useEffect(() => {
+    const seen = openSeen.current;
+    if (channel !== null) {
+      if (communityId !== null) openSeen.current = { communityId, id: channel.id, name: channel.name };
+      return;
+    }
+    if (seen === null || overlay || channels === undefined || communityId !== seen.communityId || channelId !== seen.id) return;
+    openSeen.current = null;
+    if (communities?.some(c => c.id === communityId) !== true) return;
+    announce(t('chperm.lostAccess', { name: seen.name }));
+    setEditChannelId(open => (open === seen.id ? null : open));
+  }, [overlay, channel, channels, communityId, channelId, communities, announce]);
+  // The composer's cannot-send state is spoken once for each channel it is entered in (the draft and focus stay).
+  const cannotSend = bits !== null && (bits & PERM.sendMessages) === 0;
+  const cannotTold = useRef<string | null>(null);
+  useEffect(() => {
+    if (!cannotSend || channel === null) { cannotTold.current = null; return; }
+    if (cannotTold.current === channel.id) return;
+    cannotTold.current = channel.id;
+    announce(t('chperm.cannotSend', { name: channel.name }));
+  }, [cannotSend, channel, announce]);
 
   // (5) The channel or DM that can open is opened, and closed when it is left.
   useEffect(() => {
@@ -689,7 +719,7 @@ export function Shell(): React.JSX.Element {
   };
 
   const log = (label: string) => targetId === null || logKey === null ? null : <Conversation key={targetId} channelId={targetId}
-    logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast}
+    logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast} bits={bits} roles={roles}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
     ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report} />;
   const openFailed = (id: string, error: UiError) => (
@@ -844,7 +874,8 @@ export function Shell(): React.JSX.Element {
     : dm !== null ? t('shell.dm.composer', { name: dm.name }) : null;
   const composer = targetId === null || composerLabel === null || composerPlaceholder === null ? null : (
     <ComposerArea key={targetId} channelId={targetId} label={composerLabel} placeholder={composerPlaceholder}
-      blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} encodeWith={encodeWith} candidates={candidates}
+      blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
+      encodeWith={encodeWith} candidates={candidates}
       items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
       onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report} />
   );
@@ -1035,7 +1066,7 @@ export function Shell(): React.JSX.Element {
         }} />
       <InviteFlow open={inviteOpen} community={community} onClose={() => setInviteOpen(false)}
         onMoreOptions={() => { if (community !== null) openAdminFor(community.id, 'invites'); }} />
-      <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} onClose={() => setEditChannelId(null)} />
+      <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} announce={announce} onClose={() => setEditChannelId(null)} />
       {adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
         onClose={() => setAdminFor(null)} announce={announce} /> : null}
     </>
