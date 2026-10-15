@@ -87,6 +87,7 @@ interface ExpectedCoreHandle {
   purges(): Uint8Array;
   purge_done(group_id: Uint8Array, seq: bigint): void;
   own_roles_set(community_id: Uint8Array, role_ids: Uint8Array): void;
+  authority_set(group_id: Uint8Array, pinners: Uint8Array, broadcasters: Uint8Array, mentionable: Uint8Array): void;
   call_group_create(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, external_sender_pub: Uint8Array): Uint8Array;
   call_group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
   call_media_epoch(group_id: Uint8Array): Uint8Array;
@@ -186,6 +187,9 @@ expectTrue<Equals<H['attachment_get'], E['attachment_get']>>();
 expectTrue<Equals<H['purges'], E['purges']>>();
 expectTrue<Equals<H['purge_done'], E['purge_done']>>();
 expectTrue<Equals<H['own_roles_set'], E['own_roles_set']>>();
+
+// web3.5 R1 (ABI 10): the host-served role view that gates pins and @everyone/@here.
+expectTrue<Equals<H['authority_set'], E['authority_set']>>();
 
 // L-WASM-34 (web-3 task 5): call groups and the gated media epoch.
 expectTrue<Equals<H['call_group_create'], E['call_group_create']>>();

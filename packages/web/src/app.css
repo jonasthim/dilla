@@ -139,3 +139,9 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-admin-name { min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
 .dw-admin-controls { display: flex; flex-wrap: wrap; gap: var(--row-gap); }
 .dw-admin-error { color: var(--danger); }
+.dw-role-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 12rem; }
+.dw-role-detail { color: var(--fg-2); font-size: var(--text-sm, 0.875em); }
+.dw-role-rows { padding-left: 0; }
+.dw-role-form { display: flex; flex-direction: column; gap: var(--group-gap); min-width: 0; }
+.dw-admin-tag { color: var(--fg-2); font-size: var(--text-xs); }
+.dw-composer-cannot { margin: 0; padding: var(--row-gap) var(--group-gap); color: var(--fg-2); }

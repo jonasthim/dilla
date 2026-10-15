@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import type { ChannelSummary, DeviceSummary, MemberSummary } from '@dilla/client-core';
+import type { ChannelSummary, DeviceSummary, MemberSummary, RoleSummary } from '@dilla/client-core';
 import { formatDay, formatTime } from '../strings/index.ts';
 import {
   authorName, badgeLabel, bodyParts, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
-  mentionCandidates, mentionMembers, mentionOptions, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
+  mentionCandidates, mentionMembers, mentionOptions, mentionRoles, offeredRoles, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
   stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, userName, joinFailureKey, micNoticeKey, isVoice,
 } from './shell-model.ts';
 
@@ -97,6 +97,12 @@ describe('badges', () => {
     expect(rowBadge(BADGES, { [`mute.channel.${id('6')}`]: '1' }, id('6'))).toEqual({ unread: 0, mentions: 1, muted: true });
     expect(rowBadge(BADGES, {}, id('7'))).toEqual({ unread: 0, mentions: 0, muted: false });
     expect(rowBadge(undefined, undefined, id('5'))).toEqual({ unread: 0, mentions: 0, muted: false });
+    // a muted server mutes its channels (web3.5 WA5), and its row label says so
+    const server = id('a');
+    expect(rowBadge(BADGES, { [`mute.community.${server}`]: '1' }, id('6'), server)).toEqual({ unread: 0, mentions: 1, muted: true });
+    expect(rowBadge(BADGES, { [`mute.community.${server}`]: '1' }, id('5'), server)).toEqual({ unread: 0, mentions: 0, muted: true });
+    expect(rowBadge(BADGES, { [`mute.community.${server}`]: '1' }, id('5'))).toEqual({ unread: 3, mentions: 0, muted: false });
+    expect(badgeLabel({ name: 'general', unread: 0, mentions: 1, muted: true })).toBe('general, muted, mentions 1');
   });
   it('sums what is shown', () => {
     expect(sumBadges([{ unread: 3, mentions: 0, muted: false }, { unread: 0, mentions: 1, muted: true }, { unread: 2, mentions: 2, muted: false }]))
@@ -162,7 +168,7 @@ describe('names in bodies (L-TS-37)', () => {
   });
   it('names users, the own user, roles, broadcasts and unknown ids, and keeps the rest as text', () => {
     const body = `hi <@${BOB}> and <@${SELF.id}>, <@everyone> <@here> <@${ROLE}> <@${OTHER}> <@${UNKNOWN}> <@NOPE>`;
-    expect(bodyParts(body, book)).toEqual([
+    expect(bodyParts(body, book, true)).toEqual([
       { kind: 'text', text: 'hi ' },
       { kind: 'mention', label: '@bob', me: false, broadcast: false },
       { kind: 'text', text: ' and ' },
@@ -181,8 +187,22 @@ describe('names in bodies (L-TS-37)', () => {
     ]);
     expect(plainBody(body, book)).toBe('hi @bob and @Ada L, @everyone @here @role @role @eeeeeeee <@NOPE>');
   });
+  // Review 10 (widened): the core decides whether a broadcast or a role token counts; when the row's mention flag is off,
+  // they stay pills of their kind but never tinted as "you".
+  it('tints broadcasts and my roles as me only when the row mentions me', () => {
+    const body = `<@everyone> <@here> <@${ROLE}>`;
+    const parts = bodyParts(body, book, false);
+    expect(parts).toEqual([
+      { kind: 'mention', label: '@everyone', me: false, broadcast: true },
+      { kind: 'text', text: ' ' },
+      { kind: 'mention', label: '@here', me: false, broadcast: true },
+      { kind: 'text', text: ' ' },
+      { kind: 'mention', label: '@role', me: false, broadcast: false },
+    ]);
+    expect(bodyParts(`<@${SELF.id}>`, book, false)).toEqual([{ kind: 'mention', label: '@Ada L', me: true, broadcast: false }]);
+  });
   it('names the own user by username when no member row holds it', () => {
-    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []))).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false }]);
+    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []), true)).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false }]);
   });
   it('turns tokens back into what a person types for an edit', () => {
     expect(editableText(`hi <@${BOB}> <@${MO}> <@${SELF.id}> <@everyone> <@here> <@${UNKNOWN}>`, book))
@@ -264,5 +284,59 @@ describe('voice (flow 06)', () => {
     expect(isVoice({ kind: 1, mode: 0 })).toBe(true);
     expect(isVoice({ kind: 1, mode: 1 })).toBe(false);
     expect(isVoice({ kind: 0, mode: 0 })).toBe(false);
+  });
+});
+
+describe('role mentions (flow 09)', () => {
+  const role = (id: string, name: string, over: Partial<RoleSummary> = {}): RoleSummary =>
+    ({ id, name, color: 0, position: 3, hoist: false, mentionable: true, allow: 0, deny: 0, members: 0, ...over });
+  const GAME = '71'.repeat(16);
+  const MODS = '72'.repeat(16);
+  const HIDDEN = '73'.repeat(16);
+  const EVERYONE = '70'.repeat(16);
+  const SELF = { id: 'bb'.repeat(16), username: 'ada' };
+  const roles = [role(EVERYONE, '@everyone', { position: 0, mentionable: true }), role(GAME, 'Game Night', { color: 0x336699 }),
+    role(MODS, 'Modérateurs', { mentionable: false }), role(HIDDEN, 'Quiet', { mentionable: false })];
+  const m = (userId: string, username: string): MemberSummary => ({ userId, username, display: '', kind: 0, roleIds: [] });
+
+  it('offers the mentionable roles, or every role but @everyone with the broadcast right', () => {
+    expect(offeredRoles(roles, false).map(r => r.name)).toEqual(['Game Night']);
+    expect(offeredRoles(roles, true).map(r => r.name)).toEqual(['Game Night', 'Modérateurs', 'Quiet']);
+    expect(mentionRoles(offeredRoles(roles, true))[1]).toEqual({ roleId: MODS, handle: 'modérateurs' });
+  });
+  it('lists role options after the members and before @everyone, within the eight', () => {
+    const offered = offeredRoles(roles, true);
+    expect(mentionOptions('mod', [], true, offered)).toEqual([
+      { id: `r-${MODS}`, primary: '@Modérateurs', secondary: 'role', insert: '@modérateurs ' },
+    ]);
+    const all = mentionOptions('', [m('28'.repeat(16), 'bob')], true, offered).map(o => o.id);
+    expect(all).toEqual([`m-${'28'.repeat(16)}`, `r-${GAME}`, `r-${MODS}`, `r-${HIDDEN}`, 'b-everyone']);
+    const many = Array.from({ length: 8 }, (_, i) => m(String(i).repeat(32), `u${i}`));
+    expect(mentionOptions('', many, false, offered).map(o => o.id.slice(0, 2))).toEqual(['m-', 'm-', 'm-', 'm-', 'm-', 'm-', 'm-', 'm-']);
+    expect(mentionOptions('g', [], false, offeredRoles(roles, false)).map(o => o.id)).toEqual([`r-${GAME}`]);
+  });
+  it('shows a known role with its name and colour, and keeps the generic label for an unknown one', () => {
+    const book = nameBook(SELF, [{ ...m(SELF.id, 'ada'), roleIds: [GAME, '99'.repeat(16)] }], roles);
+    expect(bodyParts(`<@${GAME}> <@${'99'.repeat(16)}>`, book, true)).toEqual([
+      { kind: 'mention', label: '@Game Night', me: true, broadcast: false, color: 0x336699 },
+      { kind: 'text', text: ' ' },
+      { kind: 'mention', label: '@role', me: true, broadcast: false },
+    ]);
+    expect(plainBody(`<@${GAME}>`, book)).toBe('@Game Night');
+    expect(editableText(`<@${GAME}>`, book)).toBe('@game-night');
+  });
+  it('matches a decomposed query against a composed handle', () => {
+    expect(mentionOptions('mode\u0301', [], false, [role(MODS, 'Modérateurs')]).map(o => o.id)).toEqual([`r-${MODS}`]);
+  });
+  it('sorts roles by position, highest first, then by name', () => {
+    const rs = [role('a1'.repeat(16), 'Beta', { position: 2 }), role('a2'.repeat(16), 'Alpha', { position: 2 }), role('a3'.repeat(16), 'Zed', { position: 7 })];
+    expect(mentionOptions('', [], false, rs).map(o => o.primary)).toEqual(['@Zed', '@Alpha', '@Beta']);
+  });
+  it('leaves out a role whose handle a member, @everyone, @here or an earlier role already takes', () => {
+    const bob = m('28'.repeat(16), 'bob');
+    const rs = [role('a1'.repeat(16), 'Bob', { position: 9 }), role('a2'.repeat(16), 'Everyone', { position: 8 }), role('a3'.repeat(16), 'here', { position: 7 }),
+      role('a4'.repeat(16), 'Staff', { position: 6 }), role('a5'.repeat(16), 'staff', { position: 5 })];
+    expect(mentionOptions('', [bob], false, rs).map(o => o.id)).toEqual([`m-${bob.userId}`, `r-${'a4'.repeat(16)}`]);
+    expect(mentionRoles(rs, [bob]).map(r => r.roleId)).toEqual(['a4'.repeat(16)]);
   });
 });

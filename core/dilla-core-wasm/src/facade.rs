@@ -76,6 +76,21 @@ pub fn role_ids_arg(bytes: &[u8]) -> Result<(), ClientError> {
 }
 
 #[doc(hidden)]
+pub fn authority_ids_arg(name: &'static str, bytes: &[u8]) -> Result<(), ClientError> {
+    if bytes.len().is_multiple_of(16) && bytes.len() <= 4096 * 16 {
+        Ok(())
+    } else {
+        Err(ClientError {
+            code: "E_CORE_INPUT",
+            detail: format!(
+                "{name}: expected 0..=4096 ids of 16 bytes, got {} bytes",
+                bytes.len()
+            ),
+        })
+    }
+}
+
+#[doc(hidden)]
 pub fn client_js_error(e: &ClientError) -> JsError {
     JsError::new(&e.to_string())
 }
@@ -651,6 +666,22 @@ impl CoreHandle {
         let community_id = js_fixed_arg::<16>("community_id", community_id)?;
         role_ids_arg(role_ids).map_err(owned_js_error)?;
         self.with_core(|c| c.own_roles_set(&community_id, role_ids))
+    }
+    /// Calls ClientCore::authority_set; pinners and broadcasters are each 0..=4096 concatenated
+    /// 16-byte user ids (web3.5 R1); mentionable is 0..=4096 concatenated 16-byte role ids, the
+    /// server's roles marked "anyone can mention" (ABI 10).
+    pub fn authority_set(
+        &self,
+        group_id: &[u8],
+        pinners: &[u8],
+        broadcasters: &[u8],
+        mentionable: &[u8],
+    ) -> Result<(), JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        authority_ids_arg("pinners", pinners).map_err(owned_js_error)?;
+        authority_ids_arg("broadcasters", broadcasters).map_err(owned_js_error)?;
+        authority_ids_arg("mentionable", mentionable).map_err(owned_js_error)?;
+        self.with_core(|c| c.authority_set(&group_id, pinners, broadcasters, mentionable))
     }
     /// Calls ClientCore::group_row; CBOR null or [group_id, kind, community_id, target_id, state, epoch, next_seq, proposals_pending, pending_commit].
     pub fn group_row(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {

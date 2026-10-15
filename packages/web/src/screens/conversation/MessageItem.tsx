@@ -1,6 +1,6 @@
 // One folded timeline item, with its controls and focus hand-off.
 import { useLayoutEffect, useRef, type PointerEvent } from 'react';
-import type { TimelineItem, TimelineItemState } from '@dilla/client-core';
+import { PERM, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionDisplay, reactionName } from '../../emoji.ts';
 import { t, type StringKey } from '../../strings/index.ts';
@@ -29,6 +29,8 @@ export type RowEvent =
   | { kind: 'retry'; msgId: string } | { kind: 'discard'; msgId: string };
 
 export interface MessageItemProps { item: TimelineItem; channelId: string; book: NameBook; now: number; active: boolean; flash: boolean;
+  /** What I may do in this channel; null while unknown, which shows every item as before. */
+  bits?: number | null;
   editing: string | null; editMeasure(v: string): number; rowRef(el: HTMLElement | null): void;
   onJumpPointerDown(e: PointerEvent<HTMLButtonElement>): void;
   onEvent(item: TimelineItem, ev: RowEvent): void; onEditChange(v: string): void; onEditSave(v: string): void; onEditCancel(): void;
@@ -71,7 +73,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
       { id: 'react', label: t('shell.message.react'), onAction: e => emit({ kind: 'react', anchor: e.currentTarget as HTMLElement }) },
       { id: 'reply', label: t('shell.message.reply'), onAction: () => emit({ kind: 'reply' }) },
       ...(ownAuthor ? [{ id: 'edit' as const, label: t('shell.message.edit'), onAction: () => emit({ kind: 'edit' as const }) }] : []),
-      { id: 'pin', label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) },
+      ...(p.bits == null || (p.bits & PERM.pinMessages) !== 0 ? [{ id: 'pin' as const, label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) }] : []),
       ...(ownAuthor ? [{ id: 'delete' as const, label: t('shell.message.delete'), danger: true, onAction: () => emit({ kind: 'delete' as const }) }] : []),
     ]} /> : undefined;
   const reply = item.reply;
@@ -85,7 +87,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     onJump: reply.state === 'missing' ? undefined : () => emit({ kind: 'jump', msgId: reply.msgId }),
     onJumpPointerDown: (e: PointerEvent<HTMLButtonElement>) => p.onJumpPointerDown(e),
   };
-  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={messageTime(item.ts, p.now)} body={shown ? bodyParts(item.body, p.book) : ''}
+  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={messageTime(item.ts, p.now)} body={shown ? bodyParts(item.body, p.book, item.mention) : ''}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [

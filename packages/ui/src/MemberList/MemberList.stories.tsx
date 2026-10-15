@@ -7,9 +7,9 @@ const meta = {
   args: {
     label: 'members', loading: false, loadingLabel: 'Loading members…', emptyLabel: 'No members yet.', onAction: () => {},
     groups: [
-      { id: 'mods', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [] }] },
+      { id: 'mods', title: 'moderators', members: [{ id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: [], color: 0xe74c3c }] },
       { id: 'members', title: 'members', members: [
-        { id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: kickBan },
+        { id: 'u2', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: kickBan, color: 0x3498db },
         { id: 'u3', name: 'Sigrid', tags: ['you'], actionsLabel: 'actions for Sigrid', actions: [] },
       ] },
     ],

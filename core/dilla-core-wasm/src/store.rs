@@ -186,6 +186,8 @@ impl StoreHandle {
             DROP TRIGGER IF EXISTS app_search_rows_update;
             DROP TABLE IF EXISTS app_search;
             DROP TABLE IF EXISTS app_search_rows;
+            DROP TABLE IF EXISTS app_authority;
+            DROP TABLE IF EXISTS app_authority_known;
             DROP TABLE IF EXISTS app_device_lists;
             DROP TABLE IF EXISTS app_trust_pins;
             DROP TABLE IF EXISTS app_quarantine;

@@ -137,8 +137,17 @@ export const RINGS_EMPTY: RingsState = [];
 /** `loaded` is false for a server whose access has not been read (or that is gone): the page shows a loading state, not
  *  "no rights". */
 export interface CommunityAccess { top: number; owner: boolean; manageCommunity: boolean; manageChannels: boolean;
-  kickMembers: boolean; banMembers: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean }
-export interface RoleSummary { id: string; name: string; color: number; position: number; hoist: boolean; mentionable: boolean }
+  kickMembers: boolean; banMembers: boolean; createInvite: boolean; manageRoles: boolean; loaded: boolean;
+  /** The id of the position-0 role (@everyone); '' until the roles are read. */
+  everyoneId: string;
+  /** Whether the last read of the overwrites succeeded; the `overwrites:` slice keeps its last value for display only. */
+  overwritesLoaded: boolean }
+/** One role with its permission bits; `members` counts the member rows that hold it (every member for @everyone, 0 while
+ *  the member list is absent). */
+export interface RoleSummary { id: string; name: string; color: number; position: number; hoist: boolean; mentionable: boolean;
+  allow: number; deny: number; members: number }
+/** One channel overwrite; `kind` 0 targets a role, 1 a member. */
+export interface OverwriteSummary { kind: 0 | 1; targetId: string; allow: number; deny: number }
 /** One ban; `name` is the display name, else the username, else ''. */
 export interface BanSummary { userId: string; name: string; reason: string; byUser: string; created: number; expires: number | null }
 export interface InviteSummary { id: string; createdBy: string | null; maxUses: number; uses: number; created: number; expires: number }
@@ -147,12 +156,14 @@ export interface RemovalNotice { id: number; communityId: string; name: string }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
-  | `permissions:${string}` | `roles:${string}` | `bans:${string}` | `invites:${string}` | 'removals';
+  | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
   [k: `typing:${string}`]: TypingState[];
-  [k: `permissions:${string}`]: CommunityAccess; [k: `roles:${string}`]: RoleSummary[]; [k: `bans:${string}`]: BanSummary[];
+  [k: `permissions:${string}`]: CommunityAccess; [k: `roles:${string}`]: RoleSummary[];
+  /** channel id (hex) → its overwrites; a channel with none is absent. */
+  [k: `overwrites:${string}`]: Record<string, OverwriteSummary[]>; [k: `bans:${string}`]: BanSummary[];
   [k: `invites:${string}`]: InviteSummary[]; removals: RemovalNotice[];
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
   trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState;

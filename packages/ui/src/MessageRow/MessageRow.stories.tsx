@@ -69,6 +69,11 @@ export const MentionsMe: Story = {
   args: { author: 'mira', time: '21:05', mention: true,
     body: [{ kind: 'mention', label: '@ada', me: true, broadcast: false }, { kind: 'text', text: ' are you bringing the map?' }] },
 };
+/** A role mention carries its role colour as a dot before the name; the text keeps its token colour. */
+export const RoleMention: Story = {
+  args: { author: 'mira', time: '21:05',
+    body: [{ kind: 'mention', label: '@moderators', me: false, broadcast: false, color: 0x3498db }, { kind: 'text', text: ' please look at this' }] },
+};
 export const ReplyMissing: Story = {
   args: { author: 'mira', time: '21:05', body: 'count me in',
     reply: { label: 'reply to björn', author: 'björn', excerpt: '', state: 'missing', stateText: 'the original message cannot be shown here', jumpLabel: 'go to the original message' } },

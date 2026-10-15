@@ -3,13 +3,17 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -276,6 +280,188 @@ type createChannelReq struct {
 	SlowmodeSeconds uint64
 }
 
+// createOverwrite is one entry of a channel create's optional ninth element (protocol/09 §
+// Channels): [kind(uint), target_id(bstr16), allow(uint), deny(uint)].
+type createOverwrite struct {
+	_      struct{} `cbor:",toarray"`
+	Kind   uint64
+	Target id.ID
+	Allow  uint64
+	Deny   uint64
+}
+
+// maxCreateOverwrites bounds a channel create's overwrites, and so the work of checking them.
+const maxCreateOverwrites = 100
+
+// decodeCreateChannel reads a channel create body: the eight fields of createChannelReq, then
+// optionally the overwrites. A toarray struct is exact-arity, so the body is read as an array
+// first; any length but 8 or 9 is refused exactly as a wrong-arity createChannelReq always was.
+// overwrites is nil for an 8-element body.
+func decodeCreateChannel(w http.ResponseWriter, r *http.Request) (createChannelReq, []createOverwrite, error) {
+	var req createChannelReq
+	var raw []cbor.RawMessage
+	if err := server.DecodeBody(w, r, maxCBORBody, &raw); err != nil {
+		return req, nil, err
+	}
+	shape := func(err error) error {
+		return server.Errorf(server.CodeInvalidRequest, "body is not deterministic CBOR: %v", err)
+	}
+	fields := raw
+	if len(raw) == 9 {
+		fields = raw[:8]
+	}
+	// The fields are re-encoded as an array and decoded into the struct, so every field rule of
+	// the 8-element body, and its refusal for any other length, holds unchanged.
+	b, err := cborx.Marshal(fields)
+	if err != nil {
+		return req, nil, err
+	}
+	if err := cborx.Unmarshal(b, &req); err != nil {
+		return req, nil, shape(err)
+	}
+	if len(raw) != 9 {
+		return req, nil, nil
+	}
+	var overwrites []createOverwrite
+	if err := cborx.Unmarshal(raw[8], &overwrites); err != nil {
+		return req, nil, shape(err)
+	}
+	if len(overwrites) < 1 || len(overwrites) > maxCreateOverwrites {
+		return req, nil, server.Errorf(server.CodeInvalidRequest, "overwrites must hold 1 to %d entries", maxCreateOverwrites)
+	}
+	return req, overwrites, nil
+}
+
+// createGate is every permission decision of a channel create, read from repo: the caller is a
+// member with manage_channels community-wide, and, when overwrites is non-nil, holds manage_roles
+// community-wide, the channel is not a category, and every entry follows putOverwrite's rules
+// against the caller's community-wide bits. A kind-1 entry targeting the caller themself, allowing
+// only bits they hold and denying none, is exempt from the rank rule. Finally the caller must still
+// view the channel with the overwrites applied. The handler runs it before the transaction, for
+// the refusal's precedence, and again inside it under the community row lock, so a demotion that
+// commits in between cannot let a create through on authority the caller no longer holds.
+//
+// It returns the overwrites as rows whose ChannelID the caller fills in; none for nil overwrites.
+func createGate(ctx context.Context, repo store.Repository, cid, uid id.ID, kind uint8, overwrites []createOverwrite) ([]store.OverwriteRow, error) {
+	if _, err := repo.GetMember(ctx, cid, uid); err != nil {
+		// A non-member must not learn that the community exists.
+		return nil, notFound(err)
+	}
+	// There is no channel yet, so there are no stored overwrites to apply: the community-wide
+	// bits decide.
+	snap, err := LoadSnapshot(ctx, repo, cid, uid, nil)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	have := snap.Resolve(uid)
+	if !have.Has(PermManageChannels) {
+		return nil, server.Errorf(server.CodeForbidden, "manage channels")
+	}
+	if overwrites == nil {
+		return nil, nil
+	}
+	if !have.Has(PermManageRoles) {
+		return nil, server.Errorf(server.CodeForbidden, "manage roles")
+	}
+	if kind == ChannelCategory {
+		return nil, server.Errorf(server.CodeInvalidRequest, "a category's overwrites have no effect")
+	}
+	top, _ := snap.Highest(uid)
+	rows := make([]store.OverwriteRow, 0, len(overwrites))
+	for _, o := range overwrites {
+		row, err := createOverwriteRow(ctx, repo, cid, uid, have, top, snap.Owner, o)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	type target struct {
+		kind uint8
+		id   id.ID
+	}
+	seen := make(map[target]bool, len(rows))
+	for _, row := range rows {
+		k := target{row.TargetKind, row.TargetID}
+		if seen[k] {
+			return nil, server.Errorf(server.CodeInvalidRequest,
+				"a target has at most one overwrite (%d:%s)", row.TargetKind, row.TargetID)
+		}
+		seen[k] = true
+	}
+	snap.Overwrite = rows
+	if !snap.ResolveChannel(uid).Has(PermViewChannel) {
+		return nil, server.Errorf(server.CodeInvalidRequest, "the channel would be hidden from you")
+	}
+	return rows, nil
+}
+
+// createOverwriteRow checks one create entry as putOverwrite checks a PUT, with the caller's
+// community-wide bits (have) and highest role position (top), and returns it as a row whose
+// channel id the caller fills in.
+func createOverwriteRow(ctx context.Context, repo store.Repository, cid, uid id.ID, have Bits, top uint64, owner id.ID, o createOverwrite) (store.OverwriteRow, error) {
+	var kind uint8
+	switch o.Kind {
+	case uint64(overwriteRole):
+		kind = overwriteRole
+	case uint64(overwriteUser):
+		kind = overwriteUser
+	default:
+		return store.OverwriteRow{}, server.Errorf(server.CodeInvalidRequest, "kind is 0 (role) or 1 (user)")
+	}
+	var targetPos uint64
+	switch kind {
+	case overwriteRole:
+		role, err := repo.GetRole(ctx, o.Target)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return store.OverwriteRow{}, err
+		}
+		if err != nil || role.CommunityID != cid {
+			return store.OverwriteRow{}, server.Errorf(server.CodeNotFound, "no such role")
+		}
+		targetPos = role.Position
+	case overwriteUser:
+		if _, err := repo.GetMember(ctx, cid, o.Target); err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				return store.OverwriteRow{}, err
+			}
+			return store.OverwriteRow{}, server.Errorf(server.CodeNotFound, "not a member")
+		}
+		target, err := LoadSnapshot(ctx, repo, cid, o.Target, nil)
+		if err != nil {
+			return store.OverwriteRow{}, notFound(err)
+		}
+		targetPos, _ = target.Highest(o.Target)
+	}
+	allow, err := knownBits("allow", o.Allow)
+	if err != nil {
+		return store.OverwriteRow{}, err
+	}
+	deny, err := knownBits("deny", o.Deny)
+	if err != nil {
+		return store.OverwriteRow{}, err
+	}
+	if both := allow & deny; both != 0 {
+		return store.OverwriteRow{}, server.Errorf(server.CodeInvalidRequest,
+			"a bit is either allowed or denied, not both (%#x)", uint64(both))
+	}
+	if scoped := (allow | deny) & communityBits; scoped != 0 {
+		return store.OverwriteRow{}, server.Errorf(server.CodeInvalidRequest,
+			"a channel overwrite cannot carry a community-wide permission (%#x)", uint64(scoped))
+	}
+	if err := checkBits(have, allow, deny); err != nil {
+		return store.OverwriteRow{}, err
+	}
+	// The one exception to the rank rule: the creator's own entry allowing exactly view_channel
+	// and denying nothing, which only keeps the channel visible to them. Any other bit on oneself
+	// (manage_messages, pin, mute…) would outlive a demotion, so it takes the rank rule: 403.
+	self := kind == overwriteUser && o.Target == uid && allow == PermViewChannel && deny == 0
+	if !self && uid != owner && targetPos >= top {
+		return store.OverwriteRow{}, server.Errorf(server.CodeForbidden,
+			"an overwrite may target only a role or member below your highest role")
+	}
+	return store.OverwriteRow{TargetKind: kind, TargetID: o.Target, Allow: uint64(allow), Deny: uint64(deny)}, nil
+}
+
 type createChannelResp struct {
 	_          struct{} `cbor:",toarray"`
 	ChannelID  id.ID
@@ -294,9 +480,9 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	var req createChannelReq
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
-		server.WriteError(w, err)
+	req, overwrites, err := decodeCreateChannel(w, r)
+	if err != nil {
+		c.fail(w, r, "create channel", err)
 		return
 	}
 	com, err := c.repo.GetCommunity(r.Context(), cid)
@@ -304,20 +490,10 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, "create channel", notFound(err))
 		return
 	}
-	if _, err := c.repo.GetMember(r.Context(), cid, s.UserID); err != nil {
-		// A non-member must not learn that the community exists.
-		c.fail(w, r, "create channel", notFound(err))
-		return
-	}
-	// There is no channel yet, so there are no overwrites to apply: the
-	// community-wide bits decide.
-	snap, err := LoadSnapshot(r.Context(), c.repo, cid, s.UserID, nil)
-	if err != nil {
-		c.fail(w, r, "create channel", notFound(err))
-		return
-	}
-	if !snap.Resolve(s.UserID).Has(PermManageChannels) {
-		server.WriteError(w, server.Errorf(server.CodeForbidden, "manage channels"))
+	// The member and manage_channels checks, read before the kind is known. The overwrite rules
+	// follow once it is, and every check runs again inside the transaction.
+	if _, err := createGate(r.Context(), c.repo, cid, s.UserID, ChannelText, nil); err != nil {
+		c.fail(w, r, "create channel", err)
 		return
 	}
 	// The three enums are checked as the client sent them, before they are
@@ -343,6 +519,12 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 			"a DM is not created through a community"))
 		return
 	}
+	if overwrites != nil {
+		if _, err := createGate(r.Context(), c.repo, cid, s.UserID, kind, overwrites); err != nil {
+			c.fail(w, r, "create channel", err)
+			return
+		}
+	}
 	row := store.ChannelRow{
 		ID:                id.New(),
 		CommunityID:       &cid,
@@ -366,18 +548,45 @@ func (c *Channels) create(w http.ResponseWriter, r *http.Request) {
 		row.Mode = ModeReadable
 	}
 	// The parent is read and the row written in one transaction, so a category
-	// deleted in between cannot end up with a live child.
+	// deleted in between cannot end up with a live child. The channel and its
+	// overwrites are written together: no reader, materialiser or frame ever sees
+	// the channel without them, so it is never open to a member it excludes.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// Every permission decision is taken again under the community row lock,
+		// so a demotion or role change that committed after the checks above
+		// cannot let this create through on authority the caller no longer holds.
+		if err := tx.LockCommunity(r.Context(), cid); err != nil {
+			return notFound(err)
+		}
+		rows, err := createGate(r.Context(), tx, cid, s.UserID, kind, overwrites)
+		if err != nil {
+			return err
+		}
 		if err := validChannel(r.Context(), tx, row); err != nil {
 			return err
 		}
 		if err := tx.CreateChannel(r.Context(), row); err != nil {
 			return err
 		}
-		return tx.Audit(r.Context(), store.AuditRow{
+		if err := tx.Audit(r.Context(), store.AuditRow{
 			Actor: &s.UserID, Action: "channel.create", Target: row.ID.String(),
 			Detail: cid.String(), At: row.Created,
-		})
+		}); err != nil {
+			return err
+		}
+		for _, o := range rows {
+			o.ChannelID = row.ID
+			if err := tx.PutOverwrite(r.Context(), o); err != nil {
+				return err
+			}
+			if err := tx.Audit(r.Context(), store.AuditRow{
+				Actor: &s.UserID, Action: "channel.overwrite.put", Target: row.ID.String(),
+				Detail: fmt.Sprintf("%d:%s", o.TargetKind, o.TargetID), At: row.Created,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		c.fail(w, r, "create channel", err)
 		return
@@ -509,7 +718,7 @@ type patchChannelReq struct {
 }
 
 func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
-	current, s, err := c.manageable(r)
+	current, s, err := c.manageable(r, c.repo)
 	if err != nil {
 		c.fail(w, r, "patch channel", err)
 		return
@@ -550,6 +759,9 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	// The row is read again inside the transaction and the request applied to
 	// that, so two concurrent PATCHes of different fields both land.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := c.lockManageable(r, tx, current); err != nil {
+			return err
+		}
 		row, err := tx.GetChannel(r.Context(), current.ID)
 		if err != nil {
 			return notFound(err)
@@ -746,7 +958,7 @@ func (c *Channels) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
-	row, s, err := c.manageable(r)
+	row, s, err := c.manageable(r, c.repo)
 	if err != nil {
 		c.fail(w, r, "delete channel", err)
 		return
@@ -754,6 +966,9 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	now := c.clk.Now().Unix()
 	var toClose []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := c.lockManageable(r, tx, row); err != nil {
+			return err
+		}
 		// Read the channel's open groups inside the transaction; close them after it.
 		var err error
 		if toClose, err = openChannelGroups(r.Context(), tx, []id.ID{row.ID}); err != nil {
@@ -807,6 +1022,11 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 // visible loads {id} for a caller who holds PermViewChannel in it. Anyone else,
 // a non-member included, gets the 404 an unknown channel gets.
 func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, error) {
+	return visibleIn(r, c.repo)
+}
+
+// visibleIn is visible reading through repo.
+func visibleIn(r *http.Request, repo store.Repository) (store.ChannelRow, auth.Session, error) {
 	s, err := enrolledSession(r)
 	if err != nil {
 		return store.ChannelRow{}, s, err
@@ -815,7 +1035,7 @@ func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, err
 	if err != nil {
 		return store.ChannelRow{}, s, err
 	}
-	row, err := c.repo.GetChannel(r.Context(), chID)
+	row, err := repo.GetChannel(r.Context(), chID)
 	if err != nil {
 		return store.ChannelRow{}, s, notFound(err)
 	}
@@ -823,26 +1043,39 @@ func (c *Channels) visible(r *http.Request) (store.ChannelRow, auth.Session, err
 	// taken the channel from: neither learns that it exists. For a DM or group
 	// DM the members are its participants (channel_members), which is what
 	// makes a 1:1 DM's derived id a name rather than a capability (P2-D31).
-	if err := c.res.Require(r.Context(), s.UserID, row, PermViewChannel); err != nil {
+	if err := NewResolver(repo).Require(r.Context(), s.UserID, row, PermViewChannel); err != nil {
 		return store.ChannelRow{}, s, err
 	}
 	return row, s, nil
 }
 
 // manageable is visible plus PermManageChannels in that channel, overwrites
-// applied.
-func (c *Channels) manageable(r *http.Request) (store.ChannelRow, auth.Session, error) {
-	row, s, err := c.visible(r)
+// applied, read through repo. patch and delete call it before their
+// transaction, for the refusal's precedence, and again inside it under the
+// community row lock.
+func (c *Channels) manageable(r *http.Request, repo store.Repository) (store.ChannelRow, auth.Session, error) {
+	row, s, err := visibleIn(r, repo)
 	if err != nil {
 		return row, s, err
 	}
 	if row.CommunityID == nil {
 		return row, s, server.Errorf(server.CodeForbidden, "a DM has no manager")
 	}
-	if err := c.res.Require(r.Context(), s.UserID, row, PermManageChannels); err != nil {
+	if err := NewResolver(repo).Require(r.Context(), s.UserID, row, PermManageChannels); err != nil {
 		return row, s, err
 	}
 	return row, s, nil
+}
+
+// lockManageable takes the community row lock in tx and runs manageable again through it, so a
+// demotion that committed after a route's checks refuses the write. row is the channel the
+// route checked before its transaction; it is a community channel (manageable refused a DM).
+func (c *Channels) lockManageable(r *http.Request, tx store.Repository, row store.ChannelRow) error {
+	if err := tx.LockCommunity(r.Context(), *row.CommunityID); err != nil {
+		return notFound(err)
+	}
+	_, _, err := c.manageable(r, tx)
+	return err
 }
 
 // fail writes err as the client's refusal. Anything that is not a

@@ -4,7 +4,7 @@
 //
 // Attacker statement (lesson e): the notifier refuses nothing. What it shows is the body of a message the core
 // already decrypted and the timeline would render, on this device only, and only with the person's own permission.
-import { effectiveNotifyMode, isMuted } from '@dilla/client-core';
+import { effectiveNotifyMode, isMuted, mentionsDirectly, suppressesEveryone } from '@dilla/client-core';
 import type { CoreClient, Notice, Ring } from '@dilla/client-core';
 import type { PermissionState } from './notify-permission.ts';
 import { t } from './strings/index.ts';
@@ -12,17 +12,24 @@ import { mergeMembers, nameBook, plainBody } from './screens/shell-model.ts';
 
 export interface NotificationHandle { onclick: ((ev: Event) => unknown) | null; close(): void; }
 export interface NotificationCtor { readonly permission: NotificationPermission; new (title: string, options: NotificationOptions): NotificationHandle; }
-export interface NotifyContext { permission: PermissionState; settings: Readonly<Record<string, string>>; visible: boolean; onScreen: string | null; }
+export interface NotifyContext { permission: PermissionState; settings: Readonly<Record<string, string>>; visible: boolean; onScreen: string | null;
+  /** The person's own user id and role ids, for a server that ignores @everyone and @here (WA5); either unset keeps every mention (fails open). */
+  me?: string; roles?: readonly string[]; }
 
 /** L-TS-25's decision for one notice; kind is the channel's for the mode: 0 a community channel, 3 | 4 a DM. */
 export function shouldNotify(notice: Notice, kind: 0 | 3 | 4, ctx: NotifyContext): boolean {
   if (ctx.permission !== 'granted') return false;
-  if (isMuted(ctx.settings, notice.channelId)) return false;
+  const server = notice.communityId ?? undefined;
+  if (isMuted(ctx.settings, notice.channelId, server)) return false;
   // The person is looking at it: the timeline shows it, so nothing pops up over it.
   if (ctx.visible && ctx.onScreen === notice.channelId) return false;
-  const mode = effectiveNotifyMode(ctx.settings, notice.channelId, kind);
+  const mode = effectiveNotifyMode(ctx.settings, notice.channelId, kind, server);
   if (mode === 'all') return true;
-  return mode === 'mentions' && (notice.kind === 'mention' || notice.kind === 'dm');
+  // A server that ignores @everyone and @here turns a broadcast-only mention into a plain message.
+  // It fails open: with the own user or roles unknown, a mention is never demoted.
+  const broadcastOnly = notice.kind === 'mention' && server !== undefined && suppressesEveryone(ctx.settings, server)
+    && ctx.me !== undefined && ctx.roles !== undefined && !mentionsDirectly(notice.body, ctx.me, ctx.roles);
+  return mode === 'mentions' && !broadcastOnly && (notice.kind === 'mention' || notice.kind === 'dm');
 }
 
 /** notify.title.dm for a DM notice, else notify.title.channel; an unknown name reads as the first 8 hex of its id. */
@@ -63,7 +70,13 @@ export function startNotifier(deps: NotifierDeps): () => void {
     const kind: 0 | 3 | 4 = item.communityId === null
       ? client.get('dms')?.find(d => d.id === item.channelId)?.kind ?? 3
       : 0;
+    const communityMembers = item.communityId === null ? undefined : client.get(`members:${item.communityId}`);
+    const self = client.get('account')?.user ?? null;
+    const selfId = self?.id;
+    const ownMember = communityMembers?.find(m => m.userId === selfId);
     const ctx: NotifyContext = {
+      me: selfId,
+      roles: ownMember === undefined ? undefined : [...ownMember.roleIds],
       permission: Ctor?.permission ?? 'unsupported',
       settings: client.get('settings') ?? {},
       visible: deps.visible(),
@@ -117,6 +130,8 @@ export interface RingNotifyDeps {
   settings: Readonly<Record<string, string>>;
   /** The DM's kind for its notify mode: 3 a DM, 4 a group DM. */
   kind: 3 | 4;
+  /** The server whose mute and mode apply to the ring's channel; null or unset for a DM (WA5). */
+  communityId?: string | null;
   /** The page is visible: the in-app banner covers it, so no notification (flow 06, task-9 ruling). */
   visible: boolean;
   focus(): void;
@@ -137,8 +152,9 @@ export interface RingNotifyDeps {
 export function ringNotification(ring: Ring, deps: RingNotifyDeps): NotificationHandle | null {
   const Ctor = deps.Notification;
   if (Ctor === undefined || Ctor.permission !== 'granted' || deps.visible) return null;
-  if (ring.busy || ring.quiet || isMuted(deps.settings, ring.channelId)) return null;
-  if (effectiveNotifyMode(deps.settings, ring.channelId, deps.kind) === 'nothing') return null;
+  const server = deps.communityId ?? undefined;
+  if (ring.busy || ring.quiet || isMuted(deps.settings, ring.channelId, server)) return null;
+  if (effectiveNotifyMode(deps.settings, ring.channelId, deps.kind, server) === 'nothing') return null;
   try {
     const note = new Ctor(t('call.ring.notifyTitle', { name: ring.callerName }),
       { body: t('call.ring.notifyBody'), tag: `dilla-ring-${ring.callId}`, silent: false });

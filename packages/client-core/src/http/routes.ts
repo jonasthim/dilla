@@ -1,5 +1,5 @@
 // One typed function per web-1 route. Core-built bodies pass through unchanged; raw answers return unchanged.
-import { CborError, arr, bin, decode, encode, opt, str, u53, u64, type CborValue } from '../cbor';
+import { CborError, arr, bin, decode, encode, opt, str, u53, u64, type CborInput, type CborValue } from '../cbor';
 import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
 import { HttpClient, type Bucket, type HttpRequest } from './client';
@@ -78,7 +78,7 @@ export const TOPIC_MAX_BYTES = 1024;
 export const BAN_REASON_MAX_BYTES = 512;
 /** GET /v1/communities/{id}/permissions: the caller's resolved community-wide bits and rank (0..OWNER_TOP). */
 export interface PermissionsRow { bits: bigint; top: number }
-export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: bigint; deny: bigint;
+export interface RoleRow { id: Uint8Array; name: string; color: number; position: number; allow: number; deny: number;
   hoist: boolean; mentionable: boolean }
 export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array; created: bigint; expires: bigint | null;
   username: string; display: string }
@@ -86,9 +86,27 @@ export interface InviteRow { id: Uint8Array; communityId: Uint8Array | null; cre
   uses: number; created: bigint; expires: bigint; revokedAt: bigint | null }
 export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Array | 'top'; position?: number }
 
+// ---- wave 2a: roles and private channels (flow 09) ----
+/** The instance's own bounds (internal/api roles.go, channels.go): overwrites per community, a role name, a role colour,
+ *  the 24 permission bits, and overwrites in one channel create. */
+export const OVERWRITES_MAX = 10_000;
+export const ROLE_NAME_MAX_BYTES = 100;
+export const ROLE_COLOR_MAX = 0xffffff;
+export const PERM_ALL = 0xffffff;
+export const OVERWRITES_PER_CREATE_MAX = 100;
+export interface OverwriteRow { channelId: Uint8Array; kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
+export interface NewOverwrite { kind: 0 | 1; targetId: Uint8Array; allow: number; deny: number }
+export interface RolePatch { name?: string; color?: number; position?: number; allow?: number; deny?: number; hoist?: boolean; mentionable?: boolean }
+export interface NewRole { name: string; color: number; position: number; allow: number; deny: number; hoist: boolean; mentionable: boolean }
+
 function id(name: string, v: Uint8Array): string {
   if (v.length !== 16) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 16 bytes');
   return toHex(v);
+}
+/** An id given by the caller, checked as input (E_ROUTE_INPUT), not decoded (E_CBOR_SHAPE). */
+function inputId(name: string, v: Uint8Array): Uint8Array {
+  id(name, v);
+  return v;
 }
 function digest(name: string, v: Uint8Array): string {
   if (v.length !== 32) throw new RangeError('E_ROUTE_INPUT: ' + name + ' must be 32 bytes');
@@ -197,9 +215,29 @@ function flag(v: CborValue): boolean {
   if (n > 1) throw new CborError('E_CBOR_RANGE', 'expected 0 or 1, got ' + String(n));
   return n === 1;
 }
+/** A permission word as the instance stores it: only the 24 defined bits are kept (a 64-bit word may carry more). */
+function bits(v: CborValue): number {
+  return Number(u64(v) & BigInt(PERM_ALL));
+}
+function overwriteRow(value: CborValue): OverwriteRow {
+  const a = atLeast(value, 5);
+  return { channelId: bin(a[0], 16), kind: oneOf(a[1], [0, 1] as const), targetId: bin(a[2], 16), allow: bits(a[3]), deny: bits(a[4]) };
+}
+function permBits(field: string, v: number): number {
+  return between(field, v, 0, PERM_ALL);
+}
+function roleName(v: string): string {
+  return checkedName('name', v, ROLE_NAME_MAX_BYTES);
+}
+function overwritePath(channelId: Uint8Array, kind: number, targetId: Uint8Array): string {
+  return `/v1/channels/${id('channelId', channelId)}/overwrites/${kindOf(kind)}/${id('targetId', targetId)}`;
+}
+function rolePath(communityId: Uint8Array, userId: Uint8Array, roleId: Uint8Array): string {
+  return `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/roles/${id('roleId', roleId)}`;
+}
 function roleRow(value: CborValue): RoleRow {
   const a = atLeast(value, 8);
-  return { id: bin(a[0], 16), name: str(a[1]), color: u53(a[2]), position: u53(a[3]), allow: u64(a[4]), deny: u64(a[5]),
+  return { id: bin(a[0], 16), name: str(a[1]), color: u53(a[2]), position: u53(a[3]), allow: bits(a[4]), deny: bits(a[5]),
     hoist: flag(a[6]), mentionable: flag(a[7]) };
 }
 function banRow(value: CborValue): BanRow {
@@ -284,11 +322,19 @@ export class Routes {
   }
   /** POST /v1/communities/{id}/channels: [kind, mode, visibility, parent_id, name, topic, position, slowmode_seconds] for a
    *  top-level channel in mode 0 (the server cannot read it) and visibility 0, with no topic and no slow mode. */
-  async createChannel(communityId: Uint8Array, channel: { kind: NewChannelKind; name: string; position: number }): Promise<ChannelCreated> {
+  async createChannel(communityId: Uint8Array,
+    channel: { kind: NewChannelKind; name: string; position: number; overwrites?: readonly NewOverwrite[] }): Promise<ChannelCreated> {
     const kind = channel.kind === 'text' ? 0 : channel.kind === 'voice' ? 1 : -1;
     if (kind < 0) throw new RangeError('E_ROUTE_INPUT: kind must be text or voice');
-    const body = encode([kind, 0, 0, null, checkedName('name', channel.name, CHANNEL_NAME_MAX_BYTES), '',
-      between('position', channel.position, 0, CHANNEL_POSITION_MAX), 0]);
+    const fields: CborInput[] = [kind, 0, 0, null, checkedName('name', channel.name, CHANNEL_NAME_MAX_BYTES), '',
+      between('position', channel.position, 0, CHANNEL_POSITION_MAX), 0];
+    const overwrites = channel.overwrites ?? [];
+    if (overwrites.length > OVERWRITES_PER_CREATE_MAX) throw new RangeError('E_ROUTE_INPUT: overwrites must be at most ' + String(OVERWRITES_PER_CREATE_MAX));
+    // A non-empty list is the ninth element, so the channel is private from birth; an empty one keeps the eight-element form.
+    if (overwrites.length > 0) {
+      fields.push(overwrites.map((o) => [Number(kindOf(o.kind)), inputId('targetId', o.targetId), permBits('allow', o.allow), permBits('deny', o.deny)]));
+    }
+    const body = encode(fields);
     const raw = await this.body('POST', `/v1/communities/${id('communityId', communityId)}/channels`, 'write', false, { body });
     const a = atLeast(decode(raw), 3);
     return { id: bin(a[0], 16), mode: u53(a[1]), visibility: u53(a[2]) };
@@ -397,6 +443,48 @@ export class Routes {
   }
   async revokeInvite(inviteId: Uint8Array): Promise<void> {
     await this.body('DELETE', `/v1/invites/${id('inviteId', inviteId)}`, 'write', true);
+  }
+  // ---- wave 2a: roles and private channels (flow 09) ----
+  /** POST /v1/communities/{id}/roles: [name, color, position, allow, deny, hoist, mentionable]; answers [role_id]. */
+  async createRole(communityId: Uint8Array, role: NewRole): Promise<{ roleId: Uint8Array }> {
+    const body = encode([roleName(role.name), between('color', role.color, 0, ROLE_COLOR_MAX), between('position', role.position, 1, CHANNEL_POSITION_MAX),
+      permBits('allow', role.allow), permBits('deny', role.deny), role.hoist ? 1 : 0, role.mentionable ? 1 : 0]);
+    const a = atLeast(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/roles`, 'write', false, { body })), 1);
+    return { roleId: bin(a[0], 16) };
+  }
+  /** PATCH /v1/roles/{id}: [name, color, position, allow, deny, hoist, mentionable], null leaves a field alone. */
+  async patchRole(roleId: Uint8Array, patch: RolePatch): Promise<void> {
+    const flagOf = (v: boolean | undefined): number | null => (v === undefined ? null : v ? 1 : 0);
+    const body = encode([patch.name === undefined ? null : roleName(patch.name),
+      patch.color === undefined ? null : between('color', patch.color, 0, ROLE_COLOR_MAX),
+      patch.position === undefined ? null : between('position', patch.position, 1, CHANNEL_POSITION_MAX),
+      patch.allow === undefined ? null : permBits('allow', patch.allow), patch.deny === undefined ? null : permBits('deny', patch.deny),
+      flagOf(patch.hoist), flagOf(patch.mentionable)]);
+    await this.body('PATCH', `/v1/roles/${id('roleId', roleId)}`, 'write', true, { body });
+  }
+  async deleteRole(roleId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/roles/${id('roleId', roleId)}`, 'write', true);
+  }
+  /** PUT /v1/communities/{id}/members/{user}/roles/{role} with an empty array body. */
+  async grantRole(communityId: Uint8Array, userId: Uint8Array, roleId: Uint8Array): Promise<void> {
+    await this.body('PUT', rolePath(communityId, userId, roleId), 'write', true, { body: encode([]) });
+  }
+  async revokeRole(communityId: Uint8Array, userId: Uint8Array, roleId: Uint8Array): Promise<void> {
+    await this.body('DELETE', rolePath(communityId, userId, roleId), 'write', true);
+  }
+  /** PUT /v1/channels/{id}/overwrites/{kind}/{target}: [allow, deny]; kind 0 is a role, 1 a member. */
+  async putOverwrite(channelId: Uint8Array, kind: 0 | 1, targetId: Uint8Array, bitsPair: { allow: number; deny: number }): Promise<void> {
+    const path = overwritePath(channelId, kind, targetId);
+    const body = encode([permBits('allow', bitsPair.allow), permBits('deny', bitsPair.deny)]);
+    await this.body('PUT', path, 'write', true, { body });
+  }
+  async deleteOverwrite(channelId: Uint8Array, kind: 0 | 1, targetId: Uint8Array): Promise<void> {
+    await this.body('DELETE', overwritePath(channelId, kind, targetId), 'write', true);
+  }
+  /** GET /v1/communities/{id}/overwrites: [[channel_id, kind, target_id, allow, deny]] for every channel the caller may view. */
+  async listOverwrites(communityId: Uint8Array): Promise<OverwriteRow[]> {
+    const raw = await this.body('GET', `/v1/communities/${id('communityId', communityId)}/overwrites`, 'read', true);
+    return bounded(decode(raw), OVERWRITES_MAX, 'overwrites').map(overwriteRow);
   }
   async postGroup(body: Uint8Array): Promise<{ nextSeq: bigint }> {
     const a = atLeast(decode(await this.body('POST', '/v1/groups', 'write', false, { body })), 2);

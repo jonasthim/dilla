@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
-import { callState, DM, GENV, renderVoiceShell, ring, type VoiceHarnessOptions } from '../../test/fake-client.ts';
+import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { A, callState, DM, GENV, renderVoiceShell, ring, TEXT, type VoiceHarnessOptions } from '../../test/fake-client.ts';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -33,6 +33,18 @@ describe('rings (flow 06, R1–R8)', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(app.sounds.ringing).toBe(false);
     expect(app.notifications[0].closed).toBe(true);
+  });
+
+  it('a ring in a muted server plays nothing; unmuted it rings (useSounds wiring)', async () => {
+    const muted = renderVoiceShell({ settings: { [`mute.community.${A}`]: '1' } });
+    muted.client.publish('rings', [ring({ channelId: TEXT })]);
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(muted.sounds.ringing).toBe(false);
+    cleanup();
+    const open = renderVoiceShell({ settings: {} });
+    open.client.publish('rings', [ring({ channelId: TEXT })]);
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(open.sounds.ringing).toBe(true);
   });
 
   it('a busy ring shows the banner with the busy text but plays nothing and notifies nobody', async () => {

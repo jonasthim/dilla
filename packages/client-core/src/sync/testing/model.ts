@@ -37,7 +37,7 @@ import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
-import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, OWNER_TOP, nameProblem, type Routes } from '../../http/routes';
+import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, OWNER_TOP, nameProblem, type NewOverwrite, type OverwriteRow, type RoleRow, type Routes } from '../../http/routes';
 import { mentionsMe } from '../../state/mentions';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from '../../testing/fake-list';
 
@@ -74,6 +74,9 @@ export function at<T>(a: readonly T[], i: number): T {
   return v;
 }
 
+function sameOverwrite(o: OverwriteRow, channelId: Uint8Array, kind: 0 | 1, targetId: Uint8Array): boolean {
+  return same(o.channelId, channelId) && o.kind === kind && same(o.targetId, targetId);
+}
 function same(a: Uint8Array, b: Uint8Array): boolean {
   return toHex(a) === toHex(b);
 }
@@ -968,6 +971,9 @@ export class ModelCore implements CorePort {
   private readonly purgeRows = new Map<string, PurgeRow>();
   /** app_roles: community hex → the own role ids (L-CORE-35). */
   private readonly roles = new Map<string, Id[]>();
+  /** app_authority / app_authority_known / app_authority_mentionable (web3.5 R1): group hex → user hexes allowed
+   *  pin_messages / mention_everyone, and the role hexes anyone may mention. */
+  private readonly authority = new Map<string, { pinners: Set<string>; broadcasters: Set<string>; mentionable: Set<string> }>();
 
   constructor(readonly me: Peer) {
     // F3: the own pin is this device's own credential key, verified from signup on; it never takes a pending change.
@@ -1578,6 +1584,53 @@ export class ModelCore implements CorePort {
     this.roles.set(toHex(communityId), [...new Map(roleIds.map((r) => [toHex(r), r.slice()])).values()]);
   }
 
+  /** web3.5 R1 `authority_set`: replaces the group's role view, refolds every pinned or unpinned target and recomputes
+   *  the mention flag of other users' readable rows naming a <@…> token: every such row on a first view or when the
+   *  mentionable roles changed, else only those of senders whose broadcast bit changed (W2a review finding 1). The group
+   *  need not be held; a held DM group is refused with E_CORE_STATE. */
+  authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[], mentionable: Id[]): void {
+    const bad = (ids: Id[]): boolean => ids.length > 4096 || ids.some((r) => !(r instanceof Uint8Array) || r.length !== 16);
+    if (bad(pinners) || bad(broadcasters) || bad(mentionable)) {
+      throw coreError('E_CORE_INPUT', 'pinners, broadcasters and mentionable must be 0..=4096 ids of 16 bytes');
+    }
+    const g = this.gs.get(toHex(groupId));
+    // messages.rs (98bc249): a DM group has no roles; nothing is written.
+    if (g !== undefined && g.communityId === null) throw coreError('E_CORE_STATE', 'a DM group has no role view');
+    const before = this.authority.get(toHex(groupId));
+    const next = { pinners: new Set(pinners.map(toHex)), broadcasters: new Set(broadcasters.map(toHex)), mentionable: new Set(mentionable.map(toHex)) };
+    this.authority.set(toHex(groupId), next);
+    if (g === undefined) return;
+    const targets = new Map<string, Id>();
+    for (const r of g.rows.values()) if (r.type !== null && (r.type === 5 || r.type === 6) && r.replyTo !== null) targets.set(toHex(r.replyTo), r.replyTo);
+    for (const target of targets.values()) this.refold(g, target, null);
+    const everySender = before === undefined || before.mentionable.size !== next.mentionable.size
+      || [...next.mentionable].some((role) => !before.mentionable.has(role));
+    for (const r of [...g.rows.values()]) {
+      if (r.status !== 0 || r.type !== 0 || r.senderUser === null || same(r.senderUser, this.me.user)) continue;
+      if (!r.body.includes('<@')) continue;
+      const sender = toHex(r.senderUser);
+      if (!everySender && before.broadcasters.has(sender) === next.broadcasters.has(sender)) continue;
+      const mention = this.mentionOf(g, r.body, r.senderUser);
+      if (mention !== r.mention) g.rows.set(r.seq, { ...r, mention });
+    }
+  }
+
+  /** A pin or unpin counts from any member while the group's view is unknown, else only from a pinner (bit 3). */
+  private mayPin(g: MGroup, user: Id | null): boolean {
+    const view = this.authority.get(toHex(g.groupId));
+    return view === undefined || (user !== null && view.pinners.has(toHex(user)));
+  }
+
+  /** messages.rs mentions_me_gated: <@everyone>/<@here> and own-role tokens count from a broadcaster (bit 18) or while the
+   *  view is unknown; from anyone else only a direct mention and a token of an own role the view marks mentionable. */
+  private mentionOf(g: MGroup, body: string, sender: Id): boolean {
+    const view = this.authority.get(toHex(g.groupId));
+    const me = toHex(this.me.user);
+    const roles = this.roleHexes(g);
+    if (view === undefined || view.broadcasters.has(toHex(sender))) return mentionsMe(body, me, roles);
+    return body.includes(`<@${me}>`) || roles.some((role) => view.mentionable.has(role) && body.includes(`<@${role}>`));
+  }
+
   /** L-CORE-34: displayable rows (type null or 0) with the fold applied. */
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] {
     const g = this.must(groupId);
@@ -1838,8 +1891,8 @@ export class ModelCore implements CorePort {
     g.rows.set(seq, {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: v.user, senderDevice: v.device, senderKind: 0, senderTier: 0,
       msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, editBody: null, editSeq: 0n,
-      // L-CORE-35: only a type-0 row of another user, against the roles known now; never recomputed later.
-      mention: v.type === 0 && !same(v.user, this.me.user) && mentionsMe(v.body, toHex(this.me.user), this.roleHexes(g)),
+      // L-CORE-35: only a type-0 row of another user, against the roles known now; recomputed later only by authoritySet.
+      mention: v.type === 0 && !same(v.user, this.me.user) && this.mentionOf(g, v.body, v.user),
       attachments: v.type === 0 ? v.attachments : [], hasEnvelope: true,
     });
     this.refoldInsert(g, seq, v.type, v.msgId, v.replyTo, v.user, v.device);
@@ -1965,8 +2018,8 @@ export class ModelCore implements CorePort {
     for (const [k, r] of latest) if (r.type === 3 && r.senderUser !== null) present.set(k, { user: r.senderUser, emoji: r.body, seq: r.seq });
     if (present.size > 0) g.reactions.set(key, present);
     else g.reactions.delete(key);
-    // Step 5: the highest-seq pin or unpin decides.
-    const pin = this.foldsOf(g, target, [5, 6], t.seq).pop();
+    // Step 5: the highest-seq pin or unpin that counts (web3.5 R1: from a pinner once the view is known) decides.
+    const pin = this.foldsOf(g, target, [5, 6], t.seq).filter((r) => this.mayPin(g, r.senderUser)).pop();
     if (pin !== undefined && pin.type === 5 && pin.senderUser !== null) g.pins.set(key, { target: target.slice(), seq: pin.seq, byUser: pin.senderUser });
     else g.pins.delete(key);
   }
@@ -2035,7 +2088,9 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   // and its channels through the client path.
   | 'listCommunities' | 'createCommunity' | 'createChannel' | 'createInvite'
   // web3.4: the caller's own permissions and the roles list, as the instance resolves them for the model's servers.
-  | 'getPermissions' | 'listRoles';
+  | 'getPermissions' | 'listRoles'
+  // wave 2a (flow 09): roles and channel overwrites, ruled by the owner alone in the model.
+  | 'listOverwrites' | 'createRole' | 'patchRole' | 'deleteRole' | 'grantRole' | 'revokeRole' | 'putOverwrite' | 'deleteOverwrite';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** The @everyone base of a new server (internal/api everyoneRoleAllow): view, send, attach, react, history, connect, speak, video,
  *  screen share and create invite. Every defined permission bit is below 2^30. */
@@ -2178,6 +2233,9 @@ export class ModelDs {
   /** Created servers: community hex → its name, its owner's and its members' user hexes. */
   private readonly communities = new Map<string, { id: Id; name: string; owner: string; members: Set<string> }>();
   private readonly owners = new Map<string, string>();
+  /** Wave 2a: the roles (besides @everyone) and channel overwrites of each created server, by community hex. */
+  private readonly roleRows = new Map<string, RoleRow[]>();
+  private readonly overwriteRows = new Map<string, OverwriteRow[]>();
   private readonly devices = new Map<string, Id>();
   private readonly users = new Map<string, Id>();
   private readonly keyPackageDevs = new Set<string>();
@@ -2601,7 +2659,44 @@ export class ModelDs {
         this.memberOf(d, communityId);
         const everyone = communityId.slice();
         everyone[0] = 0xc7;
-        return [{ id: everyone, name: '@everyone', color: 0, position: 0, allow: MODEL_EVERYONE_ALLOW, deny: 0n, hoist: false, mentionable: false }];
+        return [{ id: everyone, name: '@everyone', color: 0, position: 0, allow: Number(MODEL_EVERYONE_ALLOW), deny: 0, hoist: false, mentionable: false },
+          ...(this.roleRows.get(toHex(communityId)) ?? [])];
+      }),
+      listOverwrites: (communityId) => this.call(d, 'listOverwrites', null, null, () => {
+        this.memberOf(d, communityId);
+        return this.overwriteRows.get(toHex(communityId)) ?? [];
+      }),
+      createRole: (communityId, role) => this.call(d, 'createRole', null, null, () => {
+        this.ownerOf(d, communityId);
+        this.counter += 1;
+        const roleId = idOf(0xc8, this.counter);
+        const rows = this.roleRows.get(toHex(communityId)) ?? [];
+        rows.push({ id: roleId, name: role.name, color: role.color, position: role.position, allow: role.allow, deny: role.deny,
+          hoist: role.hoist, mentionable: role.mentionable });
+        this.roleRows.set(toHex(communityId), rows);
+        return { roleId };
+      }),
+      patchRole: (roleId, patch) => this.call(d, 'patchRole', null, null, () => {
+        const row = this.roleOf(d, roleId);
+        Object.assign(row, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+      }),
+      deleteRole: (roleId) => this.call(d, 'deleteRole', null, null, () => {
+        const row = this.roleOf(d, roleId);
+        for (const [c, rows] of this.roleRows) this.roleRows.set(c, rows.filter((r) => r !== row));
+      }),
+      grantRole: (communityId) => this.call(d, 'grantRole', null, null, () => { this.ownerOf(d, communityId); }),
+      revokeRole: (communityId) => this.call(d, 'revokeRole', null, null, () => { this.ownerOf(d, communityId); }),
+      putOverwrite: (channelId, kind, targetId, bits) => this.call(d, 'putOverwrite', null, null, () => {
+        const communityId = this.ownerOfChannel(d, channelId);
+        const rows = (this.overwriteRows.get(toHex(communityId)) ?? []).filter((o) => !sameOverwrite(o, channelId, kind, targetId));
+        rows.push({ channelId, kind, targetId, allow: bits.allow, deny: bits.deny });
+        this.overwriteRows.set(toHex(communityId), rows);
+      }),
+      deleteOverwrite: (channelId, kind, targetId) => this.call(d, 'deleteOverwrite', null, null, () => {
+        const communityId = this.ownerOfChannel(d, channelId);
+        const rows = this.overwriteRows.get(toHex(communityId)) ?? [];
+        if (!rows.some((o) => sameOverwrite(o, channelId, kind, targetId))) throw httpError(404, 'E_NOT_FOUND');
+        this.overwriteRows.set(toHex(communityId), rows.filter((o) => !sameOverwrite(o, channelId, kind, targetId)));
       }),
       postGroup: (body) => this.call(d, 'postGroup', null, null, () => this.postGroup(d, body)),
       getGroupInfo: (id) =>
@@ -2767,7 +2862,7 @@ export class ModelDs {
   }
   /** POST /v1/communities/{id}/channels: only the owner holds ManageChannels (no role grants it in the model); a voice
    *  channel is also a channel calls may start in. */
-  private createChannel(d: string, communityId: Id, channel: { kind: 'text' | 'voice'; name: string; position: number }):
+  private createChannel(d: string, communityId: Id, channel: { kind: 'text' | 'voice'; name: string; position: number; overwrites?: readonly NewOverwrite[] }):
     { id: Id; mode: number; visibility: number } {
     const c = this.memberOf(d, communityId);
     if (c.owner !== this.owners.get(d)) throw httpError(403, 'E_FORBIDDEN');
@@ -2777,7 +2872,31 @@ export class ModelDs {
     const kind = channel.kind === 'voice' ? 1 : 0;
     this.channels.set(toHex(channelId), { communityId, channelId, created: { kind, name: channel.name, position: channel.position } });
     if (kind === 1) this.voiceChannels.set(toHex(channelId), communityId);
+    // The ninth element: the channel is private from birth.
+    if (channel.overwrites !== undefined && channel.overwrites.length > 0) {
+      const rows = this.overwriteRows.get(toHex(communityId)) ?? [];
+      for (const o of channel.overwrites) rows.push({ channelId, kind: o.kind, targetId: o.targetId, allow: o.allow, deny: o.deny });
+      this.overwriteRows.set(toHex(communityId), rows);
+    }
     return { id: channelId, mode: 0, visibility: 0 };
+  }
+  /** Only the owner holds ManageRoles in the model. */
+  private ownerOf(d: string, communityId: Id): void {
+    const c = this.memberOf(d, communityId);
+    if (c.owner !== this.owners.get(d)) throw httpError(403, 'E_FORBIDDEN');
+  }
+  private ownerOfChannel(d: string, channelId: Id): Id {
+    const known = this.channels.get(toHex(channelId));
+    if (known === undefined) throw httpError(404, 'E_NOT_FOUND');
+    this.ownerOf(d, known.communityId);
+    return known.communityId;
+  }
+  private roleOf(d: string, roleId: Id): RoleRow {
+    for (const [c, rows] of this.roleRows) {
+      const row = rows.find((r) => same(r.id, roleId));
+      if (row !== undefined) { this.ownerOf(d, this.communities.get(c)!.id); return row; }
+    }
+    throw httpError(404, 'E_NOT_FOUND');
   }
 
   private channelRows(communityId: Uint8Array): {

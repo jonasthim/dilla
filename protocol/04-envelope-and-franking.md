@@ -101,10 +101,27 @@ on the order in which rows reach it.
 - **Reactions.** A reaction is kept per user and emoji: of the type-3 and type-4 envelopes from one
   user with one `body` on a target, the one with the highest `seq` decides whether that user's
   reaction is present (3) or not (4). A user adds and removes only their own reactions.
-- **Pins.** Of the type-5 and type-6 envelopes on a target, the one with the highest `seq` decides
-  whether it is pinned (5) or not (6), from any member. This version checks no role snapshot: the
-  former rule that a pin needs the channel's pin permission in the receiver's role snapshot is not
-  applied, and a client shows who pinned.
+- **Pins.** Of the type-5 and type-6 envelopes on a target that count, the one with the highest
+  `seq` decides whether it is pinned (5) or not (6). A receiver that holds the community's role
+  view (`09` overwrites, roles, members) counts a 5/6 only from a sender holding `pin_messages` in
+  that channel now; a receiver that holds none keeps the former rule, which counts a 5/6 from any
+  member. So an unauthorized 5 is ignored and an unauthorized 6 cannot unpin. When the view
+  changes, the receiver folds again by the senders' rights in the new view: a pinner who loses
+  `pin_messages` unpins what they pinned, and gaining it back pins it again; an unpin by a member
+  who lost `pin_messages` no longer counts, so the earlier pin returns. A client shows who pinned.
+- **Broadcast mentions.** A receiver that holds the community's role view counts
+  `<@everyone>`/`<@here>` only from a sender holding `mention_everyone` in that channel now, and
+  recomputes the messages it holds when the view changes (§ Mentions); a receiver that holds none
+  keeps the former rule.
+- **Role mentions.** A receiver that holds the community's role view counts a token of a role it
+  holds only when that role is marked "anyone can mention" (`mentionable`) or the sender holds
+  `mention_everyone` in that channel now; otherwise the token is shown as the role's name and does
+  not count. A token of a role the receiver does not hold never counts. A change of either input
+  (a role's `mentionable`, a sender's `mention_everyone`) recomputes the messages it holds, as for
+  broadcast mentions; a receiver that holds no view keeps the former rule.
+- **The role view.** The view is served by the instance and is not authenticated by the group
+  (`08` § Residual trust): it decides only which pins and mentions a receiver counts, never which
+  messages it shows. A DM has no role view.
 - A fold that breaks a rule is ignored, never an error; only § Envelope refuses an envelope.
 
 ## Mentions
@@ -114,8 +131,14 @@ Readable channels: `<@` followed by the 32 lower-case hexadecimal digits of a us
 and `>`, `<@everyone>`, or `<@here>`. A receiver matches the tokens literally (lower-case hex only;
 no other spelling is a mention) and counts a type-0 message as mentioning it when the message comes
 from another user and carries the receiver's own user id, a role id the receiver holds in that
-community, `<@everyone>` or `<@here>`. This version gates neither `<@everyone>` nor `<@here>` on the
-`mention_everyone` permission and counts `<@here>` as `<@everyone>`. An edit never raises a mention.
+community, `<@everyone>` or `<@here>`. A receiver that holds the community's role view (`09`
+overwrites, roles, members) counts `<@everyone>` and `<@here>` only from a sender holding
+`mention_everyone` in that channel now, and recomputes the count of the messages it holds when the
+view changes; a receiver that holds none keeps the former rule, which counts them from any member.
+The same receiver counts one of its own role ids only when the view marks that role `mentionable`
+or the sender holds `mention_everyone` there (§ Semantics, Role mentions); without a view, its own
+role ids count from any sender. The receiver's own user id counts from any sender. This version counts
+`<@here>` as `<@everyone>`. An edit never raises a mention.
 A client shows a mention as the name it stands for, never as the raw token.
 
 ## Deterministic CBOR

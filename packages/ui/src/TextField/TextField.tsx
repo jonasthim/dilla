@@ -14,6 +14,8 @@ export interface TextFieldProps {
   inputMode?: 'text' | 'numeric';
   maxLength?: number;
   spellCheck?: boolean;
+  /** Marks the input `data-autofocus`: a Dialog around it opens on this field. */
+  initialFocus?: boolean;
 }
 
 /**
@@ -22,7 +24,7 @@ export interface TextFieldProps {
  * announced as an alert. Paste, copy and cut are never intercepted (WCAG 3.3.8).
  */
 export function TextField({
-  id, label, value, onChange, type, hint, error, required, disabled, autoComplete, inputMode, maxLength, spellCheck,
+  id, label, value, onChange, type, hint, error, required, disabled, autoComplete, inputMode, maxLength, spellCheck, initialFocus,
 }: TextFieldProps) {
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
@@ -34,7 +36,8 @@ export function TextField({
       <input id={id} className="d-text-field__input" type={type ?? 'text'} value={value}
         onChange={e => onChange(e.currentTarget.value)} aria-describedby={describedBy}
         aria-invalid={error ? true : undefined} required={required} disabled={disabled}
-        autoComplete={autoComplete} inputMode={inputMode} maxLength={maxLength} spellCheck={spellCheck} />
+        autoComplete={autoComplete} inputMode={inputMode} maxLength={maxLength} spellCheck={spellCheck}
+        data-autofocus={initialFocus ? '' : undefined} />
       {hint ? <p id={hintId} className="d-text-field__hint">{hint}</p> : null}
       {error ? <p id={errorId} className="d-text-field__error" role="alert">{error}</p> : null}
     </div>

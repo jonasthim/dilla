@@ -1,8 +1,13 @@
 import { useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
+import { RoleDot } from '../internal/RoleDot.tsx';
 import './MemberList.css';
 
-export interface MemberListMember { id: string; name: string; tags: readonly string[]; actionsLabel: string; actions: readonly ActionMenuItem[] }
+export interface MemberListMember {
+  id: string; name: string; tags: readonly string[]; actionsLabel: string; actions: readonly ActionMenuItem[];
+  /** The colour of the member's top coloured role, 0xRRGGBB. Null or 0: no dot. The name keeps its token colour. */
+  color?: number | null;
+}
 export interface MemberListGroup { id: string; title: string; members: readonly MemberListMember[] }
 export interface MemberListProps {
   /** The region's name. Left out inside a landmark that already names the list (the shell's aside): a plain container. */
@@ -53,10 +58,11 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
           <ul className="d-member-list__rows" role="list">
             {group.members.map(m => (
               <li key={m.id} className="d-member-list__row" onContextMenu={e => onContextMenu(m, e)} onKeyDown={e => onKeyDown(m, e)}>
+                {m.color ? <RoleDot color={m.color} /> : null}
                 <span className="d-member-list__name">{m.name}</span>
                 {m.tags.map(tag => <span key={tag} className="d-member-list__tag">{tag}</span>)}
                 {m.actions.length > 0 ? (
-                  <ActionMenu label={m.actionsLabel} items={m.actions} open={menu?.id === m.id} at={menu?.id === m.id ? menu.at : null}
+                  <ActionMenu label={m.actionsLabel} items={m.actions} focusKey={`member:${m.id}`} open={menu?.id === m.id} at={menu?.id === m.id ? menu.at : null}
                     onOpenChange={open => setMenu(open ? { id: m.id, at: null } : cur => (cur?.id === m.id ? null : cur))}
                     onSelect={id => onAction(m.id, id)} />
                 ) : null}

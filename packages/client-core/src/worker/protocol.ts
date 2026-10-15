@@ -11,7 +11,7 @@ export type Command =
   // v0.1.0-web3.1, ready only. Names are checked as the instance checks them: 1..255 UTF-8 bytes for a server, 1..100 for a
   // channel, no control character, not blank. createChannel adds a top-level channel the server cannot read.
   | { m: 'createCommunity'; name: string }                                              // → { communityId }; listed before the ret
-  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice'; name: string }   // → { channelId }; listed before the ret
+  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice'; name: string; private?: { roleIds: string[] } }   // → { channelId }; listed before the ret
   | { m: 'createInvite'; communityId: string; maxUses: number; ttlSeconds: number }     // → InviteCreatedResult
   | { m: 'selectCommunity'; communityId: string }
   // Ready only → null: GET /v1/communities again; the communities slice is published before the answer (the page looks for
@@ -81,6 +81,15 @@ export type Command =
   | { m: 'loadBans'; communityId: string }      // slice bans:<cid>
   | { m: 'loadInvites'; communityId: string }   // slice invites:<cid>, live only
   | { m: 'revokeInvite'; communityId: string; inviteId: string }
+  | { m: 'createRole'; communityId: string; name: string; color: number; hoist: boolean; mentionable: boolean; allow: number }  // → { roleId }
+  | { m: 'updateRole'; communityId: string; roleId: string; name: string | null; color: number | null; hoist: boolean | null;
+      mentionable: boolean | null; allow: number | null }
+  | { m: 'moveRole'; communityId: string; roleId: string; direction: 'up' | 'down' }
+  | { m: 'deleteRole'; communityId: string; roleId: string }
+  | { m: 'grantRole'; communityId: string; userId: string; roleId: string }    // members and access are read again before the ret
+  | { m: 'revokeRole'; communityId: string; userId: string; roleId: string }
+  | { m: 'setOverwrite'; channelId: string; kind: 0 | 1; targetId: string; allow: number; deny: number }   // 0/0 → DELETE (404 = done)
+  | { m: 'setChannelPrivate'; channelId: string; private: boolean }
   | { m: 'resign'; nonce: string };
 export type ToWorker = { t: 'call'; id: number; command: Command };
 export type FromWorker =

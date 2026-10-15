@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -97,6 +99,7 @@ func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, c
 
 func (h *Roles) Register(mux *server.Mux) {
 	mux.HandleFunc("GET /v1/communities/{id}/roles", h.list)
+	mux.HandleFunc("GET /v1/communities/{id}/overwrites", h.listOverwrites)
 	mux.HandleFunc("POST /v1/communities/{id}/roles", h.create)
 	mux.HandleFunc("PATCH /v1/roles/{id}", h.patch)
 	mux.HandleFunc("DELETE /v1/roles/{id}", h.delete)
@@ -143,16 +146,18 @@ type roleActor struct {
 
 // manager loads the actor for community cid and requires PermManageRoles
 // community-wide. A non-member, like an unknown community, is 404: a
-// non-member must not learn that the community exists.
-func (h *Roles) manager(r *http.Request, s auth.Session, cid id.ID) (roleActor, error) {
-	com, err := h.repo.GetCommunity(r.Context(), cid)
+// non-member must not learn that the community exists. Every read goes through
+// repo: each write route calls it before its transaction, for the refusal's
+// precedence, and again inside it under the community row lock.
+func (h *Roles) manager(r *http.Request, repo store.Repository, s auth.Session, cid id.ID) (roleActor, error) {
+	com, err := repo.GetCommunity(r.Context(), cid)
 	if err != nil {
 		return roleActor{}, notFound(err)
 	}
-	if _, err := h.repo.GetMember(r.Context(), cid, s.UserID); err != nil {
+	if _, err := repo.GetMember(r.Context(), cid, s.UserID); err != nil {
 		return roleActor{}, notFound(err)
 	}
-	snap, err := LoadSnapshot(r.Context(), h.repo, cid, s.UserID, nil)
+	snap, err := LoadSnapshot(r.Context(), repo, cid, s.UserID, nil)
 	if err != nil {
 		return roleActor{}, notFound(err)
 	}
@@ -292,6 +297,76 @@ func (h *Roles) list(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// overwriteResp is one row of GET /v1/communities/{id}/overwrites.
+type overwriteResp struct {
+	_         struct{} `cbor:",toarray"`
+	ChannelID id.ID
+	Kind      uint64
+	TargetID  id.ID
+	Allow     uint64
+	Deny      uint64
+}
+
+// listOverwrites is GET /v1/communities/{id}/overwrites: the overwrites of every
+// live channel (categories included) the caller may view, ordered by channel_id,
+// kind, target_id, with bits outside the vocabulary cleared. Any member may read
+// it; a non-member and an unknown community are 404.
+func (h *Roles) listOverwrites(w http.ResponseWriter, r *http.Request) {
+	s, err := enrolledSession(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	cid, err := server.PathID(r, "id")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	if _, err := h.repo.GetMember(ctx, cid, s.UserID); err != nil {
+		h.fail(w, r, "list overwrites", notFound(err))
+		return
+	}
+	snap, err := LoadSnapshot(ctx, h.repo, cid, s.UserID, nil)
+	if err != nil {
+		h.fail(w, r, "list overwrites", notFound(err))
+		return
+	}
+	channels, err := h.repo.ListChannels(ctx, cid)
+	if err != nil {
+		h.fail(w, r, "list overwrites", err)
+		return
+	}
+	out := make([]overwriteResp, 0)
+	for _, ch := range channels {
+		rows, err := h.repo.ListOverwrites(ctx, ch.ID)
+		if err != nil {
+			h.fail(w, r, "list overwrites", err)
+			return
+		}
+		snap.Overwrite = rows
+		if !snap.ResolveChannel(s.UserID).Has(PermViewChannel) {
+			continue
+		}
+		for _, o := range rows {
+			out = append(out, overwriteResp{
+				ChannelID: ch.ID, Kind: uint64(o.TargetKind), TargetID: o.TargetID,
+				Allow: o.Allow & uint64(PermAll), Deny: o.Deny & uint64(PermAll),
+			})
+		}
+	}
+	slices.SortFunc(out, func(a, b overwriteResp) int {
+		return cmp.Or(
+			bytes.Compare(a.ChannelID[:], b.ChannelID[:]),
+			cmp.Compare(a.Kind, b.Kind),
+			bytes.Compare(a.TargetID[:], b.TargetID[:]),
+		)
+	})
+	if err := server.EncodeBody(w, http.StatusOK, out); err != nil {
+		h.log.Error("encode overwrites", "err", err)
+	}
+}
+
 // create is POST /v1/communities/{id}/roles: 201 [role_id]. Four checks: the
 // actor holds PermManageRoles community-wide; the position is strictly below
 // the actor's highest role; position 0 is refused (it is @everyone's, and
@@ -313,7 +388,7 @@ func (h *Roles) create(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	a, err := h.manager(r, s, cid)
+	a, err := h.manager(r, h.repo, s, cid)
 	if err != nil {
 		h.fail(w, r, "create role", err)
 		return
@@ -357,6 +432,21 @@ func (h *Roles) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// The actor's authority is read again under the community row lock: a
+		// demotion that committed after the checks above refuses the create.
+		if err := tx.LockCommunity(r.Context(), cid); err != nil {
+			return notFound(err)
+		}
+		locked, err := h.manager(r, tx, s, cid)
+		if err != nil {
+			return err
+		}
+		if !locked.outranks(role.Position) {
+			return server.Errorf(server.CodeForbidden, "a role at or above your highest role cannot be created")
+		}
+		if err := checkBits(locked.have, allow, deny); err != nil {
+			return err
+		}
 		roles, err := tx.ListRoles(r.Context(), cid)
 		if err != nil {
 			return err
@@ -418,7 +508,7 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "patch role", notFound(err))
 		return
 	}
-	a, err := h.manager(r, s, current.CommunityID)
+	a, err := h.manager(r, h.repo, s, current.CommunityID)
 	if err != nil {
 		h.fail(w, r, "patch role", err)
 		return
@@ -485,9 +575,24 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 	// The row is read again inside the transaction and the request applied to
 	// that, so two concurrent PATCHes of different fields both land.
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// The actor's authority is read again under the community row lock, and
+		// the rank and bit rules are applied to it below.
+		if err := tx.LockCommunity(r.Context(), current.CommunityID); err != nil {
+			return notFound(err)
+		}
+		locked, err := h.manager(r, tx, s, current.CommunityID)
+		if err != nil {
+			return err
+		}
 		role, err := tx.GetRole(r.Context(), roleID)
 		if err != nil {
 			return notFound(err)
+		}
+		if !locked.outranks(role.Position) {
+			return server.Errorf(server.CodeForbidden, "a role at or above your highest role cannot be changed")
+		}
+		if err := checkBits(locked.have, reqAllow, reqDeny); err != nil {
+			return err
 		}
 		if role.Position != current.Position {
 			// Moved since the checks above ran: the rank check was made against a
@@ -519,7 +624,7 @@ func (h *Roles) patch(w http.ResponseWriter, r *http.Request) {
 		if err := validRole(role, everyone); err != nil {
 			return err
 		}
-		if !a.outranks(role.Position) {
+		if !locked.outranks(role.Position) {
 			return server.Errorf(server.CodeForbidden,
 				"a role cannot be moved to or above your highest role")
 		}
@@ -560,7 +665,7 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "delete role", notFound(err))
 		return
 	}
-	a, err := h.manager(r, s, role.CommunityID)
+	a, err := h.manager(r, h.repo, s, role.CommunityID)
 	if err != nil {
 		h.fail(w, r, "delete role", err)
 		return
@@ -576,6 +681,22 @@ func (h *Roles) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.clk.Now().Unix()
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// The actor's authority and the role's position are read again under the
+		// community row lock.
+		if err := tx.LockCommunity(r.Context(), role.CommunityID); err != nil {
+			return notFound(err)
+		}
+		locked, err := h.manager(r, tx, s, role.CommunityID)
+		if err != nil {
+			return err
+		}
+		current, err := tx.GetRole(r.Context(), role.ID)
+		if err != nil {
+			return notFound(err)
+		}
+		if !locked.outranks(current.Position) {
+			return server.Errorf(server.CodeForbidden, "a role at or above your highest role cannot be deleted")
+		}
 		if err := tx.DeleteRole(r.Context(), role.CommunityID, role.ID); err != nil {
 			return notFound(err)
 		}
@@ -604,7 +725,9 @@ type grantTarget struct {
 	role   store.RoleRow
 }
 
-func (h *Roles) grantPath(r *http.Request, verb string) (grantTarget, error) {
+// grantPath reads through repo: grant and revoke call it before their transaction, for the
+// refusal's precedence, and again inside it under the community row lock.
+func (h *Roles) grantPath(r *http.Request, repo store.Repository, verb string) (grantTarget, error) {
 	s, err := enrolledSession(r)
 	if err != nil {
 		return grantTarget{}, err
@@ -620,10 +743,10 @@ func (h *Roles) grantPath(r *http.Request, verb string) (grantTarget, error) {
 	if err != nil {
 		return grantTarget{}, err
 	}
-	if g.a, err = h.manager(r, s, g.cid); err != nil {
+	if g.a, err = h.manager(r, repo, s, g.cid); err != nil {
 		return grantTarget{}, err
 	}
-	g.role, err = h.repo.GetRole(r.Context(), roleID)
+	g.role, err = repo.GetRole(r.Context(), roleID)
 	// A store fault is not a 404: only ErrNotFound and a role belonging to another
 	// community are. Collapsing both into 404 would hide a disk error behind an
 	// authorisation answer.
@@ -651,10 +774,10 @@ func (h *Roles) grantPath(r *http.Request, verb string) (grantTarget, error) {
 	// overwrite opens a channel the actor cannot see would otherwise hand the
 	// actor (or anyone) that channel. Each one must name only bits the actor
 	// holds in that channel, the rule putOverwrite applies when writing one.
-	if err := h.checkRoleOverwrites(r.Context(), g.a.s.UserID, g.a.have, g.cid, g.role.ID); err != nil {
+	if err := checkRoleOverwrites(r.Context(), repo, g.a.s.UserID, g.a.have, g.cid, g.role.ID); err != nil {
 		return grantTarget{}, err
 	}
-	if _, err := h.repo.GetMember(r.Context(), g.cid, g.target); err != nil {
+	if _, err := repo.GetMember(r.Context(), g.cid, g.target); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return grantTarget{}, server.Errorf(server.CodeNotFound, "not a member")
 		}
@@ -668,16 +791,17 @@ func (h *Roles) grantPath(r *http.Request, verb string) (grantTarget, error) {
 // not hold in that channel (fix wave I1, protocol/09 § Roles "No new
 // authority"). An actor with every bit community-wide (the owner, an
 // administrator) holds every bit in every channel and is not checked.
-func (h *Roles) checkRoleOverwrites(ctx context.Context, actor id.ID, have Bits, cid, roleID id.ID) error {
+func checkRoleOverwrites(ctx context.Context, repo store.Repository, actor id.ID, have Bits, cid, roleID id.ID) error {
 	if have&PermAll == PermAll {
 		return nil
 	}
-	channels, err := h.repo.ListChannels(ctx, cid)
+	res := NewResolver(repo)
+	channels, err := repo.ListChannels(ctx, cid)
 	if err != nil {
 		return err
 	}
 	for _, ch := range channels {
-		overwrites, err := h.repo.ListOverwrites(ctx, ch.ID)
+		overwrites, err := repo.ListOverwrites(ctx, ch.ID)
 		if err != nil {
 			return err
 		}
@@ -685,7 +809,7 @@ func (h *Roles) checkRoleOverwrites(ctx context.Context, actor id.ID, have Bits,
 			if o.TargetKind != overwriteRole || o.TargetID != roleID {
 				continue
 			}
-			chHave, err := h.res.Resolve(ctx, actor, ch)
+			chHave, err := res.Resolve(ctx, actor, ch)
 			if err != nil {
 				return err
 			}
@@ -703,7 +827,7 @@ func (h *Roles) checkRoleOverwrites(ctx context.Context, actor id.ID, have Bits,
 // require_mod_2fa and the role carries a moderation bit, the *target* must hold
 // a second factor.
 func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
-	g, err := h.grantPath(r, "granted")
+	g, err := h.grantPath(r, h.repo, "granted")
 	if err != nil {
 		h.fail(w, r, "grant role", err)
 		return
@@ -716,6 +840,21 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.clk.Now().Unix()
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// Every rule of grantPath, and the second-factor rule, is taken again
+		// under the community row lock: a demotion of the actor, or a change to
+		// the role, that committed after the checks above refuses the grant.
+		if err := tx.LockCommunity(r.Context(), g.cid); err != nil {
+			return notFound(err)
+		}
+		locked, err := h.grantPath(r, tx, "granted")
+		if err != nil {
+			return err
+		}
+		if locked.a.com.RequireMod2FA == 1 && Bits(locked.role.Allow)&moderatorBits != 0 {
+			if err := requireSecondFactor(r.Context(), tx, g.target, h.rpID); err != nil {
+				return err
+			}
+		}
 		if err := tx.PutMemberRole(r.Context(), g.cid, g.target, g.role.ID); err != nil {
 			return err
 		}
@@ -744,13 +883,20 @@ func (h *Roles) grant(w http.ResponseWriter, r *http.Request) {
 // revoke is DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}: 204,
 // the mirror image of grant. A grant that does not exist is 404.
 func (h *Roles) revoke(w http.ResponseWriter, r *http.Request) {
-	g, err := h.grantPath(r, "revoked")
+	g, err := h.grantPath(r, h.repo, "revoked")
 	if err != nil {
 		h.fail(w, r, "revoke role", err)
 		return
 	}
 	now := h.clk.Now().Unix()
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// As grant: every rule of grantPath again under the community row lock.
+		if err := tx.LockCommunity(r.Context(), g.cid); err != nil {
+			return notFound(err)
+		}
+		if _, err := h.grantPath(r, tx, "revoked"); err != nil {
+			return err
+		}
 		if err := tx.DeleteMemberRole(r.Context(), g.cid, g.target, g.role.ID); err != nil {
 			return notFound(err)
 		}
@@ -781,7 +927,10 @@ type overwritePath struct {
 	have Bits // the actor's bits IN this channel
 }
 
-func (h *Roles) overwriteTarget(r *http.Request, deleting bool) (overwritePath, error) {
+// overwriteTarget parses and checks the path of the two overwrite routes. Every read goes through
+// repo: the handler calls it once before the transaction, for the
+// refusal's precedence, and again inside it under the community row lock.
+func (h *Roles) overwriteTarget(r *http.Request, repo store.Repository, deleting bool) (overwritePath, error) {
 	s, err := enrolledSession(r)
 	if err != nil {
 		return overwritePath{}, err
@@ -802,13 +951,13 @@ func (h *Roles) overwriteTarget(r *http.Request, deleting bool) (overwritePath, 
 	if o.tgt, err = server.PathID(r, "target_id"); err != nil {
 		return overwritePath{}, err
 	}
-	if o.ch, err = h.repo.GetChannel(r.Context(), chID); err != nil {
+	if o.ch, err = repo.GetChannel(r.Context(), chID); err != nil {
 		return overwritePath{}, notFound(err)
 	}
 	// Answer 404 to a caller who cannot view the channel, which includes a
 	// non-member and anyone outside a DM. A DM's participants view it but hold
 	// no manage_roles (dmBits), so a DM never reaches the dereference below.
-	if o.have, err = h.res.Resolve(r.Context(), s.UserID, o.ch); err != nil {
+	if o.have, err = NewResolver(repo).Resolve(r.Context(), s.UserID, o.ch); err != nil {
 		return overwritePath{}, err
 	}
 	if !o.have.Has(PermViewChannel) {
@@ -821,7 +970,7 @@ func (h *Roles) overwriteTarget(r *http.Request, deleting bool) (overwritePath, 
 	// The rank rule of the role routes holds here too: an overwrite may target
 	// only a role strictly below the actor's highest, or a member whose highest
 	// role is, so a staffer cannot mute a senior moderator in one channel.
-	actor, err := LoadSnapshot(r.Context(), h.repo, cid, s.UserID, nil)
+	actor, err := LoadSnapshot(r.Context(), repo, cid, s.UserID, nil)
 	if err != nil {
 		return overwritePath{}, notFound(err)
 	}
@@ -829,7 +978,7 @@ func (h *Roles) overwriteTarget(r *http.Request, deleting bool) (overwritePath, 
 	var targetPos uint64
 	switch o.kind {
 	case overwriteRole:
-		role, err := h.repo.GetRole(r.Context(), o.tgt)
+		role, err := repo.GetRole(r.Context(), o.tgt)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return overwritePath{}, err
 		}
@@ -838,7 +987,7 @@ func (h *Roles) overwriteTarget(r *http.Request, deleting bool) (overwritePath, 
 		}
 		targetPos = role.Position
 	case overwriteUser:
-		if _, err := h.repo.GetMember(r.Context(), cid, o.tgt); err != nil {
+		if _, err := repo.GetMember(r.Context(), cid, o.tgt); err != nil {
 			if !errors.Is(err, store.ErrNotFound) {
 				return overwritePath{}, err
 			}
@@ -850,7 +999,7 @@ func (h *Roles) overwriteTarget(r *http.Request, deleting bool) (overwritePath, 
 			// deleted: a non-member holds no role, so their rank is 0.
 			break
 		}
-		target, err := LoadSnapshot(r.Context(), h.repo, cid, o.tgt, nil)
+		target, err := LoadSnapshot(r.Context(), repo, cid, o.tgt, nil)
 		if err != nil {
 			return overwritePath{}, notFound(err)
 		}
@@ -874,7 +1023,7 @@ type putOverwriteReq struct {
 // deny name only defined, channel-scoped bits the actor holds in the channel,
 // and never the same bit twice.
 func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
-	o, err := h.overwriteTarget(r, false)
+	o, err := h.overwriteTarget(r, h.repo, false)
 	if err != nil {
 		h.fail(w, r, "put overwrite", err)
 		return
@@ -910,12 +1059,30 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	put := store.OverwriteRow{
+		ChannelID: o.ch.ID, TargetKind: o.kind, TargetID: o.tgt,
+		Allow: uint64(allow), Deny: uint64(deny),
+	}
 	now := h.clk.Now().Unix()
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
-		if err := tx.PutOverwrite(r.Context(), store.OverwriteRow{
-			ChannelID: o.ch.ID, TargetKind: o.kind, TargetID: o.tgt,
-			Allow: uint64(allow), Deny: uint64(deny),
+		// Every decision above is taken again under the community row lock, and
+		// the self-lockout rule with it, against the overwrites as they stand.
+		if err := tx.LockCommunity(r.Context(), *o.ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		locked, err := h.overwriteTarget(r, tx, false)
+		if err != nil {
+			return err
+		}
+		if err := checkBits(locked.have, allow, deny); err != nil {
+			return err
+		}
+		if err := keepsView(r.Context(), tx, o.s.UserID, locked.ch, func(rows []store.OverwriteRow) []store.OverwriteRow {
+			return append(withoutOverwrite(rows, o.kind, o.tgt), put)
 		}); err != nil {
+			return err
+		}
+		if err := tx.PutOverwrite(r.Context(), put); err != nil {
 			return err
 		}
 		return tx.Audit(r.Context(), store.AuditRow{
@@ -937,13 +1104,27 @@ func (h *Roles) putOverwrite(w http.ResponseWriter, r *http.Request) {
 // deleteOverwrite is DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}:
 // 204, or 404 when there is no such overwrite.
 func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
-	o, err := h.overwriteTarget(r, true)
+	o, err := h.overwriteTarget(r, h.repo, true)
 	if err != nil {
 		h.fail(w, r, "delete overwrite", err)
 		return
 	}
 	now := h.clk.Now().Unix()
 	if err := h.repo.Tx(r.Context(), func(tx store.Repository) error {
+		// As putOverwrite: the checks again under the community row lock, then the
+		// self-lockout rule against the overwrites without this one.
+		if err := tx.LockCommunity(r.Context(), *o.ch.CommunityID); err != nil {
+			return notFound(err)
+		}
+		locked, err := h.overwriteTarget(r, tx, true)
+		if err != nil {
+			return err
+		}
+		if err := keepsView(r.Context(), tx, o.s.UserID, locked.ch, func(rows []store.OverwriteRow) []store.OverwriteRow {
+			return withoutOverwrite(rows, o.kind, o.tgt)
+		}); err != nil {
+			return err
+		}
 		if err := tx.DeleteOverwrite(r.Context(), o.ch.ID, o.kind, o.tgt); err != nil {
 			return notFound(err)
 		}
@@ -961,6 +1142,38 @@ func (h *Roles) deleteOverwrite(w http.ResponseWriter, r *http.Request) {
 	h.syncCallGrants(afterCommit(r), *o.ch.CommunityID, nil, &o.ch.ID)
 	h.notify.Changed(afterCommit(r), *o.ch.CommunityID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// keepsView is the self-lockout rule of the overwrite routes: it refuses 400 a change to ch's
+// overwrites that would take view_channel in ch from actor, its own author. change maps the
+// channel's overwrites as stored in repo to the set the change would leave. The owner and a holder
+// of administrator community-wide see every channel whatever its overwrites, and are not checked.
+// There is no self-target exception: a member overwrite on oneself would outlive a demotion.
+func keepsView(ctx context.Context, repo store.Repository, actor id.ID, ch store.ChannelRow,
+	change func([]store.OverwriteRow) []store.OverwriteRow) error {
+	snap, err := LoadSnapshot(ctx, repo, *ch.CommunityID, actor, &ch.ID)
+	if err != nil {
+		return notFound(err)
+	}
+	if snap.Resolve(actor).Has(PermAdministrator) {
+		return nil
+	}
+	snap.Overwrite = change(snap.Overwrite)
+	if !snap.ResolveChannel(actor).Has(PermViewChannel) {
+		return server.Errorf(server.CodeInvalidRequest, "you would lose this channel")
+	}
+	return nil
+}
+
+// withoutOverwrite is rows less the overwrite on (kind, target), in a new slice.
+func withoutOverwrite(rows []store.OverwriteRow, kind uint8, target id.ID) []store.OverwriteRow {
+	out := make([]store.OverwriteRow, 0, len(rows)+1)
+	for _, row := range rows {
+		if row.TargetKind != kind || row.TargetID != target {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // materialiseCommunity re-derives channel_members for every channel of the

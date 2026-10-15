@@ -7,6 +7,7 @@ import type { Ring } from '@dilla/client-core';
 
 const A = 'a1'.repeat(16);
 const GEN = 'c3'.repeat(16);
+const ROLE = 'f7'.repeat(16);
 const RAND = 'd4'.repeat(16);
 const DM = '9a'.repeat(16);
 const ch = (id: string, name: string): ChannelSummary =>
@@ -41,6 +42,60 @@ describe('shouldNotify (L-TS-25)', () => {
   ];
   it.each(rows)('%s', (_, n, kind, c, want) => {
     expect(shouldNotify(n, kind, c)).toBe(want);
+  });
+});
+
+describe('shouldNotify per server (web3.5 WA5)', () => {
+  const server = (v: string) => ({ [`notify.community.${A}`]: v });
+  it('a server set to nothing silences a channel with no override; a channel override still wins', () => {
+    expect(shouldNotify(notice({ kind: 'mention' }), 0, ctx({ settings: server('nothing') }))).toBe(false);
+    expect(shouldNotify(notice({ kind: 'mention' }), 0, ctx({ settings: { ...server('nothing'), [`notify.channel.${RAND}`]: 'all' } }))).toBe(true);
+  });
+  it('a server set to all notifies a plain message', () => {
+    expect(shouldNotify(notice(), 0, ctx({ settings: server('all') }))).toBe(true);
+  });
+  it('a muted server notifies nothing', () => {
+    expect(shouldNotify(notice({ kind: 'mention' }), 0, ctx({ settings: { [`mute.community.${A}`]: '1' } }))).toBe(false);
+  });
+  it('a server that ignores @everyone turns a broadcast-only mention into a message, and keeps a direct one', () => {
+    const settings = { [`everyone.community.${A}`]: '1' };
+    const c = ctx({ settings, me: ME.id, roles: [] });
+    expect(shouldNotify(notice({ kind: 'mention', body: 'hey <@everyone>' }), 0, c)).toBe(false);
+    expect(shouldNotify(notice({ kind: 'mention', body: 'hey <@here>' }), 0, c)).toBe(false);
+    expect(shouldNotify(notice({ kind: 'mention', body: `hey <@everyone> <@${ME.id}>` }), 0, c)).toBe(true);
+    expect(shouldNotify(notice({ kind: 'mention', body: 'hey <@everyone>' }), 0, ctx({ settings: {}, me: ME.id, roles: [] }))).toBe(true);
+    // a direct role mention is kept
+    expect(shouldNotify(notice({ kind: 'mention', body: `<@everyone> <@${ROLE}>` }), 0, ctx({ settings, me: ME.id, roles: [ROLE] }))).toBe(true);
+    expect(shouldNotify(notice({ kind: 'mention', body: `<@everyone> <@${ROLE}>` }), 0, c)).toBe(false);
+    // as a plain message it follows the message rules: all notifies it
+    expect(shouldNotify(notice({ kind: 'mention', body: 'hey <@everyone>' }), 0, ctx({ settings: { ...settings, ...server('all') }, me: ME.id, roles: [] }))).toBe(true);
+  });
+});
+
+describe('startNotifier under @everyone suppression (web3.5 WA5 fix)', () => {
+  const suppress = { [`everyone.community.${A}`]: '1' };
+  const run = (setup: (h: ReturnType<typeof harness>) => void, bodies: string[]) => {
+    const h = harness();
+    h.fake.set('settings', suppress);
+    setup(h);
+    h.fake.set('notices', { nextId: 0, items: [] });
+    const stop = h.start();
+    h.fake.set('notices', { nextId: bodies.length, items: bodies.map((body, id) => notice({ id, kind: 'mention', body })) });
+    stop();
+    return Note.made.length;
+  };
+  const withRole = (h: ReturnType<typeof harness>) => {
+    h.fake.set('account', account());
+    h.fake.set(`members:${A}`, [{ userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [ROLE] }]);
+  };
+  it('notifies a role mention and a user mention, not a broadcast alone', () => {
+    expect(run(withRole, [`<@${ROLE}>`, `<@${ME.id}>`, '<@everyone>'])).toBe(2);
+  });
+  it('fails open when the own user is unknown', () => {
+    expect(run(h => h.fake.set(`members:${A}`, []), ['<@everyone>'])).toBe(1);
+  });
+  it('fails open when the community members are not loaded', () => {
+    expect(run(h => h.fake.set('account', account()), ['<@everyone>'])).toBe(1);
   });
 });
 
@@ -194,6 +249,13 @@ describe('ringNotification (flow 06, R1, R8)', () => {
     for (const [r, settings] of [[ring({ busy: true }), {}], [ring({ quiet: true }), {}], [ring(), { [`notify.channel.${DM}`]: 'nothing' }]] as const) {
       const { Ctor, made } = ctor('granted');
       expect(ringNotification(r, deps(Ctor, settings))).toBeNull();
+      expect(made).toEqual([]);
+    }
+  });
+  it('raises nothing for a ring in a muted or silenced server', () => {
+    for (const settings of [{ [`mute.community.${A}`]: '1' }, { [`notify.community.${A}`]: 'nothing' }]) {
+      const { Ctor, made } = ctor('granted');
+      expect(ringNotification(ring(), { ...deps(Ctor, settings), communityId: A })).toBeNull();
       expect(made).toEqual([]);
     }
   });

@@ -1,9 +1,10 @@
 // Flow 07 (v0.1.0-web3.1): start a server, add a channel, invite people. Each flow is a @dilla/ui dialog driven by one
 // worker command at a time; every refusal is said by its code, never by the instance's detail text.
 import { useEffect, useRef, useState } from 'react';
-import { Button, CreateChannel, CreateServer, InviteLink, type NewChannelKind } from '@dilla/ui';
+import { Button, CheckList, CreateChannel, CreateServer, InviteLink, Toggle, type NewChannelKind } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
+import { useSlice } from '../core/use-slice.ts';
 import { t } from '../strings/index.ts';
 
 /** The instance's own bounds (internal/api maxCommunityNameBytes, maxChannelNameBytes); the worker checks them again. */
@@ -14,6 +15,8 @@ export const INVITE_MAX_USES = 10;
 export const INVITE_TTL_DAYS = 7;
 export const INVITE_TTL_S = INVITE_TTL_DAYS * 24 * 3600;
 /** What a new server starts with, in order: #general, then the voice channel general. */
+/** The most roles a private channel can be opened to (the worker refuses more). */
+const PRIVATE_ROLES_MAX = 98;
 const STARTERS: readonly { kind: NewChannelKind; name: string }[] = [{ kind: 'text', name: 'general' }, { kind: 'voice', name: 'general' }];
 
 const UTF8 = new TextEncoder();
@@ -289,14 +292,24 @@ export function CreateChannelFlow(props: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [priv, setPriv] = useState(false);
+  const [ticked, setTicked] = useState<readonly string[]>([]);
   const running = useRef(false);
   const session = useRef(0);
+  const communityId = props.community?.id ?? '';
+  const access = useSlice(`permissions:${communityId}`);
+  const roles = useSlice(`roles:${communityId}`);
 
   useEffect(() => {
     if (props.open) return;
     session.current += 1;
-    setKind('text'); setName(''); setError(null);
+    setKind('text'); setName(''); setError(null); setPriv(false); setTicked([]);
   }, [props.open]);
+
+  // Private create needs the manage-roles right; the roles on offer are those below my top (all of them for the owner).
+  const canPrivate = access?.manageRoles === true;
+  const offered = (roles ?? []).filter(r => r.id !== access?.everyoneId && (access?.owner === true || r.position < (access?.top ?? 0)))
+    .sort((a, b) => b.position - a.position);
 
   const fail = (message: string) => { setError(message); setAttempt(a => a + 1); };
 
@@ -321,18 +334,22 @@ export function CreateChannelFlow(props: {
     running.current = true;
     setBusy(true);
     const chosen = kind;
+    const sendPrivate = canPrivate && priv;
+    const roleIds = ticked.filter(id => offered.some(r => r.id === id));
     const at = session.current;
     const mine = () => session.current === at;
     void (async () => {
       try {
-        const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown }), 'channelId');
+        const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown, ...(sendPrivate ? { private: { roleIds } } : {}) }), 'channelId');
         if (id !== null) rememberMade(client, id);
         if (!mine()) return;
         if (id === null) fail(t('create.channel.error.other', { code: BAD_RESULT.code }));
         else props.onDone(id, chosen);
       } catch (e) {
         if (!mine()) return;
-        // Only the instance's E_INVALID_REQUEST is about the name; the worker's E_BAD_INPUT here is not (review M7).
+        // Only the instance's E_INVALID_REQUEST is about the name; the worker's E_BAD_INPUT here is not (review M7). Nor is it
+        // the 98-role cap, which the ticks already prevent: the code cannot tell the cap from "roles not loaded" or "unknown
+        // server", and the detail is never read (protocol/02), so it is worded by its code (W2a review 8).
         const code = errorOf(e).code;
         fail(code === 'E_FORBIDDEN' ? t('create.channel.error.forbidden')
           : code === 'E_INVALID_REQUEST' ? t('create.channel.error.refused')
@@ -350,7 +367,20 @@ export function CreateChannelFlow(props: {
       labels={{ title: t('create.channel.title', { server: props.community?.name ?? '' }), kind: t('create.channel.kind'),
         text: t('create.channel.text'), voice: t('create.channel.voice'), name: t('create.channel.name'), submit: t('create.channel.submit'),
         busy: t('create.channel.busy'), close: t('dialog.close') }}
-      onSubmit={submit} onClose={() => props.onClose()} />
+      onSubmit={submit} onClose={() => props.onClose()}>
+      {canPrivate ? <>
+        <Toggle id="dw-create-private" label={t('chperm.create.private')} showLabel hint={t('chperm.create.privateHint')} checked={priv}
+          onChange={on => { setPriv(on); setError(null); }} />
+        {priv ? <CheckList label={t('chperm.create.roles')} emptyLabel={t('chperm.create.noRoles')} busyId={null}
+          items={offered.map(r => {
+            const checked = ticked.includes(r.id);
+            // At most PRIVATE_ROLES_MAX roles: the rows past it are disabled, so the instance's refusal is unreachable.
+            const full = !checked && ticked.length >= PRIVATE_ROLES_MAX;
+            return { id: r.id, label: r.name, color: r.color, checked, disabled: full, ...(full ? { detail: t('chperm.create.tooMany') } : {}) };
+          })}
+          onToggle={(id, on) => setTicked(list => (on ? [...list.filter(x => x !== id), id] : list.filter(x => x !== id)))} /> : null}
+      </> : null}
+    </CreateChannel>
   );
 }
 

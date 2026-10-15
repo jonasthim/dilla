@@ -509,6 +509,10 @@ impl WebDriver {
                 Self::actor(req)?;
                 Self::hex16(req, "channel")?;
             }
+            "allow_everyone" => match Self::uint(req, "bits") {
+                Some(Some(bits)) if (1..=0xFF_FFFF).contains(&bits) => {}
+                _ => return Err(scenario("bits must be 1..=0xffffff")),
+            },
             "forge_device" => {}
             "register" | "update" | "enrol" | "dms" => {}
             _ => return Err(scenario(format!("unknown op {op}"))),
@@ -561,6 +565,7 @@ impl WebDriver {
             "send_dm" => self.send_dm(req),
             "sync_dm" => self.sync_dm(req),
             "typing" => self.typing(req).map_err(new_verb_error),
+            "allow_everyone" => self.allow_everyone(req).map_err(new_verb_error),
             "search_seed" => self.search_seed(req).map_err(new_verb_error),
             "voice_self" => self.voice_self(req).map_err(new_verb_error),
             "trust_list" => self.trust_list(req).map_err(new_verb_error),
@@ -1073,6 +1078,18 @@ impl WebDriver {
             ds.typing_set(&channel, on).map_err(Into::into)
         })?;
         Ok(json!({"accepted": true}))
+    }
+
+    /// The owner gives @everyone in the peer's server the `bits` (the roles tab's toggles, flow 09) through the real
+    /// roles API: a plain member then holds them, as a member of a server whose owner did that would.
+    fn allow_everyone(&mut self, req: &Value) -> Result<Value, TestkitError> {
+        let bits = req["bits"].as_u64().expect("validated bits");
+        let community = self.peer().community;
+        let name = self.peer().name.clone();
+        let allow = self.runner.with_session(&name, |_, ds| {
+            ds.allow_everyone(&community, bits).map_err(Into::into)
+        })?;
+        Ok(json!({"allow": allow}))
     }
 
     fn voice_self(&mut self, req: &Value) -> Result<Value, TestkitError> {
@@ -2166,6 +2183,10 @@ mod tests {
             ("rotate_umk", json!({"user": "AB".repeat(16)})),
             ("leave", json!({"channel_id": "ab".repeat(17)})),
             ("leave", json!({"channel_id": 7})),
+            ("allow_everyone", json!({})),
+            ("allow_everyone", json!({"bits": 0})),
+            ("allow_everyone", json!({"bits": 0x100_0000})),
+            ("allow_everyone", json!({"bits": "8"})),
         ] {
             assert!(WebDriver::validate(op, &input).is_err(), "{op}: {input}");
         }
@@ -2173,6 +2194,7 @@ mod tests {
             WebDriver::validate("typing", &json!({"channel": "ab".repeat(16), "on": true})).is_ok()
         );
         assert!(WebDriver::validate("leave", &json!({})).is_ok());
+        assert!(WebDriver::validate("allow_everyone", &json!({"bits": 8})).is_ok());
         assert!(WebDriver::validate("leave", &json!({"channel_id": "ab".repeat(16)})).is_ok());
         assert!(
             WebDriver::validate(

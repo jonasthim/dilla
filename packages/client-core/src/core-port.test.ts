@@ -508,6 +508,32 @@ describe('wrapCore web-2b', () => {
     expect(s.calls).toHaveLength(3);
   });
 
+  it('concatenates the authority id lists, refusing a malformed list before the call (web3.5 R1)', () => {
+    const s = stub({ authority_set: () => undefined });
+    const A = new Uint8Array(16).fill(0xa1);
+    const B = new Uint8Array(16).fill(0xb2);
+    s.port.authoritySet(G, [A, B], [B], []);
+    s.port.authoritySet(G, [], [], [A]);
+    const both = new Uint8Array(32);
+    both.set(A, 0);
+    both.set(B, 16);
+    expect(s.calls).toEqual([
+      { method: 'authority_set', args: [G, both, B, new Uint8Array(0)] },
+      { method: 'authority_set', args: [G, new Uint8Array(0), new Uint8Array(0), A] },
+    ]);
+    const detail = 'pinners, broadcasters and mentionable must be 0..=4096 ids of 16 bytes';
+    expect(caught(() => s.port.authoritySet(G, [new Uint8Array(15)], [], [])).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.authoritySet(G, [], [new Uint8Array(15)], [])).detail).toBe(detail);
+    expect(caught(() => s.port.authoritySet(G, [], [], [new Uint8Array(15)])).detail).toBe(detail);
+    expect(caught(() => s.port.authoritySet(G, [], [], Array.from({ length: 4097 }, () => A))).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.authoritySet(G, Array.from({ length: 4097 }, () => A), [], [])).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.authoritySet(G, [], Array.from({ length: 4097 }, () => A), [])).code).toBe('E_CORE_INPUT');
+    expect(s.calls).toHaveLength(2);
+    s.port.authoritySet(G, Array.from({ length: 4096 }, () => A), [], []);
+    expect(s.calls).toHaveLength(3);
+    expect((s.calls[2].args[1] as Uint8Array).length).toBe(4096 * 16);
+  });
+
   it('maps a web-2b result of the wrong shape to E_CORE_DECODE', () => {
     expect(caught(() => stub({ outbox: () => encode([[MSG, 0, '', 1, 'hi']]) }).port.outbox(G)).code).toBe('E_CORE_DECODE');
     expect(caught(() => stub({ outbox: () => encode([[MSG, 0, '', 1, 'hi', 7, null, []]]) }).port.outbox(G)).code).toBe('E_CORE_DECODE');

@@ -25,4 +25,4 @@ third-party clients, bots and servers can implement them without AGPL obligation
 reference implementation of the pure-function parts of these documents (`vectors/README.md` lists
 the files and what each one tests). An implementation conforms to a document when it reproduces
 every vector in the files that document names. CI regenerates the vectors on every change and
-fails if the committed files differ.
+fails if the committed files differ. `permissions.json` is not generated: it is frozen from the Go resolver (`internal/api/perm.go`), which is the reference, and is checked by `internal/api/perm_vectors_test.go` and `packages/client-core/src/admin/perm.test.ts`.

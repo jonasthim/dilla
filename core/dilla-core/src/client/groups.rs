@@ -414,7 +414,17 @@ impl ClientCore {
                         [id.as_slice()],
                     )?;
                 } else {
-                    for table in ["app_handshake_tail", "app_messages", "app_outbox", "app_read_state"] {
+                    for table in [
+                        "app_handshake_tail",
+                        "app_messages",
+                        "app_outbox",
+                        "app_read_state",
+                        "app_pins",
+                        "app_reactions",
+                        "app_authority",
+                        "app_authority_known",
+                        "app_authority_mentionable",
+                    ] {
                         c.execute(
                             &format!("DELETE FROM {table} WHERE group_id=?1"),
                             [id.as_slice()],

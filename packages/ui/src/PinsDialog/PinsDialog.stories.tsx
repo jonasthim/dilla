@@ -25,3 +25,13 @@ export const FivePins: Story = {
     })),
   },
 };
+
+export const WithNote: Story = {
+  args: {
+    note: 'A pin shows while the person who pinned it may pin in this channel.',
+    items: PINS.slice(0, 2).map((p, i) => ({
+      id: `pin-${String(i)}`, author: p.author, time: p.time, excerpt: p.excerpt, pinnedBy: p.by,
+      jumpLabel: 'go to message', onJump: () => {},
+    })),
+  },
+};

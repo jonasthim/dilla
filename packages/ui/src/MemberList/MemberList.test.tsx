@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemberList, type MemberListProps } from './MemberList.tsx';
+import { Dialog } from '../Dialog/Dialog.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 const kickBan = [{ id: 'kick', label: 'kick' }, { id: 'ban', label: 'ban', danger: true }];
@@ -131,5 +132,55 @@ describe('MemberList', () => {
       await expectNoAxeViolations(container);
       unmount();
     }
+  });
+});
+
+describe('MemberList role colour dot', () => {
+  const withColors = () => props({
+    groups: [{ id: 'g', title: 'members', members: [
+      { id: 'a', name: 'Astrid', tags: [], actionsLabel: 'actions for Astrid', actions: [], color: 0xe74c3c },
+      { id: 'b', name: 'Bjorn', tags: [], actionsLabel: 'actions for Bjorn', actions: [], color: null },
+      { id: 'c', name: 'Cleo', tags: [], actionsLabel: 'actions for Cleo', actions: [], color: 0 },
+      { id: 'd', name: 'Dag', tags: [], actionsLabel: 'actions for Dag', actions: [] },
+    ] }],
+  });
+
+  it('draws an aria-hidden dot in the colour before the name of a coloured member only', () => {
+    const { container } = render(<MemberList {...withColors()} />);
+    const rows = screen.getAllByRole('listitem');
+    const dot = rows[0]!.querySelector('.d-role-dot') as HTMLElement;
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveAttribute('aria-hidden', 'true');
+    expect(dot.style.getPropertyValue('--d-swatch')).toBe('#e74c3c');
+    expect(dot.compareDocumentPosition(rows[0]!.querySelector('.d-member-list__name')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('.d-role-dot')).toHaveLength(1);
+    expect(rows[0]!.textContent).toBe('Astrid');
+  });
+
+  it('has no serious axe violations with dots', async () => {
+    const { container } = render(<div className="d-root"><MemberList {...withColors()} /></div>);
+    await expectNoAxeViolations(container);
+  });
+});
+
+describe('MemberList focus return', () => {
+  it('a dialog opened from a row menu returns focus to that member\'s trigger after the row moved to another group', async () => {
+    function Pane({ moved, open }: { moved: boolean; open: boolean }) {
+      const base = props();
+      const bjorn = base.groups[1]!.members[0]!;
+      const groups = moved
+        ? [{ ...base.groups[0]!, members: [...base.groups[0]!.members, bjorn] }, { ...base.groups[1]!, members: base.groups[1]!.members.slice(1) }]
+        : base.groups;
+      return <><MemberList {...props({ groups })} />{open ? <Dialog open title="roles for Bjorn" onClose={() => {}}><p>x</p></Dialog> : null}</>;
+    }
+    const { rerender } = render(<Pane moved={false} open={false} />);
+    const before = screen.getByRole('button', { name: 'actions for Bjorn' });
+    before.focus();
+    rerender(<Pane moved={false} open />);
+    rerender(<Pane moved open />);
+    const after = screen.getByRole('button', { name: 'actions for Bjorn' });
+    expect(after).not.toBe(before);
+    rerender(<Pane moved open={false} />);
+    expect(after).toHaveFocus();
   });
 });

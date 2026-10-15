@@ -205,7 +205,7 @@ describe('the channels tab of ServerSettings', () => {
     fake.set('communities', [{ id: SERVER, name: 'Midgard', owner: 'ee'.repeat(16) }]);
     fake.set(`channels:${SERVER}`, CHANNELS);
     fake.set(`permissions:${SERVER}`, { top: 1, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false,
-      banMembers: false, createInvite: false, manageRoles: false, loaded: true });
+      banMembers: false, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ab'.repeat(16) });
     render(<div className="d-root"><CoreProvider client={fake}>
       <ServerSettings communityId={SERVER} tab="channels" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />
     </CoreProvider></div>);
@@ -243,5 +243,55 @@ describe('fix round 1: focus and the category select', () => {
     await user.click(btn('edit lobby'));
     const dialog = await screen.findByRole('dialog', { name: 'Edit #lobby' });
     expect(within(dialog).getByRole('combobox', { name: en['admin.channel.category'] })).toHaveValue('top');
+  });
+});
+
+describe('private channels in the channels tab', () => {
+  const EVERYONE = 'e0'.repeat(16);
+  const access = (over: Record<string, unknown> = {}) => ({ top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false,
+    banMembers: false, createInvite: false, manageRoles: true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true, ...over });
+  it('tags a private channel with chperm.privateTag, and no other', () => {
+    const { fake } = setup();
+    fake.publish(`permissions:${SERVER}`, access());
+    fake.publish(`overwrites:${SERVER}`, { [DEV]: [{ kind: 0, targetId: EVERYONE, allow: 0, deny: 1 }] });
+    const rows = within(screen.getByRole('list', { name: 'Talk' })).getAllByRole('listitem');
+    expect(rows[1]).toHaveTextContent(`#dev${en['chperm.privateTag']}`);
+    expect(rows[0]).not.toHaveTextContent(en['chperm.privateTag']);
+  });
+  it('tags nothing while the overwrites are not loaded', () => {
+    const { fake } = setup();
+    fake.publish(`permissions:${SERVER}`, access({ overwritesLoaded: false }));
+    fake.publish(`overwrites:${SERVER}`, { [DEV]: [{ kind: 0, targetId: EVERYONE, allow: 0, deny: 1 }] });
+    expect(screen.queryByText(en['chperm.privateTag'])).toBeNull();
+  });
+  it('shows the permissions of a channel in its edit dialog with the manage-roles right, and not for a category', async () => {
+    const { fake, user } = setup();
+    fake.publish(`permissions:${SERVER}`, access());
+    fake.publish(`roles:${SERVER}`, []);
+    await user.click(btn('edit lobby'));
+    expect(await within(await screen.findByRole('dialog', { name: 'Edit #lobby' })).findByRole('heading', { name: en['chperm.title'] })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await user.click(btn('edit Talk'));
+    expect(within(await screen.findByRole('dialog', { name: 'Edit category Talk' })).queryByRole('heading', { name: en['chperm.title'] })).toBeNull();
+  });
+  it('hides the permissions without the manage-roles right', async () => {
+    const { fake, user } = setup();
+    fake.publish(`permissions:${SERVER}`, access({ manageRoles: false }));
+    await user.click(btn('edit lobby'));
+    expect(within(await screen.findByRole('dialog', { name: 'Edit #lobby' })).queryByRole('heading', { name: en['chperm.title'] })).toBeNull();
+  });
+  it('closes only the confirm on Escape, leaving the channel dialog open, and returns focus to the switch', async () => {
+    const { fake, user } = setup();
+    fake.publish(`permissions:${SERVER}`, access());
+    fake.publish(`roles:${SERVER}`, []);
+    fake.publish(`members:${SERVER}`, []);
+    fake.publish(`overwrites:${SERVER}`, {});
+    await user.click(btn('edit lobby'));
+    await user.click(await screen.findByRole('switch', { name: en['chperm.private'] }));
+    expect(await screen.findByRole('dialog', { name: 'Make #lobby private?' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Make #lobby private?' })).toBeNull());
+    expect(screen.getByRole('dialog', { name: 'Edit #lobby' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: en['chperm.private'] })).toHaveFocus();
   });
 });

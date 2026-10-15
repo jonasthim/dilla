@@ -72,6 +72,11 @@ Stated plainly in the product's documentation and onboarding:
 - A call start's `rung` (`09` § Voice) is empty also when the instance's table of ringing calls is
   full (4 096 calls, which takes at least 512 callers): any caller can then tell the instance is
   under that load, though not who causes it or whom they call.
+- The instance serves the role view that clients use to count pins and `@everyone`/`@here` (`04`
+  § Semantics). It is not authenticated by the group. The instance can hide every pin and
+  broadcast mention, give pin or broadcast rights to any member, or serve different views to
+  different members or devices so their pins differ. It cannot read or forge a message, and the
+  view never decides which messages are shown.
 - The instance may withhold newer device-list history on first sight. Trust on first use cannot
   prove that the served signed head is the newest, so first sight is not called verified.
 - A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in

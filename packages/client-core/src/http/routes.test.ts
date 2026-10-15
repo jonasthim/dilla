@@ -1063,7 +1063,7 @@ describe('Routes: server admin and moderation', () => {
   });
   it('listRoles reads the role rows', async () => {
     const { result, seen } = await one(cborReply(200, [role(1)]), (r) => r.listRoles(COMMUNITY));
-    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: 4096n, deny: 0n, hoist: true, mentionable: true }]);
+    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: 4096, deny: 0, hoist: true, mentionable: true }]);
     expect(seen.url).toBe(`https://dilla.test/v1/communities/${hex(COMMUNITY)}/roles`);
   });
   it('listRoles refuses 251 rows and a hoist of 2', async () => {
@@ -1184,5 +1184,132 @@ describe('Routes: server admin and moderation', () => {
     const { t, routes } = setup();
     t.replies.push(refusal(403, 'E_FORBIDDEN', 'kick members'));
     await expect(routes.kickMember(COMMUNITY, OTHER)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+  });
+});
+
+describe('Routes: wave 2a roles, overwrites and private channel create (internal/api roles.go, channels.go)', () => {
+  const TARGET = fill(16, 0x31);
+  const ROLE_2 = fill(16, 0x32);
+  const one = async (reply: Response, call: (r: Routes) => Promise<unknown>) => {
+    const { t, http, routes } = setup();
+    t.replies.push(reply);
+    const result = await call(routes);
+    return { result, seen: t.seen[0], http };
+  };
+  const NEW_ROLE = { name: 'Crew', color: 0x30a46c, position: 1, allow: 8, deny: 0, hoist: true, mentionable: true };
+
+  it('createRole sends seven slots and reads [role_id]', async () => {
+    const { result, seen, http } = await one(cborReply(201, [ROLE_2]), (r) => r.createRole(COMMUNITY, NEW_ROLE));
+    expect(result).toEqual({ roleId: ROLE_2 });
+    expect([seen.method, seen.url]).toEqual(['POST', `https://dilla.test/v1/communities/${hex(COMMUNITY)}/roles`]);
+    expect(seen.body).toEqual(encode(['Crew', 0x30a46c, 1, 8, 0, 1, 1]));
+    expect([http.requests[0].bucket, http.requests[0].idempotent]).toEqual(['write', false]);
+  });
+  it('patchRole sends null for every absent field, in the server order', async () => {
+    const { seen, http } = await one(noContent(), (r) => r.patchRole(ROLE_2, { allow: 8 }));
+    expect([seen.method, seen.url]).toEqual(['PATCH', `https://dilla.test/v1/roles/${hex(ROLE_2)}`]);
+    expect(seen.body).toEqual(encode([null, null, null, 8, null, null, null]));
+    expect([http.requests[0].bucket, http.requests[0].idempotent]).toEqual(['write', true]);
+    const all = await one(noContent(), (r) => r.patchRole(ROLE_2, { name: 'n', color: 1, position: 2, allow: 3, deny: 4, hoist: false, mentionable: true }));
+    expect(all.seen.body).toEqual(encode(['n', 1, 2, 3, 4, 0, 1]));
+  });
+  it('deleteRole, grantRole, revokeRole, putOverwrite and deleteOverwrite use their paths and bodies', async () => {
+    const del = await one(noContent(), (r) => r.deleteRole(ROLE_2));
+    expect([del.seen.method, del.seen.url]).toEqual(['DELETE', `https://dilla.test/v1/roles/${hex(ROLE_2)}`]);
+    const grantPath = `https://dilla.test/v1/communities/${hex(COMMUNITY)}/members/${hex(TARGET)}/roles/${hex(ROLE_2)}`;
+    const grant = await one(noContent(), (r) => r.grantRole(COMMUNITY, TARGET, ROLE_2));
+    expect([grant.seen.method, grant.seen.url, grant.seen.body]).toEqual(['PUT', grantPath, encode([])]);
+    expect([grant.http.requests[0].bucket, grant.http.requests[0].idempotent]).toEqual(['write', true]);
+    const revoke = await one(noContent(), (r) => r.revokeRole(COMMUNITY, TARGET, ROLE_2));
+    expect([revoke.seen.method, revoke.seen.url]).toEqual(['DELETE', grantPath]);
+    const put = await one(noContent(), (r) => r.putOverwrite(CHANNEL, 1, TARGET, { allow: 2, deny: 1 }));
+    expect([put.seen.method, put.seen.url, put.seen.body]).toEqual(['PUT', `https://dilla.test/v1/channels/${hex(CHANNEL)}/overwrites/1/${hex(TARGET)}`, encode([2, 1])]);
+    expect([put.http.requests[0].bucket, put.http.requests[0].idempotent]).toEqual(['write', true]);
+    const rm = await one(noContent(), (r) => r.deleteOverwrite(CHANNEL, 0, TARGET));
+    expect([rm.seen.method, rm.seen.url]).toEqual(['DELETE', `https://dilla.test/v1/channels/${hex(CHANNEL)}/overwrites/0/${hex(TARGET)}`]);
+  });
+  it('grant 403 is E_FORBIDDEN', async () => {
+    const { routes, t } = setup();
+    t.replies.push(refusal(403, 'E_FORBIDDEN', 'rank'));
+    await expect(routes.grantRole(COMMUNITY, TARGET, ROLE_2)).rejects.toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+  });
+  it('rejects bad role input before any request', async () => {
+    const { t, routes } = setup();
+    const attempts: (() => Promise<unknown>)[] = [
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, name: '' }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, name: 'x'.repeat(101) }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, name: '\u0007' }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, color: 0x1000000 }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 0 }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, position: 2 ** 31 }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, allow: 0x1000000 }),
+      () => routes.createRole(COMMUNITY, { ...NEW_ROLE, deny: -1 }),
+      () => routes.patchRole(ROLE_2, { color: -1 }),
+      () => routes.patchRole(ROLE_2, { deny: 1.5 }),
+      () => routes.putOverwrite(CHANNEL, 2 as 0, TARGET, { allow: 0, deny: 0 }),
+      () => routes.putOverwrite(CHANNEL, 0, TARGET, { allow: 0x1000000, deny: 0 }),
+      () => routes.deleteOverwrite(CHANNEL, 2 as 0, TARGET),
+      () => routes.grantRole(new Uint8Array(15), TARGET, ROLE_2),
+      () => routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ kind: 0, targetId: new Uint8Array(15), allow: 0, deny: 1 }] }),
+    ];
+    for (const [i, attempt] of attempts.entries()) await expect(attempt(), `attempt ${i}`).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    expect(t.seen).toHaveLength(0);
+  });
+  it('accepts the 100-byte role name edge', async () => {
+    await one(cborReply(201, [ROLE_2]), (r) => r.createRole(COMMUNITY, { ...NEW_ROLE, name: 'x'.repeat(100) }));
+  });
+  it('a role row keeps only the 24 permission bits', async () => {
+    const row = [ROLE, 'mods', 0xff8800, 5, 2 ** 40 + 8, 2 ** 40, 0, 1];
+    const { result } = await one(cborReply(200, [row]), (r) => r.listRoles(COMMUNITY));
+    expect(result).toEqual([{ id: ROLE, name: 'mods', color: 0xff8800, position: 5, allow: 8, deny: 0, hoist: false, mentionable: true }]);
+  });
+  it('listOverwrites reads [channel_id, kind, target_id, allow, deny] rows', async () => {
+    const { result, seen, http } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 0, 1], [CHANNEL, 1, TARGET, 2, 0]]), (r) => r.listOverwrites(COMMUNITY));
+    expect(result).toEqual([
+      { channelId: CHANNEL, kind: 0, targetId: ROLE, allow: 0, deny: 1 },
+      { channelId: CHANNEL, kind: 1, targetId: TARGET, allow: 2, deny: 0 },
+    ]);
+    expect([seen.method, seen.url]).toEqual(['GET', `https://dilla.test/v1/communities/${hex(COMMUNITY)}/overwrites`]);
+    expect([http.requests[0].bucket, http.requests[0].idempotent]).toEqual(['read', true]);
+  });
+  it('an overwrite row keeps only the 24 permission bits, as a role row does', async () => {
+    const { result } = await one(cborReply(200, [[CHANNEL, 0, ROLE, 2 ** 40 + 8, 0x1000000 + 1]]), (r) => r.listOverwrites(COMMUNITY));
+    expect(result).toEqual([{ channelId: CHANNEL, kind: 0, targetId: ROLE, allow: 8, deny: 1 }]);
+  });
+  it('listOverwrites refuses a kind of 2, a short row and 10 001 rows', async () => {
+    const bad = async (reply: Response, code: string) => {
+      const { t, routes } = setup();
+      t.replies.push(reply);
+      await expect(routes.listOverwrites(COMMUNITY)).rejects.toMatchObject({ code });
+    };
+    await bad(cborReply(200, [[CHANNEL, 2, ROLE, 0, 0]]), 'E_CBOR_RANGE');
+    await bad(cborReply(200, [[CHANNEL, 0, ROLE, 0]]), 'E_CBOR_SHAPE');
+    await bad(cborReply(200, Array.from({ length: 10_001 }, () => [CHANNEL, 0, ROLE, 0, 0])), 'E_CBOR_SHAPE');
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, Array.from({ length: 10_000 }, () => [CHANNEL, 0, ROLE, 0, 0])));
+    expect(await routes.listOverwrites(COMMUNITY)).toHaveLength(10_000);
+  });
+  it('createChannel with one overwrite sends a ninth element', async () => {
+    const owner = fill(16, 0x33);
+    const { seen, result } = await one(cborReply(201, [CHANNEL, 0, 0]), (r) =>
+      r.createChannel(COMMUNITY, { kind: 'text', name: 'staff', position: 0, overwrites: [{ kind: 0, targetId: owner, allow: 0, deny: 1 }] }));
+    expect(result).toEqual({ id: CHANNEL, mode: 0, visibility: 0 });
+    expect(seen.body).toEqual(encode([0, 0, 0, null, 'staff', '', 0, 0, [[0, owner, 0, 1]]]));
+  });
+  it('createChannel with an empty or absent overwrites list sends eight elements, and 101 entries are refused', async () => {
+    const empty = await one(cborReply(201, [CHANNEL, 0, 0]), (r) => r.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [] }));
+    expect(empty.seen.body).toEqual(encode([0, 0, 0, null, 'a', '', 0, 0]));
+    const { t, routes } = setup();
+    const entry = { kind: 0 as const, targetId: TARGET, allow: 0, deny: 1 };
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: Array.from({ length: 101 }, () => entry) }))
+      .rejects.toThrow(/^E_ROUTE_INPUT: /);
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, kind: 2 as 0 }] }))
+      .rejects.toThrow(/^E_ROUTE_INPUT: /);
+    await expect(routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: [{ ...entry, deny: 0x1000000 }] }))
+      .rejects.toThrow(/^E_ROUTE_INPUT: /);
+    expect(t.seen).toHaveLength(0);
+    t.replies.push(cborReply(201, [CHANNEL, 0, 0]));
+    await routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: Array.from({ length: 100 }, () => entry) });
+    expect(t.seen).toHaveLength(1);
   });
 });

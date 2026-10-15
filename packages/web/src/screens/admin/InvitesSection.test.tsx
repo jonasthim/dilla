@@ -22,8 +22,9 @@ const INVITES: InviteSummary[] = [
   { id: INV2, createdBy: null, maxUses: 1, uses: 0, created: 1_800_000_000, expires: EXPIRES + 86_400 },
 ];
 
+const EVERYONE = 'ab'.repeat(16);
 const access = (over: Partial<CommunityAccess> = {}): CommunityAccess => ({ top: 0, owner: false, manageCommunity: false, manageChannels: false,
-  kickMembers: false, banMembers: false, createInvite: true, manageRoles: false, loaded: true, ...over });
+  kickMembers: false, banMembers: false, createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE, ...over });
 
 function setup(invites: InviteSummary[] | null = INVITES, handler?: (command: Command) => Promise<unknown>, members = true) {
   const fake = new FakeClient();

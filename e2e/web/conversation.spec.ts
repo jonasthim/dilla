@@ -4,7 +4,7 @@ import { expect, type Page } from '@playwright/test';
 import {
   CLASS, HEX32, TEST_TIMEOUT, WAIT, attachInput, channelRow, composerBox, copy, deleteDialog, drawImage, editorBox,
   expectAccessible, expectComposerReady, flashSeen, instanceInvite, joinCommunity, lightbox, logRegion, mentionList,
-  messageRow, openChannel, pinsDialog, reactionChip, rowAction, rowById, rowToolbar, sendText, sha256Hex, shownName,
+  PERM_PIN, messageRow, openChannel, pinsDialog, reactionChip, rowAction, rowById, rowToolbar, sendText, sha256Hex, shownName,
   signIn, signUp, tag, trayEntries, watchFlash, type Peer,
 } from './support/app';
 import { test } from './support/second';
@@ -109,7 +109,11 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
   const reacted = await peer.waitForRow((m) => m.type === 3 && m.reply_to === sent.msg_id && m.sender_user === user, 'the browser’s reaction');
   expect(reacted.body).toBe(THUMBS_UP);
 
-  // A pin, listed with who pinned it.
+  // A pin, listed with who pinned it. Like Discord's @everyone, a plain member may not pin (flow 09): the peer, the
+  // server's owner, first gives everyone that right, and the browser's toolbar then offers it.
+  await peer.allowEveryone(PERM_PIN);
+  await target.focus();
+  await expect(rowToolbar(target).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible({ timeout: WAIT });
   await rowAction(target, 'pin');
   await expect(target).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
   await page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true }).click();
@@ -377,6 +381,10 @@ test('B sees what A makes', async ({ page, peer, second, instanceName }) => {
   await expect(reactionChip(own, copy('shell.emoji.01'), 1)).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
   await expect(reactionChip(inB, copy('shell.emoji.01'), 1)).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
 
+  // A plain member may not pin (flow 09): the peer, the server's owner, gives everyone that right first.
+  await peer.allowEveryone(PERM_PIN);
+  await own.focus();
+  await expect(rowToolbar(own).getByRole('button', { name: copy('shell.message.pin'), exact: true })).toBeVisible({ timeout: WAIT });
   await rowAction(own, 'pin');
   await expect(inB).toHaveAttribute('data-pinned', 'true', { timeout: WAIT });
 

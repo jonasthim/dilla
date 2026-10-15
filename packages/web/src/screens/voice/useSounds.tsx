@@ -14,6 +14,14 @@ export interface UseSoundsOptions {
   deafened: boolean;
   settings: Readonly<Record<string, string>>;
   selfId: string | null;
+  /** The server a ring's channel belongs to, for that server's mute (WA5); unset for DMs. */
+  ringCommunity?: (channelId: string) => string | undefined;
+}
+
+/** True while a ring exists that may sound: not busy, not quiet, and its channel and server are not muted. */
+export function ringAudible(rings: readonly Ring[] | undefined, settings: Readonly<Record<string, string>>,
+  communityOf?: (channelId: string) => string | undefined): boolean {
+  return (rings ?? []).some(r => !r.busy && !r.quiet && !isMuted(settings, r.channelId, communityOf?.(r.channelId)));
 }
 
 /** The browser's autoplay rule: no sound before the person interacted with the page (L-WEB-52). */
@@ -40,7 +48,7 @@ export function useSounds(o: UseSoundsOptions): void {
   // The ring.
   const ringing = useRef(false);
   // The DM mute is re-read here: muting a DM while it rings stops the sound at once (review m3).
-  const wantRing = o.inCall === null && (o.rings ?? []).some(r => !r.busy && !r.quiet && !isMuted(o.settings, r.channelId))
+  const wantRing = o.inCall === null && ringAudible(o.rings, o.settings, o.ringCommunity)
     && o.settings[SETTINGS.soundRing] !== 'off' && activated();
   useEffect(() => {
     if (wantRing === ringing.current) return;

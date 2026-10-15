@@ -5,8 +5,8 @@ import type { Id } from '../core-port';
 import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import { BAN_REASON_MAX_BYTES, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, TOPIC_MAX_BYTES, nameProblem } from '../http/routes';
-import type { ChannelRow, Routes } from '../http/routes';
-import type { BanSummary, CommunitySummary, InviteSummary, RoleSummary, SliceName, SliceTypes } from '../state/types';
+import type { ChannelRow, OverwriteRow, RoleRow, Routes } from '../http/routes';
+import type { BanSummary, CommunitySummary, InviteSummary, SliceName, SliceTypes } from '../state/types';
 import type { Command } from '../worker/protocol';
 import { accessOf } from './rank';
 
@@ -14,7 +14,7 @@ import { accessOf } from './rank';
 export const BAN_SECONDS_MIN = 3600;
 export const BAN_SECONDS_MAX = 3_153_600_000;
 
-export type AdminRoutes = Pick<Routes, 'getPermissions' | 'listRoles' | 'patchCommunity' | 'deleteCommunity' | 'leaveCommunity'
+export type AdminRoutes = Pick<Routes, 'getPermissions' | 'listRoles' | 'listOverwrites' | 'patchCommunity' | 'deleteCommunity' | 'leaveCommunity'
   | 'transferOwnership' | 'createCategory' | 'patchChannel' | 'deleteChannel' | 'kickMember' | 'putBan' | 'deleteBan' | 'listBans'
   | 'listInvites' | 'revokeInvite'>;
 
@@ -47,6 +47,11 @@ export interface AdminDeps {
    *  begun before it is older and is not applied. */
   dropCommunity(communityId: string): void;
   track(job: Promise<unknown>): void;
+  /** An access read landed (wave 2a): the roles controller keeps the rows and bits and publishes roles and overwrites;
+   *  `overwrites` is null when that read failed. */
+  accessRead(communityId: string, roles: RoleRow[], bits: bigint, overwrites: OverwriteRow[] | null): void;
+  /** A server was dropped: the roles controller forgets what it kept. */
+  accessForgotten(communityId: string): void;
   /** The worker's own refusal (its code reaches the page as E_BAD_INPUT and the like). */
   refusal(code: string, detail: string): Error;
 }
@@ -99,19 +104,41 @@ export class AdminController {
 
   // ---- access ----
 
-  /** Reads the caller's permissions and the roles of a server, and publishes both; a failed read publishes neither and
-   *  leaves what the page already holds. Never throws. */
+  /** Reads the caller's permissions, the roles and the overwrites of a server, and publishes them; a failed read publishes
+   *  nothing and leaves what the page already holds, except that a failed overwrites read alone clears `overwritesLoaded`.
+   *  Never throws. Reads are sequenced per server: one that began before a later one never publishes, and it resolves
+   *  once the newest has. */
   async loadAccess(communityId: string): Promise<void> {
+    const seq = (this.accessSeq.get(communityId) ?? 0) + 1;
+    this.accessSeq.set(communityId, seq);
+    const job = this.readAccess(communityId, seq);
+    this.accessJob.set(communityId, job);
+    await job;
+    // Superseded: wait for the newest read, so the caller sees its slices when this resolves.
+    let latest = this.accessJob.get(communityId);
+    while (latest !== undefined && latest !== job) {
+      await latest;
+      const again = this.accessJob.get(communityId);
+      if (again === latest) break;
+      latest = again;
+    }
+  }
+  private readonly accessSeq = new Map<string, number>();
+  private readonly accessJob = new Map<string, Promise<void>>();
+
+  private async readAccess(communityId: string, seq: number): Promise<void> {
     try {
       const id = fromHex(communityId);
-      const [perms, roles] = await Promise.all([this.deps.routes.getPermissions(id), this.deps.routes.listRoles(id)]);
+      const [perms, roles, overwrites] = await Promise.all([this.deps.routes.getPermissions(id), this.deps.routes.listRoles(id),
+        this.deps.routes.listOverwrites(id).catch(() => null)]);
+      if (this.accessSeq.get(communityId) !== seq) return;
       const me = this.deps.me();
       if (me === null || !this.deps.listed(communityId)) return;
       const owner = (this.deps.get('communities') ?? []).find((c: CommunitySummary) => c.id === communityId)?.owner === toHex(me.userId);
-      this.deps.publish(`permissions:${communityId}`, accessOf(perms.bits, perms.top, owner));
-      this.deps.publish(`roles:${communityId}`, roles.map((r): RoleSummary => ({
-        id: toHex(r.id), name: r.name, color: r.color, position: r.position, hoist: r.hoist, mentionable: r.mentionable,
-      })));
+      const everyone = roles.find((r) => r.position === 0);
+      this.deps.publish(`permissions:${communityId}`, { ...accessOf(perms.bits, perms.top, owner),
+        everyoneId: everyone === undefined ? '' : toHex(everyone.id), overwritesLoaded: overwrites !== null });
+      this.deps.accessRead(communityId, roles, perms.bits, overwrites);
     } catch { /* the slices stay as they were (absent before the first read) */ }
   }
 
@@ -120,6 +147,9 @@ export class AdminController {
     this.deps.publish(`roles:${communityId}`, []);
     this.deps.publish(`bans:${communityId}`, []);
     this.deps.publish(`invites:${communityId}`, []);
+    this.deps.publish(`overwrites:${communityId}`, {});
+    this.deps.accessForgotten(communityId);
+    this.accessSeq.set(communityId, (this.accessSeq.get(communityId) ?? 0) + 1);   // a read in flight no longer publishes
     // A slice has no "absent" value: a server the caller left reads as no access at all.
     this.deps.publish(`permissions:${communityId}`, { ...accessOf(0n, 0, false), loaded: false });
   }

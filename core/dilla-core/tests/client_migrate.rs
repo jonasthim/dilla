@@ -41,6 +41,74 @@ fn write_the_v3_fixture() {
         .expect("checkpoint");
 }
 
+fn authority_tables(db: &rusqlite::Connection) -> i64 {
+    db.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('app_authority','app_authority_known','app_authority_mentionable')",
+        [],
+        |r| r.get(0),
+    )
+    .expect("tables")
+}
+
+/// web3.5 R1: a v3 store gains the authority tables, empty, moves to schema 4, and keeps its pins
+/// (no group has a known view, so every pin keeps the former rule).
+#[test]
+fn a_v3_store_gains_the_authority_tables_with_its_pins_unchanged() {
+    let (path, handle) = copy_of(V3_FIXTURE, "v3-authority");
+    let pin = (vec![0x44u8; 16], vec![0x71u8; 16], 9i64, vec![0xe5u8; 16]);
+    {
+        let db = handle.lock().expect("v3 db");
+        assert_eq!(authority_tables(&db), 0, "the fixture predates the tables");
+        db.execute(
+            "INSERT INTO app_pins (group_id, target, seq, by_user) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![pin.0, pin.1, pin.2, pin.3],
+        )
+        .expect("a v3 pin");
+    }
+    let core = ClientCore::open(Arc::clone(&handle)).expect("v4 open");
+    drop(core);
+    let db = handle.lock().expect("db");
+    let schema: Vec<u8> = db
+        .query_row("SELECT v FROM app_meta WHERE k='schema'", [], |r| r.get(0))
+        .expect("schema");
+    assert_eq!(schema, vec![0x04]);
+    assert_eq!(authority_tables(&db), 3);
+    type PinRow = (Vec<u8>, Vec<u8>, i64, Vec<u8>);
+    let pins: Vec<PinRow> = db
+        .prepare("SELECT group_id, target, seq, by_user FROM app_pins")
+        .expect("pins query")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .expect("pins")
+        .collect::<Result<_, _>>()
+        .expect("pin rows");
+    assert_eq!(pins, vec![pin]);
+    let known: i64 = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM app_authority) + (SELECT count(*) FROM app_authority_known)",
+            [],
+            |r| r.get(0),
+        )
+        .expect("rows");
+    assert_eq!(known, 0, "no group starts with a known view");
+    drop(db);
+    std::fs::remove_file(path).expect("remove copy");
+}
+
+/// A store a web3.4 build left at schema 4 (before the tables) gains them on its next open.
+#[test]
+fn a_schema_4_store_without_the_authority_tables_gains_them() {
+    let conn = memory();
+    drop(ClientCore::open(Arc::clone(&conn)).expect("fresh"));
+    conn.lock()
+        .expect("lock")
+        .execute_batch("DROP TABLE app_authority; DROP TABLE app_authority_known; DROP TABLE app_authority_mentionable;")
+        .expect("a web3.4 store");
+    drop(ClientCore::open(Arc::clone(&conn)).expect("reopen"));
+    let db = conn.lock().expect("lock");
+    assert_eq!(authority_tables(&db), 3);
+    assert_eq!(meta_of(&db, "schema"), Some(vec![0x04]));
+}
+
 #[test]
 fn v3_fixture_migrates_and_keeps_settings_with_or_without_fts() {
     let (path, handle) = copy_of(V3_FIXTURE, "v3-to-v4");

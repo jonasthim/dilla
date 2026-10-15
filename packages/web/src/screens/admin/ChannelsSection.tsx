@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button, ConfirmDialog, ChannelSettings } from '@dilla/ui';
-import type { ChannelSummary } from '@dilla/client-core';
+import { isPrivate, type ChannelSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -41,6 +41,10 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
   const channels = useSlice(`channels:${communityId}`) ?? NO_CHANNELS;
   const groups = groupChannels(channels);
   const categories = groups.flatMap(g => (g.category === null ? [] : [g.category]));
+  const access = useSlice(`permissions:${communityId}`);
+  const overwrites = useSlice(`overwrites:${communityId}`);
+  // Private means @everyone is denied viewing; with the overwrites unknown nothing is tagged.
+  const tagged = (c: ChannelSummary): boolean => access?.overwritesLoaded === true && access.everyoneId !== '' && isPrivate(overwrites?.[c.id] ?? [], access.everyoneId);
   const [target, setTarget] = useState<Target>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [moveAttempt, setMoveAttempt] = useState(0);
@@ -111,13 +115,14 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
             {g.channels.map((c, i) => (
               <li key={c.id} className="dw-admin-row">
                 <span className="dw-admin-name">{shown(c)}</span>
+                {tagged(c) ? <span className="dw-admin-tag">{t('chperm.privateTag')}</span> : null}
                 {controls(c, i, g.channels.length)}
               </li>
             ))}
           </ul>
         </div>
       ))}
-      <ChannelEditFlow channel={target?.kind === 'edit' ? live ?? null : null} categories={categories} onClose={() => setTarget(null)} />
+      <ChannelEditFlow announce={announce} channel={target?.kind === 'edit' ? live ?? null : null} categories={categories} onClose={() => setTarget(null)} />
       <DeleteChannel channel={target?.kind === 'delete' ? live ?? null : null}
         onDone={() => { focusHeading.current = true; setTarget(null); headingRef.current?.focus(); }} onClose={() => setTarget(null)} />
       <NewCategory open={target?.kind === 'category'} communityId={communityId} serverName={serverName} onClose={() => setTarget(null)} />

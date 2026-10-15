@@ -1,42 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { OWNER_TOP } from '../http/routes';
 import type { RoleSummary } from '../state/types';
-import { PERM, accessOf, canModerate, topOf } from './rank';
+import { accessOf, canModerate, topOf } from './rank';
+import { PERM } from './perm';
 
-const role = (id: string, position: number): RoleSummary => ({ id, name: id, color: 0, position, hoist: false, mentionable: false });
-
-describe('PERM', () => {
-  it('pins the bit values of internal/api/perm.go', () => {
-    expect(PERM).toEqual({
-      createInvite: 1n << 11n, kickMembers: 1n << 12n, banMembers: 1n << 13n, manageChannels: 1n << 14n,
-      manageRoles: 1n << 15n, manageCommunity: 1n << 16n, administrator: 1n << 20n,
-    });
-  });
-});
+const role = (id: string, position: number): RoleSummary => ({ id, name: id, color: 0, position, hoist: false, mentionable: false, allow: 0, deny: 0, members: 0 });
 
 describe('accessOf', () => {
   it('gives the owner everything, whatever the bits', () => {
     expect(accessOf(0n, OWNER_TOP, true)).toEqual({ top: OWNER_TOP, owner: true, manageCommunity: true, manageChannels: true,
-      kickMembers: true, banMembers: true, createInvite: true, manageRoles: true, loaded: true });
+      kickMembers: true, banMembers: true, createInvite: true, manageRoles: true, loaded: true, everyoneId: '', overwritesLoaded: false });
   });
   it('gives an administrator everything', () => {
-    const a = accessOf(PERM.administrator, 3, false);
+    const a = accessOf(BigInt(PERM.administrator), 3, false);
     expect(a).toEqual({ top: 3, owner: false, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true,
-      createInvite: true, manageRoles: true, loaded: true });
+      createInvite: true, manageRoles: true, loaded: true, everyoneId: '', overwritesLoaded: false });
   });
   it('gives the default member nothing', () => {
     // view, send, read history, connect: bits 0, 1, 6, 7
     const bits = (1n << 0n) | (1n << 1n) | (1n << 6n) | (1n << 7n);
     expect(accessOf(bits, 0, false)).toEqual({ top: 0, owner: false, manageCommunity: false, manageChannels: false,
-      kickMembers: false, banMembers: false, createInvite: false, manageRoles: false, loaded: true });
+      kickMembers: false, banMembers: false, createInvite: false, manageRoles: false, loaded: true, everyoneId: '', overwritesLoaded: false });
   });
   it('reads each permission from its own bit', () => {
-    expect(accessOf(PERM.kickMembers, 1, false)).toMatchObject({ kickMembers: true, banMembers: false, createInvite: false });
-    expect(accessOf(PERM.banMembers, 1, false)).toMatchObject({ kickMembers: false, banMembers: true });
-    expect(accessOf(PERM.manageChannels, 1, false)).toMatchObject({ manageChannels: true, manageCommunity: false });
-    expect(accessOf(PERM.manageCommunity, 1, false)).toMatchObject({ manageCommunity: true, manageRoles: false });
-    expect(accessOf(PERM.manageRoles, 1, false)).toMatchObject({ manageRoles: true, manageChannels: false });
-    expect(accessOf(PERM.createInvite, 1, false)).toMatchObject({ createInvite: true, kickMembers: false });
+    expect(accessOf(BigInt(PERM.kickMembers), 1, false)).toMatchObject({ kickMembers: true, banMembers: false, createInvite: false });
+    expect(accessOf(BigInt(PERM.banMembers), 1, false)).toMatchObject({ kickMembers: false, banMembers: true });
+    expect(accessOf(BigInt(PERM.manageChannels), 1, false)).toMatchObject({ manageChannels: true, manageCommunity: false });
+    expect(accessOf(BigInt(PERM.manageCommunity), 1, false)).toMatchObject({ manageCommunity: true, manageRoles: false });
+    expect(accessOf(BigInt(PERM.manageRoles), 1, false)).toMatchObject({ manageRoles: true, manageChannels: false });
+    expect(accessOf(BigInt(PERM.createInvite), 1, false)).toMatchObject({ createInvite: true, kickMembers: false });
   });
 });
 

@@ -5,6 +5,10 @@ export const SETTINGS = {
   notifyDefault: 'notify.default',                           // 'dms-mentions' (default) | 'everything' | 'nothing'
   notifyChannel: (hex: string) => `notify.channel.${hex}`,   // 'all' | 'mentions' | 'nothing'
   muteChannel: (hex: string) => `mute.channel.${hex}`,       // '1' when muted; absent otherwise
+  // web3.5: per-server defaults. The channel value still wins over the community value.
+  notifyCommunity: (hex: string) => `notify.community.${hex}`, // 'all' | 'mentions' | 'nothing'
+  muteCommunity: (hex: string) => `mute.community.${hex}`,     // '1' when the whole server is muted
+  everyoneCommunity: (hex: string) => `everyone.community.${hex}`, // '1' = ignore @everyone and @here
   density: 'density',
   reduceMotion: 'reduceMotion',
   searchScope: 'searchScope',
@@ -31,6 +35,9 @@ const NOTIFY_CHANNEL = 'notify.channel.';
 const MUTE_CHANNEL = 'mute.channel.';
 const DEFAULTS: readonly string[] = ['dms-mentions', 'everything', 'nothing'];
 const MODES: readonly string[] = ['all', 'mentions', 'nothing'];
+const NOTIFY_COMMUNITY = 'notify.community.';
+const MUTE_COMMUNITY = 'mute.community.';
+const EVERYONE_COMMUNITY = 'everyone.community.';
 const VOICE_VOLUME = 'voice.volume.';
 const DEVICE_ID = /^[A-Za-z0-9+/=_-]{1,128}$/;
 const PTT_KEY = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
@@ -46,6 +53,9 @@ export function isSettingKey(key: string): boolean {
   if (FIXED_KEYS.has(key)) return true;
   if (key.startsWith(NOTIFY_CHANNEL)) return HEX32.test(key.slice(NOTIFY_CHANNEL.length));
   if (key.startsWith(MUTE_CHANNEL)) return HEX32.test(key.slice(MUTE_CHANNEL.length));
+  if (key.startsWith(NOTIFY_COMMUNITY)) return HEX32.test(key.slice(NOTIFY_COMMUNITY.length));
+  if (key.startsWith(MUTE_COMMUNITY)) return HEX32.test(key.slice(MUTE_COMMUNITY.length));
+  if (key.startsWith(EVERYONE_COMMUNITY)) return HEX32.test(key.slice(EVERYONE_COMMUNITY.length));
   if (key.startsWith(VOICE_VOLUME)) return HEX32.test(key.slice(VOICE_VOLUME.length));
   return false;
 }
@@ -63,13 +73,18 @@ export function isSettingValue(key: string, value: string): boolean {
   if (key === SETTINGS.voicePttKey) return PTT_KEY.test(value);
   if (key === SETTINGS.voiceNoise || key === SETTINGS.soundVoice || key === SETTINGS.soundRing) return ON_OFF.includes(value);
   if (key.startsWith(VOICE_VOLUME)) return VOLUME.test(value);
-  if (key.startsWith(NOTIFY_CHANNEL)) return MODES.includes(value);
+  if (key.startsWith(NOTIFY_CHANNEL) || key.startsWith(NOTIFY_COMMUNITY)) return MODES.includes(value);
   return value === '1';
 }
 
-export function effectiveNotifyMode(settings: Record<string, string>, channelHex: string, kind: 0 | 3 | 4): NotifyMode {
+/** Channel override first, then the server's value (when `communityHex` is a valid id), then the device default. */
+export function effectiveNotifyMode(settings: Record<string, string>, channelHex: string, kind: 0 | 3 | 4, communityHex?: string): NotifyMode {
   const override = settings[SETTINGS.notifyChannel(channelHex)];
   if (override !== undefined && MODES.includes(override)) return override as NotifyMode;
+  if (communityHex !== undefined && HEX32.test(communityHex)) {
+    const server = settings[SETTINGS.notifyCommunity(communityHex)];
+    if (server !== undefined && MODES.includes(server)) return server as NotifyMode;
+  }
   const stored = settings[SETTINGS.notifyDefault];
   const fallback = stored !== undefined && DEFAULTS.includes(stored) ? stored : 'dms-mentions';
   if (fallback === 'everything') return 'all';
@@ -77,6 +92,13 @@ export function effectiveNotifyMode(settings: Record<string, string>, channelHex
   return kind === 3 || kind === 4 ? 'all' : 'mentions';
 }
 
-export function isMuted(settings: Record<string, string>, channelHex: string): boolean {
-  return settings[SETTINGS.muteChannel(channelHex)] === '1';
+/** True when the channel or (given `communityHex`) its server is muted. */
+export function isMuted(settings: Record<string, string>, channelHex: string, communityHex?: string): boolean {
+  if (settings[SETTINGS.muteChannel(channelHex)] === '1') return true;
+  return communityHex !== undefined && HEX32.test(communityHex) && settings[SETTINGS.muteCommunity(communityHex)] === '1';
+}
+
+/** True when this server ignores @everyone and @here. */
+export function suppressesEveryone(settings: Record<string, string>, communityHex: string): boolean {
+  return HEX32.test(communityHex) && settings[SETTINGS.everyoneCommunity(communityHex)] === '1';
 }

@@ -11,6 +11,9 @@ committed files differ from the generator output.
 | `sframe.json` | `05-media-frames.md` | `kid`, `key`, `salt`, `ctr`, `nonce`, `header` per case; `header` and `decode` per `rfc9605_c1` entry; `key`, `salt`, `nonce`, `frame` and `open` of `rfc9605_c3`; `prefix_len`, `frame` and `open` per `media_frames` entry; `out` and `roundtrip` per `escapes` entry; refusal of every entry of `rejects` with the named `E_SFRAME_*` code |
 | `identity.json` | `03-identity.md` | `safety_number.digits`, `sas.digits`, `recovery_key.base32`, `k_header`, `k_backup`, `credential_identity.cbor`, and both Ed25519 signatures |
 | `frames.json` | `02-delivery-service.md` | `frame` per case from `[op, n, group_id, payload]`, and refusal of every entry of `rejects` with the named `E_FRAME_*` code |
+| `permissions.json` | `09-http-api.md` | `community` and `channel` per case: the resolved community-wide and channel bits of `user` (§ Permissions) |
+
+`permissions.json` is not generated: it is frozen from the Go resolver (`internal/api/perm.go`), which is the reference, and is checked by `internal/api/perm_vectors_test.go` and `packages/client-core/src/admin/perm.test.ts`.
 
 All byte strings are lowercase hex. Integers larger than 2^53 are decimal strings. `kid` and `ctr`
 in `sframe.json` are always decimal strings, even when the value is small enough to fit safely in a

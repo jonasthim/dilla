@@ -308,7 +308,7 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 
 | Method and path | Request | Response |
 |---|---|---|
-| `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]` |
+| `POST /v1/communities/{id}/channels` | `[kind(uint), mode(uint), visibility(uint), parent_id(bstr16\|null), name(tstr), topic(tstr), position(uint), slowmode_seconds(uint)[, overwrites]]`, `overwrites` = `[[kind(uint), target_id(bstr16), allow(uint), deny(uint)]]` | `201 [channel_id(bstr16), mode(uint), visibility(uint)]` |
 | `GET /v1/channels/{id}` | — | `[channel_id, community_id(bstr16\|null), kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]` |
 | `GET /v1/communities/{id}/channels` | — | `200 [[channel_id, kind, mode, visibility, parent_id(bstr16\|null), name, topic, position, slowmode_seconds, seq, text_group_id(bstr16\|null)]]`: the live channels the caller may view (`view_channel`, overwrites applied) by `position` then `channel_id`; a category is listed when it or one of its children is visible; `404` for a non-member |
 | `PATCH /v1/channels/{id}` | `[name(tstr\|null), topic(tstr\|null), mode(uint\|null), visibility(uint\|null), parent_id(bstr16\|null), position(uint\|null), slowmode_seconds(uint\|null)]` | `204` |
@@ -319,6 +319,25 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 | `kind` | `0` text, `1` voice, `2` category, `3` DM, `4` group DM. `3` and `4` are not created through a community (`400`) |
 | `mode` | `0` end-to-end encrypted, `1` server-readable |
 | `visibility` | `0` private, `1` invite, `2` discoverable |
+
+- **Created with overwrites.** The optional ninth element gives the channel its overwrites
+  (§ Roles) in the same transaction that creates it, so a channel can be private from its first
+  moment: no member it excludes ever lists it, holds a `channel_members` row for it or is proposed
+  to its groups. A body of any length but 8 or 9 is `400`. `overwrites` holds 1 to 100 entries
+  (`400` otherwise), and each follows § Roles' overwrite rules against the caller's
+  **community-wide** permissions, rank included; a second entry for the same `(kind, target_id)` is
+  `400`. Three more rules hold:
+  - the caller also needs `manage_roles` community-wide (`403`);
+  - a category never takes overwrites at creation (`400`);
+  - the creator must still see the channel with the overwrites applied (`400` otherwise). The one
+    exception to the rank rule makes this possible for a non-owner: a kind `1` entry naming the
+    creator themself, allowing only `view_channel` and denying none, is allowed; any other entry
+    on oneself takes the rank rule (`403`). Such an entry is an ordinary member overwrite
+    afterwards: it keeps the channel visible to its holder after a demotion, and goes with the
+    membership like every member overwrite (§ Roles).
+
+  The create's audit records `channel.create` and one `channel.overwrite.put` per entry, and
+  `community_changed` (`02`) is sent once.
 
 - A channel whose visibility is `invite` or `discoverable` is **server-readable**. Creating one
   with `mode = 0` is not an error: the instance stores `mode = 1` and answers it, and the client
@@ -353,19 +372,20 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
 ### Roles
 
 Every route below is `E`, and every one needs `manage_roles` community-wide (for an overwrite, in
-that channel), except `GET`, which any member may read; a caller who is not a member of the
+that channel), except the two `GET`s, which any member may read; a caller who is not a member of the
 community answers `404 E_NOT_FOUND`.
 
 | Method and path | Request | Response |
 |---|---|---|
 | `GET /v1/communities/{id}/roles` | — | `[[role_id(bstr16), name(tstr), color(uint), position(uint), allow(uint), deny(uint), hoist(uint), mentionable(uint)]]`: every role ordered by `position` then `role_id`, `@everyone` first; bits outside § Permissions are cleared |
+| `GET /v1/communities/{id}/overwrites` | — | `[[channel_id, kind, target_id, allow, deny]]`: every overwrite of every channel (categories included) the caller may view, ordered by `channel_id`, `kind`, `target_id`; bits outside § Permissions are cleared |
 | `POST /v1/communities/{id}/roles` | `[name(tstr), color(uint), position(uint), allow(uint), deny(uint), hoist(uint), mentionable(uint)]` | `201 [role_id(bstr16)]` |
 | `PATCH /v1/roles/{id}` | the same seven fields, each `\|null`; null leaves a field alone | `204` |
 | `DELETE /v1/roles/{id}` | — | `204` |
 | `PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}` | `[]` | `204` |
 | `DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}` | — | `204`; `404` when the member does not hold the role |
-| `PUT /v1/channels/{id}/overwrites/{kind}/{target_id}` | `[allow(uint), deny(uint)]` | `204` |
-| `DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}` | — | `204`; `404` when there is no such overwrite |
+| `PUT /v1/channels/{id}/overwrites/{kind}/{target_id}` | `[allow(uint), deny(uint)]` | `204`; a change that would hide the channel from its author, unless the author is the owner or holds `administrator`, is `400` |
+| `DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}` | — | `204`; `404` when there is no such overwrite; a change that would hide the channel from its author, unless the author is the owner or holds `administrator`, is `400` |
 
 - **Rank.** A role's `position` orders it; higher is more senior. The owner is above every role;
   anyone else acts only on roles strictly below their own highest role. Creating, changing,
@@ -386,7 +406,14 @@ community answers `404 E_NOT_FOUND`.
 - **Overwrites.** `{kind}` is `0` (the target is a role of the channel's community) or `1` (the
   target is a member of it); anything else is `400`, and an unknown target is `404`. An overwrite
   may not allow and deny the same bit, nor carry a community-wide bit (§ Permissions), both `400`.
-  A second `PUT` for the same target replaces the pair.
+  A second `PUT` for the same target replaces the pair. A member's own overwrites (kind `1`) in
+  every channel of the community are deleted with the membership, in the same transaction as a
+  kick, a ban or a leave, so a member who rejoins starts without them.
+- **No self-lockout.** A `PUT` or `DELETE` after which its author, neither the owner nor a holder
+  of `administrator`, would no longer hold `view_channel` in the channel is `400`. It is checked
+  after every rule above, so their `403` comes first, and an overwrite on oneself is no exception
+  (the rank rule refuses it anyway).
+- **Reading overwrites.** A client uses them with § Permissions to fold pins and `@everyone` (`04`).
 
 ### Bans
 

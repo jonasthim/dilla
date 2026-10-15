@@ -129,7 +129,13 @@ pub(super) const BLANK_EDITS: &str = "UPDATE app_messages INDEXED BY app_message
 pub(super) const LATEST_EDIT: &str = "SELECT body, seq FROM app_messages INDEXED BY app_messages_by_reply WHERE group_id = ?1 AND reply_to = ?2 AND type = 1 AND sender_user = ?3 AND seq > ?4 AND status = 0 ORDER BY seq DESC LIMIT 1";
 pub(super) const REACTIONS_FULL: &str = "INSERT INTO app_reactions (group_id, target, user_id, emoji, seq) SELECT ?1, ?2, u, b, s FROM (SELECT sender_user AS u, body AS b, type AS t, MAX(seq) AS s FROM app_messages INDEXED BY app_messages_by_reaction WHERE group_id = ?1 AND reply_to = ?2 AND seq > ?3 AND status = 0 AND type IN (3, 4) AND sender_user IS NOT NULL GROUP BY sender_user, body) WHERE t = 3";
 pub(super) const REACTION_PAIR: &str = "SELECT type, seq FROM app_messages INDEXED BY app_messages_by_reaction WHERE group_id = ?1 AND reply_to = ?2 AND sender_user = ?3 AND body = ?4 AND seq > ?5 AND status = 0 AND type IN (3, 4) ORDER BY seq DESC LIMIT 1";
-pub(super) const PIN_LATEST: &str = "SELECT seq, sender_user FROM app_messages INDEXED BY app_messages_by_pin WHERE group_id = ?1 AND reply_to = ?2 AND type = ?3 AND seq > ?4 AND status = 0 ORDER BY seq DESC LIMIT 1";
+/// The latest pin (type 5) or unpin (6) of a target that counts: from any member while the group
+/// has no known role view, else only from a sender the view allows `pin_messages` (bit 3) now.
+/// An unauthorized 5 is ignored and an unauthorized 6 cannot unpin (protocol/04 § Semantics).
+pub(super) const PIN_LATEST: &str = "SELECT seq, sender_user FROM app_messages INDEXED BY app_messages_by_pin WHERE group_id = ?1 AND reply_to = ?2 AND type = ?3 AND seq > ?4 AND status = 0 \
+    AND (NOT EXISTS (SELECT 1 FROM app_authority_known k WHERE k.group_id = ?1) \
+         OR sender_user IN (SELECT a.user_id FROM app_authority a WHERE a.group_id = ?1 AND a.bit = 3)) \
+    ORDER BY seq DESC LIMIT 1";
 
 /// Recompute the portion covered by `scope`; inserted triggers touch bounded rows.
 pub(super) fn refold(
@@ -351,6 +357,8 @@ mod tests {
             .expect("schema");
         c.execute_batch(super::super::schema::APP_INDEXES_V3)
             .expect("indexes");
+        c.execute_batch(super::super::schema::APP_AUTHORITY)
+            .expect("authority");
         let cases: [(&str, &str, &str); 9] = [
             (
                 "UNHELD_DELETERS",
@@ -455,6 +463,8 @@ mod tests {
             .expect("schema");
         c.execute_batch(super::super::schema::APP_INDEXES_V3)
             .expect("indexes");
+        c.execute_batch(super::super::schema::APP_AUTHORITY)
+            .expect("authority");
         let group = [1u8; 16];
         let target = [2u8; 16];
         let author = [3u8; 16];
@@ -500,6 +510,8 @@ mod tests {
             .expect("schema");
         c.execute_batch(super::super::schema::APP_INDEXES_V3)
             .expect("indexes");
+        c.execute_batch(super::super::schema::APP_AUTHORITY)
+            .expect("authority");
         let g = [1u8; 16];
         let x = [2u8; 16];
         let alice = [3u8; 16];

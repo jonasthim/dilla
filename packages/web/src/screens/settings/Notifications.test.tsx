@@ -90,7 +90,7 @@ describe('the default and per channel', () => {
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    expect(screen.getAllByRole('radiogroup')).toHaveLength(4);
+    expect(screen.getAllByRole('radiogroup')).toHaveLength(5);
     expect(screen.queryByRole('group', { name: '#lounge · Midgard' })).toBeNull();
     await expectNoAxeViolations(view.container);
   });
@@ -125,6 +125,46 @@ describe('the default and per channel', () => {
     fake.handler = () => Promise.reject(refusal({ code: 'E_SETTING_KEY' }));
     await user.click(within(group('bob')).getByRole('switch', { name: 'mute' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('That did not work (E_SETTING_KEY). Try again.');
+  });
+});
+
+describe('per server (web3.5 WA5)', () => {
+  const NAME = 'Midgard';
+  it('lists the server before the channels, with a mode, a mute and an @everyone switch, and passes axe', async () => {
+    const { view } = setup();
+    expect(screen.getByRole('heading', { level: 3, name: 'Servers' })).toBeInTheDocument();
+    expect(screen.getByText('A server’s setting applies to its channels unless a channel has its own.')).toBeInTheDocument();
+    const server = group(NAME);
+    expect(within(within(server).getByRole('radiogroup', { name: NAME })).getAllByRole('radio').map(r => r.textContent))
+      .toEqual(['default', 'all messages', 'mentions', 'nothing']);
+    expect(within(server).getByRole('switch', { name: 'mute server' })).toBeInTheDocument();
+    expect(within(server).getByRole('switch', { name: 'ignore @everyone and @here' })).toBeInTheDocument();
+    const channels = screen.getByRole('heading', { level: 3, name: 'Per channel' });
+    expect(screen.getByRole('heading', { level: 3, name: 'Servers' }).compareDocumentPosition(channels) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await expectNoAxeViolations(view.container);
+  });
+  it('writes a mode under notify.community.<hex>, and default deletes the key', async () => {
+    const { fake, user } = setup({ settings: { [`notify.community.${A}`]: 'nothing' } });
+    const modes = within(group(NAME)).getByRole('radiogroup', { name: NAME });
+    expect(within(modes).getByRole('radio', { name: 'nothing' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(within(modes).getByRole('radio', { name: 'mentions' }));
+    await user.click(within(modes).getByRole('radio', { name: 'default' }));
+    expect(fake.callsOf('setSetting')).toEqual([
+      { m: 'setSetting', key: `notify.community.${A}`, value: 'mentions' },
+      { m: 'setSetting', key: `notify.community.${A}`, value: null },
+    ]);
+  });
+  it('mutes the server and ignores @everyone, each deleting its key when switched off', async () => {
+    const { fake, user } = setup({ settings: { [`mute.community.${A}`]: '1' } });
+    const server = within(group(NAME));
+    const mute = server.getByRole('switch', { name: 'mute server' });
+    expect(mute).toHaveAttribute('aria-checked', 'true');
+    await user.click(mute);
+    await user.click(server.getByRole('switch', { name: 'ignore @everyone and @here' }));
+    expect(fake.callsOf('setSetting')).toEqual([
+      { m: 'setSetting', key: `mute.community.${A}`, value: null },
+      { m: 'setSetting', key: `everyone.community.${A}`, value: '1' },
+    ]);
   });
 });
 

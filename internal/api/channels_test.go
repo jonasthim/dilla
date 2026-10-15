@@ -1,10 +1,14 @@
 package api_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
@@ -575,5 +579,414 @@ func TestAParentFromAnotherCommunityIsRefused(t *testing.T) {
 	if status, _ := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/channels", tok,
 		[]any{uint64(0), uint64(0), uint64(0), id.New(), "x", "", uint64(0), uint64(0)}); status != http.StatusBadRequest {
 		t.Fatalf("unknown parent = %d, want 400", status)
+	}
+}
+
+// errDetail decodes an E_* error body [code, detail, …] and returns its detail.
+func errDetail(t *testing.T, body []byte) string {
+	t.Helper()
+	var arr []cbor.RawMessage
+	if err := cborx.Unmarshal(body, &arr); err != nil || len(arr) < 2 {
+		t.Fatalf("error body %x: %v", body, err)
+	}
+	var detail string
+	mustUnmarshal(t, arr[1], &detail)
+	return detail
+}
+
+// ow is one entry of a channel create's ninth element: [kind, target_id, allow, deny].
+func ow(kind uint64, target id.ID, allow, deny api.Bits) []any {
+	return []any{kind, target, uint64(allow), uint64(deny)}
+}
+
+// createWith posts a channel of kind named name carrying the ninth element overwrites.
+func createWith(e *env, cid id.ID, tok, name string, kind uint64, overwrites any) (int, []byte) {
+	return e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/channels", tok,
+		[]any{kind, uint64(0), uint64(0), nil, name, "", uint64(0), uint64(0), overwrites})
+}
+
+// createdID decodes a 201's channel id.
+func createdID(t *testing.T, body []byte) id.ID {
+	t.Helper()
+	var out []cbor.RawMessage
+	mustUnmarshal(t, body, &out)
+	var ch id.ID
+	mustUnmarshal(t, out[0], &ch)
+	return ch
+}
+
+// lists reports whether ch is among the channels GET /v1/communities/{id}/channels answers tok.
+func lists(t *testing.T, e *env, cid id.ID, tok string, ch id.ID) bool {
+	t.Helper()
+	status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/channels", tok, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET channels = %d (%x)", status, body)
+	}
+	var rows [][]cbor.RawMessage
+	mustUnmarshal(t, body, &rows)
+	for _, row := range rows {
+		var got id.ID
+		mustUnmarshal(t, row[0], &got)
+		if got == ch {
+			return true
+		}
+	}
+	return false
+}
+
+// privateFixture is notifyEnv plus a member "b" and a moderator "mod" holding a role at position 5
+// with view, send, manage_messages, manage_channels and manage_roles, and @everyone's id.
+type privateFixture struct {
+	e                    *env
+	gw                   *changedGW
+	cid, owner, b, mod   id.ID
+	ownerTok, bTok, mTok string
+	everyone, modRole    id.ID
+}
+
+func privateEnv(t *testing.T) privateFixture {
+	t.Helper()
+	e, gw, cid, owner, ownerTok := notifyEnv(t)
+	f := privateFixture{e: e, gw: gw, cid: cid, owner: owner, ownerTok: ownerTok}
+	f.b, f.bTok = joinAs(t, e, cid, "b")
+	f.mod, f.mTok = joinAs(t, e, cid, "mod")
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil || len(roles) != 1 {
+		t.Fatalf("ListRoles = %v, %v", roles, err)
+	}
+	f.everyone = roles[0].ID
+	f.modRole = createRole(t, e, cid, ownerTok, "mod", 5,
+		api.PermViewChannel|api.PermSendMessages|api.PermManageMessages|api.PermManageChannels|api.PermManageRoles)
+	grant(t, e, cid, ownerTok, f.mod, f.modRole, http.StatusNoContent)
+	gw.reset()
+	return f
+}
+
+// S2: the owner creates a channel private from birth. B never lists it, its members are the
+// ones it allows, every entry is audited beside channel.create, and the members are told once.
+func TestAChannelIsPrivateFromBirth(t *testing.T) {
+	f := privateEnv(t)
+	status, body := createWith(f.e, f.cid, f.ownerTok, "styrelse", 0,
+		[]any{ow(0, f.everyone, 0, api.PermViewChannel), ow(1, f.mod, api.PermViewChannel, 0)})
+	if status != http.StatusCreated {
+		t.Fatalf("private create = %d (%x)", status, body)
+	}
+	ch := createdID(t, body)
+	if lists(t, f.e, f.cid, f.bTok, ch) {
+		t.Fatal("B lists a channel @everyone may not view")
+	}
+	if !lists(t, f.e, f.cid, f.mTok, ch) || !lists(t, f.e, f.cid, f.ownerTok, ch) {
+		t.Fatal("the owner or the allowed mod does not list the channel")
+	}
+	members, err := listChannelMembers(t, f.e, ch)
+	if err != nil {
+		t.Fatalf("ListChannelMembers: %v", err)
+	}
+	want := []id.ID{f.owner, f.mod}
+	slices.SortFunc(want, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	if !slices.Equal(members, want) {
+		t.Fatalf("channel_members = %v, want %v", members, want)
+	}
+	rows, err := f.e.Repo.ListAudit(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	var actions []string
+	for _, row := range rows {
+		if row.Target == ch.String() {
+			actions = append(actions, row.Action)
+		}
+	}
+	slices.Sort(actions)
+	if !slices.Equal(actions, []string{"channel.create", "channel.overwrite.put", "channel.overwrite.put"}) {
+		t.Fatalf("audit actions = %v", actions)
+	}
+	told(t, f.gw, "private create", map[id.ID]int{f.owner: 1, f.b: 1, f.mod: 1})
+
+	// With only @everyone denied, the owner is the one member.
+	status, body = createWith(f.e, f.cid, f.ownerTok, "ensam", 0, []any{ow(0, f.everyone, 0, api.PermViewChannel)})
+	if status != http.StatusCreated {
+		t.Fatalf("owner-only create = %d (%x)", status, body)
+	}
+	if members, _ := listChannelMembers(t, f.e, createdID(t, body)); !slices.Equal(members, []id.ID{f.owner}) {
+		t.Fatalf("channel_members = %v, want the owner only", members)
+	}
+	told(t, f.gw, "second create", map[id.ID]int{f.owner: 2, f.b: 2, f.mod: 2})
+}
+
+// S2: a moderator with manage_channels and manage_roles creates a private channel only with an
+// entry that keeps it visible to them, and every entry follows the overwrite PUT rules against
+// the moderator's community-wide bits.
+func TestAPrivateCreateFollowsTheOverwriteRules(t *testing.T) {
+	f := privateEnv(t)
+	deny := ow(0, f.everyone, 0, api.PermViewChannel)
+	self := ow(1, f.mod, api.PermViewChannel, 0)
+
+	status, body := createWith(f.e, f.cid, f.mTok, "mods", 0, []any{deny, self})
+	if status != http.StatusCreated {
+		t.Fatalf("mod create with a self entry = %d (%x)", status, body)
+	}
+	if !lists(t, f.e, f.cid, f.mTok, createdID(t, body)) {
+		t.Fatal("the mod does not list the channel it made")
+	}
+	told(t, f.gw, "mod create", map[id.ID]int{f.owner: 1, f.b: 1, f.mod: 1})
+
+	cases := []struct {
+		name       string
+		kind       uint64
+		overwrites any
+		status     int
+		detail     string
+	}{
+		{"no self entry", 0, []any{deny}, http.StatusBadRequest, "the channel would be hidden from you"},
+		{"the mod's own role", 0, []any{deny, self, ow(0, f.modRole, api.PermViewChannel, 0)}, http.StatusForbidden, ""},
+		{"a self deny", 0, []any{ow(1, f.mod, 0, api.PermSendMessages)}, http.StatusForbidden, ""},
+		// I-1: the mod holds manage_messages and send, so only the narrowed exemption refuses these.
+		{"a self entry beyond view", 0, []any{deny, ow(1, f.mod, api.PermViewChannel|api.PermManageMessages, 0)}, http.StatusForbidden, ""},
+		{"a self entry other than view", 0, []any{ow(1, f.mod, api.PermSendMessages, 0)}, http.StatusForbidden, ""},
+		{"kick_members", 0, []any{ow(0, f.everyone, api.PermKickMembers, 0)}, http.StatusBadRequest, ""},
+		{"a bit the mod lacks", 0, []any{ow(0, f.everyone, api.PermPinMessages, 0)}, http.StatusForbidden, ""},
+		{"a self allow of a bit the mod lacks", 0, []any{ow(1, f.mod, api.PermPinMessages, 0)}, http.StatusForbidden, ""},
+		{"an undefined bit", 0, []any{ow(0, f.everyone, 1<<40, 0)}, http.StatusBadRequest, ""},
+		{"allow and deny", 0, []any{ow(0, f.everyone, api.PermSendMessages, api.PermSendMessages)}, http.StatusBadRequest, ""},
+		{"kind 2", 0, []any{ow(2, f.everyone, 0, api.PermSendMessages)}, http.StatusBadRequest, ""},
+		{"an unknown role", 0, []any{ow(0, id.New(), 0, api.PermSendMessages)}, http.StatusNotFound, ""},
+		{"a non-member", 0, []any{ow(1, id.New(), 0, api.PermSendMessages)}, http.StatusNotFound, ""},
+		{"a category", uint64(api.ChannelCategory), []any{deny, self}, http.StatusBadRequest, "a category's overwrites have no effect"},
+		{"a duplicate", 0, []any{deny, self, ow(0, f.everyone, 0, api.PermSendMessages)}, http.StatusBadRequest, ""},
+		{"no entries", 0, []any{}, http.StatusBadRequest, "overwrites must hold 1 to 100 entries"},
+		{"101 entries", 0, slices.Repeat([]any{deny}, 101), http.StatusBadRequest, "overwrites must hold 1 to 100 entries"},
+	}
+	for _, c := range cases {
+		status, body := createWith(f.e, f.cid, f.mTok, "refused", c.kind, c.overwrites)
+		if status != c.status {
+			t.Fatalf("%s = %d, want %d (%x)", c.name, status, c.status, body)
+		}
+		if c.detail != "" && errDetail(t, body) != c.detail {
+			t.Fatalf("%s detail = %q, want %q", c.name, errDetail(t, body), c.detail)
+		}
+	}
+	// No refused create wrote a channel or told anyone.
+	told(t, f.gw, "refused creates", map[id.ID]int{f.owner: 1, f.b: 1, f.mod: 1})
+
+	// Without manage_roles, overwrites are refused even to a channel manager.
+	chanRole := createRole(t, f.e, f.cid, f.ownerTok, "channels", 4, api.PermViewChannel|api.PermManageChannels)
+	grant(t, f.e, f.cid, f.ownerTok, f.b, chanRole, http.StatusNoContent)
+	if status, body := createWith(f.e, f.cid, f.bTok, "nope", 0, []any{ow(1, f.b, api.PermViewChannel, 0)}); status != http.StatusForbidden {
+		t.Fatalf("create with overwrites without manage_roles = %d, want 403 (%x)", status, body)
+	}
+	if _, _, status := newChannel(t, f.e, f.cid, f.bTok, 0, 0, 0, "plain"); status != http.StatusCreated {
+		t.Fatalf("the same manager's plain create = %d, want 201", status)
+	}
+}
+
+// beforeTx is a Repository whose next Tx first runs a change through the inner repository: it is a
+// concurrent request that commits after a handler's checks and before its transaction.
+type beforeTx struct {
+	store.Repository
+	mu   sync.Mutex
+	next func()
+}
+
+func (b *beforeTx) Tx(ctx context.Context, fn func(store.Repository) error) error {
+	b.mu.Lock()
+	run := b.next
+	b.next = nil
+	b.mu.Unlock()
+	if run != nil {
+		run()
+	}
+	return b.Repository.Tx(ctx, fn)
+}
+
+func (b *beforeTx) arm(run func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.next = run
+}
+
+// S2, Wave 1's lesson: a moderator demoted after the create's checks and before its transaction
+// creates nothing, because every check is taken again inside the transaction under the lock.
+func TestAPrivateCreateRechecksUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewChannels(hooked, e.DS, e.Clk, 10, log).Register(e.Mux)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5,
+		api.PermViewChannel|api.PermManageChannels|api.PermManageRoles)
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+
+	hooked.arm(func() {
+		if err := e.Repo.DeleteMemberRole(t.Context(), cid, mod, modRole); err != nil {
+			t.Errorf("demote: %v", err)
+		}
+	})
+	status, body := createWith(e, cid, modTok, "sen", 0,
+		[]any{ow(0, roles[0].ID, 0, api.PermViewChannel), ow(1, mod, api.PermViewChannel, 0)})
+	if status != http.StatusForbidden {
+		t.Fatalf("create by a mod demoted before the transaction = %d, want 403 (%x)", status, body)
+	}
+	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(chans) != 0 {
+		t.Fatalf("a refused create wrote %+v", chans)
+	}
+	// Control: the same create with no demotion in between passes every check before the
+	// transaction, so the 403 above could only come from the check inside it.
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+	if status, body := createWith(e, cid, modTok, "sen", 0,
+		[]any{ow(0, roles[0].ID, 0, api.PermViewChannel), ow(1, mod, api.PermViewChannel, 0)}); status != http.StatusCreated {
+		t.Fatalf("the same create undisturbed = %d (%x), want 201", status, body)
+	}
+}
+
+// S2 round 2: a creator's self entry is a member overwrite, and like any other it goes with the
+// membership. A moderator who made a private channel visible to themself by a self entry, then is
+// kicked, banned (and unbanned) or leaves, and rejoins, does not see the channel again.
+func TestASelfEntryEndsWithTheMembership(t *testing.T) {
+	for _, how := range []string{"kick", "ban", "leave"} {
+		t.Run(how, func(t *testing.T) {
+			f := privateEnv(t)
+			status, body := createWith(f.e, f.cid, f.mTok, "mods", 0,
+				[]any{ow(0, f.everyone, 0, api.PermViewChannel), ow(1, f.mod, api.PermViewChannel, 0)})
+			if status != http.StatusCreated {
+				t.Fatalf("mod create = %d (%x)", status, body)
+			}
+			ch := createdID(t, body)
+			if !lists(t, f.e, f.cid, f.mTok, ch) {
+				t.Fatal("the creator does not list its channel")
+			}
+			member := "/v1/communities/" + f.cid.String() + "/members/" + f.mod.String()
+			ban := "/v1/communities/" + f.cid.String() + "/bans/" + f.mod.String()
+			type step struct {
+				method, path, tok string
+				body              any
+			}
+			steps := map[string][]step{
+				"kick": {{http.MethodDelete, member, f.ownerTok, nil}},
+				// Banned, then unbanned so the rejoin is admitted.
+				"ban":   {{http.MethodPut, ban, f.ownerTok, []any{"", nil}}, {http.MethodDelete, ban, f.ownerTok, nil}},
+				"leave": {{http.MethodPost, "/v1/communities/" + f.cid.String() + "/leave", f.mTok, []any{}}},
+			}[how]
+			for _, s := range steps {
+				if status, body := f.e.Do(s.method, s.path, s.tok, s.body); status != http.StatusNoContent {
+					t.Fatalf("%s %s = %d (%x)", s.method, s.path, status, body)
+				}
+			}
+			for _, o := range mustOverwrites(t, f.e, ch) {
+				if o.TargetKind == 1 && o.TargetID == f.mod {
+					t.Fatalf("the self entry outlived the %s: %+v", how, o)
+				}
+			}
+			if members, _ := listChannelMembers(t, f.e, ch); slices.Contains(members, f.mod) {
+				t.Fatalf("channel_members still lists the creator after the %s", how)
+			}
+			joinCommunity(t, f.e, f.cid, f.mTok)
+			if lists(t, f.e, f.cid, f.mTok, ch) {
+				t.Fatalf("after the %s and a rejoin the creator lists the private channel", how)
+			}
+			if status, _ := f.e.Do(http.MethodGet, "/v1/channels/"+ch.String(), f.mTok, nil); status != http.StatusNotFound {
+				t.Fatalf("after the %s and a rejoin GET channel = %d, want 404", how, status)
+			}
+		})
+	}
+}
+
+// mustOverwrites reads a channel's stored overwrites.
+func mustOverwrites(t *testing.T, e *env, ch id.ID) []store.OverwriteRow {
+	t.Helper()
+	ow, err := e.Repo.ListOverwrites(t.Context(), ch)
+	if err != nil {
+		t.Fatalf("ListOverwrites: %v", err)
+	}
+	return ow
+}
+
+// S2 round 2: channel PATCH and DELETE take manage_channels again inside their transaction under
+// the community row lock. A moderator demoted between the route's checks and its transaction is
+// 403 and nothing is written; the same request undisturbed (the control) succeeds. The PATCH is
+// the sensitive one: a private channel made invite-visible.
+func TestChannelPatchAndDeleteRecheckUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewChannels(hooked, e.DS, e.Clk, 10, log).Register(e.Mux)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5, api.PermViewChannel|api.PermManageChannels)
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+	ch, _, _ := newChannel(t, e, cid, ownerTok, 0, 0, uint64(api.VisPrivate), "privat")
+	path := "/v1/channels/" + ch.String()
+
+	gone := func() bool {
+		_, err := e.Repo.GetChannel(t.Context(), ch)
+		return err != nil
+	}
+	cases := []struct {
+		name, method string
+		body         any
+		unchanged    func() bool
+	}{
+		{"patch private to invite", http.MethodPatch, []any{nil, nil, nil, uint64(api.VisInvite), nil, nil, nil},
+			func() bool { return mustChannel(t, e, ch).Visibility == api.VisPrivate }},
+		{"delete", http.MethodDelete, nil, func() bool { return !gone() }},
+	}
+	for _, c := range cases {
+		hooked.arm(func() {
+			if err := e.Repo.DeleteMemberRole(t.Context(), cid, mod, modRole); err != nil {
+				t.Errorf("demote: %v", err)
+			}
+		})
+		if status, body := e.Do(c.method, path, modTok, c.body); status != http.StatusForbidden {
+			t.Fatalf("%s by a mod demoted before the transaction = %d (%x), want 403", c.name, status, body)
+		}
+		if !c.unchanged() {
+			t.Fatalf("the refused %s wrote", c.name)
+		}
+		if err := e.Repo.PutMemberRole(t.Context(), cid, mod, modRole); err != nil {
+			t.Fatalf("re-promote: %v", err)
+		}
+		if status, body := e.Do(c.method, path, modTok, c.body); status != http.StatusNoContent {
+			t.Fatalf("control: %s undisturbed = %d (%x), want 204", c.name, status, body)
+		}
+		if c.unchanged() {
+			t.Fatalf("control: the %s wrote nothing", c.name)
+		}
+	}
+}
+
+// S2: the create body is 8 or 9 elements; any other length is the shape refusal it always was.
+func TestAChannelCreateIsEightOrNineElements(t *testing.T) {
+	f := privateEnv(t)
+	path := "/v1/communities/" + f.cid.String() + "/channels"
+	if status, body := f.e.Do(http.MethodPost, path, f.ownerTok,
+		[]any{uint64(0), uint64(0), uint64(0), nil, "eight", "", uint64(0), uint64(0)}); status != http.StatusCreated {
+		t.Fatalf("8 elements = %d (%x)", status, body)
+	}
+	for _, body := range [][]any{
+		{uint64(0), uint64(0), uint64(0), nil, "seven", "", uint64(0)},
+		{uint64(0), uint64(0), uint64(0), nil, "ten", "", uint64(0), uint64(0), []any{ow(0, f.everyone, 0, 1)}, nil},
+	} {
+		status, resp := f.e.Do(http.MethodPost, path, f.ownerTok, body)
+		if status != http.StatusBadRequest || f.e.ErrCode(resp) != "E_INVALID_REQUEST" ||
+			!strings.HasPrefix(errDetail(t, resp), "body is not deterministic CBOR") {
+			t.Fatalf("%d elements = %d %q, want 400 with the shape refusal", len(body), status, errDetail(t, resp))
+		}
+	}
+	// A ninth element that is not an array of four-element entries is the same refusal.
+	status, resp := f.e.Do(http.MethodPost, path, f.ownerTok,
+		[]any{uint64(0), uint64(0), uint64(0), nil, "bad", "", uint64(0), uint64(0), []any{[]any{uint64(0)}}})
+	if status != http.StatusBadRequest || !strings.HasPrefix(errDetail(t, resp), "body is not deterministic CBOR") {
+		t.Fatalf("bad entry = %d %q", status, errDetail(t, resp))
 	}
 }

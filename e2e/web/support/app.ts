@@ -99,6 +99,8 @@ export function copy(key: string, vars?: Record<string, string | number>): strin
 
 export interface PeerSetupOptions { password?: string; channels?: number; }
 export const PEER_PASSWORD = 'peer-password-1234';
+/** The "pin messages" permission bit (protocol/02's vocabulary, client-core's PERM.pinMessages). */
+export const PERM_PIN = 1 << 3;
 export type PeerMessage = PeerReceived & { sender_user: string; sender_device: string; tier: number; msg_id: string; type: number };
 export function isPeerMessage(m: PeerReceived): m is PeerMessage {
   return m.msg_id !== null && m.type !== null && m.sender_user !== null && m.sender_device !== null && m.tier !== null;
@@ -182,6 +184,8 @@ export class Peer {
   /** The acting device proposes its own removal from the group; another member (the browser) commits it. */
   leave(channelId?: string): Promise<{ group_id: string }> { return this.driver.leave(channelId); }
   typing(channelId: string, on: boolean): Promise<void> { return this.driver.typing(channelId, on); }
+  /** The peer, the server's owner, gives everyone in it `bits` (e.g. PERM_PIN) through the roles API, as its roles tab would. */
+  allowEveryone(bits: number): Promise<{ allow: number }> { return this.driver.allowEveryone(bits); }
   searchSeed(channelId: string, body: string): Promise<{ seq: number }> { return this.driver.searchSeed(channelId, body); }
 
   async sync(channelId?: string): Promise<SyncAnswer> {

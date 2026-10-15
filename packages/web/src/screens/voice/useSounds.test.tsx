@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import type { VoiceParticipant } from '@dilla/client-core';
+import type { Ring } from '@dilla/client-core';
+import { ringAudible } from './useSounds.tsx';
 import { ME } from '../../test/fixtures.ts';
 import { BOB, BOB_DEV, callState, CAROL, CAROL_DEV, GENV, OWN_DEV, renderVoiceShell, type VoiceHarnessOptions } from '../../test/fake-client.ts';
 
@@ -81,5 +83,19 @@ describe('join and leave sounds (flow 06 § Sounds, R2, R4)', () => {
     expect(app.sounds.played).toEqual([]);
     app.client.publish('voice', room(BOB_IN, ME_IN, CAROL_IN));
     expect(app.sounds.played).toEqual(['join']);
+  });
+});
+
+describe('ringAudible (web3.5 WA5)', () => {
+  const CH = 'ab'.repeat(16);
+  const SRV = 'cd'.repeat(16);
+  const ring = (over: Partial<Ring> = {}): Ring => ({ callId: CH, channelId: CH, callerUser: BOB, callerName: 'bob', ringTs: 1, expiresAt: 0, busy: false, quiet: false, ...over });
+  it('sounds for a plain ring, and not for a busy, quiet, muted-channel or muted-server ring', () => {
+    expect(ringAudible([ring()], {}, () => SRV)).toBe(true);
+    expect(ringAudible([ring({ busy: true })], {}, () => SRV)).toBe(false);
+    expect(ringAudible([ring({ quiet: true })], {}, () => SRV)).toBe(false);
+    expect(ringAudible([ring()], { [`mute.channel.${CH}`]: '1' }, () => SRV)).toBe(false);
+    expect(ringAudible([ring()], { [`mute.community.${SRV}`]: '1' }, () => SRV)).toBe(false);
+    expect(ringAudible([ring()], { [`mute.community.${SRV}`]: '1' }, () => undefined)).toBe(true);
   });
 });
