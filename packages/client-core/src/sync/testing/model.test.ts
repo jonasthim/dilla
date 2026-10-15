@@ -918,6 +918,14 @@ describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CO
     expect(thrown(() => core.authoritySet(G, [], [new Uint8Array(15)]))).toMatchObject({ code: 'E_CORE_INPUT' });
   });
 
+  it('refuses a role view for a DM group as the core does (web3.5 C4: a worker that pushes one is caught)', () => {
+    const core = fresh();
+    const dm = idOf(0xd2, 1);
+    core.seedGroup(dm, 0, null, idOf(0xd1, 1));
+    expect(thrown(() => core.authoritySet(dm, [PEER.user], []))).toMatchObject({ code: 'E_CORE_STATE', detail: 'a DM group has no role view' });
+    core.authoritySet(G, [PEER.user], []);
+  });
+
   it('counts @everyone/@here only from a broadcaster once the view is known, recomputing held rows (web3.5 R1)', () => {
     const core = fresh();
     apply(core, app(1n, PEER, idOf(0x7e, 1), '<@everyone> standup'));

@@ -1584,12 +1584,15 @@ export class ModelCore implements CorePort {
   }
 
   /** web3.5 R1 `authority_set`: replaces the group's role view, refolds every pinned or unpinned target and recomputes
-   *  the mention flag of every other user's readable row naming <@everyone>/<@here>. The group need not be held. */
+   *  the mention flag of every other user's readable row naming <@everyone>/<@here>. The group need not be held; a held
+   *  DM group is refused with E_CORE_STATE. */
   authoritySet(groupId: Id, pinners: Id[], broadcasters: Id[]): void {
     const bad = (ids: Id[]): boolean => ids.length > 4096 || ids.some((r) => !(r instanceof Uint8Array) || r.length !== 16);
     if (bad(pinners) || bad(broadcasters)) throw coreError('E_CORE_INPUT', 'pinners and broadcasters must be 0..=4096 ids of 16 bytes');
-    this.authority.set(toHex(groupId), { pinners: new Set(pinners.map(toHex)), broadcasters: new Set(broadcasters.map(toHex)) });
     const g = this.gs.get(toHex(groupId));
+    // messages.rs (98bc249): a DM group has no roles; nothing is written.
+    if (g !== undefined && g.communityId === null) throw coreError('E_CORE_STATE', 'a DM group has no role view');
+    this.authority.set(toHex(groupId), { pinners: new Set(pinners.map(toHex)), broadcasters: new Set(broadcasters.map(toHex)) });
     if (g === undefined) return;
     const targets = new Map<string, Id>();
     for (const r of g.rows.values()) if (r.type !== null && (r.type === 5 || r.type === 6) && r.replyTo !== null) targets.set(toHex(r.replyTo), r.replyTo);

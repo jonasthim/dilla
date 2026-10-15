@@ -44,6 +44,7 @@ import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
 import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
+import { authorityFor } from '../admin/authority';
 
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
@@ -588,6 +589,14 @@ export class Controller {
   private readonly pinsOpen = new Set<string>();
   /** community hex → the own role hexes last applied to the core, used only to skip a redundant ownRolesSet. */
   private readonly roles = new Map<string, string[]>();
+  /** web3.5 C4: group hex → the role view last handed to the core (authoritySet) in this attach, and its server. An
+   *  unchanged view is not sent again; a re-attach, a dropped server and a group back to active clear entries. */
+  private readonly authority = new Map<string, { communityId: string; key: string }>();
+  /** group hex → the channel group state last seen for it (pushAuthority, onGroupChanged, onMembership). */
+  private readonly authorityStates = new Map<string, ChannelGroupState>();
+  /** Servers whose member list and whose access (roles and overwrites) were read in this attach. */
+  private readonly membersRead = new Set<string>();
+  private readonly accessRead = new Set<string>();
   /** community hex → how many channels this device created there: a list read overtaken by a create is read again. */
   private readonly structureRev = new Map<string, number>();
   private purging: Promise<void> | null = null;
@@ -711,8 +720,12 @@ export class Controller {
       // C4 fix round 2: the local drop outranks a list read already in flight, which still lists the server.
       dropCommunity: (communityId) => { this.listWritten(); this.dropCommunity(communityId); },
       track: (job) => { void this.barrier.track(job).catch(() => undefined); },
-      accessRead: (communityId, roles, bits, overwrites) => { this.rolesCtl.accessRead(communityId, roles, bits, overwrites); },
-      accessForgotten: (communityId) => { this.rolesCtl.forget(communityId); },
+      accessRead: (communityId, roles, bits, overwrites) => {
+        this.rolesCtl.accessRead(communityId, roles, bits, overwrites);
+        this.accessRead.add(communityId);
+        this.pushAuthority(communityId);
+      },
+      accessForgotten: (communityId) => { this.rolesCtl.forget(communityId); this.accessRead.delete(communityId); },
       refusal: (code, detail) => new Refusal(code, detail),
     });
     this.rolesCtl = new RolesController({
@@ -1641,6 +1654,13 @@ export class Controller {
     this.slices.set(`channels:${communityId}`, []);
     this.slices.set(`members:${communityId}`, []);
     this.admin.forget(communityId);
+    // web3.5 C4: a server joined again is sent its views again, once its member list and access are read again.
+    this.membersRead.delete(communityId);
+    for (const [group, entry] of this.authority) {
+      if (entry.communityId !== communityId) continue;
+      this.authority.delete(group);
+      this.authorityStates.delete(group);
+    }
     // C4 fix round 1: a call in one of its channels ends here at once (its removed phase, its group forgotten), and the
     // voice book forgets the channels, so a rejoin starts from the instance's state, not from what was seen before.
     this.safely(() => { this.calls.channelsDropped(dropped); });
@@ -1804,7 +1824,13 @@ export class Controller {
     // Web-3 task 10, concern 4: a voice participant the lists lacked is named now.
     this.calls.membersChanged();
     this.rolesCtl.membersChanged(communityId);
-    // Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once.
+    this.membersRead.add(communityId);
+    this.setOwnRoles(communityId, rows);
+    this.pushAuthority(communityId);
+  }
+
+  /** Ruling 12: the core's mention rule reads the own roles of the community (L-CORE-35); a change reaches it once. */
+  private setOwnRoles(communityId: string, rows: readonly MemberRow[]): void {
     const core = this.core;
     const me = this.me;
     if (core === null || me === null) return;
@@ -1818,6 +1844,75 @@ export class Controller {
       core.ownRolesSet(fromHex(communityId), own.roleIds);
       this.roles.set(communityId, hexes);
     } catch { /* the next member list tries again */ }
+  }
+
+  /**
+   * web3.5 C4: hands the core each of the server's text groups' role view (who may pin, who may mention everyone), so it
+   * counts only their pins and broadcast mentions. Runs after a member list and after an access read land.
+   *
+   * Nothing is sent while the view is unknown: until this attach has read the server's member list, and its roles,
+   * @everyone and overwrites (`loaded` and `overwritesLoaded`), the core keeps its old rule (every pin counts). The member
+   * list is whole (listMembers walks every page), so a user absent from it is no member and allowed nothing. Never for a
+   * DM group (it has no roles; the core refuses one). A view equal to the one last sent for the group is not sent again;
+   * a throw leaves the entry as it was, so the next load tries again. After a change the group's channel rows, its open
+   * timeline and pins and the badges are published again.
+   */
+  private pushAuthority(communityId: string): void {
+    const core = this.core;
+    if (core === null || !this.membersRead.has(communityId) || !this.accessRead.has(communityId)) return;
+    const access = this.slices.get(`permissions:${communityId}`);
+    const roles = this.slices.get(`roles:${communityId}`);
+    const members = this.slices.get(`members:${communityId}`);
+    const overwrites = this.slices.get(`overwrites:${communityId}`);
+    const owner = (this.slices.get('communities') ?? []).find((c) => c.id === communityId)?.owner;
+    if (access === undefined || !access.loaded || !access.overwritesLoaded || access.everyoneId === '') return;
+    if (roles === undefined || !roles.some((r) => r.id === access.everyoneId) || members === undefined || overwrites === undefined) return;
+    if (owner === undefined || owner === '') return;
+    const groups = core.groups();
+    const channels: { id: string; kind: number; mode: number; textGroupId: string }[] = [];
+    for (const g of groups) {
+      if (g.kind !== 0 || g.communityId === null || toHex(g.communityId) !== communityId) continue;
+      const channelId = toHex(g.targetId);
+      const known = this.channels.get(channelId);
+      if (known === undefined || known.communityId !== communityId) continue;
+      channels.push({ id: channelId, kind: known.row.kind, mode: known.row.mode, textGroupId: toHex(g.groupId) });
+    }
+    let changed = false;
+    for (const [groupHex, view] of authorityFor({ owner, everyoneId: access.everyoneId, roles, members, overwrites, channels })) {
+      const key = `${view.pinners.join(',')}|${view.broadcasters.join(',')}`;
+      const channelId = channels.find((c) => c.textGroupId === groupHex)?.id;
+      if (channelId !== undefined) this.authorityStates.set(groupHex, this.groupState(channelId, groups));
+      if (this.authority.get(groupHex)?.key === key) continue;
+      try {
+        core.authoritySet(fromHex(groupHex), view.pinners.map(fromHex), view.broadcasters.map(fromHex));
+      } catch { continue; }
+      this.authority.set(groupHex, { communityId, key });
+      changed = true;
+      this.safely(() => { this.touchGroup(fromHex(groupHex)); });
+    }
+    if (changed) this.safely(() => { this.publishBadges(); });
+  }
+
+  /** web3.5 C4 re-arm: a text group of a server that comes back to active (from joining, resync or not-member) is sent its
+   *  view again, also when it equals the last one sent (a rejoin may have discarded the group's view in the core). */
+  private authorityGroupState(groupId: Id): void {
+    const core = this.core;
+    if (core === null) return;
+    const hex = toHex(groupId);
+    const groups = core.groups();
+    const g = groups.find((x) => toHex(x.groupId) === hex);
+    if (g === undefined || g.kind !== 0 || g.communityId === null) return;
+    const channelId = toHex(g.targetId);
+    const known = this.channels.get(channelId);
+    if (known === undefined || known.communityId !== toHex(g.communityId)) return;
+    const current = channelGroup(g.targetId, groups);
+    if (current !== undefined && toHex(current.groupId) !== hex) return;   // an older group of the channel
+    const state = this.groupState(channelId, groups);
+    const before = this.authorityStates.get(hex);
+    this.authorityStates.set(hex, state);
+    if (state !== 'active' || before === 'active') return;
+    this.authority.delete(hex);
+    this.pushAuthority(known.communityId);
   }
 
   private publishChannels(communityId: string): void {
@@ -2274,6 +2369,8 @@ export class Controller {
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.memberReadEnded.clear(); this.voiceLookups.clear();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
+    // web3.5 C4: the next attach sends every role view again, once its own reads have landed.
+    this.authority.clear(); this.authorityStates.clear(); this.membersRead.clear(); this.accessRead.clear();
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
     this.searchGate.invalidate(); this.searchCursor = null;
     this.noticesState = { nextId: this.noticesState.nextId, items: [] };
@@ -2515,6 +2612,7 @@ export class Controller {
     // catch-up the DS served ('member').
     if (result.state === 2) this.resyncing.delete(hex);
     this.safely(() => { this.refreshTrustGeneration(); this.touchGroup(groupId); });
+    this.safely(() => { this.authorityGroupState(groupId); });
     this.stopTypingIfUnviewable();
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.safely(() => { this.reportActivity(groupId, result); });
@@ -2529,11 +2627,13 @@ export class Controller {
     if (status === 'member') {
       if (!this.notMember.delete(hex) && !this.resyncing.delete(hex)) return;
       this.safely(() => { this.touchGroup(groupId); });
+      this.safely(() => { this.authorityGroupState(groupId); });
       return;
     }
     if (status === 'resyncing') { this.resyncing.add(hex); this.notMember.delete(hex); }
     else { this.notMember.add(hex); this.resyncing.delete(hex); }
     this.safely(() => { this.touchGroup(groupId); });
+    this.safely(() => { this.authorityGroupState(groupId); });
     this.stopTypingIfUnviewable();
     // Review M6: a call group's lost membership ends the call here (the engine never resyncs a call group).
     if (status === 'not-member') this.safely(() => { if (this.calls.isCallGroup(groupId)) this.calls.onMembershipLost(groupId); });
