@@ -68,7 +68,10 @@ pub(crate) const STATE_PRIOR: &str = "state_prior";
 /// - `app_messages.mention`: 1 on a status-0 type-0 row from another user (by `sender_user`,
 ///   ruling 29: the own user's other devices are excluded too) whose body `mentions_me_gated`
 ///   (`<@everyone>`/`<@here>` by the group's role view, web3.5 R1), else 0. `authority_set`
-///   recomputes it for the group's broadcast rows.
+///   recomputes it for the group's broadcast rows of senders whose broadcast bit changed, and
+///   that rescan reads today's own roles (`app_roles`), not the roles held when the row arrived:
+///   a rescanned row with an own-role token counts by the current roles (ruling 12 holds for rows
+///   the rescan does not touch).
 /// - `app_messages.reply_to`: the envelope's `reply_to` of a status-0 row, retained by a
 ///   status-2 row that kept its identity; NULL otherwise.
 /// - `app_messages.edit_body` and `edit_seq`: the latest author's edit applied to a type-0 row;

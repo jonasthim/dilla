@@ -104,13 +104,18 @@ on the order in which rows reach it.
 - **Pins.** Of the type-5 and type-6 envelopes on a target that count, the one with the highest
   `seq` decides whether it is pinned (5) or not (6). A receiver that holds the community's role
   view (`09` overwrites, roles, members) counts a 5/6 only from a sender holding `pin_messages` in
-  that channel now, and `<@everyone>`/`<@here>` only from a sender holding `mention_everyone`; a
-  receiver that holds none keeps the former rule. The former rule counts a 5/6 from any member. So
-  an unauthorized 5 is ignored and an unauthorized 6 cannot unpin; when the view changes, the
-  receiver folds again by the senders' rights in the new view (a pinner who loses `pin_messages`
-  unpins what they pinned, and gaining it back pins it again). The view is served by the host and
-  is not authenticated by the group: it decides only which pins and mentions a receiver counts,
-  never which messages it shows. A client shows who pinned.
+  that channel now; a receiver that holds none keeps the former rule, which counts a 5/6 from any
+  member. So an unauthorized 5 is ignored and an unauthorized 6 cannot unpin. When the view
+  changes, the receiver folds again by the senders' rights in the new view: a pinner who loses
+  `pin_messages` unpins what they pinned, and gaining it back pins it again; an unpin by a member
+  who lost `pin_messages` no longer counts, so the earlier pin returns. A client shows who pinned.
+- **Broadcast mentions.** A receiver that holds the community's role view counts
+  `<@everyone>`/`<@here>` only from a sender holding `mention_everyone` in that channel now, and
+  recomputes the messages it holds when the view changes (§ Mentions); a receiver that holds none
+  keeps the former rule.
+- **The role view.** The view is served by the instance and is not authenticated by the group
+  (`08` § Residual trust): it decides only which pins and mentions a receiver counts, never which
+  messages it shows. A DM has no role view.
 - A fold that breaks a rule is ignored, never an error; only § Envelope refuses an envelope.
 
 ## Mentions

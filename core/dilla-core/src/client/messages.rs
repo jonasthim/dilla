@@ -11,6 +11,7 @@ use crate::mls::StorageError;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::random::OpenMlsRand;
 use rusqlite::{OptionalExtension, params};
+use std::collections::BTreeSet;
 
 pub(crate) const OUTBOX_QUEUED: i64 = 0;
 pub(crate) const OUTBOX_IN_FLIGHT: i64 = 1;
@@ -1028,9 +1029,12 @@ impl ClientCore {
 impl ClientCore {
     /// Replaces `group_id`'s role view (web3.5 R1): `pinners` and `broadcasters` are 0..=4096
     /// concatenated 16-byte user ids the host-served view allows `pin_messages` (bit 3) and
-    /// `mention_everyone` (bit 18) in the group's channel now. In one unit it replaces the rows,
-    /// marks the view known, refolds every pinned or unpinned target of the group, and recomputes
-    /// the mention flag of every other user's readable message naming `<@everyone>`/`<@here>`.
+    /// `mention_everyone` (bit 18) in the group's channel now. A view equal to the stored one
+    /// writes nothing. Otherwise, in one unit, it replaces the rows, marks the view known, refolds
+    /// the targets with a 5/6 from a user whose pin bit changed, and recomputes the mention flag of
+    /// other users' readable messages naming `<@everyone>`/`<@here>` from a sender whose broadcast
+    /// bit changed; a group's first view refolds and recomputes all of them. A DM group has no
+    /// roles: `E_CORE_STATE`, nothing written.
     ///
     /// The view is the host's claim, not something MLS authenticates: it decides only which pins
     /// and broadcast mentions this device counts, never which messages it shows.
@@ -1049,14 +1053,65 @@ impl ClientCore {
             ));
         }
         let g = group_id.as_slice();
+        let ids_of = |ids: &[u8]| -> BTreeSet<[u8; 16]> {
+            ids.as_chunks::<16>().0.iter().copied().collect()
+        };
+        let (new_p, new_b) = (ids_of(pinners), ids_of(broadcasters));
+        let (dm, known, old_p, old_b) = self.read_one(|c| {
+            let dm: bool = c
+                .query_row(
+                    "SELECT community_id IS NULL FROM app_groups WHERE group_id = ?1",
+                    [g],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(false);
+            let known = c
+                .query_row(
+                    "SELECT 1 FROM app_authority_known WHERE group_id = ?1",
+                    [g],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            let (mut p, mut b) = (BTreeSet::new(), BTreeSet::new());
+            let mut q = c.prepare("SELECT bit, user_id FROM app_authority WHERE group_id = ?1")?;
+            let rows = q.query_map([g], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, [u8; 16]>(1)?)))?;
+            for row in rows {
+                let (bit, user) = row?;
+                if bit == 3 {
+                    p.insert(user);
+                } else {
+                    b.insert(user);
+                }
+            }
+            Ok((dm, known, p, b))
+        })?;
+        if dm {
+            return Err(ClientError::new(
+                E_CORE_STATE,
+                "a DM group has no role view",
+            ));
+        }
+        if known && old_p == new_p && old_b == new_b {
+            return Ok(());
+        }
+        // A first view changes what counts for every sender; a later one only for the users whose
+        // bit changed.
+        let all = !known;
+        let pin_changed: BTreeSet<[u8; 16]> = old_p.symmetric_difference(&new_p).copied().collect();
+        let broadcast_changed: BTreeSet<[u8; 16]> =
+            old_b.symmetric_difference(&new_b).copied().collect();
         self.write_dyn(&mut |c| {
             c.execute("DELETE FROM app_authority WHERE group_id = ?1", [g])?;
-            for (bit, ids) in [(3i64, pinners), (18, broadcasters)] {
-                for id in ids.as_chunks::<16>().0 {
-                    c.execute(
-                        "INSERT OR IGNORE INTO app_authority (group_id, bit, user_id) VALUES (?1, ?2, ?3)",
-                        params![g, bit, id.as_slice()],
-                    )?;
+            {
+                let mut insert = c.prepare_cached(
+                    "INSERT OR IGNORE INTO app_authority (group_id, bit, user_id) VALUES (?1, ?2, ?3)",
+                )?;
+                for (bit, ids) in [(3i64, &new_p), (18, &new_b)] {
+                    for id in ids {
+                        insert.execute(params![g, bit, id.as_slice()])?;
+                    }
                 }
             }
             // The core keeps no clock of its own (every call that needs the time is handed it).
@@ -1065,17 +1120,30 @@ impl ClientCore {
                  ON CONFLICT (group_id) DO UPDATE SET set_at = excluded.set_at",
                 [g],
             )?;
-            let targets: Vec<Vec<u8>> = {
-                let mut q = c.prepare(
-                    "SELECT DISTINCT reply_to FROM app_messages WHERE group_id = ?1 AND type IN (5, 6) AND reply_to IS NOT NULL",
-                )?;
-                q.query_map([g], |r| r.get(0))?
-                    .collect::<Result<_, _>>()?
-            };
-            for target in targets {
-                if let Ok(target) = <[u8; 16]>::try_from(target.as_slice()) {
+            if all || !pin_changed.is_empty() {
+                let folds: Vec<(Vec<u8>, Option<Vec<u8>>)> = {
+                    let mut q = c.prepare(
+                        "SELECT DISTINCT reply_to, sender_user FROM app_messages WHERE group_id = ?1 AND type IN (5, 6) AND reply_to IS NOT NULL",
+                    )?;
+                    q.query_map([g], |r| Ok((r.get(0)?, r.get(1)?)))?
+                        .collect::<Result<_, _>>()?
+                };
+                let targets: BTreeSet<[u8; 16]> = folds
+                    .into_iter()
+                    .filter(|(_, sender)| {
+                        all || sender
+                            .as_deref()
+                            .and_then(|s| <[u8; 16]>::try_from(s).ok())
+                            .is_some_and(|s| pin_changed.contains(&s))
+                    })
+                    .filter_map(|(target, _)| <[u8; 16]>::try_from(target.as_slice()).ok())
+                    .collect();
+                for target in targets {
                     fold::refold(c, group_id, &target, &fold::FoldScope::Pin, None, Some(&own))?;
                 }
+            }
+            if !all && broadcast_changed.is_empty() {
+                return Ok(());
             }
             let roles = own_roles_of(c, group_id)?;
             let rows: Vec<(i64, [u8; 16], String, i64)> = {
@@ -1090,6 +1158,9 @@ impl ClientCore {
                 .collect::<Result<_, _>>()?
             };
             for (seq, sender, body, was) in rows {
+                if !all && !broadcast_changed.contains(&sender) {
+                    continue;
+                }
                 let ok = broadcast_ok(c, group_id, &sender)?;
                 let now = i64::from(mentions_me_gated(&body, &own.user_id, &roles, ok));
                 if now != was {

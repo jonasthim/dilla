@@ -419,6 +419,8 @@ impl ClientCore {
                         "app_messages",
                         "app_outbox",
                         "app_read_state",
+                        "app_pins",
+                        "app_reactions",
                         "app_authority",
                         "app_authority_known",
                     ] {

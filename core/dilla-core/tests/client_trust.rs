@@ -291,6 +291,37 @@ fn a_released_pending_message_applies_the_broadcast_gate() {
     );
 }
 
+/// The same release from a sender the view allows `mention_everyone` counts.
+#[test]
+fn a_released_pending_broadcast_from_an_allowed_sender_counts() {
+    let (_, mut relay, mut alice, mut bob) = alice_and_bob();
+    let (_, seq) = bob.send(&mut relay, &GROUP, "<@everyone> late", NOW + 1);
+    alice.sync(&relay);
+    assert_eq!(alice.row_at(&GROUP, seq).status, 1);
+    alice
+        .core
+        .authority_set(&GROUP, &[], &bob.user)
+        .expect("bob may broadcast");
+    let (history, head) = list_wire(&bob);
+    alice
+        .core
+        .device_list_ingest(
+            &GROUP,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history,
+            &head,
+            NOW + 2,
+        )
+        .expect("ingest");
+    alice
+        .core
+        .revalidate_pending(&GROUP, relay.leaf_of(bob.device), 256)
+        .expect("revalidate");
+    let row = alice.row_at(&GROUP, seq);
+    assert_eq!((row.status, row.mention), (0, 1));
+}
+
 #[test]
 fn untrusted_message_does_not_abort_a_batch_with_an_honest_message() {
     let (_, mut relay, mut alice, mut bob) = alice_and_bob();

@@ -174,6 +174,19 @@ fn a_discarded_group_leaves_no_authority_rows() {
     a.core
         .authority_set(&OTHER_GROUP, &[0xe5; 16], &[])
         .expect("another group's view");
+    {
+        let db = a.probe.lock().expect("lock");
+        db.execute(
+            "INSERT INTO app_pins (group_id, target, seq, by_user) VALUES (?1, ?2, 2, ?2)",
+            [GROUP.as_slice(), [0x71u8; 16].as_slice()],
+        )
+        .expect("a pin");
+        db.execute(
+            "INSERT INTO app_reactions (group_id, target, user_id, emoji, seq) VALUES (?1, ?2, ?2, 'x', 3)",
+            [GROUP.as_slice(), [0x71u8; 16].as_slice()],
+        )
+        .expect("a reaction");
+    }
     a.core.group_discard(&GROUP).expect("discard");
     let rows = |sql: &str| -> i64 {
         a.probe
@@ -190,6 +203,11 @@ fn a_discarded_group_leaves_no_authority_rows() {
         rows("SELECT count(*) FROM app_authority_known WHERE group_id = ?1"),
         0
     );
+    assert_eq!(rows("SELECT count(*) FROM app_pins WHERE group_id = ?1"), 0);
+    assert_eq!(
+        rows("SELECT count(*) FROM app_reactions WHERE group_id = ?1"),
+        0
+    );
     let other: i64 = a
         .probe
         .lock()
@@ -201,6 +219,31 @@ fn a_discarded_group_leaves_no_authority_rows() {
         )
         .expect("count");
     assert_eq!(other, 2, "another group's view stays");
+}
+
+/// A DM has no roles: the core refuses a role view for a DM group.
+#[test]
+fn a_dm_group_takes_no_role_view() {
+    let instance = Instance::generate();
+    let mut a = ready_core(0xa1, "alice");
+    a.core
+        .group_create(&DM_GROUP, None, &DM_CHANNEL, POLICY, &instance.public())
+        .expect("a DM group");
+    assert_eq!(
+        code(a.core.authority_set(&DM_GROUP, &[0xe5; 16], &[])),
+        "E_CORE_STATE"
+    );
+    let rows: i64 = a
+        .probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT (SELECT count(*) FROM app_authority) + (SELECT count(*) FROM app_authority_known)",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(rows, 0);
 }
 
 #[test]

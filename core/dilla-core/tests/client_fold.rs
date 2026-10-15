@@ -2299,3 +2299,210 @@ fn authority_set_takes_at_most_4096_ids_of_16_bytes_each() {
         0
     );
 }
+
+fn changes(me: &Core) -> u64 {
+    me.probe.lock().expect("lock").total_changes()
+}
+
+fn exec(me: &Core, sql: &str) {
+    me.probe
+        .lock()
+        .expect("lock")
+        .execute(sql, [])
+        .expect("probe write");
+}
+
+/// D1 as ruled (2026-10-15): the fold counts by the senders' rights now, so an unpin by a member
+/// who lost `pin_messages` no longer counts and the earlier pin returns.
+#[test]
+fn an_unpin_by_a_member_who_lost_pin_messages_no_longer_counts() {
+    const A: [u8; 16] = [0x72; 16];
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let mut reader = join(&mut relay, &mut me, &mut [&mut peer], 0xd4, 0xd5);
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "a"), 3);
+    assert_eq!(post(&mut peer, &mut relay, 0xa1, Pin, Some(A), ""), 4);
+    assert_eq!(post(&mut reader, &mut relay, 0xa2, Unpin, Some(A), ""), 5);
+    me.sync(&relay);
+    me.core
+        .authority_set(&GROUP, &[PEER_USER, READER_USER].concat(), &[])
+        .expect("both may pin");
+    assert_eq!(pin_keys(&me), vec![], "the reader's unpin counts");
+    me.core
+        .authority_set(&GROUP, &PEER_USER, &[])
+        .expect("only the peer");
+    assert_eq!(pin_keys(&me), vec![(A, 4, PEER_USER)], "pinned again");
+}
+
+/// The two bits are separate: a broadcaster who may not pin, and a pinner who may not broadcast.
+#[test]
+fn the_pin_and_broadcast_bits_are_held_apart() {
+    const A: [u8; 16] = [0x72; 16];
+    const B: [u8; 16] = [0x73; 16];
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let mut reader = join(&mut relay, &mut me, &mut [&mut peer], 0xd4, 0xd5);
+    me.core
+        .authority_set(&GROUP, &READER_USER, &PEER_USER)
+        .expect("crossed");
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "a"), 3);
+    assert_eq!(post(&mut peer, &mut relay, 0x73, Message, None, "b"), 4);
+    assert_eq!(post(&mut peer, &mut relay, 0xa1, Pin, Some(A), ""), 5);
+    assert_eq!(post(&mut reader, &mut relay, 0xa2, Pin, Some(B), ""), 6);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x74, Message, None, "<@everyone>"),
+        7
+    );
+    assert_eq!(
+        post(&mut reader, &mut relay, 0x75, Message, None, "<@here>"),
+        8
+    );
+    me.sync(&relay);
+    assert_eq!(pin_keys(&me), vec![(B, 6, READER_USER)]);
+    assert_eq!((row_at(&me, 7).mention, row_at(&me, 8).mention), (1, 0));
+}
+
+/// A view belongs to its group: another group's view grants nothing here.
+#[test]
+fn each_group_keeps_its_own_view() {
+    const A: [u8; 16] = [0x72; 16];
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    me.core
+        .authority_set(&OTHER_GROUP, &PEER_USER, &PEER_USER)
+        .expect("the peer may, there");
+    me.core
+        .authority_set(&GROUP, &[], &[])
+        .expect("nobody may, here");
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "a"), 2);
+    assert_eq!(post(&mut peer, &mut relay, 0xa1, Pin, Some(A), ""), 3);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x74, Message, None, "<@everyone>"),
+        4
+    );
+    me.sync(&relay);
+    assert_eq!(pin_keys(&me), vec![]);
+    assert_eq!(row_at(&me, 4).mention, 0);
+    assert_eq!(count(&me, "SELECT count(*) FROM app_authority_known"), 2);
+}
+
+/// The rescan reads only other users' readable rows: the own row and a deleted row keep their flag.
+#[test]
+fn the_broadcast_rescan_ignores_own_and_deleted_rows() {
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    assert_eq!(
+        post(
+            &mut peer,
+            &mut relay,
+            0x71,
+            Message,
+            None,
+            "<@everyone> gone"
+        ),
+        2
+    );
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa1, Delete, Some([0x71; 16]), ""),
+        3
+    );
+    me.sync(&relay);
+    let (_, own_seq) = me.send(&mut relay, &GROUP, "<@everyone> mine", NOW);
+    me.sync(&relay);
+    let flag = |me: &Core, seq: u64| -> i64 {
+        me.probe
+            .lock()
+            .expect("lock")
+            .query_row(
+                "SELECT mention FROM app_messages WHERE group_id = ?1 AND seq = ?2",
+                rusqlite::params![GROUP.as_slice(), seq as i64],
+                |r| r.get(0),
+            )
+            .expect("row")
+    };
+    let deleted_before = flag(&me, 2);
+    me.core
+        .authority_set(&GROUP, &[], &[])
+        .expect("the peer may not");
+    assert_eq!(
+        flag(&me, 2),
+        deleted_before,
+        "a deleted row is not rescanned"
+    );
+    me.core
+        .authority_set(&GROUP, &[], &[0xa1; 16])
+        .expect("I may");
+    assert_eq!(flag(&me, own_seq), 0, "the own row never counts");
+}
+
+/// A push equal to the stored view (in any order, with repeats) writes nothing.
+#[test]
+fn an_unchanged_view_writes_nothing() {
+    const A: [u8; 16] = [0x72; 16];
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let mut reader = join(&mut relay, &mut me, &mut [&mut peer], 0xd4, 0xd5);
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "a"), 3);
+    assert_eq!(post(&mut reader, &mut relay, 0xa1, Pin, Some(A), ""), 4);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x74, Message, None, "<@everyone>"),
+        5
+    );
+    me.sync(&relay);
+    me.core
+        .authority_set(&GROUP, &[PEER_USER, READER_USER].concat(), &PEER_USER)
+        .expect("a view");
+    let before = changes(&me);
+    me.core
+        .authority_set(
+            &GROUP,
+            &[READER_USER, PEER_USER, READER_USER].concat(),
+            &PEER_USER,
+        )
+        .expect("the same view");
+    assert_eq!(changes(&me), before, "nothing written");
+}
+
+/// A changed view refolds only the targets with a 5/6 from a user whose pin bit changed, and
+/// rescans only the rows of senders whose broadcast bit changed. Rows outside both are left as
+/// they are (here, deliberately stale, to show they are not touched).
+#[test]
+fn a_changed_view_touches_only_the_affected_targets_and_rows() {
+    const A: [u8; 16] = [0x72; 16];
+    const B: [u8; 16] = [0x73; 16];
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    let mut reader = join(&mut relay, &mut me, &mut [&mut peer], 0xd4, 0xd5);
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "a"), 3);
+    assert_eq!(post(&mut peer, &mut relay, 0x73, Message, None, "b"), 4);
+    assert_eq!(post(&mut peer, &mut relay, 0xa1, Pin, Some(A), ""), 5);
+    assert_eq!(post(&mut reader, &mut relay, 0xa2, Pin, Some(B), ""), 6);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x74, Message, None, "<@everyone> p"),
+        7
+    );
+    assert_eq!(
+        post(
+            &mut reader,
+            &mut relay,
+            0x75,
+            Message,
+            None,
+            "<@everyone> r"
+        ),
+        8
+    );
+    me.sync(&relay);
+    let both = [PEER_USER, READER_USER].concat();
+    me.core.authority_set(&GROUP, &both, &both).expect("both");
+    assert_eq!(pin_keys(&me).len(), 2);
+    // Make the peer's derived state stale; a change that concerns only the reader leaves it so.
+    exec(
+        &me,
+        "DELETE FROM app_pins WHERE target = x'72727272727272727272727272727272'",
+    );
+    exec(&me, "UPDATE app_messages SET mention = 0 WHERE seq = 7");
+    me.core
+        .authority_set(&GROUP, &PEER_USER, &PEER_USER)
+        .expect("the reader loses both");
+    assert_eq!(pin_keys(&me), vec![], "B unpinned; A not refolded");
+    assert_eq!(
+        (row_at(&me, 7).mention, row_at(&me, 8).mention),
+        (0, 0),
+        "the reader's row rescanned; the peer's not"
+    );
+}
