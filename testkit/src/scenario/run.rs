@@ -756,7 +756,11 @@ impl Runner {
                 ))
                 .into());
             }
+            // Every account owes a second factor, and an owed session reaches nothing else (not even the
+            // gateway): enrol an authenticator app before the first connection.
+            let totp = HttpDs::enrol_second_factor(&base, &enrolled.token)?;
             let mut ds = HttpDs::with_session(&base, client.device_id(), enrolled.token)?;
+            ds.set_totp(totp);
             ds.set_session_expires(enrolled.expires);
             // The user signs its one device into its device list, as a real client does right
             // after registering: invariant 4 refuses any Add whose DSK is in no list the user

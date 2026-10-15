@@ -17,6 +17,9 @@ use dilla_core::identity::DeviceList;
 use dilla_core::ids::DeviceId;
 use tungstenite::{Message, WebSocket};
 
+use crate::TestkitError;
+use crate::totp::{self, TotpState};
+
 use super::{
     CommitRequest, CommitResult, DeliveryService, Device, DsError, ErrorExtras, Frame, GroupId,
     GroupInfoResp, HandshakeItem, HealRequest, KeyPackageResp, MessageItem, ProposalItem,
@@ -82,6 +85,9 @@ pub struct HttpDs {
     /// Op 53 rings in arrival order, kept apart from the delivery-service frames until `take_rings` (web-3,
     /// L-GW-33): a ring is never replayed, so a `drain` that dropped one would lose it for good.
     rings: Vec<CallRing>,
+    /// The authenticator-app secret this account enrolled at registration, and the last counter the instance took
+    /// (protocol/09 § Second factors); `None` for a session that never enrolled one.
+    totp: Option<TotpState>,
 }
 
 /// At most this many unclaimed rings are kept; the oldest goes first. A test reads its rings within a few frames.
@@ -141,11 +147,12 @@ pub enum Element3<'a> {
     Credential(&'a [u8]),
     Registration(&'a Registration),
 }
-/// `POST /v1/auth/password/login` → `[assertion, needs_totp]`.
+/// `POST /v1/auth/password/login` → `[assertion, needs]` (protocol/09): `0` nothing owed, `1` a TOTP code (or a backup
+/// code), `2` a passkey login (or a backup code) for an account that holds no TOTP.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PasswordLogin {
     pub assertion: String,
-    pub needs_totp: bool,
+    pub needs: u8,
 }
 /// One served device-list row (L-HTTP-56): `[version, blob, ssk_signature, prev_hash]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -786,15 +793,11 @@ fn decode_password_login(bytes: &[u8]) -> Result<PasswordLogin, CborError> {
     decode_strict(bytes, |d| {
         d.array(2)?;
         let assertion = d.text()?.to_owned();
-        let needs_totp = match d.uint()? {
-            0 => false,
-            1 => true,
+        let needs = match d.uint()? {
+            n @ 0..=2 => n as u8,
             _ => return Err(CborError::IntegerOverflow),
         };
-        Ok(PasswordLogin {
-            assertion,
-            needs_totp,
-        })
+        Ok(PasswordLogin { assertion, needs })
     })
 }
 
@@ -1122,6 +1125,7 @@ impl HttpDs {
             missed_acks: 0,
             expires: 0,
             rings: Vec::new(),
+            totp: None,
         }
     }
 
@@ -1182,6 +1186,7 @@ impl HttpDs {
             missed_acks: 0,
             expires: 0,
             rings: Vec::new(),
+            totp: None,
         };
         ds.open_socket()?;
         Ok(ds)
@@ -1222,6 +1227,136 @@ impl HttpDs {
             })
         })
         .map_err(protocol)
+    }
+
+    /// Enrols the authenticator app every account owes (protocol/09 § Second factors) over the session
+    /// `POST /v1/accounts` returned. An owed session reaches only the allow-list (and the gateway refuses
+    /// it), so this runs before `with_session`. Returns `None` when the account owes nothing. The host clock
+    /// is read from the control listener, since the confirming code is computed for the instance's time.
+    pub fn enrol_second_factor(base: &str, token: &str) -> Result<Option<TotpState>, TestkitError> {
+        let agent = new_agent();
+        let base = base.trim_end_matches('/');
+        let (status, out) = call(
+            &agent,
+            "GET",
+            &format!("{base}/v1/auth/factors"),
+            Some(token),
+            None,
+        )?;
+        check_status(status, &out)?;
+        let owed = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(5)?;
+            let owed = d.uint()?;
+            for _ in 0..4 {
+                d.skip()?;
+            }
+            Ok(owed)
+        })
+        .map_err(protocol)?;
+        if owed == 0 {
+            return Ok(None);
+        }
+        if std::env::var("DILLA_TESTKIT_CONTROL").is_err() {
+            return Err(TestkitError::Scenario(
+                "the instance requires a second factor and DILLA_TESTKIT_CONTROL is unset".into(),
+            ));
+        }
+        let out = post_cbor(
+            &agent,
+            &format!("{base}/v1/auth/totp/enroll"),
+            Some(token),
+            &encode(|e| {
+                e.array(1).null();
+            }),
+        )?;
+        let secret = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            let secret = d.text()?.to_owned();
+            d.skip()?;
+            Ok(secret)
+        })
+        .map_err(protocol)?;
+        let counter = host_unix()? / totp::PERIOD;
+        let code = totp::code(&secret, counter).map_err(TestkitError::Scenario)?;
+        let out = post_cbor(
+            &agent,
+            &format!("{base}/v1/auth/totp/confirm"),
+            Some(token),
+            &encode(|e| {
+                e.array(1).text(&code);
+            }),
+        )?;
+        decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(1)?;
+            d.skip()?;
+            Ok(())
+        })
+        .map_err(protocol)?;
+        Ok(Some(TotpState {
+            secret,
+            last_counter: counter,
+        }))
+    }
+
+    /// Keeps (or drops) the authenticator-app secret [`HttpDs::enrol_second_factor`] returned.
+    pub fn set_totp(&mut self, totp: Option<TotpState>) {
+        self.totp = totp;
+    }
+
+    /// The enrolled authenticator app, with the last counter the instance took.
+    pub fn totp(&self) -> Option<&TotpState> {
+        self.totp.as_ref()
+    }
+
+    /// Turns a password login into an assertion that owes nothing. `needs` 1 is answered with this account's
+    /// TOTP code at `/v1/auth/totp/verify`, counter `max(c-1, last+1)` (advancing the host clock one period at a
+    /// time while that is past `c+1`); `needs` 2 asks for a passkey, which a native peer has none of.
+    pub fn second_factor_assertion(
+        &mut self,
+        login: PasswordLogin,
+    ) -> Result<String, TestkitError> {
+        match login.needs {
+            0 => Ok(login.assertion),
+            1 => {
+                let state = self.totp.as_ref().ok_or_else(|| {
+                    TestkitError::Scenario(
+                        "the account asks for a TOTP code and this peer enrolled none".into(),
+                    )
+                })?;
+                let secret = state.secret.clone();
+                let counter = totp::pick_counter(
+                    state.last_counter,
+                    || host_unix().map_err(|e| e.to_string()),
+                    || {
+                        control_post("/debug/clock", r#"{"seconds":30}"#)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    },
+                )
+                .map_err(TestkitError::Scenario)?;
+                let code = totp::code(&secret, counter).map_err(TestkitError::Scenario)?;
+                let out = post_cbor(
+                    &self.agent,
+                    &format!("{}/v1/auth/totp/verify", self.base),
+                    None,
+                    &encode(|e| {
+                        e.array(2).text(&login.assertion).text(&code);
+                    }),
+                )?;
+                let assertion = decode_strict(&out, |d: &mut Decoder<'_>| {
+                    d.array(1)?;
+                    Ok(d.text()?.to_owned())
+                })
+                .map_err(protocol)?;
+                if let Some(state) = self.totp.as_mut() {
+                    state.last_counter = counter;
+                }
+                Ok(assertion)
+            }
+            _ => Err(TestkitError::Scenario(
+                "the account asks for a passkey login and a native peer holds no passkey".into(),
+            )),
+        }
     }
 
     pub fn device(&self) -> DeviceId {
@@ -2217,6 +2352,16 @@ pub fn control_get(path: &str) -> Result<Vec<u8>, DsError> {
     control(&new_agent(), "GET", path, None)
 }
 
+/// The test host's fake clock in unix seconds (`GET /debug/clock` → `{"now": n}`): a TOTP code is computed for the
+/// instance's time, which `advance_clock` moves, not for the machine's.
+fn host_unix() -> Result<u64, DsError> {
+    let out = control_get("/debug/clock")?;
+    serde_json::from_slice::<serde_json::Value>(&out)
+        .ok()
+        .and_then(|v| v.get("now").and_then(serde_json::Value::as_u64))
+        .ok_or_else(|| DsError::Protocol("GET /debug/clock answered no `now`".into()))
+}
+
 impl DeliveryService for HttpDs {
     /// Row 10: `[packages([bstr]), last_resort(bstr|null)]` -> `201 [count]`. The session names
     /// the device; `d` must be the device this client holds a session for.
@@ -3036,6 +3181,7 @@ mod tests {
             missed_acks: 0,
             expires: 0,
             rings: Vec::new(),
+            totp: None,
         }
     }
 
@@ -3611,9 +3757,20 @@ mod tests {
             decode_password_login(&login).unwrap(),
             PasswordLogin {
                 assertion: "asrt".into(),
-                needs_totp: true
+                needs: 1
             }
         );
+        // `needs` is 0, 1 or 2 (protocol/09); anything else is a protocol error.
+        for (wire, want) in [(0, Some(0)), (1, Some(1)), (2, Some(2)), (3, None)] {
+            let login = cbor(|e| {
+                e.array(2).text("asrt").uint(wire);
+            });
+            assert_eq!(
+                decode_password_login(&login).ok().map(|l| l.needs),
+                want,
+                "needs {wire}"
+            );
+        }
         let served = cbor(|e| {
             e.array(4)
                 .uint(2)

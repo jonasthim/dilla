@@ -19,6 +19,7 @@ mod fixtures;
 mod media_driver;
 mod netprobe;
 mod scenario;
+mod totp;
 mod web_driver;
 
 pub use client::{Received, TestClient};

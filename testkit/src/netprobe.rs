@@ -799,7 +799,11 @@ fn enrol(
         ))
         .into());
     }
+    // Every account owes a second factor, and an owed session reaches nothing else (not even the
+    // gateway): enrol an authenticator app before the first connection.
+    let totp = HttpDs::enrol_second_factor(base, &enrolled.token)?;
     let mut ds = HttpDs::with_session(base, client.device_id(), enrolled.token)?;
+    ds.set_totp(totp);
     ds.set_session_expires(enrolled.expires);
     ds.put_device_list(&enrolled.user_id, &client.signed_device_list(now_unix()))?;
     Ok((client, ds, seed))
