@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { VOICE_ICONS, VOICE_SHORTCUTS, VoiceToolbar, type ToolbarControl } from '../CallControls/CallControls.tsx';
+import { VOICE_ICONS, VOICE_SHORTCUTS, VoiceToolbar, voiceWhy, type ToolbarControl, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
 
 export interface VoiceDockProps {
@@ -18,6 +18,9 @@ export interface VoiceDockProps {
   canShare?: boolean;
   /** True while joining (the stage's `busy`): camera and share are aria-disabled. Mute, deafen and leave stay live. */
   busy?: boolean;
+  /** True while the call is paused or held; it picks the reason camera and share give. Absent, the paused phase or
+   *  `!canCamera` stands for it. */
+  paused?: boolean;
   /** Optional: the mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
   shortcuts?: { mute: string; deafen: string };
   /** The latest polite announcement (join, leave, mute, deafen, the end of a pause, the outgoing ring); '' for none. */
@@ -36,6 +39,8 @@ export interface VoiceDockProps {
     camera?: string;
     /** `voice.shareOn`; needed with `onShare`. */
     share?: string;
+    /** The reasons an inert camera or share gives in its tooltip and description (`voice.why.*`); none without it. */
+    why?: VoiceWhyLabels;
   };
   /** Optional: the input meter (an `AudioMeter`), shown under the status line. */
   meter?: ReactNode;
@@ -57,9 +62,10 @@ const PHASE_GLYPH = { connecting: '◌', connected: '●', reconnecting: '◌', 
  * leave, mute, deafen and the end of a pause (flow 06).
  */
 export function VoiceDock({
-  phase, where, muted, deafened, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, shortcuts,
+  phase, where, muted, deafened, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, shortcuts,
   announcement, labels, meter, onMute, onDeafen, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
+  const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const text = {
     connecting: labels.connecting,
     connected: labels.connected.replaceAll('{where}', where),
@@ -71,10 +77,10 @@ export function VoiceDock({
     { id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen },
   ];
   if (onCamera !== undefined && labels.camera !== undefined) {
-    controls.push({ id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, ...VOICE_ICONS.camera, onAction: onCamera });
+    controls.push({ id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera, onAction: onCamera });
   }
   if (onShare !== undefined && labels.share !== undefined) {
-    controls.push({ id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, ...VOICE_ICONS.share, onAction: onShare });
+    controls.push({ id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare });
   }
   controls.push({ id: 'leave', label: labels.leave, danger: true, ...VOICE_ICONS.leave, onAction: onLeave });
   return (

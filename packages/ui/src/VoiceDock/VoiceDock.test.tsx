@@ -123,6 +123,29 @@ describe('VoiceDock', () => {
     for (const name of ['camera', 'share screen']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
   });
 
+  // Jonas, 2026-10-15: the dock's disabled camera and share say why, as on the stage.
+  it('a disabled camera or share says why: connecting, then paused, then not available; mute, deafen and leave never', async () => {
+    const why = { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' };
+    const withWhy: VoiceDockProps = { ...five, labels: { ...five.labels, why } };
+    const { rerender } = render(<VoiceDock {...withWhy} phase="paused" paused canCamera={false} canShare={false} />);
+    const desc = (name: string) => screen.getByRole('button', { name });
+    expect(desc('camera')).toHaveAccessibleName('camera');
+    expect(desc('camera')).toHaveAccessibleDescription('paused');
+    expect(desc('share screen')).toHaveAccessibleDescription('paused');
+    for (const name of ['mute', 'deafen', 'leave']) expect(desc(name)).not.toHaveAttribute('aria-describedby');
+    await userEvent.keyboard('{Tab}{ArrowRight}{ArrowRight}');
+    const tip = screen.getByRole('toolbar', { name: 'voice controls' }).querySelector('[role="tooltip"]');
+    expect(tip).toHaveTextContent(/^camera — paused$/);
+    rerender(<VoiceDock {...withWhy} phase="connecting" busy canCamera canShare />);
+    expect(desc('camera')).toHaveAccessibleDescription('connecting');
+    expect(desc('share screen')).toHaveAccessibleDescription('connecting');
+    rerender(<VoiceDock {...withWhy} canShare={false} />);
+    expect(desc('camera')).not.toHaveAttribute('aria-describedby');
+    expect(desc('share screen')).toHaveAccessibleDescription('not available in this browser');
+    rerender(<VoiceDock {...withWhy} />);
+    for (const name of ['camera', 'share screen']) expect(desc(name)).not.toHaveAttribute('aria-describedby');
+  });
+
   it('the shortcuts show in the mute and deafen tooltips and describe those controls', async () => {
     render(<VoiceDock {...five} shortcuts={{ mute: '⌘⇧M', deafen: '⌘⇧D' }} />);
     await userEvent.keyboard('{Tab}');

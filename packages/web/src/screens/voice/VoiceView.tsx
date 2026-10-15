@@ -202,6 +202,9 @@ function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | n
 /** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
 const VOICE_SHORTCUT_TEXT = voiceShortcutText();
 
+/** Why an inert camera or share is inert, the same for the stage and the dock (founder, 2026-10-15). */
+const VOICE_WHY = () => ({ paused: t('voice.why.paused'), joining: t('voice.why.joining'), noShare: t('voice.why.noShare') });
+
 /** Whether this browser can capture a screen; the stage and the dock offer share screen only then. */
 function canCapture(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
@@ -214,9 +217,9 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
-      canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null} shortcuts={VOICE_SHORTCUT_TEXT}
+      canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
-        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave') }}
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
       onLeave={v.call.leave} />
   );
@@ -516,11 +519,11 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
       ) : null}
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
         camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
-        canShare={!paused && canCapture()} busy={call.session === null} shortcuts={VOICE_SHORTCUT_TEXT}
+        canShare={!paused && canCapture()} busy={call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
-          deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn') }}
+          deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn'), why: VOICE_WHY() }}
         meter={<>
           <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
           {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}

@@ -12,6 +12,7 @@ const meta = {
     labels: {
       region: 'voice controls', connecting: 'connecting', connected: 'in {where}', reconnecting: 'reconnecting', paused: 'paused in {where}',
       mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen',
+      why: { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' },
     },
     camera: false, sharing: false, canCamera: true, canShare: true, shortcuts: { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' },
     onMute: () => {}, onDeafen: () => {}, onCamera: () => {}, onShare: () => {}, onLeave: () => {},
@@ -37,6 +38,28 @@ export const CameraAndSharing: Story = { args: { camera: true, sharing: true, me
 /** Paused (RV-3): the dock says so, and camera and share are aria-disabled as on the stage; the banner with its action
  *  lives on the stage. */
 export const Paused: Story = { args: { phase: 'paused', canCamera: false, canShare: false } };
+/** Paused, with keyboard focus on camera: its tooltip says why it is disabled, "camera — paused" (Jonas, 2026-10-15),
+ *  and the reason is its description; the name stays "camera". */
+export const PausedWhy: Story = {
+  args: { phase: 'paused', paused: true, canCamera: false, canShare: false, meter: <AudioMeter level={0} label="input level" /> },
+  play: async ({ canvasElement }) => {
+    expectVoiceTargets(canvasElement, 'VoiceDock');
+    expectOneRow(canvasElement, 'VoiceDock');
+    const camera = canvasElement.querySelector<HTMLButtonElement>('[role="toolbar"] button[data-control="camera"]');
+    if (camera === null) throw new Error('VoiceDock: no camera control');
+    camera.focus();
+    await nextFrame();
+    const tip = canvasElement.querySelector<HTMLElement>('.d-voice-toolbar__tip');
+    if (tip === null || tip.hidden || tip.textContent !== 'camera — paused') {
+      throw new Error(`VoiceDock: the camera tip says "${tip?.textContent ?? ''}", not "camera — paused"`);
+    }
+    if (camera.getAttribute('aria-label') !== 'camera') throw new Error('VoiceDock: the camera name changed');
+    const ids = (camera.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean);
+    const described = ids.map(id => document.getElementById(id)?.textContent ?? '').join(' ');
+    if (described !== 'paused') throw new Error(`VoiceDock: the camera is described as "${described}", not "paused"`);
+    expectTipTakesNoPointer(canvasElement, 'VoiceDock');
+  },
+};
 /** Joining: camera and share wait for the session (the stage's busy); mute, deafen and leave stay live. */
 export const Joining: Story = { args: { phase: 'connecting', busy: true } };
 /** Keyboard focus on mute shows its tooltip: the label and the shortcut. */

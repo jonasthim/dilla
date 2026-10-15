@@ -437,6 +437,10 @@ export const en = {
   'voice.leave': 'leave',
   'voice.cameraOn': 'camera',
   'voice.shareOn': 'share screen',
+  // Why an inert camera or share control is inert, in its tooltip and as its description (founder, 2026-10-15).
+  'voice.why.paused': 'paused',
+  'voice.why.joining': 'connecting',
+  'voice.why.noShare': 'not available in this browser',
   'voice.controls.region': 'call controls',
   'voice.controls.voice': 'voice channel controls',
   'voice.state.speaking': 'speaking',

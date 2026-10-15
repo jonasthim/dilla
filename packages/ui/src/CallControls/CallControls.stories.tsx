@@ -47,6 +47,7 @@ const meta = {
     labels: {
       region: 'call controls', mute: 'mute', deafen: 'deafen', camera: 'camera',
       share: 'share screen', leave: 'leave',
+      why: { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' },
     },
     shortcuts: { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' },
     onMute: () => {}, onDeafen: () => {}, onCamera: () => {}, onShare: () => {}, onLeave: () => {},
@@ -63,7 +64,7 @@ export const CameraAndSharing: Story = { args: { camera: true, sharing: true } }
 /** Joining: the controls appear but stay aria-disabled. */
 export const Joining: Story = { args: { busy: true } };
 /** Paused (RV-3): camera and share are aria-disabled until the call continues. */
-export const Paused: Story = { args: { canCamera: false, canShare: false } };
+export const Paused: Story = { args: { paused: true, canCamera: false, canShare: false } };
 /** Keyboard focus on mute shows its tooltip above it: the label and the shortcut. */
 export const TooltipOnFocus: Story = {
   args: { muted: true },

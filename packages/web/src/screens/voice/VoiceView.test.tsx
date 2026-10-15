@@ -664,6 +664,42 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     expect(dock().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
     expect(stage().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
   });
+
+  // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*), in the dock and on the stage; the name stays.
+  it('a disabled camera or share says why: not available, paused, connecting', async () => {
+    const app = await inVoice();
+    // No getDisplayMedia here: share says so, and camera, live, says nothing.
+    for (const bar of [dock(), stage()]) {
+      const share = bar.getByRole('button', { name: t('voice.shareOn') });
+      expect(share).toHaveAccessibleName(t('voice.shareOn'));
+      expect(share).toHaveAccessibleDescription(t('voice.why.noShare'));
+      expect(bar.getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby');
+    }
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await screen.findByText('paused in general');
+    for (const bar of [dock(), stage()]) {
+      for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
+        expect(bar.getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.paused'));
+      }
+    }
+  });
+
+  it('while joining, the dock’s camera and share say connecting', async () => {
+    withCapture();
+    const app = renderVoiceShell();
+    const release = app.holdStart();
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    await screen.findByRole('toolbar', { name: 'voice controls' });
+    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
+      expect(dock().getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.joining'));
+    }
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+    await waitFor(() => expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby'));
+    expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-describedby');
+  });
 });
 
 describe('voiceShortcutText', () => {

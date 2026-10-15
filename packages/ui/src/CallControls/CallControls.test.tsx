@@ -220,6 +220,61 @@ describe('CallControls', () => {
     expect(tipOf()).not.toBeVisible();
   });
 
+  // Jonas, 2026-10-15: a disabled camera or share says why, in its tooltip and as its description; the name is unchanged.
+  describe('a disabled control says why', () => {
+    const why = { paused: 'paused', joining: 'connecting', noShare: 'not available in this browser' };
+    const withWhy = { ...base, labels: { ...labels, why } };
+    const tipOf = () => screen.getByRole('toolbar', { name: 'call controls' }).querySelector<HTMLElement>('[role="tooltip"]');
+    const focusOn = async (name: string) => {
+      await userEvent.keyboard('{Tab}');
+      const order = ['mute', 'deafen', 'camera', 'share screen', 'leave'];
+      for (let i = 0; i < order.indexOf(name); i += 1) await userEvent.keyboard('{ArrowRight}');
+      expect(screen.getByRole('button', { name })).toHaveFocus();
+    };
+
+    it('paused: camera and share say "paused" in the tip and the description', async () => {
+      render(<CallControls {...withWhy} paused canCamera={false} canShare={false} />);
+      for (const name of ['camera', 'share screen']) {
+        const b = screen.getByRole('button', { name });
+        expect(b).toHaveAccessibleName(name);
+        expect(b).toHaveAccessibleDescription('paused');
+      }
+      await focusOn('camera');
+      expect(tipOf()).toHaveTextContent(/^camera — paused$/);
+      await userEvent.keyboard('{ArrowRight}');
+      expect(tipOf()).toHaveTextContent(/^share screen — paused$/);
+    });
+
+    it('joining comes first: busy says "connecting", even while paused', async () => {
+      render(<CallControls {...withWhy} busy paused canCamera={false} canShare={false} />);
+      expect(screen.getByRole('button', { name: 'camera' })).toHaveAccessibleDescription('connecting');
+      expect(screen.getByRole('button', { name: 'share screen' })).toHaveAccessibleDescription('connecting');
+      await focusOn('camera');
+      expect(tipOf()).toHaveTextContent(/^camera — connecting$/);
+    });
+
+    it('without screen capture, share says so and camera, enabled, says nothing', async () => {
+      render(<CallControls {...withWhy} canShare={false} />);
+      const share = screen.getByRole('button', { name: 'share screen' });
+      expect(share).toHaveAccessibleName('share screen');
+      expect(share).toHaveAccessibleDescription('not available in this browser');
+      const camera = screen.getByRole('button', { name: 'camera' });
+      expect(camera).not.toHaveAttribute('aria-describedby');
+      await focusOn('camera');
+      expect(tipOf()).toHaveTextContent(/^camera$/);
+      await userEvent.keyboard('{ArrowRight}');
+      expect(tipOf()).toHaveTextContent(/^share screen — not available in this browser$/);
+    });
+
+    it('a shortcut and no reason stay as they were; with no reason labels, nothing is said', () => {
+      const { rerender } = render(<CallControls {...withWhy} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }} />);
+      expect(screen.getByRole('button', { name: 'mute' })).toHaveAccessibleDescription('Ctrl+Shift+M');
+      for (const name of ['camera', 'share screen', 'leave']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-describedby');
+      rerender(<CallControls {...base} paused canCamera={false} canShare={false} />);
+      expect(screen.getByRole('button', { name: 'camera' })).not.toHaveAttribute('aria-describedby');
+    });
+  });
+
   it('leave is set apart from the toggles by a divider, in the same roving order', async () => {
     render(<CallControls {...base} />);
     const bar = screen.getByRole('toolbar', { name: 'call controls' });
