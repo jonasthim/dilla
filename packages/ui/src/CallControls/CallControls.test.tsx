@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
@@ -102,52 +102,134 @@ describe('CallControls', () => {
     expect(screen.getByRole('button', { name: 'leave' })).toHaveAttribute('data-variant', 'danger');
   });
 
-  it('the tooltip shows the label on keyboard focus, with the shortcut as the description, and Escape hides it', async () => {
-    const onLeave = vi.fn();
-    const outer = vi.fn();
-    render(<div onKeyDown={e => { outer(e.key); }}><CallControls {...base} onLeave={onLeave} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }} /></div>);
+  // Review round 1 (#2, #3): one tooltip per toolbar, a sibling of the buttons, never part of a button's hit area.
+  const shortcuts = { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' };
+  const tipOf = () => screen.getByRole('toolbar', { name: 'call controls' }).querySelector<HTMLElement>('[role="tooltip"]');
+
+  it('one tooltip, outside every button: the label and shortcut on keyboard focus; only the shortcut describes', async () => {
+    render(<CallControls {...base} shortcuts={shortcuts} />);
     const mute = screen.getByRole('button', { name: 'mute' });
-    const tip = () => mute.querySelector<HTMLElement>('[role="tooltip"]');
-    expect(tip()).not.toBeVisible();
+    expect(screen.getByRole('toolbar', { name: 'call controls' }).querySelectorAll('[role="tooltip"]')).toHaveLength(1);
+    expect(tipOf()).not.toBeVisible();
     await userEvent.keyboard('{Tab}');
     expect(mute).toHaveFocus();
-    expect(tip()).toBeVisible();
-    expect(tip()).toHaveTextContent('mute');
-    expect(tip()).toHaveTextContent('Ctrl+Shift+M');
-    // Described by the shortcut alone, so the name is not read twice; never a title attribute.
+    expect(tipOf()).toBeVisible();
+    expect(tipOf()).toHaveTextContent('mute');
+    expect(tipOf()).toHaveTextContent('Ctrl+Shift+M');
+    for (const b of screen.getAllByRole('button')) expect(b.contains(tipOf())).toBe(false);
+    expect(tipOf()).toHaveAttribute('data-for', 'mute');
+    // A tip shown by focus never takes the pointer.
+    expect(tipOf()).toHaveAttribute('data-origin', 'focus');
     expect(mute).toHaveAccessibleDescription('Ctrl+Shift+M');
     expect(mute).toHaveAccessibleName('mute');
     expect(mute).not.toHaveAttribute('title');
-    await userEvent.keyboard('{Escape}');
-    expect(tip()).not.toBeVisible();
-    expect(mute).toHaveFocus();
-    expect(onLeave).not.toHaveBeenCalled();
-    expect(outer).toHaveBeenCalledWith('Escape');
-    // Moving on shows the next control's tooltip; camera has no shortcut, so it has no description.
     await userEvent.keyboard('{ArrowRight}{ArrowRight}');
     const camera = screen.getByRole('button', { name: 'camera' });
-    expect(camera).toHaveFocus();
-    expect(camera.querySelector('[role="tooltip"]')).toBeVisible();
-    expect(camera.querySelector('[role="tooltip"]')).toHaveTextContent('camera');
+    expect(tipOf()).toHaveAttribute('data-for', 'camera');
+    expect(tipOf()).toHaveTextContent(/^camera$/);
     expect(camera).not.toHaveAttribute('aria-describedby');
-    expect(tip()).not.toBeVisible();
   });
 
-  it('the tooltip shows on hover and hides when the pointer leaves; a click on it does not press the control', async () => {
+  it('Escape hides a visible tip wherever focus is, is marked handled, and leaves nothing else', async () => {
     const onLeave = vi.fn();
-    render(<CallControls {...base} onLeave={onLeave} />);
-    const leave = screen.getByRole('button', { name: 'leave' });
-    const tip = leave.querySelector<HTMLElement>('[role="tooltip"]');
-    expect(tip).not.toBeVisible();
-    await userEvent.hover(leave);
-    expect(tip).toBeVisible();
-    expect(tip).toHaveTextContent('leave');
-    await userEvent.unhover(leave);
-    expect(tip).not.toBeVisible();
-    // The tooltip is hoverable (it sits inside the button), so a click on it must not leave the call.
-    await userEvent.hover(leave);
-    if (tip) await userEvent.click(tip);
+    const outer = vi.fn();
+    render(<><input aria-label="message" onKeyDown={e => { outer(e.key); }} /><CallControls {...base} onLeave={onLeave} shortcuts={shortcuts} /></>);
+    const field = screen.getByRole('textbox', { name: 'message' });
+    field.focus();
+    await userEvent.hover(screen.getByRole('button', { name: 'deafen' }));
+    expect(tipOf()).toBeVisible();
+    expect(tipOf()).toHaveAttribute('data-for', 'deafen');
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => { field.dispatchEvent(esc); });
+    expect(esc.defaultPrevented).toBe(true);
+    expect(tipOf()).not.toBeVisible();
+    expect(field).toHaveFocus();
+    expect(outer).not.toHaveBeenCalled();
     expect(onLeave).not.toHaveBeenCalled();
+    // With no tip showing, Escape is not touched.
+    const esc2 = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => { field.dispatchEvent(esc2); });
+    expect(esc2.defaultPrevented).toBe(false);
+    expect(outer).toHaveBeenCalledWith('Escape');
+    // The next hover shows it again.
+    await userEvent.unhover(screen.getByRole('button', { name: 'deafen' }));
+    await userEvent.hover(screen.getByRole('button', { name: 'deafen' }));
+    expect(tipOf()).toBeVisible();
+  });
+
+  it('Escape on a focused control hides its tip; focus stays and the arrows still rove', async () => {
+    render(<CallControls {...base} shortcuts={shortcuts} />);
+    await userEvent.keyboard('{Tab}');
+    await userEvent.keyboard('{Escape}');
+    expect(tipOf()).not.toBeVisible();
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByRole('button', { name: 'deafen' })).toHaveFocus();
+    expect(tipOf()).toBeVisible();
+    expect(tipOf()).toHaveAttribute('data-for', 'deafen');
+  });
+
+  it('hoverable: the pointer can move from the control onto its tip and the tip stays; leaving both hides it', async () => {
+    // One user-event instance, so each move leaves the element before it (pointerout and pointerleave).
+    const user = userEvent.setup();
+    render(<><p>elsewhere</p><CallControls {...base} shortcuts={shortcuts} /></>);
+    const mute = screen.getByRole('button', { name: 'mute' });
+    await user.hover(mute);
+    expect(tipOf()).toBeVisible();
+    expect(tipOf()).toHaveAttribute('data-origin', 'hover');
+    await user.hover(tipOf()!);
+    expect(tipOf()).toBeVisible();
+    expect(tipOf()).toHaveAttribute('data-for', 'mute');
+    await user.hover(screen.getByText('elsewhere'));
+    expect(tipOf()).not.toBeVisible();
+  });
+
+  it('one tip at a time: the most recent hover or focus wins', async () => {
+    render(<CallControls {...base} shortcuts={shortcuts} />);
+    await userEvent.keyboard('{Tab}');
+    expect(tipOf()).toHaveAttribute('data-for', 'mute');
+    await userEvent.hover(screen.getByRole('button', { name: 'camera' }));
+    expect(tipOf()).toHaveAttribute('data-for', 'camera');
+    await userEvent.keyboard('{ArrowRight}');
+    expect(tipOf()).toHaveAttribute('data-for', 'deafen');
+    await userEvent.unhover(screen.getByRole('button', { name: 'camera' }));
+    expect(tipOf()).toHaveAttribute('data-for', 'deafen');
+  });
+
+  it('a click on a neighbour while a tip shows reaches that neighbour; a click never shows a focus tip', async () => {
+    const onShare = vi.fn();
+    const onLeave = vi.fn();
+    render(<CallControls {...base} onShare={onShare} onLeave={onLeave} />);
+    await userEvent.keyboard('{Tab}{End}');
+    expect(tipOf()).toHaveAttribute('data-for', 'leave');
+    await userEvent.click(screen.getByRole('button', { name: 'share screen' }));
+    expect(onShare).toHaveBeenCalledTimes(1);
+    expect(onLeave).not.toHaveBeenCalled();
+    // The click focused share, but a pointer focus is not a keyboard focus: the tip is the hover's.
+    expect(tipOf()).toHaveAttribute('data-origin', 'hover');
+    await userEvent.unhover(screen.getByRole('button', { name: 'share screen' }));
+    expect(tipOf()).not.toBeVisible();
+  });
+
+  it('a touch never pins a tip', async () => {
+    const onMute = vi.fn();
+    const user = userEvent.setup();
+    render(<CallControls {...base} onMute={onMute} shortcuts={shortcuts} />);
+    await user.pointer({ keys: '[TouchA]', target: screen.getByRole('button', { name: 'mute' }) });
+    expect(onMute).toHaveBeenCalledTimes(1);
+    expect(tipOf()).not.toBeVisible();
+  });
+
+  it('leave is set apart from the toggles by a divider, in the same roving order', async () => {
+    render(<CallControls {...base} />);
+    const bar = screen.getByRole('toolbar', { name: 'call controls' });
+    const divider = bar.querySelector('.d-voice-toolbar__divider');
+    expect(divider).toHaveAttribute('aria-hidden', 'true');
+    expect(divider?.nextElementSibling).toBe(screen.getByRole('button', { name: 'leave' }));
+    await userEvent.keyboard('{Tab}{ArrowLeft}');
+    expect(screen.getByRole('button', { name: 'leave' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(screen.getByRole('button', { name: 'share screen' })).toHaveFocus();
   });
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {

@@ -3,7 +3,7 @@
  * https://github.com/lucide-icons/lucide/tree/1.57.0/icons
  * Generated from the upstream SVG files; only the child elements are kept. Every icon is drawn on a 24 × 24
  * viewBox with fill none, stroke currentColor, stroke width 2 and round caps and joins (the Icon component sets these).
- * Do not edit by hand: re-fetch at a pinned tag and regenerate.
+ * Do not edit by hand: re-fetch at a pinned tag and regenerate with packages/ui/scripts/vendor-icons.mjs.
  *
  * SHA-256 of each upstream file at 1.57.0:
  *   icons/mic.svg  9b940cd735d1ffa270ba670c4e677d9a09400f3fa81d6b3f405b12a3b67a59a8

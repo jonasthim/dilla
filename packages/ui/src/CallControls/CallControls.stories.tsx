@@ -16,10 +16,32 @@ export function expectVoiceTargets(root: HTMLElement, story: string): void {
   }
 }
 
+/** Review round 1 (#1): a voice toolbar's controls sit in one row at the width they are given. */
+export function expectOneRow(root: HTMLElement, story: string): void {
+  for (const bar of Array.from(root.querySelectorAll<HTMLElement>('.d-voice-toolbar'))) {
+    const tops = Array.from(bar.querySelectorAll<HTMLElement>(':scope > button')).map(b => Math.round(b.getBoundingClientRect().top));
+    if (new Set(tops).size > 1) throw new Error(`${story}: the voice controls wrap (tops ${tops.join(', ')}) at ${String(bar.clientWidth)} px`);
+    if (bar.scrollWidth > bar.clientWidth + 1) throw new Error(`${story}: the voice controls scroll sideways`);
+  }
+}
+
+/** Review round 1 (#2, #3): a tip shown by keyboard focus takes no pointer; a click where it shows passes through. */
+export function expectTipTakesNoPointer(root: HTMLElement, story: string): void {
+  const tip = root.querySelector<HTMLElement>('.d-voice-toolbar__tip');
+  if (tip === null || tip.hidden) throw new Error(`${story}: no tooltip shows after keyboard focus`);
+  const r = tip.getBoundingClientRect();
+  const under = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  if (under !== null && tip.contains(under)) throw new Error(`${story}: the focus tooltip takes the pointer`);
+  for (const b of Array.from(root.querySelectorAll('button'))) if (b.contains(tip)) throw new Error(`${story}: the tooltip sits inside a button`);
+}
+
+/** One rendered frame, for a check after a focus or a layout effect. */
+export function nextFrame(): Promise<void> { return new Promise(resolve => { requestAnimationFrame(() => { resolve(); }); }); }
+
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const meta = {
   title: 'Voice/CallControls', component: CallControls,
-  excludeStories: ['expectVoiceTargets'],
+  excludeStories: ['expectVoiceTargets', 'expectOneRow', 'expectTipTakesNoPointer', 'nextFrame'],
   args: {
     muted: false, deafened: false, camera: false, sharing: false, canCamera: true, canShare: true, busy: false,
     labels: {
@@ -29,8 +51,8 @@ const meta = {
     shortcuts: { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' },
     onMute: () => {}, onDeafen: () => {}, onCamera: () => {}, onShare: () => {}, onLeave: () => {},
   },
-  // Each control is at least 40 × 40 CSS px (44 × 44 under 48rem of viewport), flow 06.
-  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallControls'); },
+  // Each control is at least 40 × 40 CSS px (44 × 44 under 48rem of viewport), flow 06, and the five sit in one row.
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallControls'); expectOneRow(canvasElement, 'CallControls'); },
 } satisfies Meta<typeof CallControls>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -46,8 +68,10 @@ export const Paused: Story = { args: { canCamera: false, canShare: false } };
 export const TooltipOnFocus: Story = {
   args: { muted: true },
   decorators: [Story => <div style={{ paddingTop: 40 }}><Story /></div>],
-  play: ({ canvasElement }) => {
+  play: async ({ canvasElement }) => {
     expectVoiceTargets(canvasElement, 'CallControls');
     canvasElement.querySelector<HTMLButtonElement>('[role="toolbar"] button')?.focus();
+    await nextFrame();
+    expectTipTakesNoPointer(canvasElement, 'CallControls');
   },
 };

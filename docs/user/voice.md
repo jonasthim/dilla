@@ -44,16 +44,16 @@ seconds while the instance finishes your earlier leave; a screen reader hears "R
 
 You can keep talking while you read: open any text channel and the dock stays above your user panel, with the input
 level and the same five buttons as under the tiles, **mute**, **deafen**, **camera**, **share screen** and **leave**, so
-you can turn your camera or a share on and off from any channel. The buttons are icons: hover one, or reach it with
-Tab and the arrow keys, and its name shows above it, with its shortcut for **mute** and **deafen** (Escape hides it).
+you can turn your camera or a share on and off from any channel. The buttons are icons in one row, with **leave** set
+apart at the end after a thin line. Point at one, or reach it with Tab and the arrow keys, and its name shows above it,
+with its shortcut for **mute** and **deafen**; Escape hides the name again.
 
 ![Mira in #general while she stays in harbour: the dock "in harbour" with its meter and the icon buttons mute,
 deafen, camera, share screen and leave](screenshots/voice-dock-desktop.png)
 
 At phone width the tiles take the full width, one above the other, the call's buttons sit under them, every control
 is at least 44 by 44 pixels, and the dock stays pinned at the bottom of the channel list, above the conversation, so
-its buttons are on screen while you read a text channel: **mute**, **deafen**, **camera** and **share screen** in one
-row and **leave** across the row below.
+its five buttons are on screen, in one row, while you read a text channel.
 
 ![The voice channel at 360 pixels wide](screenshots/voice-stage-phone.png)
 
@@ -67,7 +67,7 @@ someone joins. You do not have to do anything.
 **mute** turns your microphone off ("Microphone muted.") and, pressed again, on ("Microphone on."). **deafen** turns
 off everything you hear, and mutes you too ("Sound off."); pressed again, it turns it back on ("Sound on."). These
 buttons keep their names: while one is on its icon changes (a crossed-out microphone, crossed-out headphones) and is
-drawn in red, and a screen reader says "pressed".
+drawn in red with a line under it, and a screen reader says "pressed".
 
 This browser keeps your mute and deafen for your next call: if you were muted when you left, you join muted. If
 you join deafened, pressing **deafen** again turns your sound back on but leaves you muted; press **mute** to talk.

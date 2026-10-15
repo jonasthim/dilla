@@ -199,6 +199,9 @@ function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | n
     ?? root.querySelector<HTMLElement>('.dw-voice-join');
 }
 
+/** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
+const VOICE_SHORTCUT_TEXT = voiceShortcutText();
+
 /** Whether this browser can capture a screen; the stage and the dock offer share screen only then. */
 function canCapture(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
@@ -211,7 +214,7 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
-      canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null} shortcuts={voiceShortcutText()}
+      canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null} shortcuts={VOICE_SHORTCUT_TEXT}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave') }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
@@ -513,7 +516,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
       ) : null}
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
         camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
-        canShare={!paused && canCapture()} busy={call.session === null} shortcuts={voiceShortcutText()}
+        canShare={!paused && canCapture()} busy={call.session === null} shortcuts={VOICE_SHORTCUT_TEXT}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),

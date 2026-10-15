@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import { Icon, type IconName } from '../Icon/Icon.tsx';
 import { arrowIndex } from '../internal/arrow-select.ts';
@@ -50,8 +50,8 @@ export const VOICE_ICONS = {
   deafen: { icon: 'headphones', iconOn: 'headphone-off', tint: 'danger' },
   camera: { icon: 'video-off', iconOn: 'video', tint: 'accent' },
   share: { icon: 'monitor-up', iconOn: 'monitor-x', tint: 'accent' },
-  leave: { icon: 'phone-off' },
-} as const satisfies Record<string, Pick<ToolbarControl, 'icon' | 'iconOn' | 'tint'>>;
+  leave: { icon: 'phone-off', apart: true },
+} as const satisfies Record<string, Pick<ToolbarControl, 'icon' | 'iconOn' | 'tint' | 'apart'>>;
 
 /**
  * One control of a voice toolbar: an icon button named by `label` (`aria-label`). A toggle (`on` given) keeps one
@@ -63,6 +63,8 @@ export interface ToolbarControl {
   icon: IconName;
   /** The glyph while `on`; `icon` when absent. */
   iconOn?: IconName;
+  /** Set apart from the controls before it by a hairline divider (leave), in the same roving order. */
+  apart?: boolean;
   /** The colour of the on state: `danger` (mute, deafen; the default) or `accent` (camera, share). */
   tint?: 'danger' | 'accent';
   /** `aria-keyshortcuts`, e.g. VOICE_SHORTCUTS.mute. */
@@ -72,62 +74,126 @@ export interface ToolbarControl {
   onAction(): void;
 }
 
+/** The space between a control and its tooltip, in CSS px; the tip's transparent bridge covers it (CallControls.css). */
+const TIP_GAP = 6;
+
+type TipOrigin = 'hover' | 'focus';
+
 /**
- * A voice toolbar: the controls as one roving tab stop, named by `label`. Each control shows a tooltip, its label and
- * any shortcut, on hover and on keyboard focus (WCAG 1.4.13): the pointer can move onto it, it stays until the pointer
- * or focus leaves, and Escape hides it without moving focus. It is never a `title`. Only the shortcut describes the
- * control (`aria-describedby`), so the name is not read twice.
+ * A voice toolbar: the controls as one roving tab stop, named by `label`, with a control marked `apart` (leave) set
+ * off by a hairline divider. One tooltip serves the toolbar (WCAG 1.4.13), a sibling of the buttons and never part of
+ * a button's hit area. It shows the label and any shortcut of the most recently hovered or keyboard-focused control:
+ * - hover: a mouse or pen only, never a touch; the pointer can move onto the tip (a bridge covers the gap), and the tip
+ *   takes the pointer then, over its own area only;
+ * - keyboard focus: never a focus that a press caused; the tip takes no pointer at all;
+ * - Escape, wherever focus is, hides a shown tip and is consumed (`preventDefault`), and does nothing else.
+ * It is never a `title`. Only the shortcut describes a control (`aria-describedby`), so the name is not read twice.
  */
 export function VoiceToolbar({ label, controls, className }: { label: string; controls: readonly ToolbarControl[]; className?: string }): ReactNode {
   const bar = useToolbarFocus(controls.length);
   const uid = useId();
+  const tipRef = useRef<HTMLSpanElement>(null);
+  const pressed = useRef(false);
+  const lastHover = useRef<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
+  const [last, setLast] = useState<TipOrigin>('focus');
   const [dismissed, setDismissed] = useState<string | null>(null);
-  const shown = hovered ?? focused;
-  const tip = shown !== null && shown !== dismissed ? shown : null;
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'Escape' && tip !== null) setDismissed(tip);
-    bar.onKeyDown(e);
-  };
+  const primary = last === 'hover' ? hovered ?? focused : focused ?? hovered;
+  const origin: TipOrigin = primary !== null && primary === hovered && (last === 'hover' || primary !== focused) ? 'hover' : 'focus';
+  const shown = primary !== null && primary !== dismissed ? controls.find(c => c.id === primary) ?? null : null;
+  const shownId = shown?.id ?? null;
+
+  // Escape hides the tip wherever focus is, and only that: the key is consumed so nothing else acts on it.
+  useEffect(() => {
+    if (shownId === null) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDismissed(shownId);
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => { document.removeEventListener('keydown', onKey, true); };
+  }, [shownId]);
+
+  // Above its control, centred on it and kept inside the toolbar's width.
+  useLayoutEffect(() => {
+    const tip = tipRef.current;
+    const root = bar.ref.current;
+    if (tip === null || root === null || shownId === null) return;
+    const button = Array.from(root.querySelectorAll<HTMLElement>(':scope > button')).find(b => b.dataset.control === shownId);
+    if (button === undefined) return;
+    const left = button.offsetLeft + button.offsetWidth / 2 - tip.offsetWidth / 2;
+    tip.style.left = `${String(Math.max(0, Math.min(left, root.clientWidth - tip.offsetWidth)))}px`;
+    tip.style.top = `${String(button.offsetTop - tip.offsetHeight - TIP_GAP)}px`;
+  });
+
   const focusVisible = (el: HTMLElement): boolean => {
     try { return el.matches(':focus-visible'); } catch { return true; }
   };
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => { pressed.current = false; bar.onKeyDown(e); };
+  const intoTip = (to: EventTarget | null): boolean => to instanceof Node && tipRef.current?.contains(to) === true;
+
   return (
     <div ref={bar.ref} role="toolbar" aria-label={label} aria-orientation="horizontal"
-      className={['d-voice-toolbar', className].filter(Boolean).join(' ')} onKeyDown={onKeyDown} onFocus={bar.onFocus}>
-      {controls.map((c, i) => {
-        const shortcutId = `${uid}-${c.id}-keys`;
-        const onClick = (e: MouseEvent<HTMLButtonElement>) => {
-          // The tooltip sits inside the button so the pointer can rest on it; a click there is not a press.
-          if (e.target instanceof Element && e.target.closest('.d-voice-toolbar__tip') !== null) return;
-          if (c.inert !== true) c.onAction();
-        };
-        return (
-          <Button key={c.id} variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
+      className={['d-voice-toolbar', className].filter(Boolean).join(' ')} onKeyDown={onKeyDown} onFocus={bar.onFocus}
+      onPointerDownCapture={() => { pressed.current = true; }}>
+      {controls.map((c, i) => (
+        <Fragment key={c.id}>
+          {c.apart === true ? <span className="d-voice-toolbar__divider" aria-hidden="true" /> : null}
+          <Button variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
             data-tint={c.on === undefined ? undefined : (c.tint ?? 'danger')} pressed={c.on} mark={false} aria-label={c.label}
-            aria-keyshortcuts={c.keys} aria-describedby={c.shortcut !== undefined ? shortcutId : undefined}
+            aria-keyshortcuts={c.keys} aria-describedby={c.shortcut !== undefined ? `${uid}-${c.id}-keys` : undefined}
             aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
-            onFocus={e => { setDismissed(null); setFocused(focusVisible(e.currentTarget) ? c.id : null); }}
+            onFocus={e => {
+              setDismissed(null);
+              // A press focuses the control too; only a keyboard (or script) focus shows the focus tip.
+              if (pressed.current) { pressed.current = false; return; }
+              if (!focusVisible(e.currentTarget)) return;
+              setFocused(c.id);
+              setLast('focus');
+            }}
             onBlur={() => { setFocused(f => (f === c.id ? null : f)); }}
-            onMouseEnter={() => { setDismissed(null); setHovered(c.id); }}
-            onMouseLeave={() => { setHovered(h => (h === c.id ? null : h)); }}
-            onClick={onClick}>
+            onPointerEnter={(e: PointerEvent<HTMLButtonElement>) => {
+              if (e.pointerType === 'touch') return;
+              setDismissed(null);
+              lastHover.current = c.id;
+              setHovered(c.id);
+              setLast('hover');
+            }}
+            onPointerLeave={(e: PointerEvent<HTMLButtonElement>) => {
+              if (intoTip(e.relatedTarget)) return;
+              setHovered(h => (h === c.id ? null : h));
+            }}
+            onClick={() => { if (c.inert !== true) c.onAction(); }}>
             <Icon name={c.on === true ? c.iconOn ?? c.icon : c.icon} />
-            <span className="d-voice-toolbar__tip" role="tooltip" hidden={tip !== c.id}>
-              <span>{c.label}</span>
-              {c.shortcut !== undefined ? <kbd id={shortcutId} className="d-voice-toolbar__keys">{c.shortcut}</kbd> : null}
-            </span>
           </Button>
-        );
-      })}
+        </Fragment>
+      ))}
+      {controls.filter(c => c.shortcut !== undefined).map(c => (
+        <span key={c.id} id={`${uid}-${c.id}-keys`} hidden>{c.shortcut}</span>
+      ))}
+      <span ref={tipRef} className="d-voice-toolbar__tip" role="tooltip" hidden={shown === null}
+        data-for={shown?.id} data-origin={shown === null ? undefined : origin}
+        // Hoverable: the pointer moved from the control onto its tip (over the bridge), so the tip stays.
+        onPointerEnter={e => { if (e.pointerType !== 'touch' && lastHover.current !== null) setHovered(lastHover.current); }}
+        onPointerLeave={e => {
+          const to = e.relatedTarget;
+          if (to instanceof Element && to.closest('[data-control]')?.getAttribute('data-control') === shownId) return;
+          lastHover.current = null;
+          setHovered(null);
+        }}>
+        {shown !== null ? <span>{shown.label}</span> : null}
+        {shown?.shortcut !== undefined ? <kbd className="d-voice-toolbar__keys">{shown.shortcut}</kbd> : null}
+      </span>
     </div>
   );
 }
 
 export interface CallControlsProps {
   muted: boolean; deafened: boolean; camera: boolean; sharing: boolean;
-  /** False while there is no camera, or while the call is paused (RV-3): the camera control is aria-disabled. */
+  /** False while the call is paused or held (RV-3): the camera control is aria-disabled. (No caller checks for a camera device yet.) */
   canCamera: boolean;
   /** False without screen capture, or while the call is paused (RV-3): the share control is aria-disabled. */
   canShare: boolean;

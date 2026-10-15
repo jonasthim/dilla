@@ -9,8 +9,12 @@ export function voiceShortcutText(apple: boolean = isApplePlatform()): { mute: s
 
 interface PlatformSource { userAgentData?: { platform?: string }; platform?: string }
 
-/** Whether this is macOS or iOS: userAgentData's platform where the browser has it, else navigator.platform. */
+/**
+ * Whether this is macOS or iOS: userAgentData's platform where the browser has one, else navigator.platform. An
+ * empty UA-CH platform (Chromium's "unknown") is no answer, so navigator.platform decides then.
+ */
 export function isApplePlatform(nav: PlatformSource | undefined = typeof navigator === 'undefined' ? undefined : navigator): boolean {
-  const name = nav?.userAgentData?.platform ?? nav?.platform ?? '';
+  const hinted = nav?.userAgentData?.platform;
+  const name = hinted !== undefined && hinted !== '' ? hinted : nav?.platform ?? '';
   return /^(mac|iphone|ipad|ipod)/i.test(name);
 }

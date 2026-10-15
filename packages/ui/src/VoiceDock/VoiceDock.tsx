@@ -12,7 +12,7 @@ export interface VoiceDockProps {
   camera?: boolean;
   /** This device shares its screen (a pressed toggle). Shown only with `onShare`. */
   sharing?: boolean;
-  /** False while there is no camera, or while the call is paused (RV-3): the camera control is aria-disabled. */
+  /** False while the call is paused or held (RV-3): the camera control is aria-disabled. (No caller checks for a camera device yet.) */
   canCamera?: boolean;
   /** False without screen capture, or while the call is paused (RV-3): the share control is aria-disabled. */
   canShare?: boolean;

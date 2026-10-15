@@ -128,7 +128,10 @@ describe('VoiceDock', () => {
     await userEvent.keyboard('{Tab}');
     const mute = screen.getByRole('button', { name: 'mute' });
     expect(mute).toHaveAccessibleDescription('⌘⇧M');
-    expect(mute.querySelector('[role="tooltip"]')).toBeVisible();
+    const tip = screen.getByRole('toolbar', { name: 'voice controls' }).querySelector('[role="tooltip"]');
+    expect(tip).toBeVisible();
+    expect(tip).toHaveTextContent('mute⌘⇧M');
+    expect(mute.contains(tip)).toBe(false);
     await userEvent.keyboard('{ArrowRight}');
     expect(screen.getByRole('button', { name: 'deafen' })).toHaveAccessibleDescription('⌘⇧D');
   });

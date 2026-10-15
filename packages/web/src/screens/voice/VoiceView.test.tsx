@@ -679,5 +679,7 @@ describe('voiceShortcutText', () => {
     expect(isApplePlatform({ userAgentData: { platform: 'Windows' }, platform: 'MacIntel' })).toBe(false);
     expect(isApplePlatform({ platform: 'Linux x86_64' })).toBe(false);
     expect(isApplePlatform({ platform: '' })).toBe(false);
+    // Review round 1 (#7): Chromium reports an empty UA-CH platform when it does not know; navigator.platform decides then.
+    expect(isApplePlatform({ userAgentData: { platform: '' }, platform: 'MacIntel' })).toBe(true);
   });
 });
