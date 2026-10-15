@@ -267,6 +267,11 @@ const TOTP = /^[0-9]{6}$/;
 const backupCode = normaliseBackupCode;
 /** The WebAuthn response a page hands over for a passkey sign-in: at most 64 KiB of JSON. */
 const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
+/** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
+const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
+  id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
+  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
+});
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
   ({ username, needsTotp: factor === 'totp', factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
@@ -1056,10 +1061,7 @@ export class Controller {
     this.instance = instance;
     // A tab that then waits for the lock offers hand-over by this instance (L-WEB-46), so diagnostics names it now.
     this.publishDiagnostics();
-    this.setAccount({ instance: {
-      id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
-      passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
-    } });
+    this.setAccount({ instance: instanceStateOf(instance) });
     void this.lead(instance);
     return null;
   }
@@ -1484,8 +1486,16 @@ export class Controller {
       try { username = (await this.routes.getAccountMe()).username; } catch { /* named at ready */ }
       if (this.revoked()) return;
     }
+    // S2 review M5: under instance.discovery = "session" GET /v1/instance is E, F, so the set-up reads the methods it offers
+    // with this session (the start's read had none). Only the same instance's answer is taken; a failure keeps the start's.
+    let instance = this.accountState.instance;
+    try {
+      const read = await this.routes.getInstance();
+      if (this.revoked()) return;
+      if (toHex(read.instanceId) === toHex(this.requireInstance().instanceId)) instance = instanceStateOf(read);
+    } catch { /* the start's read stands */ }
     this.setAccount({ phase: 'factor-setup', factorSetup: { origin }, user: { id: toHex(userId), username }, deviceId: toHex(deviceId),
-      recoveryKey: null, error: null, signIn: null });
+      recoveryKey: null, error: null, signIn: null, instance });
   }
 
   /** The page's set-up is done: the factors are read again (still owed: E_FACTOR_REQUIRED, the phase stays), then ready,

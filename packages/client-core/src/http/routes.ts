@@ -293,8 +293,10 @@ export class Routes {
     return (await this.http.request({ method, path, bucket, idempotent, ...options })).body;
   }
 
+  /** GET /v1/instance with the session's bearer whenever one exists (`E, F` under instance.discovery = "session"); before
+   *  sign-in there is no token and nothing is sent. */
   async getInstance(): Promise<Instance> {
-    const a = atLeast(decode(await this.body('GET', '/v1/instance', 'read', true, { auth: false })), 11);
+    const a = atLeast(decode(await this.body('GET', '/v1/instance', 'read', true)), 11);
     return { instanceId: bin(a[3], 16), generation: u64(a[4]), name: str(a[5]), registrationMode: oneOf(a[6], [0, 1, 2]),
       authMethods: arr(a[7]).map(u53), policyVersion: u64(a[8]), externalSenderPub: bin(a[10], 32) };
   }

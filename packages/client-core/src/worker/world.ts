@@ -211,6 +211,8 @@ export const NOW_S = 1_700_000_000n;
 export function world(opts: {
   phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: boolean; realAccount?: boolean; fetch?: typeof fetch; now?: () => number;
   owed?: boolean; realGateway?: boolean; WebSocket?: typeof WebSocket; httpTicket?: boolean;
+  /** S2 review M5: getInstance through the real Routes and HttpClient over `fetch` (the bearer it sends is observable). */
+  httpInstance?: boolean;
 } = {}) {
   // An account that is already registered (phase 2) is already a member of the community, so that a
   // selectCommunity of it passes pre-flight ruling 1(v); a signup or sign-in world starts outside it.
@@ -456,10 +458,9 @@ export function world(opts: {
   const wiped: string[] = [];
   const parts: Partial<ControllerParts> = {
     ...(opts.realRoutes === true ? {} : { routes: (http) => {
-      if (opts.httpTicket === true) {
-        const real = new Routes(http);
-        routes.postTicket.mockImplementation(() => real.postTicket());
-      }
+      const real = new Routes(http);
+      if (opts.httpTicket === true) routes.postTicket.mockImplementation(() => real.postTicket());
+      if (opts.httpInstance === true) routes.getInstance.mockImplementation(() => real.getInstance());
       return routes as unknown as Routes;
     } }),
     session: opts.realAccount === true ? (d) => new Session(d) : () => session as unknown as Session,

@@ -91,8 +91,10 @@ interface Case {
 
 const CASES: Case[] = [
   {
-    name: 'getInstance reads elements 3 to 8 and 10', call: (r) => r.getInstance(),
-    method: 'GET', path: '/v1/instance', bucket: 'read', idempotent: true, auth: false, sent: null,
+    // S2 review (M5): the session's bearer goes along whenever there is one, so instance.discovery = "session" (E, F)
+    // answers an owed client too; before sign-in token() is null and nothing is sent (below).
+    name: 'getInstance reads elements 3 to 8 and 10, with the session bearer', call: (r) => r.getInstance(),
+    method: 'GET', path: '/v1/instance', bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, INSTANCE_DOC),
     expected: { instanceId: INSTANCE, generation: 7n, name: 'dilla.test', registrationMode: 0, authMethods: [0, 3], policyVersion: 2n, externalSenderPub: PUB },
   },
@@ -594,6 +596,15 @@ describe('Routes: one request per call, decoded as the server answers it', () =>
       expect(http.requests[0].auth ?? true).toBe(c.auth);
     });
   }
+});
+
+describe('GET /v1/instance before sign-in', () => {
+  it('sends no Authorization header while there is no session', async () => {
+    const { t, routes } = setup({ token: null });
+    t.replies.push(cborReply(200, INSTANCE_DOC));
+    expect((await routes.getInstance()).name).toBe('dilla.test');
+    expect(t.seen[0].headers.get('authorization')).toBeNull();
+  });
 });
 
 describe('signed-list response bounds', () => {

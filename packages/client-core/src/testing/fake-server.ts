@@ -35,7 +35,8 @@ export const FAKE_TOTP_CODE = '123456';
 /** The setup key the fake's enrol answers. */
 export const FAKE_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
 export const FAKE_STEP_UP_EXPIRES_S = 300;
-const STEP_UP_FREE_ATTEMPTS = 5;
+/** dillad's step-up ledger: four free failures; the fifth is itself 429 (Throttle.RecordFailure locks on it). */
+const STEP_UP_FREE_ATTEMPTS = 4;
 const BACKUP_CODES = 10;
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 /** What one account holds: an app (totpCode), passkeys, unused backup codes, and the owed flag. */
@@ -55,6 +56,12 @@ const OWED_OK = [
   /^POST \/v1\/auth\/passkey\/register\/(begin|finish)$/, /^DELETE \/v1\/devices\/[0-9a-f]{32}\/sessions$/,
   /^(PUT|GET) \/v1\/users\/[0-9a-f]{32}\/device-list$/, /^GET \/v1\/backups(\/[01]\/0)?$/,
 ];
+
+/** The "E or V" routes a provisional session reaches (keypackages.go: orProvisional). */
+const E_OR_V = [/^POST \/v1\/keypackages$/, /^(GET|DELETE) \/v1\/welcomes(\/[0-9]+)?$/];
+/** dillad's passkey name rule (validPasskeyName): 1-64 bytes of UTF-8 without control characters. */
+const validPasskeyName = (name: CborValue): boolean => typeof name === 'string' && name.length > 0
+  && new TextEncoder().encode(name).length <= 64 && !/\p{Cc}/u.test(name);
 
 function reply(status: number, body?: CborInput): Response {
   if (body === undefined) return new Response(null, { status, headers: { 'X-Dilla-Generation': '1' } });
@@ -459,12 +466,17 @@ export class FakeServer {
     if (device === undefined || user === undefined || this.revoked.has(device)) return refuse(401, 'E_UNAUTHENTICATED');
     const username = this.accounts.get(user)?.username;
     if (username !== undefined) {
-      // dillad's order: the session routes of § Second factors are E (enrolled only), so a pending or provisional token
-      // is refused before anything else; the owed rule applies to an enrolled session (Scope == Enrolled) only.
-      const enrolled = (this.tokenScope.get(r.auth!) ?? 0) === 0;
+      // dillad's order (session.go middleware): the scope check first, then the owed rule for every scope. The session
+      // routes of § Second factors are E (enrolled only): a pending token is E_FORBIDDEN there, a provisional one
+      // E_PROVISIONAL_OUTSIDE_PAIRING. An owed account is refused on every route but the F allow-list and the P routes,
+      // enrolled sessions and provisional ones on the "E or V" routes alike; a pending one never passes the scope check
+      // to a non-P route (the fake's later pending check answers that).
+      const scope = this.tokenScope.get(r.auth!) ?? 0;
       const factorLine = line.startsWith('GET /v1/auth/factors') || line.startsWith('POST /v1/auth/');
-      if (factorLine && !enrolled) return refuse(403, 'E_FORBIDDEN');
-      if (enrolled && this.factorsOf(username).owed && !OWED_OK.some((re) => re.test(line))) return refuse(403, 'E_FACTOR_REQUIRED');
+      if (factorLine && scope === 1) return refuse(403, 'E_FORBIDDEN');
+      if (factorLine && scope === 2) return refuse(403, 'E_PROVISIONAL_OUTSIDE_PAIRING');
+      const reachesOwedRule = scope === 0 || (scope === 2 && E_OR_V.some((re) => re.test(line)));
+      if (reachesOwedRule && this.factorsOf(username).owed && !OWED_OK.some((re) => re.test(line))) return refuse(403, 'E_FACTOR_REQUIRED');
       const factorRoute = this.factorRoute(r, line, username);
       if (factorRoute !== null) return factorRoute;
     }
@@ -637,6 +649,15 @@ export class FakeServer {
     this.stepUps.delete(token);
     return true;
   }
+  private stepUpLocked(username: string): boolean {
+    return (this.stepUpFailures.get(username) ?? 0) >= STEP_UP_FREE_ATTEMPTS + 1;
+  }
+  /** A failed step-up (secret or passkey): 403 E_STEP_UP, or 429 on the failure that passes the free attempts. */
+  private stepUpFailure(username: string): Response {
+    const failures = (this.stepUpFailures.get(username) ?? 0) + 1;
+    this.stepUpFailures.set(username, failures);
+    return failures > STEP_UP_FREE_ATTEMPTS ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_STEP_UP');
+  }
   private issueStepUp(username: string, session: string | null): Response {
     const token = `su-${++this.stepUpN}`;
     this.stepUps.set(token, { username, session: session ?? '' });
@@ -653,6 +674,9 @@ export class FakeServer {
       try { body = arr(decode(r.body)); } catch { return refuse(400, 'E_INVALID_REQUEST'); }
     }
     const held = this.holdsFactor(username);
+    // [stepup|null] exactly (dillad's stepUpRequest): any other arity does not decode.
+    if ((line === 'POST /v1/auth/totp/enroll' || line === 'POST /v1/auth/passkey/register/begin' || line === 'POST /v1/auth/recovery/codes')
+      && (body.length !== 1 || (body[0] !== null && typeof body[0] !== 'string'))) return refuse(400, 'E_INVALID_REQUEST');
     switch (line) {
       case 'GET /v1/auth/factors':
         return reply(200, [state.owed ? 1 : 0, this.totpOf(username) === null ? null : NOW_S,
@@ -684,58 +708,68 @@ export class FakeServer {
         return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
       }
       case 'POST /v1/auth/passkey/register/finish': {
+        // dillad checks the name before it touches the ceremony, which a refused name leaves open; an unknown, spent or
+        // other account's ceremony is one answer, 400 E_INVALID_REQUEST.
+        const name = body[2] ?? null;
+        if (!validPasskeyName(name) || typeof name !== 'string') return refuse(400, 'E_INVALID_REQUEST');
         const ceremony = this.takeCeremony(body[0] ?? null, 'register');
-        if (ceremony === null || ceremony.username !== username) return refuse(401, 'E_UNAUTHENTICATED');
-        const name = body[2];
-        if (typeof name !== 'string' || name.length < 1 || new TextEncoder().encode(name).length > 64) return refuse(400, 'E_INVALID_REQUEST');
+        if (ceremony === null || ceremony.username !== username) return refuse(400, 'E_INVALID_REQUEST', 'the registration response was not accepted');
         if (held && !ceremony.steppedUp) return refuse(403, 'E_STEP_UP');
         const credId = this.addPasskey(username, name);
         state.owed = false;
         return reply(200, [credId, state.codes.length === 0 ? this.mintCodes(username) : []]);
       }
       case 'POST /v1/auth/stepup': {
-        const failures = this.stepUpFailures.get(username) ?? 0;
-        if (failures >= STEP_UP_FREE_ATTEMPTS) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
         const secret = body[1];
+        if ((body[0] !== 0n && body[0] !== 1n && body[0] !== 2n) || typeof secret !== 'string') return refuse(400, 'E_INVALID_REQUEST');
+        if (this.stepUpLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
         let ok = false;
         if (body[0] === 0n) ok = this.passwords.get(username)?.password === secret;
-        else if (body[0] === 1n) ok = this.spendTotp(username, secret ?? null);
-        else if (body[0] === 2n && typeof secret === 'string') {
+        else if (body[0] === 1n) ok = this.spendTotp(username, secret);
+        else {
           const at = state.codes.indexOf(secret);
           if (at >= 0) { state.codes.splice(at, 1); ok = true; }
-        } else return refuse(400, 'E_INVALID_REQUEST');
-        if (!ok) { this.stepUpFailures.set(username, failures + 1); return refuse(403, 'E_STEP_UP'); }
+        }
+        if (!ok) return this.stepUpFailure(username);
         this.stepUpFailures.delete(username);
         return this.issueStepUp(username, session);
       }
       case 'POST /v1/auth/stepup/passkey/begin': {
-        if (state.passkeys.length === 0) return refuse(403, 'E_STEP_UP');
+        if (state.passkeys.length === 0) return refuse(400, 'E_INVALID_REQUEST', 'this account holds no passkey');
         const id = `s-${++this.ceremonyN}`;
         this.ceremonies.set(id, { kind: 'stepup', username, steppedUp: false });
         return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
       }
       case 'POST /v1/auth/stepup/passkey/finish': {
+        // The same ledger as POST /v1/auth/stepup (dillad: stepUpFailure).
+        if (this.stepUpLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
         const ceremony = this.takeCeremony(body[0] ?? null, 'stepup');
-        if (ceremony === null || ceremony.username !== username) return refuse(403, 'E_STEP_UP');
+        if (ceremony === null || ceremony.username !== username) return this.stepUpFailure(username);
         const credHex = typeof body[1] === 'string' ? body[1].split(':')[0] : null;
-        if (!state.passkeys.some((k) => toHex(k.credId) === credHex)) return refuse(403, 'E_STEP_UP');
+        if (!state.passkeys.some((k) => toHex(k.credId) === credHex)) return this.stepUpFailure(username);
+        this.stepUpFailures.delete(username);
         return this.issueStepUp(username, session);
       }
       case 'POST /v1/auth/factors/remove': {
-        if (!this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        // dillad validates kind and cred_id before it spends the token, which a malformed body leaves unspent.
         const kind = body[1];
-        const cred = body[2];
+        const cred = body[2] ?? null;
+        if (kind !== 0n && kind !== 1n) return refuse(400, 'E_INVALID_REQUEST', 'kind is 0 (totp) or 1 (passkey)');
+        if (kind === 1n && !(cred instanceof Uint8Array && cred.length > 0)) return refuse(400, 'E_INVALID_REQUEST', 'a passkey removal names its cred_id');
+        if (!this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
         if (kind === 0n) {
-          if (this.totpOf(username) === null) return refuse(404, 'E_NOT_FOUND');
+          // The app row, confirmed or not (an unconfirmed enrolment is deleted too), then the recount.
+          if (this.totpOf(username) === null && state.totpEnrol === null) return refuse(404, 'E_NOT_FOUND');
           const keep = state.passkeys.length > 0;
           if (!keep) return refuse(409, 'E_INVALID_REQUEST', 'it is the last factor');
+          state.totpEnrol = null;
           state.totpCode = null;
           state.totpUsed = 0;
           const stored = this.passwords.get(username);
           if (stored !== undefined) stored.totp = null;
           return reply(204);
         }
-        if (kind === 1n && cred instanceof Uint8Array) {
+        if (cred instanceof Uint8Array) {
           const at = state.passkeys.findIndex((k) => same(k.credId, cred));
           if (at < 0) return refuse(404, 'E_NOT_FOUND');
           if (state.passkeys.length === 1 && this.totpOf(username) === null) return refuse(409, 'E_INVALID_REQUEST', 'it is the last factor');

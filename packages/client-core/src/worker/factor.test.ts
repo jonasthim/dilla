@@ -5,7 +5,8 @@ import { encodeFrame, Op } from '../gateway/frames';
 import { toHex } from '../hex';
 import type { AccountState, FactorsState } from '../state/types';
 import { ACCEPTS } from './controller';
-import { COMMUNITY, DEVICE, INSTANCE_ID, PASSWORD, RECOVERY_KEY, SUBMIT, USER, cbor, refusal, toReady, world, type World } from './world';
+import type { CborInput } from '../cbor';
+import { COMMUNITY, DEVICE, INSTANCE_DOC, INSTANCE_ID, PASSWORD, RECOVERY_KEY, SUBMIT, USER, cbor, refusal, toReady, world, type World } from './world';
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -396,5 +397,39 @@ describe('C2 review: an owed account on a new browser, the double submit, the ho
     await w.routes.postTicket().catch(() => undefined);
     expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signup' } });
     expect(factorSetups(w)).toBe(published);
+  });
+});
+
+// S2 review M5: under instance.discovery = "session", GET /v1/instance is E, F; an owed client reads auth_methods with its
+// session. The start's read precedes any session (it names the store), so it carries no bearer.
+describe('the instance read with a session (S2 review M5)', () => {
+  it('an owed client re-reads the instance with its bearer at factor-setup and publishes the methods it answers', async () => {
+    const seen: (string | null)[] = [];
+    const withSession = [...(INSTANCE_DOC as CborInput[])];
+    withSession[7] = [0, 1, 2];
+    const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const bearer = request.headers.get('authorization');
+      seen.push(bearer);
+      // A session-discovery instance answers the session; the anonymous answer stands in for the start's read.
+      return Promise.resolve(cbor(bearer === null ? INSTANCE_DOC : withSession));
+    }) as typeof globalThis.fetch;
+    const w = world({ phase: 2, owed: true, httpInstance: true, fetch });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('factor-setup'));
+    await vi.waitFor(() => expect(w.account()?.instance).toMatchObject({ totp: true, passkeys: true }));
+    expect(seen).toEqual([null, 'Bearer session-token']);
+  });
+
+  it('an account that owes nothing does not read the instance again (control)', async () => {
+    const seen: (string | null)[] = [];
+    const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(input, init).headers.get('authorization'));
+      return Promise.resolve(cbor(INSTANCE_DOC));
+    }) as typeof globalThis.fetch;
+    const w = world({ httpInstance: true, fetch });
+    await toReady(w);
+    expect(seen).toEqual([null]);
+    expect(w.account()?.instance).toMatchObject({ totp: false, passkeys: false });
   });
 });
