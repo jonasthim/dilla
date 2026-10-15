@@ -16,6 +16,7 @@ import (
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/blob"
+	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/gateway"
@@ -90,7 +91,11 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	// The DM call ring (web-3, L-GW-33) delivers op 53 through the gateway; a start that would ring
 	// more users than a call holds rings nobody.
 	ringer := api.NewRinger(p.gw, clk, log).WithMaxUsers(cfg.LiveKit.MaxVoiceParticipants)
-	calls := api.NewCalls(repo, res, tokens, p.calls, clk, log).WithCounters(p.o.Metrics).WithRinger(ringer)
+	// The in-process LiveKit stamps a participant's join with the process's wall clock, never with
+	// Options.Clock: the test host freezes and moves that one (advance_clock, its TOTP picks), and a
+	// leave bound by mixing the two clocks proposes no Remove, so the leaf stays in the call group.
+	calls := api.NewCalls(repo, res, tokens, p.calls, clk, log).WithCounters(p.o.Metrics).WithRinger(ringer).
+		WithSFUClock(clock.System())
 	// A cut device loses the relay with its call session; a nil *RelayRevocations must not become
 	// a non-nil api.RelayRevoker.
 	if p.o.Relay != nil {

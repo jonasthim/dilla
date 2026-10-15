@@ -229,6 +229,9 @@ type Calls struct {
 	// nil rings nobody.
 	ringer *Ringer
 
+	// sfuClk is the clock the SFU stamps a participant's join with (WithSFUClock); nil means clk.
+	sfuClk clock.Clock
+
 	// startHook, set by a test only, runs at named points of start (startStage); endHook likewise at
 	// named points of endCall.
 	startHook func(stage string)
@@ -250,6 +253,23 @@ func (h *Calls) WithRinger(r *Ringer) *Calls {
 type RelayRevoker interface {
 	Revoke(device id.ID, at time.Time)
 	Mint(device id.ID, since time.Time) (issued time.Time, wait time.Duration)
+}
+
+// WithSFUClock sets the clock the SFU stamps a participant's join with and returns h. The
+// in-process LiveKit reads the process's wall clock whatever the instance's clock is; a session's
+// leave is bound to its admission by comparing the two stamps, so they must come from one clock.
+// Unset, the instance's clock stands in (an instance whose clock is the wall clock, a test).
+func (h *Calls) WithSFUClock(c clock.Clock) *Calls {
+	h.sfuClk = c
+	return h
+}
+
+// sfuNow is the SFU clock's now (WithSFUClock), else the instance clock's.
+func (h *Calls) sfuNow() time.Time {
+	if h.sfuClk != nil {
+		return h.sfuClk.Now()
+	}
+	return h.clk.Now()
 }
 
 // WithRelay sets the relay revocation state the cuts feed and returns h.
