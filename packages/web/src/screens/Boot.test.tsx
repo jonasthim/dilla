@@ -86,6 +86,25 @@ describe('Boot', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Error E_WORKER. Reload the page to try again.');
   });
 
+  // C4x (web3.6): a store a newer client wrote (a rollback) is explained with both schema numbers, offers Reload and
+  // never the reset, which would delete the newer client's data.
+  it('explains a store written by a newer version, with both numbers, and offers only Reload', async () => {
+    const reload = vi.spyOn(browser, 'reload').mockImplementation(() => {});
+    const fake = new FakeClient();
+    fake.set('account', account({ phase: 'error',
+      error: { code: 'E_STORE_NEWER', detail: '', status: 0, retryAfterMs: null, store: { found: 5, supported: 4 } } }));
+    const view = render(<div className="d-root"><CoreProvider client={fake}><Boot fatal={null} /></CoreProvider></div>);
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('This version of dilla is too old for the data saved in this browser');
+    expect(status).toHaveTextContent('That data needs data version 5; this version of dilla reads up to 4. Update to the newer version of dilla, or ask the host of this server.');
+    expect(status).not.toHaveTextContent('E_STORE_NEWER');
+    expect(screen.getAllByRole('button').map(b => b.textContent)).toEqual(['Reload']);
+    await expectNoAxeViolations(view.container);
+    await userEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    reload.mockRestore();
+  });
+
   it('reloads from the error splash', async () => {
     const reload = vi.spyOn(browser, 'reload').mockImplementation(() => {});
     show('error');

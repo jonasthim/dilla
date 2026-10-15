@@ -14,7 +14,7 @@ import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import {
-  CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
+  CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
@@ -118,13 +118,16 @@ E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQ
 E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
-E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
+E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
 E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
 export function sanitizeWorkerError(e: unknown): WorkerError {
+  // A store a newer client wrote (C4x): core_open rejects with a plain Error, so it is read from the message here.
+  const store = storeNewerOf(e);
+  if (store !== null) return { code: 'E_STORE_NEWER', detail: '', status: 0, retryAfterMs: null, store };
   let code = 'E_INTERNAL';
   if (e instanceof DillaHttpError || e instanceof CoreError || e instanceof SyncError || e instanceof CborError
     || e instanceof AttachmentError || e instanceof Refusal) code = e.code;
@@ -137,10 +140,14 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
 }
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
+  const store = error.code === 'E_STORE_NEWER' && error.store !== undefined
+    && Number.isSafeInteger(error.store.found) && Number.isSafeInteger(error.store.supported)
+    ? { found: error.store.found, supported: error.store.supported } : null;
   return { code: ALLOWED_CODES.has(error.code) ? error.code : 'E_INTERNAL', detail: '',
     status: Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? error.status : 0,
     retryAfterMs: typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
-      && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null };
+      && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null,
+    ...(store === null ? {} : { store }) };
 }
 
 /** An account code thrown as Error(code) by the account modules (enrol.ts, signup.ts, session.ts). */

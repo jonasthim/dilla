@@ -12,7 +12,9 @@ import { serverNotify } from './serverNotify.ts';
 import { factor } from './factor.ts';
 import { factorSignin } from './factorSignin.ts';
 import { factorSettings } from './factorSettings.ts';
+import { storeNewer } from './storeNewer.ts';
 export const en = {
+  ...storeNewer,
   ...privacy,
   ...admin,
   ...members,

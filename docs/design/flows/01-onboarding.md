@@ -359,6 +359,10 @@ are no single-key shortcuts.
 - Reload while registering when the server had created the account: the worker finishes the sign-up
   (`Signup.resume()` returns 2) and the shell opens directly; step 5 is not shown.
 - When the browser's key is refused for an account that was registered (the stored session proves it), the page shows the `revoked` splash and nothing is deleted.
+- When the data saved in this browser was written by a newer version of dilla (a rollback; the core refuses it
+  untouched with `E_STORE_NEWER`, and `account.error.store` holds the data version it found and the highest this
+  version reads), the boot screen shows the `boot.storeNewer.*` splash with both numbers and one `Reload` button.
+  Nothing is deleted and no reset is offered: the newer version can still open the data.
 
 ## Copy
 
@@ -415,3 +419,6 @@ are no single-key shortcuts.
 | `onboarding.error.network` | `The connection dropped while creating your account. Reload the page to finish.` | danger banner, step 4, `E_NETWORK` or status ≥ 500 |
 | `onboarding.error.reload` | `Reload` | button in the network banner |
 | `onboarding.error.other` | `The account could not be created ({code}). Try again.` | danger banner, step 4, any other refusal |
+| `boot.storeNewer.status` | `This version of dilla is too old for the data saved in this browser` | boot splash status, phase `error` with `E_STORE_NEWER` (v0.1.0-web3.6, C4x) |
+| `boot.storeNewer.detail` | `That data needs data version {found}; this version of dilla reads up to {supported}. Update to the newer version of dilla, or ask the host of this server.` | boot splash detail; `{found}` and `{supported}` are `account.error.store` |
+| `boot.storeNewer.action` | `Reload` | the splash's only button; it reloads the page |

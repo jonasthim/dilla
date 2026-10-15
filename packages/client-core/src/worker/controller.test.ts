@@ -51,6 +51,14 @@ describe('Controller', () => {
     expect(h.locks.requests).toEqual([]);
   });
 
+  it('a store written by a newer client is E_STORE_NEWER with both schema numbers (C4x)', async () => {
+    // core_open rejects with a plain Error carrying the core's ClientError display (dilla-core-wasm facade.rs).
+    const h = harness({ boot: () => Promise.reject(new Error('E_STORE_NEWER: found 5, supported 4')) });
+    h.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(h.account()?.phase).toBe('error'));
+    expect(h.account()?.error).toEqual({ code: 'E_STORE_NEWER', detail: '', status: 0, retryAfterMs: null, store: { found: 5, supported: 4 } });
+  });
+
   it('a store without an identity asks for signup; signupBegin shows the key and signupReset withdraws it', async () => {
     const { core, resets } = stubCore();
     const h = harness({ boot: opened(core) });

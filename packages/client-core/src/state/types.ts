@@ -31,8 +31,10 @@ export interface AccountState {
    *  own signed list (a device this person did not add). null otherwise; re-derived at each trust publish. */
   ownTrust: 'changed' | 'unlisted' | null;
 }
-/** Page-bound errors have a stable code and no detail. */
-export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null; }
+/** Page-bound errors have a stable code and no detail. `store` is set only on E_STORE_NEWER: the app schema of the
+ *  store in this browser and the highest this build supports (C4x, web3.6). */
+export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null;
+  store?: { found: number; supported: number }; }
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;
   reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
 /** owner: the 32-hex user id of the server's owner (GET /v1/communities element 2). The owner holds every permission; the
