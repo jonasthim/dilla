@@ -88,9 +88,15 @@ type Accounts interface {
 	// SetFactorOwed writes users.factor_owed (web3.6 S1); ErrNotFound for an unknown user.
 	SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error
 	// MarkFactorOwedWithoutFactor sets factor_owed on every live human account that holds no
-	// confirmed TOTP secret and no passkey registered for rpID, and returns how many it set. It
-	// only ever sets the flag, never clears it (the boot reconcile, ruling P2).
+	// confirmed TOTP secret and no passkey registered for rpID, and returns how many it set (the
+	// boot reconcile's first half).
 	MarkFactorOwedWithoutFactor(ctx context.Context, rpID string) (int64, error)
+	// ClearFactorOwedWithFactor clears factor_owed on every live human account that holds a
+	// confirmed TOTP secret or a passkey registered for rpID, and returns how many it cleared (the
+	// boot reconcile's second half, web3.6 review I2): owed holds exactly when no usable factor is
+	// held. A concurrent operator reset deletes the factors in the transaction that sets the flag
+	// and under the user's row lock, so it never leaves a row this clears.
+	ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int64, error)
 }
 
 type Devices interface {

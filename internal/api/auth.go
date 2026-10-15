@@ -1508,6 +1508,35 @@ func (d Deps) settleFirstFactor(ctx context.Context, tx store.Repository, userID
 	return codes, nil
 }
 
+// settleOwedHolder clears the owed mark of an account that holds a usable factor and reports
+// whether it did. The check and the write are one transaction under the user lock, which the
+// operator reset takes too before it deletes the factors and sets the mark: a reset is wholly
+// before the check (no factor, nothing cleared) or waits for the commit (and then sets the mark
+// again), so it never ends with an owed account cleared.
+func (d Deps) settleOwedHolder(ctx context.Context, userID id.ID) (bool, error) {
+	settled := false
+	err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
+			return err
+		}
+		u, err := tx.GetUser(ctx, userID)
+		if err != nil || !u.FactorOwed {
+			settled = err == nil
+			return err
+		}
+		holds, err := holdsFactor(ctx, tx, userID, d.rpID())
+		if err != nil || !holds {
+			return err
+		}
+		if err := tx.SetFactorOwed(ctx, userID, false); err != nil {
+			return err
+		}
+		settled = true
+		return nil
+	})
+	return settled, err
+}
+
 // stringsAny is a []string as the CBOR array the wire carries ([] for none, never null).
 func stringsAny(in []string) []any {
 	out := make([]any, 0, len(in))
@@ -1755,6 +1784,10 @@ func (d Deps) FinishPasskeyStepUp(w http.ResponseWriter, r *http.Request) {
 // Factors is GET /v1/auth/factors → [owed(uint), totp(uint|null), passkeys([[cred_id(bstr),
 // name(tstr), created(uint), last_used(uint|null)]]), backup_codes_left(uint), password(uint)].
 // totp is the confirmed_at of a CONFIRMED secret, else null; passkeys are this rp_id's, by created.
+//
+// An account marked as owing a factor that holds a usable one is settled here (web3.6 review I2):
+// owed means no usable factor is held, and the mark can outlive that (an rp_id changed and put
+// back, before the restart whose reconcile clears it), leaving a forced set-up that cannot finish.
 func (d Deps) Factors(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -1766,6 +1799,14 @@ func (d Deps) Factors(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	if u.FactorOwed {
+		settled, err := d.settleOwedHolder(ctx, sess.UserID)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		u.FactorOwed = !settled
 	}
 	var totp any
 	switch row, err := d.Repo.GetTOTP(ctx, sess.UserID); {

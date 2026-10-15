@@ -384,10 +384,9 @@ func TestTheGatewayRefusesAnAccountThatOwesASecondFactor(t *testing.T) {
 	dialReady(t, ctx, ts, token)
 }
 
-// The boot reconcile (ruling P2): a start marks every live human account that holds no usable
-// factor, a passkey under another rp_id being no usable factor, and says how many at info. It
-// never clears the flag; an account with a factor under this rp_id or a confirmed TOTP is left
-// alone.
+// The boot reconcile: a start marks every live human account that holds no usable factor, a
+// passkey under another rp_id being no usable factor, and clears the mark from every one that
+// holds a usable factor (web3.6 review I2), and says how many of each at info.
 func TestTheBootReconcileMarksAnAccountWithoutAUsableFactor(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Log.Level = "warn"
@@ -424,8 +423,9 @@ func TestTheBootReconcileMarksAnAccountWithoutAUsableFactor(t *testing.T) {
 		Period: 30, Algorithm: "SHA1", ConfirmedAt: &confirmed, Created: now}); err != nil {
 		t.Fatalf("PutTOTP: %v", err)
 	}
-	stillOwed := user("still-owed", true)
-	passkey(stillOwed, rp, 0x83)
+	settled := user("settled", true)
+	passkey(settled, rp, 0x83)
+	bare := user("bare", true)
 	if err := first.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -444,7 +444,8 @@ func TestTheBootReconcileMarksAnAccountWithoutAUsableFactor(t *testing.T) {
 		{"a passkey only under old.example", moved, true},
 		{"a passkey under the instance's rp_id", current, false},
 		{"a confirmed TOTP", totp, false},
-		{"already owed, holding a passkey", stillOwed, true},
+		{"marked as owing, holding a passkey under the instance's rp_id", settled, false},
+		{"marked as owing, holding nothing", bare, true},
 	} {
 		u, err := second.Repo().GetUser(ctx, c.user)
 		if err != nil {
@@ -454,7 +455,10 @@ func TestTheBootReconcileMarksAnAccountWithoutAUsableFactor(t *testing.T) {
 			t.Errorf("%s: factor_owed = %v after the restart, want %v", c.name, u.FactorOwed, c.want)
 		}
 	}
-	if !logs.has(slog.LevelInfo, "second factor", map[string]string{"accounts": "1"}) {
+	if !logs.has(slog.LevelInfo, "now owe one", map[string]string{"accounts": "1"}) {
 		t.Fatalf("the restart did not log the one account it marked at info: %v", logs.messages())
+	}
+	if !logs.has(slog.LevelInfo, "no longer owe one", map[string]string{"accounts": "1"}) {
+		t.Fatalf("the restart did not log the one account it cleared at info: %v", logs.messages())
 	}
 }

@@ -242,6 +242,13 @@ func (r *Repo) MarkFactorOwedWithoutFactor(ctx context.Context, rpID string) (in
 	return n, wrap(err)
 }
 
+// ClearFactorOwedWithFactor is one statement: SQLite has one writer, so an operator reset's
+// transaction is either wholly before it or wholly after it.
+func (r *Repo) ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int64, error) {
+	n, err := r.w.ClearFactorOwedWithFactor(ctx, sqlitedb.ClearFactorOwedWithFactorParams{RpID: rpID})
+	return n, wrap(err)
+}
+
 // boolInt is a 0/1 flag column's value.
 func boolInt(b bool) int64 {
 	if b {

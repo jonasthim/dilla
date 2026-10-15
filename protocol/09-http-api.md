@@ -222,7 +222,7 @@ full contract.
 | `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]`; the user's credentials are excluded; `409 E_INVALID_REQUEST` when the account already holds 1024 passkeys (checked before the step-up token is spent) |
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id, response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]`; `name` is 1–64 bytes of UTF-8 without control characters (`400` otherwise, the ceremony kept); an unknown, spent or expired ceremony, another account's, or a response that does not verify is `400 E_INVALID_REQUEST` (another account's ceremony is not spent); clears `factor_owed`; `403 E_STEP_UP` as for confirm; `409 E_INVALID_REQUEST` at 1024 passkeys |
 | `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold; `429 E_RATE_LIMITED`, and no assertion, when it would owe 1 while the account is locked out |
-| `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint)]` |
+| `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint)]`; an account marked as owing that holds a factor is cleared first and answers `owed` 0 (§ Second factors) |
 | `POST /v1/auth/stepup` | E | `[method(uint 0 password\|1 totp\|2 backup code), secret(tstr)]` | `201 [stepup(tstr), expires(uint)]`; a wrong secret is `403 E_STEP_UP`; `429 E_RATE_LIMITED` with `retry_after_ms` from the failure that crosses the step-up ledger's free attempts on, or while the client address's login failure budget is spent; `400 E_INVALID_REQUEST` for another method |
 | `POST /v1/auth/stepup/passkey/begin` | E | `[]` | `[ceremony_id, options]` (this user's credentials only; UV required); `400 E_INVALID_REQUEST` for an account that holds no passkey |
 | `POST /v1/auth/stepup/passkey/finish` | E | `[ceremony_id, response]` | `201 [stepup, expires]`; `403 E_STEP_UP` for a login's ceremony, another account's, or an assertion that does not verify; `429` as for `/stepup` |
@@ -236,6 +236,14 @@ full contract.
 - An account that holds no factor **owes** one (`factor_owed`, § Sessions). The TOTP confirm and
   the passkey finish write the factor, clear `factor_owed` and mint backup codes in one
   transaction under the account's lock.
+- **`factor_owed` follows what the account holds.** At every start, before it serves, `dillad`
+  reconciles it both ways: it marks every live human account that holds no factor and clears it
+  from every one that holds one. A passkey counts only under the current `rp_id`, so changing
+  `rp_id` marks an account whose only factor is a passkey, and putting it back (and restarting)
+  clears it. `GET /v1/auth/factors` also clears it, and answers `owed` 0, when it finds the
+  account holds a factor (checked and written in one transaction under the account's lock). An
+  operator reset deletes the factors and sets the mark in one transaction under that lock, so
+  neither clears a mark a reset set.
 - **Step-up:** required by enroll, register/begin, remove and codes exactly when the caller's
   account holds a factor; a token is single-use, bound to the session that minted it, and lives
   300 s; only the routes above spend one. The confirm and finish re-check the rule under the

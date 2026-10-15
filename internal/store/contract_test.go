@@ -39,6 +39,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"TombstoneUser",
 			// dilla web3.6 S1: the owed second factor and its boot reconcile.
 			"MarkFactorOwedWithoutFactor", "SetFactorOwed",
+			// web3.6 review I2: the reconcile clears the mark from an account that holds a factor.
+			"ClearFactorOwedWithFactor",
 		}},
 		{"Devices", reflect.TypeOf((*store.Devices)(nil)).Elem(), []string{
 			"CreateDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",

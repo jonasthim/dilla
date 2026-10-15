@@ -243,6 +243,35 @@ func (r *Repo) MarkFactorOwedWithoutFactor(ctx context.Context, rpID string) (in
 	return n, wrap(err)
 }
 
+// ClearFactorOwedWithFactor locks the owed accounts' rows before the UPDATE, in one transaction.
+// Under READ COMMITTED the UPDATE's subqueries read the factor tables at its own snapshot and are
+// not re-read when it waits on a row: without the lock, an operator reset that commits between
+// that snapshot and the row lock would have its just-deleted factors count, and the mark it set
+// would be cleared. The reset takes the same row lock first (LockUserForDeviceRegistration), so
+// with it a reset is wholly before the UPDATE's snapshot or waits for this commit.
+func (r *Repo) ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int64, error) {
+	var n int64
+	settle := func(q *Repo) error {
+		if _, err := q.w.LockOwedHumans(ctx); err != nil {
+			return wrap(err)
+		}
+		var err error
+		n, err = q.w.ClearFactorOwedWithFactor(ctx, pgdb.ClearFactorOwedWithFactorParams{RpID: rpID})
+		return wrap(err)
+	}
+	if r.inTx {
+		return n, settle(r)
+	}
+	err := r.Tx(ctx, func(tx store.Repository) error {
+		q, ok := tx.(*Repo)
+		if !ok {
+			return errors.New("store: ClearFactorOwedWithFactor: the transaction is not a postgres Repo")
+		}
+		return settle(q)
+	})
+	return n, err
+}
+
 // boolInt is a 0/1 flag column's value.
 func boolInt(b bool) int64 {
 	if b {

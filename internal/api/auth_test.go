@@ -1078,6 +1078,32 @@ func TestTheFactorsListDescribesTheAccount(t *testing.T) {
 	}
 }
 
+// web3.6 review I2: an account marked as owing a factor that holds a usable one (an rp_id changed
+// and put back, before the restart that reconciles it) is settled by reading its factors: the
+// list answers owed 0 and the mark is gone, so the forced set-up finishes without the step-up
+// the owed account could not get. One that holds none stays owed.
+func TestReadingTheFactorsOfAnOwedHolderSettlesIt(t *testing.T) {
+	h, deps := newPasskeyAPI(t)
+	u, _, token := seedAPISession(t, deps)
+	enrolTOTP(t, h, deps, token)
+	owe(t, deps, u.ID)
+	if f := getFactors(t, h, token); f[0] != uint64(0) || f[1] == nil {
+		t.Fatalf("an owed account holding a confirmed TOTP lists %#v, want owed 0 and the TOTP", f)
+	}
+	if got, err := deps.Repo.GetUser(context.Background(), u.ID); err != nil || got.FactorOwed {
+		t.Fatalf("after the read, factor_owed = %v (%v), want false", got.FactorOwed, err)
+	}
+	if res := getAuth(h, "/v1/devices", token); res.Code != http.StatusOK {
+		t.Fatalf("GET /v1/devices after the read = %d (%x), want 200", res.Code, res.Body.Bytes())
+	}
+
+	bare, _, bareToken := seedAPISession(t, deps)
+	owe(t, deps, bare.ID)
+	if f := getFactors(t, h, bareToken); f[0] != uint64(1) {
+		t.Fatalf("an owed account with no factor lists owed %#v, want 1", f[0])
+	}
+}
+
 // Under instance.discovery = "session" the discovery document is `E, F`: a
 // client setting up a factor reads auth_methods.
 func TestAnOwedSessionReadsTheInstanceDocumentUnderSessionDiscovery(t *testing.T) {

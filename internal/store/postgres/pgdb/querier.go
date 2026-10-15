@@ -20,6 +20,13 @@ type Querier interface {
 	// An adopted heal. The deadline goes with the flag: closeUnhealedGroups reads the pair, and a
 	// healed group that kept its deadline would be one restart away from looking overdue again.
 	ClearEpochUnknown(ctx context.Context, arg ClearEpochUnknownParams) error
+	// The boot reconcile's second half (web3.6 review I2): an account marked as owing a factor that
+	// holds a confirmed TOTP secret or a passkey registered for the instance's rp_id owes nothing, so
+	// owed holds exactly when no usable factor is held. It is what an rp_id changed and then put back
+	// needs: the first start marks the passkey-only accounts, the start after the revert clears them.
+	// The operator reset deletes the factors in the transaction that sets the flag, so it never
+	// leaves a row this clears.
+	ClearFactorOwedWithFactor(ctx context.Context, arg ClearFactorOwedWithFactorParams) (int64, error)
 	ClearLoginFailures(ctx context.Context, arg ClearLoginFailuresParams) error
 	CloseGroup(ctx context.Context, arg CloseGroupParams) error
 	ConfirmBlobRef(ctx context.Context, arg ConfirmBlobRefParams) (int64, error)
@@ -229,6 +236,11 @@ type Querier interface {
 	// a ban under READ COMMITTED. FOR NO KEY UPDATE: two lockers conflict, while the
 	// FOR KEY SHARE a foreign-key check on members or channels takes does not.
 	LockCommunity(ctx context.Context, arg LockCommunityParams) (id.ID, error)
+	// Taken in ClearFactorOwedWithFactor's transaction before the UPDATE: the operator reset takes the
+	// same row lock first, so a reset committed before this lock is seen by the UPDATE's snapshot and
+	// one started after it waits. Without it a reset could commit between the UPDATE's snapshot and
+	// its row lock, and the UPDATE would clear the mark from factors the reset had just deleted.
+	LockOwedHumans(ctx context.Context) ([]id.ID, error)
 	// The row lock serializes count and insert for one user until Tx commits.
 	LockUserForDeviceRegistration(ctx context.Context, arg LockUserForDeviceRegistrationParams) (id.ID, error)
 	// Invariant 11's first half, as ONE statement rather than a paged loop: a restore runs once and
@@ -239,9 +251,8 @@ type Querier interface {
 	// Sets the mark only when no reference is left, and only when it is not already set, so a
 	// repeated delete cannot push collection back.
 	MarkBlobUnreferenced(ctx context.Context, arg MarkBlobUnreferencedParams) error
-	// The boot reconcile (web3.6 S1, ruling P2): every live human account that holds no confirmed
-	// TOTP secret and no passkey registered for the instance's rp_id owes a second factor. It only
-	// ever sets the flag: an account that owes one stays owed until a factor is added.
+	// The boot reconcile's first half (web3.6 S1): every live human account that holds no confirmed
+	// TOTP secret and no passkey registered for the instance's rp_id owes a second factor.
 	MarkFactorOwedWithoutFactor(ctx context.Context, arg MarkFactorOwedWithoutFactorParams) (int64, error)
 	// The highest seq PruneAppMessages' DELIVERY triggers are about to delete with the same arguments,
 	// or 0. The store runs it in PruneAppMessages' transaction and raises pruned_below to it before the

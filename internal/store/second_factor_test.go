@@ -1,7 +1,7 @@
 package store_test
 
 // second_factor_test.go pins web3.6 S1's store half: users.factor_owed, its backfill in migration
-// 00017, the boot reconcile (MarkFactorOwedWithoutFactor, ruling P2: it only ever sets the flag),
+// 00017, the boot reconcile (MarkFactorOwedWithoutFactor sets the flag, ClearFactorOwedWithFactor clears it),
 // the flag riding along on GetSessionByHash, and the factor deletes S2 and S3 build on.
 
 import (
@@ -174,8 +174,68 @@ func checkBackfill(ctx context.Context, t *testing.T, p *goose.Provider, repo st
 	}
 }
 
-// The boot reconcile (ruling P2) marks an account whose only passkey is under another rp_id, and
-// only ever sets the flag.
+// The reconcile's second half (web3.6 review I2) clears the mark from an owed account that holds a
+// usable factor, and from no other. The revert row: an rp_id changed (the mark is set) and then
+// put back (the mark is cleared).
+func TestClearFactorOwedWithFactorClearsOnlyAHolder(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			reverted := factorUser(ctx, t, repo, 0, false)
+			putPasskey(ctx, t, repo, reverted, "dilla.example", bytes.Repeat([]byte{0x41}, 32))
+			if n, err := repo.MarkFactorOwedWithoutFactor(ctx, "mistyped.example"); err != nil || n != 1 {
+				t.Fatalf("the reconcile under the mistyped rp_id = %d, %v; want 1, nil", n, err)
+			}
+			if n, err := repo.ClearFactorOwedWithFactor(ctx, "mistyped.example"); err != nil || n != 0 {
+				t.Fatalf("the clear under the mistyped rp_id = %d, %v; want 0, nil", n, err)
+			}
+			if !owed(ctx, t, repo, reverted) {
+				t.Fatal("the mistyped rp_id did not mark the passkey-only account")
+			}
+
+			withTOTP := factorUser(ctx, t, repo, 0, true)
+			putTOTP(ctx, t, repo, withTOTP, true)
+			otherRP := factorUser(ctx, t, repo, 0, true)
+			putPasskey(ctx, t, repo, otherRP, "old.example", bytes.Repeat([]byte{0x42}, 32))
+			unconfirmed := factorUser(ctx, t, repo, 0, true)
+			putTOTP(ctx, t, repo, unconfirmed, false)
+			bare := factorUser(ctx, t, repo, 0, true)
+
+			// The rp_id is put back.
+			if _, err := repo.MarkFactorOwedWithoutFactor(ctx, "dilla.example"); err != nil {
+				t.Fatalf("MarkFactorOwedWithoutFactor: %v", err)
+			}
+			n, err := repo.ClearFactorOwedWithFactor(ctx, "dilla.example")
+			if err != nil {
+				t.Fatalf("ClearFactorOwedWithFactor: %v", err)
+			}
+			if n != 2 {
+				t.Errorf("ClearFactorOwedWithFactor cleared %d accounts, want 2 (the reverted passkey and the TOTP)", n)
+			}
+			for _, c := range []struct {
+				name string
+				user id.ID
+				want bool
+			}{
+				{"a passkey under dilla.example, after the revert", reverted, false},
+				{"an owed user holding a confirmed TOTP", withTOTP, false},
+				{"a passkey only under old.example", otherRP, true},
+				{"an unconfirmed TOTP", unconfirmed, true},
+				{"no factor", bare, true},
+			} {
+				if got := owed(ctx, t, repo, c.user); got != c.want {
+					t.Errorf("%s: factor_owed = %v after the reconcile, want %v", c.name, got, c.want)
+				}
+			}
+			if n, err := repo.ClearFactorOwedWithFactor(ctx, "dilla.example"); err != nil || n != 0 {
+				t.Fatalf("a second clear = %d, %v; want 0, nil", n, err)
+			}
+		})
+	}
+}
+
+// The boot reconcile's first half marks an account whose only passkey is under another rp_id, and
+// only ever sets the flag (the second half, ClearFactorOwedWithFactor, clears it).
 func TestMarkFactorOwedWithoutFactorOnlySetsTheFlag(t *testing.T) {
 	for engine, repo := range engines(t) {
 		t.Run(engine, func(t *testing.T) {
@@ -187,7 +247,7 @@ func TestMarkFactorOwedWithoutFactorOnlySetsTheFlag(t *testing.T) {
 			putPasskey(ctx, t, repo, currentRP, "dilla.example", bytes.Repeat([]byte{0x22}, 32))
 			totp := factorUser(ctx, t, repo, 0, false)
 			putTOTP(ctx, t, repo, totp, true)
-			// Owed and holding a factor: the reconcile never clears.
+			// Owed and holding a factor: this half never clears.
 			owedWithTOTP := factorUser(ctx, t, repo, 0, true)
 			putTOTP(ctx, t, repo, owedWithTOTP, true)
 			unconfirmed := factorUser(ctx, t, repo, 0, false)

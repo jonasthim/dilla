@@ -12,6 +12,31 @@ import (
 	id "github.com/jonasthim/dilla/internal/id"
 )
 
+const clearFactorOwedWithFactor = `-- name: ClearFactorOwedWithFactor :execrows
+UPDATE users SET factor_owed = 0
+ WHERE kind = 0 AND deleted_at IS NULL AND factor_owed = 1
+   AND (id IN (SELECT t.user_id FROM totp_secrets t WHERE t.confirmed_at IS NOT NULL)
+        OR id IN (SELECT w.user_id FROM webauthn_credentials w WHERE w.rp_id = $1))
+`
+
+type ClearFactorOwedWithFactorParams struct {
+	RpID string
+}
+
+// The boot reconcile's second half (web3.6 review I2): an account marked as owing a factor that
+// holds a confirmed TOTP secret or a passkey registered for the instance's rp_id owes nothing, so
+// owed holds exactly when no usable factor is held. It is what an rp_id changed and then put back
+// needs: the first start marks the passkey-only accounts, the start after the revert clears them.
+// The operator reset deletes the factors in the transaction that sets the flag, so it never
+// leaves a row this clears.
+func (q *Queries) ClearFactorOwedWithFactor(ctx context.Context, arg ClearFactorOwedWithFactorParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearFactorOwedWithFactor, arg.RpID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const createUser = `-- name: CreateUser :exec
 INSERT INTO users (id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
@@ -156,6 +181,37 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]Users, 
 	return items, nil
 }
 
+const lockOwedHumans = `-- name: LockOwedHumans :many
+SELECT id FROM users WHERE kind = 0 AND deleted_at IS NULL AND factor_owed = 1 FOR UPDATE
+`
+
+// Taken in ClearFactorOwedWithFactor's transaction before the UPDATE: the operator reset takes the
+// same row lock first, so a reset committed before this lock is seen by the UPDATE's snapshot and
+// one started after it waits. Without it a reset could commit between the UPDATE's snapshot and
+// its row lock, and the UPDATE would clear the mark from factors the reset had just deleted.
+func (q *Queries) LockOwedHumans(ctx context.Context) ([]id.ID, error) {
+	rows, err := q.db.QueryContext(ctx, lockOwedHumans)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []id.ID{}
+	for rows.Next() {
+		var id id.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markFactorOwedWithoutFactor = `-- name: MarkFactorOwedWithoutFactor :execrows
 UPDATE users SET factor_owed = 1
  WHERE kind = 0 AND deleted_at IS NULL AND factor_owed = 0
@@ -167,9 +223,8 @@ type MarkFactorOwedWithoutFactorParams struct {
 	RpID string
 }
 
-// The boot reconcile (web3.6 S1, ruling P2): every live human account that holds no confirmed
-// TOTP secret and no passkey registered for the instance's rp_id owes a second factor. It only
-// ever sets the flag: an account that owes one stays owed until a factor is added.
+// The boot reconcile's first half (web3.6 S1): every live human account that holds no confirmed
+// TOTP secret and no passkey registered for the instance's rp_id owes a second factor.
 func (q *Queries) MarkFactorOwedWithoutFactor(ctx context.Context, arg MarkFactorOwedWithoutFactorParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, markFactorOwedWithoutFactor, arg.RpID)
 	if err != nil {

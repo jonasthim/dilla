@@ -555,11 +555,14 @@ factor up, until it adds one. This section is what the operator does about that.
   confirmed TOTP secret and no passkey. Those people are not signed out; every browser of theirs stops at "Add a
   second factor" until they add one. Tell your members before you upgrade, and ask them to open Settings → Sign-in
   afterwards.
-- At every start `dillad serve` marks again any live human account that holds no usable factor, and logs
-  "accounts without a usable second factor now owe one". A usable passkey is one registered under the current
-  `auth.webauthn.rp_id`, so changing `rp_id` (below) makes every account whose only factor is a passkey owe a new one,
-  and so does restoring an archive made before web-3.6. The reconcile only ever sets the flag; adding a factor clears
-  it.
+- At every start, before it serves, `dillad serve` reconciles the flag both ways. It marks any live human account
+  that holds no usable factor and logs "accounts without a usable second factor now owe one", and it clears the flag
+  from any marked account that holds a usable factor and logs "accounts that hold a usable second factor no longer
+  owe one". A usable passkey is one registered under the current `auth.webauthn.rp_id`, so changing `rp_id` (below)
+  makes every account whose only factor is a passkey owe a new one, and so does restoring an archive made before
+  web-3.6. **If you changed `rp_id` by mistake, put the old value back and restart:** the passkeys count again and
+  the flag is cleared. Adding a factor clears the flag at once, and so does a browser reading its factors while the
+  account holds one.
 - There is no switch that turns the requirement off.
 
 ### The configuration it needs

@@ -6,7 +6,8 @@
 -- (protocol/09 § Sessions, the `F` and `P` routes; protocol/02 § Device sessions) until it holds a
 -- confirmed TOTP secret or a passkey. POST /v1/accounts writes 1 for a human account; adding the
 -- first factor clears it; the boot reconcile (MarkFactorOwedWithoutFactor) sets it again on any
--- live human account that holds no usable factor, and never clears it.
+-- live human account that holds no usable factor, and ClearFactorOwedWithFactor clears it from
+-- any that holds one.
 ALTER TABLE users ADD COLUMN factor_owed INTEGER NOT NULL DEFAULT 0 CHECK (factor_owed IN (0, 1));
 
 -- Backfill (data, not schema)
