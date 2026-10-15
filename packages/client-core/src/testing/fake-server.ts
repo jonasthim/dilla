@@ -35,8 +35,14 @@ export const FAKE_TOTP_CODE = '123456';
 /** The setup key the fake's enrol answers. */
 export const FAKE_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
 export const FAKE_STEP_UP_EXPIRES_S = 300;
-/** dillad's step-up ledger: four free failures; the fifth is itself 429 (Throttle.RecordFailure locks on it). */
-const STEP_UP_FREE_ATTEMPTS = 4;
+/** dillad's lockout (auth.lockout defaults): four free failures, the fifth is itself 429, and a failure counts for the
+ *  observation window of 15 minutes. The fake holds a lockout until the failures age out of the window, which is stricter
+ *  than dillad's growing lockouts (one attempt passes each time a lockout runs out). It has one client address, so dillad's
+ *  per-address budgets (the login_failed bucket the step-up gate peeks) are not modelled. */
+const FREE_ATTEMPTS = 4;
+const OBSERVATION_WINDOW_S = 900;
+/** The passkeys one account may hold (dillad MaxPasskeys, the client's PASSKEYS_MAX). */
+const MAX_PASSKEYS = 1024;
 const BACKUP_CODES = 10;
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 /** What one account holds: an app (totpCode), passkeys, unused backup codes, and the owed flag. */
@@ -95,7 +101,12 @@ export class FakeServer {
   private readonly factorStates = new Map<string, FakeFactorState>();
   /** Step-up tokens: token → the username and the session token they were issued to. Single use. */
   private readonly stepUps = new Map<string, { username: string; session: string }>();
+  /** Step-up failures of this (the one) client address per account: a success clears them. */
   private readonly stepUpFailures = new Map<string, number>();
+  /** dillad's account-wide step-up ledger: failure times from every address; a success never clears it. */
+  private readonly stepUpAccount = new Map<string, number[]>();
+  /** dillad's account login ledger (the lockout): failure times of password logins and second-factor codes. */
+  private readonly loginFailures = new Map<string, number[]>();
   /** Open WebAuthn ceremonies: the id (hex) → what it is for and for whom. */
   private readonly ceremonies = new Map<string, { kind: 'register' | 'login' | 'stepup'; username: string | null; steppedUp: boolean }>();
   private stepUpN = 0;
@@ -400,9 +411,12 @@ export class FakeServer {
       const body = arr(decode(r.body), 2);
       const username = str(body[0] ?? null);
       const password = str(body[1] ?? null);
+      // The standing lockout gate before the password is looked at; the ledger is cleared only by a login owing nothing.
+      if (this.loginLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
       const stored = this.passwords.get(username);
-      if (stored === undefined || stored.password !== password) return refuse(401, 'E_UNAUTHENTICATED');
+      if (stored === undefined || stored.password !== password) return this.loginFailure(username);
       const needs = this.needsOf(username);
+      if (needs === 0) this.loginFailures.delete(username);
       return reply(200, [this.assertion(username, needs), needs]);
     }
     if (line === 'POST /v1/auth/totp/verify') {
@@ -411,8 +425,11 @@ export class FakeServer {
       const code = str(body[1] ?? null);
       const assertion = this.activeAssertions.get(value);
       this.activeAssertions.delete(value);
-      if (assertion === undefined || assertion.needs !== 1 || !this.spendTotp(assertion.user, code))
-        return refuse(401, 'E_UNAUTHENTICATED');
+      if (assertion === undefined || assertion.needs !== 1) return refuse(401, 'E_UNAUTHENTICATED');
+      // dillad: a locked account is refused before its code is looked at; the assertion is already spent.
+      if (this.loginLocked(assertion.user)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
+      if (!this.spendTotp(assertion.user, code)) return this.loginFailure(assertion.user);
+      this.loginFailures.delete(assertion.user);
       return reply(200, [this.assertion(assertion.user, 0)]);
     }
     if (line === 'POST /v1/auth/recovery/verify') {
@@ -422,10 +439,12 @@ export class FakeServer {
       const assertion = this.activeAssertions.get(value);
       this.activeAssertions.delete(value);
       if (assertion === undefined || assertion.needs === 0) return refuse(401, 'E_UNAUTHENTICATED');
+      if (this.loginLocked(assertion.user)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
       const state = this.factorsOf(assertion.user);
       const at = state.codes.indexOf(code);
-      if (at < 0) return refuse(401, 'E_UNAUTHENTICATED');
+      if (at < 0) return this.loginFailure(assertion.user);
       state.codes.splice(at, 1);
+      this.loginFailures.delete(assertion.user);
       return reply(200, [this.assertion(assertion.user, 0)]);
     }
     if (line === 'POST /v1/auth/passkey/login/begin') {
@@ -443,8 +462,11 @@ export class FakeServer {
       for (const account of this.accounts.values()) {
         const held = this.factorsOf(account.username).passkeys.find((k) => toHex(k.credId) === credHex);
         if (held === undefined) continue;
-        held.lastUsed = this.nowS;
         const needs = flagText === 'nouv' ? 1 : 0;
+        // dillad: a login that would owe a code the lockout forbids guessing gets no assertion; a complete one clears it.
+        if (needs === 1 && this.loginLocked(account.username)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
+        if (needs === 0) this.loginFailures.delete(account.username);
+        held.lastUsed = this.nowS;
         return reply(200, [this.assertion(account.username, needs), needs]);
       }
       return refuse(401, 'E_PASSKEY_UNKNOWN');
@@ -634,6 +656,10 @@ export class FakeServer {
     out.set(new TextEncoder().encode(id.slice(0, 16)));
     return out;
   }
+  private peekCeremony(raw: CborValue): { kind: 'register' | 'login' | 'stepup'; username: string | null } | undefined {
+    if (!(raw instanceof Uint8Array)) return undefined;
+    return this.ceremonies.get(new TextDecoder().decode(raw).replace(/\0+$/, ''));
+  }
   private takeCeremony(raw: CborValue, kind: 'register' | 'login' | 'stepup'): { username: string | null; steppedUp: boolean } | null {
     if (!(raw instanceof Uint8Array)) return null;
     const id = new TextDecoder().decode(raw).replace(/\0+$/, '');
@@ -649,14 +675,42 @@ export class FakeServer {
     this.stepUps.delete(token);
     return true;
   }
-  private stepUpLocked(username: string): boolean {
-    return (this.stepUpFailures.get(username) ?? 0) >= STEP_UP_FREE_ATTEMPTS + 1;
+  private recent(ledger: Map<string, number[]>, username: string): number[] {
+    const kept = (ledger.get(username) ?? []).filter((at) => at > this.nowS - OBSERVATION_WINDOW_S);
+    ledger.set(username, kept);
+    return kept;
   }
-  /** A failed step-up (secret or passkey): 403 E_STEP_UP, or 429 on the failure that passes the free attempts. */
+  /** Step-up failures made at other client addresses: they count on the account-wide ledger only. */
+  stepUpFailuresElsewhere(username: string, count: number): void {
+    for (let i = 0; i < count; i += 1) this.recent(this.stepUpAccount, username).push(this.nowS);
+  }
+  private stepUpLocked(username: string): boolean {
+    return (this.stepUpFailures.get(username) ?? 0) > FREE_ATTEMPTS || this.recent(this.stepUpAccount, username).length > FREE_ATTEMPTS;
+  }
+  /** A failed step-up guess (a secret, a passkey or an old password): counted on both ledgers; true when it locks them. */
+  private stepUpFail(username: string): boolean {
+    const here = (this.stepUpFailures.get(username) ?? 0) + 1;
+    this.stepUpFailures.set(username, here);
+    const all = this.recent(this.stepUpAccount, username);
+    all.push(this.nowS);
+    return here > FREE_ATTEMPTS || all.length > FREE_ATTEMPTS;
+  }
+  /** 403 E_STEP_UP, or 429 on the failure that passes the free attempts. */
   private stepUpFailure(username: string): Response {
-    const failures = (this.stepUpFailures.get(username) ?? 0) + 1;
-    this.stepUpFailures.set(username, failures);
-    return failures > STEP_UP_FREE_ATTEMPTS ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_STEP_UP');
+    return this.stepUpFail(username) ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_STEP_UP');
+  }
+  /** A success clears this address's count only; the account-wide one ages out. */
+  private stepUpPass(username: string): void {
+    this.stepUpFailures.delete(username);
+  }
+  private loginLocked(username: string): boolean {
+    return this.recent(this.loginFailures, username).length > FREE_ATTEMPTS;
+  }
+  /** A wrong password or second-factor code: 401, or 429 on the failure that locks the account. */
+  private loginFailure(username: string): Response {
+    const all = this.recent(this.loginFailures, username);
+    all.push(this.nowS);
+    return all.length > FREE_ATTEMPTS ? refuse(429, 'E_RATE_LIMITED', '', 30_000) : refuse(401, 'E_UNAUTHENTICATED');
   }
   private issueStepUp(username: string, session: string | null): Response {
     const token = `su-${++this.stepUpN}`;
@@ -702,6 +756,8 @@ export class FakeServer {
         return reply(200, [state.codes.length === 0 ? this.mintCodes(username) : []]);
       }
       case 'POST /v1/auth/passkey/register/begin': {
+        // dillad: the cap before any token is spent.
+        if (state.passkeys.length >= MAX_PASSKEYS) return refuse(409, 'E_INVALID_REQUEST', 'this account holds the most passkeys it may');
         if (held && !this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
         const id = `r-${++this.ceremonyN}`;
         this.ceremonies.set(id, { kind: 'register', username, steppedUp: held });
@@ -712,9 +768,14 @@ export class FakeServer {
         // other account's ceremony is one answer, 400 E_INVALID_REQUEST.
         const name = body[2] ?? null;
         if (!validPasskeyName(name) || typeof name !== 'string') return refuse(400, 'E_INVALID_REQUEST');
+        // Another account's ceremony is refused before it is taken, so the account that began it can still finish it.
+        const open = this.peekCeremony(body[0] ?? null);
+        if (open !== undefined && open.kind === 'register' && open.username !== username)
+          return refuse(400, 'E_INVALID_REQUEST', 'the registration response was not accepted');
         const ceremony = this.takeCeremony(body[0] ?? null, 'register');
         if (ceremony === null || ceremony.username !== username) return refuse(400, 'E_INVALID_REQUEST', 'the registration response was not accepted');
         if (held && !ceremony.steppedUp) return refuse(403, 'E_STEP_UP');
+        if (state.passkeys.length >= MAX_PASSKEYS) return refuse(409, 'E_INVALID_REQUEST', 'this account holds the most passkeys it may');
         const credId = this.addPasskey(username, name);
         state.owed = false;
         return reply(200, [credId, state.codes.length === 0 ? this.mintCodes(username) : []]);
@@ -731,7 +792,7 @@ export class FakeServer {
           if (at >= 0) { state.codes.splice(at, 1); ok = true; }
         }
         if (!ok) return this.stepUpFailure(username);
-        this.stepUpFailures.delete(username);
+        this.stepUpPass(username);
         return this.issueStepUp(username, session);
       }
       case 'POST /v1/auth/stepup/passkey/begin': {
@@ -747,8 +808,28 @@ export class FakeServer {
         if (ceremony === null || ceremony.username !== username) return this.stepUpFailure(username);
         const credHex = typeof body[1] === 'string' ? body[1].split(':')[0] : null;
         if (!state.passkeys.some((k) => toHex(k.credId) === credHex)) return this.stepUpFailure(username);
-        this.stepUpFailures.delete(username);
+        this.stepUpPass(username);
         return this.issueStepUp(username, session);
+      }
+      case 'POST /v1/auth/password': {
+        // [old|null, new] (E). The old password is this route's step-up: guesses go on the step-up ledgers, never on
+        // the login ledger. A first password (no old one) needs a fresh session in dillad; the fake does not model that.
+        const old = body[0] ?? null;
+        const next = body[1];
+        if (body.length !== 2 || (old !== null && typeof old !== 'string') || typeof next !== 'string') return refuse(400, 'E_INVALID_REQUEST');
+        if (next === '') return refuse(400, 'E_INVALID_REQUEST', 'the new password is empty');
+        const stored = this.passwords.get(username);
+        if (stored !== undefined) {
+          if (old === null) return refuse(403, 'E_FORBIDDEN', 'changing a password needs the old one');
+          if (this.stepUpLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
+          if (stored.password !== old) {
+            return this.stepUpFail(username) ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_FORBIDDEN', 'the old password is wrong');
+          }
+          this.stepUpPass(username);
+        }
+        this.passwords.set(username, { password: next, totp: stored?.totp ?? null });
+        this.loginFailures.delete(username);
+        return reply(204);
       }
       case 'POST /v1/auth/factors/remove': {
         // dillad validates kind and cred_id before it spends the token, which a malformed body leaves unspent.

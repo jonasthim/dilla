@@ -581,9 +581,10 @@ export class Routes {
       { body: encode([username, password]), auth: false, retry429: false })), 2);
     return { assertion: str(a[0]), needs: oneOf(a[1], [0, 1, 2]) };
   }
+  /** A 429 (the account's lockout) has spent the assertion, so it is not waited out: the person logs in again later. */
   async totpVerify(assertion: string, code: string): Promise<{ assertion: string }> {
     const a = atLeast(decode(await this.body('POST', '/v1/auth/totp/verify', 'none', false,
-      { body: encode([assertion, code]), auth: false })), 1);
+      { body: encode([assertion, code]), auth: false, retry429: false })), 1);
     return { assertion: str(a[0]) };
   }
   async listBackups(): Promise<BackupItem[]> {

@@ -1035,12 +1035,16 @@ describe('FakeServer answers the second-factor edges as dillad does (S2 review)'
     expect((await c.routes.passkeyRegisterFinish(mine.ceremonyId, '{}', 'Phone')).backupCodes).toEqual([]);
   });
 
-  it('a successful step-up clears the ledger: four failures, a success, four more failures stay 403', async () => {
+  it('a successful step-up does not clear the account-wide count: it ages out over 15 minutes', async () => {
     const server = new FakeServer();
     const { c } = await ada(server);
     for (let i = 0; i < 4; i += 1) await refusalOf(c.routes.stepUp(0, 'nope'));
     expect((await c.routes.stepUp(0, 'pw')).token).toMatch(/^su-/);
-    for (let i = 0; i < 4; i += 1) expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    // Control: once the failures are older than the window, a wrong secret is a plain 403 again and the right one serves.
+    server.nowS += 901;
+    expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect((await c.routes.stepUp(0, 'pw')).token).toMatch(/^su-/);
   });
 
   it('passkey step-up failures charge the same ledger: the fifth failure of either kind is 429, and so is any attempt after', async () => {
@@ -1114,5 +1118,121 @@ describe('FakeServer answers the second-factor edges as dillad does (S2 review)'
     expect((await raw(server, 'POST', '/v1/auth/totp/enroll', session, encode([null]))).status).toBe(200);
     expect((await raw(server, 'POST', '/v1/auth/passkey/register/begin', session, encode([null]))).status).toBe(200);
     expect(await c.routes.getFactors()).toMatchObject({ totp: null });
+  });
+});
+
+// The server's guess caps (w3-srv 9bbde5c8): every guess at a second factor is capped per account.
+describe('FakeServer caps guesses as dillad does', () => {
+  const sessionOf = (server: FakeServer): string | null => [...server.tokens.keys()][0] ?? null;
+  const changePassword = (server: FakeServer, old: string | null, next: string) =>
+    raw(server, 'POST', '/v1/auth/password', sessionOf(server), encode([old, next]));
+  /** Five wrong password logins: the account's login ledger locks on the fifth. */
+  async function lockLogin(c: ReturnType<typeof client>): Promise<void> {
+    for (let i = 0; i < 4; i += 1) expect(await refusalOf(c.routes.passwordLogin('ada', 'nope'))).toMatchObject({ status: 401 });
+    expect(await refusalOf(c.routes.passwordLogin('ada', 'nope'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+  }
+
+  it('POST /v1/auth/password: a wrong old password is 403 on the step-up ledgers; the fifth is 429, then the right one too', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    for (let i = 0; i < 4; i += 1) expect(await changePassword(server, 'nope', 'new pw')).toMatchObject({ status: 403, body: ['E_FORBIDDEN', 'the old password is wrong', null] });
+    expect((await changePassword(server, 'nope', 'new pw')).status).toBe(429);
+    expect((await changePassword(server, 'pw', 'new pw')).status).toBe(429);
+    // The same ledgers as the step-ups; the owner's login ledger is untouched and nothing changed.
+    expect(await refusalOf(c.routes.stepUp(0, 'pw'))).toMatchObject({ status: 429 });
+    expect((await c.routes.passwordLogin('ada', 'pw')).needs).toBe(0);
+  });
+
+  it('POST /v1/auth/password with the right old password changes it (204); without one, or with an empty new one, it is refused', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    expect((await changePassword(server, null, 'new pw')).status).toBe(403);
+    expect((await changePassword(server, 'pw', '')).status).toBe(400);
+    expect((await changePassword(server, 'pw', 'new pw')).status).toBe(204);
+    expect((await c.routes.passwordLogin('ada', 'new pw')).needs).toBe(0);
+    expect(await refusalOf(c.routes.passwordLogin('ada', 'pw'))).toMatchObject({ status: 401 });
+  });
+
+  it('/totp/verify and /recovery/verify answer 429 while the account is locked, and the assertion is spent', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setPassword('ada', 'pw', FAKE_TOTP_CODE);
+    server.factorsOf('ada').codes = ['A'.repeat(26)];
+    const forCode = await c.routes.passwordLogin('ada', 'pw');
+    const forBackup = await c.routes.passwordLogin('ada', 'pw');
+    expect(forCode.needs).toBe(1);
+    await lockLogin(c);
+    expect(await refusalOf(c.routes.totpVerify(forCode.assertion, FAKE_TOTP_CODE))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    expect(await refusalOf(c.routes.recoveryVerify(forBackup.assertion, 'A'.repeat(26)))).toMatchObject({ status: 429 });
+    server.nowS += 901;
+    // Spent: the same assertions are refused once the lockout is over.
+    expect(await refusalOf(c.routes.totpVerify(forCode.assertion, FAKE_TOTP_CODE))).toMatchObject({ status: 401 });
+    expect(await refusalOf(c.routes.recoveryVerify(forBackup.assertion, 'A'.repeat(26)))).toMatchObject({ status: 401 });
+    // Control: unlocked, a fresh assertion takes the code and the backup code.
+    expect((await c.routes.totpVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, FAKE_TOTP_CODE)).assertion).toMatch(/^asrt-/);
+    expect((await c.routes.recoveryVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, 'A'.repeat(26))).assertion).toMatch(/^asrt-/);
+  });
+
+  it('wrong second-factor codes charge the account ledger: the fifth is 429', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setPassword('ada', 'pw', FAKE_TOTP_CODE);
+    for (let i = 0; i < 4; i += 1) {
+      expect(await refusalOf(c.routes.totpVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, '000000'))).toMatchObject({ status: 401 });
+    }
+    expect(await refusalOf(c.routes.totpVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, '000000'))).toMatchObject({ status: 429 });
+    expect(await refusalOf(c.routes.passwordLogin('ada', 'pw'))).toMatchObject({ status: 429 });
+  });
+
+  it('passkey/login/finish is 429 with no assertion when the login would owe a code while locked; a verified one serves and clears', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const cred = server.addPasskey('ada', 'Laptop');
+    const anon = client(server);
+    await lockLogin(c);
+    const issued = server.assertions.length;
+    expect(await refusalOf(anon.routes.passkeyLoginFinish((await anon.routes.passkeyLoginBegin()).ceremonyId, `${toHex(cred)}:nouv`)))
+      .toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    expect(server.assertions).toHaveLength(issued);
+    // Control: a passkey that verified the user owes nothing, is served, and clears the account's ledger.
+    expect((await anon.routes.passkeyLoginFinish((await anon.routes.passkeyLoginBegin()).ceremonyId, toHex(cred))).needs).toBe(0);
+    expect((await c.routes.passwordLogin('ada', 'pw')).needs).toBe(2);
+  });
+
+  it('step-up failures from other addresses count on the account-wide ledger', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.stepUpFailuresElsewhere('ada', 4);
+    // Control: four elsewhere leave this address its guess.
+    expect((await c.routes.stepUp(0, 'pw')).token).toMatch(/^su-/);
+    server.stepUpFailuresElsewhere('ada', 1);
+    expect(await refusalOf(c.routes.stepUp(0, 'pw'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+  });
+
+  it('at 1024 passkeys register/begin (before the token is spent) and register/finish are 409', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    for (let i = 0; i < 1023; i += 1) server.addPasskey('ada', `key ${String(i)}`);
+    const step = (await c.routes.stepUp(0, 'pw')).token;
+    const open = await c.routes.passkeyRegisterBegin(step);
+    server.addPasskey('ada', 'the 1024th');
+    const token = (await c.routes.stepUp(0, 'pw')).token;
+    expect(await refusalOf(c.routes.passkeyRegisterBegin(token))).toMatchObject({ status: 409, code: 'E_INVALID_REQUEST' });
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(open.ceremonyId, '{}', 'one more'))).toMatchObject({ status: 409, code: 'E_INVALID_REQUEST' });
+    // Control: the token the capped begin refused is unspent, and below the cap a ceremony finishes.
+    await c.routes.removeFactor(token, 1, server.factorsOf('ada').passkeys[0].credId);
+    const again = await c.routes.passkeyRegisterBegin((await c.routes.stepUp(0, 'pw')).token);
+    expect((await c.routes.passkeyRegisterFinish(again.ceremonyId, '{}', 'one more')).credId.length).toBeGreaterThan(0);
+  });
+
+  it('register/finish with another account\'s ceremony is 400 and leaves it for its own account to finish', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const bea = client(server);
+    server.register('bea', DEV_B);
+    bea.use((await bea.routes.postSession(DEV_B, establishBody(DEV_B, null))).token);
+    const theirs = await bea.routes.passkeyRegisterBegin(null);
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(theirs.ceremonyId, '{}', 'Phone'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    expect((await bea.routes.passkeyRegisterFinish(theirs.ceremonyId, '{}', 'Phone')).backupCodes).toHaveLength(10);
   });
 });

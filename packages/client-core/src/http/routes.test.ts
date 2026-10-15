@@ -1506,6 +1506,8 @@ describe('Routes: second-factor shapes and bounds', () => {
     for (const call of [
       (routes: Routes) => routes.stepUp(0, 'x'),
       (routes: Routes) => routes.recoveryVerify(ASSERTION, 'x'),
+      // The lockout's 429 spends the assertion (dillad 9bbde5c8): a retry could only meet a 401 and hide the wait.
+      (routes: Routes) => routes.totpVerify(ASSERTION, '123456'),
       (routes: Routes) => routes.passkeyLoginFinish(CEREMONY, RESPONSE),
     ]) {
       const { t, routes } = setup();
