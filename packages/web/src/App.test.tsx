@@ -19,8 +19,19 @@ describe('screenFor', () => {
     for (const p of ['loading', 'unsupported', 'other-tab', 'store-lost', 'revoked', 'error'] as const) expect(screenFor(p)).toBe('boot');
     for (const p of ['needs-signup', 'signup-keys', 'registering'] as const) expect(screenFor(p)).toBe('onboarding');
     expect(screenFor('ready')).toBe('shell');
-    for (const p of ['signin-login', 'signin-totp', 'signin-key', 'enrolling'] as const) expect(screenFor(p)).toBe('signin');
+    for (const p of ['signin-login', 'signin-totp', 'signin-key', 'enrolling', 'signin-passkey'] as const) expect(screenFor(p)).toBe('signin');
     expect(screenFor('cleared')).toBe('boot');
+  });
+  it('routes the factor-setup phase by its origin', () => {
+    expect(screenFor('factor-setup', 'signup')).toBe('onboarding');
+    expect(screenFor('factor-setup', 'signin')).toBe('signin');
+    expect(screenFor('factor-setup', 'required')).toBe('factor');
+    // No origin yet is the forced screen: an account found owing is never let past it.
+    expect(screenFor('factor-setup')).toBe('factor');
+    expect(screenFor('factor-setup', null)).toBe('factor');
+    // The origin only matters in that phase.
+    expect(screenFor('ready', 'signup')).toBe('shell');
+    expect(screenFor('signin-login', 'required')).toBe('signin');
   });
 });
 
@@ -414,7 +425,7 @@ describe('App sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
-    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
     expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
     expect(screen.queryByText('Step 4 of 4')).toBeNull();
   });

@@ -285,7 +285,7 @@ describe('creating the account', () => {
     act(() => fake.set('account', account({ phase: 'ready' })));
     expect(h1()).toHaveTextContent('You’re in');
     expect(document.activeElement).toBe(h1());
-    expect(screen.getByText('Step 5 of 6')).toBeInTheDocument();
+    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
     expect(screen.getByText('You are ada on dilla.test.')).toBeInTheDocument();
     await user.click(button('Open dilla'));
     expect(onFinish).toHaveBeenCalledTimes(1);

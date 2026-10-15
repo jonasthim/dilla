@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { BootPhase } from '@dilla/client-core';
+import type { BootPhase, FactorSetupOrigin } from '@dilla/client-core';
 import { browser } from './browser.ts';
 import { useCore } from './core/context.tsx';
 import { errorOf, type UiError } from './core/errors.ts';
@@ -7,6 +7,7 @@ import { useSlice } from './core/use-slice.ts';
 import { notificationCtor, startNotifier } from './notify.ts';
 import { joinErrorState, useRoute, type Route } from './router.ts';
 import { Boot } from './screens/Boot.tsx';
+import { ForcedFactor } from './screens/factor/ForcedFactor.tsx';
 import { Onboarding, type SignupResult } from './screens/Onboarding.tsx';
 import { Settings } from './screens/Settings.tsx';
 import { focusRailSettings, Shell } from './screens/Shell.tsx';
@@ -16,12 +17,15 @@ import { OtherTab } from './screens/OtherTab.tsx';
 import { requestHandover } from './handover.ts';
 import { flushSync } from 'react-dom';
 
-export type Screen = 'boot' | 'onboarding' | 'signin' | 'shell';
+export type Screen = 'boot' | 'onboarding' | 'signin' | 'shell' | 'factor';
 
-export function screenFor(phase: BootPhase | undefined): Screen {
+/** web3.6: the set-up of a second factor belongs to the ceremony that led to it: sign-up, sign-in, or (an account found
+ *  owing, with no ceremony) the forced screen. A factor-setup phase with no origin is the forced one. */
+export function screenFor(phase: BootPhase | undefined, origin?: FactorSetupOrigin | null): Screen {
   switch (phase) {
     case 'needs-signup': case 'signup-keys': case 'registering': return 'onboarding';
-    case 'signin-login': case 'signin-totp': case 'signin-key': case 'enrolling': return 'signin';
+    case 'signin-login': case 'signin-totp': case 'signin-passkey': case 'signin-key': case 'enrolling': return 'signin';
+    case 'factor-setup': return origin === 'signup' ? 'onboarding' : origin === 'signin' ? 'signin' : 'factor';
     // The worker holds no store after a wipe: the Boot splash shows while the page reloads itself (L-TS-27).
     case 'cleared': return 'boot';
     case 'ready': return 'shell';
@@ -174,7 +178,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     if (!isSettings) leftByNotice.current = false;
     wasSettings.current = isSettings;
   }, [route.name]);
-  const screen = screenFor(phase);
+  const screen = screenFor(phase, account?.factorSetup?.origin);
   // Onboarding stays mounted after the phase turns ready, until its done step calls onFinish; so does SignIn.
   const [onboarding, setOnboarding] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
@@ -217,8 +221,9 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   function screenBody(): React.JSX.Element {
     if (screen === 'signin' || (signingIn && phase === 'ready')) return <SignIn onFinish={finishSignIn} />;
     if (screen === 'onboarding' || (onboarding && phase === 'ready')) return <Onboarding onFinish={finish} />;
-    // The two lines above narrow `screen` to 'boot' | 'shell' ('cleared' is 'boot'), so this switch is total.
+    // The two lines above narrow `screen` to 'boot' | 'shell' | 'factor' ('cleared' is 'boot'), so this switch is total.
     switch (screen) {
+      case 'factor': return <ForcedFactor />;
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
       case 'shell': return <><Shell />{route.name === 'settings' ? <Settings /> : null}</>;

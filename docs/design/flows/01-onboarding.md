@@ -25,7 +25,8 @@ itself, and what a screen reader reads, stays as written.
 | `needs-signup`, `instance.registrationMode` 2 | the closed frame and nothing else |
 | `signup-keys` | step 3, or step 4 when the person already moved on; `account.recoveryKey` holds the 13 groups |
 | `registering` | step 4 in the registering state |
-| `ready`, reached by a sign-up in this page | step 5 |
+| `factor-setup`, origin `signup` | step 5, the second factor (flow 10); a reload there reopens it |
+| `ready`, reached by a sign-up in this page | step 6 |
 | `ready` on a fresh load | not this flow: the shell |
 | `signin-login`, `signin-totp`, `signin-key`, `enrolling` | not this flow: `03-sign-in.md` |
 | any other phase | not this flow: the boot screen |
@@ -39,7 +40,12 @@ sends `signupSubmit` with the invite of step 1, the username, display name and p
 `recoveryKeyAcknowledged: true`; the account is created only by this submit. A refused `signupSubmit`
 leaves the phase at `signup-keys` with the same key, so going back and forward again shows the same key
 with its box still ticked; a new key appears only after `signupReset`, which this flow never sends. After
-`signupSubmit` resolves and the phase is `ready`, step 5 is shown; its button calls `onFinish(result)`, and
+`signupSubmit` resolves the account owes its second factor, so the phase is `factor-setup` with origin `signup`
+and step 5 is shown (`FactorSetup`, `factor.*` copy, step line `onboarding.step` with n 5). Step 5 has no skip
+and no cancel: its `Back` only returns to the choice between an authenticator app and a passkey. When the
+factor is in place and the backup codes are acknowledged, the page sends `factorSetupDone` with the invite of
+step 1; the worker reads the factors again, makes the browser ready and joins the invite's server, and only
+then, with the phase `ready` and the join answered, step 6 is shown. Its button calls `onFinish(result)`, and
 the page navigates, replacing the history entry: to `/c/<communityId>` when `result.communityId` is set; to
 `/welcome?invite=<the invite>` when `result.joinError` is set (the shell then opens the join dialog
 prefilled); otherwise to `/`.
@@ -58,7 +64,9 @@ prefilled); otherwise to `/`.
 Six steps, each one `OnboardingFrame` whose step line is `onboarding.step`. Each of the first four is one
 `<form noValidate>`: `Enter` in a field submits the step, as does its forward button (`type="submit"`:
 `Continue` on steps 1–3, `Create account` on step 4); `Back` is `type="button"`, comes first in the
-footer and never submits. Step 5 is flow 10's. Step 6's only button is `Open dilla`.
+footer and never submits. Step 5 is flow 10's, in the same frame, with its own announcer: the page speaks
+`factor.totp.keyCopied` and `factor.codes.copied` through a polite region that exists only while step 5 is
+shown. Step 6's only button is `Open dilla`.
 
 ## Wireframes at 1280 × 800
 
@@ -74,7 +82,7 @@ label `Invite (optional)`):
 +----------------------------------------------------------------------------------------------+
 |                                                                                              |
 |                      Join dilla.thim.dev                                  <h1>, has focus    |
-|                      Step 1 of 5                                                             |
+|                      Step 1 of 6                                                             |
 |                                                                                              |
 |                      You need an invite from someone on dilla.thim.dev. Paste it below.      |
 |                                                                                              |
@@ -96,7 +104,7 @@ Step 2, identity (the password field only when the instance offers password sign
 | [D] DILLA_                                                                                   |
 +----------------------------------------------------------------------------------------------+
 |                      Choose your name                                     <h1>, has focus    |
-|                      Step 2 of 5                                                             |
+|                      Step 2 of 6                                                             |
 |                      People on dilla.thim.dev see these next to your messages.               |
 |                                                                                              |
 |                      Username                                                                |
@@ -126,7 +134,7 @@ Step 3, recovery key (the grid in detail: `02-recovery-key.md`):
 | [D] DILLA_                                                                                   |
 +----------------------------------------------------------------------------------------------+
 |                      Your recovery key                                    <h1>, has focus    |
-|                      Step 3 of 5                                                             |
+|                      Step 3 of 6                                                             |
 |                      This key is shown once and is kept nowhere. Write it down or print      |
 |                      it, and keep it away from this computer.                                |
 |                      This key is the only way to get your account back or to add another     |
@@ -157,7 +165,7 @@ Step 4, this browser:
 | [D] DILLA_                                                                                   |
 +----------------------------------------------------------------------------------------------+
 |                      What this browser keeps                              <h1>, has focus    |
-|                      Step 4 of 5                                                             |
+|                      Step 4 of 6                                                             |
 |                      This browser now holds the key of this device, in its storage for       |
 |                      dilla.thim.dev. The key never leaves this browser.                      |
 |                      Clearing this site’s data removes the key and the messages kept         |
@@ -171,14 +179,29 @@ Step 4, this browser:
 +----------------------------------------------------------------------------------------------+
 ```
 
-Step 5, done:
+Step 5, second factor (flow 10 draws it in full; this is its place in the sequence):
+
+```
++----------------------------------------------------------------------------------------------+
+| [D] DILLA_                                                                                   |
++----------------------------------------------------------------------------------------------+
+|                      Add a second factor                                  <h1>, has focus    |
+|                      Step 5 of 6                                                             |
+|                      Every account on dilla.thim.dev needs a second factor. ...              |
+|                      ( ) authenticator app    ( ) passkey                                    |
+|                      --------------------------------------------------                      |
+|                                                            [ Continue ]    (no skip)         |
++----------------------------------------------------------------------------------------------+
+```
+
+Step 6, done:
 
 ```
 +----------------------------------------------------------------------------------------------+
 | [D] DILLA_                                                                                   |
 +----------------------------------------------------------------------------------------------+
 |                      You’re in                                            <h1>, has focus    |
-|                      Step 5 of 5                                                             |
+|                      Step 6 of 6                                                             |
 |                      You are ada on dilla.thim.dev.                                          |
 |                      --------------------------------------------------                      |
 |                                                            [ Open dilla ]                    |
@@ -197,7 +220,7 @@ the instance offers it.
 | [D] DILLA_                           |   | [D] DILLA_                           |
 +--------------------------------------+   +--------------------------------------+
 |  Join dilla.thim.dev                 |   |  Choose your name                    |
-|  Step 1 of 5                         |   |  Step 2 of 5                         |
+|  Step 1 of 6                         |   |  Step 2 of 6                         |
 |  You need an invite from someone     |   |  People on dilla.thim.dev see these  |
 |  on dilla.thim.dev. Paste it below.  |   |  next to your messages.              |
 |  Invite                              |   |  Username                            |
@@ -216,7 +239,7 @@ the instance offers it.
 | [D] DILLA_                           |   | [D] DILLA_                           |
 +--------------------------------------+   +--------------------------------------+
 |  Your recovery key                   |   |  What this browser keeps             |
-|  Step 3 of 5                         |   |  Step 4 of 5                         |
+|  Step 3 of 6                         |   |  Step 4 of 6                         |
 |  This key is shown once and is kept  |   |  This browser now holds the key of   |
 |  nowhere. …                          |   |  this device, …                      |
 |  This key is the only way to get     |   |  Clearing this site’s data …         |
@@ -232,7 +255,7 @@ the instance offers it.
 |  |  13 5TVA                       |  |   | [D] DILLA_                           |
 |  +--------------------------------+  |   +--------------------------------------+
 |  [ ] I have written down or          |   |  You’re in                           |
-|      printed my recovery key         |   |  Step 5 of 5                         |
+|      printed my recovery key         |   |  Step 6 of 6                         |
 |  [ Print ]                           |   |  You are ada on dilla.thim.dev.      |
 |  ------------------------------      |   |  ------------------------------      |
 |          [ Back ]  [ Continue ]      |   |                    [ Open dilla ]    |
@@ -298,7 +321,7 @@ banner, on step 4:
 
 ```
 |                      What this browser keeps                                                 |
-|                      Step 4 of 5                                                             |
+|                      Step 4 of 6                                                             |
 |                      +------------------------------------------------------------------+    |
 |                      | ✕ The connection dropped while creating your account. Reload     |    |
 |                      |   the page to finish.                                 [ Reload ] |    |
@@ -357,7 +380,10 @@ are no single-key shortcuts.
   opens at step 1. The key shown before was never used and is worthless; the next pass shows a new key.
   The page cannot tell this case from a first visit, so it says nothing about it.
 - Reload while registering when the server had created the account: the worker finishes the sign-up
-  (`Signup.resume()` returns 2) and the shell opens directly; step 5 is not shown.
+  (`Signup.resume()` returns 2). The account owes its second factor, so step 5 opens (origin `signup`).
+- Reload on step 5: the page mounts at the choice again; the setup key and the backup codes were never stored
+  and are gone. The phase is still `factor-setup`, so nothing else is reachable, and an account that is
+  abandoned there meets the forced screen of flow 10 at its next start.
 - When the browser's key is refused for an account that was registered (the stored session proves it), the page shows the `revoked` splash and nothing is deleted.
 - When the data saved in this browser was written by a newer version of dilla (a rollback; the core refuses it
   untouched with `E_STORE_NEWER`, and `account.error.store` holds the data version it found and the highest this
@@ -404,9 +430,9 @@ are no single-key shortcuts.
 | `onboarding.browser.submit` | `Create account` | button, forward on step 4 |
 | `onboarding.browser.submitting` | `Creating account…` | button, forward on step 4 while registering |
 | `onboarding.browser.registering` | `Creating your account on {instance}…` | status line, step 4, while registering |
-| `onboarding.done.title` | `You’re in` | step heading, step 5 |
-| `onboarding.done.body` | `You are {username} on {instance}.` | paragraph, step 5 |
-| `onboarding.done.next` | `Open dilla` | button, step 5 |
+| `onboarding.done.title` | `You’re in` | step heading, step 6 |
+| `onboarding.done.body` | `You are {username} on {instance}.` | paragraph, step 6 |
+| `onboarding.done.next` | `Open dilla` | button, step 6 |
 | `onboarding.error.inviteRequired` | `Paste the invite you were given.` | field error, invite, mode 0, empty on `Continue` |
 | `onboarding.error.inviteInvalid` | `This invite is expired, used up or unknown. Ask for a new one.` | field error, invite, after `E_INVITE_INVALID` |
 | `onboarding.error.usernameRule` | `Use 3 to 32 characters: a–z, 0–9, dot, underscore or hyphen, with no dot at the start or end.` | field error, username |
