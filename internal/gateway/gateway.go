@@ -32,6 +32,11 @@ type Options struct {
 	// it structurally.
 	Auth Authenticator
 
+	// OnFactorOwed runs for a device whose connection the liveness sweep closed because its
+	// account now owes a second factor (an operator's reset-factors, web3.6 S3), so the
+	// composition root can cut the device from its live calls. Nil does nothing.
+	OnFactorOwed func(device id.ID)
+
 	// Outstanding reports a group's non-void instance proposals, for ready's per-group digest.
 	// The delivery service sets it in task 21; nil reads as 0.
 	Outstanding func(ctx context.Context, groupID id.ID) uint64

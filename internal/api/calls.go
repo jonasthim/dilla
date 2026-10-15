@@ -1154,7 +1154,7 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID) {
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,
-// or its user is disabled, deleted or gone. It reads the device row it is handed and the user row.
+// or its user is disabled, deleted, gone or owes a second factor. It reads the device row it is handed and the user row.
 func barred(ctx context.Context, repo store.Repository, dv store.DeviceRow) (bool, error) {
 	if dv.RevokedAt != nil || dv.QuarantinedAt != nil {
 		return true, nil
@@ -1166,7 +1166,9 @@ func barred(ctx context.Context, repo store.Repository, dv store.DeviceRow) (boo
 	if err != nil {
 		return false, err
 	}
-	return u.DisabledAt != nil || u.DeletedAt != nil, nil
+	// An account that owes a second factor (an operator's reset, web3.6 S3) is barred like a
+	// disabled one: its sessions survive, but a call token minted before the reset must not last.
+	return u.DisabledAt != nil || u.DeletedAt != nil || u.FactorOwed, nil
 }
 
 func errBarred() error {

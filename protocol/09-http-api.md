@@ -1232,7 +1232,8 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
 - **Diagnostics.** `GET /v1/admin/diagnostics` answers `200 [[name(tstr), status(uint),
   detail(tstr), fix(tstr)]]`: first the `dillad doctor` legs the running instance can answer
   itself, under doctor's names and in doctor's order — `database` (the schema version), `data_dir`
-  (its mode), `wasi` (the core the delivery service validates in), `udp`, `blobs` (every referenced
+  (its mode), `wasi` (the core the delivery service validates in), `udp`, `webauthn` (the passkey
+  relying party and the origins it accepts), `blobs` (every referenced
   file present, no stray files) — then two legs of the instance's own, which doctor does not have:
   `calls` (the call stats of the last 15 minutes: how many of the calls that reported are still
   live, the reports, how many had a relay selected, the median and 95th-percentile round-trip time,
@@ -1244,9 +1245,11 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   `dillad doctor`'s, so an admin request never makes the instance dial out. The report runs only
   after the admin check.
 
+- **Reset factors.** `dillad admin user reset-factors` removes a person's second factors and backup codes and marks the account owing one (`§ Second factors`); sessions stay, and every device sets up a factor before it is used again.
+
 Informative: the operator's own surface is `dillad admin <noun> <verb>`, run at a shell on the
 instance's host and acting as the operator, who is not a `users` row. `user list|show|disable|
-enable|delete`, `invite create|list|revoke`, `community list|show`, `device revoke`, `blob purge`
+enable|delete|reset-factors`, `invite create|list|revoke`, `community list|show`, `device revoke`, `blob purge`
 and `audit` read and write the same tables as the routes above. Every verb that changes state
 writes an audit row with a null `actor` (and the same `action` names: `user.disable`, `user.enable`,
 `user.delete`, `invite.create`, `invite.revoke`, `device.revoke`, `blob.purge`); a read-only verb

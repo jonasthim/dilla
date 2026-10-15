@@ -49,6 +49,36 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// The host's fake clock, so a spec reads how far POST /debug/clock has moved it (a TOTP code is
+	// computed for the instance's time, not the browser's).
+	mux.HandleFunc("GET /debug/clock", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]int64{"now": h.Clock().Now().Unix()})
+	})
+	// The operator's reset (`dillad admin user reset-factors`) with this host's live seams: the
+	// person's factors go, factor_owed is set, their sockets close and their calls are cut, and the
+	// sessions stay (web3.6 D5). It stands in for the operator and never for the client.
+	mux.HandleFunc("POST /debug/reset-factors", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Username string `json:"username"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		u, err := h.Server().Repo().GetUserByUsername(r.Context(), body.Username)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "no such user", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := h.Server().ResetFactors(r.Context(), u.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /debug/kick", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Actor     string `json:"actor"`

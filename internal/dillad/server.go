@@ -47,7 +47,9 @@ type Server struct {
 	wasm     *mlswasi.Runtime
 	ownsWasm bool
 	gw       *gateway.Gateway
-	ds       *ds.DS
+	// cutDevice queues a device to leave every live call (the same hook a revocation uses).
+	cutDevice func(ctx context.Context, device id.ID)
+	ds        *ds.DS
 	// groups is the mounted delivery-service route group. Shutdown drains its AfterRegister runs
 	// (a channel group being populated after its 201) before it stops the delivery service they
 	// issue proposals through.
@@ -233,7 +235,20 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// service's call evictor and the gateway's voice_self store reach them through this variable,
 	// which is assigned before delivery.Start and before any connection can reach the gateway.
 	var events *api.CallEvents
+	// callRoutes is the call route group mountPlanTwo builds below. The revocation, quarantine and
+	// factor-reset hooks close over it: all run only on requests or ticks, which reach the mux
+	// and the gateway after New has returned.
+	var callRoutes *api.Calls
+	cutFromCalls := func(ctx context.Context, device id.ID) {
+		if callRoutes != nil {
+			callRoutes.CutDevice(ctx, device)
+		}
+	}
+
 	gw := gateway.New(gateway.Options{
+		// A sweep that closes a device's socket because its account now owes a second factor
+		// (web3.6 S3: the operator's reset, run by another process) also cuts the device's calls.
+		OnFactorOwed:      func(device id.ID) { cutFromCalls(context.Background(), device) },
 		Store:             o.Repo,
 		Clock:             o.Clock,
 		Log:               o.Log,
@@ -274,14 +289,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
 	channels, acl := deliverySeams(o)
-	// callRoutes is the call route group mountPlanTwo builds below. The revocation and quarantine
-	// hooks close over it: both run only on requests, which reach the mux after New has returned.
-	var callRoutes *api.Calls
-	cutFromCalls := func(ctx context.Context, device id.ID) {
-		if callRoutes != nil {
-			callRoutes.CutDevice(ctx, device)
-		}
-	}
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,
 		Wasm:     wasm,
@@ -487,7 +494,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	s := &Server{
 		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
-		wasm: wasm, ownsWasm: ownsWasm, gw: gw, ds: delivery, groups: groups, events: events,
+		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, events: events,
 		blobs: blobs, ownsBlobs: ownsBlobs,
 		throttle: throttle, limiter: limiter,
 	}
