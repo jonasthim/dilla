@@ -1,7 +1,14 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'voice' | 'privacy' | 'keyboard' | 'diagnostics';
+export type SettingsSection =
+  | 'devices'
+  | 'notifications'
+  | 'appearance'
+  | 'voice'
+  | 'privacy'
+  | 'keyboard'
+  | 'diagnostics';
 export type SignInNotice = 'race' | 'evicted';
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }

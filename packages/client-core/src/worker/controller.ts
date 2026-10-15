@@ -44,6 +44,7 @@ import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
 import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
+import { FACTOR_VALIDATORS } from '../account/factors';
 import { authorityFor } from '../admin/authority';
 
 export interface ControllerDeps {
@@ -396,6 +397,7 @@ const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string'
 const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {
   ...ADMIN_VALIDATORS,
   ...ROLES_VALIDATORS,
+  ...FACTOR_VALIDATORS,
 };
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.

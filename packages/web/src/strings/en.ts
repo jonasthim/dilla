@@ -9,6 +9,9 @@ import { perm } from './perm.ts';
 import { chperm } from './chperm.ts';
 import { mention } from './mention.ts';
 import { serverNotify } from './serverNotify.ts';
+import { factor } from './factor.ts';
+import { factorSignin } from './factorSignin.ts';
+import { factorSettings } from './factorSettings.ts';
 export const en = {
   ...privacy,
   ...admin,
@@ -19,6 +22,9 @@ export const en = {
   ...chperm,
   ...mention,
   ...serverNotify,
+  ...factor,
+  ...factorSignin,
+  ...factorSettings,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
