@@ -226,12 +226,17 @@ export async function axeEverywhere(page: Page, state: string): Promise<void> {
   }
 }
 
-/** Opens the DM `dmId` from the DMs tab, by its row's name (the other person's), once the page lists it. */
+/**
+ * Opens the DM `dmId` from the DMs tab, by its row's name (the other person's), once the page lists it, and waits until
+ * this device has joined the DM's group (the composer is enabled only while the group is `active`). A DM is listed as
+ * soon as its Welcome is seen, while its group is still `none`, and the worker drops a typing frame of a group that is
+ * not active (controller.ts incomingTypingFrame): a one-shot signal sent before the join is lost for good.
+ */
 export async function openDm(page: Page, dmId: string, name: string): Promise<void> {
   await sidebarTab(page, 'dms').click();
   await namedRow(dmsNav(page), name).click();
   await expect(page).toHaveURL(new RegExp(`/dm/${dmId}$`), { timeout: WAIT });
-  await expect(dmComposer(page)).toBeVisible({ timeout: WAIT });
+  await expect(dmComposer(page)).toBeEnabled({ timeout: WAIT });
 }
 /** The DM call strip's `call` (no live call) or `join call` button. */
 export function stripButton(page: Page, key: 'call.start' | 'call.join'): Locator {
