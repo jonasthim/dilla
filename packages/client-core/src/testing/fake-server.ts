@@ -42,6 +42,10 @@ const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 export interface FakeFactorState {
   owed: boolean;
   totpCode: string | null;
+  /** How many app codes were accepted: each is burnt, as dillad's last_counter is, so the app's next code is another. */
+  totpUsed: number;
+  /** An enrolment not yet confirmed, and whether its enroll spent a step-up (dillad keeps the same record per user). */
+  totpEnrol: { steppedUp: boolean } | null;
   passkeys: { credId: Uint8Array; name: string; created: number; lastUsed: number | null }[];
   codes: string[];
 }
@@ -86,7 +90,7 @@ export class FakeServer {
   private readonly stepUps = new Map<string, { username: string; session: string }>();
   private readonly stepUpFailures = new Map<string, number>();
   /** Open WebAuthn ceremonies: the id (hex) → what it is for and for whom. */
-  private readonly ceremonies = new Map<string, { kind: 'register' | 'login' | 'stepup'; username: string | null }>();
+  private readonly ceremonies = new Map<string, { kind: 'register' | 'login' | 'stepup'; username: string | null; steppedUp: boolean }>();
   private stepUpN = 0;
   private ceremonyN = 0;
   private credN = 0;
@@ -158,12 +162,14 @@ export class FakeServer {
   }
   setPassword(username: string, password: string, totp: string | null = null): void {
     this.passwords.set(username, { password, totp });
+    // An app planted here shows `totp` as its first code (nothing burnt yet).
+    if (totp !== null) this.factorsOf(username).totpUsed = 0;
   }
   /** What the account holds; created empty. */
   factorsOf(username: string): FakeFactorState {
     let state = this.factorStates.get(username);
     if (state === undefined) {
-      state = { owed: false, totpCode: null, passkeys: [], codes: [] };
+      state = { owed: false, totpCode: null, totpUsed: 0, totpEnrol: null, passkeys: [], codes: [] };
       this.factorStates.set(username, state);
     }
     return state;
@@ -185,6 +191,21 @@ export class FakeServer {
   }
   private totpOf(username: string): string | null {
     return this.factorsOf(username).totpCode ?? this.passwords.get(username)?.totp ?? null;
+  }
+  /** The code the account's app shows now: its first code until one is accepted, then the next (one code per use, so a
+   *  replayed code is refused as dillad refuses a counter at or below last_counter). null without an app. */
+  totpCodeNow(username: string): string | null {
+    const base = this.totpOf(username);
+    if (base === null) return null;
+    const used = this.factorsOf(username).totpUsed;
+    return used === 0 ? base : String((Number.parseInt(base, 10) + used) % 1_000_000).padStart(6, '0');
+  }
+  /** Accepts the app's current code once. */
+  private spendTotp(username: string, code: CborValue): boolean {
+    const now = this.totpCodeNow(username);
+    if (now === null || code !== now) return false;
+    this.factorsOf(username).totpUsed += 1;
+    return true;
   }
   private needsOf(username: string): 0 | 1 | 2 {
     if (this.totpOf(username) !== null) return 1;
@@ -383,7 +404,7 @@ export class FakeServer {
       const code = str(body[1] ?? null);
       const assertion = this.activeAssertions.get(value);
       this.activeAssertions.delete(value);
-      if (assertion === undefined || assertion.needs !== 1 || this.totpOf(assertion.user) !== code)
+      if (assertion === undefined || assertion.needs !== 1 || !this.spendTotp(assertion.user, code))
         return refuse(401, 'E_UNAUTHENTICATED');
       return reply(200, [this.assertion(assertion.user, 0)]);
     }
@@ -402,7 +423,7 @@ export class FakeServer {
     }
     if (line === 'POST /v1/auth/passkey/login/begin') {
       const id = `c-${++this.ceremonyN}`;
-      this.ceremonies.set(id, { kind: 'login', username: null });
+      this.ceremonies.set(id, { kind: 'login', username: null, steppedUp: false });
       return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
     }
     if (line === 'POST /v1/auth/passkey/login/finish') {
@@ -438,7 +459,12 @@ export class FakeServer {
     if (device === undefined || user === undefined || this.revoked.has(device)) return refuse(401, 'E_UNAUTHENTICATED');
     const username = this.accounts.get(user)?.username;
     if (username !== undefined) {
-      if (this.factorsOf(username).owed && !OWED_OK.some((re) => re.test(line))) return refuse(403, 'E_FACTOR_REQUIRED');
+      // dillad's order: the session routes of § Second factors are E (enrolled only), so a pending or provisional token
+      // is refused before anything else; the owed rule applies to an enrolled session (Scope == Enrolled) only.
+      const enrolled = (this.tokenScope.get(r.auth!) ?? 0) === 0;
+      const factorLine = line.startsWith('GET /v1/auth/factors') || line.startsWith('POST /v1/auth/');
+      if (factorLine && !enrolled) return refuse(403, 'E_FORBIDDEN');
+      if (enrolled && this.factorsOf(username).owed && !OWED_OK.some((re) => re.test(line))) return refuse(403, 'E_FACTOR_REQUIRED');
       const factorRoute = this.factorRoute(r, line, username);
       if (factorRoute !== null) return factorRoute;
     }
@@ -596,7 +622,7 @@ export class FakeServer {
     out.set(new TextEncoder().encode(id.slice(0, 16)));
     return out;
   }
-  private takeCeremony(raw: CborValue, kind: 'register' | 'login' | 'stepup'): { username: string | null } | null {
+  private takeCeremony(raw: CborValue, kind: 'register' | 'login' | 'stepup'): { username: string | null; steppedUp: boolean } | null {
     if (!(raw instanceof Uint8Array)) return null;
     const id = new TextDecoder().decode(raw).replace(/\0+$/, '');
     const open = this.ceremonies.get(id);
@@ -634,17 +660,27 @@ export class FakeServer {
       case 'POST /v1/auth/totp/enroll':
         if (this.totpOf(username) !== null) return refuse(403, 'E_FORBIDDEN');
         if (held && !this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        // Each enroll replaces the unconfirmed secret and records whether it spent a step-up (S2's in-memory record).
+        state.totpEnrol = { steppedUp: held };
         return reply(200, [FAKE_TOTP_SECRET, `otpauth://totp/dilla:${username}?secret=${FAKE_TOTP_SECRET}&issuer=dilla`]);
       case 'POST /v1/auth/totp/confirm': {
-        if (body[0] !== FAKE_TOTP_CODE) return refuse(401, 'E_UNAUTHENTICATED');
+        // dillad reads the enrolled secret row (none: 404), refuses a code that does not match it or was used
+        // (400 E_INVALID_REQUEST), then re-checks the step-up rule: a factor held now that the enroll did not step up
+        // for is 403 E_STEP_UP, and nothing is written.
+        const enrol = state.totpEnrol;
+        if (enrol === null || this.totpOf(username) !== null) return refuse(404, 'E_NOT_FOUND');
+        if (body[0] !== FAKE_TOTP_CODE) return refuse(400, 'E_INVALID_REQUEST', 'the code does not match this secret');
+        if (held && !enrol.steppedUp) return refuse(403, 'E_STEP_UP');
+        state.totpEnrol = null;
         state.totpCode = FAKE_TOTP_CODE;
+        state.totpUsed = 1;
         state.owed = false;
         return reply(200, [state.codes.length === 0 ? this.mintCodes(username) : []]);
       }
       case 'POST /v1/auth/passkey/register/begin': {
         if (held && !this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
         const id = `r-${++this.ceremonyN}`;
-        this.ceremonies.set(id, { kind: 'register', username });
+        this.ceremonies.set(id, { kind: 'register', username, steppedUp: held });
         return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
       }
       case 'POST /v1/auth/passkey/register/finish': {
@@ -652,6 +688,7 @@ export class FakeServer {
         if (ceremony === null || ceremony.username !== username) return refuse(401, 'E_UNAUTHENTICATED');
         const name = body[2];
         if (typeof name !== 'string' || name.length < 1 || new TextEncoder().encode(name).length > 64) return refuse(400, 'E_INVALID_REQUEST');
+        if (held && !ceremony.steppedUp) return refuse(403, 'E_STEP_UP');
         const credId = this.addPasskey(username, name);
         state.owed = false;
         return reply(200, [credId, state.codes.length === 0 ? this.mintCodes(username) : []]);
@@ -662,7 +699,7 @@ export class FakeServer {
         const secret = body[1];
         let ok = false;
         if (body[0] === 0n) ok = this.passwords.get(username)?.password === secret;
-        else if (body[0] === 1n) ok = this.totpOf(username) === secret;
+        else if (body[0] === 1n) ok = this.spendTotp(username, secret ?? null);
         else if (body[0] === 2n && typeof secret === 'string') {
           const at = state.codes.indexOf(secret);
           if (at >= 0) { state.codes.splice(at, 1); ok = true; }
@@ -674,7 +711,7 @@ export class FakeServer {
       case 'POST /v1/auth/stepup/passkey/begin': {
         if (state.passkeys.length === 0) return refuse(403, 'E_STEP_UP');
         const id = `s-${++this.ceremonyN}`;
-        this.ceremonies.set(id, { kind: 'stepup', username });
+        this.ceremonies.set(id, { kind: 'stepup', username, steppedUp: false });
         return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
       }
       case 'POST /v1/auth/stepup/passkey/finish': {
@@ -693,6 +730,7 @@ export class FakeServer {
           const keep = state.passkeys.length > 0;
           if (!keep) return refuse(409, 'E_INVALID_REQUEST', 'it is the last factor');
           state.totpCode = null;
+          state.totpUsed = 0;
           const stored = this.passwords.get(username);
           if (stored !== undefined) stored.totp = null;
           return reply(204);

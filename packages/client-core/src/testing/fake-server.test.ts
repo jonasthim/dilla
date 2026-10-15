@@ -766,7 +766,7 @@ describe('FakeServer answers the web3.6 second-factor routes as dillad does', ()
     server.setOwed('ada');
     const enrol = await c.routes.totpEnroll(null);
     expect(enrol.secret).toBe(FAKE_TOTP_SECRET);
-    expect(await refusalOf(c.routes.totpConfirm('000000'))).toMatchObject({ status: 401 });
+    expect(await refusalOf(c.routes.totpConfirm('000000'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
     expect(await c.routes.getFactors()).toMatchObject({ owed: true, totp: null });
     const codes = await c.routes.totpConfirm(FAKE_TOTP_CODE);
     expect(codes).toHaveLength(10);
@@ -889,5 +889,104 @@ describe('FakeServer answers the web3.6 second-factor routes as dillad does', ()
     expect(second.filter((code) => first.includes(code))).toEqual([]);
     expect(await refusalOf(c.routes.regenerateBackupCodes('su-bogus'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
     expect(await c.routes.getFactors()).toMatchObject({ backupCodesLeft: 10 });
+  });
+});
+
+// C1 review B2 and B3: the fake refuses exactly where dillad does, so a web test cannot pass on leniency.
+describe('FakeServer refuses the second-factor routes as strictly as dillad', () => {
+  /** A pending (scope 1) token on ada's own device, planted as the fake mints none for a listed device. */
+  function pending(server: FakeServer): ReturnType<typeof client> {
+    server.tokens.set('tok-pending', toHex(DEV_A));
+    server.tokenScope.set('tok-pending', 1);
+    const p = client(server);
+    p.use('tok-pending');
+    return p;
+  }
+
+  it('refuses a pending session on the enrolled-only factor routes; the enrolled session is served', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const cred = server.addPasskey('ada', 'Laptop');
+    server.addPasskey('ada', 'Phone');
+    const p = pending(server);
+    const forbidden = { status: 403, code: 'E_FORBIDDEN' };
+    expect(await refusalOf(p.routes.stepUp(0, 'pw'))).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.getFactors())).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.passkeyRegisterBegin(null))).toMatchObject(forbidden);
+    const token = (await c.routes.stepUp(0, 'pw')).token;
+    expect(await refusalOf(p.routes.totpEnroll(token))).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.regenerateBackupCodes(token))).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.removeFactor(token, 1, cred))).toMatchObject(forbidden);
+    // Control: the same token on its own enrolled session is served, unspent by the refusals above.
+    await c.routes.removeFactor(token, 1, cred);
+    expect((await c.routes.getFactors()).passkeys).toHaveLength(1);
+  });
+
+  it('answers an owed account by scope: a pending token is E_FORBIDDEN, the enrolled one E_FACTOR_REQUIRED', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    const p = pending(server);
+    expect(await refusalOf(p.routes.listDevices())).toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    expect(await refusalOf(p.routes.totpEnroll(null))).toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    expect(await refusalOf(c.routes.listDevices())).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+    expect((await c.routes.totpEnroll(null)).secret).toBe(FAKE_TOTP_SECRET);
+  });
+
+  it('confirms only an enrolled secret, once: no enrol is 404, a wrong code 400, a second confirm 404', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    expect(await refusalOf(c.routes.totpConfirm(FAKE_TOTP_CODE))).toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+    expect(await c.routes.getFactors()).toMatchObject({ owed: true, totp: null });
+    await c.routes.totpEnroll(null);
+    expect(await refusalOf(c.routes.totpConfirm('000000'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    expect(await c.routes.totpConfirm(FAKE_TOTP_CODE)).toHaveLength(10);
+    expect(await refusalOf(c.routes.totpConfirm(FAKE_TOTP_CODE))).toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+  });
+
+  it('burns an app code on use: a replayed code is refused, the next code is accepted', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    await c.routes.totpEnroll(null);
+    await c.routes.totpConfirm(FAKE_TOTP_CODE);
+    // The code that confirmed the app cannot also step up.
+    expect(await refusalOf(c.routes.stepUp(1, FAKE_TOTP_CODE))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const now = server.totpCodeNow('ada') ?? '';
+    expect(now).not.toBe(FAKE_TOTP_CODE);
+    expect((await c.routes.stepUp(1, now)).token).toMatch(/^su-/);
+    expect(await refusalOf(c.routes.stepUp(1, now))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const login = await c.routes.passwordLogin('ada', 'pw');
+    expect(await refusalOf(c.routes.totpVerify(login.assertion, now))).toMatchObject({ status: 401 });
+    const again = await c.routes.passwordLogin('ada', 'pw');
+    expect((await c.routes.totpVerify(again.assertion, server.totpCodeNow('ada') ?? '')).assertion).toMatch(/^asrt-/);
+  });
+
+  it('re-checks the step-up rule at confirm and finish: a factor added since an unstepped begin is E_STEP_UP', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    await c.routes.totpEnroll(null);
+    const register = await c.routes.passkeyRegisterBegin(null);
+    // Another device registers a passkey meanwhile, which clears the debt there.
+    server.addPasskey('ada', 'Other device');
+    server.setOwed('ada', false);
+    expect(await refusalOf(c.routes.totpConfirm(FAKE_TOTP_CODE))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(register.ceremonyId, '{}', 'Laptop'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await c.routes.getFactors()).toMatchObject({ totp: null, passkeys: [{ name: 'Other device' }] });
+    // Control: the same ceremonies begun with a step-up are served.
+    await c.routes.totpEnroll((await c.routes.stepUp(0, 'pw')).token);
+    expect(await c.routes.totpConfirm(FAKE_TOTP_CODE)).toHaveLength(10);
+    const stepped = await c.routes.passkeyRegisterBegin((await c.routes.stepUp(0, 'pw')).token);
+    expect((await c.routes.passkeyRegisterFinish(stepped.ceremonyId, '{}', 'Laptop')).backupCodes).toEqual([]);
+  });
+
+  it('an unstepped begin with no factor held meanwhile is served (control)', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    const register = await c.routes.passkeyRegisterBegin(null);
+    expect((await c.routes.passkeyRegisterFinish(register.ceremonyId, '{}', 'Laptop')).backupCodes).toHaveLength(10);
   });
 });
