@@ -8,12 +8,14 @@ import { BansSection } from './BansSection.tsx';
 import { ChannelsSection } from './ChannelsSection.tsx';
 import { DangerSection } from './DangerSection.tsx';
 import { InvitesSection } from './InvitesSection.tsx';
+import { RolesSection } from './RolesSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
 import type { Announce } from './shared.ts';
 
 export type AdminTab =
   | 'overview'
   | 'channels'
+  | 'roles'
   | 'invites'
   | 'bans'
   | 'danger';
@@ -58,6 +60,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
   if (access !== undefined && loaded) {
     if (access.manageCommunity) tabs.push({ id: 'overview', label: t('admin.nav.overview') });
     if (access.manageChannels) tabs.push({ id: 'channels', label: t('admin.nav.channels') });
+    if (access.manageRoles) tabs.push({ id: 'roles', label: t('roles.tab') });
     if (access.createInvite) tabs.push({ id: 'invites', label: t('admin.nav.invites') });
     if (access.banMembers) tabs.push({ id: 'bans', label: t('admin.nav.bans') });
     tabs.push({ id: 'danger', label: t(access.owner ? 'admin.nav.delete' : 'admin.nav.leave') });
@@ -80,6 +83,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
       {!loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       {active === 'overview' ? <OverviewSection {...common} /> : null}
       {active === 'channels' ? <ChannelsSection {...common} /> : null}
+      {active === 'roles' ? <RolesSection {...common} /> : null}
       {active === 'invites' ? <InvitesSection {...common} /> : null}
       {active === 'bans' ? <BansSection {...common} /> : null}
       {active === 'danger' ? <DangerSection {...common} owner={access?.owner === true} onGone={finish} /> : null}

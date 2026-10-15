@@ -48,7 +48,19 @@ const navNames = () => within(screen.getByRole('navigation', { name: en['admin.n
 describe('ServerSettings tabs', () => {
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['overview', 'channels', 'invites', 'bans', 'delete server']);
+    expect(navNames()).toEqual(['overview', 'channels', 'roles', 'invites', 'bans', 'delete server']);
+  });
+  it('shows the roles tab only with manageRoles, after channels', () => {
+    setup({ ...NONE, manageChannels: true, manageRoles: true });
+    expect(navNames()).toEqual(['channels', 'roles', 'leave server']);
+  });
+  it('shows no roles tab without manageRoles', () => {
+    setup({ ...NONE, manageChannels: true });
+    expect(navNames()).not.toContain('roles');
+  });
+  it('mounts the roles panel for the roles tab', () => {
+    setup(FULL, { tab: 'roles' });
+    expect(screen.getByRole('heading', { name: en['roles.title'] })).toBeInTheDocument();
   });
   it('shows only the tabs a person has the permission for; the danger tab is always there', () => {
     setup({ ...NONE, manageChannels: true, banMembers: true });
