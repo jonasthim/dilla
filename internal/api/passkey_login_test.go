@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pquerna/otp/totp"
+
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/id"
@@ -332,8 +334,10 @@ func TestAPresenceOnlyPasskeyLoginDoesNotClearTheLockout(t *testing.T) {
 	}
 
 	device.userVerified = false
-	if _, needs := passkeyLoginNeeds(t, h, device); needs != 1 {
-		t.Fatalf("a presence-only login owes %d, want 1", needs)
+	// While the account is locked a presence-only login, which would owe a code, is refused
+	// outright, and the lockout stays.
+	if res := passkeyLoginRaw(t, h, device); res.Code != http.StatusTooManyRequests {
+		t.Fatalf("a presence-only login of a locked account = %d, want 429", res.Code)
 	}
 	if deps.Throttle.LockedFor(u.ID) == 0 {
 		t.Fatal("a presence-only passkey login, still owing a code, cleared the account's lockout")
@@ -345,5 +349,53 @@ func TestAPresenceOnlyPasskeyLoginDoesNotClearTheLockout(t *testing.T) {
 	}
 	if locked := deps.Throttle.LockedFor(u.ID); locked != 0 {
 		t.Fatalf("the control: a complete passkey login left the account locked for %s", locked)
+	}
+}
+
+// The throttle fix (item 3): someone holding a PIN-less key on a "preferred" instance logs in
+// presence-only (needs 1) and guesses the TOTP at /totp/verify. Those guesses charge the account
+// ledger, and once it is locked neither the presence-only login nor the verify lets the correct
+// code through. The control is the same correct code on an account with no prior failures.
+func TestAPresenceOnlyPasskeyLoginCannotOutguessTheLockout(t *testing.T) {
+	h, deps, _ := newPasskeyAPITuned(t, "preferred", false, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 1000
+		c.Limits.Rate.LoginFailedBurst = 1000
+	})
+	setup := func() (string, *virtualAuthenticator) {
+		u, _, token := seedAPISession(t, deps)
+		pw := seedPassword(t, deps, u, "correct horse battery staple")
+		secret, _ := enrolTOTP(t, h, deps, token)
+		device := newVirtualAuthenticator(t, deps.Domain, true)
+		enrolPasskeyWith(t, h, token, device, stepUp(t, h, token, stepUpPassword, pw))
+		device.userVerified = false
+		return secret, device
+	}
+	// attempt is a presence-only login and a code; it answers the first refusal, or the verify's status.
+	attempt := func(device *virtualAuthenticator, code string) int {
+		res := passkeyLoginRaw(t, h, device)
+		if res.Code != http.StatusOK {
+			return res.Code
+		}
+		var out []any
+		if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		body, _ := cborx.Marshal([]any{out[0].(string), code})
+		return postCBOR(h, "/v1/auth/totp/verify", body).Code
+	}
+
+	secret, device := setup()
+	for i := 0; i <= deps.Config.Auth.Lockout.FreeAttempts; i++ {
+		attempt(device, "000000")
+	}
+	right, _ := totp.GenerateCode(secret, deps.Clock.Now())
+	if got := attempt(device, right); got != http.StatusTooManyRequests {
+		t.Fatalf("the correct code after free_attempts+1 wrong ones = %d, want 429", got)
+	}
+
+	cSecret, cDevice := setup()
+	cRight, _ := totp.GenerateCode(cSecret, deps.Clock.Now())
+	if got := attempt(cDevice, cRight); got != http.StatusOK {
+		t.Fatalf("the control (no prior failures) = %d, want 200", got)
 	}
 }

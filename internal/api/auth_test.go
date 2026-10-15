@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1237,7 +1240,9 @@ func TestAnOwnersStepUpElsewhereDoesNotResetAThiefsCount(t *testing.T) {
 	h, deps := newTestAPIWithConfig(t, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 100 })
 	const thiefAddr, ownerAddr = "203.0.113.9:4000", "198.51.100.7:4000"
 	free := deps.Config.Auth.Lockout.FreeAttempts
-	run := func(ownerFrom string) int {
+	// run: free-1 thief failures, the owner's success from ownerFrom, then `more` thief failures;
+	// it answers the last one.
+	run := func(ownerFrom string, more int) int {
 		u, _, thief := seedAPISession(t, deps)
 		owner := secondSession(t, deps, u)
 		pw := seedPassword(t, deps, u, "correct horse battery staple")
@@ -1247,14 +1252,22 @@ func TestAnOwnersStepUpElsewhereDoesNotResetAThiefsCount(t *testing.T) {
 			}
 		}
 		stepUpToken(t, stepUpFrom(h, owner, stepUpPassword, pw, ownerFrom))
-		stepUpFrom(h, thief, stepUpPassword, "not it", thiefAddr)
-		return stepUpFrom(h, thief, stepUpPassword, "not it", thiefAddr).Code
+		code := 0
+		for range more {
+			code = stepUpFrom(h, thief, stepUpPassword, "not it", thiefAddr).Code
+		}
+		return code
 	}
-	if got := run(ownerAddr); got != http.StatusTooManyRequests {
+	if got := run(ownerAddr, 2); got != http.StatusTooManyRequests {
 		t.Fatalf("the thief's failure past free_attempts after the owner stepped up elsewhere = %d, want 429", got)
 	}
-	if got := run(thiefAddr); got != http.StatusForbidden {
-		t.Fatalf("the control (the owner on the same address) = %d, want 403", got)
+	// The owner's success on the thief's own address resets nothing account-wide either.
+	if got := run(thiefAddr, 2); got != http.StatusTooManyRequests {
+		t.Fatalf("the thief's failure past free_attempts after the owner stepped up on its address = %d, want 429", got)
+	}
+	// The control: one failure fewer is still inside free_attempts.
+	if got := run(ownerAddr, 1); got != http.StatusForbidden {
+		t.Fatalf("the control (free_attempts failures) = %d, want 403", got)
 	}
 }
 
@@ -1356,5 +1369,100 @@ func seedCredentials(t *testing.T, d api.Deps, uid id.ID, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		seedCredentialAt(t, d, uid, i)
+	}
+}
+
+// The throttle fix (item 1): step-up failures are capped per account, whatever the address. From
+// several addresses, free_attempts wrong TOTP codes each; the CORRECT code from a fresh address
+// is then refused 429 before it is checked. The control is the correct code on a fresh account.
+func TestStepUpTOTPGuessesAreCappedPerAccountAcrossAddresses(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 1000 })
+	free := deps.Config.Auth.Lockout.FreeAttempts
+	_, _, token := seedAPISession(t, deps)
+	secret, _ := enrolTOTP(t, h, deps, token)
+	for a := 1; a <= 3; a++ {
+		for range free {
+			stepUpFrom(h, token, stepUpTOTP, "000000", fmt.Sprintf("203.0.113.%d:4000", a))
+		}
+	}
+	right, _ := totp.GenerateCode(secret, deps.Clock.Now())
+	if res := stepUpFrom(h, token, stepUpTOTP, right, "198.51.100.200:4000"); res.Code != http.StatusTooManyRequests {
+		t.Fatalf("the correct code after %d wrong ones over 3 addresses = %d, want 429", 3*free, res.Code)
+	}
+
+	_, _, fresh := seedAPISession(t, deps)
+	fSecret, _ := enrolTOTP(t, h, deps, fresh)
+	fRight, _ := totp.GenerateCode(fSecret, deps.Clock.Now())
+	stepUpToken(t, stepUpFrom(h, fresh, stepUpTOTP, fRight, "198.51.100.201:4000"))
+}
+
+// The throttle fix (item 2): the old password is POST /v1/auth/password's step-up, and guessing
+// it behind a stolen session is capped like any step-up. Past free_attempts the RIGHT old password
+// is refused 429 and the password is unchanged; the guesses never lock the owner's own login. The
+// control is the right old password first, on a fresh account.
+func TestChangePasswordOldPasswordIsThrottled(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 1000 })
+	const pw = "correct horse battery staple"
+	u, _, token := seedAPISession(t, deps)
+	seedPassword(t, deps, u, pw)
+	change := func(token, old string) int {
+		body, _ := cborx.Marshal([]any{old, "the thief's password"})
+		return postCBORAuth(h, "/v1/auth/password", body, token).Code
+	}
+	for i := 0; i <= deps.Config.Auth.Lockout.FreeAttempts; i++ {
+		change(token, "not the password")
+	}
+	if got := change(token, pw); got != http.StatusTooManyRequests {
+		t.Fatalf("the right old password after free_attempts+1 wrong ones = %d, want 429", got)
+	}
+	if locked := deps.Throttle.LockedFor(u.ID); locked != 0 {
+		t.Fatalf("the guesses locked the owner's login for %s", locked)
+	}
+	if status, _ := login(t, h, u.Username, pw); status != http.StatusOK {
+		t.Fatalf("the owner's password after the refused change = %d, want 200 (unchanged)", status)
+	}
+
+	v, _, vToken := seedAPISession(t, deps)
+	seedPassword(t, deps, v, pw)
+	if got := change(vToken, pw); got != http.StatusNoContent {
+		t.Fatalf("the control (the right old password first) = %d, want 204", got)
+	}
+}
+
+// slowHasher is testHasher that takes a while, so concurrent requests overlap inside Verify, and
+// counts the guesses that reached it.
+type slowHasher struct {
+	testHasher
+	checked *atomic.Int64
+}
+
+func (h slowHasher) Verify(ctx context.Context, pw, phc string) (bool, bool, error) {
+	h.checked.Add(1)
+	time.Sleep(150 * time.Millisecond)
+	return h.testHasher.Verify(ctx, pw, phc)
+}
+
+// The throttle fix (item 4): concurrent step-ups are counted before they are checked, so a burst
+// in flight cannot all pass the gate ahead of its own failures. Twenty wrong passwords at once from
+// one address: at most free_attempts+1 reach the hasher.
+func TestConcurrentStepUpGuessesAreCountedBeforeTheyAreChecked(t *testing.T) {
+	checked := &atomic.Int64{}
+	h, deps := newTestAPIFull(t, func(c *config.Config) { c.Limits.Rate.LoginFailedBurst = 1000 },
+		func(d *api.Deps) { d.Hasher = slowHasher{checked: checked} })
+	u, _, token := seedAPISession(t, deps)
+	seedPassword(t, deps, u, "correct horse battery staple")
+	const n = 20
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stepUpRaw(h, token, stepUpPassword, "not the password")
+		}()
+	}
+	wg.Wait()
+	limit := int64(deps.Config.Auth.Lockout.FreeAttempts + 1)
+	if got := checked.Load(); got > limit || got == 0 {
+		t.Fatalf("%d of %d concurrent wrong step-ups reached the password check, want 1..%d", got, n, limit)
 	}
 }

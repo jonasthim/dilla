@@ -190,10 +190,10 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs(uint)]` (`needs`: § Second factors) |
-| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr)]` | `204` |
+| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr)]` | `204`; a wrong `old` is `403 E_FORBIDDEN`, counted on the step-up ledgers (§ Second factors), so past their free attempts every attempt, the right one included, is `429 E_RATE_LIMITED` |
 | `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]` (§ Second factors) |
 | `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]` (§ Second factors) |
-| `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 only |
+| `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 only; `429 E_RATE_LIMITED` while the account is locked out (the assertion is spent) |
 | `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 or 2 |
 | `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]` (§ Second factors) |
@@ -218,10 +218,10 @@ full contract.
 | `POST /v1/auth/password/login` | — | `[username, password]` | `[assertion(tstr), needs(uint)]`: `0` nothing owed; `1` a TOTP code or a backup code (`/totp/verify`, `/recovery/verify`); `2` the account has passkeys and no TOTP: a passkey login, or a backup code |
 | `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]`; `403 E_STEP_UP` when the account holds a factor and `stepup` is missing or not valid; `403 E_FORBIDDEN` over a confirmed secret (unchanged) |
 | `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]`: 10 when the account held no unused code, else `[]`; clears `factor_owed` in the same transaction; `403 E_STEP_UP` when a factor appeared since an enroll that carried no step-up; `404 E_NOT_FOUND` with no pending enrolment (none, or already confirmed); `400 E_INVALID_REQUEST` for a code that does not match |
-| `POST /v1/auth/recovery/verify` | — | `[assertion, code]` | `[assertion]`; accepts an assertion owing `needs` 1 **or 2** |
+| `POST /v1/auth/recovery/verify` | — | `[assertion, code]` | `[assertion]`; accepts an assertion owing `needs` 1 **or 2**; `429 E_RATE_LIMITED` while the account is locked out (the assertion is spent) |
 | `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]`; the user's credentials are excluded; `409 E_INVALID_REQUEST` when the account already holds 1024 passkeys (checked before the step-up token is spent) |
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id, response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]`; `name` is 1–64 bytes of UTF-8 without control characters (`400` otherwise, the ceremony kept); an unknown, spent or expired ceremony, another account's, or a response that does not verify is `400 E_INVALID_REQUEST` (another account's ceremony is not spent); clears `factor_owed`; `403 E_STEP_UP` as for confirm; `409 E_INVALID_REQUEST` at 1024 passkeys |
-| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold |
+| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold; `429 E_RATE_LIMITED`, and no assertion, when it would owe 1 while the account is locked out |
 | `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint)]` |
 | `POST /v1/auth/stepup` | E | `[method(uint 0 password\|1 totp\|2 backup code), secret(tstr)]` | `201 [stepup(tstr), expires(uint)]`; a wrong secret is `403 E_STEP_UP`; `429 E_RATE_LIMITED` with `retry_after_ms` from the failure that crosses the step-up ledger's free attempts on, or while the client address's login failure budget is spent; `400 E_INVALID_REQUEST` for another method |
 | `POST /v1/auth/stepup/passkey/begin` | E | `[]` | `[ceremony_id, options]` (this user's credentials only; UV required); `400 E_INVALID_REQUEST` for an account that holds no passkey |
@@ -241,14 +241,20 @@ full contract.
   300 s; only the routes above spend one. The confirm and finish re-check the rule under the
   account's lock: when a factor appeared since a begin that carried no valid step-up, they write
   nothing and answer `403 E_STEP_UP`. The record of what a begin carried lives in memory, so after
-  a restart the person confirms again. Step-up failures are counted on a ledger of their own, never
-  on the account's password lockout. That ledger is kept per account **and** per client address, so
-  a success from one address clears only that address's count; a step-up also respects the
-  address's login failure budget (§ Rate limits), which its failures spend.
+  a restart the person confirms again. Step-up guesses (the step-up routes and the old password of
+  `POST /v1/auth/password`) are counted on two step-up ledgers of their own, never on the account's
+  password lockout: one per account, whatever the address, and one per account **and** client
+  address. A guess is counted before its secret is checked, so concurrent guesses count against
+  each other. A success refunds its own guess and clears only the per-address count; the
+  account-wide count ages out over `auth.lockout.observation_window`, so no success, the owner's
+  included, resets a thief's guesses. A step-up also respects the address's login failure budget
+  (§ Rate limits), which its failures spend.
 - **Limits:** an account holds at most 1024 passkeys for this `rp_id`, and
   `auth.totp.recovery_codes` is 1–16 (the client's decode bounds).
-- **A presence-only passkey login** (`needs 1`) does not clear the account's failed-login
-  lockout; the code that completes it does, as after a password.
+- **The account lockout covers the second step:** a password or passkey login that still owes a
+  factor does not clear the account's failed-login ledger; wrong codes at `/totp/verify` and
+  `/recovery/verify` are counted on it; and while it is locked those routes answer `429`, as does a
+  passkey login that would owe a code. The code that completes a login clears it.
 - **A step-up passkey ceremony is not a login ceremony,** nor the reverse: `login/finish` refuses a
   step-up's ceremony (`401`), and `stepup/passkey/finish` refuses a login's or another account's
   (`403 E_STEP_UP`).

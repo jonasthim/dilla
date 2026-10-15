@@ -105,6 +105,11 @@ func (t *Throttle) LockedFor(userID id.ID) time.Duration {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.lockedForLocked(userID, now, window)
+}
+
+// lockedForLocked is LockedFor with t.mu held.
+func (t *Throttle) lockedForLocked(userID id.ID, now time.Time, window time.Duration) time.Duration {
 	ts := within(t.byUser[userID], now, window)
 	if len(ts) == 0 {
 		delete(t.byUser, userID)
@@ -123,6 +128,81 @@ func (t *Throttle) LockedFor(userID id.ID) time.Duration {
 		return remaining
 	}
 	return 0
+}
+
+// Attempt is one guess at a secret, counted on its ledgers BEFORE the secret is checked. LockedFor
+// then RecordFailure is a check followed later by a write, so N concurrent guesses can all pass the
+// check before any of them is recorded; Begin checks and counts in one step under the lock, so the
+// guesses in flight count against the lockout of the ones behind them. A guess that turns out
+// right is refunded (Pass); one that turns out wrong stays counted (Fail).
+type Attempt struct {
+	t       *Throttle
+	ledgers []id.ID
+	at      time.Time
+}
+
+// Begin refuses with the longest lockout among ledgers when any is locked; otherwise it counts one
+// attempt on every ledger and returns it.
+func (t *Throttle) Begin(ledgers ...id.ID) (*Attempt, time.Duration) {
+	now := t.clk.Now()
+	window := t.lockout.ObservationWindow.Value()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var locked time.Duration
+	for _, l := range ledgers {
+		if d := t.lockedForLocked(l, now, window); d > locked {
+			locked = d
+		}
+	}
+	if locked > 0 {
+		return nil, locked
+	}
+	for _, l := range ledgers {
+		t.byUser[l] = appendWithin(t.byUser[l], now, window)
+	}
+	return &Attempt{t: t, ledgers: append([]id.ID(nil), ledgers...), at: now}, 0
+}
+
+// Fail keeps the attempt counted, charges the client address as RecordFailure does, and returns
+// the longest lockout the ledgers now earn, from this moment.
+func (a *Attempt) Fail(ip netip.Addr) time.Duration {
+	t := a.t
+	now := t.clk.Now()
+	window := t.lockout.ObservationWindow.Value()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := server.RateKey(ip)
+	t.byAddr[key] = appendWithin(t.byAddr[key], now, window)
+	t.limiter.Allow(Classes(t.limiterConfig())["login_failed"], key)
+	var locked time.Duration
+	for _, l := range a.ledgers {
+		if d := t.curve(len(within(t.byUser[l], now, window))); d > locked {
+			locked = d
+		}
+	}
+	return locked
+}
+
+// Pass refunds the attempt on every ledger, and forgets every ledger in forget entirely.
+func (a *Attempt) Pass(forget ...id.ID) {
+	t := a.t
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, l := range forget {
+		delete(t.byUser, l)
+	}
+	for _, l := range a.ledgers {
+		ts := t.byUser[l]
+		for i := len(ts) - 1; i >= 0; i-- {
+			if ts[i].Equal(a.at) {
+				t.byUser[l] = append(ts[:i:i], ts[i+1:]...)
+				break
+			}
+		}
+		if len(t.byUser[l]) == 0 {
+			delete(t.byUser, l)
+		}
+	}
 }
 
 // curve maps a count of failures inside the observation window to the lockout

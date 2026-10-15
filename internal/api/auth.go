@@ -262,18 +262,22 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A success clears the account's ledger, both the in-memory one the lockout
-	// curve reads and the durable one the admin CLI reports.
-	d.Throttle.Clear(user.ID)
-	if cerr := d.Repo.ClearLoginFailures(ctx, user.ID); cerr != nil {
-		d.logf(r, "api: ClearLoginFailures", "err", cerr)
-	}
 	d.recordAttempt(r, user, true, addrKey, methodPassword, true)
 
 	needs, terr := d.loginNeeds(ctx, user.ID)
 	if terr != nil {
 		server.WriteError(w, d.storeError(r, terr))
 		return
+	}
+	// A complete login clears the account's ledger, both the in-memory one the
+	// lockout curve reads and the durable one the admin CLI reports. One that still
+	// owes a factor does not: guesses at the code that follows accumulate on the
+	// same ledger, and verifySecondFactor clears it once the code is right.
+	if needs == needsNothing {
+		d.Throttle.Clear(user.ID)
+		if cerr := d.Repo.ClearLoginFailures(ctx, user.ID); cerr != nil {
+			d.logf(r, "api: ClearLoginFailures", "err", cerr)
+		}
 	}
 	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, needs), uint64(needs)})
 }
@@ -429,16 +433,29 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, server.Errorf(server.CodeForbidden, "changing a password needs the old one"))
 			return
 		}
+		// The old password is this route's step-up, so guesses at it are counted on the step-up
+		// ledgers (before the check, per account across addresses), never on the owner's login
+		// ledger: a thief behind a stolen session neither guesses freely nor locks the owner out.
+		try, gerr := d.stepUpGate(r, sess.UserID)
+		if gerr != nil {
+			server.WriteError(w, gerr)
+			return
+		}
 		valid, _, verr := d.Hasher.Verify(ctx, *req.Old, phc)
 		if verr != nil {
+			try.cancel()
 			server.WriteError(w, verr)
 			return
 		}
 		if !valid {
-			d.Throttle.RecordFailure(sess.UserID, server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+			if locked := try.fail(d, r); locked > 0 {
+				server.WriteError(w, server.RateLimitedAfter(locked))
+				return
+			}
 			server.WriteError(w, server.Errorf(server.CodeForbidden, "the old password is wrong"))
 			return
 		}
+		try.pass()
 	} else {
 		now := d.Clock.Now().Unix()
 		row, serr := d.Repo.GetSessionByHash(ctx, sess.TokenHash, now)
@@ -725,6 +742,15 @@ func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method 
 		return
 	}
 	userID, needs, ok := d.Assertions.SpendNeeds(req.Assertion)
+	if ok && accept(needs) {
+		// The account's lockout holds here too: guesses at the code are charged to the account
+		// ledger below, and a locked account is refused before its code is looked at. The
+		// assertion is already spent.
+		if locked := d.Throttle.LockedFor(userID); locked > 0 {
+			server.WriteError(w, server.RateLimitedAfter(locked))
+			return
+		}
+	}
 	if !ok || !accept(needs) {
 		// An unknown, expired, replayed or already-cleared assertion, or one owing
 		// something this route cannot clear, is one answer: there is nothing here
@@ -1046,6 +1072,13 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	// The account's failed-login ledger is cleared only by a complete login. A presence-only
 	// assertion still owes a code, and verifySecondFactor clears the ledger once that is given;
 	// clearing it here would hand someone holding a PIN-less key a fresh lockout curve per login.
+	if needs != needsNothing {
+		if locked := d.Throttle.LockedFor(userID); locked > 0 {
+			// It would owe a code the lockout forbids guessing: no assertion is issued.
+			server.WriteError(w, server.RateLimitedAfter(locked))
+			return
+		}
+	}
 	if needs == needsNothing {
 		d.Throttle.Clear(userID)
 		if cerr := d.Repo.ClearLoginFailures(ctx, userID); cerr != nil {
@@ -1494,25 +1527,53 @@ func stepUpLedger(userID id.ID, addrKey string) id.ID {
 	return loginLedger(store.UserRow{}, false, "\x00stepup"+userID.String()+"\x00"+addrKey)
 }
 
-// stepUpGate is the standing refusal before a step-up secret is looked at: the address's failure
-// budget, PEEKED as PasswordLogin peeks it, then the step-up ledger's lockout.
-func (d Deps) stepUpGate(r *http.Request, userID id.ID) (id.ID, error) {
-	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
-	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
-		return id.ID{}, server.RateLimitedAfter(wait)
-	}
-	ledger := stepUpLedger(userID, addrKey)
-	if locked := d.Throttle.LockedFor(ledger); locked > 0 {
-		return id.ID{}, server.RateLimitedAfter(locked)
-	}
-	return ledger, nil
+// stepUpAccountLedger is the account-wide step-up ledger: every step-up guess at the account,
+// from any address, is counted on it, so guesses spread over many addresses are capped per
+// account. A success never clears it (it ages out over the observation window), so the owner's
+// success cannot reset a thief's count either. The price: a thief can hold the owner's step-ups
+// locked, for at most lockout_ceiling; the owner's login ledger is never touched.
+func stepUpAccountLedger(userID id.ID) id.ID {
+	return loginLedger(store.UserRow{}, false, "\x00stepup-acct"+userID.String())
 }
 
-// stepUpFailure charges a failed step-up to the step-up ledger and the address, and answers 403
-// E_STEP_UP, or 429 E_RATE_LIMITED once the ledger is past its free attempts.
-func (d Deps) stepUpFailure(r *http.Request, ledger id.ID) error {
-	ip := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
-	if locked := d.Throttle.RecordFailure(ledger, ip); locked > 0 {
+// stepUpTry is one guess at a step-up secret in flight: counted on both step-up ledgers before
+// the secret is checked (auth.Throttle.Begin), so concurrent guesses count against each other.
+type stepUpTry struct {
+	attempt *auth.Attempt
+	address id.ID // the account+address ledger, the one a success clears
+}
+
+// stepUpGate is the standing refusal before a step-up secret is looked at: the address's failure
+// budget, PEEKED as PasswordLogin peeks it, then the account-wide and the account+address step-up
+// ledgers, checked and counted in one step.
+func (d Deps) stepUpGate(r *http.Request, userID id.ID) (stepUpTry, error) {
+	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
+		return stepUpTry{}, server.RateLimitedAfter(wait)
+	}
+	address := stepUpLedger(userID, addrKey)
+	attempt, locked := d.Throttle.Begin(stepUpAccountLedger(userID), address)
+	if locked > 0 {
+		return stepUpTry{}, server.RateLimitedAfter(locked)
+	}
+	return stepUpTry{attempt: attempt, address: address}, nil
+}
+
+// fail keeps the guess counted and charges the address; it reports the lockout the guess earned.
+func (s stepUpTry) fail(d Deps, r *http.Request) time.Duration {
+	return s.attempt.Fail(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+}
+
+// pass refunds the guess and clears the account+address ledger; the account-wide one ages out.
+func (s stepUpTry) pass() { s.attempt.Pass(s.address) }
+
+// cancel refunds a guess that was never decided (a store failure).
+func (s stepUpTry) cancel() { s.attempt.Pass() }
+
+// stepUpFailure charges a failed step-up and answers 403 E_STEP_UP, or 429 E_RATE_LIMITED once a
+// step-up ledger is past its free attempts.
+func (d Deps) stepUpFailure(r *http.Request, try stepUpTry) error {
+	if locked := try.fail(d, r); locked > 0 {
 		return server.RateLimitedAfter(locked)
 	}
 	return stepUpRefusal()
@@ -1546,7 +1607,7 @@ func (d Deps) StepUp(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "method is 0, 1 or 2"))
 		return
 	}
-	ledger, err := d.stepUpGate(r, sess.UserID)
+	try, err := d.stepUpGate(r, sess.UserID)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -1554,14 +1615,15 @@ func (d Deps) StepUp(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	good, err := d.checkStepUpSecret(ctx, sess.UserID, req.Method, req.Secret)
 	if err != nil {
+		try.cancel()
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
 	if !good {
-		server.WriteError(w, d.stepUpFailure(r, ledger))
+		server.WriteError(w, d.stepUpFailure(r, try))
 		return
 	}
-	d.Throttle.Clear(ledger)
+	try.pass()
 	token, expires := d.StepUps.Issue(sess.UserID, sess.TokenHash)
 	d.write(w, r, http.StatusCreated, []any{token, uint64(expires)}) //nolint:gosec // G115: a unix time after 1970
 }
@@ -1668,17 +1730,17 @@ func (d Deps) FinishPasskeyStepUp(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	ledger, err := d.stepUpGate(r, sess.UserID)
+	try, err := d.stepUpGate(r, sess.UserID)
 	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
 	if err := p.FinishStepUp(r.Context(), req.CeremonyID, []byte(req.Response), sess.UserID); err != nil {
 		d.logf(r, "api: finish passkey step-up", "err", err)
-		server.WriteError(w, d.stepUpFailure(r, ledger))
+		server.WriteError(w, d.stepUpFailure(r, try))
 		return
 	}
-	d.Throttle.Clear(ledger)
+	try.pass()
 	token, expires := d.StepUps.Issue(sess.UserID, sess.TokenHash)
 	d.write(w, r, http.StatusCreated, []any{token, uint64(expires)}) //nolint:gosec // G115: a unix time after 1970
 }
