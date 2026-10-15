@@ -211,8 +211,8 @@ export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefin
 }
 
 /**
- * A body as text and mention pills. `broadcast` says whether its @everyone, @here and role mentions count (the row mentioned me, or it is
- * mine and I may mention everyone): when they do not, a broadcast stays plain text and a role pill is not styled as naming me.
+ * A body as text and mention pills. `broadcast` says whether its @everyone and @here count (the row mentioned me, or it is
+ * mine and I may mention everyone): when they do not, they stay plain text, never a pill styled as naming me.
  */
 export function bodyParts(body: string, book: NameBook, broadcast = true): BodyPart[] {
   return splitMentions(body).map(part => {
@@ -223,8 +223,8 @@ export function bodyParts(body: string, book: NameBook, broadcast = true): BodyP
     if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false };
     if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false };
     const known = book.roleInfo?.get(id);
-    if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: broadcast && book.ownRoles.has(id), broadcast: false, color: known.color };
-    if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: broadcast && book.ownRoles.has(id), broadcast: false };
+    if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: book.ownRoles.has(id), broadcast: false, color: known.color };
+    if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: book.ownRoles.has(id), broadcast: false };
     return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false };
   });
 }

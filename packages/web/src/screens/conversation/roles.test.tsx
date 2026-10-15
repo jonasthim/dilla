@@ -8,8 +8,8 @@ import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
-import { GEN, MEMBERS, O1, OTHER_ROLE, PEER, P1, ROLE, ownRow, peerRow, timeline } from '../../test/conversation.tsx';
-import { bodyParts, mentionCandidates, mentionMembers, nameBook } from '../shell-model.ts';
+import { GEN, MEMBERS, O1, OTHER_ROLE, PEER, P1, ownRow, peerRow, timeline } from '../../test/conversation.tsx';
+import { mentionCandidates, mentionMembers, nameBook } from '../shell-model.ts';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
 import { Conversation, INITIAL_UI, type ConversationUi } from './Conversation.tsx';
 
@@ -207,19 +207,6 @@ describe('@everyone in the log', () => {
     first.view.unmount();
     log({ bits: SEND | PERM.mentionEveryone, items: [ownRow(O1, '1', 'hey <@here>')] });
     expect(row(O1).querySelector('.d-mention')).not.toBeNull();
-  });
-});
-
-describe('a mention of my role', () => {
-  // The core counts a role token only if the role is mentionable or the sender may mention everyone: one that did not count
-  // stays a role pill but is not styled as naming me.
-  const book = nameBook({ id: ME.id, username: 'ada' }, MEMBERS, [...ROLES, role(ROLE, 'Crew')]);
-  const pill = (counts: boolean) => bodyParts(`hi <@${ROLE}>`, book, counts).find(p => p.kind === 'mention');
-  it('names me when the row mentioned me', () => {
-    expect(pill(true)).toMatchObject({ kind: 'mention', me: true });
-  });
-  it('does not name me when it did not count', () => {
-    expect(pill(false)).toMatchObject({ kind: 'mention', me: false });
   });
 });
 
