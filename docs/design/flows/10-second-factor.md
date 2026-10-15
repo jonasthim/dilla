@@ -117,7 +117,7 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factor.error.wrongAddress='Passkeys do not work at this address of {instance}. Use an authenticator app, and tell the operator.'`
 - `factor.error.exists='This passkey is already on your account.'`
 - `factor.error.refused='{instance} did not accept the passkey. Try again, or use an authenticator app.'`
-- `factor.error.nameLong='A name is up to 64 characters.'`
+- `factor.error.nameLong='That name is too long. Try a shorter one.'`
 - `factor.error.tooMany='Too many attempts. Try again in {seconds} s.'`
 - `factor.error.network='The connection dropped. Check it and try again.'`
 - `factor.error.other='That did not work ({code}). Try again.'`
