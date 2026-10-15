@@ -763,13 +763,16 @@ describe('CreateChannelFlow, private create', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect((fake.calls[0] as { private: { roleIds: string[] } }).private.roleIds).toHaveLength(98));
   }, 30000);
-  it('words the worker’s E_BAD_INPUT of a private create as the too-many copy', async () => {
+  // Review 8: the worker's E_BAD_INPUT also means "roles not loaded" or "unknown server", and the code cannot tell those
+  // from the 98-role cap (which the ticks already prevent), so it is worded by its code, never as the cap.
+  it('words the worker’s E_BAD_INPUT of a private create by its code, not as the too-many copy', async () => {
     const { fake, user } = setup();
     fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT' }));
     await user.click(privateSwitch());
     await user.type(nameField('Channel name'), 'staff');
     await user.click(screen.getByRole('button', { name: 'Create' }));
-    expect(await screen.findByText('A private channel can be opened to at most 98 roles. Untick some and try again.')).toBeInTheDocument();
+    expect(await screen.findByText('Could not add the channel (E_BAD_INPUT). Try again.')).toBeInTheDocument();
+    expect(screen.queryByText('A private channel can be opened to at most 98 roles. Untick some and try again.')).toBeNull();
   });
   it('words any other refusal of a private create with its code', async () => {
     const { fake, user } = setup();

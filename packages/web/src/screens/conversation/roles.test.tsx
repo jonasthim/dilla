@@ -190,6 +190,26 @@ describe('pins by right', () => {
   });
 });
 
+describe('@everyone in the log', () => {
+  // Review 10: a broadcast that did not count for me (a sender without the right) is plain text, not a pill naming me.
+  it('renders a broadcast that did not mention me as plain text', () => {
+    log({ items: [peerRow(P1, '1', 'hey <@everyone> look', { mention: false })] });
+    expect(row(P1).querySelector('.d-mention')).toBeNull();
+    expect(row(P1)).toHaveTextContent('hey @everyone look');
+  });
+  it('renders a broadcast that mentioned me as a pill', () => {
+    log({ items: [peerRow(P1, '1', 'hey <@everyone> look', { mention: true })] });
+    expect(row(P1).querySelector('.d-mention')).toHaveAttribute('data-broadcast', 'true');
+  });
+  it('renders my own broadcast as a pill only while I may mention everyone (or the bits are unknown)', () => {
+    const first = log({ bits: SEND, items: [ownRow(O1, '1', 'hey <@here>')] });
+    expect(row(O1).querySelector('.d-mention')).toBeNull();
+    first.view.unmount();
+    log({ bits: SEND | PERM.mentionEveryone, items: [ownRow(O1, '1', 'hey <@here>')] });
+    expect(row(O1).querySelector('.d-mention')).not.toBeNull();
+  });
+});
+
 describe('role labels in the log', () => {
   it('renders a known role with its name and colour dot, and an unknown one generically', () => {
     log({ items: [peerRow(P1, '1', `see <@${GAME}> and <@${OTHER_ROLE}> from <@${PEER}>`)] });

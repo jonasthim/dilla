@@ -129,3 +129,12 @@ describe('MemberRolesFlow focus', () => {
     expect(dialog().getByRole('button', { name: en['roles.assign.close'] })).toHaveFocus();
   });
 });
+
+describe('MemberRolesFlow late roles', () => {
+  it('moves focus from Done to the first enabled box when the roles arrive after it opened', () => {
+    const { fake } = setup({ roles: null });
+    expect(dialog().getByRole('button', { name: en['roles.assign.close'] })).toHaveFocus();
+    act(() => fake.set(`roles:${SERVER}`, ROLES));
+    expect(dialog().getByRole('checkbox', { name: 'admins' })).toHaveFocus();
+  });
+});

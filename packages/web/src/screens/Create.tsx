@@ -347,10 +347,11 @@ export function CreateChannelFlow(props: {
         else props.onDone(id, chosen);
       } catch (e) {
         if (!mine()) return;
-        // Only the instance's E_INVALID_REQUEST is about the name; the worker's E_BAD_INPUT here is not (review M7).
+        // Only the instance's E_INVALID_REQUEST is about the name; the worker's E_BAD_INPUT here is not (review M7). Nor is it
+        // the 98-role cap, which the ticks already prevent: the code cannot tell the cap from "roles not loaded" or "unknown
+        // server", and the detail is never read (protocol/02), so it is worded by its code (W2a review 8).
         const code = errorOf(e).code;
         fail(code === 'E_FORBIDDEN' ? t('create.channel.error.forbidden')
-          : code === 'E_BAD_INPUT' && sendPrivate ? t('chperm.create.tooMany')
           : code === 'E_INVALID_REQUEST' ? t('create.channel.error.refused')
             : t('create.channel.error.other', { code }));
       } finally {

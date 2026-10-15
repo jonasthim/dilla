@@ -210,11 +210,15 @@ export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefin
   return result;
 }
 
-export function bodyParts(body: string, book: NameBook): BodyPart[] {
+/**
+ * A body as text and mention pills. `broadcast` says whether its @everyone and @here count (the row mentioned me, or it is
+ * mine and I may mention everyone): when they do not, they stay plain text, never a pill styled as naming me.
+ */
+export function bodyParts(body: string, book: NameBook, broadcast = true): BodyPart[] {
   return splitMentions(body).map(part => {
     if (part.kind === 'text') return part;
     const id = part.target;
-    if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: true, broadcast: true };
+    if (id === 'everyone' || id === 'here') return broadcast ? { kind: 'mention', label: `@${id}`, me: true, broadcast: true } : { kind: 'text', text: `@${id}` };
     const member = book.members.find(m => m.userId === id);
     if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false };
     if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false };

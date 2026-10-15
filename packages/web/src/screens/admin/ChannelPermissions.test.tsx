@@ -76,13 +76,16 @@ describe('the channel permissions section', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Open to everyone' }));
     await waitFor(() => expect(fake.callsOf('setChannelPrivate')).toEqual([{ m: 'setChannelPrivate', channelId: CH, private: false }]));
   });
-  it('maps the would-lose refusal to its copy, keeps confirm enabled, and returns focus to the toggle on cancel', async () => {
+  // Review 9: the instance answers 400 E_INVALID_REQUEST for the lockout and for a bad body, kind or bit alike, so its
+  // refusal is worded by its code; only the page's own check (below) says "would hide".
+  it('words the instance’s 400 by its code, keeps confirm enabled, and returns focus to the toggle on cancel', async () => {
     const { fake, user } = setup([ALLOW_MODS]);
     fake.handler = () => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }));
     await user.click(toggle());
     await user.click(screen.getByRole('button', { name: 'Make private' }));
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('That change would hide the channel from you.');
+    expect(alert).toHaveTextContent('Could not save the permissions (E_INVALID_REQUEST). Try again.');
+    expect(alert).not.toHaveTextContent('That change would hide the channel from you.');
     expect(screen.getByRole('button', { name: 'Make private' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(toggle()).toHaveFocus());
@@ -129,6 +132,13 @@ describe('the channel permissions section', () => {
     await user.click(disclosure('Players'));
     await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not read who can see this channel.');
+  });
+  it('words an overwrite’s 400 E_INVALID_REQUEST by its code, not as the lockout', async () => {
+    const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
+    fake.handler = () => Promise.reject(refusal({ code: 'E_INVALID_REQUEST', status: 400 }));
+    await user.click(disclosure('Players'));
+    await user.click(within(screen.getByRole('radiogroup', { name: 'send messages' })).getByRole('radio', { name: 'deny' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the permissions (E_INVALID_REQUEST). Try again.');
   });
   it('maps a 400 that is not E_INVALID_REQUEST to the generic copy', async () => {
     const { fake, user } = setup([ow(0, PLAYERS, 0, 0)]);
@@ -259,5 +269,16 @@ describe('the channel permissions section', () => {
     const { view, user } = setup([ow(0, EVERYONE, 0, PERM.viewChannel), ow(0, PLAYERS, PERM.pinMessages, 0)]);
     await user.click(disclosure('Players'));
     await expectNoAxeViolations(view.container);
+  });
+});
+
+describe('ChannelPermissions heading order', () => {
+  it('puts the grid’s group headings under "who has settings here" (h4), as h5', async () => {
+    const { user } = setup([ow(0, PLAYERS, 0, 0)]);
+    await user.click(disclosure('Players'));
+    const levels = screen.getAllByRole('heading').map(h => Number(h.tagName.slice(1)));
+    expect(levels.slice(0, 2)).toEqual([3, 4]);
+    expect(levels.slice(2).length).toBeGreaterThan(0);
+    expect(levels.slice(2).every(l => l === 5)).toBe(true);
   });
 });

@@ -147,6 +147,15 @@ describe('roles: role commands', () => {
     expect(await run(w, { m: 'moveRole', communityId: CID, roleId: HEX.a, direction: 'up' })).toMatchObject({ ok: false });
     expect(w.routes.listRoles.mock.calls.length).toBe(reads + 1);
   });
+  // Review 13: patchRole answers 409 when the role moved meanwhile (roles.go, the in-transaction position check).
+  it('updateRole reads the access again and rethrows on a 409', async () => {
+    const w = await ready({ owner: false, top: 9 });
+    w.routes.patchRole.mockRejectedValueOnce(refusal(409, 'E_INVALID_REQUEST'));
+    const perms = w.routes.getPermissions.mock.calls.length;
+    expect(await run(w, { m: 'updateRole', communityId: CID, roleId: HEX.a, name: 'n', color: null, hoist: null, mentionable: null, allow: null }))
+      .toMatchObject({ ok: false, error: { code: 'E_INVALID_REQUEST' } });
+    expect(w.routes.getPermissions.mock.calls.length).toBeGreaterThan(perms);
+  });
   it('deleteRole treats a 404 as done', async () => {
     const w = await ready();
     w.routes.deleteRole.mockRejectedValueOnce(refusal(404, 'E_NOT_FOUND'));

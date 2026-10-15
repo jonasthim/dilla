@@ -10,7 +10,9 @@ import { t, type StringKey } from '../../strings/index.ts';
 import { forbidden, shownName, statusIs, useRun, type SectionProps } from './shared.ts';
 
 /** What the instance would answer a change that hides the channel from its own author. */
-const HIDDEN = Object.assign(new Error('hidden'), { code: 'E_INVALID_REQUEST', detail: '', status: 400, retryAfterMs: null });
+// The page's own lockout refusal, raised before asking the instance. E_WOULD_HIDE is the code a dedicated server refusal
+// would carry; today the instance has none (its lockout is a plain 400 E_INVALID_REQUEST).
+const HIDDEN = Object.assign(new Error('hidden'), { code: 'E_WOULD_HIDE', detail: '', status: 0, retryAfterMs: null });
 const NO_ROLES: readonly RoleSummary[] = [];
 const NO_MEMBERS: readonly MemberSummary[] = [];
 const NO_ENTRIES: readonly OverwriteSummary[] = [];
@@ -32,9 +34,11 @@ function channelGroups(disabledFor: (bit: number) => boolean): PermissionGridGro
 /** The copy of a refusal of an overwrite change. The instance decides every request again; this only words its answer. */
 function refusalText(e: UiError): string {
   if (forbidden(e)) return t('chperm.error.forbidden');
-  // The detail text is never read (protocol/02). Only the instance's own invalid-request refusal is its lockout rule; the
-  // worker's E_BAD_INPUT means the page's overwrites could not be trusted.
-  if (e.status === 400 && e.code === 'E_INVALID_REQUEST') return t('chperm.error.hidden');
+  // The page's own lockout check (HIDDEN, above) is the only "would hide" answer. The instance answers 400
+  // E_INVALID_REQUEST for its lockout rule and for a bad body, kind or community-wide bit alike, and its detail text is
+  // never read (protocol/02), so that refusal is worded by its code (W2a review 9). The worker's E_BAD_INPUT means the
+  // page's overwrites could not be trusted.
+  if (e.code === HIDDEN.code) return t('chperm.error.hidden');
   if (e.code === 'E_BAD_INPUT') return t('chperm.error.unread');
   if (statusIs(e, 404)) return t('chperm.error.gone');
   return t('chperm.error.other', { code: e.code });
@@ -230,7 +234,7 @@ export function ChannelPermissions({ channelId, communityId, announce }: { chann
                 </div>
                 {shown ? (
                   <div id={panel}>
-                    <PermissionGrid label={entry.name} groups={groups} mode="tri" values={values}
+                    <PermissionGrid label={entry.name} groups={groups} mode="tri" values={values} headingLevel={5}
                       labels={{ allow: t('perm.allow'), inherit: t('perm.inherit'), deny: t('perm.deny') }}
                       onChange={(id, v) => save(entry, PERM_BY_KEY[id as keyof typeof PERM_BY_KEY], v)} />
                   </div>

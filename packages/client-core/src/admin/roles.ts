@@ -189,11 +189,10 @@ export class RolesController {
       changes.push({ id: mover.id, position: to });
     }
     try {
-      await this.guarded(communityId, async () => {
-        for (const change of changes) await this.deps.routes.patchRole(change.id, { position: change.position });
-      });
+      for (const change of changes) await this.deps.routes.patchRole(change.id, { position: change.position });
     } catch (e) {
-      // A 409 (the positions moved meanwhile) or a partial swap: what the instance holds decides, not the rows the page had.
+      // Any refusal (a 403, a 409 when the positions moved meanwhile, or a partial swap) reads the access once, as
+      // `guarded` would: what the instance holds decides, not the rows the page had.
       await this.deps.loadAccess(communityId);
       throw e;
     }
@@ -282,13 +281,14 @@ export class RolesController {
     return out;
   }
 
-  /** Runs a request; a 403 (the instance no longer grants what the page offered) reads the access again, and the refusal
-   *  still reaches the page. */
+  /** Runs a request; a 403 (the instance no longer grants what the page offered) or a 409 (patchRole: the role moved
+   *  meanwhile) reads the access again, and the refusal still reaches the page. */
   async guarded<T>(communityId: string, run: () => Promise<T>): Promise<T> {
     try {
       return await run();
     } catch (e) {
-      if (statusOf(e) === 403) await this.deps.loadAccess(communityId);
+      const status = statusOf(e);
+      if (status === 403 || status === 409) await this.deps.loadAccess(communityId);
       throw e;
     }
   }
