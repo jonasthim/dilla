@@ -168,7 +168,7 @@ describe('names in bodies (L-TS-37)', () => {
   });
   it('names users, the own user, roles, broadcasts and unknown ids, and keeps the rest as text', () => {
     const body = `hi <@${BOB}> and <@${SELF.id}>, <@everyone> <@here> <@${ROLE}> <@${OTHER}> <@${UNKNOWN}> <@NOPE>`;
-    expect(bodyParts(body, book)).toEqual([
+    expect(bodyParts(body, book, true)).toEqual([
       { kind: 'text', text: 'hi ' },
       { kind: 'mention', label: '@bob', me: false, broadcast: false },
       { kind: 'text', text: ' and ' },
@@ -187,8 +187,22 @@ describe('names in bodies (L-TS-37)', () => {
     ]);
     expect(plainBody(body, book)).toBe('hi @bob and @Ada L, @everyone @here @role @role @eeeeeeee <@NOPE>');
   });
+  // Review 10 (widened): the core decides whether a broadcast or a role token counts; when the row's mention flag is off,
+  // they stay pills of their kind but never tinted as "you".
+  it('tints broadcasts and my roles as me only when the row mentions me', () => {
+    const body = `<@everyone> <@here> <@${ROLE}>`;
+    const parts = bodyParts(body, book, false);
+    expect(parts).toEqual([
+      { kind: 'mention', label: '@everyone', me: false, broadcast: true },
+      { kind: 'text', text: ' ' },
+      { kind: 'mention', label: '@here', me: false, broadcast: true },
+      { kind: 'text', text: ' ' },
+      { kind: 'mention', label: '@role', me: false, broadcast: false },
+    ]);
+    expect(bodyParts(`<@${SELF.id}>`, book, false)).toEqual([{ kind: 'mention', label: '@Ada L', me: true, broadcast: false }]);
+  });
   it('names the own user by username when no member row holds it', () => {
-    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []))).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false }]);
+    expect(bodyParts(`<@${SELF.id}>`, nameBook(SELF, []), true)).toEqual([{ kind: 'mention', label: '@ada', me: true, broadcast: false }]);
   });
   it('turns tokens back into what a person types for an edit', () => {
     expect(editableText(`hi <@${BOB}> <@${MO}> <@${SELF.id}> <@everyone> <@here> <@${UNKNOWN}>`, book))
@@ -303,7 +317,7 @@ describe('role mentions (flow 09)', () => {
   });
   it('shows a known role with its name and colour, and keeps the generic label for an unknown one', () => {
     const book = nameBook(SELF, [{ ...m(SELF.id, 'ada'), roleIds: [GAME, '99'.repeat(16)] }], roles);
-    expect(bodyParts(`<@${GAME}> <@${'99'.repeat(16)}>`, book)).toEqual([
+    expect(bodyParts(`<@${GAME}> <@${'99'.repeat(16)}>`, book, true)).toEqual([
       { kind: 'mention', label: '@Game Night', me: true, broadcast: false, color: 0x336699 },
       { kind: 'text', text: ' ' },
       { kind: 'mention', label: '@role', me: true, broadcast: false },

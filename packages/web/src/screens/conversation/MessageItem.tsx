@@ -76,8 +76,6 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
       ...(p.bits == null || (p.bits & PERM.pinMessages) !== 0 ? [{ id: 'pin' as const, label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) }] : []),
       ...(ownAuthor ? [{ id: 'delete' as const, label: t('shell.message.delete'), danger: true, onAction: () => emit({ kind: 'delete' as const }) }] : []),
     ]} /> : undefined;
-  // An @everyone counts for me only when the row mentioned me; my own counts while I may mention everyone (review 10).
-  const broadcastCounts = item.own ? p.bits == null || (p.bits & PERM.mentionEveryone) !== 0 : item.mention;
   const reply = item.reply;
   const replyProps = reply === null ? undefined : {
     author: reply.senderUser === null ? '' : authorName({ senderUser: reply.senderUser, senderDevice: null }, p.book.members, p.book.self),
@@ -89,7 +87,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     onJump: reply.state === 'missing' ? undefined : () => emit({ kind: 'jump', msgId: reply.msgId }),
     onJumpPointerDown: (e: PointerEvent<HTMLButtonElement>) => p.onJumpPointerDown(e),
   };
-  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={messageTime(item.ts, p.now)} body={shown ? bodyParts(item.body, p.book, broadcastCounts) : ''}
+  return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={messageTime(item.ts, p.now)} body={shown ? bodyParts(item.body, p.book, item.mention) : ''}
     own={item.own} tag={item.bot ? 'bot' : item.web ? 'web' : undefined} state={item.state}
     stateLabel={label === null ? undefined : t(label)} detail={gone ? undefined : item.state === 'failed' ? item.reason : cannotReadDetail}
     actions={!gone && item.state === 'failed' && item.msgId !== null ? [

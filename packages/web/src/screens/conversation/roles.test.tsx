@@ -8,7 +8,7 @@ import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
-import { GEN, MEMBERS, O1, OTHER_ROLE, PEER, P1, ownRow, peerRow, timeline } from '../../test/conversation.tsx';
+import { GEN, MEMBERS, O1, OTHER_ROLE, PEER, P1, ROLE, ownRow, peerRow, timeline } from '../../test/conversation.tsx';
 import { mentionCandidates, mentionMembers, nameBook } from '../shell-model.ts';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
 import { Conversation, INITIAL_UI, type ConversationUi } from './Conversation.tsx';
@@ -190,23 +190,24 @@ describe('pins by right', () => {
   });
 });
 
-describe('@everyone in the log', () => {
-  // Review 10: a broadcast that did not count for me (a sender without the right) is plain text, not a pill naming me.
-  it('renders a broadcast that did not mention me as plain text', () => {
+describe('mention tint in the log', () => {
+  // Review 10 (widened): a broadcast or a role token tints as "you" only when the core's mention flag is set for the row.
+  const pill = (id: string, text: string) => Array.from(row(id).querySelectorAll<HTMLElement>('.d-mention')).find(p => p.textContent?.includes(text));
+  it('a broadcast that did not count is a plain broadcast pill, not one naming me', () => {
     log({ items: [peerRow(P1, '1', 'hey <@everyone> look', { mention: false })] });
-    expect(row(P1).querySelector('.d-mention')).toBeNull();
-    expect(row(P1)).toHaveTextContent('hey @everyone look');
+    expect(pill(P1, '@everyone')).toHaveAttribute('data-broadcast', 'true');
+    expect(pill(P1, '@everyone')).not.toHaveAttribute('data-me');
   });
-  it('renders a broadcast that mentioned me as a pill', () => {
+  it('a broadcast that counted tints as me', () => {
     log({ items: [peerRow(P1, '1', 'hey <@everyone> look', { mention: true })] });
-    expect(row(P1).querySelector('.d-mention')).toHaveAttribute('data-broadcast', 'true');
+    expect(pill(P1, '@everyone')).toHaveAttribute('data-me', 'true');
   });
-  it('renders my own broadcast as a pill only while I may mention everyone (or the bits are unknown)', () => {
-    const first = log({ bits: SEND, items: [ownRow(O1, '1', 'hey <@here>')] });
-    expect(row(O1).querySelector('.d-mention')).toBeNull();
+  it('a token of my role that did not count is a plain role pill; one that counted tints as me', () => {
+    const first = log({ items: [peerRow(P1, '1', `ping <@${ROLE}>`, { mention: false })] });
+    expect(pill(P1, '@')).not.toHaveAttribute('data-me');
     first.view.unmount();
-    log({ bits: SEND | PERM.mentionEveryone, items: [ownRow(O1, '1', 'hey <@here>')] });
-    expect(row(O1).querySelector('.d-mention')).not.toBeNull();
+    log({ items: [peerRow(P1, '1', `ping <@${ROLE}>`, { mention: true })] });
+    expect(pill(P1, '@')).toHaveAttribute('data-me', 'true');
   });
 });
 

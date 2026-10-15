@@ -211,26 +211,28 @@ export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefin
 }
 
 /**
- * A body as text and mention pills. `broadcast` says whether its @everyone and @here count (the row mentioned me, or it is
- * mine and I may mention everyone): when they do not, they stay plain text, never a pill styled as naming me.
+ * A body as text and mention pills. `mentionsMe` is the row's mention flag from the core, which alone decides whether an
+ * @everyone, @here or a token of one of my roles counted (the sender's right, the role's "anyone can mention"). Such a pill
+ * is tinted as naming me only when it is set; otherwise it is a plain broadcast or role pill (W2a review 10). The core
+ * flags the row, not each token, so a row that counts for any reason tints all of them.
  */
-export function bodyParts(body: string, book: NameBook, broadcast = true): BodyPart[] {
+export function bodyParts(body: string, book: NameBook, mentionsMe: boolean): BodyPart[] {
   return splitMentions(body).map(part => {
     if (part.kind === 'text') return part;
     const id = part.target;
-    if (id === 'everyone' || id === 'here') return broadcast ? { kind: 'mention', label: `@${id}`, me: true, broadcast: true } : { kind: 'text', text: `@${id}` };
+    if (id === 'everyone' || id === 'here') return { kind: 'mention', label: `@${id}`, me: mentionsMe, broadcast: true };
     const member = book.members.find(m => m.userId === id);
     if (member !== undefined) return { kind: 'mention', label: `@${member.display || member.username}`, me: id === book.self?.id, broadcast: false };
     if (id === book.self?.id) return { kind: 'mention', label: `@${book.self.username}`, me: true, broadcast: false };
     const known = book.roleInfo?.get(id);
-    if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: book.ownRoles.has(id), broadcast: false, color: known.color };
-    if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: book.ownRoles.has(id), broadcast: false };
+    if (known !== undefined) return { kind: 'mention', label: t('mention.role', { name: known.name }), me: mentionsMe && book.ownRoles.has(id), broadcast: false, color: known.color };
+    if (book.roles.has(id)) return { kind: 'mention', label: t('shell.message.mentionRole'), me: mentionsMe && book.ownRoles.has(id), broadcast: false };
     return { kind: 'mention', label: t('shell.message.mentionUnknown', { id: id.slice(0, 8) }), me: false, broadcast: false };
   });
 }
 
 export function plainBody(body: string, book: NameBook): string {
-  return bodyParts(body, book).map(part => part.kind === 'text' ? part.text : part.label).join('');
+  return bodyParts(body, book, false).map(part => part.kind === 'text' ? part.text : part.label).join('');
 }
 
 export function editableText(body: string, book: NameBook): string {
