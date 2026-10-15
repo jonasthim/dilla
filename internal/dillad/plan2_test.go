@@ -261,9 +261,10 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 	}
 	// t.TempDir is 0755 and nothing reflects UDP here, so data_dir and udp only have to be present;
 	// the database, the wasi core and the blob just uploaded are this process's own and must be OK.
-	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs", "calls", "turn_relay"} {
+	// webauthn (web3.6) only has to be present: its status is the test config's rp_origins.
+	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs", "calls", "turn_relay", "webauthn"} {
 		st, ok := status[name]
-		if !ok || (st != 0 && name != "data_dir" && name != "udp") {
+		if !ok || (st != 0 && name != "data_dir" && name != "udp" && name != "webauthn") {
 			t.Errorf("diagnostics leg %q: present %v, status %d (%v)", name, ok, st, legs)
 		}
 	}

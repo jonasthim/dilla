@@ -31,6 +31,10 @@ func TestTheWebAuthnLegFlagsAnIPRelyingPartyAndAForeignOrigin(t *testing.T) {
 		{"an IPv6 rp_id", webauthnConfig("::1", "https://[::1]"), ops.Red, "IP address"},
 		{"an origin on another domain", webauthnConfig("chat.example", "https://chat.example", "https://other.example"), ops.Red, "other.example"},
 		{"a look-alike suffix is not a subdomain", webauthnConfig("chat.example", "https://notchat.example"), ops.Red, "notchat.example"},
+		// Hosts are case-insensitive: the browser lowercases the origin's host before it compares.
+		{"control: an origin host in another case", webauthnConfig("chat.example", "https://Chat.Example"), ops.Green, ""},
+		{"control: a subdomain in another case", webauthnConfig("Chat.Example", "https://APP.chat.example"), ops.Green, ""},
+		{"another domain stays foreign in any case", webauthnConfig("chat.example", "https://Other.Example"), ops.Red, "Other.Example"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			leg := ops.WebAuthnLeg(tc.cfg)

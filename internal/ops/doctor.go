@@ -414,8 +414,11 @@ func WebAuthnLeg(cfg config.Config) Leg {
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
 			continue
 		}
-		host := u.Hostname()
-		if host != rpID && !strings.HasSuffix(host, "."+rpID) {
+		// Hosts are compared without case: a browser lowercases an origin's host, and an
+		// operator's https://Chat.Example is the same origin as https://chat.example.
+		host, rp := strings.ToLower(u.Hostname()), strings.ToLower(rpID)
+		if host != rp && !strings.HasSuffix(host, "."+rp) {
+			host = u.Hostname()
 			bad = append(bad, fmt.Sprintf("auth.webauthn.rp_origins has %s, whose host %s is neither rp_id %s nor a subdomain of it", origin, host, rpID))
 		}
 	}

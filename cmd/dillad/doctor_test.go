@@ -88,7 +88,7 @@ func TestDoctorExitsUnavailableOnAnyRedLeg(t *testing.T) {
 		t.Fatalf("the red leg is not on the report:\n%s", out)
 	}
 	// The other legs still ran: one red leg must not hide the rest.
-	for _, leg := range []string{"config", "database", "clock", "certificate", "turn", "udp", "blobs"} {
+	for _, leg := range []string{"config", "database", "clock", "certificate", "turn", "udp", "blobs", "webauthn"} {
 		if !strings.Contains(out, leg) {
 			t.Fatalf("leg %q is missing from the report:\n%s", leg, out)
 		}
