@@ -198,3 +198,34 @@ describe('the announcer', () => {
     watch.stop();
   });
 });
+
+describe('retry after a refused finish', () => {
+  async function toOpen(script: Script) {
+    const r = setup(script);
+    await r.user.click(button('Continue'));
+    await screen.findByRole('img', { name: /QR code/ });
+    await r.user.type(screen.getByRole('textbox', { name: en['factor.totp.code'] }), '123456{Enter}');
+    await r.user.click(await screen.findByRole('checkbox', { name: en['factor.codes.ack'] }));
+    await r.user.click(button('Continue'));
+    return r;
+  }
+  it('sends factorSetupDone again from the same button and gets in', async () => {
+    let n = 0;
+    const { fake, user } = await toOpen((c, f) => {
+      if (c.m !== 'factorSetupDone') return happy(c, f);
+      n += 1;
+      return n === 1 ? Promise.reject(refusal({ code: 'E_FACTOR_REQUIRED', status: 403 })) : happy(c, f);
+    });
+    await user.click(button('Open dilla'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('E_FACTOR_REQUIRED');
+    await user.click(button('Open dilla'));
+    await waitFor(() => { expect(screen.getByRole('navigation', { name: 'servers' })).toBeInTheDocument(); });
+    expect(fake.callsOf('factorSetupDone')).toHaveLength(2);
+  });
+  it('a double click while one call is in flight sends it once', async () => {
+    const { fake, user } = await toOpen((c, f) => c.m === 'factorSetupDone' ? new Promise(() => {}) : happy(c, f));
+    await user.dblClick(button('Open dilla'));
+    await user.keyboard('{Enter}');
+    expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
+  });
+});

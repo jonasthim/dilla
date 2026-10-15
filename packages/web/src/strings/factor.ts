@@ -1,6 +1,5 @@
 // Flow 10 (docs/design/flows/10-second-factor.md): second factor copy. Keys: factor.*
 export const factor = {
-  'factor.step': 'Step {n} of 3',
   'factor.choose.title': 'Add a second factor',
   'factor.choose.body': 'Every account on {instance} needs a second factor. Signing in on a new browser then takes your password and a code from an authenticator app, or a passkey on its own.',
   'factor.choose.required': 'Your account does not have a second factor yet. {instance} now asks every account for one, so add it before you go on.',

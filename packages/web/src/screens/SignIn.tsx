@@ -263,12 +263,12 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const openBackup = () => { if (blocked) return; setBanner(null); setErrors({}); setBackupMode(true); requestFocus('backup'); };
   const closeBackup = () => { if (blocked) return; setBanner(null); setErrors({}); setBackupMode(false); setBackup(''); requestFocus('heading'); };
   // The factor was set up here: the worker reads the factors again, then the browser is ready.
-  const finishFactor = () => {
-    if (factorDone.busy) return;
+  // Returns the call so FactorSetup knows when it ended: a refusal re-arms its button, which retries.
+  const finishFactor = (): Promise<void> => {
     setFactorDone({ busy: true, problem: null });
-    client.call({ m: 'factorSetupDone', invite: null })
-      .then(() => { setFactorDone({ busy: false, problem: null }); })
-      .catch((e: unknown) => { setFactorDone({ busy: false, problem: doneProblem(errorOf(e)) }); });
+    return client.call({ m: 'factorSetupDone', invite: null }).then(
+      () => { setFactorDone({ busy: false, problem: null }); },
+      (e: unknown) => { setFactorDone({ busy: false, problem: doneProblem(errorOf(e)) }); throw e; });
   };
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -353,6 +353,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
         : <Button variant="ghost" type="button" onClick={closeBackup} {...blockedProps}>{t('factor.back')}</Button>}
       <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'backup' ? 'signin.login.working' : 'signin.login.submit')}</Button>
     </>, <>
+      {noPasskeys ? <p>{t('factorSignin.passkey.unusable')}</p> : null}
       <p>{t('factorSignin.backup.body')}</p>
       <TextField id={FIELD_ID.backup} label={t('factorSignin.backup.label')} value={backup} onChange={change('backup', setBackup)}
         error={errorText('backup')} required autoComplete="off" spellCheck={false} />

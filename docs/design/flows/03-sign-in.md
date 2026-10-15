@@ -94,7 +94,8 @@ passkey and backup-code options. The backup-code form (`factorSignin.backup.titl
 format check (`factorSignin.backup.format`) and a ghost `factor.back` that returns to the form it came from.
 Step 2 gains the ghost button `factorSignin.usePasskey` under the password field, only where the instance offers
 passkeys and the browser can use them. A passkey-only account in a browser that cannot run passkeys never sees
-the passkey screen: step 3 opens as the backup-code form, with `Cancel` in place of `Back`.
+the passkey screen: step 3 opens as the backup-code form, with `Cancel` in place of `Back` and the line
+`factorSignin.passkey.unusable` above the body.
 Each of the first three is one `<form noValidate>`: `Enter` in a field submits the step, as does its
 forward button (`type="submit"`). The back button comes first in the footer, is `type="button"` and never
 submits: `Create a new account instead` (a ghost button) on step 1 before the login, which has no `Cancel`,
@@ -597,7 +598,7 @@ assertion, an account that never published a device list, or a fault of the inst
 | a refused backup code (step 3 → step 2) | step 2's `<h1>`, then the empty password field | the banner `factorSignin.backup.failed` (`role="alert"`), then the field |
 | a cancelled or refused passkey ceremony (step 2 or the passkey screen) | the button that started it | the banner `factorSignin.passkey.failed` or `factorSignin.passkey.unknown` (`role="alert"`) |
 | the backup-code form opens | its field | the heading, then the field |
-| `signin-passkey` in a browser that cannot run passkeys | the backup-code form's `<h1>`: it opens directly, with `Cancel` where `Back` would be | the heading |
+| `signin-passkey` in a browser that cannot run passkeys | the backup-code form's `<h1>`: it opens directly, with `Cancel` where `Back` would be and `factorSignin.passkey.unusable` above the body | the heading |
 | `devices.forget` on the set-up view (origin `signin`, the only way out) | Cancel, Escape and close return focus to it; the confirm opens on Cancel | the dialog; a refused wipe is a `role="alert"` in it and focus goes to Cancel |
 | the set-up copies a key or codes (step 3, origin `signin`) | unchanged | `factor.totp.keyCopied` or `factor.codes.copied`, by the polite region that exists while the set-up is shown |
 | a banner on the step that is shown | unchanged | the banner (`role="alert"`) |

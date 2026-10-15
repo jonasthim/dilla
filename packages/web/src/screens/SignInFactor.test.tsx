@@ -329,6 +329,31 @@ describe('set-up on a new browser (flow 10 state 1, origin signin)', () => {
     expect(h1()).toHaveTextContent('Your backup codes');
   });
 
+  it('retries factorSetupDone from the same button after a refusal, once at a time', async () => {
+    let n = 0;
+    const script: Script = (c, f) => {
+      if (c.m === 'factorSetupDone') {
+        n += 1;
+        if (n === 1) return Promise.reject(refusal({ code: 'E_RATE_LIMITED', status: 429, retryAfterMs: 2000 }));
+        move(f, readyMe);
+        return Promise.resolve({ communityId: null, joinError: null });
+      }
+      return Promise.resolve({ secret: SECRET, uri: 'otpauth://totp/x', backupCodes: [BACKUP] });
+    };
+    const { user, fake } = setup('factor-setup', script, { factorSetup: { origin: 'signin' }, user: ME });
+    fake.set('factors', NO_FACTORS);
+    await user.click(button('Continue'));
+    await screen.findByRole('img', { name: /QR code/ });
+    await user.type(field(en['factor.totp.code']), '123456{Enter}');
+    await user.click(await screen.findByRole('checkbox'));
+    await user.click(button('Continue'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Too many attempts. Try again in 2 s.');
+    expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0);
+    await user.dblClick(button('Continue'));
+    await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
+    expect(fake.callsOf('factorSetupDone')).toHaveLength(2);
+  });
+
   it('has one live region, and a copy is spoken once', async () => {
     const script: Script = () => Promise.resolve({ secret: SECRET, uri: `otpauth://totp/x?secret=${SECRET}` });
     const { fake, user, view } = setup('factor-setup', script, { factorSetup: { origin: 'signin' }, user: ME });
@@ -421,6 +446,7 @@ describe('a passkey-only account in a browser without passkeys', () => {
     expect(h1()).toHaveTextContent('Use a backup code');
     expect(screen.queryByRole('button', { name: 'Use passkey' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+    expect(screen.getByText(en['factorSignin.passkey.unusable'])).toBeInTheDocument();
     await user.type(field('Backup code'), `${BACKUP}{Enter}`);
     expect(fake.callsOf('signInBackupCode')).toHaveLength(1);
     expect(fake.callsOf('signInPasskeyBegin')).toEqual([]);

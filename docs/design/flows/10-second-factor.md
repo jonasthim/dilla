@@ -6,7 +6,7 @@ Every human account on an instance has a second factor, and the server enforces 
 
 | State | What shows | Copy keys |
 |---|---|---|
-| 1. Choose, for sign-up | Step 5 of 6 of onboarding, in `OnboardingFrame`. `ChoiceCards` with the authenticator app and the passkey, and `Button` Continue. | `factor.step`, `factor.choose.title`, `factor.choose.body`, `factor.choose.label`, `factor.choose.app`, `factor.choose.appHint`, `factor.choose.passkey`, `factor.choose.passkeyHint`, `factor.choose.next` |
+| 1. Choose, for sign-up | Step 5 of 6 of onboarding, in `OnboardingFrame`. `ChoiceCards` with the authenticator app and the passkey, and `Button` Continue. | `factor.choose.title`, `factor.choose.body`, `factor.choose.label`, `factor.choose.app`, `factor.choose.appHint`, `factor.choose.passkey`, `factor.choose.passkeyHint`, `factor.choose.next` |
 | 2. Choose, when forced | The same screen, mounted by App for an account that owes a factor. It adds the required paragraph. There is no skip and no cancel control. The one way out is the ghost button `devices.forget` under the frame (all three set-up views have it): it opens a confirm (`devices.forgetTitle`, `devices.forgetBody`, `devices.confirmForget`, `devices.working`, `signin.cancel`) that sends `forgetBrowser` and nothing else. It clears this browser; it never marks the factor as set and never reaches the shell. | `factor.choose.required`, `devices.forget`, `devices.forgetTitle`, `devices.forgetBody`, `devices.confirmForget`, `devices.working` |
 | 3. Passkey unusable | The passkey card is disabled and shows its reason. The app card stays selectable. | `factor.choose.passkeyOff` |
 | 4. No-password account | Only the passkey card, preselected, with its reason. | `factor.choose.noPassword` |
@@ -19,7 +19,7 @@ Every human account on an instance has a second factor, and the server enforces 
 | 11. Passkey cancelled, wrong address, exists, refused | A banner with the matching text. Focus goes back to the button that started the ceremony. A dropped connection or any other refusal shows `factor.error.network` or `factor.error.other`. | `factor.error.cancelled`, `factor.error.wrongAddress`, `factor.error.exists`, `factor.error.refused`, `factor.error.network`, `factor.error.other` |
 | 12. Backup codes | An ordered list of codes (a real `<ol>`) with Print and Copy. The checkbox is unticked and Continue is disabled with its hint. Ticked: Continue is enabled. Copied: a polite announcement. | `factor.codes.title`, `factor.codes.body`, `factor.codes.notKey`, `factor.codes.label`, `factor.codes.print`, `factor.codes.copy`, `factor.codes.copied`, `factor.codes.ack`, `factor.codes.ackHint`, `factor.codes.next` |
 | 13. Forced done | The last step of the forced set-up, after the backup codes. The announcement is spoken when the factor is in place. | `factor.done.title`, `factor.done.totp`, `factor.done.passkey`, `factor.done.next`, `factor.added` |
-| 14. Sign-in with a passkey | A link under the password field on step 2 of sign-in, then step 3 as a passkey screen. The browser asks for the passkey on Use passkey. A failure and an unknown passkey are banners. | `factorSignin.usePasskey`, `factorSignin.passkey.title`, `factorSignin.passkey.body`, `factorSignin.passkey.submit`, `factorSignin.passkey.working`, `factorSignin.passkey.failed`, `factorSignin.passkey.unknown` |
+| 14. Sign-in with a passkey | A link under the password field on step 2 of sign-in, then step 3 as a passkey screen. The browser asks for the passkey on Use passkey. A failure and an unknown passkey are banners. | `factorSignin.usePasskey`, `factorSignin.passkey.title`, `factorSignin.passkey.body`, `factorSignin.passkey.submit`, `factorSignin.passkey.working`, `factorSignin.passkey.failed`, `factorSignin.passkey.unknown`, `factorSignin.passkey.unusable` |
 | 15. Sign-in needs a code after a passkey | The passkey did not check the person, so step 3 turns into the code form with a note above it. | `factorSignin.passkey.needsCode` |
 | 16. Backup-code sign-in, a failure, codes left | A link on the code form leads to a backup-code field. A refused code is a banner. After signing in with a backup code the shell says how many remain. The lost-phone line sits under the form. | `factorSignin.useBackup`, `factorSignin.lost`, `factorSignin.backup.title`, `factorSignin.backup.body`, `factorSignin.backup.label`, `factorSignin.backup.failed`, `factorSignin.backup.format`, `factorSignin.left.one`, `factorSignin.left.other` |
 | 17. Settings loading and error | Settings → Sign-in while the factors load, then on a failed load a message and a Try again button. | `factorSettings.loading`, `factorSettings.error.load`, `factorSettings.retry` |
@@ -63,7 +63,6 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 
 ## Copy
 
-- `factor.step='Step {n} of 3'`
 - `factor.choose.title='Add a second factor'`
 - `factor.choose.body='Every account on {instance} needs a second factor. Signing in on a new browser then takes your password and a code from an authenticator app, or a passkey on its own.'`
 - `factor.choose.required='Your account does not have a second factor yet. {instance} now asks every account for one, so add it before you go on.'`
@@ -125,7 +124,8 @@ Polite, through the screen's `useAnnouncer` (it queues, so two in a row are both
 - `factorSignin.passkey.body='This account signs in with a passkey. Your browser asks for it when you continue.'`
 - `factorSignin.passkey.submit='Use passkey'`
 - `factorSignin.passkey.working='Waiting for your passkey…'`
-- `factorSignin.passkey.failed='The passkey did not sign you in. Try again, or sign in with your password.'`
+- `factorSignin.passkey.failed='The passkey did not sign you in. Try again, or use a backup code.'`
+- `factorSignin.passkey.unusable='This browser cannot use passkeys here. Use a backup code instead, or sign in from a browser that can.'`
 - `factorSignin.passkey.unknown='{instance} does not know this passkey. It may belong to another account or another server.'`
 - `factorSignin.passkey.needsCode='This passkey did not check that it is you, so {instance} also asks for your code.'`
 - `factorSignin.useBackup='Use a backup code instead'`

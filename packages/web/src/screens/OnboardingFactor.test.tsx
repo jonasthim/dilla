@@ -176,6 +176,35 @@ describe('step 5: the second factor', () => {
     }
   });
 
+  describe('retry after a refused finish', () => {
+    it('sends factorSetupDone again from the same button, with the codes still on screen, and finishes', async () => {
+      let n = 0;
+      const script: Script = (c, f) => {
+        if (c.m !== 'factorSetupDone') return base(c, f);
+        n += 1;
+        return n === 1 ? Promise.reject(refusal({ code: 'E_NETWORK', status: 0 })) : base(c, f);
+      };
+      const { fake, user, onFinish } = setup(script);
+      await toFactor(user);
+      await throughApp(user);
+      await user.click(button('Continue'));
+      expect(await screen.findByRole('alert')).toHaveTextContent(en['factor.error.network']);
+      expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0);
+      await user.click(button('Continue'));
+      await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
+      expect(fake.callsOf('factorSetupDone')).toHaveLength(2);
+      await user.click(button('Open dilla'));
+      expect(onFinish).toHaveBeenCalledTimes(1);
+    });
+    it('a double press while one call is in flight sends it once', async () => {
+      const { fake, user } = setup((c, f) => c.m === 'factorSetupDone' ? new Promise(() => {}) : base(c, f));
+      await toFactor(user);
+      await throughApp(user);
+      await user.dblClick(button('Continue'));
+      expect(fake.callsOf('factorSetupDone')).toHaveLength(1);
+    });
+  });
+
   describe('forget this browser', () => {
     const forget = () => screen.getByRole('button', { name: en['devices.forget'] });
     it('is reachable by keyboard, sends forgetBrowser only on confirm, and Cancel returns focus to it', async () => {

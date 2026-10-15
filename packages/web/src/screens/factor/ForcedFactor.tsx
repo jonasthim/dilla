@@ -18,13 +18,13 @@ export function ForcedFactor(): React.JSX.Element | null {
   const { text, announce } = useAnnouncer();
   const [done, setDone] = useState<{ busy: boolean; problem: DoneProblem | null }>({ busy: false, problem: null });
   if (account?.instance == null) return null;
-  const finish = () => {
-    if (done.busy) return;
+  // Ready: the phase moves, so this screen leaves on its own. A refusal (still owed, 429, network) re-arms FactorSetup's
+  // button, which retries.
+  const finish = (): Promise<void> => {
     setDone({ busy: true, problem: null });
-    // Ready, or still owed (the instance re-reads the factors): the phase moves, so this screen leaves on its own.
-    client.call({ m: 'factorSetupDone', invite: null })
-      .then(() => { setDone({ busy: false, problem: null }); })
-      .catch((e: unknown) => { setDone({ busy: false, problem: doneProblem(errorOf(e)) }); });
+    return client.call({ m: 'factorSetupDone', invite: null }).then(
+      () => { setDone({ busy: false, problem: null }); },
+      (e: unknown) => { setDone({ busy: false, problem: doneProblem(errorOf(e)) }); throw e; });
   };
   return (
     <>

@@ -255,14 +255,16 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     void run();
   };
   // The factor is in place: the worker reads the factors again, makes the browser ready and joins the invite's server.
-  const finishFactor = () => {
-    if (factorState.busy) return;
+  // Returns the call so FactorSetup knows when it ended: a refusal re-arms its button, which retries.
+  const finishFactor = (): Promise<void> => {
     setFactorState({ busy: true, problem: null });
     const code = extractInviteCode(invite);
-    client.call({ m: 'factorSetupDone', invite: code === '' ? null : code }).then((value) => {
-      setFactorResult(resultOf(value, code));
-      setFactorState({ busy: false, problem: null });
-    }).catch((e: unknown) => { setFactorState({ busy: false, problem: doneProblem(errorOf(e)) }); });
+    return client.call({ m: 'factorSetupDone', invite: code === '' ? null : code }).then(
+      (value) => {
+        setFactorResult(resultOf(value, code));
+        setFactorState({ busy: false, problem: null });
+      },
+      (e: unknown) => { setFactorState({ busy: false, problem: doneProblem(errorOf(e)) }); throw e; });
   };
   const back = (to: Step) => () => {
     if (blocked) return;

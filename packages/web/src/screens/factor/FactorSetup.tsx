@@ -21,7 +21,9 @@ export interface FactorSetupProps {
   instanceName: string;
   username: string;
   announce: (text: string) => void;
-  onDone: (result: FactorSetupResult) => void;
+  /** May return a promise: while it is pending, and once it resolved, a second press does nothing; if it rejects the button
+   *  is armed again, so the same press retries. */
+  onDone: (result: FactorSetupResult) => void | Promise<void>;
 }
 
 type Step = 'choose' | 'totp' | 'passkey' | 'codes' | 'done';
@@ -133,16 +135,20 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
   };
   const finish = (which: 'totp' | 'passkey') => {
     setKind(which);
-    setCodes([]);
+    // Without a done step the codes stay on screen until onDone has succeeded: a refused finish is retried from them.
     if (origin !== 'required') { complete(which); return; }
+    setCodes([]);
     setStep('done');
     announce(t('factor.added'));
   };
-  /** onDone fires once, however often Enter or the button is pressed. */
+  /** onDone runs once at a time, however often Enter or the button is pressed, and not again after it succeeded. */
   const complete = (which: 'totp' | 'passkey') => {
     if (completed.current) return;
     completed.current = true;
-    onDone({ kind: which });
+    let pending: void | Promise<void>;
+    try { pending = onDone({ kind: which }); } catch (e) { completed.current = false; throw e; }
+    if (pending === undefined) { setCodes([]); return; }
+    pending.then(() => { if (mounted.current) setCodes([]); }, () => { completed.current = false; });
   };
 
   const beginTotp = () => {
