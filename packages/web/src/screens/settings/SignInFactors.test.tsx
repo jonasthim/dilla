@@ -429,9 +429,11 @@ describe('review fixes', () => {
     await screen.findByText(en['factorSettings.password.set']);
     expect(regionHome()).toBeNull();
     await user.click(button(en['factorSettings.codes.make']));
-    expect(regionHome()).toBe(stepUp());
+    await waitFor(() => expect(regionHome()).toBe(stepUp()));
     await confirmPassword(user);
-    expect(regionHome()).toBe(await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] }));
+    // The dialog first, then the region: the region moves into it once it is shown, not before.
+    const made = await screen.findByRole('dialog', { name: en['factorSettings.codes.makeTitle'] });
+    await waitFor(() => expect(regionHome()).toBe(made));
   });
   it('hands a failed app begin back to the password with the nothing-was-added notice', async () => {
     const { user } = setup({ ...ONLY_PASSKEY }, (c, f) => c.m === 'factorTotpBegin' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : happy(c, f));
