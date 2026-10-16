@@ -96,9 +96,9 @@ test('the facade keeps one identity, group and outbox across pause, resume and a
   expect(String(before.groups)).toMatch(new RegExp(`^818950${rep('33', 16)}0050${rep('44', 16)}50${rep('55', 16)}0200`));
   // [[seq 1, epoch 0, recv_ts 1760000000, status 0, "", user 0x66…, this device, kind 0 (user),
   //   tier 1 (browser), msg_id, type 0, "hello from the facade", edited_seq 0, reply null,
-  //   [] reactions, not pinned, [] attachments, no mention]]
+  //   [] reactions, not pinned, [] attachments, no mention, thread summary null (web3.7: 19 elements)]]
   expect(String(before.timeline)).toMatch(
-    new RegExp(`^819201001a68e778000060${'50' + rep('66', 16)}50${device}000150[0-9a-f]{32}0075${HELLO_HEX}00f680008000$`),
+    new RegExp(`^819301001a68e778000060${'50' + rep('66', 16)}50${device}000150[0-9a-f]{32}0075${HELLO_HEX}00f680008000f6$`),
   );
   // [[msg_id, state 1 (in flight), "", created 1760000000, "still queued", type 0, reply_to null, attachments []]]
   expect(String(before.outbox)).toMatch(new RegExp(`^818850[0-9a-f]{32}01601a68e778006c${QUEUED_HEX}00f680$`));
