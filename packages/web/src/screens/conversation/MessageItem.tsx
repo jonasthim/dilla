@@ -37,8 +37,8 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   onOpenImage(index: number, opener: HTMLElement): void; onError(e: unknown): void;
   /** Opens this message's thread (web3.7): the toolbar item and the summary chip. Absent where no thread can be opened (the thread pane's own rows). */
   onOpenThread?: (msgId: string) => void;
-  /** False: no toolbar (the thread pane's rows take reactions and nothing else). */
-  actions?: boolean }
+  /** True: a row of the thread pane. Its toolbar takes react, and edit and delete on own messages; reply, pin and thread stay in the channel. */
+  inThread?: boolean }
 
 export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
@@ -73,13 +73,13 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     ],
   } : undefined;
   const openThread = item.state === 'ok' && item.msgId !== null && item.seq !== null ? p.onOpenThread : undefined;
-  const toolbar = p.actions !== false && item.state === 'ok' && item.msgId !== null && item.seq !== null ? <MessageToolbar
+  const toolbar = item.state === 'ok' && item.msgId !== null && item.seq !== null ? <MessageToolbar
     label={t('shell.message.toolbar')} tabbable={p.active} items={[
       { id: 'react', label: t('shell.message.react'), onAction: e => emit({ kind: 'react', anchor: e.currentTarget as HTMLElement }) },
-      { id: 'reply', label: t('shell.message.reply'), onAction: () => emit({ kind: 'reply' }) },
+      ...(p.inThread === true ? [] : [{ id: 'reply' as const, label: t('shell.message.reply'), onAction: () => emit({ kind: 'reply' }) }]),
       ...(openThread !== undefined ? [{ id: 'thread' as const, label: t('thread.open'), onAction: () => openThread(item.msgId!) }] : []),
       ...(ownAuthor ? [{ id: 'edit' as const, label: t('shell.message.edit'), onAction: () => emit({ kind: 'edit' as const }) }] : []),
-      ...(p.bits == null || (p.bits & PERM.pinMessages) !== 0 ? [{ id: 'pin' as const, label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) }] : []),
+      ...(p.inThread !== true && (p.bits == null || (p.bits & PERM.pinMessages) !== 0) ? [{ id: 'pin' as const, label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) }] : []),
       ...(ownAuthor ? [{ id: 'delete' as const, label: t('shell.message.delete'), danger: true, onAction: () => emit({ kind: 'delete' as const }) }] : []),
     ]} /> : undefined;
   const reply = item.reply;

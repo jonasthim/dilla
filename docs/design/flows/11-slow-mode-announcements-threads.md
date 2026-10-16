@@ -15,9 +15,11 @@ Slow mode on a per-channel basis limits how fast people can post, configurable b
 | 7. New channel, announcement kind | In create channel, a kind selector offers text and announcement. Announcement is selected: it sets the kind and shows roles checkboxes for who can post. | `announce.kind`, `announce.hint`, `announce.roles` |
 | 8. Announcement channel, reader | A person without post permission views the channel and sees a read-only note. | `announce.readOnly` |
 | 8b. New channel, announcement refused | A creator who is not the owner or an administrator ticks no role of theirs below their highest role. The server is not asked: the name field shows the refusal. | `announce.noHeldRole` |
+| 8c. New channel, announcement, no roles | The server has no role besides @everyone: the roles list says so; the channel can still be created (only the owner and administrators post). | `announce.noRoles` |
 | 9. Message toolbar, thread item | A toolbar item for each message offers a reply-in-thread action. | `thread.open` |
 | 10. Thread summary chip | A chip or badge on a message shows the reply count: 1 reply or N replies. | `thread.summary.one`, `thread.summary.other` |
 | 11. Thread pane or sheet | The thread view at full width (pane in the aside) or full screen (sheet on phone), with the title "Thread", a close button (text `thread.close`), and a composer for replies below the message thread. | `thread.title`, `thread.close`, `thread.composer` |
+| 11b. Thread pane, no replies | A thread with a root and no replies shows a line in the reply log. Thread rows take reactions, and edit and delete on a person's own replies; pin and reply stay in the channel. | `thread.noReplies` |
 | 12. Thread list, empty and root missing | A list of all threads in a channel. Empty state: "No threads in #{name} yet." The root message may not be reachable: "The message that started this thread cannot be shown here." | `thread.list`, `thread.empty`, `thread.rootMissing` |
 
 ## 1280×800
@@ -66,6 +68,7 @@ Polite, through `useAnnouncer`: `slow.queued` when a send is queued behind slow 
 - `announce.hint='Only the roles you tick can post. Everyone can read and react.'`
 - `announce.roles='Roles that can post'`
 - `announce.readOnly='Only some people can post in #{name}.'`
+- `announce.noRoles='No roles yet. Make a role in Server settings → Roles first.'`
 - `announce.noHeldRole='Tick a role of yours that is below your highest role, so that you can post here too.'`
 - `thread.open='reply in thread'`
 - `thread.summary.one='1 reply'`
@@ -75,4 +78,5 @@ Polite, through `useAnnouncer`: `slow.queued` when a send is queued behind slow 
 - `thread.composer='reply in thread'`
 - `thread.list='threads'`
 - `thread.empty='No threads in #{name} yet.'`
+- `thread.noReplies='No replies yet.'`
 - `thread.rootMissing='The message that started this thread cannot be shown here.'`

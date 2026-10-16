@@ -385,7 +385,7 @@ export function CreateChannelFlow(props: {
         busy: t('create.channel.busy'), close: t('dialog.close') }}
       onSubmit={submit} onClose={() => props.onClose()}>
       {kind === 'announcement' ? <>
-        <CheckList label={t('announce.roles')} emptyLabel={t('chperm.create.noRoles')} busyId={null}
+        <CheckList label={t('announce.roles')} emptyLabel={t('announce.noRoles')} busyId={null}
           items={announceRoles.map(r => {
             const checked = announceTicked.includes(r.id);
             return { id: r.id, label: r.name, color: r.color, checked, disabled: !checked && announceTicked.length >= ANNOUNCE_ROLES_MAX };

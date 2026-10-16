@@ -105,10 +105,39 @@ describe('ThreadView (web3.7)', () => {
     </CoreProvider></div>);
     expect(document.querySelector('.d-composer__notice')).toHaveTextContent('Slow mode is on.');
   });
-  it('offers its rows reactions and nothing else: no toolbar, no thread of a thread', () => {
+  const toolbar = (id: string) => within(document.querySelector(`.d-thread-pane .d-message-row[data-msg-id="${id}"]`) as HTMLElement)
+    .getByRole('toolbar', { name: 'actions for this message' });
+  const labels = (id: string) => within(toolbar(id)).getAllByRole('button').map(b => b.textContent);
+  it('offers react on every row, edit and delete on own replies, and no reply, pin or thread', () => {
     setup();
-    expect(document.querySelector('.d-thread-pane [role="toolbar"]')).toBeNull();
-    expect(screen.queryByRole('button', { name: en['thread.open'] })).toBeNull();
+    expect(labels(P2)).toEqual([en['shell.message.react']]);
+    expect(labels(O1)).toEqual([en['shell.message.react'], en['shell.message.edit'], en['shell.message.delete']]);
+  });
+  it('edits an own reply', async () => {
+    const { fake, user } = setup();
+    await user.click(within(toolbar(O1)).getByRole('button', { name: en['shell.message.edit'] }));
+    const editor = screen.getByRole('textbox', { name: en['shell.edit.label'] });
+    expect(editor).toHaveValue('my reply');
+    await user.clear(editor);
+    await user.type(editor, 'my better reply');
+    await user.click(screen.getByRole('button', { name: en['shell.edit.save'] }));
+    expect(fake.callsOf('editMessage')).toEqual([{ m: 'editMessage', channelId: GEN, msgId: O1, text: 'my better reply' }]);
+    expect(screen.queryByRole('textbox', { name: en['shell.edit.label'] })).toBeNull();
+  });
+  it('deletes an own reply after asking', async () => {
+    const { fake, user } = setup();
+    await user.click(within(toolbar(O1)).getByRole('button', { name: en['shell.message.delete'] }));
+    expect(fake.callsOf('deleteMessage')).toEqual([]);
+    await user.click(screen.getByRole('button', { name: en['shell.delete.confirm'] }));
+    expect(fake.callsOf('deleteMessage')).toEqual([{ m: 'deleteMessage', channelId: GEN, msgId: O1 }]);
+  });
+  it('says there are no replies yet, but not while the thread is still being read', () => {
+    setup({ thread: thread({ items: [] }) });
+    expect(screen.getByText(en['thread.noReplies'])).toBeInTheDocument();
+  });
+  it('shows no empty line while reading', () => {
+    setup({ thread: null });
+    expect(screen.queryByText(en['thread.noReplies'])).toBeNull();
   });
   it('toggles a reaction on a reply', async () => {
     const reaction = { emoji: '👍', count: 1, mine: false };

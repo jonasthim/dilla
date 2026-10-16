@@ -8,6 +8,8 @@ export class CoreCallError extends Error {
   readonly detail: string;
   readonly status: number;
   readonly retryAfterMs: number | null;
+  /** A stable key for a refusal the worker made itself; the page maps it to copy. */
+  readonly reason: string | undefined;
 
   constructor(error: WorkerError) {
     super(error.detail ? `${error.code}: ${error.detail}` : error.code);
@@ -16,6 +18,7 @@ export class CoreCallError extends Error {
     this.detail = error.detail;
     this.status = error.status;
     this.retryAfterMs = error.retryAfterMs;
+    this.reason = error.reason;
   }
 }
 
@@ -57,10 +60,10 @@ const DISPOSED: WorkerError = { code: 'E_DISPOSED', detail: '', status: 0, retry
 
 function workerError(value: unknown): WorkerError {
   if (typeof value === 'object' && value !== null) {
-    const { code, detail, status, retryAfterMs } = value as Record<string, unknown>;
+    const { code, detail, status, retryAfterMs, reason } = value as Record<string, unknown>;
     if (typeof code === 'string' && typeof detail === 'string' && typeof status === 'number'
       && (typeof retryAfterMs === 'number' || retryAfterMs === null)) {
-      return { code, detail, status, retryAfterMs };
+      return { code, detail, status, retryAfterMs, ...(typeof reason === 'string' ? { reason } : {}) };
     }
   }
   return { code: 'E_INTERNAL', detail: 'malformed worker error', status: 0, retryAfterMs: null };

@@ -210,3 +210,16 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 }
 
 .dw-phone-footer { padding: 0.5rem 0.75rem; }
+
+/* web3.7: the threads of a channel, rows like the channel list's. */
+.dw-thread-list { padding: 0.5rem var(--row-pad-x, 0.75rem); }
+.dw-thread-list__title { margin: 0 0 0.5rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
+.dw-thread-list__empty { margin: 0; font-size: var(--text-base); color: var(--fg-3); }
+.dw-thread-list ul { margin: 0; padding: 0; list-style: none; }
+.dw-thread-list__row { display: flex; align-items: center; width: 100%; min-height: 1.75rem; padding: var(--row-pad-y) 8px; margin: var(--row-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
+.dw-thread-list__excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-thread-list__count { flex-shrink: 0; white-space: pre; color: var(--fg-3); }
+.dw-thread-list__row:hover { background: var(--surface-2); color: var(--fg); }
+@container d-shell (max-width: 47.99rem) {
+  .dw-thread-list__row { min-height: 2.75rem; }
+}

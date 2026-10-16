@@ -1,8 +1,8 @@
 // A public thread (flow 11, state 11): the root, its replies and a composer whose sends carry the thread. It reads its own
 // slices, so a shell mounts it and nothing else: mounted it opens the thread, unmounted it closes it and gives focus back.
 import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
-import type { TimelineItem } from '@dilla/client-core';
-import { Dialog, EmojiGrid, MessageLog, ThreadPane } from '@dilla/ui';
+import { encodeMentions, PERM, type TimelineItem } from '@dilla/client-core';
+import { Button, Dialog, EmojiGrid, MessageLog, ThreadPane } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf } from '../../core/errors.ts';
 import { useChannelBits } from '../../core/use-channel-bits.ts';
@@ -10,7 +10,7 @@ import { useSlice } from '../../core/use-slice.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { useRoute } from '../../router.ts';
 import { t } from '../../strings/index.ts';
-import { mentionCandidates, mentionMembers, nameBook } from '../shell-model.ts';
+import { editableText, editRoles, mentionCandidates, mentionMembers, mentionRoles, nameBook } from '../shell-model.ts';
 import { AttachmentLightbox, type LightboxState } from './Attachments.tsx';
 import { ComposerArea, type OutgoingMessage } from './ComposerArea.tsx';
 import { conversationReducer, INITIAL_UI } from './Conversation.tsx';
@@ -34,6 +34,7 @@ export function ThreadView(p: {
   const [draft, setDraft] = useState('');
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [emojiFor, setEmojiFor] = useState<{ msgId: string } | null>(null);
+  const [deleteFor, setDeleteFor] = useState<{ msgId: string; key: string } | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const sending = useRef(false);
@@ -69,12 +70,16 @@ export function ThreadView(p: {
   const active = items.some(i => i.key === activeKey) ? activeKey : items.at(-1)?.key ?? null;
   const now = Date.now();
 
+  const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : true;
+  const roleMentionsFor = (body: string) => mentionRoles(editRoles(roles ?? [], broadcast, body), encodeWith);
   const report = (e: unknown) => dispatch({ type: 'trayError', text: t('shell.banner.commandError', { code: errorOf(e).code }) });
   const command = (m: Parameters<typeof client.call>[0]) => { client.call(m).catch(report); };
   const onRow = (item: TimelineItem, ev: RowEvent) => {
     const msgId = item.msgId;
     if (ev.kind === 'react') { if (msgId !== null) setEmojiFor({ msgId }); }
     else if (ev.kind === 'toggle') { if (msgId !== null) command({ m: 'react', channelId: p.channelId, msgId, emoji: ev.emoji, on: ev.on }); }
+    else if (ev.kind === 'edit') { if (msgId !== null) dispatch({ type: 'edit', msgId, value: editableText(item.body, book) }); }
+    else if (ev.kind === 'delete') { if (msgId !== null) setDeleteFor({ msgId, key: item.key }); }
     else if (ev.kind === 'retry') command({ m: 'retrySend', msgId: ev.msgId });
     else if (ev.kind === 'discard') command({ m: 'discardSend', msgId: ev.msgId });
   };
@@ -110,10 +115,19 @@ export function ThreadView(p: {
     if (next !== undefined) { e.preventDefault(); rowEls.current.get(next.key)?.focus(); }
   };
   const row = (item: TimelineItem, key: string, isActive: boolean) => (
-    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} active={isActive} flash={false} editing={null}
-      editMeasure={() => 0} rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
-      onJumpPointerDown={e => e.preventDefault()} onEvent={onRow} onEditChange={() => undefined} onEditSave={() => undefined}
-      onEditCancel={() => undefined} onOpenImage={(i, el) => openImage(item, i, el)} onError={report} actions={false} />
+    <MessageItem key={key} item={item} channelId={p.channelId} book={book} now={now} bits={bits} active={isActive} flash={false}
+      editing={ui.editing?.msgId === item.msgId ? ui.editing.value : null}
+      editMeasure={v => new TextEncoder().encode(encodeMentions(v, encodeWith, broadcast, roleMentionsFor(item.body))).length} rowRef={el => { if (el) rowEls.current.set(item.key, el); else rowEls.current.delete(item.key); }}
+      onJumpPointerDown={e => e.preventDefault()} onEvent={onRow} onEditChange={value => dispatch({ type: 'editChange', value })}
+      onEditSave={value => {
+        if (value.trim() === '') return;
+        const start = editableText(item.body, book);
+        dispatch({ type: 'editDone' });
+        rowEls.current.get(item.key)?.focus();
+        if (value !== start && item.msgId) command({ m: 'editMessage', channelId: p.channelId, msgId: item.msgId, text: encodeMentions(value, encodeWith, broadcast, roleMentionsFor(item.body)) });
+      }}
+      onEditCancel={() => { dispatch({ type: 'editDone' }); rowEls.current.get(item.key)?.focus(); }}
+      onOpenImage={(i, el) => openImage(item, i, el)} onError={report} inThread />
   );
   const rootNode = current === null ? null
     : current.root === null ? <p className="dw-thread-missing">{t('thread.rootMissing')}</p>
@@ -132,7 +146,7 @@ export function ThreadView(p: {
             book={book} draft={draft} onDraft={setDraft} ui={ui} dispatch={dispatch} onSend={send} onError={report}
             threadId={p.rootMsgId} announce={p.announce} />
         }>
-        <MessageLog label={t('thread.title')} emptyLabel="" busy={current === null} onKeyDown={rowKey}>
+        <MessageLog label={t('thread.title')} emptyLabel={current === null ? '' : t('thread.noReplies')} busy={current === null} onKeyDown={rowKey}>
           {items.map(item => row(item, item.key, item.key === active))}
         </MessageLog>
       </ThreadPane>
@@ -144,6 +158,14 @@ export function ThreadView(p: {
             setEmojiFor(null);
           }} onClose={() => setEmojiFor(null)} />
       </Dialog>
+      <Dialog open={deleteFor !== null} title={t('shell.delete.title')} closeLabel={t('shell.delete.cancel')}
+        onClose={() => setDeleteFor(null)} footer={<Button variant="danger" onClick={() => {
+          if (deleteFor === null) return;
+          command({ m: 'deleteMessage', channelId: p.channelId, msgId: deleteFor.msgId });
+          const key = deleteFor.key;
+          setDeleteFor(null);
+          queueMicrotask(() => rowEls.current.get(key)?.focus());
+        }}>{t('shell.delete.confirm')}</Button>}>{t('shell.delete.body')}</Dialog>
       {lightbox !== null ? <AttachmentLightbox channelId={p.channelId} state={lightbox}
         onIndex={index => setLightbox(s => s ? { ...s, index } : null)} onClose={() => { lightbox.opener?.focus(); setLightbox(null); }} onError={report} /> : null}
     </div>

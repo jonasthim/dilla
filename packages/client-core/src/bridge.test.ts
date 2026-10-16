@@ -56,6 +56,16 @@ describe('connectCore', () => {
     expect(new CoreCallError({ code: 'E_X', detail: 'd', status: 409, retryAfterMs: null })).toMatchObject({ code: 'E_X', detail: 'd', status: 409, message: 'E_X: d' });
   });
 
+  it("carries a worker refusal's reason to the page, and only a string one", async () => {
+    const { worker, client } = connected();
+    const first = client.call({ m: 'joinCommunity', invite: 'code' });
+    const second = client.call({ m: 'joinCommunity', invite: 'code' });
+    worker.emit({ t: 'ret', id: 1, ok: false, error: { code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null, reason: 'announce.noHeldRole' } });
+    worker.emit({ t: 'ret', id: 2, ok: false, error: { code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null, reason: 7 } });
+    expect(await first.catch((e: unknown) => e)).toMatchObject({ code: 'E_BAD_INPUT', reason: 'announce.noHeldRole' });
+    expect(await second.catch((e: unknown) => e)).toHaveProperty('reason', undefined);
+  });
+
   it('ignores an answer to an id it never sent and a message of no known kind', () => {
     const { worker, client } = connected();
     expect(() => worker.emit({ t: 'ret', id: 99, ok: true, value: 1 })).not.toThrow();
