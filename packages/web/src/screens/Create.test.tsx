@@ -789,6 +789,92 @@ describe('CreateChannelFlow, private create', () => {
   });
 });
 
+describe('CreateChannelFlow, announcement kind (web3.7)', () => {
+  const EVERYONE = 'e0'.repeat(16);
+  const LOW = 'b2'.repeat(16);
+  const LOWER = 'b4'.repeat(16);
+  const HIGH = 'b3'.repeat(16);
+  const role = (id: string, name: string, position: number) => ({ id, name, color: 0, position, hoist: false, mentionable: false, allow: 0, deny: 0, members: 0 });
+  function setup(opts: { manageRoles?: boolean; manageChannels?: boolean } = {}) {
+    const fake = client();
+    fake.set(`permissions:${SERVER}`, { top: 5, owner: false, manageCommunity: false, manageChannels: opts.manageChannels ?? true, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: opts.manageRoles ?? true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true });
+    fake.set(`roles:${SERVER}`, [role(EVERYONE, '@everyone', 0), role(LOWER, 'Newcomers', 1), role(LOW, 'Players', 2), role(HIGH, 'Council', 9)]);
+    fake.handler = () => Promise.resolve({ channelId: TEXT });
+    const onDone = vi.fn();
+    const r = mount(fake, <CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={onDone} onClose={vi.fn()} />);
+    return { fake, onDone, ...r };
+  }
+  const announcement = () => screen.getByRole('radio', { name: 'announcement' });
+
+  it('offers the kind only to a person who may create one (manage channels and manage roles)', () => {
+    setup();
+    expect(announcement()).toBeInTheDocument();
+  });
+  it.each([[{ manageRoles: false }], [{ manageChannels: false }]])('does not offer it with %o', opts => {
+    setup(opts);
+    expect(screen.queryByRole('radio', { name: 'announcement' })).toBeNull();
+    expect(screen.getAllByRole('radio').map(r => (r as HTMLInputElement).labels?.[0]?.textContent ?? r.getAttribute('aria-label'))).toHaveLength(2);
+  });
+  it('lists every role but @everyone with the hint once the kind is chosen, and sends the ticked ones', async () => {
+    const { fake, user } = setup();
+    expect(screen.queryByRole('group', { name: 'Roles that can post' })).toBeNull();
+    await user.click(announcement());
+    expect(screen.getByRole('group', { name: 'Roles that can post' })).toBeInTheDocument();
+    expect(screen.getByText('Only the roles you tick can post. Everyone can read and react.')).toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Council', 'Players', 'Newcomers']);
+    await user.click(screen.getByRole('checkbox', { name: 'Players' }));
+    await user.type(nameField('Channel name'), 'News');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'announcement', name: 'news', announce: { roleIds: [LOW] } }]));
+  });
+  it('creates with no role ticked (only the owner and administrators post)', async () => {
+    const { fake, user, onDone } = setup();
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'announcement', name: 'news', announce: { roleIds: [] } }]));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(TEXT, 'announcement'));
+  });
+  it('a text create after a look at the announcement kind sends neither the kind nor the roles', async () => {
+    const { fake, user } = setup();
+    await user.click(announcement());
+    await user.click(screen.getByRole('checkbox', { name: 'Players' }));
+    await user.click(screen.getByRole('radio', { name: 'text' }));
+    await user.type(nameField('Channel name'), 'open');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'open' }]));
+  });
+  it('has no private switch beside the announcement roles', async () => {
+    const { user } = setup();
+    expect(screen.getByRole('switch', { name: 'private channel' })).toBeInTheDocument();
+    await user.click(announcement());
+    expect(screen.queryByRole('switch', { name: 'private channel' })).toBeNull();
+  });
+  it('words the creator’s missing held role by its reason, in the name field', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(Object.assign(refusal({ code: 'E_BAD_INPUT' }), { reason: 'announce.noHeldRole' }));
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Tick a role of yours that is below your highest role, so that you can post here too.')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+  it('words an E_BAD_INPUT without that reason by its code', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT' }));
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Could not add the channel (E_BAD_INPUT). Try again.')).toBeInTheDocument();
+  });
+  it('has no serious axe violations with the roles listed', async () => {
+    const { user, view } = setup();
+    await user.click(announcement());
+    await expectNoAxeViolations(view.container);
+  });
+});
+
 describe('InviteFlow', () => {
   const URL = 'https://chat.example.org/i/7KQ2';
   function setup(answer: () => Promise<unknown> = () => Promise.resolve({ url: URL, code: '7KQ2', expires: 1_900_000_000 }),

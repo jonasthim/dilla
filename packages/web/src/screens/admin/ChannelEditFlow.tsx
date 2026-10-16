@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChannelSettings } from '@dilla/ui';
+import { ChannelSettings, Select } from '@dilla/ui';
 import type { ChannelSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { t } from '../../strings/index.ts';
@@ -7,6 +7,7 @@ import { CHANNEL_NAME_MAX_BYTES, channelName, nameProblem } from '../Create.tsx'
 import { ChannelPermissions } from './ChannelPermissions.tsx';
 import { forbidden, refused, statusIs, useRun, type Announce } from './shared.ts';
 import { useSlice } from '../../core/use-slice.ts';
+import { SLOW_STEPS } from '../conversation/slow.ts';
 
 const TOPIC_MAX_BYTES = 1024;
 const UTF8 = new TextEncoder();
@@ -16,7 +17,9 @@ const topicHasControl = (s: string): boolean => [...s].some(c => c !== '\n' && c
 
 const NO_ANNOUNCE: Announce = () => undefined;
 
-interface Draft { id: string; name: string; topic: string; parent: string }
+interface Draft { id: string; name: string; topic: string; parent: string; slowmode: string }
+
+const SLOW_OPTIONS = SLOW_STEPS.map(([seconds, key]) => ({ value: String(seconds), label: t(key) }));
 
 /**
  * Edit a channel or category (flow 08) over `ChannelSettings`. The category select offers `top` (no category) and every
@@ -32,7 +35,8 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
   const action = useRun();
   const access = useSlice(`permissions:${channel?.communityId ?? ''}`);
   const kind = channel === null ? 'text' : channel.kind === 2 ? 'category' : channel.kind === 1 ? 'voice' : 'text';
-  const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId != null && categories.some(c => c.id === channel.parentId) ? channel.parentId : 'top' };
+  const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId != null && categories.some(c => c.id === channel.parentId) ? channel.parentId : 'top',
+    slowmode: String(channel?.slowmode ?? 0) };
   const current = draft?.id === initial.id ? draft : initial;
   const edit = (over: Partial<Draft>) => { setDraft({ ...current, ...over }); setLocal(null); action.reset(); };
 
@@ -54,8 +58,9 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
     const name = shownName === channel.name ? null : shownName;
     const topic = kind === 'text' && current.topic !== channel.topic ? current.topic : null;
     const parent = kind === 'category' || current.parent === initial.parent ? 'keep' : current.parent;
-    if (name === null && topic === null && parent === 'keep') { close(); return; }
-    void action.run(() => client.call({ m: 'updateChannel', channelId: channel.id, name, topic, parent, slowmode: null }), e =>
+    const slowmode = kind === 'text' && current.slowmode !== initial.slowmode ? Number(current.slowmode) : null;
+    if (name === null && topic === null && parent === 'keep' && slowmode === null) { close(); return; }
+    void action.run(() => client.call({ m: 'updateChannel', channelId: channel.id, name, topic, parent, slowmode }), e =>
       forbidden(e) ? t('admin.channel.error.forbidden')
         : statusIs(e, 404) ? t('admin.channel.error.gone')
           : refused(e) ? t('admin.channel.error.refused')
@@ -74,6 +79,8 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
         topicHint: t('admin.channel.topicHint'), category: t('admin.channel.category'), submit: t('admin.channel.save'),
         busy: t('admin.channel.saving'), close: t('admin.cancel') }}
       onSubmit={submit} onClose={close}>
+      {kind === 'text' ? <Select label={t('slow.label')} hint={t('slow.hint')} value={current.slowmode} options={SLOW_OPTIONS}
+        onChange={v => edit({ slowmode: v })} /> : null}
       {channel !== null && kind !== 'category' && access?.manageRoles === true
         ? <ChannelPermissions channelId={channel.id} communityId={channel.communityId} announce={announce ?? NO_ANNOUNCE} /> : null}
     </ChannelSettings>

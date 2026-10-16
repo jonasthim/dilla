@@ -1,20 +1,34 @@
 // The open conversation's draft, mentions, replies and file tray.
-import { useId, useLayoutEffect, useRef, useState } from 'react';
-import { encodeMentions, mentionQuery, PERM, type MemberSummary, type MentionMember, type RoleSummary, type TimelineItem } from '@dilla/client-core';
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { encodeMentions, mentionQuery, PERM, type MemberSummary, type MentionMember, type RoleSummary, type SlowState, type TimelineItem } from '@dilla/client-core';
 import { Composer, MentionList, ReplyChip } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
+import { useRoute } from '../../router.ts';
 import { t } from '../../strings/index.ts';
 import { editableText, mentionOptions, mentionRoles, offeredRoles, type NameBook } from '../shell-model.ts';
 import { attachFiles, TrayList } from './Attachments.tsx';
 import type { ConversationAction, ConversationUi } from './Conversation.tsx';
+import { formatWait, spokenStep } from './slow.ts';
 
-export interface OutgoingMessage { raw: string; text: string; replyTo: string | null; attachments: readonly string[] }
+export interface OutgoingMessage { raw: string; text: string; replyTo: string | null; attachments: readonly string[];
+  /** The thread a send belongs to (the thread composer); absent for the channel's own composer. */
+  threadId?: string | null }
 export interface ComposerAreaProps { channelId: string; label: string; placeholder: string; blocked: string | null;
   /** Today's broadcast rule; `bits` (what I may do here, null while unknown) overrides it once known. */
   broadcast: boolean; bits?: number | null; roles?: readonly RoleSummary[]; channelName?: string; encodeWith: readonly MentionMember[]; candidates: readonly MemberSummary[]; items: readonly TimelineItem[];
   book: NameBook; draft: string; onDraft(text: string): void; ui: ConversationUi; dispatch(a: ConversationAction): void;
-  onSend(m: OutgoingMessage): void; onError(e: unknown): void }
+  onSend(m: OutgoingMessage): void; onError(e: unknown): void;
+  /** The channel's slow-mode state; when absent the `slow:<channel>` slice stands in. */
+  slow?: SlowState;
+  /** True: a person who bypasses slow mode (no countdown). When absent, the channel bits say (bypass_slowmode). */
+  bypass?: boolean;
+  /** The thread this composer replies in: its sends carry it. */
+  threadId?: string;
+  /** True: an announcement channel. When absent the channel's `announcement` flag in the channels slice says. */
+  announcement?: boolean;
+  /** Speaks a queued send once, politely (the shell's announcer). */
+  announce?: (text: string) => void }
 
 export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const client = useCore();
@@ -27,6 +41,38 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const pendingCaret = useRef<number | null>(null);
   const id = useId().replace(/:/g, '-');
   const bits = p.bits ?? null;
+  const sliceSlow = useSlice(`slow:${p.channelId}`);
+  const [route] = useRoute();
+  const channels = useSlice(`channels:${route.name === 'channel' ? route.communityId : ''}`);
+  const announcement = p.announcement ?? channels?.find(c => c.id === p.channelId)?.announcement === true;
+  const bypass = p.bypass ?? (bits !== null && (bits & PERM.bypassSlowmode) !== 0);
+  const slow = p.slow ?? sliceSlow;
+  // The countdown: a timer re-renders once a second until the wait is over. A slice whose time has passed is over, queued or not.
+  const [, tick] = useReducer((n: number) => n + 1, 0);
+  const until = bypass ? 0 : slow?.until ?? 0;
+  const remaining = until - Date.now();
+  const waiting = remaining > 0;
+  useEffect(() => {
+    if (until <= Date.now()) return;
+    const id = window.setInterval(() => {
+      tick();
+      if (Date.now() >= until) window.clearInterval(id);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [until]);
+  // The visible text changes each second and is hidden from the assistive tree; a polite status speaks on a change of
+  // minute or of 10 s step only (flow 11).
+  const waitText = waiting ? t('slow.wait', { time: formatWait(remaining) }) : '';
+  const step = waiting ? spokenStep(remaining) : '';
+  const [spoken, setSpoken] = useState({ step: '', text: '' });
+  if (spoken.step !== step) setSpoken({ step, text: waitText });
+  const queued = waiting && slow?.queued === true;
+  const queuedBefore = useRef(false);
+  const announceQueued = p.announce;
+  useEffect(() => {
+    if (queued && !queuedBefore.current) announceQueued?.(t('slow.queued'));
+    queuedBefore.current = queued;
+  }, [queued, announceQueued]);
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : p.broadcast;
   const offered = offeredRoles(p.roles ?? [], broadcast);
   const roleMentions = mentionRoles(offered, p.encodeWith);
@@ -78,12 +124,17 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     }
     p.dispatch({ type: 'trayError', text: null });
     p.onSend({ raw: value, text: encodeMentions(value, p.encodeWith, broadcast, roleMentions), replyTo: p.ui.reply?.msgId ?? null,
-      attachments: tray.map(a => a.id) });
+      attachments: tray.map(a => a.id), ...(p.threadId !== undefined ? { threadId: p.threadId } : {}) });
   };
   // Advisory: the instance decides, and W2b enforces it. The composer stays mounted, read-only with its reason (the draft,
   // the file tray, the reply chip and the focus all stay); the shell speaks the state once through its announcer.
   const cannotSend = bits !== null && (bits & PERM.sendMessages) === 0;
-  const blocked = p.blocked ?? (cannotSend ? t('chperm.cannotSend', { name: p.channelName ?? '' }) : null);
+  const readOnly = cannotSend && announcement;
+  const readOnlyText = t('announce.readOnly', { name: p.channelName ?? '' });
+  const blocked = p.blocked ?? (readOnly ? readOnlyText : cannotSend ? t('chperm.cannotSend', { name: p.channelName ?? '' }) : null);
+  const noticeBody = readOnly ? readOnlyText : waiting ? <>
+    <span aria-hidden="true">{waitText}</span>{queued ? <span> {t('slow.queued')}</span> : null}
+  </> : null;
   return <>
     <input ref={inputRef} className="dw-attach-input" type="file" multiple hidden
       onChange={e => { void attachFiles(client, p.channelId, Array.from(e.currentTarget.files ?? []), a => p.dispatch(a)); e.currentTarget.value = ''; }} />
@@ -94,6 +145,7 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       sendLabel={t('shell.composer.send')}
       counterLabel={n => n < 0 ? t('shell.composer.over', { n: -n }) : t('shell.composer.remaining', { n })}
       attachLabel={t('shell.composer.attach')} onAttach={() => inputRef.current?.click()}
+      {...(noticeBody !== null ? { notice: noticeBody } : {})}
       top={<>
         {p.ui.reply !== null ? <ReplyChip label={t('shell.composer.replying', { name: p.ui.reply.author })}
           excerpt={p.ui.reply.excerpt} cancelLabel={t('shell.composer.replyCancel')}
@@ -113,5 +165,6 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
       }}
       onPasteFiles={files => { void attachFiles(client, p.channelId, files, a => p.dispatch(a)); }} textareaRef={textareaRef}
       canSendEmpty={tray.length > 0} />
+    <p className="d-sr-only" role="status" data-slow="">{spoken.text}</p>
   </>;
 }

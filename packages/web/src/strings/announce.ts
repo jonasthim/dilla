@@ -4,4 +4,5 @@ export const announce = {
   'announce.hint': 'Only the roles you tick can post. Everyone can read and react.',
   'announce.roles': 'Roles that can post',
   'announce.readOnly': 'Only some people can post in #{name}.',
+  'announce.noHeldRole': 'Tick a role of yours that is below your highest role, so that you can post here too.',
 } as const;

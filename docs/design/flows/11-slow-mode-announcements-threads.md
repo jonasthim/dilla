@@ -14,6 +14,7 @@ Slow mode on a per-channel basis limits how fast people can post, configurable b
 | 6. Bypass: no countdown | A person with bypass_slowmode sees no countdown or queue for their own posts, and the notice does not show. | none: a person with bypass_slowmode sees no countdown |
 | 7. New channel, announcement kind | In create channel, a kind selector offers text and announcement. Announcement is selected: it sets the kind and shows roles checkboxes for who can post. | `announce.kind`, `announce.hint`, `announce.roles` |
 | 8. Announcement channel, reader | A person without post permission views the channel and sees a read-only note. | `announce.readOnly` |
+| 8b. New channel, announcement refused | A creator who is not the owner or an administrator ticks no role of theirs below their highest role. The server is not asked: the name field shows the refusal. | `announce.noHeldRole` |
 | 9. Message toolbar, thread item | A toolbar item for each message offers a reply-in-thread action. | `thread.open` |
 | 10. Thread summary chip | A chip or badge on a message shows the reply count: 1 reply or N replies. | `thread.summary.one`, `thread.summary.other` |
 | 11. Thread pane or sheet | The thread view at full width (pane in the aside) or full screen (sheet on phone), with the title "Thread", a close button (text `thread.close`), and a composer for replies below the message thread. | `thread.title`, `thread.close`, `thread.composer` |
@@ -65,6 +66,7 @@ Polite, through `useAnnouncer`: `slow.queued` when a send is queued behind slow 
 - `announce.hint='Only the roles you tick can post. Everyone can read and react.'`
 - `announce.roles='Roles that can post'`
 - `announce.readOnly='Only some people can post in #{name}.'`
+- `announce.noHeldRole='Tick a role of yours that is below your highest role, so that you can post here too.'`
 - `thread.open='reply in thread'`
 - `thread.summary.one='1 reply'`
 - `thread.summary.other='{count} replies'`

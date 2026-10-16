@@ -1,0 +1,166 @@
+import { describe, expect, it, vi } from 'vitest';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
+import type { ThreadState } from '@dilla/client-core';
+import { CoreProvider } from '../../core/context.tsx';
+import { FakeClient, refusal } from '../../test/fake-client.ts';
+import { account } from '../../test/fixtures.ts';
+import { expectNoAxeViolations } from '../../test/setup.ts';
+import { en } from '../../strings/index.ts';
+import { A, GEN, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
+import { ThreadView } from './ThreadView.tsx';
+
+const ROOT = P1;
+
+function thread(over: Partial<ThreadState> = {}): ThreadState {
+  return {
+    channelId: GEN, rootMsgId: ROOT, root: peerRow(ROOT, '1', 'the root post', { thread: { count: 2, lastTs: 3 } }),
+    items: [peerRow(P2, '2', 'first reply'), ownRow(O1, '3', 'my reply')], hasEarlier: false, ...over,
+  };
+}
+
+function setup(over: { thread?: ThreadState | null; phone?: boolean } = {}) {
+  window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+  const fake = new FakeClient();
+  fake.set('account', account());
+  fake.set(`members:${A}`, MEMBERS);
+  fake.set(`thread:${GEN}`, over.thread === undefined ? thread() : over.thread);
+  const onClose = vi.fn();
+  const announce = vi.fn();
+  const user = userEvent.setup();
+  const view = render(<div className="d-root"><CoreProvider client={fake}>
+    <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={over.phone ?? false} onClose={onClose} announce={announce} />
+  </CoreProvider></div>);
+  return { fake, user, view, onClose, announce };
+}
+const box = () => screen.getByRole('textbox', { name: en['thread.composer'] });
+
+describe('ThreadView (web3.7)', () => {
+  it('opens the thread on mount and closes it on unmount, in that order', () => {
+    const { fake, view } = setup();
+    expect(fake.calls).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);
+    view.unmount();
+    expect(fake.calls).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }, { m: 'closeThread', channelId: GEN }]);
+  });
+  it('shows the title, a close control, the root and the replies', () => {
+    const { onClose } = setup();
+    expect(screen.getByRole('heading', { level: 2, name: en['thread.title'] })).toBeInTheDocument();
+    const root = document.querySelector('.d-thread-pane__root') as HTMLElement;
+    expect(within(root).getByText('the root post')).toBeInTheDocument();
+    const replies = document.querySelector('.d-thread-pane__replies') as HTMLElement;
+    expect(within(replies).getAllByText(/reply$/).map(e => e.textContent)).toEqual(['first reply', 'my reply']);
+    screen.getByRole('button', { name: en['thread.close'] }).click();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it('says the root cannot be shown when it is not held, and still lists the replies', () => {
+    setup({ thread: thread({ root: null }) });
+    expect(screen.getByText(en['thread.rootMissing'])).toBeInTheDocument();
+    expect(screen.getByText('first reply')).toBeInTheDocument();
+  });
+  it('shows no root text while the thread is still being read', () => {
+    setup({ thread: null });
+    expect(screen.queryByText(en['thread.rootMissing'])).toBeNull();
+    expect(box()).toBeInTheDocument();
+  });
+  it('is a sheet with its own header on a phone', () => {
+    setup({ phone: true });
+    expect(document.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
+    expect(screen.getByRole('button', { name: en['thread.close'] })).toBeInTheDocument();
+  });
+  it('focuses the thread composer on opening', () => {
+    setup();
+    expect(box()).toHaveFocus();
+  });
+  it('closes on Escape inside it', async () => {
+    const { user, onClose } = setup();
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it('sends a reply with the thread id, clears the draft once it is sent and keeps the focus', async () => {
+    const { fake, user } = setup();
+    await user.type(box(), 'a new reply');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'a new reply', threadId: ROOT }]));
+    await waitFor(() => expect(box()).toHaveValue(''));
+    expect(box()).toHaveFocus();
+  });
+  it('keeps the draft and says why when a send is refused', async () => {
+    const { fake, user } = setup();
+    fake.handler = c => (c.m === 'send' ? Promise.reject(refusal({ code: 'E_NETWORK' })) : Promise.resolve(null));
+    await user.type(box(), 'will fail');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('alert')).toHaveTextContent('E_NETWORK');
+    expect(box()).toHaveValue('will fail');
+  });
+  it('shows the slow-mode wait of the channel in the thread composer too', () => {
+    const fake = new FakeClient();
+    fake.set(`slow:${GEN}`, { until: Date.now() + 30_000, queued: false });
+    window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+    fake.set('account', account());
+    fake.set(`members:${A}`, MEMBERS);
+    fake.set(`thread:${GEN}`, thread());
+    render(<div className="d-root"><CoreProvider client={fake}>
+      <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={false} onClose={vi.fn()} announce={vi.fn()} />
+    </CoreProvider></div>);
+    expect(document.querySelector('.d-composer__notice')).toHaveTextContent('Slow mode is on.');
+  });
+  it('offers its rows reactions and nothing else: no toolbar, no thread of a thread', () => {
+    setup();
+    expect(document.querySelector('.d-thread-pane [role="toolbar"]')).toBeNull();
+    expect(screen.queryByRole('button', { name: en['thread.open'] })).toBeNull();
+  });
+  it('toggles a reaction on a reply', async () => {
+    const reaction = { emoji: '👍', count: 1, mine: false };
+    const { fake, user } = setup({ thread: thread({ items: [peerRow(P2, '2', 'first reply', { reactions: [reaction] })] }) });
+    await user.click(screen.getByRole('button', { name: /thumbs|👍/ }));
+    expect(fake.callsOf('react')).toEqual([{ m: 'react', channelId: GEN, msgId: P2, emoji: '👍', on: true }]);
+  });
+  it('returns focus to the control that opened it when it closes (contract 2)', async () => {
+    window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set(`members:${A}`, MEMBERS);
+    fake.set(`thread:${GEN}`, thread());
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return <div className="d-root"><button type="button" onClick={() => setOpen(true)}>open it</button>
+        {open ? <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={false} onClose={() => setOpen(false)} announce={vi.fn()} /> : null}</div>;
+    }
+    const user = userEvent.setup();
+    render(<CoreProvider client={fake}><Host /></CoreProvider>);
+    await user.click(screen.getByRole('button', { name: 'open it' }));
+    expect(box()).toHaveFocus();
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'open it' })).toHaveFocus());
+  });
+  it('returns focus to the root’s row when the opener is gone', async () => {
+    window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set(`members:${A}`, MEMBERS);
+    fake.set(`thread:${GEN}`, thread());
+    function Host() {
+      const [open, setOpen] = useState(false);
+      const [chip, setChip] = useState(true);
+      return <div className="d-root">
+        <div className="d-message-row" data-msg-id={ROOT} tabIndex={-1}>root row
+          {chip ? <button type="button" onClick={() => { setOpen(true); setChip(false); }}>chip</button> : null}</div>
+        {open ? <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={false} onClose={() => setOpen(false)} announce={vi.fn()} /> : null}</div>;
+    }
+    const user = userEvent.setup();
+    render(<CoreProvider client={fake}><Host /></CoreProvider>);
+    await user.click(screen.getByRole('button', { name: 'chip' }));
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(document.querySelector('.d-message-row[data-msg-id]')).toHaveFocus());
+  });
+  it('has no serious axe violations, as a column and as a sheet', async () => {
+    const { view } = setup();
+    await expectNoAxeViolations(view.container);
+    view.unmount();
+    const sheet = setup({ phone: true });
+    await expectNoAxeViolations(sheet.view.container);
+  });
+});
+
+void act; void PEER;
