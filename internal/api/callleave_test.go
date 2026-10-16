@@ -322,8 +322,9 @@ func inParticipants(f *eventsFixture, dev id.ID) bool {
 
 // M1/n3: the newer session never joins (its LiveKit join failed, or the page closed). Inside A2's join
 // window the leave stays deferred; once the window has passed with no participant_joined, the retry
-// loop completes it: D is gone from the call, flags 0 is announced, its self flags are cleared, and
-// the newer membership's leaf is removed.
+// loop completes it: D is gone from the call, flags 0 is announced and its self flags are cleared.
+// The leaf is left to the room sweep and its two-sighting rule (review n4): completion proposes no
+// Remove.
 func TestADeferredLeaveCompletesWhenTheRejoinNeverComes(t *testing.T) {
 	f := newEventsFixture(t, api.CallsConfig{})
 	deferLeave(t, f)
@@ -342,9 +343,8 @@ func TestADeferredLeaveCompletesWhenTheRejoinNeverComes(t *testing.T) {
 	if inParticipants(f, f.dev) {
 		t.Fatal("D is still a participant of the call after its deferred leave completed")
 	}
-	got := f.ds.memberRemovals()
-	if len(got) != 1 || got[0].Leaf != secondAdmission.leaf || got[0].Added != secondAdmission.added {
-		t.Fatalf("membership-bound Removes = %+v, want the one of the never-joined leaf 4 (epoch 7)", got)
+	if got := f.ds.memberRemovals(); len(got) != 0 {
+		t.Fatalf("membership-bound Removes = %+v: completion proposed a Remove; the room sweep decides the leaf", got)
 	}
 	// The self flags went with it: D's next session joins without the stale self-mute.
 	admitThroughProxy(t, f.calls, f.room, f.dev)

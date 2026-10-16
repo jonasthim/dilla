@@ -797,27 +797,38 @@ func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 
 // completeDeferredLeaves completes, on the retry loop, each deferred leave whose newer session never
 // joined: once the device's latest fresh admission is older than admissionJoinWindow and the SFU
-// lists the device out of the room, it is announced out (flags 0), its self flags are cleared and the
-// Remove of the newer membership is proposed, bound to it (ds.ErrRemoveTargetGone: the sweep, a
-// commit or the device itself removed it first). A device the SFU lists, a room it cannot list, or
-// an admission still inside its window waits for the next pass; a newer session's participant_joined,
-// its leave, an eviction or the call's end drops the deferral first.
-func (c *CallEvents) completeDeferredLeaves(ctx context.Context) {
+// lists the device out of the room, it is announced out (flags 0) and its self flags are cleared.
+// Its leaf is left to the room sweep and its two-sighting rule (review n4): completion proposes no
+// Remove. A device the SFU lists, a room it cannot list, or an admission still inside its window
+// waits for the next pass; a newer session's participant_joined, its leave, an eviction or the
+// call's end drops the deferral first. One pass looks at most at limit deferrals and lists each room
+// once (review S1); RetryPending runs it after its repairs, on its own budget.
+func (c *CallEvents) completeDeferredLeaves(ctx context.Context, limit int) {
 	c.mu.Lock()
-	pending := make(map[announceKey]deferredLeave, len(c.deferred))
+	pending := make(map[announceKey]deferredLeave, min(len(c.deferred), limit))
 	for k, dl := range c.deferred {
+		if len(pending) >= limit {
+			break
+		}
 		pending[k] = dl
 	}
 	c.mu.Unlock()
+	listed := map[string]roomListing{}
 	for k, dl := range pending {
 		if ctx.Err() != nil {
 			return
 		}
-		c.completeDeferred(ctx, k, dl)
+		c.completeDeferred(ctx, k, dl, listed)
 	}
 }
 
-func (c *CallEvents) completeDeferred(ctx context.Context, k announceKey, dl deferredLeave) {
+// roomListing is one SFU listing of a room within a pass: its participants, or the error.
+type roomListing struct {
+	parts []*livekit.ParticipantInfo
+	err   error
+}
+
+func (c *CallEvents) completeDeferred(ctx context.Context, k announceKey, dl deferredLeave, listed map[string]roomListing) {
 	drop := func() {
 		c.mu.Lock()
 		if cur, ok := c.deferred[k]; ok && cur == dl {
@@ -840,13 +851,17 @@ func (c *CallEvents) completeDeferred(ctx context.Context, k announceKey, dl def
 	if c.sfu == nil {
 		return
 	}
-	lctx, cancel := sfuCtx(ctx)
-	parts, err := c.sfu.Participants(lctx, dl.room)
-	cancel()
-	if err != nil {
+	l, seen := listed[dl.room]
+	if !seen {
+		lctx, cancel := sfuCtx(ctx)
+		l.parts, l.err = c.sfu.Participants(lctx, dl.room)
+		cancel()
+		listed[dl.room] = l
+	}
+	if l.err != nil {
 		return // the room cannot be seen: the next pass decides
 	}
-	for _, p := range parts {
+	for _, p := range l.parts {
 		if base, _, _ := strings.Cut(p.GetIdentity(), "#"); base == k.dev.String() {
 			return // in the room: its participant_joined is on its way
 		}
@@ -866,13 +881,6 @@ func (c *CallEvents) completeDeferred(ctx context.Context, k announceKey, dl def
 	c.mu.Unlock()
 	c.log.InfoContext(ctx, "a deferred leave completed: the device's newer session never joined",
 		"room", dl.room, "device_id", k.dev.String())
-	if ok && row.GroupID != nil && c.dsvc != nil {
-		err := c.dsvc.ProposeRemoveOfMember(ctx, *row.GroupID, newer.leaf, k.dev, newer.added, id.New())
-		if err != nil && !errors.Is(err, ds.ErrRemoveTargetGone) {
-			c.log.WarnContext(ctx, "proposing the Remove of a device whose newer session never joined failed; the sweep decides",
-				"group_id", row.GroupID.String(), "device_id", k.dev.String(), "err", err)
-		}
-	}
 	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil {
 		c.log.ErrorContext(ctx, "reading a call's channel failed", "err", err)

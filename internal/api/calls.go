@@ -88,6 +88,13 @@ const (
 	callHoldBackground = 10 * time.Second
 	// maxRepairsPerTick caps the repairs one retry pass, or one grant sync of a call, attempts.
 	maxRepairsPerTick = 32
+	// maxDeferredPerTick caps the deferred leaves one retry pass looks at, after its repairs
+	// (CallEvents.completeDeferredLeaves); the rest wait for the next pass. Each room is listed once
+	// per pass, so a pass makes at most this many SFU calls.
+	maxDeferredPerTick = 8
+	// deferredPassBudget bounds the deferred-leave step of one retry pass, on its own: two SFU calls'
+	// worth, so a slow SFU delays the next pass's repairs by at most this.
+	deferredPassBudget = 2 * sfuCallTimeout
 	// CallRetryInterval is the retry loop's cadence (StartRetries).
 	CallRetryInterval = 5 * time.Second
 	// RoomSweepInterval is how often, at most, the retry loop sweeps the SFU's rooms (SweepRooms).

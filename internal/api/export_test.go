@@ -15,6 +15,13 @@ func (h *Calls) SetStartHookForTest(f func(stage string)) { h.startHook = f }
 // the voice session not yet ended).
 func (h *Calls) SetEndHookForTest(f func(stage string)) { h.endHook = f }
 
+// DeferredLeavesForTest is how many leaves the call events hold back for a newer session.
+func (c *CallEvents) DeferredLeavesForTest() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.deferred)
+}
+
 // ProcessQueueForTest runs one pass of the retry loop's work queue on the caller's goroutine.
 func (h *Calls) ProcessQueueForTest(ctx context.Context) { h.processQueue(ctx) }
 
