@@ -69,21 +69,33 @@ export function portSlice<T>(page: Page, name: string): Promise<T | undefined> {
 export interface UploadSeen { status: number; relabelled: boolean }
 export interface UploadHold { relabel: boolean; readonly seen: UploadSeen[] }
 
+const UPLOAD = /\/v1\/groups\/[0-9a-f]{32}\/message$/;
+
 /**
- * Routes the group message upload (`POST /v1/groups/<id>/message`) of every page in `context`. While `relabel` is set, the
- * class (the last byte of the body, CBOR `[epoch, private_message, class]`) goes out as 1 instead of 0. The host's
- * answer is recorded in `seen` and handed back unchanged.
+ * Watches the group message upload (`POST /v1/groups/<id>/message`) of every page in `context`. Honest uploads go through the
+ * browser's own network stack untouched (the route lets them continue) and their status comes from the response events. While
+ * `relabel` is set, the upload is fetched with its class (the last byte of the body, CBOR `[epoch, private_message, class]`)
+ * turned from 0 to 1, and the host's answer is handed back unchanged. Every answer is recorded in `seen`.
  */
 export async function holdUploads(context: BrowserContext): Promise<UploadHold> {
   const hold: UploadHold = { relabel: false, seen: [] };
-  await context.route(/\/v1\/groups\/[0-9a-f]{32}\/message$/, async (route) => {
+  const handled = new WeakSet<object>();
+  context.on('response', (response) => {
+    const request = response.request();
+    if (request.method() !== 'POST' || !UPLOAD.test(request.url()) || handled.has(request)) return;
+    hold.seen.push({ status: response.status(), relabelled: false });
+  });
+  await context.route(UPLOAD, async (route) => {
     const request = route.request();
     const body = request.postDataBuffer();
-    if (request.method() !== 'POST' || body === null) { await route.fallback(); return; }
-    const relabel = hold.relabel && body.length > 0 && body[body.length - 1] === 0x00;
-    if (relabel) body[body.length - 1] = 0x01;
-    const response = await route.fetch(relabel ? { postData: body } : {});
-    hold.seen.push({ status: response.status(), relabelled: relabel });
+    if (!hold.relabel || request.method() !== 'POST' || body === null || body.length === 0 || body[body.length - 1] !== 0x00) {
+      await route.continue();
+      return;
+    }
+    body[body.length - 1] = 0x01;
+    handled.add(request);
+    const response = await route.fetch({ postData: body });
+    hold.seen.push({ status: response.status(), relabelled: true });
     await route.fulfill({ response });
   });
   return hold;

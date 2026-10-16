@@ -575,9 +575,9 @@ export async function tabTo(page: Page, target: Locator, maxPresses = 40): Promi
 export function escapeRegExp(text: string): string { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 /** A rail item or channel row by the name it shows: its accessible name is the name alone, or the name followed
- *  by ", " and the counts (shell.rail.itemLabel, shell.channels.rowLabel, shell.channels.rowLabelMuted). */
+ *  by the row's badge ("general slow mode", slow.badge) and by ", " and the counts (shell.rail.itemLabel, shell.channels.rowLabel, shell.channels.rowLabelMuted). */
 export function namedRow(scope: Locator, name: string): Locator {
-  return scope.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}(, |$)`) });
+  return scope.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}( ${escapeRegExp(copy('slow.badge'))})?(, |$)`) });
 }
 export function railItem(page: Page, community: string): Locator { return namedRow(railNav(page), community); }
 export function channelRow(page: Page, channel: string): Locator { return namedRow(channelsNav(page), channel); }
