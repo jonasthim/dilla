@@ -160,8 +160,9 @@ type fakeGate struct {
 
 // admissions is a fakeGate's record of the joins the proxy let through.
 type admissions struct {
-	mu   sync.Mutex
-	devs []id.ID
+	mu      sync.Mutex
+	devs    []id.ID
+	resumes []bool // per admission, whether the proxy reported it a signal resume
 }
 
 func (a *admissions) list() []id.ID {
@@ -170,10 +171,17 @@ func (a *admissions) list() []id.ID {
 	return slices.Clone(a.devs)
 }
 
-func (g fakeGate) Admitted(_ context.Context, _ string, dev id.ID) {
+func (a *admissions) resumeFlags() []bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.resumes)
+}
+
+func (g fakeGate) Admitted(_ context.Context, _ string, dev id.ID, resume bool) {
 	if g.noted != nil {
 		g.noted.mu.Lock()
 		g.noted.devs = append(g.noted.devs, dev)
+		g.noted.resumes = append(g.noted.resumes, resume)
 		g.noted.mu.Unlock()
 	}
 }
@@ -366,7 +374,7 @@ func (admitEveryLeaf) AdmitRoom(context.Context, string, id.ID) (*livekit.Partic
 	return sfu.PublishGrant(true, false, false), nil
 }
 
-func (admitEveryLeaf) Admitted(context.Context, string, id.ID) {}
+func (admitEveryLeaf) Admitted(context.Context, string, id.ID, bool) {}
 
 // SP-20: against the real SFU, neither a GET carrying publish=x nor a POST carrying publish=y in its
 // body creates a "<device>#…" participant through the proxy.

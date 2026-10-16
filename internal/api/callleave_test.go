@@ -114,19 +114,27 @@ func admitFirstSession(t *testing.T, f *eventsFixture) time.Time {
 // A2 older than the join window — when the first session's late participant_left arrives with that
 // session's join time. Without readmit (the control) D's membership moved with no new admission (an
 // in-call resync), and the leave is its current session's: M-4's fallback removes leaf 4, as before.
+// With sameLeaf, the second session was admitted at the membership the first held (a LiveKit
+// restartConnection keeps the MLS leaf): the late leave's bound Remove would cut it directly.
 func TestALateLeaveNeverCutsANewerAdmission(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		readmit bool
+		name              string
+		readmit, sameLeaf bool
 	}{
-		{"admitted again", true},
-		{"control: no second admission", false},
+		{"admitted again", true, false},
+		{"admitted again at the same leaf", true, true},
+		{"control: no second admission", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newEventsFixture(t, api.CallsConfig{})
 			joined := admitFirstSession(t, f)
 			f.e.Clk.Advance(10 * time.Second)
-			placeLeaves(t, f.e, f.group, f.dev, leafAt{leaf: 3, added: 5, removed: 6}, secondAdmission)
+			newer := secondAdmission
+			if tc.sameLeaf {
+				newer = firstAdmission
+			} else {
+				placeLeaves(t, f.e, f.group, f.dev, leafAt{leaf: 3, added: 5, removed: 6}, secondAdmission)
+			}
 			f.stub.setPresent(f.room) // D is out of the room for a moment
 			if tc.readmit {
 				admitThroughProxy(t, f.calls, f.room, f.dev) // A2, under a new session
@@ -135,7 +143,7 @@ func TestALateLeaveNeverCutsANewerAdmission(t *testing.T) {
 			f.sendLeft(t, f.dev, "PA_1", joined)
 			var cut bool
 			for _, r := range f.ds.memberRemovals() {
-				if r.Device == f.dev && r.Leaf == secondAdmission.leaf && r.Added == secondAdmission.added {
+				if r.Device == f.dev && r.Leaf == newer.leaf && r.Added == newer.added {
 					cut = true
 				}
 			}
@@ -155,6 +163,75 @@ func TestALateLeaveNeverCutsANewerAdmission(t *testing.T) {
 				t.Fatal("the leave of D's current session announced nothing")
 			}
 		})
+	}
+}
+
+// resumeThroughProxy is a LiveKit signal resume of the session already in the room: the /rtc proxy
+// admits it like a join, flagged a resume.
+func resumeThroughProxy(t *testing.T, calls *api.Calls, room string, dev id.ID) {
+	t.Helper()
+	if _, code, err := admitted(t, calls, room, dev); code != "" || err != nil {
+		t.Fatalf("admission = %q %v", code, err)
+	}
+	calls.Admitted(t.Context(), room, dev, true)
+}
+
+// A signal resume goes through /rtc but is the same session: it is not a newer admission. A real
+// leave after one still proposes its Remove and announces the device out; after an in-call resync
+// moved the leaf, M-4's fallback still removes the current membership.
+func TestAResumeIsNotANewerAdmission(t *testing.T) {
+	t.Run("a real leave after a resume", func(t *testing.T) {
+		f := newEventsFixture(t, api.CallsConfig{})
+		joined := admitFirstSession(t, f)
+		f.e.Clk.Advance(5 * time.Second)
+		resumeThroughProxy(t, f.calls, f.room, f.dev)
+		f.e.Clk.Advance(5 * time.Second)
+		f.stub.setPresent(f.room)
+		f.sendLeft(t, f.dev, "PA_1", joined)
+		got := f.ds.memberRemovals()
+		if len(got) != 1 || got[0].Leaf != firstAdmission.leaf || got[0].Added != firstAdmission.added {
+			t.Fatalf("membership-bound Removes = %+v, want the one of leaf 3 (epoch 5)", got)
+		}
+		if !f.leftAnnounced(f.dev) {
+			t.Fatal("a real leave after a resume announced nothing: D stays in the call for everyone")
+		}
+	})
+	t.Run("a real leave after a resume and a resync", func(t *testing.T) {
+		f := newEventsFixture(t, api.CallsConfig{})
+		joined := admitFirstSession(t, f)
+		f.e.Clk.Advance(5 * time.Second)
+		resumeThroughProxy(t, f.calls, f.room, f.dev)
+		placeLeaves(t, f.e, f.group, f.dev, leafAt{leaf: 3, added: 5, removed: 6}, secondAdmission)
+		f.e.Clk.Advance(admissionWindow())
+		f.stub.setPresent(f.room)
+		f.sendLeft(t, f.dev, "PA_1", joined)
+		got := f.ds.memberRemovals()
+		if len(got) != 1 || got[0].Leaf != secondAdmission.leaf || got[0].Added != secondAdmission.added {
+			t.Fatalf("membership-bound Removes = %+v, want M-4's one of leaf 4 (epoch 7)", got)
+		}
+		if !f.leftAnnounced(f.dev) {
+			t.Fatal("a real leave after a resume and a resync announced nothing")
+		}
+	})
+}
+
+// The reload's new session reports self-mute before its participant_joined is processed; the first
+// session's late leave does not wipe it, so the new session's in_call carries it.
+func TestALateLeaveKeepsTheNewSessionsSelfFlags(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	joined := admitFirstSession(t, f)
+	f.e.Clk.Advance(10 * time.Second)
+	placeLeaves(t, f.e, f.group, f.dev, leafAt{leaf: 3, added: 5, removed: 6}, secondAdmission)
+	admitThroughProxy(t, f.calls, f.room, f.dev) // A2, the reload's session
+	f.events.SetSelf(f.callID, f.dev, 1)         // self-muted, from the new session
+	f.stub.setPresent(f.room)
+	f.e.Clk.Advance(time.Second)
+	f.sendLeft(t, f.dev, "PA_1", joined)
+	f.e.Clk.Advance(time.Second)
+	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: f.dev.String(), Sid: "PA_2"})
+	f.sendJoined(t, f.dev, "PA_2", f.e.Clk.Now())
+	if got := f.gw.last(); got.Device != f.dev || got.Flags != api.VoiceInCall|2 {
+		t.Fatalf("the new session's voice_state = %+v, want in_call with self-mute (flags %d)", got, api.VoiceInCall|2)
 	}
 }
 

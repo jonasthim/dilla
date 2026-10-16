@@ -46,10 +46,11 @@ const rtcRateClass = "unauth"
 // now — its current base permission — or a *server.Error refusal; *api.Calls is one. Admitted is
 // told, once every check of the proxy passed, that the join goes through to the SFU: the call
 // routes bind the session's leave to it and open its join window (M-2 of the integration
-// re-review: a join the proxy refuses after AdmitRoom records nothing).
+// re-review: a join the proxy refuses after AdmitRoom records nothing). resume says the join is a
+// LiveKit signal resume of the session already in the room (sfu.JoinIsResume), not a new session.
 type RTCGate interface {
 	AdmitRoom(ctx context.Context, room string, device id.ID) (*livekit.ParticipantPermission, error)
-	Admitted(ctx context.Context, room string, device id.ID)
+	Admitted(ctx context.Context, room string, device id.ID, resume bool)
 }
 
 // planTwo is what Plan 2's handler groups are built over: the composition root's own collaborators,
@@ -310,6 +311,6 @@ func admitRTC(r *http.Request, s SFU, gate RTCGate) error {
 	if err := join.CheckClient(); err != nil {
 		return server.Errorf(server.CodeInvalidRequest, "%v", err)
 	}
-	gate.Admitted(r.Context(), rt.Room, dev)
+	gate.Admitted(r.Context(), rt.Room, dev, join.Resume)
 	return nil
 }

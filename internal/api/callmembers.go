@@ -41,10 +41,12 @@ type membership struct {
 // admission is a membership a device was admitted to a room with, and when: at by the instance
 // clock (the join window, the sweep), sfuAt by the SFU's (what a session's join time is compared
 // with: LiveKit stamps it with its own clock, which the instance clock need not match, and reports it
-// in whole milliseconds, so sfuAt is truncated to the millisecond).
+// in whole milliseconds, so sfuAt is truncated to the millisecond). resume marks a LiveKit signal
+// resume through /rtc: the session already in the room again, never a newer one.
 type admission struct {
 	membership
 	at, sfuAt time.Time
+	resume    bool
 }
 
 type admitKey struct {
@@ -66,8 +68,9 @@ type leafRemoval struct {
 
 // noteAdmission records the membership dev holds in row's call group now, as it is admitted to row's
 // room: what a leave of the session it opens is bound to (DS-7, N2), and what opens its join window.
-// A store failure records nothing: the leave then proposes nothing and the sweep decides.
-func (h *Calls) noteAdmission(ctx context.Context, row store.VoiceSessionRow, dev id.ID) {
+// A store failure records nothing: the leave then proposes nothing and the sweep decides. resume is
+// a signal resume of the session already in the room.
+func (h *Calls) noteAdmission(ctx context.Context, row store.VoiceSessionRow, dev id.ID, resume bool) {
 	if row.GroupID == nil {
 		return
 	}
@@ -81,7 +84,7 @@ func (h *Calls) noteAdmission(ctx context.Context, row store.VoiceSessionRow, de
 			continue
 		}
 		k := admitKey{room: row.LivekitRoom, dev: dev}
-		a := admission{membership: membership{leaf: m.LeafIndex, added: m.AddedEpoch}, at: h.clk.Now(), sfuAt: h.sfuNow().Truncate(time.Millisecond)}
+		a := admission{membership: membership{leaf: m.LeafIndex, added: m.AddedEpoch}, at: h.clk.Now(), sfuAt: h.sfuNow().Truncate(time.Millisecond), resume: resume}
 		h.memMu.Lock()
 		if h.admissions == nil {
 			h.admissions = map[admitKey][]admission{}
@@ -111,18 +114,28 @@ func (h *Calls) admittedAs(room string, dev id.ID, joinedAt time.Time) (admissio
 	return admission{}, false
 }
 
-// newerAdmission reports whether dev was admitted to room again after than (the SFU's clock): an
-// admission whose sfuAt is after it. A leave of the session admitted at than is then of an earlier
-// session (a page reload and rejoin), and the newer session's own events decide its membership. A
-// zero than is no admission, so nothing is newer than it.
+// newerAdmission reports whether dev was admitted to room again after than (the SFU's clock): a
+// fresh join's admission whose sfuAt is after it. A leave of the session admitted at than is then
+// of an earlier session (a page reload and rejoin), and the newer session's own events decide its
+// membership. A signal resume is the same session again, so it is never newer. A zero than is no
+// admission, so nothing is newer than it. Only admissions recorded after the one stamped than count
+// (when it is still remembered): one recorded before it under another clock reading — a clock that
+// stepped back — is never taken for a newer session.
 func (h *Calls) newerAdmission(room string, dev id.ID, than time.Time) bool {
 	if than.IsZero() {
 		return false
 	}
 	h.memMu.Lock()
 	defer h.memMu.Unlock()
-	for _, a := range h.admissions[admitKey{room: room, dev: dev}] {
-		if a.sfuAt.After(than) {
+	list := h.admissions[admitKey{room: room, dev: dev}]
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].sfuAt.Equal(than) {
+			list = list[i+1:]
+			break
+		}
+	}
+	for _, a := range list {
+		if !a.resume && a.sfuAt.After(than) {
 			return true
 		}
 	}

@@ -423,18 +423,21 @@ func joinedAt(p *livekit.ParticipantInfo) time.Time {
 // resync re-added its leaf in a later epoch, or it rejoined by external commit — the Remove is bound
 // to the membership it holds now, under the sweep's rules (M-4 of the integration re-review): only
 // while the SFU shows the device out of the room and it was not admitted within its join window.
-// Otherwise nothing is proposed and the room sweep decides. Nor is it when the device was admitted
-// again after the leaving session's admission (web3.7, a page reload and rejoin): the membership it
-// holds now is the newer session's, whose own leave or the room sweep decides it.
+// Otherwise nothing is proposed and the room sweep decides.
+//
+// Nothing at all is proposed when the device was admitted by a fresh join after the leaving
+// session's admission (web3.7, a page reload and rejoin, or a LiveKit restartConnection that keeps
+// the leaf): whatever membership it holds now, the newer session's, even the same leaf, is decided
+// by that session's own leave or the room sweep. A signal resume is no newer session.
 func (c *CallEvents) proposeLeave(ctx context.Context, row store.VoiceSessionRow, dev id.ID, a admission) {
 	group := *row.GroupID
+	if c.calls.newerAdmission(row.LivekitRoom, dev, a.sfuAt) {
+		c.log.InfoContext(ctx, "a leave of an earlier admission proposes nothing: the device was admitted again",
+			"group_id", group.String(), "device_id", dev.String())
+		return
+	}
 	err := c.dsvc.ProposeRemoveOfMember(ctx, group, a.leaf, dev, a.added, id.New())
 	if errors.Is(err, ds.ErrRemoveTargetGone) {
-		if c.calls.newerAdmission(row.LivekitRoom, dev, a.sfuAt) {
-			c.log.InfoContext(ctx, "a leave of an earlier admission proposes nothing: the device was admitted again",
-				"group_id", group.String(), "device_id", dev.String())
-			return
-		}
 		cur, out := c.calls.currentMembershipOut(ctx, row, dev, a)
 		if !out {
 			c.log.InfoContext(ctx, "a leave of an earlier membership proposes nothing: the device rejoined the call group or left it",
@@ -523,7 +526,11 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 			otherSession = true
 		}
 	}
-	if !otherSession {
+	// A leave of a session the device was admitted again after (a reload) leaves the self flags the
+	// newer session reported before its participant_joined was processed. c.mu is held; newerAdmission
+	// takes only the calls' memMu, which nothing holds while taking c.mu.
+	readmitted := joined != nil && c.calls.newerAdmission(row.LivekitRoom, dev, joined.sfuAt)
+	if !otherSession && !readmitted {
 		// The device is out of the call: its self flags go with the session (a rejoin starts clean).
 		delete(c.self, announceKey{call: row.CallID, dev: dev})
 	}
