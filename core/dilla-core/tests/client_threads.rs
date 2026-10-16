@@ -868,7 +868,8 @@ fn threads_lists_only_held_roots() {
         Some(ROOT),
         "real",
     );
-    // A root whose msg id a fold row also carries is not listed (M1 ruling: any other type).
+    // A root whose msg id a fold row also carries is still listed (fix round 2, R1-I1): only a
+    // held first type-0 root decides.
     let shared = post_in(
         &mut peer,
         &mut relay,
@@ -900,7 +901,52 @@ fn threads_lists_only_held_roots() {
     assert_eq!(seqs(&me), vec![root, on_fold, orphan, shared]);
     assert_eq!(
         threads_of(&me).iter().map(|t| t.root).collect::<Vec<_>>(),
-        vec![ROOT]
+        vec![[0x77; 16], ROOT]
+    );
+}
+
+/// Fix round 2 (R1-I1, probe Y1): a fold whose own msg id is a thread root's id (Mallory's reaction
+/// on another message) does not delist the thread; the timeline, the summary and `threads` agree.
+#[test]
+fn a_fold_reusing_a_root_id_keeps_its_thread() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let root = post_in(
+        &mut peer,
+        &mut relay,
+        0x71,
+        Message,
+        None,
+        None,
+        "bob's root",
+    );
+    let r1 = post_in(&mut peer, &mut relay, 0x72, Message, None, Some(ROOT), "r1");
+    let other = post_in(&mut peer, &mut relay, 0x79, Message, None, None, "other");
+    post_in(
+        &mut peer,
+        &mut relay,
+        0x71,
+        ReactionAdd,
+        Some([0x79; 16]),
+        None,
+        "x",
+    );
+    me.sync(&relay);
+    assert_eq!(seqs(&me), vec![root, other]);
+    assert_eq!(me.row_at(&GROUP, root).thread.map(|t| t.0), Some(1));
+    assert_eq!(
+        thread_of(&me, &ROOT, 0, 50)
+            .1
+            .iter()
+            .map(|r| r.seq)
+            .collect::<Vec<_>>(),
+        vec![r1]
+    );
+    assert_eq!(
+        threads_of(&me)
+            .iter()
+            .map(|t| (t.root, t.root_seq))
+            .collect::<Vec<_>>(),
+        vec![(ROOT, Some(root))]
     );
 }
 

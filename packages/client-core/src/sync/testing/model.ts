@@ -1681,15 +1681,14 @@ export class ModelCore implements CorePort {
     return { root: root === null ? null : this.view(g, root), rows: rows.map((r) => this.view(g, r)) };
   }
 
-  /** web3.7: the group's threads under a held root whose id no other type carries, at most 50, the latest reply first
-   *  (messages.rs THREADS_SQL; fix round 1, M1). */
+  /** web3.7: the group's threads under a held first root, at most 50, the latest reply first (messages.rs THREADS_SQL;
+   *  fix round 1, M1; fix round 2: a fold reusing the root's id changes nothing). */
   threads(groupId: Id): ThreadRow[] {
     const g = this.must(groupId);
     const out: (ThreadRow & { id: string })[] = [];
     for (const root of g.rows.values()) {
       if (root.msgId === null || this.threadRoot(g, root.msgId) !== root) continue;
       const msgId = root.msgId;
-      if ([...g.rows.values()].some((r) => r.type !== null && r.type !== 0 && r.msgId !== null && same(r.msgId, msgId))) continue;
       const summary = this.summary(g, root);
       if (summary === null) continue;
       out.push({ rootMsgId: msgId, rootSeq: root.seq, count: summary.count, lastTs: summary.lastTs,

@@ -819,6 +819,14 @@ describe('ModelCore keeps public threads as the core does (web3.7)', () => {
     expect(shown(core, 8n).reply?.threadRoot).toEqual(R);
   });
 
+  it('keeps a thread listed when a fold reuses its root id (fix round 2, R1-I1)', () => {
+    const core = fresh();
+    apply(core, threadApp(1n, R, 'root', null), threadApp(2n, reply(1), 'r1', R), threadApp(3n, R2, 'other', null),
+      threadApp(4n, R, 'x', null, { type: 3, replyTo: R2 }));
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread?.count ?? null])).toEqual([[1n, 1], [3n, null]]);
+    expect(core.threads(G).map((t) => [t.rootSeq, t.count])).toEqual([[1n, 1]]);
+  });
+
   it('counts a thread reply toward unread and mentions', () => {
     const core = fresh();
     const root = own(core, 1n, textRequest('my root'));

@@ -43,7 +43,8 @@ pub(super) const TIMELINE_SELECT: &str = "SELECT m.seq,m.epoch,m.recv_ts,m.statu
      WHERE f.group_id=m.group_id AND f.msg_id=m.msg_id AND f.type=0 AND f.seq<m.seq) THEN \
      (SELECT COUNT(*) FROM app_messages s INDEXED BY app_messages_by_thread \
      WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.seq>m.seq AND s.status=0) ELSE 0 END, \
-     CASE WHEN m.type=0 AND m.thread_id IS NULL THEN (SELECT MAX(s.recv_ts) FROM app_messages s INDEXED BY app_messages_by_thread \
+     CASE WHEN m.type=0 AND m.thread_id IS NULL AND NOT EXISTS (SELECT 1 FROM app_messages f INDEXED BY app_messages_by_msg \
+     WHERE f.group_id=m.group_id AND f.msg_id=m.msg_id AND f.type=0 AND f.seq<m.seq) THEN (SELECT MAX(s.recv_ts) FROM app_messages s INDEXED BY app_messages_by_thread \
      WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.seq>m.seq AND s.status=0) END \
      FROM app_messages m ";
 
@@ -83,7 +84,7 @@ pub(super) fn thread_root_sql() -> String {
 }
 
 /// The group's threads (web3.7): each held root (the first type-0 row with its msg id, carrying no
-/// `thread_id`, its id carried by no row of another type) with a shown type-0 reply after it: the
+/// `thread_id`; a fold that reuses the id changes nothing, fix round 2) with a shown type-0 reply after it: the
 /// root's seq, status and shown body, the reply count and the latest reply's `recv_ts`; at most
 /// 50, the latest reply first.
 pub(super) const THREADS_SQL: &str = "SELECT x.thread_id, t.seq, t.status, COALESCE(t.edit_body, t.body), COUNT(*), MAX(x.recv_ts) \
@@ -93,8 +94,6 @@ pub(super) const THREADS_SQL: &str = "SELECT x.thread_id, t.seq, t.status, COALE
      WHERE x.group_id=?1 AND x.thread_id IS NOT NULL AND x.type=0 AND x.status=0 \
      AND NOT EXISTS (SELECT 1 FROM app_messages f INDEXED BY app_messages_by_msg WHERE f.group_id=t.group_id \
      AND f.msg_id=t.msg_id AND f.type=0 AND f.seq<t.seq) \
-     AND NOT EXISTS (SELECT 1 FROM app_messages n INDEXED BY app_messages_by_msg WHERE n.group_id=t.group_id \
-     AND n.msg_id=t.msg_id AND n.type<>0) \
      GROUP BY x.thread_id ORDER BY MAX(x.recv_ts) DESC, x.thread_id LIMIT 50";
 
 /// The thread root of the type-0 row at `?2` when it shows in a thread (its root held before it),
