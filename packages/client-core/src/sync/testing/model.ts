@@ -830,7 +830,7 @@ export class ModelCore implements CorePort {
     const refused = this.callGate(g, true);
     if (refused !== null) {
       const detail = this.gateDetail(g, refused);
-      // The unit of the join rolls back: no row, no verdict rows and no MLS state of the refused join survive.
+      // The unit of the join rolls back: no row, no verdict rows and no group state of the refused join survive.
       this.dropCallLeaves(eg.groupId);
       if (prev !== undefined) this.gs.set(toHex(eg.groupId), prev); else this.gs.delete(toHex(eg.groupId));
       throw coreError(refused, detail);
