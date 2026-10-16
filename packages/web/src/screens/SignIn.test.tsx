@@ -522,6 +522,39 @@ describe('the key step recognises a backup code (R44)', () => {
     expect(note()).toBeNull();
   });
 
+  it('announces the note once, politely, when it turns on and not on every keystroke', () => {
+    setup('signin-key');
+    const region = () => screen.getByTestId('signin-announcer');
+    typeInto(BACKUP);
+    wait(300);
+    typeInto(BACKUP.toUpperCase());
+    wait(300);
+    expect(region()).toBeEmptyDOMElement();
+    wait(600);
+    wait(1); // the announcer speaks a tick after it is asked
+    expect(region()).toHaveTextContent(NOTE);
+    expect(region()).toHaveAttribute('aria-live', 'polite');
+    wait(2000);
+    expect(region().textContent).toBe(NOTE);
+  });
+
+  it('clears its timer when the step unmounts', () => {
+    const { view } = setup('signin-key');
+    const before = vi.getTimerCount();
+    typeInto(BACKUP);
+    expect(vi.getTimerCount()).toBe(before + 1);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(before);
+  });
+
+  it('ignores a change while the step is blocked', () => {
+    setup('enrolling');
+    typeInto(BACKUP);
+    wait(2000);
+    expect(key()).toHaveValue('');
+    expect(note()).toBeNull();
+  });
+
   it('has no axe violations without the note', async () => {
     setup('signin-key');
     typeInto(LONG);

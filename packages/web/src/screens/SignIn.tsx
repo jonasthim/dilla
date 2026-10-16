@@ -120,6 +120,9 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     const timer = setTimeout(() => { setNoteSettled(true); }, BACKUP_NOTE_MS);
     return () => { clearTimeout(timer); };
   }, [key, looksBackup]);
+  const showBackup = looksBackup && noteSettled;
+  // aria-describedby is read only on focus; the person is in the field, so the note is also spoken once as it appears.
+  useEffect(() => { if (showBackup) announce(t('signIn.key.isBackupCode')); }, [showBackup, announce]);
 
   const phase = account?.phase;
   const instance = account?.instance ?? null;
@@ -394,7 +397,6 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   } else if (shown === 'key') {
     const n = normaliseRecoveryKey(key).length;
     const short = n !== KEY_LENGTH;
-    const showBackup = looksBackup && noteSettled;
     const working = busy === 'key' || enrolling;
     // The text cannot change under a running enrolment.
     const onKey = change('key', setKey);
@@ -409,11 +411,14 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       <p>{t('signin.key.body')}</p>
       <RecoveryKeyField id={FIELD_ID.key} label={t('signin.key.label')} value={key}
         onChange={value => { if (!blocked) { setNoteSettled(false); onKey(value); } }}
-        onBlur={() => { if (looksBackup) setNoteSettled(true); }} describedBy={showBackup ? BACKUP_ID : undefined} hint={t('signin.key.hint', { n })} error={errorText('key')} />
+        onBlur={() => { if (looksBackup) setNoteSettled(true); }}
+        describedBy={showBackup ? BACKUP_ID : undefined}
+        hint={t('signin.key.hint', { n })} error={errorText('key')} />
       {showBackup ? <p id={BACKUP_ID}>{t('signIn.key.isBackupCode')}</p> : null}
       {short ? <p id={LENGTH_ID}>{t('signin.error.keyLength')}</p> : null}
       {/* A11Y-DESIGN-04: the live region is there before its text, so the text is announced when it arrives. */}
       <p role="status">{working ? t('signin.key.working') : null}</p>
+      <p className="d-sr-only" aria-live="polite" data-testid="signin-announcer">{announcement}</p>
     </>);
   } else {
     content = form(t('signin.login.title', { instance: name }), 2, <>
