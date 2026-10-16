@@ -393,6 +393,7 @@ export function FactorSetup(props: FactorSetupProps): React.JSX.Element {
         <div className="dw-factor-key">
           <QrCode value={key.uri} label={t('factor.totp.qr', { username, instance: instanceName })} />
           <div className="dw-factor-key__text">
+            {/* Focus bubbles from the field; only an input is selected (the copy button is not). */}
             <div className="dw-factor-key__field" onFocus={(e) => { if (e.target instanceof HTMLInputElement) e.target.select(); }}>
               <TextField id="factor-totp-key" label={t('factor.totp.key')} value={key.secret} onChange={() => {}} readOnly
                 spellCheck={false} autoComplete="off" />
