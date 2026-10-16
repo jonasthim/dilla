@@ -83,8 +83,9 @@ export interface TimelineItem {
 export interface ThreadState { channelId: string; rootMsgId: string; root: TimelineItem | null; items: TimelineItem[]; hasEarlier: boolean }
 /** One thread of a channel (web3.7): its held root's seq and excerpt. */
 export interface ThreadSummary { rootMsgId: string; rootSeq: string | null; count: number; lastTs: number; excerpt: string }
+/** ts: the target's recv_ts, unix seconds. threadRoot (web3.7): the thread the pinned message shows in, null for a channel message. */
 export interface PinnedItem { msgId: string; seq: string; senderUser: string | null; excerpt: string; pinnedBy: string; pinnedSeq: string; ts: number;
-  threadRoot: string | null; }   // threadRoot (web3.7): the thread the pinned message shows in, null for a channel message   // ts: the target's recv_ts, unix seconds
+  threadRoot: string | null; }   // ts: the target's recv_ts, unix seconds
 export interface TrayItem { id: string; name: string; size: number; mime: string; image: boolean;
   phase: 'reading' | 'preparing' | 'uploading' | 'ready' | 'failed'; reason: string; }
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }

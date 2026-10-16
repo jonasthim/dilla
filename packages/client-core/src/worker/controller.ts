@@ -690,6 +690,9 @@ export class Controller {
   /** web3.7: this worker's own pending thread replies (msg id hex → the root and the group they went to). The outbox row
    *  does not name its thread, so this keeps the reply out of the main timeline and in the open thread until it is stored. */
   private readonly threadSends = new Map<string, { root: string; group: string }>();
+  /** web3.7: set only around the synchronous sendRequest of a thread reply. sendRequest tells the page the outbox changed
+   *  before it returns the msg id, so the new row is attributed to its thread from here until threadSends holds it. */
+  private threadIntent: { root: string; group: string; known: ReadonlySet<string> } | null = null;
   /** community hex → the own role hexes last applied to the core, used only to skip a redundant ownRolesSet. */
   private readonly roles = new Map<string, string[]>();
   /** web3.5 C4: group hex → the role view last handed to the core (authoritySet) in this attach, and its server. An
@@ -822,7 +825,7 @@ export class Controller {
       channelsOf: (communityId) => [...this.channels].filter(([, k]) => k.communityId === communityId).map(([id, k]) => ({ id, row: k.row })),
       communityOf: (channelId) => this.channels.get(channelId)?.communityId ?? null,
       setChannel: (communityId, row) => { this.channels.set(toHex(row.id), { communityId, row }); },
-      removeChannel: (channelId) => { this.channels.delete(channelId); this.open.delete(channelId); },
+      removeChannel: (channelId) => { this.channels.delete(channelId); this.dropOpen(channelId); },
       publishChannels: (communityId) => { this.publishChannels(communityId); this.updateExpected(); this.publishBadges(); },
       structureChanged: (communityId) => { this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1); },
       reloadCommunity: (communityId) => this.loadCommunity(communityId),
@@ -1993,7 +1996,7 @@ export class Controller {
     for (const [channelId, known] of this.channels) {
       if (known.communityId !== communityId) continue;
       this.channels.delete(channelId);
-      this.open.delete(channelId);
+      this.dropOpen(channelId);
       dropped.push(channelId);
     }
     this.slices.set(`channels:${communityId}`, []);
@@ -2366,7 +2369,7 @@ export class Controller {
     }
     for (const id of this.dms.keys()) {
       if (next.has(id)) continue;
-      this.open.delete(id);
+      this.dropOpen(id);
       if (this.slices.get(`timeline:${id}`) !== undefined) {
         this.slices.set(`timeline:${id}`, { channelId: id, group: 'none', items: [], hasEarlier: false });
       }
@@ -2876,10 +2879,16 @@ export class Controller {
     this.incomingTyping.delete(channelId);
     if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
-    if (this.threadOpen.delete(channelId)) this.slices.set(`thread:${channelId}`, null);
-    this.threadsOpen.delete(channelId);
-    this.open.delete(channelId);
+    this.dropOpen(channelId);
     return Promise.resolve(null);
+  }
+
+  /** A channel stops being open (closed, removed, its community dropped, its DM gone): its thread and threads list go
+   *  with it, so nothing of a channel that is not open stays on display or is resurrected by a later open. */
+  private dropOpen(channelId: string): void {
+    this.open.delete(channelId);
+    if (this.threadOpen.delete(channelId) || this.slices.get(`thread:${channelId}`) !== undefined) this.slices.set(`thread:${channelId}`, null);
+    if (this.threadsOpen.delete(channelId) || this.slices.get(`threads:${channelId}`) !== undefined) this.slices.set(`threads:${channelId}`, []);
   }
 
   private loadEarlier(channelId: string): Promise<null> {
@@ -2920,7 +2929,7 @@ export class Controller {
     const outbox = groupId === null ? [] : this.settleThreadSends(groupId, core.outbox(groupId));
     const timeline = buildTimeline({
       channelId, group, rows: groupId === null ? [] : core.timeline(groupId, 0n, limit),
-      outbox: outbox.filter((row) => !this.threadSends.has(toHex(row.msgId))), ownUser: me.userId, ownDevice: me.deviceId, limit,
+      outbox: outbox.filter((row) => groupId === null || this.threadOf(groupId, row) === null), ownUser: me.userId, ownDevice: me.deviceId, limit,
     });
     this.slices.set(`timeline:${channelId}`, timeline);
     // A DM has no community member list to look senders up in.
@@ -2928,6 +2937,16 @@ export class Controller {
     this.refreshThread(channelId, groupId, group, outbox);
     if (this.threadsOpen.has(channelId)) this.publishThreads(channelId);
     return true;
+  }
+
+  /** The root hex of the thread an own outbox row of the group is a reply in (null: a channel row or a fold). */
+  private threadOf(groupId: Id, row: OutboxRow): string | null {
+    if (row.type !== 0) return null;
+    const msgId = toHex(row.msgId);
+    const sent = this.threadSends.get(msgId);
+    if (sent !== undefined) return sent.root;
+    const intent = this.threadIntent;
+    return intent !== null && intent.group === toHex(groupId) && !intent.known.has(msgId) ? intent.root : null;
   }
 
   /** Forgets the thread sends of the group that the outbox no longer holds (stored, or discarded); answers the outbox. */
@@ -2939,7 +2958,8 @@ export class Controller {
     return outbox;
   }
 
-  /** Replies read per open thread: the core's cap. There is no paging command (the brief names three). */
+  /** Replies read per open thread: the core's cap. There is no paging command (the brief names three), so `hasEarlier` is
+   *  true at exactly this many replies, though the thread may hold no more. */
   private static readonly THREAD_PAGE = 200;
 
   /** The open thread of the channel, read again from the core (nothing when none is open). */
@@ -2954,8 +2974,8 @@ export class Controller {
     const replies = [...read.rows].reverse();   // the core answers newest first; the page reads oldest first, newest last
     const timeline = buildTimeline({
       channelId, group, rows: read.root === null ? replies : [read.root, ...replies],
-      outbox: outbox.filter((row) => row.type !== 0 || this.threadSends.get(toHex(row.msgId))?.root === root),
-      ownUser: me.userId, ownDevice: me.deviceId, limit: Controller.THREAD_PAGE,
+      outbox: outbox.filter((row) => row.type !== 0 || this.threadOf(groupId, row) === root),
+      ownUser: me.userId, ownDevice: me.deviceId, limit: Controller.THREAD_PAGE, threadRoot: fromHex(root),
     });
     const items = read.root === null ? timeline.items : timeline.items.slice(1);
     this.slices.set(`thread:${channelId}`, {
@@ -2967,6 +2987,7 @@ export class Controller {
 
   private openThread(channelId: string, rootMsgId: string): Promise<null> {
     if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    if (!this.open.has(channelId)) throw new Refusal('E_NOT_READY', 'the channel is not open');
     this.threadOpen.set(channelId, rootMsgId);
     const core = this.requireCore();
     const groups = core.groups();
@@ -2983,6 +3004,7 @@ export class Controller {
 
   private loadThreads(channelId: string): Promise<null> {
     if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    if (!this.open.has(channelId)) throw new Refusal('E_NOT_READY', 'the channel is not open');
     this.threadsOpen.add(channelId);
     this.publishThreads(channelId);
     return Promise.resolve(null);
@@ -3163,6 +3185,7 @@ export class Controller {
       let group: ChannelGroupState = 'none';
       try { group = this.groupState(channelId); } catch { /* none */ }
       this.slices.set(`timeline:${channelId}`, { channelId, group, items: [], hasEarlier: false });
+      if (this.threadOpen.has(channelId)) this.slices.set(`thread:${channelId}`, null);
     }
     this.publishTrust();
   }
@@ -3573,6 +3596,7 @@ export class Controller {
       throw e;
     }
     if (c.threadId !== undefined && c.threadId !== null) this.threadSends.set(toHex(msgId), { root: c.threadId, group: toHex(groupId) });
+    // The thread is read again now that the msg id is recorded.
     this.refreshTimeline(c.channelId);
     return { msgId: toHex(msgId) };
   }
@@ -3584,12 +3608,23 @@ export class Controller {
    * key (E_UMK_CHANGED) is not retried.
    */
   private async sendWithTrustRetry(groupId: Id, request: SendRequest): Promise<Id> {
-    try { return this.requireSync().sendRequest(groupId, request); }
+    try { return this.sendIntoThread(groupId, request); }
     catch (e) {
       if (!(e instanceof CoreError) || !LEAF_VERDICTS.has(e.code)) throw e;
       await this.refreshGroupTrust(groupId);
-      return this.requireSync().sendRequest(groupId, request);
+      return this.sendIntoThread(groupId, request);
     }
+  }
+
+  /** The synchronous core send. A thread reply names its thread first, so the publishes the outbox change makes inside
+   *  the call already keep it out of the channel and show it in the thread. */
+  private sendIntoThread(groupId: Id, request: SendRequest): Id {
+    const sync = this.requireSync();
+    if (request.threadId === null) return sync.sendRequest(groupId, request);
+    const core = this.requireCore();
+    this.threadIntent = { root: toHex(request.threadId), group: toHex(groupId), known: new Set(core.outbox(groupId).map((r) => toHex(r.msgId))) };
+    try { return sync.sendRequest(groupId, request); }
+    finally { this.threadIntent = null; }
   }
 
   /** Forgets which leaves of the group were already fetched and waits for a trust refresh that reads them again. */

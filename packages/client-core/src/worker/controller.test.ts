@@ -4515,4 +4515,109 @@ describe('threads (web3.7 TB2)', () => {
     w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([2n]));
     expect(w.timeline()?.items[0]?.reply?.threadRoot).toBe(ROOT_HEX);
   });
+
+  async function withThreadsOpen(): Promise<World> {
+    const w = await threadWorld();
+    w.state.threadList = [{ rootMsgId: ROOT_ID, rootSeq: 1n, count: 2, lastTs: 1_700_000_005n, excerpt: 'from a stranger 1' }];
+    w.call(20, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    w.call(21, { m: 'loadThreads', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(21)).toMatchObject({ ok: true }));
+    expect(thread(w)).not.toBeNull();
+    expect(w.last<ThreadSummary[]>(`threads:${CH}`)).toHaveLength(1);
+    return w;
+  }
+
+  it('a pending thread reply never shows in the main timeline, even for the publish the outbox change makes', async () => {
+    const w = await threadWorld();
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [] });
+    w.state.rows = [{ ...rootRow(), thread: null }];
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    const pending: OutboxRow = { msgId: new Uint8Array(16).fill(0x77), state: 0, error: '', created: 1_700_000_001n, body: 'in thread', type: 0, replyTo: null, attachments: [] };
+    // Like the real sendRequest: the outbox row exists and onOutboxChanged runs before it returns.
+    w.sync.sendRequest.mockImplementationOnce(() => { w.state.outbox = [pending]; w.sync.deps!.onOutboxChanged(GROUP); return pending.msgId; });
+    w.call(11, { m: 'send', channelId: CH, text: 'in thread', threadId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
+    const timelines = w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === `timeline:${CH}`);
+    for (const m of timelines) expect((m.value as TimelineState).items.map((i) => i.body)).not.toContain('in thread');
+    const threads = w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === `thread:${CH}`);
+    expect((threads.at(-1)?.value as ThreadState).items.map((i) => i.body)).toEqual(['in thread']);
+  });
+
+  it('a plain send beside a thread reply is not taken for a thread reply', async () => {
+    const w = await threadWorld();
+    const plain: OutboxRow = { msgId: new Uint8Array(16).fill(0x66), state: 0, error: '', created: 1_700_000_001n, body: 'plain', type: 0, replyTo: null, attachments: [] };
+    w.sync.sendRequest.mockImplementationOnce(() => { w.state.outbox = [plain]; w.sync.deps!.onOutboxChanged(GROUP); return plain.msgId; });
+    w.call(11, { m: 'send', channelId: CH, text: 'plain' });
+    await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
+    expect(w.timeline()?.items.map((i) => i.body)).toContain('plain');
+  });
+
+  it('the threads list is read again after a frame (a new root gets its first reply)', async () => {
+    const w = await withThreadsOpen();
+    w.state.threadList = [
+      { rootMsgId: new Uint8Array(16).fill(0x32), rootSeq: 2n, count: 1, lastTs: 1_700_000_009n, excerpt: 'new root' },
+      ...w.state.threadList,
+    ];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n]));
+    expect(w.last<ThreadSummary[]>(`threads:${CH}`)?.map((t) => t.excerpt)).toEqual(['new root', 'from a stranger 1']);
+  });
+
+  it('sign-out clears the thread slices', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(thread(w)).toBeNull();
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+  });
+
+  it('removing the channel closes its thread and clears both slices; reopening does not resurrect it', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'deleteChannel', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(thread(w)).toBeNull();
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n]));
+    expect(thread(w)).toBeNull();
+  });
+
+  it('leaving the community closes the threads of its channels', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'leaveCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(thread(w)).toBeNull();
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+  });
+
+  it('closeChannel clears the threads list too', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'closeChannel', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+  });
+
+  it('openThread and loadThreads refuse a channel that is not open', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.groups = [textGroup(2)];
+    w.call(10, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    w.call(11, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    w.call(12, { m: 'loadThreads', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(12)).toBeDefined());
+    expect(w.ret(11)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    expect(w.ret(12)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+  });
+
+  it('a quote of a thread reply sent from the open thread names the thread', async () => {
+    const w = await threadWorld();
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [replyRow(2)] });
+    const pending: OutboxRow = { msgId: new Uint8Array(16).fill(0x77), state: 0, error: '', created: 1_700_000_001n, body: 'q', type: 0, replyTo: replyRow(2).msgId, attachments: [] };
+    w.sync.sendRequest.mockImplementationOnce(() => { w.state.outbox = [pending]; w.sync.deps!.onOutboxChanged(GROUP); return pending.msgId; });
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    w.call(11, { m: 'send', channelId: CH, text: 'q', threadId: ROOT_HEX, replyTo: toHex(replyRow(2).msgId as Uint8Array) });
+    await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
+    expect(thread(w)?.items.at(-1)?.reply?.threadRoot).toBe(ROOT_HEX);
+  });
 });
