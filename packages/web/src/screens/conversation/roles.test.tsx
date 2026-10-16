@@ -221,7 +221,7 @@ describe('role labels in the log', () => {
 });
 
 describe('unpin in the pins dialog', () => {
-  const pin: PinnedItem = { msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: 1700000000 };
+  const pin: PinnedItem = { msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: 1700000000, threadRoot: null };
   const unpin = () => within(screen.getByRole('dialog', { name: 'Pinned in #general' })).queryByRole('button', { name: 'unpin' });
   it('hides unpin without the pin right, and keeps jump', () => {
     log({ bits: SEND, pinsOpen: true, pins: [pin] });

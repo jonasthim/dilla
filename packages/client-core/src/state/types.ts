@@ -51,7 +51,8 @@ export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 |
   announcement: boolean; group: ChannelGroupState; }
 export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[]; }   // roleIds: hex of member-row element 3, in order
 export type TimelineItemState = 'ok' | 'pending' | 'failed' | 'cannot-read' | 'deleted';
-export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; }
+/** `threadRoot` (web3.7): the msg id of the thread root the quoted message shows in, null for a channel message. */
+export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; threadRoot: string | null; }
 export interface ReactionSummary { emoji: string; count: number; mine: boolean; }
 export interface AttachmentSummary { index: number; size: number; mime: string; name: string; w: number | null; h: number | null;
   thumb: boolean; kind: 'image' | 'audio' | 'video' | 'file'; tooLarge: boolean; }   // kind: attachmentKind (L-TS-58)
@@ -75,8 +76,15 @@ export interface TimelineItem {
   attachments: AttachmentSummary[];             // what the envelope names; never a key, a nonce or a blob id
   mention: boolean;                             // the core's flag, set once at apply (L-CORE-35)
   actions: PendingAction[];                     // pending or failed folds of the own outbox aimed at this message
+  thread: { count: number; lastTs: number } | null;   // a held root with shown replies: how many, and the latest (unix seconds)
 }
-export interface PinnedItem { msgId: string; seq: string; senderUser: string | null; excerpt: string; pinnedBy: string; pinnedSeq: string; ts: number; }   // ts: the target's recv_ts, unix seconds
+/** The open thread of a channel (web3.7): its root (null when the root is not held), the replies oldest first (newest last,
+ *  as the timeline orders items) and whether older replies exist. */
+export interface ThreadState { channelId: string; rootMsgId: string; root: TimelineItem | null; items: TimelineItem[]; hasEarlier: boolean }
+/** One thread of a channel (web3.7): its held root's seq and excerpt. */
+export interface ThreadSummary { rootMsgId: string; rootSeq: string | null; count: number; lastTs: number; excerpt: string }
+export interface PinnedItem { msgId: string; seq: string; senderUser: string | null; excerpt: string; pinnedBy: string; pinnedSeq: string; ts: number;
+  threadRoot: string | null; }   // threadRoot (web3.7): the thread the pinned message shows in, null for a channel message   // ts: the target's recv_ts, unix seconds
 export interface TrayItem { id: string; name: string; size: number; mime: string; image: boolean;
   phase: 'reading' | 'preparing' | 'uploading' | 'ready' | 'failed'; reason: string; }
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }
@@ -102,7 +110,7 @@ export interface TrustSummary { userId: string; name: string; shared: boolean; u
  */
 export interface SendBlock { code: TrustBlock; own: boolean }
 export type SendBlocksState = Record<string, SendBlock>;
-export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string }[];
+export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string; threadRoot: string | null }[];
   cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
   devices: number; errors: { code: string; at: number }[] }
@@ -183,7 +191,7 @@ export type SliceName = 'account' | 'connection' | 'communities' | `channels:${s
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
-  | `slow:${string}`;
+  | `slow:${string}` | `thread:${string}` | `threads:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
@@ -192,7 +200,7 @@ export interface SliceTypes { account: AccountState; connection: ConnectionState
   /** channel id (hex) → its overwrites; a channel with none is absent. */
   [k: `overwrites:${string}`]: Record<string, OverwriteSummary[]>; [k: `bans:${string}`]: BanSummary[];
   [k: `invites:${string}`]: InviteSummary[]; removals: RemovalNotice[]; factors: FactorsState;
-  [k: `slow:${string}`]: SlowState;
+  [k: `slow:${string}`]: SlowState; [k: `thread:${string}`]: ThreadState | null; [k: `threads:${string}`]: ThreadSummary[];
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
   trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState;
   call: CallState; voice: VoiceState; rings: RingsState }

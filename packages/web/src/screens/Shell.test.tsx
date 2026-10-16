@@ -83,7 +83,7 @@ it('takes a picked community search hit to its channel and focuses the row', asy
   } });
   await user.keyboard('{Control>}k{/Control}');
   await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
-  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
   await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="5"]')).toHaveFocus());
@@ -96,7 +96,7 @@ it('focuses the destination row when the previous channel has the same sequence'
   } });
   await user.keyboard('{Control>}k{/Control}');
   await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
-  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(window.location.pathname).toBe(`/c/${A}/${RAND}`));
   await waitFor(() => expect(screen.getByText('lamp', { selector: '.d-message-row__body' }).closest('.d-message-row')).toHaveFocus());
@@ -114,7 +114,7 @@ it('accepts the worker request id after invalidation and loads earlier pages for
   };
   await user.keyboard('{Control>}k{/Control}');
   await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'lamp');
-  act(() => fake.set('search', { requestId: 9, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0' }], cursor: null }));
+  act(() => fake.set('search', { requestId: 9, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /lamp/ }));
   await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: RAND }));
   await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="5"]')).toHaveFocus());
@@ -124,7 +124,7 @@ it('reports a search hit unavailable if its channel never loads a timeline', asy
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}k{/Control}');
   await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'gone');
-  act(() => fake.set('search', { requestId: 5, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'gone', rank: '0' }], cursor: null }));
+  act(() => fake.set('search', { requestId: 5, hits: [{ channelId: RAND, communityId: A, seq: '5', snippet: 'gone', rank: '0', threadRoot: null }], cursor: null }));
   await user.click(screen.getByRole('option', { name: /gone/ }));
   await waitFor(() => expect(screen.getByText('That message is no longer available')).toBeInTheDocument(), { timeout: 2500 });
   expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveFocus();
@@ -138,7 +138,7 @@ it('takes a keyboard-picked DM hit to its DM route and focuses the row', async (
   await user.keyboard('{Control>}k{/Control}');
   const input = screen.getByRole('combobox', { name: 'Search your messages' });
   await user.type(input, 'lamp');
-  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '8', snippet: 'lamp', rank: '0' }], cursor: null }));
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: DM, communityId: null, seq: '8', snippet: 'lamp', rank: '0', threadRoot: null }], cursor: null }));
   await user.keyboard('{Enter}');
   await waitFor(() => expect(window.location.pathname).toBe(`/dm/${DM}`));
   await waitFor(() => expect(document.querySelector('.d-message-row[data-seq="8"]')).toHaveFocus());

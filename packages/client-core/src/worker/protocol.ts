@@ -22,7 +22,11 @@ export type Command =
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }
-  | { m: 'send'; channelId: string; text: string; replyTo?: string | null; attachments?: readonly string[] }   // → { msgId }
+  // web3.7 public threads. One open thread per channel; it is read again whenever the channel's timeline is.
+  | { m: 'openThread'; channelId: string; rootMsgId: string }    // ready → null; slice thread:<channel>, published before the ret
+  | { m: 'closeThread'; channelId: string }                       // ready → null; thread:<channel> = null
+  | { m: 'loadThreads'; channelId: string }                       // ready → null; slice threads:<channel>
+  | { m: 'send'; channelId: string; text: string; replyTo?: string | null; attachments?: readonly string[]; threadId?: string | null }   // → { msgId }; threadId: a held type-0 root (web3.7)
   | { m: 'retrySend'; msgId: string }
   | { m: 'discardSend'; msgId: string }
   | { m: 'signInBegin' }                                         // needs-signup → signin-login

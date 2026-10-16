@@ -38,7 +38,7 @@ export function ownRow(msgId: string, seq: string | null, body: string, over: Pa
   return timelineItem({ key: `o${msgId}`, msgId, seq, body, senderUser: ME.id, senderDevice: 'cc'.repeat(16), own: true, web: true, ts: NOW, ...over });
 }
 export function reply(over: Partial<ReplyRef> = {}): ReplyRef {
-  return { msgId: P1, state: 'ok', senderUser: PEER, excerpt: 'the original', seq: '1', ...over };
+  return { msgId: P1, state: 'ok', senderUser: PEER, excerpt: 'the original', seq: '1', threadRoot: null, ...over };
 }
 export function image(over: Partial<AttachmentSummary> = {}): AttachmentSummary {
   return { index: 0, size: 1234, mime: 'image/png', name: 'map.png', w: 640, h: 480, thumb: true, kind: 'image', tooLarge: false, ...over };

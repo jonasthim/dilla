@@ -290,7 +290,7 @@ export function world(opts: {
     sendBlockOwn: vi.fn((_g: Uint8Array): boolean => false),
     keyPackages: vi.fn((_count: number, _last: boolean): Uint8Array => new Uint8Array([1])),
     search: vi.fn((_scope: unknown, _query: string, _cursor: unknown, _limit: number) => [] as {
-      groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint }[]),
+      groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint; threadRoot: Uint8Array | null }[]),
     resume: vi.fn((): Promise<void> => Promise.resolve()),
     attachmentGet: vi.fn((_g: Uint8Array, seq: bigint, index: number): AttachmentDescriptor => {
       const d = state.descriptors.get(`${String(seq)}:${String(index)}`);

@@ -339,7 +339,7 @@ function desc(n: number): AttachmentDescriptor {
     size: 10 + n, mime: 'text/plain', w: null, h: null, thumb: null, name: `f${String(n)}.txt`,
   };
 }
-const withFiles = (body: string, ...n: number[]) => ({ type: 0 as const, replyTo: null, body, attachments: n.map(desc) });
+const withFiles = (body: string, ...n: number[]) => ({ type: 0 as const, replyTo: null, body, attachments: n.map(desc), threadId: null });
 
 describe('sending with attachments and folds (L-TS-34)', () => {
   it('confirms the attachments of a row before its upload, once per attempt', async () => {
@@ -422,7 +422,7 @@ describe('sending with attachments and folds (L-TS-34)', () => {
   it('sendRequest sends a fold with its type and reply_to, and the folded view shows it', async () => {
     const target = d.engine.send(g, 'first words');
     await settle();
-    const edit = d.engine.sendRequest(g, { type: 1, replyTo: target, body: 'better words', attachments: [] });
+    const edit = d.engine.sendRequest(g, { type: 1, replyTo: target, body: 'better words', attachments: [], threadId: null });
     expect(d.core.outbox(g)).toMatchObject([{ msgId: edit, type: 1, replyTo: target, body: 'better words', attachments: [] }]);
     await settle();
     expect(posts()).toBe(2);
@@ -432,7 +432,7 @@ describe('sending with attachments and folds (L-TS-34)', () => {
   });
 
   it('throws the core refusal of a fold synchronously and queues nothing', () => {
-    expect(catchSync(() => d.engine.sendRequest(g, { type: 1, replyTo: null, body: 'x', attachments: [] })))
+    expect(catchSync(() => d.engine.sendRequest(g, { type: 1, replyTo: null, body: 'x', attachments: [], threadId: null })))
       .toMatchObject({ code: 'E_CORE_INPUT', detail: 'reply_to is required' });
     expect(d.core.outbox(g)).toEqual([]);
   });
@@ -537,7 +537,7 @@ describe('a queued row refused at send_encrypt by a leaf verdict (client I1, sec
 describe('slow mode in the send lane (CB2)', () => {
   const slowed = (ms: number | null = 5000) => httpError(429, 'E_RATE_LIMITED', ms);
   const coreOf = (m: string): number => d.core.calls.filter((c) => c.m === m && c.g === toHex(g)).length;
-  const reaction = (target: Id) => ({ type: 3 as const, replyTo: target, body: '👍', attachments: [] });
+  const reaction = (target: Id) => ({ type: 3 as const, replyTo: target, body: '👍', attachments: [], threadId: null });
 
   it('a 429 requeues the row instead of failing it', async () => {
     ds.inject('postMessage', { fail: slowed() });
@@ -664,14 +664,14 @@ describe('slow mode in the send lane (CB2)', () => {
     ds.inject('postMessage', { fail: slowed() });
     const p = d.engine.send(g, 'waiting');
     await settle();
-    expect(catchSync(() => d.engine.sendRequest(g, { type: 1, replyTo: p, body: 'edited', attachments: [] })))
+    expect(catchSync(() => d.engine.sendRequest(g, { type: 1, replyTo: p, body: 'edited', attachments: [], threadId: null })))
       .toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: 'target is not held' });
     expect(catchSync(() => d.engine.sendRequest(g, reaction(p)))).toMatchObject({ code: 'E_CORE_NOT_FOUND' });
     expect(d.core.outbox(g).map((x) => [x.type, x.state])).toEqual([[0, 0]]);
     await clock.advance(5000);
     expect(posts()).toBe(2);
     // Once P is confirmed, a fold on it queues and uploads.
-    d.engine.sendRequest(g, { type: 1, replyTo: p, body: 'edited', attachments: [] });
+    d.engine.sendRequest(g, { type: 1, replyTo: p, body: 'edited', attachments: [], threadId: null });
     await settle();
     expect(posts()).toBe(3);
     expect(d.posted.map((x) => x.type)).toEqual([0, 1]);
@@ -683,10 +683,10 @@ describe('slow mode in the send lane (CB2)', () => {
     const earlier = d.engine.send(g, 'earlier');
     await settle();
     ds.inject('postMessage', { fail: slowed(5000) });
-    d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'one', attachments: [] });
+    d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'one', attachments: [], threadId: null });
     await settle();
     await clock.advance(1500);
-    d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'two', attachments: [] });
+    d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'two', attachments: [], threadId: null });
     await settle();
     expect(posts()).toBe(2);
     await clock.advance(5000);
@@ -730,7 +730,7 @@ describe('slow mode in the send lane (CB2)', () => {
     const earlier = d.engine.send(g, 'earlier');
     await settle();
     ds.inject('postMessage', { fail: slowed(2000) });
-    const f = d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'edit', attachments: [] });
+    const f = d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'edit', attachments: [], threadId: null });
     await settle();
     ds.inject('postMessage', { fail: httpError(403, 'E_FORBIDDEN') });
     await clock.advance(2000);

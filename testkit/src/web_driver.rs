@@ -328,6 +328,15 @@ impl WebDriver {
                 } else if kind != 0 {
                     return Err(scenario("reply_to is required"));
                 }
+                if req.get("thread_id").is_some() {
+                    if !req["thread_id"].is_string() {
+                        return Err(scenario("thread_id is not 32 lowercase hex"));
+                    }
+                    Self::hex16(req, "thread_id")?;
+                    if kind != 0 {
+                        return Err(scenario("thread_id is only for type 0"));
+                    }
+                }
                 let body_value = req.get("body");
                 let body = body_value.and_then(Value::as_str).unwrap_or("");
                 match kind {
@@ -1040,8 +1049,13 @@ impl WebDriver {
             .get("reply_to")
             .map(|_| Self::hex16(req, "reply_to").map(MsgId::from_bytes))
             .transpose()?;
-        let (seq, msg_id) = self.runner.with_member(&name, |c, ds| {
-            c.send_envelope(ds, &group, kind, reply_to, body, Vec::new())
+        let thread_id = req
+            .get("thread_id")
+            .map(|_| Self::hex16(req, "thread_id").map(MsgId::from_bytes))
+            .transpose()?;
+        let (seq, msg_id) = self.runner.with_member(&name, |c, ds| match thread_id {
+            Some(root) => c.send_in_thread(ds, &group, root, reply_to, body),
+            None => c.send_envelope(ds, &group, kind, reply_to, body, Vec::new()),
         })?;
         self.sent.insert(
             (group, seq),
@@ -2434,6 +2448,39 @@ mod tests {
             error_of(&d.handle(&json!({"id": 5, "op": "send", "body": "é".repeat(2000)}))),
             "scenario: setup first"
         );
+    }
+
+    #[test]
+    fn send_validates_thread_id_before_the_setup_check() {
+        let mut d = driver(1);
+        let root = "ab".repeat(16);
+        let send = |extra: Value| {
+            let mut req = json!({"id": 1, "op": "send", "body": "in a thread"});
+            req.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            req
+        };
+        // The control: a type-0 post with a lower-case root reaches the setup check.
+        assert_eq!(
+            error_of(&d.handle(&send(json!({"thread_id": root})))),
+            "scenario: setup first"
+        );
+        for bad in [json!("AB".repeat(16)), json!("ab".repeat(15)), json!(7)] {
+            assert_eq!(
+                error_of(&d.handle(&send(json!({"thread_id": bad})))),
+                "scenario: thread_id is not 32 lowercase hex"
+            );
+        }
+        // A fold or any other non-post type cannot join a thread.
+        for kind in 1..=6 {
+            let req = send(json!({"type": kind, "reply_to": "cd".repeat(16), "thread_id": root}));
+            assert_eq!(
+                error_of(&d.handle(&req)),
+                "scenario: thread_id is only for type 0",
+                "{req}"
+            );
+        }
     }
 
     #[test]

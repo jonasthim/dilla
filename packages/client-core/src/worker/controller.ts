@@ -33,7 +33,7 @@ import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
-  type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem,
+  type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type ThreadState, type TimelineItem, type TrayItem,
   type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
@@ -190,6 +190,9 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'openChannel',
   'closeChannel',
   'loadEarlier',
+  'openThread',
+  'closeThread',
+  'loadThreads',
   'send',
   'retrySend',
   'discardSend',
@@ -282,7 +285,7 @@ const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId')[]>> = {
   selectCommunity: ['communityId'],
   createChannel: ['communityId'],
   createRole: ['communityId'],
@@ -297,6 +300,9 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   openChannel: ['channelId'],
   closeChannel: ['channelId'],
   loadEarlier: ['channelId'],
+  openThread: ['channelId', 'rootMsgId'],
+  closeThread: ['channelId'],
+  loadThreads: ['channelId'],
   send: ['channelId'],
   retrySend: ['msgId'],
   discardSend: ['msgId'],
@@ -385,6 +391,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'pin',
     'loadPins',
     'closePins',
+    'openThread',
+    'closeThread',
+    'loadThreads',
     'attachFiles',
     'discardAttachment',
     'openAttachment',
@@ -491,8 +500,9 @@ function invalid(command: Record<string, unknown>): string | null {
     }
   }
   if (m === 'send') {
-    const { replyTo, attachments } = command;
+    const { replyTo, attachments, threadId } = command;
     if (replyTo !== undefined && replyTo !== null && (typeof replyTo !== 'string' || !ID.test(replyTo))) return 'replyTo is not 32 lowercase hex';
+    if (threadId !== undefined && threadId !== null && (typeof threadId !== 'string' || !ID.test(threadId))) return 'threadId is not 32 lowercase hex';
     if (attachments !== undefined && !(Array.isArray(attachments) && attachments.length <= MAX_ATTACHMENTS
       && attachments.every((t) => typeof t === 'string' && t.length >= 1 && t.length <= TRAY_ID_MAX))) {
       return `attachments is not a list of at most ${String(MAX_ATTACHMENTS)} tray ids`;
@@ -673,6 +683,13 @@ export class Controller {
   private readonly trays = new Map<string, Tray>();
   /** Channels whose pins view is open: touchGroup keeps their pins slice fresh until closePins or closeChannel. */
   private readonly pinsOpen = new Set<string>();
+  /** web3.7: channel hex → the root msg id hex of its one open thread; refreshTimeline reads it again. */
+  private readonly threadOpen = new Map<string, string>();
+  /** web3.7: channels whose threads list was loaded; refreshTimeline keeps their threads slice fresh until closeChannel. */
+  private readonly threadsOpen = new Set<string>();
+  /** web3.7: this worker's own pending thread replies (msg id hex → the root and the group they went to). The outbox row
+   *  does not name its thread, so this keeps the reply out of the main timeline and in the open thread until it is stored. */
+  private readonly threadSends = new Map<string, { root: string; group: string }>();
   /** community hex → the own role hexes last applied to the core, used only to skip a redundant ownRolesSet. */
   private readonly roles = new Map<string, string[]>();
   /** web3.5 C4: group hex → the role view last handed to the core (authoritySet) in this attach, and its server. An
@@ -977,6 +994,9 @@ export class Controller {
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
       case 'react': return this.react(command.channelId, command.msgId, command.emoji, command.on);
       case 'pin': return this.pin(command.channelId, command.msgId, command.on);
+      case 'openThread': return this.openThread(command.channelId, command.rootMsgId);
+      case 'closeThread': return this.closeThread(command.channelId);
+      case 'loadThreads': return this.loadThreads(command.channelId);
       case 'loadPins': return this.loadPins(command.channelId);
       case 'closePins': return this.closePins(command.channelId);
       case 'attachFiles': return this.attachFiles(command.channelId, command.files);
@@ -2460,7 +2480,10 @@ export class Controller {
     const rows = core.timeline(g, 0n, 1);
     if (rows.length === 0) return Promise.resolve(null);
     const newest = rows.reduce((max, r) => (r.seq > max ? r.seq : max), rows[0]?.seq ?? 0n);
-    core.markRead(g, newest, this.nowS());
+    // web3.7: there is no read state per thread, so reading the channel marks its thread replies read too; they are not in
+    // the main timeline, so the marker goes to the group's head (the core clamps it there as well).
+    const head = row.nextSeq - 1n;
+    core.markRead(g, head > newest ? head : newest, this.nowS());
     this.publishBadges();
     return Promise.resolve(null);
   }
@@ -2733,6 +2756,9 @@ export class Controller {
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.memberReadEnded.clear(); this.voiceLookups.clear();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
+    for (const channelId of this.threadOpen.keys()) this.slices.set(`thread:${channelId}`, null);
+    for (const channelId of this.threadsOpen) this.slices.set(`threads:${channelId}`, []);
+    this.threadOpen.clear(); this.threadsOpen.clear(); this.threadSends.clear();
     // web3.5 C4: the next attach sends every role view again, once its own reads have landed.
     this.authority.clear(); this.authorityStates.clear(); this.membersRead.clear(); this.accessRead.clear();
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
@@ -2850,6 +2876,8 @@ export class Controller {
     this.incomingTyping.delete(channelId);
     if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
+    if (this.threadOpen.delete(channelId)) this.slices.set(`thread:${channelId}`, null);
+    this.threadsOpen.delete(channelId);
     this.open.delete(channelId);
     return Promise.resolve(null);
   }
@@ -2889,14 +2917,85 @@ export class Controller {
     }
     const limit = this.open.get(channelId)?.limit ?? TIMELINE_PAGE;
     const groupId = this.timelineGroup(channelId, groups, hint);
+    const outbox = groupId === null ? [] : this.settleThreadSends(groupId, core.outbox(groupId));
     const timeline = buildTimeline({
       channelId, group, rows: groupId === null ? [] : core.timeline(groupId, 0n, limit),
-      outbox: groupId === null ? [] : core.outbox(groupId), ownUser: me.userId, ownDevice: me.deviceId, limit,
+      outbox: outbox.filter((row) => !this.threadSends.has(toHex(row.msgId))), ownUser: me.userId, ownDevice: me.deviceId, limit,
     });
     this.slices.set(`timeline:${channelId}`, timeline);
     // A DM has no community member list to look senders up in.
     if (target.communityId !== null) this.lookUpMembers(target.communityId, timeline.items);
+    this.refreshThread(channelId, groupId, group, outbox);
+    if (this.threadsOpen.has(channelId)) this.publishThreads(channelId);
     return true;
+  }
+
+  /** Forgets the thread sends of the group that the outbox no longer holds (stored, or discarded); answers the outbox. */
+  private settleThreadSends(groupId: Id, outbox: OutboxRow[]): OutboxRow[] {
+    if (this.threadSends.size === 0) return outbox;
+    const group = toHex(groupId);
+    const held = new Set(outbox.map((row) => toHex(row.msgId)));
+    for (const [msgId, sent] of this.threadSends) if (sent.group === group && !held.has(msgId)) this.threadSends.delete(msgId);
+    return outbox;
+  }
+
+  /** Replies read per open thread: the core's cap. There is no paging command (the brief names three). */
+  private static readonly THREAD_PAGE = 200;
+
+  /** The open thread of the channel, read again from the core (nothing when none is open). */
+  private refreshThread(channelId: string, groupId: Id | null, group: ChannelGroupState, outbox: readonly OutboxRow[]): void {
+    const root = this.threadOpen.get(channelId);
+    const core = this.core;
+    const me = this.me;
+    if (root === undefined || core === null || me === null) return;
+    const empty: ThreadState = { channelId, rootMsgId: root, root: null, items: [], hasEarlier: false };
+    if (groupId === null) { this.slices.set(`thread:${channelId}`, empty); return; }
+    const read = core.threadTimeline(groupId, fromHex(root), 0n, Controller.THREAD_PAGE);
+    const replies = [...read.rows].reverse();   // the core answers newest first; the page reads oldest first, newest last
+    const timeline = buildTimeline({
+      channelId, group, rows: read.root === null ? replies : [read.root, ...replies],
+      outbox: outbox.filter((row) => row.type !== 0 || this.threadSends.get(toHex(row.msgId))?.root === root),
+      ownUser: me.userId, ownDevice: me.deviceId, limit: Controller.THREAD_PAGE,
+    });
+    const items = read.root === null ? timeline.items : timeline.items.slice(1);
+    this.slices.set(`thread:${channelId}`, {
+      channelId, rootMsgId: root, root: read.root === null ? null : timeline.items[0] ?? null, items, hasEarlier: read.rows.length >= Controller.THREAD_PAGE,
+    });
+    const communityId = this.target(channelId)?.communityId ?? null;
+    if (communityId !== null) this.lookUpMembers(communityId, timeline.items);
+  }
+
+  private openThread(channelId: string, rootMsgId: string): Promise<null> {
+    if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    this.threadOpen.set(channelId, rootMsgId);
+    const core = this.requireCore();
+    const groups = core.groups();
+    const groupId = this.timelineGroup(channelId, groups);
+    this.refreshThread(channelId, groupId, this.groupState(channelId, groups), groupId === null ? [] : core.outbox(groupId));
+    return Promise.resolve(null);
+  }
+
+  private closeThread(channelId: string): Promise<null> {
+    this.threadOpen.delete(channelId);
+    this.slices.set(`thread:${channelId}`, null);
+    return Promise.resolve(null);
+  }
+
+  private loadThreads(channelId: string): Promise<null> {
+    if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    this.threadsOpen.add(channelId);
+    this.publishThreads(channelId);
+    return Promise.resolve(null);
+  }
+
+  private publishThreads(channelId: string): void {
+    const core = this.core;
+    if (core === null) return;
+    const g = this.timelineGroup(channelId, core.groups());
+    this.slices.set(`threads:${channelId}`, g === null ? [] : core.threads(g).map((t) => ({
+      rootMsgId: toHex(t.rootMsgId), rootSeq: t.rootSeq === null ? null : t.rootSeq.toString(), count: t.count,
+      lastTs: Number(t.lastTs), excerpt: t.excerpt,
+    })));
   }
 
   /** A sender who is not in the loaded member list re-runs listMembers once per unknown user (L-TS-09). */
@@ -3292,7 +3391,8 @@ export class Controller {
       const rows = hits.slice(0, 50).flatMap((h) => {
         const destination = destinations.get(toHex(h.groupId));
         return destination === undefined ? [] : [{ ...destination, seq: h.seq.toString(),
-          snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString() }];
+          snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString(),
+          threadRoot: h.threadRoot === null ? null : toHex(h.threadRoot) }];
       });
       const last = hits.at(-1);
       if (last !== undefined) this.searchCursor = { token: String(requestId), scope: command,
@@ -3460,6 +3560,7 @@ export class Controller {
     }
     const request: SendRequest = {
       type: 0, replyTo: c.replyTo === undefined || c.replyTo === null ? null : fromHex(c.replyTo), body: c.text, attachments: descriptors,
+      threadId: c.threadId === undefined || c.threadId === null ? null : fromHex(c.threadId),
     };
     let msgId: Id;
     // The core enforces the 4000-byte limit (E_ENVELOPE_LIMIT); the controller does not measure the text.
@@ -3471,6 +3572,7 @@ export class Controller {
       for (const d of descriptors) void this.barrier.track(this.routes.deleteBlob(channel, d.blobId).catch(() => undefined));
       throw e;
     }
+    if (c.threadId !== undefined && c.threadId !== null) this.threadSends.set(toHex(msgId), { root: c.threadId, group: toHex(groupId) });
     this.refreshTimeline(c.channelId);
     return { msgId: toHex(msgId) };
   }
@@ -3525,7 +3627,7 @@ export class Controller {
       this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     }
     const groupId = this.activeGroup(channelId);
-    await this.sendWithTrustRetry(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
+    await this.sendWithTrustRetry(groupId, { type, replyTo: fromHex(msgId), body, attachments: [], threadId: null });
     this.refreshTimeline(channelId);
     return null;
   }
@@ -3670,6 +3772,7 @@ export class Controller {
     const items: PinnedItem[] = g === null ? [] : core.pins(g).map((p) => ({
       msgId: toHex(p.msgId), seq: p.targetSeq.toString(), senderUser: p.author === null ? null : toHex(p.author), excerpt: p.excerpt,
       pinnedBy: toHex(p.byUser), pinnedSeq: p.pinnedSeq.toString(), ts: Number(p.targetTs),
+      threadRoot: p.threadRoot === null ? null : toHex(p.threadRoot),
     }));
     this.slices.set(`pins:${channelId}`, items);
   }

@@ -46,7 +46,7 @@ function run(core: ModelCore, c: FoldCase): void {
     switch (r.what) {
       case 'peer-target': batch.push(ModelDs.row.peerTarget(seq, 1n)); break;
       case 'own-target':
-        target = core.sendPrepare(G, { type: 0, replyTo: null, body: 'my target', attachments: [] }, 1n);
+        target = core.sendPrepare(G, { type: 0, replyTo: null, body: 'my target', attachments: [], threadId: null }, 1n);
         batch.push(ModelDs.row.ownEcho(seq, 1n, framed(core.sendEncrypt(target).messageBody)));
         break;
       case 'peer-edit': batch.push(ModelDs.row.peerEdit(seq, 1n, target)); break;
@@ -58,7 +58,7 @@ function run(core: ModelCore, c: FoldCase): void {
       case 'own-react': {
         core.groupApply(G, encode([]), encode(batch), seq - 1n);
         batch = [];
-        const id = core.sendPrepare(G, { type: 3, replyTo: target, body: '👍', attachments: [] }, 2n);
+        const id = core.sendPrepare(G, { type: 3, replyTo: target, body: '👍', attachments: [], threadId: null }, 2n);
         batch.push(ModelDs.row.ownEcho(seq, 1n, framed(core.sendEncrypt(id).messageBody)));
         break;
       }

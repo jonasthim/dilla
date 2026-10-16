@@ -25,7 +25,7 @@ export interface PeerReceived {
   seq: number; body: string; sender_user: string | null; sender_device: string | null; tier: number | null;
   msg_id: string | null; type: number | null; reply_to: string | null; deleted: boolean; attachments: PeerAttachment[];
 }
-export interface PeerSendOptions { type?: number; replyTo?: string }
+export interface PeerSendOptions { type?: number; replyTo?: string; threadId?: string }
 export interface PeerAttachRequest { channelId?: string; name: string; mime: string; body?: string; bytesHex?: string; size?: number; seed?: number; w?: number; h?: number; thumbHex?: string }
 export interface PeerAttached { seq: number; msg_id: string; blob_id: string; sha256: string }
 export interface PeerFetched { sha256: string; size: number; mime: string; name: string; thumb_sha256: string | null }
@@ -86,6 +86,7 @@ export class WebDriver {
       ...(channelId === undefined ? {} : { channel_id: channelId }),
       ...(opts.type === undefined ? {} : { type: opts.type }),
       ...(opts.replyTo === undefined ? {} : { reply_to: opts.replyTo }),
+      ...(opts.threadId === undefined ? {} : { thread_id: opts.threadId }),
     }));
   }
   async sync(channelId?: string): Promise<PeerSync> { return this.strip(await this.request<PeerSync & { id: number; ok: boolean }>('sync', channelId === undefined ? {} : { channel_id: channelId })); }

@@ -55,7 +55,7 @@ export interface AttachmentDescriptor { blobId: Uint8Array; key: Uint8Array; non
   w: number | null; h: number | null; thumb: Uint8Array | null; name: string; }
 /** `threadId` (web3.7) names the held type-0 root a message joins; absent or null is no thread, and only type 0 may
  *  carry one (the core refuses it on 1..6 with E_CORE_INPUT). */
-export interface SendRequest { type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null; body: string; attachments: AttachmentDescriptor[]; threadId?: Id | null; }
+export interface SendRequest { type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null; body: string; attachments: AttachmentDescriptor[]; threadId: Id | null; }
 export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created: bigint; body: string; type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null;
   attachments: { blobId: Uint8Array; size: number; mime: string; name: string }[]; }
 /** `threadRoot` (web3.7 fix round 1, M3): the root of the thread the pinned row shows in, null for a channel row. */

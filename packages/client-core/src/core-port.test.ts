@@ -233,7 +233,7 @@ describe('wrapCore decoding', () => {
           [[0, 1234, 'image/png', 640, 480, 1, 'map.png'], [1, 70000, 'application/pdf', null, null, 0, '']], 1],
       ]),
     });
-    expect(port.sendPrepare(G, { type: 0, replyTo: null, body: 'hi', attachments: [] }, 1n)).toEqual(MSG);
+    expect(port.sendPrepare(G, { type: 0, replyTo: null, body: 'hi', attachments: [], threadId: null }, 1n)).toEqual(MSG);
     expect(port.sendEncrypt(MSG)).toEqual({ groupId: G, messageBody: new Uint8Array([5, 6]) });
     expect(port.sendConfirm(MSG, new Uint8Array([1]))).toEqual({ groupId: G, seq: 42n });
     expect(port.outbox(G)).toEqual([{ msgId: MSG, state: 2, error: 'E_TOO_LARGE', created: 1_700_000_000n, body: 'hi', type: 0, replyTo: null, attachments: [] }]);
@@ -494,14 +494,14 @@ describe('wrapCore web-2b', () => {
 
   it('encodes a send request as the L-CORE-36 array, attachment elements in order', () => {
     const s = stub({ send_prepare: () => encode([MSG]) });
-    expect(s.port.sendPrepare(G, { type: 0, replyTo: MSG, body: 'look', attachments: [descriptor] }, 7n)).toEqual(MSG);
+    expect(s.port.sendPrepare(G, { type: 0, replyTo: MSG, body: 'look', attachments: [descriptor], threadId: null }, 7n)).toEqual(MSG);
     expect(s.calls[0]?.method).toBe('send_prepare');
     expect(s.calls[0]?.args[0]).toBe(G);
     expect(s.calls[0]?.args[2]).toBe(7n);
     expect(decode(s.calls[0]?.args[1] as Uint8Array)).toEqual([0n, MSG, 'look', [[BLOB, KEY, NONCE, 1234n, 'image/png', 640n, 480n, THUMB, 'map.png']], null]);
     s.port.sendPrepare(G, { type: 3, replyTo: MSG, body: '👍', attachments: [], threadId: null }, 8n);
     expect(decode(s.calls[1]?.args[1] as Uint8Array)).toEqual([3n, MSG, '👍', [], null]);
-    s.port.sendPrepare(G, { type: 0, replyTo: null, body: 'x', attachments: [{ ...descriptor, w: null, h: null, thumb: null, name: '' }] }, 9n);
+    s.port.sendPrepare(G, { type: 0, replyTo: null, body: 'x', attachments: [{ ...descriptor, w: null, h: null, thumb: null, name: '' }], threadId: null }, 9n);
     expect(decode(s.calls[2]?.args[1] as Uint8Array)).toEqual([0n, null, 'x', [[BLOB, KEY, NONCE, 1234n, 'image/png', null, null, null, '']], null]);
     // web3.7: the fifth element is the thread root.
     s.port.sendPrepare(G, { type: 0, replyTo: null, body: 'in a thread', attachments: [], threadId: MSG2 }, 10n);

@@ -17,7 +17,7 @@ export function sendRequest(s: SyncInternals, g: Id, request: SendRequest): Id {
   s.deps.onOutboxChanged(g); s.requestDrain(g); return id;
 }
 export function sendMessage(s: SyncInternals, g: Id, text: string): Id {
-  return sendRequest(s, g, { type: 0, replyTo: null, body: text, attachments: [] });
+  return sendRequest(s, g, { type: 0, replyTo: null, body: text, attachments: [], threadId: null });
 }
 export function retrySend(s: SyncInternals, msgId: Id): void {
   const g = owner(s, msgId);

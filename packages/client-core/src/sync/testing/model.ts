@@ -44,7 +44,7 @@ import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type F
 
 /** The plain message request web-2a sent with a bare body (L-TS-30). */
 export function textRequest(body: string): SendRequest {
-  return { type: 0, replyTo: null, body, attachments: [] };
+  return { type: 0, replyTo: null, body, attachments: [], threadId: null };
 }
 
 export interface Peer {

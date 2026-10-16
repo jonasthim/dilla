@@ -807,12 +807,35 @@ impl TestClient {
         attachments: Vec<Attachment>,
     ) -> Result<(u64, MsgId), TestkitError> {
         let (epoch, message, msg_id) =
-            self.seal_envelope(group_id, kind, reply_to, body, attachments)?;
+            self.seal_envelope(group_id, kind, reply_to, None, body, attachments)?;
         // The upload class (web3.7 SB1): 0 for a post, 1 for every other envelope type.
         let class = if kind == EnvelopeType::Message { 0 } else { 1 };
         Ok((
             ds.post_message_from(group_id, epoch, message, Some(class))?
                 .seq,
+            msg_id,
+        ))
+    }
+
+    /// Sends a type-0 post into the thread of the held root `thread_id` (web3.7), class 0 like any post.
+    pub fn send_in_thread(
+        &mut self,
+        ds: &mut dyn DeliveryService,
+        group_id: &[u8],
+        thread_id: MsgId,
+        reply_to: Option<MsgId>,
+        body: &str,
+    ) -> Result<(u64, MsgId), TestkitError> {
+        let (epoch, message, msg_id) = self.seal_envelope(
+            group_id,
+            EnvelopeType::Message,
+            reply_to,
+            Some(thread_id),
+            body,
+            Vec::new(),
+        )?;
+        Ok((
+            ds.post_message_from(group_id, epoch, message, Some(0))?.seq,
             msg_id,
         ))
     }
@@ -827,6 +850,7 @@ impl TestClient {
         group_id: &[u8],
         kind: EnvelopeType,
         reply_to: Option<MsgId>,
+        thread_id: Option<MsgId>,
         body: &str,
         attachments: Vec<Attachment>,
     ) -> Result<(u64, Vec<u8>, MsgId), TestkitError> {
@@ -841,7 +865,7 @@ impl TestClient {
             v: 1,
             msg_id: MsgId::from_bytes(msg_id),
             kind,
-            thread_id: None,
+            thread_id,
             reply_to,
             body: body.to_owned(),
             attachments,
@@ -857,7 +881,14 @@ impl TestClient {
     }
 
     fn seal(&mut self, group_id: &[u8], body: &str) -> Result<(u64, Vec<u8>, MsgId), TestkitError> {
-        self.seal_envelope(group_id, EnvelopeType::Message, None, body, Vec::new())
+        self.seal_envelope(
+            group_id,
+            EnvelopeType::Message,
+            None,
+            None,
+            body,
+            Vec::new(),
+        )
     }
 
     /// Commits a `Remove` of `target`'s leaf. The leaf is found by parsing `GET /tree` and

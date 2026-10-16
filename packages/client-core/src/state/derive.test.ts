@@ -9,7 +9,7 @@ const OWN_DEVICE = 0x0b;
 const PEER_USER = 0x1a;
 const PEER_DEVICE = 0x1b;
 /** The folded fields of a row nothing folded onto (L-TS-36). */
-const PLAIN = { edited: false, reply: null, reactions: [], pinned: false, attachments: [], mention: false, actions: [] };
+const PLAIN = { edited: false, reply: null, reactions: [], pinned: false, attachments: [], mention: false, actions: [], thread: null };
 
 function row(seq: number, over: Partial<TimelineRow> = {}): TimelineRow {
   return {
@@ -106,6 +106,15 @@ describe('buildTimeline', () => {
     expect(timeline([marker], []).items.map((i) => [i.key, i.state, i.own, i.body])).toEqual([[`o${hex(0x45)}`, 'deleted', true, '']]);
   });
 
+  it('maps a root summary to a count and seconds, and a quote names its thread root', () => {
+    const [item] = timeline([row(2, {
+      thread: { count: 3, lastTs: 1_700_000_050n },
+      reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: 'x', state: 0, threadRoot: id(0x31) },
+    })]).items;
+    expect(item?.thread).toEqual({ count: 3, lastTs: 1_700_000_050 });
+    expect(item?.reply?.threadRoot).toBe(hex(0x31));
+  });
+
   it('reports earlier rows when the core filled the page', () => {
     expect(timeline([row(10), row(11)], [], 2).hasEarlier).toBe(true);
     expect(timeline([row(10)], [], 2).hasEarlier).toBe(false);
@@ -124,7 +133,7 @@ describe('buildTimeline', () => {
     })]).items;
     expect(item).toMatchObject({
       seq: '2', body: 'edited text', edited: true, pinned: true, mention: true, actions: [],
-      reply: { msgId: hex(0x31), state: 'ok', senderUser: hex(PEER_USER), excerpt: 'body 1', seq: '1' },
+      reply: { msgId: hex(0x31), state: 'ok', senderUser: hex(PEER_USER), excerpt: 'body 1', seq: '1', threadRoot: null },
       reactions: [{ emoji: '👍', count: 2, mine: true }, { emoji: '🦀', count: 1, mine: false }],
       attachments: [
         { index: 0, size: 1234, mime: 'image/png', name: 'map.png', w: 640, h: 480, thumb: true, kind: 'image', tooLarge: false },
@@ -140,8 +149,8 @@ describe('buildTimeline', () => {
       row(4, { reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: '', state: 2, threadRoot: null } }),
     ]).items;
     expect(items.map((i) => i.reply)).toEqual([
-      { msgId: hex(0x7e), state: 'missing', senderUser: null, excerpt: '', seq: null },
-      { msgId: hex(0x31), state: 'deleted', senderUser: hex(PEER_USER), excerpt: '', seq: '1' },
+      { msgId: hex(0x7e), state: 'missing', senderUser: null, excerpt: '', seq: null, threadRoot: null },
+      { msgId: hex(0x31), state: 'deleted', senderUser: hex(PEER_USER), excerpt: '', seq: '1', threadRoot: null },
     ]);
   });
 
@@ -169,14 +178,14 @@ describe('buildTimeline', () => {
     }), outbox(0x54, 0, { body: 'to nobody', replyTo: id(0x7d) })]).items;
     expect(items[1]).toMatchObject({
       key: `o${hex(0x53)}`, state: 'pending', seq: null, body: '',
-      reply: { msgId: hex(0x33), state: 'ok', senderUser: hex(PEER_USER), excerpt: `line one line two ${'é'.repeat(102)}`, seq: '3' },
+      reply: { msgId: hex(0x33), state: 'ok', senderUser: hex(PEER_USER), excerpt: `line one line two ${'é'.repeat(102)}`, seq: '3', threadRoot: null },
       attachments: [
         { index: 0, size: 2048, mime: 'image/webp', name: 'shot.webp', w: null, h: null, thumb: false, kind: 'image', tooLarge: false },
         { index: 1, size: 26_214_401, mime: 'text/plain', name: '', w: null, h: null, thumb: false, kind: 'file', tooLarge: true },
       ],
     });
     expect(Array.from(items[1]?.reply?.excerpt ?? '')).toHaveLength(120);
-    expect(items[2]?.reply).toEqual({ msgId: hex(0x7d), state: 'missing', senderUser: null, excerpt: '', seq: null });
+    expect(items[2]?.reply).toEqual({ msgId: hex(0x7d), state: 'missing', senderUser: null, excerpt: '', seq: null, threadRoot: null });
     expect(JSON.stringify(items)).not.toContain('"blobId"');
   });
 });

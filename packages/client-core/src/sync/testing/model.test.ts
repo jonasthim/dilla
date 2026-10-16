@@ -738,7 +738,7 @@ function apply(core: ModelCore, ...rows: CborInput[][]): void {
   core.groupApply(G, encode([]), encode(rows), through);
 }
 function request(type: SendRequest['type'], replyTo: Id | null, body = '', attachments: AttachmentDescriptor[] = []): SendRequest {
-  return { type, replyTo, body, attachments };
+  return { type, replyTo, body, attachments, threadId: null };
 }
 /** Prepares and frames an own row and applies its echo at `seq`, as the delivery service serves it. */
 function own(core: ModelCore, seq: bigint, r: SendRequest): Id {

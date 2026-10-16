@@ -112,7 +112,7 @@ describe('FakeCore group half', () => {
     const core = member();
     const apply = caught(() => core.groupApply(GROUP, new Uint8Array([0x80]), new Uint8Array([0x80]), 1n));
     expect([apply.code, apply.detail]).toEqual(['E_CORE_STATE', 'not modelled']);
-    const send = caught(() => core.sendPrepare(GROUP, { type: 0, replyTo: null, body: 'hi', attachments: [] }, 1n));
+    const send = caught(() => core.sendPrepare(GROUP, { type: 0, replyTo: null, body: 'hi', attachments: [], threadId: null }, 1n));
     expect([send.code, send.detail]).toEqual(['E_CORE_STATE', 'not modelled']);
     const others: [string, () => unknown][] = [
       ['groups', () => core.groups()],
