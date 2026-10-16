@@ -121,6 +121,50 @@ func (q *Queries) DeleteRecoveryCodes(ctx context.Context, arg DeleteRecoveryCod
 	return err
 }
 
+const deleteTOTP = `-- name: DeleteTOTP :exec
+DELETE FROM totp_secrets WHERE user_id = $1
+`
+
+type DeleteTOTPParams struct {
+	UserID id.ID
+}
+
+func (q *Queries) DeleteTOTP(ctx context.Context, arg DeleteTOTPParams) error {
+	_, err := q.db.ExecContext(ctx, deleteTOTP, arg.UserID)
+	return err
+}
+
+const deleteWebauthnCredential = `-- name: DeleteWebauthnCredential :execrows
+DELETE FROM webauthn_credentials WHERE user_id = $1 AND cred_id = $2
+`
+
+type DeleteWebauthnCredentialParams struct {
+	UserID id.ID
+	CredID []byte
+}
+
+// Only the caller's own row: a credential id another account holds deletes nothing.
+func (q *Queries) DeleteWebauthnCredential(ctx context.Context, arg DeleteWebauthnCredentialParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteWebauthnCredential, arg.UserID, arg.CredID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteWebauthnCredentialsByUser = `-- name: DeleteWebauthnCredentialsByUser :exec
+DELETE FROM webauthn_credentials WHERE user_id = $1
+`
+
+type DeleteWebauthnCredentialsByUserParams struct {
+	UserID id.ID
+}
+
+func (q *Queries) DeleteWebauthnCredentialsByUser(ctx context.Context, arg DeleteWebauthnCredentialsByUserParams) error {
+	_, err := q.db.ExecContext(ctx, deleteWebauthnCredentialsByUser, arg.UserID)
+	return err
+}
+
 const getCeremony = `-- name: GetCeremony :one
 SELECT id, kind, user_id, session_json, created, expires FROM webauthn_ceremonies WHERE id = $1 AND expires > $2
 `

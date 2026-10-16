@@ -13,6 +13,11 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
    * pressed would contradict it (WCAG 2.5.3 label in name, 4.1.2).
    */
   pressed?: boolean;
+  /**
+   * False drops the `[x]` / `[ ]` mark from a toggle (default true). Only for a toggle whose content shows the state
+   * another way, such as a voice control's swapped icon; `aria-pressed` stays either way.
+   */
+  mark?: boolean;
   children: ReactNode;
 };
 
@@ -21,6 +26,7 @@ export function Button({
   size = 'md',
   keyHint,
   pressed,
+  mark = true,
   children,
   type = 'button',
   className,
@@ -30,7 +36,7 @@ export function Button({
   return (
     <button type={type} className={['d-btn', className].filter(Boolean).join(' ')} data-variant={variant} data-size={size}
       aria-pressed={isToggle ? pressed : undefined} {...rest}>
-      {isToggle ? (
+      {isToggle && mark ? (
         <span className="d-btn__pressed-mark" aria-hidden="true">{pressed ? '[x]' : '[ ]'}</span>
       ) : null}
       <span className="d-btn__label">{children}</span>

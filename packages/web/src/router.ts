@@ -1,7 +1,15 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'voice' | 'privacy' | 'keyboard' | 'diagnostics';
+export type SettingsSection =
+  | 'devices'
+  | 'signin'
+  | 'notifications'
+  | 'appearance'
+  | 'voice'
+  | 'privacy'
+  | 'keyboard'
+  | 'diagnostics';
 export type SignInNotice = 'race' | 'evicted';
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }
@@ -16,7 +24,7 @@ export const SETTINGS_FROM = 'settingsFrom';
 export const SETTINGS_COMPARE = 'compareUser';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
-const SETTINGS_SECTION = /^\/settings\/(devices|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
+const SETTINGS_SECTION = /^\/settings\/(devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 
 /**

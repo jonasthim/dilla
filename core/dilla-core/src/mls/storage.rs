@@ -159,8 +159,19 @@ impl DillaStorage {
     /// error somewhere deep in a later reload (gap-6 section 2.3), or, worse, does not report at
     /// all. `openmls_version` is deliberately *not* checked: it is a provenance note, and OpenMLS
     /// patch releases do not change the blob layout the way this provider's own version would.
+    ///
+    /// A file that already has `storage_meta` is checked before anything is created in it (C4x,
+    /// web3.6): a file a newer build wrote is refused untouched, as the app schema is.
     pub fn migrate(&self) -> Result<(), StorageError> {
         with_conn(&self.conn, |c| {
+            let has_meta: bool = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'storage_meta')",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_meta {
+                Self::check_meta(c, false)?;
+            }
             c.execute_batch(SCHEMA)?;
             let mut stmt =
                 c.prepare("INSERT OR IGNORE INTO storage_meta (key, value) VALUES (?1, ?2)")?;
@@ -171,25 +182,43 @@ impl DillaStorage {
             ])?;
             stmt.execute(rusqlite::params!["codec", Self::CODEC])?;
             drop(stmt);
-
-            let mut read = c.prepare("SELECT value FROM storage_meta WHERE key = ?1")?;
-            let mut get = |key: &str| -> Result<String, StorageError> {
-                let mut rows = read.query(rusqlite::params![key])?;
-                match rows.next()? {
-                    // An absent row cannot happen right after the seed above, but it is a
-                    // mismatch rather than a default: the alternative is treating a file whose
-                    // meta row someone deleted as if it were ours.
-                    None => Ok(String::new()),
-                    Some(row) => Ok(row.get::<_, String>(0)?),
-                }
-            };
-            let version = get("storage_provider_version")?;
-            let codec = get("codec")?;
-            if version != Self::PROVIDER_VERSION || codec != Self::CODEC {
-                return Err(StorageError::UnsupportedStorage { version, codec });
-            }
-            Ok(())
+            Self::check_meta(c, true)
         })
+    }
+
+    /// Reads `storage_provider_version` and `codec` back and refuses any other build's. Before the
+    /// seed (`seeded` false) an absent row passes, so the seed fills it exactly as it did before
+    /// this pre-check existed; after the seed an absent row is a mismatch.
+    fn check_meta(c: &rusqlite::Connection, seeded: bool) -> Result<(), StorageError> {
+        let mut read = c.prepare("SELECT value FROM storage_meta WHERE key = ?1")?;
+        let mut get = |key: &str| -> Result<Option<String>, StorageError> {
+            let mut rows = read.query(rusqlite::params![key])?;
+            match rows.next()? {
+                None => Ok(None),
+                Some(row) => Ok(Some(row.get::<_, String>(0)?)),
+            }
+        };
+        let (version, codec) = match (get("storage_provider_version")?, get("codec")?) {
+            (Some(version), Some(codec)) => (version, codec),
+            // An absent row cannot happen right after the seed above, but it is a mismatch
+            // rather than a default: the alternative is treating a file whose meta row someone
+            // deleted as if it were ours.
+            (version, codec) if seeded => (version.unwrap_or_default(), codec.unwrap_or_default()),
+            _ => return Ok(()),
+        };
+        if version != Self::PROVIDER_VERSION || codec != Self::CODEC {
+            return Err(StorageError::UnsupportedStorage { version, codec });
+        }
+        Ok(())
+    }
+
+    /// Runs `f` on the connection outside any unit: for the read-only checks `ClientCore::open`
+    /// makes before any migration (C4x).
+    pub(crate) fn read<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        with_conn(&self.conn, f)
     }
 
     pub fn storage_meta(&self, key: &str) -> Result<Option<String>, StorageError> {

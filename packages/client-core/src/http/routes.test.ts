@@ -91,8 +91,10 @@ interface Case {
 
 const CASES: Case[] = [
   {
-    name: 'getInstance reads elements 3 to 8 and 10', call: (r) => r.getInstance(),
-    method: 'GET', path: '/v1/instance', bucket: 'read', idempotent: true, auth: false, sent: null,
+    // S2 review (M5): the session's bearer goes along whenever there is one, so instance.discovery = "session" (E, F)
+    // answers an owed client too; before sign-in token() is null and nothing is sent (below).
+    name: 'getInstance reads elements 3 to 8 and 10, with the session bearer', call: (r) => r.getInstance(),
+    method: 'GET', path: '/v1/instance', bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, INSTANCE_DOC),
     expected: { instanceId: INSTANCE, generation: 7n, name: 'dilla.test', registrationMode: 0, authMethods: [0, 3], policyVersion: 2n, externalSenderPub: PUB },
   },
@@ -310,12 +312,12 @@ const CASES: Case[] = [
   {
     name: 'passwordLogin sends both strings without a token', call: (r) => r.passwordLogin('ada', 'hunter2 hunter2'),
     method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'hunter2 hunter2']),
-    reply: () => cborReply(200, [ASSERTION, 1]), expected: { assertion: ASSERTION, needsTotp: true },
+    reply: () => cborReply(200, [ASSERTION, 1]), expected: { assertion: ASSERTION, needs: 1 },
   },
   {
     name: 'passwordLogin without a second factor', call: (r) => r.passwordLogin('ada', 'pw'),
     method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
-    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needsTotp: false },
+    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0 },
   },
   {
     name: 'totpVerify', call: (r) => r.totpVerify(ASSERTION, '123456'),
@@ -458,8 +460,125 @@ const CASES: Case[] = [
 },
 ];
 
+// ---- web3.6: second factors (flow 10) ----
+const CRED = fill(32, 0x20);
+const CEREMONY = fill(16, 0x21);
+const CODES = ['AAAAAAAAAAAAAAAAAAAAAAAAAA', 'BBBBBBBBBBBBBBBBBBBBBBBBBB'];
+const OPTIONS = '{"publicKey":{}}';
+const RESPONSE = '{"id":"x"}';
+
+const FACTOR_CASES: Case[] = [
+  {
+    name: 'recoveryVerify', call: (r) => r.recoveryVerify(ASSERTION, 'AAAAAAAAAAAAAAAAAAAAAAAAAA'),
+    method: 'POST', path: '/v1/auth/recovery/verify', bucket: 'none', idempotent: false, auth: false,
+    sent: encode([ASSERTION, 'AAAAAAAAAAAAAAAAAAAAAAAAAA']), reply: () => cborReply(200, ['asrt-3', 'appended']), expected: { assertion: 'asrt-3' },
+  },
+  {
+    name: 'passwordLogin reads needs 2', call: (r) => r.passwordLogin('ada', 'pw'),
+    method: 'POST', path: '/v1/auth/password/login', bucket: 'none', idempotent: false, auth: false, sent: encode(['ada', 'pw']),
+    reply: () => cborReply(200, [ASSERTION, 2]), expected: { assertion: ASSERTION, needs: 2 },
+  },
+  {
+    name: 'getFactors reads the five elements', call: (r) => r.getFactors(),
+    method: 'GET', path: '/v1/auth/factors', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [1, 1_800_000_000, [[CRED, 'Laptop', 1_800_000_100, null], [fill(16, 0x22), 'Phone', 1_800_000_200, 1_800_000_300]], 4, 1, 'appended']),
+    expected: { owed: true, totp: 1_800_000_000, backupCodesLeft: 4, hasPassword: true,
+      passkeys: [{ credId: CRED, name: 'Laptop', created: 1_800_000_100, lastUsed: null }, { credId: fill(16, 0x22), name: 'Phone', created: 1_800_000_200, lastUsed: 1_800_000_300 }] },
+  },
+  {
+    name: 'getFactors of an account with no app and no password', call: (r) => r.getFactors(),
+    method: 'GET', path: '/v1/auth/factors', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [0, null, [], 0, 0]), expected: { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: false },
+  },
+  {
+    name: 'totpEnroll without a step-up sends null', call: (r) => r.totpEnroll(null),
+    method: 'POST', path: '/v1/auth/totp/enroll', bucket: 'write', idempotent: false, auth: true, sent: encode([null]),
+    reply: () => cborReply(200, ['JBSWY3DPEHPK3PXP', 'otpauth://totp/x?secret=JBSWY3DPEHPK3PXP']), expected: { secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x?secret=JBSWY3DPEHPK3PXP' },
+  },
+  {
+    name: 'totpEnroll with a step-up token', call: (r) => r.totpEnroll('su-1'),
+    method: 'POST', path: '/v1/auth/totp/enroll', bucket: 'write', idempotent: false, auth: true, sent: encode(['su-1']),
+    reply: () => cborReply(200, ['S', 'U']), expected: { secret: 'S', uri: 'U' },
+  },
+  {
+    name: 'totpConfirm returns the minted codes', call: (r) => r.totpConfirm('123456'),
+    method: 'POST', path: '/v1/auth/totp/confirm', bucket: 'write', idempotent: false, auth: true, sent: encode(['123456']),
+    reply: () => cborReply(200, [CODES]), expected: CODES,
+  },
+  {
+    name: 'totpConfirm returns no codes when the account already held some', call: (r) => r.totpConfirm('123456'),
+    method: 'POST', path: '/v1/auth/totp/confirm', bucket: 'write', idempotent: false, auth: true, sent: encode(['123456']),
+    reply: () => cborReply(200, [[]]), expected: [],
+  },
+  {
+    name: 'passkeyRegisterBegin', call: (r) => r.passkeyRegisterBegin(null),
+    method: 'POST', path: '/v1/auth/passkey/register/begin', bucket: 'write', idempotent: false, auth: true, sent: encode([null]),
+    reply: () => cborReply(200, [CEREMONY, OPTIONS]), expected: { ceremonyId: CEREMONY, options: OPTIONS },
+  },
+  {
+    name: 'passkeyRegisterFinish', call: (r) => r.passkeyRegisterFinish(CEREMONY, RESPONSE, 'Laptop'),
+    method: 'POST', path: '/v1/auth/passkey/register/finish', bucket: 'write', idempotent: false, auth: true, sent: encode([CEREMONY, RESPONSE, 'Laptop']),
+    reply: () => cborReply(200, [CRED, CODES]), expected: { credId: CRED, backupCodes: CODES },
+  },
+  {
+    name: 'passkeyLoginBegin', call: (r) => r.passkeyLoginBegin(),
+    method: 'POST', path: '/v1/auth/passkey/login/begin', bucket: 'none', idempotent: false, auth: false, sent: encode([]),
+    reply: () => cborReply(200, [CEREMONY, OPTIONS]), expected: { ceremonyId: CEREMONY, options: OPTIONS },
+  },
+  {
+    name: 'passkeyLoginFinish with user verification', call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE),
+    method: 'POST', path: '/v1/auth/passkey/login/finish', bucket: 'none', idempotent: false, auth: false, sent: encode([CEREMONY, RESPONSE]),
+    reply: () => cborReply(200, [ASSERTION, 0]), expected: { assertion: ASSERTION, needs: 0 },
+  },
+  {
+    name: 'passkeyLoginFinish without user verification', call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE),
+    method: 'POST', path: '/v1/auth/passkey/login/finish', bucket: 'none', idempotent: false, auth: false, sent: encode([CEREMONY, RESPONSE]),
+    reply: () => cborReply(200, [ASSERTION, 1]), expected: { assertion: ASSERTION, needs: 1 },
+  },
+  {
+    name: 'stepUp with the password', call: (r) => r.stepUp(0, 'hunter2 hunter2'),
+    method: 'POST', path: '/v1/auth/stepup', bucket: 'write', idempotent: false, auth: true, sent: encode([0, 'hunter2 hunter2']),
+    reply: () => cborReply(201, ['su-1', 1_800_000_300]), expected: { token: 'su-1', expires: 1_800_000_300n },
+  },
+  {
+    name: 'stepUp with a code', call: (r) => r.stepUp(1, '123456'),
+    method: 'POST', path: '/v1/auth/stepup', bucket: 'write', idempotent: false, auth: true, sent: encode([1, '123456']),
+    reply: () => cborReply(201, ['su-2', 1_800_000_300]), expected: { token: 'su-2', expires: 1_800_000_300n },
+  },
+  {
+    name: 'stepUp with a backup code', call: (r) => r.stepUp(2, 'AAAAAAAAAAAAAAAAAAAAAAAAAA'),
+    method: 'POST', path: '/v1/auth/stepup', bucket: 'write', idempotent: false, auth: true, sent: encode([2, 'AAAAAAAAAAAAAAAAAAAAAAAAAA']),
+    reply: () => cborReply(201, ['su-3', 1_800_000_300]), expected: { token: 'su-3', expires: 1_800_000_300n },
+  },
+  {
+    name: 'stepUpPasskeyBegin', call: (r) => r.stepUpPasskeyBegin(),
+    method: 'POST', path: '/v1/auth/stepup/passkey/begin', bucket: 'write', idempotent: false, auth: true, sent: encode([]),
+    reply: () => cborReply(200, [CEREMONY, OPTIONS]), expected: { ceremonyId: CEREMONY, options: OPTIONS },
+  },
+  {
+    name: 'stepUpPasskeyFinish', call: (r) => r.stepUpPasskeyFinish(CEREMONY, RESPONSE),
+    method: 'POST', path: '/v1/auth/stepup/passkey/finish', bucket: 'write', idempotent: false, auth: true, sent: encode([CEREMONY, RESPONSE]),
+    reply: () => cborReply(201, ['su-4', 1_800_000_300]), expected: { token: 'su-4', expires: 1_800_000_300n },
+  },
+  {
+    name: 'removeFactor of the app', call: (r) => r.removeFactor('su-1', 0, null),
+    method: 'POST', path: '/v1/auth/factors/remove', bucket: 'write', idempotent: false, auth: true, sent: encode(['su-1', 0, null]),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'removeFactor of a passkey', call: (r) => r.removeFactor('su-1', 1, CRED),
+    method: 'POST', path: '/v1/auth/factors/remove', bucket: 'write', idempotent: false, auth: true, sent: encode(['su-1', 1, CRED]),
+    reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'regenerateBackupCodes', call: (r) => r.regenerateBackupCodes('su-1'),
+    method: 'POST', path: '/v1/auth/recovery/codes', bucket: 'write', idempotent: false, auth: true, sent: encode(['su-1']),
+    reply: () => cborReply(200, [CODES]), expected: CODES,
+  },
+];
+
 describe('Routes: one request per call, decoded as the server answers it', () => {
-  for (const c of CASES) {
+  for (const c of [...CASES, ...FACTOR_CASES]) {
     it(c.name, async () => {
       const { t, http, routes } = setup();
       t.replies.push(c.reply());
@@ -477,6 +596,15 @@ describe('Routes: one request per call, decoded as the server answers it', () =>
       expect(http.requests[0].auth ?? true).toBe(c.auth);
     });
   }
+});
+
+describe('GET /v1/instance before sign-in', () => {
+  it('sends no Authorization header while there is no session', async () => {
+    const { t, routes } = setup({ token: null });
+    t.replies.push(cborReply(200, INSTANCE_DOC));
+    expect((await routes.getInstance()).name).toBe('dilla.test');
+    expect(t.seen[0].headers.get('authorization')).toBeNull();
+  });
 });
 
 describe('signed-list response bounds', () => {
@@ -527,6 +655,18 @@ const REFUSALS: RefusalCase[] = [
   { name: 'getLimits 501', call: (r) => r.getLimits(), reply: () => refusal(501, 'E_INTERNAL'), status: 501, code: 'E_INTERNAL' },
   { name: 'passwordLogin 401', call: (r) => r.passwordLogin('ada', 'x'), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
   { name: 'totpVerify 401', call: (r) => r.totpVerify(ASSERTION, '000000'), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
+  { name: 'stepUp 403 E_STEP_UP', call: (r) => r.stepUp(0, 'x'), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
+  { name: 'totpEnroll 403 E_STEP_UP', call: (r) => r.totpEnroll(null), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
+  { name: 'removeFactor 403 E_STEP_UP', call: (r) => r.removeFactor('su', 0, null), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
+  { name: 'removeFactor 409 last factor', call: (r) => r.removeFactor('su', 0, null), reply: () => refusal(409, 'E_INVALID_REQUEST'), status: 409, code: 'E_INVALID_REQUEST' },
+  { name: 'getFactors 403 E_FACTOR_REQUIRED', call: (r) => r.getFactors(), reply: () => refusal(403, 'E_FACTOR_REQUIRED'), status: 403, code: 'E_FACTOR_REQUIRED' },
+  { name: 'listDevices 403 E_FACTOR_REQUIRED', call: (r) => r.listDevices(), reply: () => refusal(403, 'E_FACTOR_REQUIRED'), status: 403, code: 'E_FACTOR_REQUIRED' },
+  { name: 'grantRole 403 E_TARGET_NO_FACTOR', call: (r) => r.grantRole(COMMUNITY, USER, ROLE), reply: () => refusal(403, 'E_TARGET_NO_FACTOR'), status: 403, code: 'E_TARGET_NO_FACTOR' },
+  { name: 'passkeyLoginFinish 401 E_PASSKEY_UNKNOWN', call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE), reply: () => refusal(401, 'E_PASSKEY_UNKNOWN'), status: 401, code: 'E_PASSKEY_UNKNOWN' },
+  { name: 'passkeyLoginFinish 401 E_UNAUTHENTICATED', call: (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
+  { name: 'recoveryVerify 401', call: (r) => r.recoveryVerify(ASSERTION, 'x'), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
+  { name: 'stepUp 429 beyond the retry window', call: (r) => r.stepUp(0, 'x'), reply: () => refusal(429, 'E_RATE_LIMITED', '', 1_200_000), status: 429, code: 'E_RATE_LIMITED' },
+  { name: 'regenerateBackupCodes 403 E_STEP_UP', call: (r) => r.regenerateBackupCodes('su'), reply: () => refusal(403, 'E_STEP_UP'), status: 403, code: 'E_STEP_UP' },
   { name: 'postSessionPending 429 beyond the retry window', call: (r) => r.postSessionPending(DEVICE, BODY), reply: () => refusal(429, 'E_RATE_LIMITED', '', 1_200_000), status: 429, code: 'E_RATE_LIMITED' },
   { name: 'postSessionPending 403 device cap', call: (r) => r.postSessionPending(DEVICE, BODY), reply: () => refusal(403, 'E_FORBIDDEN', 'device cap reached'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'listBackups 403', call: (r) => r.listBackups(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
@@ -1311,5 +1451,70 @@ describe('Routes: wave 2a roles, overwrites and private channel create (internal
     t.replies.push(cborReply(201, [CHANNEL, 0, 0]));
     await routes.createChannel(COMMUNITY, { kind: 'text', name: 'a', position: 0, overwrites: Array.from({ length: 100 }, () => entry) });
     expect(t.seen).toHaveLength(1);
+  });
+});
+
+describe('Routes: second-factor shapes and bounds', () => {
+  const bad = async (reply: Response, call: (r: Routes) => Promise<unknown>, code: string): Promise<void> => {
+    const { t, routes } = setup();
+    t.replies.push(reply);
+    await expect(call(routes)).rejects.toMatchObject({ code });
+  };
+  it('refuses a needs of 3 on a password login', async () => {
+    await bad(cborReply(200, [ASSERTION, 3]), (r) => r.passwordLogin('ada', 'pw'), 'E_CBOR_RANGE');
+  });
+  it('refuses a needs of 2 on a passkey login finish', async () => {
+    await bad(cborReply(200, [ASSERTION, 2]), (r) => r.passkeyLoginFinish(CEREMONY, RESPONSE), 'E_CBOR_RANGE');
+  });
+  it('refuses short answers', async () => {
+    await bad(cborReply(200, [ASSERTION]), (r) => r.passwordLogin('ada', 'pw'), 'E_CBOR_SHAPE');
+    await bad(cborReply(200, [1, null, [], 0]), (r) => r.getFactors(), 'E_CBOR_SHAPE');
+    await bad(cborReply(200, [CRED]), (r) => r.passkeyRegisterFinish(CEREMONY, RESPONSE, 'x'), 'E_CBOR_SHAPE');
+    await bad(cborReply(201, ['su-1']), (r) => r.stepUp(0, 'x'), 'E_CBOR_SHAPE');
+  });
+  it('refuses an owed flag, a ceremony id or a password flag outside the wire shape', async () => {
+    await bad(cborReply(200, [2, null, [], 0, 1]), (r) => r.getFactors(), 'E_CBOR_RANGE');
+    await bad(cborReply(200, [0, null, [], 0, 2]), (r) => r.getFactors(), 'E_CBOR_RANGE');
+    await bad(cborReply(200, [fill(15, 1), OPTIONS]), (r) => r.passkeyLoginBegin(), 'E_CBOR_SHAPE');
+  });
+  it('bounds the backup codes at 16 and the passkeys at 1024', async () => {
+    await bad(cborReply(200, [Array.from({ length: 17 }, () => 'A')]), (r) => r.totpConfirm('123456'), 'E_CBOR_SHAPE');
+    await bad(cborReply(200, [Array.from({ length: 17 }, () => 'A')]), (r) => r.regenerateBackupCodes('su'), 'E_CBOR_SHAPE');
+    await bad(cborReply(200, [CRED, Array.from({ length: 17 }, () => 'A')]), (r) => r.passkeyRegisterFinish(CEREMONY, RESPONSE, 'x'), 'E_CBOR_SHAPE');
+    const row = [CRED, 'p', 1, null];
+    await bad(cborReply(200, [0, null, Array.from({ length: 1025 }, () => row), 0, 1]), (r) => r.getFactors(), 'E_CBOR_SHAPE');
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [0, null, Array.from({ length: 1024 }, () => row), 0, 1]));
+    expect((await routes.getFactors()).passkeys).toHaveLength(1024);
+  });
+  it('refuses inputs the server would refuse, before sending', async () => {
+    const { t, routes } = setup();
+    const attempts: (() => Promise<unknown>)[] = [
+      () => routes.passkeyRegisterFinish(CEREMONY, RESPONSE, ''),
+      () => routes.passkeyRegisterFinish(CEREMONY, RESPONSE, 'x'.repeat(65)),
+      () => routes.passkeyRegisterFinish(CEREMONY, RESPONSE, 'tab\there'),
+      () => routes.passkeyRegisterFinish(new Uint8Array(15), RESPONSE, 'x'),
+      () => routes.stepUp(3 as 0, 'x'),
+      () => routes.removeFactor('su', 2 as 0, null),
+      () => routes.removeFactor('su', 1, null),
+      () => routes.removeFactor('su', 0, CRED),
+    ];
+    for (const [i, attempt] of attempts.entries()) await expect(attempt(), `attempt ${i}`).rejects.toThrow(/^E_ROUTE_INPUT: /);
+    expect(t.seen).toHaveLength(0);
+  });
+  it('sends one request for a short 429 on the step-up and the passkey and backup-code logins', async () => {
+    for (const call of [
+      (routes: Routes) => routes.stepUp(0, 'x'),
+      (routes: Routes) => routes.recoveryVerify(ASSERTION, 'x'),
+      // The lockout's 429 spends the assertion (dillad 9bbde5c8): a retry could only meet a 401 and hide the wait.
+      (routes: Routes) => routes.totpVerify(ASSERTION, '123456'),
+      (routes: Routes) => routes.passkeyLoginFinish(CEREMONY, RESPONSE),
+    ]) {
+      const { t, routes } = setup();
+      t.replies.push(refusal(429, 'E_RATE_LIMITED', '', 1000));
+      await expect(call(routes)).rejects.toMatchObject({ status: 429, retryAfterMs: 1000 });
+      expect(t.seen).toHaveLength(1);
+      expect(t.sleeps).toEqual([]);
+    }
   });
 });

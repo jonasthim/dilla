@@ -169,8 +169,8 @@ func idOf(t *testing.T, v any) id.ID {
 // channel, and reads the admin audit log and the diagnostics report. Each step reaches its handler:
 // a 2xx, or the handler's own CBOR refusal, and never the mux's 404 or a 501.
 func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
-	_, h, code := newInstance(t)
-	tok := accountToken(t, h, code)
+	srv, h, code := newInstance(t)
+	tok := accountToken(t, srv, code)
 	must := func(rec *httptest.ResponseRecorder, want int, what string) *httptest.ResponseRecorder {
 		t.Helper()
 		if rec.Code != want {
@@ -261,9 +261,10 @@ func TestThePlanTwoFlowRunsThroughTheCompositionRoot(t *testing.T) {
 	}
 	// t.TempDir is 0755 and nothing reflects UDP here, so data_dir and udp only have to be present;
 	// the database, the wasi core and the blob just uploaded are this process's own and must be OK.
-	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs", "calls", "turn_relay"} {
+	// webauthn (web3.6) only has to be present: its status is the test config's rp_origins.
+	for _, name := range []string{"database", "data_dir", "wasi", "udp", "blobs", "calls", "turn_relay", "webauthn"} {
 		st, ok := status[name]
-		if !ok || (st != 0 && name != "data_dir" && name != "udp") {
+		if !ok || (st != 0 && name != "data_dir" && name != "udp" && name != "webauthn") {
 			t.Errorf("diagnostics leg %q: present %v, status %d (%v)", name, ok, st, legs)
 		}
 	}
@@ -318,8 +319,8 @@ func TestTheRTCPathsAreMountedOnlyWithAnSFU(t *testing.T) {
 // GET /i/{code} is on, so a join is no way round the limit on guessing codes: one address is
 // refused 429 after invite_burst joins, long before the per-device write burst would refuse it.
 func TestTheJoinIsMeteredOnTheInviteBucket(t *testing.T) {
-	_, h, code := newInstance(t)
-	tok := accountToken(t, h, code)
+	srv, h, code := newInstance(t)
+	tok := accountToken(t, srv, code)
 	rate := testConfig(t).Limits.Rate
 	if rate.InviteBurst >= rate.WriteBurst {
 		t.Fatalf("invite burst %d is not below the write burst %d: the test could not tell the buckets apart",
@@ -345,8 +346,8 @@ func TestTheJoinIsMeteredOnTheInviteBucket(t *testing.T) {
 // Plan 2's routes are metered on the instance's [limits.rate] buckets, per device session: past the
 // read burst a GET is refused 429 E_RATE_LIMITED, whatever it would have answered.
 func TestThePlanTwoRoutesAreMeteredPerDevice(t *testing.T) {
-	_, h, code := newInstance(t)
-	tok := accountToken(t, h, code)
+	srv, h, code := newInstance(t)
+	tok := accountToken(t, srv, code)
 	burst := testConfig(t).Limits.Rate.ReadBurst
 	for i := range 2 * burst {
 		rec := call(t, h, http.MethodGet, "/v1/dms", tok, nil)

@@ -37,6 +37,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Accounts", reflect.TypeOf((*store.Accounts)(nil)).Elem(), []string{
 			"CreateUser", "GetUser", "GetUserByUsername", "ListUsers", "SetUserDisabled",
 			"TombstoneUser",
+			// dilla web3.6 S1: the owed second factor and its boot reconcile.
+			"MarkFactorOwedWithoutFactor", "SetFactorOwed",
+			// web3.6 review I2: the reconcile clears the mark from an account that holds a factor.
+			"ClearFactorOwedWithFactor",
 		}},
 		{"Devices", reflect.TypeOf((*store.Devices)(nil)).Elem(), []string{
 			"CreateDevice", "GetDevice", "GetDeviceList", "ListDevicesByUser", "PutDeviceList",
@@ -59,6 +63,8 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"PruneCeremonies", "PutCeremony", "PutOIDCIdentity", "PutPasswordCredential",
 			"PutRecoveryCodes", "PutTOTP", "PutWebauthnCredential", "PutWebauthnUser",
 			"RecordLoginAttempt", "TakeCeremony", "UpdateWebauthnCredential",
+			// dilla web3.6 S1: removing a factor, and the operator reset.
+			"DeleteRecoveryCodes", "DeleteTOTP", "DeleteWebauthnCredential", "DeleteWebauthnCredentialsByUser",
 		}},
 		{"Invites", reflect.TypeOf((*store.Invites)(nil)).Elem(), []string{
 			"CreateInvite", "GetInviteByHash", "ListInvites", "RedeemInvite", "RevokeInvite",

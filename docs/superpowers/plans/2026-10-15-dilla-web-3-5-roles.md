@@ -34,7 +34,7 @@ Every member's app shows a pin only while its pinner may pin there, and treats `
 
 **Spec:** `docs/superpowers/specs/2026-10-14-discord-parity-roadmap.md`, Wave 2. The controller split it on 2026-10-15:
 - **W2a = this plan (web3.5).**
-- **W2b = web3.6**, carried in the appendix. Later waves shift one tag.
+- **W2b = web3.7**, carried in the appendix. Later waves shift two tags; web3.6 is the second-factor wave.
 - Private threads move to a later wave. Cross-server following stays out (spec:225).
 
 The Wave 2 design (opus, 2026-10-15) is carried into this plan in full for W2a and compactly for W2b. Code anchors are on `dilla-web-3-4-admin` @ 29f6d46.
@@ -45,9 +45,9 @@ The Wave 2 design (opus, 2026-10-15) is carried into this plan in full for W2a a
   - sonnet does recipe tasks, and also the doc, `## States` and strings tasks (T1, H1). **No haiku in this wave.**
   - opus does S2, R1 and C4, and every review of those. C2 is implemented on sonnet and reviewed on opus.
 - **Reservations:**
-  - e2e ports 8491/8492 (E1) and 8493/8494 (E2). 8489/8490 stay spare. 8495–8498 are W2b's.
-  - Flow doc 09 (10 is W2b's).
-  - No migration (00017 / schema 015 are W2b's), no opcode (55 stays free), no permission bit (24+ stay free).
+  - e2e ports 8491/8492 (E1) and 8493/8494 (E2). 8489/8490 stay spare. 8495–8500 are web3.6's; 8501–8504 are W2b's.
+  - Flow doc 09 (10 is web3.6's, 11 is W2b's).
+  - No migration (00017 / schema 015 are web3.6's, 00018 / 016 are W2b's), no opcode (55 stays free), no permission bit (24+ stay free).
   - Core local schema: W2a takes `app_meta` `schema` = 4 (today `x'03'`). W2b takes 5.
   - Browser ABI 10 (today 9). W2b takes 11.
 - **Never touch `visibility`.** In this wave "private" means exactly this: **the channel has an `@everyone` (kind 0) overwrite whose deny holds `view_channel`.** `visibility` 0 ("private" in channels.go:36) means "not invite-visible" and is a different thing. No brief reads, writes or names it.
@@ -1281,7 +1281,7 @@ Then:
   - measure op 54 reads per frame (now 6 with overwrites) at 2 and 20 members;
   - measure materialise latency after a role PATCH with 10 channels × 20 members. Card it if it takes over 1 s (risk 4).
 - PR, CI green, merge; tag `v0.1.0-web3.5` (prerelease); verify the assets; tell Homelab to deploy; Jonas checks.
-- Then re-read the appendix against the merged code and write W2b's plan (web3.6) in the same shape.
+- Then re-read the appendix against the merged code and write W2b's plan (web3.7) in the same shape.
 
 **Risks carried (opus sign-off):**
 1. **S2 self entry.** The create-time self overwrite outlives a demotion: an ex-moderator keeps a private channel they created. It's visible in the channel's permission list and audited, and the owner or an admin can remove it. The alternative (D3): never allow self entries, and require a role below the creator.
@@ -1296,12 +1296,12 @@ Then:
 - **D3.** Allow the create-time self overwrite (built), or require a lower held role.
 - **D2** (W2b): the host learns post vs. other per upload.
 - **D4 and D5 are settled** by the controller (2026-10-15):
-  - W2a = web3.5 and W2b = web3.6, with later waves shifting by one;
+  - W2a = web3.5 and W2b = web3.7, with later waves shifting by one;
   - no category sync; private threads in a later wave; cross-server following out.
 
 ---
 
-## Appendix: W2b (web3.6) design to re-read after W2a merges
+## Appendix: W2b (web3.7) design to re-read after W2a merges
 
 **Scope:**
 - an "upload class" protocol change, so the host enforces `send_messages` and slow mode on E2EE posts;
@@ -1314,11 +1314,11 @@ Not in scope: private threads (a new group target, in a later wave) and cross-se
 W2b shares no files with W2a except the strings, the Shell owner and the core schema numbering. **Re-anchor every line number below against W2a's merged code before dispatch.**
 
 **Reservations:**
-- migration `00017_message_class.sql` (both engines), plus `sqlite/schema/015_message_class.sql` and its Postgres twin;
+- migration `00018_message_class.sql` (both engines), plus `sqlite/schema/016_message_class.sql` and its Postgres twin;
 - no op (55 stays free); no permission bit;
 - core local schema 5; browser ABI 11;
-- flow doc 10;
-- e2e ports 8495/8496 (E3) and 8497/8498 (E4);
+- flow doc 11;
+- e2e ports 8501/8502 (E3) and 8503/8504 (E4);
 - string prefixes `slow.`, `announce.` and `thread.`.
 
 **Trust model (§2.2): a host-enforced upload class, verified by receivers.**
@@ -1384,7 +1384,7 @@ W2b shares no files with W2a except the strings, the Shell owner and the core sc
 - ThreadView;
 - then W-Shell-B.
 
-**Copy (flow 10, `strings/{slow,announce,thread}.ts`), exact:**
+**Copy (flow 11, `strings/{slow,announce,thread}.ts`), exact:**
 
 ```
 slow.label='Slow mode'  slow.hint='How long each person waits between messages. People who may bypass slow mode do not wait.'
@@ -1403,14 +1403,14 @@ W2b also changes two values, so T1b must update flow 09's Copy too (flow09's tes
 - `perm.slowmode.hint` → "Send without waiting in channels with slow mode."
 
 **e2e:**
-- **E3 `slowmode-announce.spec.ts`** (8495/8496):
+- **E3 `slowmode-announce.spec.ts`** (8501/8502):
   - 10 s slow mode: Björn sends one message, the composer shows `slow.wait`, and the second message arrives after the wait;
   - an announcement channel: Björn sees `announce.readOnly` and can react;
   - a request crafted through the core-worker harness hook (class 0 without send) → 403. Use the harness, not the UI.
-- **E4 `threads.spec.ts`** (8497/8498): reply in a thread; the summary count shows on both sides; the thread pane opens in the aside; a mention in a thread gives a badge.
+- **E4 `threads.spec.ts`** (8503/8504): reply in a thread; the summary count shows on both sides; the thread pane opens in the aside; a mention in a thread gives a badge.
 
 **Task order:**
-- P0: T0b (sonnet: the string files, flow 10, `strings.flow10.test.ts`), then T1b (sonnet: the copy).
+- P0: T0b (sonnet: the string files, flow 11, `strings.flow11.test.ts`), then T1b (sonnet: the copy).
 - Then: SRV-B (SB1) → CORE-R-B (RB1, then TB1) → CORE-B (CB2, CB3, TB2) → UI-B → WEB-B → W-Shell-B → E3 → E4 → H1b → 07 rows.
 - **Split again if needed:** threads (TB1/TB2/UI/E4) touch nothing of the class work except core schema numbering. If W2b runs long, ship threads as W2c.
 

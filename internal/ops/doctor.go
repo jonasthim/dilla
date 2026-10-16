@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -387,6 +389,54 @@ func UDPLeg(cfg config.Config) Leg {
 		Detail: fmt.Sprintf("not probed: dillad runs no reflector, so %d/udp can only be checked from outside", cfg.LiveKit.UDPPort),
 		Fix: fmt.Sprintf("publish %s:%d/udp to this host and verify it from outside; in behind_proxy that is a raw UDP forward, not an HTTP route",
 			ip, cfg.LiveKit.UDPPort)}
+}
+
+// WebAuthnLeg reads the passkey configuration and contacts nothing (web3.6 S3). A passkey binds to
+// the relying party id forever, and every sign-in needs a second factor now, so a configuration that
+// cannot work, or that works only until an operator moves the instance, is worth saying before a
+// person is locked out of a new browser:
+//   - rp_id that is an IP address fails: browsers refuse a WebAuthn relying party that is not a domain;
+//   - an https/http rp_origins host that is neither rp_id nor a subdomain of it fails: the browser
+//     refuses the ceremony (custom-scheme origins, like the desktop shell's dilla://app, are not web
+//     origins and are not judged);
+//   - behind a proxy warns: the origin the browser sees is the proxy's, and rp_origins defaults to
+//     the instance domain without its port;
+//   - auth.methods without totp warns: passkeys become the only second factor.
+func WebAuthnLeg(cfg config.Config) Leg {
+	const name = "webauthn"
+	rpID := cfg.Auth.WebAuthn.RPID
+	var bad, warn []string
+	if _, err := netip.ParseAddr(strings.Trim(rpID, "[]")); err == nil {
+		bad = append(bad, fmt.Sprintf("auth.webauthn.rp_id %q is an IP address; browsers accept only a domain name", rpID))
+	}
+	for _, origin := range cfg.Auth.WebAuthn.RPOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+			continue
+		}
+		// Hosts are compared without case: a browser lowercases an origin's host, and an
+		// operator's https://Chat.Example is the same origin as https://chat.example.
+		host, rp := strings.ToLower(u.Hostname()), strings.ToLower(rpID)
+		if host != rp && !strings.HasSuffix(host, "."+rp) {
+			host = u.Hostname()
+			bad = append(bad, fmt.Sprintf("auth.webauthn.rp_origins has %s, whose host %s is neither rp_id %s nor a subdomain of it", origin, host, rpID))
+		}
+	}
+	if cfg.BehindProxy() {
+		warn = append(warn, "tls.mode is behind_proxy: set auth.webauthn.rp_origins to the public origin, with its port")
+	}
+	if !slices.Contains(cfg.Auth.Methods, "totp") {
+		warn = append(warn, "auth.methods lacks totp: passkeys are the only second factor; an instance whose passkeys stop working locks new browsers out")
+	}
+	switch {
+	case len(bad) > 0:
+		return Leg{Name: name, Status: Red, Detail: strings.Join(append(bad, warn...), "; "),
+			Fix: "set auth.webauthn.rp_id to the instance's domain name and every auth.webauthn.rp_origins entry to an origin on it, then restart; passkeys already registered stay bound to the old rp_id"}
+	case len(warn) > 0:
+		return Leg{Name: name, Status: Yellow, Detail: strings.Join(warn, "; "),
+			Fix: "check auth.webauthn and auth.methods in the configuration"}
+	}
+	return Leg{Name: name, Status: Green, Detail: fmt.Sprintf("rp_id %s, %d %s", rpID, len(cfg.Auth.WebAuthn.RPOrigins), plural(len(cfg.Auth.WebAuthn.RPOrigins), "origin", "origins"))}
 }
 
 // blobLegPage is how many blob rows one ListBlobs call returns.

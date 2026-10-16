@@ -29,6 +29,9 @@ type UserRow struct {
 	Created    int64
 	DisabledAt *int64
 	DeletedAt  *int64
+	// FactorOwed is users.factor_owed (web3.6 S1): the account holds no second factor yet, so its
+	// enrolled sessions reach only protocol/09's `F` and `P` routes.
+	FactorOwed bool
 }
 
 // UserFlag bits, recorded in protocol/09-http-api.md § Flags (NV8).
@@ -70,6 +73,9 @@ type SessionRow struct {
 	Created     int64
 	Expires     int64
 	IdleExpires int64
+	// FactorOwed is the session's account's users.factor_owed, read by GetSessionByHash's join
+	// (web3.6 S1). CreateSession ignores it.
+	FactorOwed bool
 }
 
 type TOTPRow struct {

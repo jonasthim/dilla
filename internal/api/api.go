@@ -74,6 +74,14 @@ type Deps struct {
 	Throttle   *auth.Throttle
 	Assertions *Assertions
 
+	// StepUps holds the step-up tokens the factor-changing routes spend (protocol/09 § Second
+	// factors). Register builds one when it is nil; it is memory only, like Assertions.
+	StepUps *StepUps
+
+	// enrolments remembers whether each enrolment in flight began with a valid step-up, for the
+	// confirm and finish legs' re-check under the user lock. Register builds it.
+	enrolments *enrolments
+
 	// Passkeys runs the four WebAuthn ceremonies. It is nil when `passkey` is
 	// not in auth.methods — go-webauthn refuses a config with no RPOrigins, so
 	// an instance that never configured a relying party has no Passkeys to
@@ -153,6 +161,12 @@ func Register(m *server.Mux, d Deps) {
 	if d.StateMeter == nil {
 		d.StateMeter = NewStateMeter(d.Clock, StateBytesPerDevicePerDay)
 	}
+	if d.StepUps == nil {
+		d.StepUps = NewStepUps(d.Clock, StepUpTTL)
+	}
+	if d.enrolments == nil {
+		d.enrolments = newEnrolments(d.Clock, enrolmentTTL)
+	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 
@@ -175,15 +189,15 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("POST /v1/auth/totp/verify", http.HandlerFunc(d.VerifyTOTP))
 	m.Handle("POST /v1/auth/recovery/verify", http.HandlerFunc(d.VerifyRecovery))
 	m.Handle("POST /v1/auth/password", d.enrolled(d.ChangePassword))
-	m.Handle("POST /v1/auth/totp/enroll", d.enrolled(d.EnrollTOTP))
-	m.Handle("POST /v1/auth/totp/confirm", d.enrolled(d.ConfirmTOTP))
+	m.Handle("POST /v1/auth/totp/enroll", d.owedOK(d.EnrollTOTP))
+	m.Handle("POST /v1/auth/totp/confirm", d.owedOK(d.ConfirmTOTP))
 
 	// Passkeys. The two register legs are enrolled sessions adding a credential
 	// to an account that already exists; the two login legs are unauthenticated
 	// and meter themselves on the `login` bucket inside the handler, exactly as
 	// the password and second-factor ceremonies above do.
-	m.Handle("POST /v1/auth/passkey/register/begin", d.enrolled(d.BeginPasskeyRegistration))
-	m.Handle("POST /v1/auth/passkey/register/finish", d.enrolled(d.FinishPasskeyRegistration))
+	m.Handle("POST /v1/auth/passkey/register/begin", d.owedOK(d.BeginPasskeyRegistration))
+	m.Handle("POST /v1/auth/passkey/register/finish", d.owedOK(d.FinishPasskeyRegistration))
 	m.Handle("POST /v1/auth/passkey/login/begin", http.HandlerFunc(d.BeginPasskeyLogin))
 	m.Handle("POST /v1/auth/passkey/login/finish", http.HandlerFunc(d.FinishPasskeyLogin))
 
@@ -193,8 +207,18 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("GET /v1/auth/oidc/start", http.HandlerFunc(d.StartOIDC))
 	m.Handle("GET /v1/auth/oidc/callback", http.HandlerFunc(d.CallbackOIDC))
 
-	// Accounts. Every one of these is an enrolled session.
-	m.Handle("GET /v1/accounts/me", d.enrolled(d.GetMe))
+	// Second factors (protocol/09 § Second factors). The list is `E, F`: an owed account reads
+	// what it has while it sets one up. Step-up, removal and fresh backup codes are `E`: an owed
+	// account holds nothing to step up with or remove.
+	m.Handle("GET /v1/auth/factors", d.owedOK(d.Factors))
+	m.Handle("POST /v1/auth/stepup", d.enrolled(d.StepUp))
+	m.Handle("POST /v1/auth/stepup/passkey/begin", d.enrolled(d.BeginPasskeyStepUp))
+	m.Handle("POST /v1/auth/stepup/passkey/finish", d.enrolled(d.FinishPasskeyStepUp))
+	m.Handle("POST /v1/auth/factors/remove", d.enrolled(d.RemoveFactor))
+	m.Handle("POST /v1/auth/recovery/codes", d.enrolled(d.RecoveryCodes))
+
+	// Accounts. Every one of these is an enrolled session; GET is also an owed one's (`E, F`).
+	m.Handle("GET /v1/accounts/me", d.owedOK(d.GetMe))
 	m.Handle("PATCH /v1/accounts/me", d.enrolled(d.PatchMe))
 	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
 
@@ -224,7 +248,7 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("POST /v1/devices/{device_id}/sessions", http.HandlerFunc(d.SessionEstablish))
 	// The sessions DELETE is on the device write bucket like DELETE /v1/devices/{device_id}, and
 	// keeps the same ten-minute grace for another device's unlisted row (fix-wave review NEW-1).
-	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.SessionDelete)))
+	m.Handle("DELETE /v1/devices/{device_id}/sessions", d.owedOK(dsMeter(d.Limiter, dsClassWrite, d.SessionDelete)))
 
 	// The gateway ticket. The route is mounted here and answers 501 until part
 	// 1b task 17 fills Deps.Tickets, so the document and the binary agree on
@@ -297,6 +321,13 @@ func (d Deps) enrolled(h http.HandlerFunc) http.Handler {
 
 func (d Deps) scoped(h http.HandlerFunc, want auth.Scope) http.Handler {
 	return d.Sessions.Middleware(h, want)
+}
+
+// owedOK mounts one of protocol/09's `E, F` routes: an enrolled session, also one whose account
+// owes a second factor (web3.6 S1). Every other enrolled route refuses such a session with
+// E_FACTOR_REQUIRED; the list stays short, because it is what an owed account can do.
+func (d Deps) owedOK(h http.HandlerFunc) http.Handler {
+	return d.Sessions.MiddlewareOwedOK(h, auth.ScopeEnrolled)
 }
 
 // session is the resolved session of an authenticated route. A handler that

@@ -20,7 +20,7 @@ pub use identity::{recovery_key_check, session_preimage};
 pub use messages::{mentions_me, mentions_me_with_roles};
 #[cfg(feature = "test-hooks")]
 pub use schema::test_force_missing_fts5;
-pub use schema::{HANDSHAKE_TAIL, migrate_app};
+pub use schema::{APP_SCHEMA_SUPPORTED, HANDSHAKE_TAIL, migrate_app};
 
 use crate::identity::CredentialIdentity;
 use crate::mls::{
@@ -179,6 +179,9 @@ impl ClientCore {
 
     pub fn open(conn: ConnHandle) -> Result<Self, ClientError> {
         let provider = DillaProvider::new(conn);
+        // C4x: a store a newer client wrote is refused (E_STORE_NEWER) by a read before any
+        // migration, the OpenMLS storage's included, can create or change anything in it.
+        provider.storage().read(schema::refuse_newer)?;
         provider.storage().exec("PRAGMA secure_delete = ON")?;
         provider.storage().migrate()?;
         let version = provider
@@ -197,12 +200,8 @@ impl ClientCore {
                 Ok(found)
             })
             .map_err(ClientError::from)?;
-        if version > 4 {
-            return Err(ClientError::new(
-                E_CORE_STATE,
-                format!("app schema {version} is newer than this build"),
-            ));
-        }
+        // A store newer than this build was refused untouched by `migrate_conn` (E_STORE_NEWER).
+        debug_assert!(version <= u64::from(schema::APP_SCHEMA_SUPPORTED));
         let (identity, signup, enrol) = provider
             .storage()
             .unit(|u| u.with_conn(identity::load_phase))
@@ -267,7 +266,7 @@ fn mismatched() -> ClientError {
 
 /// `open`'s mapping of the migration unit's storage errors: a `Codec` error carries its own
 /// detail ("app_meta schema is malformed", "app_meta identity is malformed"), every other one is
-/// `ClientError::from`.
+/// `ClientError::from` (`StoreNewer` is `E_STORE_NEWER`).
 fn schema_error(e: StorageError) -> ClientError {
     match e {
         StorageError::Codec(m) => ClientError::new(E_CORE_STORAGE, m),

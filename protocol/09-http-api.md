@@ -26,7 +26,7 @@ identifier is `400 E_INVALID_REQUEST`; a well-formed but unknown one is `404 E_N
 Every endpoint in this document except the ones marked `—` requires a device session exactly as
 `02-delivery-service.md`'s `§ Device sessions` defines: `Authorization: Bearer <token>` resolved to
 a `sessions` row by `SHA-256(token)`; no cookie and therefore no CSRF surface on `/v1`. The `Auth`
-column below uses four scopes:
+column below uses these scopes:
 
 | scope | meaning |
 |---|---|
@@ -34,14 +34,22 @@ column below uses four scopes:
 | `P` | `pending` also accepted |
 | `V` | `provisional` also accepted |
 | `A` | an `enrolled` session whose user holds the instance-admin flag |
+| `F` | an `enrolled` session whose account owes a second factor is also accepted |
 | `—` | no session required |
+
+An account owes a second factor until it holds a confirmed TOTP secret or a passkey registered
+for this instance's `rp_id` (`02` § Device sessions item 8, § Second factors). Every `E` route
+not marked `E, F` answers such an account's sessions `403 E_FACTOR_REQUIRED`, as do the `E or V`
+routes, for a `provisional` session too; the `P` routes admit it, and the gateway refuses it
+(close `4003`). A table without an `Auth` column says its scope in the sentence
+before it ("every route below is `E`").
 
 ## Accounts and devices
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/accounts` | — | `[code(tstr), username(tstr), display(tstr), umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64), password(tstr\|null), device(array)]` where `device = [device_id(bstr16), dsk_pub(bstr32), tier(uint), signer_tier(uint), credential(bstr)]` | `[user_id(bstr16), device_id(bstr16), token(tstr), expires(uint)]` |
-| `GET /v1/accounts/me` | E | — | `[user_id, username, display, kind, flags, created]` |
+| `GET /v1/accounts/me` | E, F | — | `[user_id, username, display, kind, flags, created]` |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
 | `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7) and, `device cap reached`, at 8 live devices; `429 E_RATE_LIMITED` with `retry_after_ms` past 3 live rows created in the hour; it never evicts; `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
@@ -118,7 +126,7 @@ on its revocations (`02` § Device sessions item 6).
 |---|---|---|---|
 | `POST /v1/devices/{device_id}/sessions/challenge` | — | `[]` | `201 [nonce(bstr32), expires(uint)]` |
 | `POST /v1/devices/{device_id}/sessions` | — | `[nonce, purpose, sig, registration\|credential\|null, login\|null]` | `201 [token, scope, user_id, device_id, expires, idle_expires, generation]` |
-| `DELETE /v1/devices/{device_id}/sessions` | E | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
+| `DELETE /v1/devices/{device_id}/sessions` | E, F | — | `204` (all sessions of that device, sockets closed); `409 E_INVALID_REQUEST` for another device's unlisted row created less than 10 minutes ago; `404 E_NOT_FOUND` for another user's device; spends the device session's write bucket (`429 E_RATE_LIMITED`) |
 | `POST /v1/gateway/ticket` | E | `[]` | `201 [ticket(tstr), expires(uint)]` — single use, 30 s |
 
 The full session issuance and lifetime rules — scopes, lifetimes, revocation — are
@@ -181,16 +189,16 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs_totp(uint)]` |
-| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr)]` | `204` |
-| `POST /v1/auth/totp/enroll` | E | `[]` | `[secret(tstr), otpauth_url(tstr)]` |
-| `POST /v1/auth/totp/confirm` | E | `[code(tstr)]` | `[recovery_codes([tstr])]` |
-| `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]` |
-| `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]` |
-| `POST /v1/auth/passkey/register/begin` | E | `[]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
-| `POST /v1/auth/passkey/register/finish` | E | `[ceremony_id(bstr16), response(tstr)]` | `[cred_id(bstr)]` |
+| `POST /v1/auth/password/login` | — | `[username(tstr), password(tstr)]` | `[assertion(tstr), needs(uint)]` (`needs`: § Second factors) |
+| `POST /v1/auth/password` | E (step-up) | `[old(tstr\|null), new(tstr), stepup(tstr\|null)]`; the third element may be left out (a null `stepup`) | `204`; a wrong `old` is `403 E_FORBIDDEN`, counted on the step-up ledgers (§ Second factors), so past their free attempts every attempt, the right one included, is `429 E_RATE_LIMITED`; `429` too, before any guess, while the client address's login failure budget is spent. A **first** password (the account has none, `old` is null) needs a session established within `auth.session.reauth_window` (`403 E_FORBIDDEN` otherwise) and, when the account holds a second factor, a step-up token, spent after the window check (`403 E_STEP_UP` without a valid one); `stepup` is ignored when a password exists, where `old` is the step-up |
+| `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]` (§ Second factors) |
+| `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]` (§ Second factors) |
+| `POST /v1/auth/totp/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 only; `429 E_RATE_LIMITED` while the account is locked out (the assertion is spent) |
+| `POST /v1/auth/recovery/verify` | — | `[assertion(tstr), code(tstr)]` | `[assertion(tstr)]`; accepts an assertion owing `needs` 1 or 2 |
+| `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]` (the library's JSON, opaque to the client's CBOR layer) |
+| `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]` (§ Second factors) |
 | `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]` |
-| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]` | `[assertion(tstr)]` |
+| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]` | `[assertion(tstr), needs(uint 0\|1)]` (§ Second factors) |
 | `GET /v1/auth/oidc/start` | — | — | `302` to the IdP, PKCE `S256`, state cookie `__Secure-dilla-oidc` scoped to this route only |
 | `GET /v1/auth/oidc/callback` | — | — | `302` back to the client with a one-time `assertion` |
 
@@ -198,6 +206,79 @@ The `assertion` is a short-lived one-time **enrolment assertion**: it proves hos
 by `POST /v1/devices/{device_id}/sessions`, sent as the token's UTF-8 bytes in a bstr (element 4).
 With a registration array in element 3 it registers the device; either way the minted session is
 `pending`. It is never a session token and never reaches `/v1` beyond that one endpoint.
+
+### Second factors
+
+Every human account holds a second factor: a TOTP authenticator, or a passkey. The routes below
+enrol, use, list and remove them. Where a row repeats one of § Auth ceremonies, this one is the
+full contract.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/auth/password/login` | — | `[username, password]` | `[assertion(tstr), needs(uint)]`: `0` nothing owed; `1` a TOTP code or a backup code (`/totp/verify`, `/recovery/verify`); `2` the account has passkeys and no TOTP: a passkey login, or a backup code |
+| `POST /v1/auth/totp/enroll` | E, F | `[stepup(tstr\|null)]` | `[secret(tstr), otpauth_url(tstr)]`; `403 E_STEP_UP` when the account holds a factor and `stepup` is missing or not valid; `403 E_FORBIDDEN` over a confirmed secret (unchanged) |
+| `POST /v1/auth/totp/confirm` | E, F | `[code(tstr)]` | `[backup_codes([tstr])]`: `auth.totp.recovery_codes` of them (1–16, default 10) when the account held no unused code, else `[]` (the same for `register/finish`); clears `factor_owed` in the same transaction; `403 E_STEP_UP` when a factor appeared since an enroll that carried no step-up; `404 E_NOT_FOUND` with no pending enrolment (none, or already confirmed); `400 E_INVALID_REQUEST` for a code that does not match |
+| `POST /v1/auth/recovery/verify` | — | `[assertion, code]` | `[assertion]`; accepts an assertion owing `needs` 1 **or 2**; `429 E_RATE_LIMITED` while the account is locked out (the assertion is spent) |
+| `POST /v1/auth/passkey/register/begin` | E, F | `[stepup(tstr\|null)]` | `[ceremony_id(bstr16), options(tstr)]`; the user's credentials are excluded; `409 E_INVALID_REQUEST` when the account already holds 1024 passkeys (checked before the step-up token is spent) |
+| `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id, response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]`; `name` is 1–64 bytes of UTF-8 without control characters (`400` otherwise, the ceremony kept); an unknown, spent or expired ceremony, another account's, or a response that does not verify is `400 E_INVALID_REQUEST` (another account's ceremony is not spent); clears `factor_owed`; `403 E_STEP_UP` as for confirm; `409 E_INVALID_REQUEST` at 1024 passkeys |
+| `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id, response]` | `[assertion(tstr), needs(uint 0\|1)]`: 0 when the authenticator verified the user, else 1; `401 E_PASSKEY_UNKNOWN` for a passkey this instance does not hold; `429 E_RATE_LIMITED`, and no assertion, when it would owe 1 while the account is locked out |
+| `GET /v1/auth/factors` | E, F | — | `[owed(uint), totp(uint\|null), passkeys([[cred_id(bstr), name(tstr), created(uint), last_used(uint\|null)]]), backup_codes_left(uint), password(uint)]`; an account marked as owing that holds a factor is cleared first and answers `owed` 0 (§ Second factors) |
+| `POST /v1/auth/stepup` | E | `[method(uint 0 password\|1 totp\|2 backup code), secret(tstr)]` | `201 [stepup(tstr), expires(uint)]`; a wrong secret is `403 E_STEP_UP`; `429 E_RATE_LIMITED` with `retry_after_ms` from the failure that crosses the step-up ledger's free attempts on, or while the client address's login failure budget is spent; `400 E_INVALID_REQUEST` for another method |
+| `POST /v1/auth/stepup/passkey/begin` | E | `[]` | `[ceremony_id, options]` (this user's credentials only; UV required); `400 E_INVALID_REQUEST` for an account that holds no passkey |
+| `POST /v1/auth/stepup/passkey/finish` | E | `[ceremony_id, response]` | `201 [stepup, expires]`; `403 E_STEP_UP` for a login's ceremony, another account's, or an assertion that does not verify; `429` as for `/stepup` |
+| `POST /v1/auth/factors/remove` | E | `[stepup(tstr), kind(uint 0 totp\|1 passkey), cred_id(bstr\|null)]` | `204`; `409 E_INVALID_REQUEST` when it is the account's last factor; `404 E_NOT_FOUND` for a credential that isn't the caller's; `403 E_STEP_UP` |
+| `POST /v1/auth/recovery/codes` | E | `[stepup(tstr)]` | `[backup_codes([tstr])]`; every earlier code stops working |
+
+- **"Holds a factor"** means a confirmed TOTP secret, or at least one passkey registered for this
+  instance's `rp_id`. Backup codes are not a factor. The wire and the server call them recovery
+  codes; people are shown them as **backup codes**, and they are never the recovery key of
+  `03-identity.md`.
+- An account that holds no factor **owes** one (`factor_owed`, § Sessions). The TOTP confirm and
+  the passkey finish write the factor, clear `factor_owed` and mint backup codes in one
+  transaction under the account's lock.
+- **`factor_owed` follows what the account holds.** At every start, before it serves, `dillad`
+  reconciles it both ways: it marks every live human account that holds no factor and clears it
+  from every one that holds one. A passkey counts only under the current `rp_id`, so changing
+  `rp_id` marks an account whose only factor is a passkey, and putting it back (and restarting)
+  clears it. `GET /v1/auth/factors` also clears it, and answers `owed` 0, when it finds the
+  account holds a factor (checked and written in one transaction under the account's lock). An
+  operator reset deletes the factors and sets the mark in one transaction under that lock, so
+  neither clears a mark a reset set.
+- **Step-up:** required by enroll, register/begin, remove and codes, and by a first password
+  (`POST /v1/auth/password` with no password on the account), exactly when the caller's account
+  holds a factor; a token is single-use, bound to the session that minted it, and lives 300 s;
+  only these routes spend one. A first password needs it because a browser can establish a fresh
+  session from its device key at will: the session's freshness alone would let a stolen browser
+  set a password and then step up with it (method 0). The confirm and finish re-check the rule under the
+  account's lock: when a factor appeared since a begin that carried no valid step-up, they write
+  nothing and answer `403 E_STEP_UP`. The record of what a begin carried lives in memory, so after
+  a restart the person confirms again. Step-up guesses (the step-up routes and the old password of
+  `POST /v1/auth/password`) are counted on two step-up ledgers of their own, never on the account's
+  password lockout: one per account, whatever the address, and one per account **and** client
+  address. A request that ends before its guess is decided (a store or hasher failure) is not
+  counted. A success refunds its own guess and clears only the per-address count; the
+  account-wide count ages out over `auth.lockout.observation_window`, so no success, the owner's
+  included, resets a thief's guesses. A step-up also respects the address's login failure budget
+  (§ Rate limits), which its failures spend.
+- **Limits:** an account holds at most 1024 passkeys for this `rp_id`, and
+  `auth.totp.recovery_codes` is 1–16 (the client's decode bounds).
+- **A guess is counted before its secret is checked,** in one step with the lockout check, at
+  every step-up route (`/stepup`, `stepup/passkey/finish`, the old password of
+  `POST /v1/auth/password`) and at `/totp/verify` and `/recovery/verify`: concurrent guesses
+  count against each other, so a burst in flight cannot all reach the comparison. The password
+  login is bounded instead by its per-handle bucket.
+- **The account lockout covers the second step:** a password or passkey login that still owes a
+  factor does not clear the account's failed-login ledger; wrong codes at `/totp/verify` and
+  `/recovery/verify` are counted on it; and while it is locked those routes answer `429`, as does a
+  passkey login that would owe a code. The code that completes a login clears it.
+- **A step-up passkey ceremony is not a login ceremony,** nor the reverse: `login/finish` refuses a
+  step-up's ceremony (`401`), and `stepup/passkey/finish` refuses a login's or another account's
+  (`403 E_STEP_UP`).
+- **The last factor** cannot be removed (`409`), also when two devices remove the last two at once.
+- **OIDC callback:** the assertion owes a factor whenever the account holds one (`needs` as for the
+  password login).
+- **Passkeys count alone only with user verification** (`auth.webauthn.user_verification`, default
+  `required`), read from each assertion's own authenticator data.
 
 ## Communities and content
 
@@ -271,7 +352,7 @@ community answers `404` to everyone.
   many succeed.
   The one exception is the join that follows a sign-up with the same invite, which spends nothing
   (§ Invites, one use per person).
-- `require_mod_2fa = 1` refuses (`403 E_FORBIDDEN`) a grant of a role whose `allow` carries any
+- `require_mod_2fa = 1` refuses (`403 E_TARGET_NO_FACTOR`) a grant of a role whose `allow` carries any
   moderation bit (manage messages, kick, ban, manage channels, manage roles, manage community,
   administrator) to a user who holds neither a confirmed TOTP secret nor a passkey for this
   instance's relying party.
@@ -1097,8 +1178,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 ### Reports
 
 A report reveals one message to the instance's admins so they can verify what was sent (`04` §
-Franking). Filing is `E` for any enrolled session; the queue and its status are instance-admin only
-(§ Flags), `403 E_FORBIDDEN` for anyone else.
+Franking). Every route below is `E`: filing is open to any enrolled session; the queue and its
+status are instance-admin only (§ Flags), `403 E_FORBIDDEN` for anyone else.
 
 | Method and path | Request | Response |
 |---|---|---|
@@ -1147,6 +1228,7 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
 | `DELETE /v1/admin/blobs/{blob_id}` | `[reason(tstr)]` | `204` |
 | `GET /v1/admin/audit?since=&limit=` | — | `[[actor(bstr 16)\|null, action(tstr), target(tstr), detail(tstr), at(uint)]]` |
 | `POST /v1/admin/users/{id}/disable` | `[disabled(uint)]` | `204` |
+| `GET /v1/admin/diagnostics` | — | `[[name(tstr), status(uint), detail(tstr), fix(tstr)]]` (below) |
 
 - **Purge.** `DELETE /v1/admin/blobs/{blob_id}` removes every reference to the blob in every
   channel, deletes it and unlinks the file at once, and records a tombstone, so a later `PUT`,
@@ -1178,7 +1260,8 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
 - **Diagnostics.** `GET /v1/admin/diagnostics` answers `200 [[name(tstr), status(uint),
   detail(tstr), fix(tstr)]]`: first the `dillad doctor` legs the running instance can answer
   itself, under doctor's names and in doctor's order — `database` (the schema version), `data_dir`
-  (its mode), `wasi` (the core the delivery service validates in), `udp`, `blobs` (every referenced
+  (its mode), `wasi` (the core the delivery service validates in), `udp`, `webauthn` (the passkey
+  relying party and the origins it accepts), `blobs` (every referenced
   file present, no stray files) — then two legs of the instance's own, which doctor does not have:
   `calls` (the call stats of the last 15 minutes: how many of the calls that reported are still
   live, the reports, how many had a relay selected, the median and 95th-percentile round-trip time,
@@ -1190,9 +1273,11 @@ The instance-admin routes. Every one is `E` and needs a user whose `users.flags`
   `dillad doctor`'s, so an admin request never makes the instance dial out. The report runs only
   after the admin check.
 
+- **Reset factors.** `dillad admin user reset-factors` removes a person's second factors and backup codes and marks the account owing one (`§ Second factors`); sessions stay, and every device sets up a factor before it is used again.
+
 Informative: the operator's own surface is `dillad admin <noun> <verb>`, run at a shell on the
 instance's host and acting as the operator, who is not a `users` row. `user list|show|disable|
-enable|delete`, `invite create|list|revoke`, `community list|show`, `device revoke`, `blob purge`
+enable|delete|reset-factors`, `invite create|list|revoke`, `community list|show`, `device revoke`, `blob purge`
 and `audit` read and write the same tables as the routes above. Every verb that changes state
 writes an audit row with a null `actor` (and the same `action` names: `user.disable`, `user.enable`,
 `user.delete`, `invite.create`, `invite.revoke`, `device.revoke`, `blob.purge`); a read-only verb
@@ -1275,7 +1360,7 @@ but valid envelope before the validator ever saw it); `PUT /v1/backups/0/0` 256 
 
 | Method and path | Auth | Request | Response | Errors |
 |---|---|---|---|---|
-| `GET /v1/instance` | — or E (`instance.discovery`) | — | the discovery document below | `401` |
+| `GET /v1/instance` | — or E, F (`instance.discovery`) | — | the discovery document below | `401` |
 | `GET /v1/instance/limits` | — | — | the limits array below | — |
 
 The discovery document is an eleven-element array, in this order:

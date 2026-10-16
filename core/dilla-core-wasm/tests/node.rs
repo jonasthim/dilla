@@ -466,6 +466,16 @@ fn a_client_error_crosses_as_its_display() {
         message(client_js_error(&detailed)),
         "E_CORE_INPUT: limit: 0 is outside 1..=200"
     );
+    // C4x (web3.6): a store written by a newer client crosses as its own code with both numbers,
+    // the exact text the worker reads (core-port.ts `storeNewerOf`).
+    let newer = ClientError::from(dilla_core::mls::StorageError::StoreNewer {
+        found: 5,
+        supported: 4,
+    });
+    assert_eq!(
+        message(client_js_error(&newer)),
+        "E_STORE_NEWER: found 5, supported 4"
+    );
 }
 
 #[wasm_bindgen_test]

@@ -24,8 +24,8 @@
 //   4c. (web-2c and web-3) the native peer's server "Bridge Watch": Privacy, the comparison, search, diagnostics, the
 //      peer's changed identity in the conversation, in Privacy and as a refused voice join, and a second tab;
 //   5. removes mira from the server on ada's authority (the owner's DELETE /v1/communities/{id}/members/{user},
-//      through the host's POST /debug/kick, since the web client has no kick yet) and shoots the "no longer a member"
-//      state. This is the one step not done through a client; the ids it needs are read from the host's database;
+//      through the host's POST /debug/kick, since the web client has no kick yet) and shoots the "You are no longer
+//      in ..." banner (shell-removed). This is the one step not done through a client; the ids it needs are read from the host's database;
 //   6. closes every browser, stops the host and deletes the temporary directories.
 //
 // The host runs its in-process LiveKit on 127.0.0.1:7888 (signalling, reached through the host's /rtc proxy) and
@@ -44,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { t } from '../../packages/web/src/strings/index.ts';
 import { chromiumMediaArgs, writeFixtures } from '../media/support/fixtures.ts';
+import { nextCode } from '../web/support/totp.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TESTHOST_BIN = path.join(REPO_ROOT, 'target', 'dilla-testhost');
@@ -259,6 +260,11 @@ async function settle(page, { keepFocus = false } = {}) {
   }, keepFocus);
 }
 
+// web3.6: every account sets up an authenticator app. The setup key of each person is kept for the sign-in shots;
+// the codes are computed for the test host's clock (control URL set by main()).
+let controlBase = '';
+const authenticators = new Map();
+
 async function onboard(page, person, invite, shots) {
   const shot = async (name) => { if (shots) { await settle(page); await shots(name); } };
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
@@ -281,6 +287,22 @@ async function onboard(page, person, invite, shots) {
   await byText(page, 'heading', 'onboarding.browser.title').waitFor({ timeout: WAIT });
   await shot('onboarding-4-browser');
   await byText(page, 'button', 'onboarding.browser.submit').click();
+  await byText(page, 'heading', 'factor.choose.title').waitFor({ timeout: WAIT });
+  await shot('onboarding-5-factor-choose');
+  await page.getByRole('radio', { name: new RegExp(t('factor.choose.app')) }).check();
+  await byText(page, 'button', 'factor.choose.next').click();
+  await byText(page, 'heading', 'factor.totp.title').waitFor({ timeout: WAIT });
+  const keyField = page.getByLabel(t('factor.totp.key'), { exact: true });
+  await page.waitForFunction(() => /^[A-Z2-7]{16,}$/.test(document.querySelector('#factor-totp-key')?.value ?? ''), null, { timeout: WAIT });
+  const authenticator = { totpSecret: await keyField.inputValue(), lastCounter: -1 };
+  authenticators.set(person.username, authenticator);
+  await shot('onboarding-5-factor-app');
+  await page.getByLabel(t('factor.totp.code'), { exact: true }).fill(await nextCode(controlBase, authenticator));
+  await byText(page, 'button', 'factor.totp.submit').click();
+  await byText(page, 'heading', 'factor.codes.title').waitFor({ timeout: WAIT });
+  await shot('onboarding-5-factor-codes');
+  await byText(page, 'checkbox', 'factor.codes.ack').check();
+  await byText(page, 'button', 'factor.codes.next').click();
   await byText(page, 'heading', 'onboarding.done.title').waitFor({ timeout: WAIT });
   await shot('onboarding-5-done');
   await byText(page, 'button', 'onboarding.done.next').click();
@@ -448,6 +470,7 @@ async function main(argv) {
   const o = parseArgs(argv);
   const publicUrl = `http://127.0.0.1:${o.port}`;
   const controlUrl = `http://127.0.0.1:${o.control}`;
+  controlBase = controlUrl;
   if (!existsSync(path.join(WEB_ROOT, 'index.html'))) throw new Error(`${WEB_ROOT} has no index.html: npm run build -w @dilla/web first`);
   if (!existsSync(WASI_CORE)) throw new Error(`${WASI_CORE} is missing: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked, then copy it there`);
   for (const p of [o.port, o.control, SFU.port]) {
@@ -723,7 +746,7 @@ async function main(argv) {
     await composer(mira, 'general').fill('');
 
     // Sign-in ceremony in a clean fourth browser, in the shipped order: recovery key, then username and
-    // password, then (no second factor on this account) done. The key is held only in this short-lived process.
+    // password, then the code from the authenticator app, then done. The key is held only in this short-lived process.
     const second = await open('mira-second');
     const shootSecond = shotsOf(second);
     await second.goto('/welcome');
@@ -742,6 +765,12 @@ async function main(argv) {
     await second.getByLabel(t('signin.login.password'), { exact: true }).fill(MIRA_PASSWORD);
     await settle(second);
     await shootSecond('signin-2-login');
+    await byText(second, 'button', 'signin.login.submit').click();
+    // web3.6: a new browser also takes the code from the authenticator app.
+    await byText(second, 'heading', 'signin.totp.title').waitFor({ timeout: WAIT });
+    await second.getByLabel(t('signin.totp.code'), { exact: true }).fill(await nextCode(controlUrl, authenticators.get(PEOPLE.mira.username)));
+    await settle(second);
+    await shootSecond('signin-3-code');
     await byText(second, 'button', 'signin.login.submit').click();
     await byText(second, 'heading', 'signin.done.title').waitFor({ timeout: WAIT });
     await settle(second);
@@ -771,6 +800,12 @@ async function main(argv) {
     await byText(mira, 'button', 'notify.permission.ask').waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-notifications');
+    // web3.6: Settings -> Sign-in lists the factors mira set up at sign-up.
+    await byText(mira, 'button', 'factorSettings.nav').click();
+    await byText(mira, 'heading', 'factorSettings.title').waitFor({ timeout: WAIT });
+    await byText(mira, 'button', 'factorSettings.codes.make').waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('settings-signin');
     await byText(mira, 'button', 'settings.close').click();
 
     // Enter the second channel once so this browser joins its group, then leave it unopened on screen.
@@ -963,21 +998,12 @@ async function main(argv) {
     await mira.getByRole('button', { name: 'general', exact: true }).click();
     await composer(mira, 'general').waitFor({ timeout: WAIT });
 
-    // Mira is removed from the server with her tab open; her next message meets the lost membership.
+    // Mira is removed from the server with her tab open. Since the removal flow (web3.5) she is taken to another
+    // server and a banner says "You are no longer in ...", which is what the guide shows.
     await kickFromServer(controlUrl, path.join(scratch, 'host'), SERVER, PEOPLE.ada.username, PEOPLE.mira.username);
-    const box = composer(mira, 'general');
-    const notMember = mira.getByText(t('shell.composer.notMember'), { exact: true });
-    const lost = 'anyone still here?';
-    for (let i = 0; i < 20 && !(await notMember.isVisible()); i++) {
-      if (await box.isEnabled() && (await row(mira, 'general', lost).count()) === 0) {
-        await box.fill(lost);
-        await box.press('Enter');
-      }
-      await mira.waitForTimeout(1000);
-    }
-    await notMember.waitFor({ timeout: WAIT });
+    await mira.getByText(t('removed.notice', { server: SERVER }), { exact: true }).waitFor({ timeout: WAIT });
     await settle(mira);
-    await shoot('shell-not-member');
+    await shoot('shell-removed');
   } finally {
     if (peer !== null) await stop(peer.child);
     for (const c of contexts) await c.close().catch(() => undefined);

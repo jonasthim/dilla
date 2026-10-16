@@ -104,6 +104,8 @@ export async function harness(opts: HarnessOptions = {}) {
     postTicket: () => Promise.resolve({ ticket: 'ticket', expires: 1_700_000_030n }),
     postKeyPackages: () => Promise.resolve(0),
     getAccountMe: () => Promise.resolve({ userId: ME.user, username: 'me', display: 'Me', kind: 0, flags: 0n }),
+    // web3.6: enterReady's factor gate; this account owes nothing.
+    getFactors: () => Promise.resolve({ owed: false, totp: 1_700_000_000, passkeys: [], backupCodesLeft: 10, hasPassword: true }),
   };
   const requests: { route: string; args: unknown[] }[] = [];
   const answers: Answer[] = [];

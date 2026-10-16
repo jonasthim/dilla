@@ -86,7 +86,8 @@ modes (exactly one):
     --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
   --upgrade              replace the binary and the core of an installed instance,
                          restart it and run doctor; never touches the config or the data,
-                         and puts the previous binary and core back if the restart fails
+                         and puts the previous binary and core back if the restart fails,
+                         first migrating the database back down if the new binary migrated it
 
 options:
   --version TAG          the release to install, e.g. v0.1.0 (default: the tag this copy
@@ -501,9 +502,51 @@ doctor_and_report() {
 	return 0
 }
 
+# schema_version BINARY: the database's schema version, as BINARY's `migrate status` reads it.
+schema_version() {
+	sv_out="$(runuser -u dillad -- "$1" migrate status --config="$CONF" 2>/dev/null)" || return 1
+	sv="$(printf '%s\n' "$sv_out" | awk '$1 == "current" { sub(/,$/, "", $2); print $2; exit }')"
+	case "$sv" in '' | *[!0-9]*) return 1 ;; esac
+	printf '%s\n' "$sv"
+}
+
+# rollback_stuck REASON: the rollback cannot prove the database is at a schema the previous binary
+# reads, so the previous binary is NOT started (it refuses a newer schema, so the instance would
+# stay down either way). The new binary stays in place, and the operator is told the ways out.
+rollback_stuck() {
+	log "error: dilla did not restart with the new binary, and the rollback stopped: $1"
+	if [ "$STOPPED" -eq 1 ]; then
+		log "dilla is stopped. The new binary is still $BIN_DIR/dillad; the previous one is $BIN_DIR/dillad.prev."
+	else
+		log "dilla could not be stopped, so systemd may still be restarting the new binary ($BIN_DIR/dillad); the previous one is $BIN_DIR/dillad.prev."
+	fi
+	if [ -z "${SCHEMA_AFTER:-}" ]; then
+		log "First read the database's schema version with the previous binary:"
+		log "    runuser -u dillad -- $BIN_DIR/dillad.prev migrate status --config=$CONF"
+		log "If it prints \"current $SCHEMA_BEFORE\" (or lower), nothing was migrated: put the previous pair back and start it:"
+		log "    systemctl stop dilla; cp -p $BIN_DIR/dillad.prev $BIN_DIR/dillad; cp -p $BIN_DIR/$CORE_NAME.prev $BIN_DIR/$CORE_NAME; systemctl start dilla"
+		log "If it prints a higher current version, the new binary migrated it; then either:"
+	else
+		log "The database is at schema $SCHEMA_AFTER and the previous binary refuses anything above $SCHEMA_BEFORE, so do not put it back as it is. Either:"
+	fi
+	log "  1. fix what stopped the new release (journalctl -o cat -u dilla) and run: systemctl start dilla"
+	log "  2. or stop dilla, take the database back with the NEW binary, then put the previous pair back:"
+	log "       runuser -u dillad -- $BIN_DIR/dillad migrate down --to=$SCHEMA_BEFORE --i-know-what-i-am-doing --config=$CONF"
+	log "       cp -p $BIN_DIR/dillad.prev $BIN_DIR/dillad; cp -p $BIN_DIR/$CORE_NAME.prev $BIN_DIR/$CORE_NAME; systemctl start dilla"
+	log "  3. or, on SQLite, restore the copy the new binary took before it migrated, <db.path>.pre-migration-<unix time>"
+	log "     beside the database (it loses everything written since), then put the previous pair back as in 2"
+	exit 1
+}
+
 # ---------------------------------------------------------------- upgrade ----
 if [ "$UPGRADE" -eq 1 ]; then
 	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME"
+	# The schema the previous binary runs on. The new binary migrates the database when it
+	# starts, and a dillad refuses a database newer than its own migrations, so a rollback must
+	# first take the database back to this version, with the new binary (the only one that knows
+	# the way down).
+	SCHEMA_BEFORE="$(schema_version "$BIN_DIR/dillad")" ||
+		die "could not read the database's schema version with the installed binary (runuser -u dillad -- $BIN_DIR/dillad migrate status --config=$CONF); nothing was changed"
 	# The previous pair stays beside the new one, for the rollback below and by hand.
 	cp -p "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"
 	cp -p "$BIN_DIR/$CORE_NAME" "$BIN_DIR/$CORE_NAME.prev"
@@ -511,7 +554,27 @@ if [ "$UPGRADE" -eq 1 ]; then
 	put "$WORK/$CORE_NAME" "$BIN_DIR/$CORE_NAME" 0644
 	log "restarting dilla"
 	if ! systemctl restart dilla >&2; then
-		log "error: dilla did not restart with the new binary; putting the previous binary and core back"
+		log "error: dilla did not restart with the new binary"
+		# Stopped first: systemd restarts a failed dilla on its own (Restart=on-failure), and each
+		# start of the new binary would migrate the database up again.
+		STOPPED=1
+		systemctl stop dilla >&2 || STOPPED=0
+		# Read with the PREVIOUS binary: it loaded this dilla.toml a minute ago, and its `migrate
+		# status` reports a newer schema without refusing it. The new binary may refuse the config
+		# (a release that validates it more strictly), in which case it never migrated anything.
+		SCHEMA_AFTER=""
+		SCHEMA_AFTER="$(schema_version "$BIN_DIR/dillad.prev")" || {
+			SCHEMA_AFTER=""
+			rollback_stuck "could not read the database's schema version with the previous binary"
+		}
+		if [ "$SCHEMA_AFTER" -gt "$SCHEMA_BEFORE" ]; then
+			# The new binary got past its config load and migrated, so it can take the database down.
+			[ "$STOPPED" -eq 1 ] || rollback_stuck "dilla could not be stopped, so the database cannot be migrated down safely"
+			log "the new binary migrated the database from schema $SCHEMA_BEFORE to $SCHEMA_AFTER; taking it back to $SCHEMA_BEFORE"
+			runuser -u dillad -- "$BIN_DIR/dillad" migrate down --to="$SCHEMA_BEFORE" --i-know-what-i-am-doing --config="$CONF" >&2 ||
+				rollback_stuck "migrate down --to=$SCHEMA_BEFORE failed"
+		fi
+		log "putting the previous binary and core back"
 		put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
 		put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
 		if systemctl restart dilla >&2; then

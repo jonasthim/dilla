@@ -106,7 +106,18 @@ func (g *Gateway) sweepSessions(ctx context.Context) {
 		if !ready || len(hash) == 0 {
 			continue
 		}
-		if _, err := sessions.GetSessionByHash(ctx, hash, now); !errors.Is(err, store.ErrNotFound) {
+		row, err := sessions.GetSessionByHash(ctx, hash, now)
+		if err == nil && row.FactorOwed {
+			// The account owes a second factor now (the operator's reset keeps the session, web3.6
+			// D5): the socket ends 4003, the code a re-identify would meet, and is not resumable.
+			g.closeConn(c, CloseUnauthenticated, "second factor required")
+			g.suspend(c)
+			if g.opts.OnFactorOwed != nil {
+				g.opts.OnFactorOwed(c.deviceID)
+			}
+			continue
+		}
+		if !errors.Is(err, store.ErrNotFound) {
 			if err != nil && g.opts.Log != nil {
 				g.opts.Log.Warn("reading a connection's session failed; leaving it open",
 					"device", c.deviceID.String()[:8], "err", err)

@@ -49,6 +49,7 @@ func diagnostics(o Options, wasm *mlswasi.Runtime, blobs *blob.Store) func(conte
 				Detail: fmt.Sprintf("abi_version=%d core_version=%s", info.ABIVersion, info.CoreVersion)})
 		}
 		add(ops.UDPLeg(*o.Config))
+		add(ops.WebAuthnLeg(*o.Config))
 		add(ops.BlobConsistencyLeg(ctx, o.Repo, blobs))
 		return r
 	}

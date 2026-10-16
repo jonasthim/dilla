@@ -17,6 +17,9 @@ use dilla_core::identity::DeviceList;
 use dilla_core::ids::DeviceId;
 use tungstenite::{Message, WebSocket};
 
+use crate::TestkitError;
+use crate::totp::{self, TotpState};
+
 use super::{
     CommitRequest, CommitResult, DeliveryService, Device, DsError, ErrorExtras, Frame, GroupId,
     GroupInfoResp, HandshakeItem, HealRequest, KeyPackageResp, MessageItem, ProposalItem,
@@ -82,6 +85,9 @@ pub struct HttpDs {
     /// Op 53 rings in arrival order, kept apart from the delivery-service frames until `take_rings` (web-3,
     /// L-GW-33): a ring is never replayed, so a `drain` that dropped one would lose it for good.
     rings: Vec<CallRing>,
+    /// The authenticator-app secret this account enrolled at registration, and the last counter the instance took
+    /// (protocol/09 § Second factors); `None` for a session that never enrolled one.
+    totp: Option<TotpState>,
 }
 
 /// At most this many unclaimed rings are kept; the oldest goes first. A test reads its rings within a few frames.
@@ -141,11 +147,12 @@ pub enum Element3<'a> {
     Credential(&'a [u8]),
     Registration(&'a Registration),
 }
-/// `POST /v1/auth/password/login` → `[assertion, needs_totp]`.
+/// `POST /v1/auth/password/login` → `[assertion, needs]` (protocol/09): `0` nothing owed, `1` a TOTP code (or a backup
+/// code), `2` a passkey login (or a backup code) for an account that holds no TOTP.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PasswordLogin {
     pub assertion: String,
-    pub needs_totp: bool,
+    pub needs: u8,
 }
 /// One served device-list row (L-HTTP-56): `[version, blob, ssk_signature, prev_hash]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -786,15 +793,11 @@ fn decode_password_login(bytes: &[u8]) -> Result<PasswordLogin, CborError> {
     decode_strict(bytes, |d| {
         d.array(2)?;
         let assertion = d.text()?.to_owned();
-        let needs_totp = match d.uint()? {
-            0 => false,
-            1 => true,
+        let needs = match d.uint()? {
+            n @ 0..=2 => n as u8,
             _ => return Err(CborError::IntegerOverflow),
         };
-        Ok(PasswordLogin {
-            assertion,
-            needs_totp,
-        })
+        Ok(PasswordLogin { assertion, needs })
     })
 }
 
@@ -1122,6 +1125,7 @@ impl HttpDs {
             missed_acks: 0,
             expires: 0,
             rings: Vec::new(),
+            totp: None,
         }
     }
 
@@ -1182,6 +1186,7 @@ impl HttpDs {
             missed_acks: 0,
             expires: 0,
             rings: Vec::new(),
+            totp: None,
         };
         ds.open_socket()?;
         Ok(ds)
@@ -1222,6 +1227,197 @@ impl HttpDs {
             })
         })
         .map_err(protocol)
+    }
+
+    /// Enrols the authenticator app every account owes (protocol/09 § Second factors) over the session
+    /// `POST /v1/accounts` returned. An owed session reaches only the allow-list (and the gateway refuses
+    /// it), so this runs before `with_session`. Returns `None` when the account owes nothing. The host clock
+    /// is read from the control listener, since the confirming code is computed for the instance's time. With
+    /// `machine_clock_ok` and no control listener, the machine's clock stands in: a real instance runs on real
+    /// time and the confirm is the only code the caller ever spends (netprobe). Without it, an unset
+    /// `DILLA_TESTKIT_CONTROL` is a scenario error.
+    pub fn enrol_second_factor(
+        base: &str,
+        token: &str,
+        machine_clock_ok: bool,
+    ) -> Result<Option<TotpState>, TestkitError> {
+        enrol_second_factor_on(base, token, machine_clock_ok, control_is_set())
+    }
+}
+
+/// `HttpDs::enrol_second_factor` with the control listener's presence given, so a test need not touch the
+/// process environment.
+fn enrol_second_factor_on(
+    base: &str,
+    token: &str,
+    machine_clock_ok: bool,
+    control_set: bool,
+) -> Result<Option<TotpState>, TestkitError> {
+    {
+        let agent = new_agent();
+        let base = base.trim_end_matches('/');
+        let (status, out) = call(
+            &agent,
+            "GET",
+            &format!("{base}/v1/auth/factors"),
+            Some(token),
+            None,
+        )?;
+        check_status(status, &out)?;
+        let owed = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(5)?;
+            let owed = d.uint()?;
+            for _ in 0..4 {
+                d.skip()?;
+            }
+            Ok(owed)
+        })
+        .map_err(protocol)?;
+        if owed == 0 {
+            return Ok(None);
+        }
+        if !control_set && !machine_clock_ok {
+            return Err(TestkitError::Scenario(
+                "the instance requires a second factor and DILLA_TESTKIT_CONTROL is unset".into(),
+            ));
+        }
+        let out = post_cbor(
+            &agent,
+            &format!("{base}/v1/auth/totp/enroll"),
+            Some(token),
+            &encode(|e| {
+                e.array(1).null();
+            }),
+        )?;
+        let secret = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(2)?;
+            let secret = d.text()?.to_owned();
+            d.skip()?;
+            Ok(secret)
+        })
+        .map_err(protocol)?;
+        let now = if control_set {
+            host_unix()?
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+        };
+        let counter = now / totp::PERIOD;
+        let code = totp::code(&secret, counter).map_err(TestkitError::Scenario)?;
+        let out = post_cbor(
+            &agent,
+            &format!("{base}/v1/auth/totp/confirm"),
+            Some(token),
+            &encode(|e| {
+                e.array(1).text(&code);
+            }),
+        )?;
+        let backup_codes = decode_strict(&out, |d: &mut Decoder<'_>| {
+            d.array(1)?;
+            (0..array_or_null(d)?)
+                .map(|_| Ok(d.text()?.to_owned()))
+                .collect()
+        })
+        .map_err(protocol)?;
+        Ok(Some(TotpState {
+            secret,
+            last_counter: counter,
+            backup_codes,
+        }))
+    }
+}
+
+impl HttpDs {
+    /// Keeps (or drops) the authenticator-app secret [`HttpDs::enrol_second_factor`] returned.
+    pub fn set_totp(&mut self, totp: Option<TotpState>) {
+        self.totp = totp;
+    }
+
+    /// The enrolled authenticator app, with the last counter the instance took.
+    pub fn totp(&self) -> Option<&TotpState> {
+        self.totp.as_ref()
+    }
+
+    /// Turns a password login into an assertion that owes nothing. `needs` 1 is answered with this account's
+    /// TOTP code at `/v1/auth/totp/verify`, counter `max(c-1, last+1)` (advancing the host clock one period at a
+    /// time while that is past `c+1`); `needs` 2 asks for a passkey, which a native peer has none of.
+    pub fn second_factor_assertion(
+        &mut self,
+        login: PasswordLogin,
+    ) -> Result<String, TestkitError> {
+        match login.needs {
+            0 => Ok(login.assertion),
+            1 => {
+                let code = self.next_totp_code()?;
+                let out = post_cbor(
+                    &self.agent,
+                    &format!("{}/v1/auth/totp/verify", self.base),
+                    None,
+                    &encode(|e| {
+                        e.array(2).text(&login.assertion).text(&code);
+                    }),
+                )?;
+                let assertion = decode_strict(&out, |d: &mut Decoder<'_>| {
+                    d.array(1)?;
+                    Ok(d.text()?.to_owned())
+                })
+                .map_err(protocol)?;
+                Ok(assertion)
+            }
+            _ => Err(TestkitError::Scenario(
+                "the account asks for a passkey login and a native peer holds no passkey".into(),
+            )),
+        }
+    }
+
+    /// This account's next TOTP code, counter `max(c-1, last+1)`. The counter is spent from here on, whether or
+    /// not the answer reaches us: reusing a counter is refused, skipping one is harmless.
+    fn next_totp_code(&mut self) -> Result<String, TestkitError> {
+        let state = self.totp.as_ref().ok_or_else(|| {
+            TestkitError::Scenario(
+                "the account asks for a TOTP code and this peer enrolled none".into(),
+            )
+        })?;
+        let secret = state.secret.clone();
+        let counter = totp::pick_counter(
+            state.last_counter,
+            || host_unix().map_err(|e| e.to_string()),
+            || {
+                control_post("/debug/clock", r#"{"seconds":30}"#)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .map_err(TestkitError::Scenario)?;
+        let code = totp::code(&secret, counter).map_err(TestkitError::Scenario)?;
+        if let Some(state) = self.totp.as_mut() {
+            state.last_counter = counter;
+        }
+        Ok(code)
+    }
+
+    /// `POST /v1/auth/stepup [method, secret]` → `[stepup, expires]`. It spends a backup code (method 2) while one is
+    /// left, which never moves the test host's shared clock, and falls back to a TOTP code (method 1).
+    pub fn step_up(&mut self) -> Result<String, TestkitError> {
+        let backup = self.totp.as_mut().and_then(|s| s.backup_codes.pop());
+        let (method, secret) = match backup {
+            Some(code) => (2, code),
+            None => (1, self.next_totp_code()?),
+        };
+        let token = self.post_decoded(
+            "/v1/auth/stepup",
+            &encode(|e| {
+                e.array(2).uint(method).text(&secret);
+            }),
+            |d: &mut Decoder<'_>| {
+                d.array(2)?;
+                let token = d.text()?.to_owned();
+                d.uint()?;
+                Ok(token)
+            },
+        )?;
+        Ok(token)
     }
 
     pub fn device(&self) -> DeviceId {
@@ -1460,14 +1656,24 @@ impl HttpDs {
         )
     }
 
-    /// `POST /v1/auth/password [null, password]`: a first password, set from a fresh session.
-    pub fn set_password(&self, password: &str) -> Result<(), DsError> {
+    /// `POST /v1/auth/password [null, password, stepup|null]`: a first password, set from a fresh session. An
+    /// account that holds a factor spends a step-up token on it (protocol/09), taken here from the peer's TOTP.
+    pub fn set_password(&mut self, password: &str) -> Result<(), TestkitError> {
+        let stepup = match self.totp {
+            Some(_) => Some(self.step_up()?),
+            None => None,
+        };
         self.post_status(
             "/v1/auth/password",
             &encode(|e| {
-                e.array(2).null().text(password);
+                e.array(3).null().text(password);
+                match &stepup {
+                    Some(token) => e.text(token),
+                    None => e.null(),
+                };
             }),
-        )
+        )?;
+        Ok(())
     }
 
     /// `GET /v1/users/{user_id}/device-list`: the newest row (L-HTTP-56).
@@ -2174,7 +2380,7 @@ fn control(
     path: &str,
     json: Option<&str>,
 ) -> Result<Vec<u8>, DsError> {
-    let base = std::env::var("DILLA_TESTKIT_CONTROL").map_err(|_| {
+    let base = control_base().ok_or_else(|| {
         DsError::Protocol(
             "DILLA_TESTKIT_CONTROL is unset: this scenario needs the test host's control \
              listener (advance_clock, kick, snapshot, restore_snapshot, expect_quarantined, \
@@ -2215,6 +2421,27 @@ pub fn control_post(path: &str, json: &str) -> Result<Vec<u8>, DsError> {
 /// `GET <control><path>`, answered as the JSON body's bytes.
 pub fn control_get(path: &str) -> Result<Vec<u8>, DsError> {
     control(&new_agent(), "GET", path, None)
+}
+
+/// The test host's fake clock in unix seconds (`GET /debug/clock` → `{"now": n}`): a TOTP code is computed for the
+/// instance's time, which `advance_clock` moves, not for the machine's.
+/// The control listener's base URL; an empty `DILLA_TESTKIT_CONTROL` (the e2e driver passes `''`) is unset.
+fn control_base() -> Option<String> {
+    std::env::var("DILLA_TESTKIT_CONTROL")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
+fn control_is_set() -> bool {
+    control_base().is_some()
+}
+
+fn host_unix() -> Result<u64, DsError> {
+    let out = control_get("/debug/clock")?;
+    serde_json::from_slice::<serde_json::Value>(&out)
+        .ok()
+        .and_then(|v| v.get("now").and_then(serde_json::Value::as_u64))
+        .ok_or_else(|| DsError::Protocol("GET /debug/clock answered no `now`".into()))
 }
 
 impl DeliveryService for HttpDs {
@@ -3036,6 +3263,7 @@ mod tests {
             missed_acks: 0,
             expires: 0,
             rings: Vec::new(),
+            totp: None,
         }
     }
 
@@ -3100,6 +3328,132 @@ mod tests {
         );
         assert_eq!(ds.delivered.get(group.as_slice()), Some(&5));
         gateway.join().unwrap();
+    }
+
+    /// With no control listener and the machine's clock allowed (netprobe against a real instance), enrolment
+    /// reads no `/debug` route and confirms a code for the machine's time; a caller that does not allow it is
+    /// refused with the scenario error before it enrols anything.
+    #[test]
+    fn enrolment_without_a_control_listener_uses_the_machine_clock() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let server = std::thread::spawn(move || {
+            let mut seen: Vec<(String, Vec<u8>)> = Vec::new();
+            // factors (owed), enroll, confirm.
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                let (head_end, length) = loop {
+                    let n = stream.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..i]).to_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        break (i + 4, length);
+                    }
+                };
+                while buf.len() < head_end + length {
+                    let n = stream.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let line = String::from_utf8_lossy(&buf)
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .to_owned();
+                let body = match seen.len() {
+                    0 => cbor(|e| {
+                        e.array(5).uint(1).null().array(0).uint(0).uint(0);
+                    }),
+                    1 => cbor(|e| {
+                        e.array(2).text(secret).text("otpauth://totp/x");
+                    }),
+                    _ => cbor(|e| {
+                        e.array(1).array(0);
+                    }),
+                };
+                seen.push((line, buf[head_end..].to_vec()));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+            seen
+        });
+
+        let base = format!("http://{addr}");
+        let state = enrol_second_factor_on(&base, "tok", true, false)
+            .unwrap()
+            .expect("an owed account enrols");
+        let seen = server.join().unwrap();
+        let lines: Vec<&str> = seen.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            lines,
+            [
+                "GET /v1/auth/factors HTTP/1.1",
+                "POST /v1/auth/totp/enroll HTTP/1.1",
+                "POST /v1/auth/totp/confirm HTTP/1.1"
+            ],
+            "no /debug call"
+        );
+        // The confirm carries the code for the machine's counter (allow the step to roll over mid-test).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / totp::PERIOD;
+        assert!(
+            (now - 1..=now).contains(&state.last_counter),
+            "counter {} vs {now}",
+            state.last_counter
+        );
+        let want = totp::code(secret, state.last_counter).unwrap();
+        assert!(
+            seen[2].1.windows(6).any(|w| w == want.as_bytes()),
+            "the confirm body carries {want}"
+        );
+    }
+
+    #[test]
+    fn enrolment_without_control_or_permission_is_a_scenario_error() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut chunk = [0u8; 1024];
+            let _ = stream.read(&mut chunk).unwrap();
+            let body = cbor(|e| {
+                e.array(5).uint(1).null().array(0).uint(0).uint(0);
+            });
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        let err = enrol_second_factor_on(&format!("http://{addr}"), "tok", false, false)
+            .unwrap_err()
+            .to_string();
+        server.join().unwrap();
+        assert!(
+            err.contains(
+                "the instance requires a second factor and DILLA_TESTKIT_CONTROL is unset"
+            ),
+            "{err}"
+        );
     }
 
     const REGISTERED: [u8; 16] = [0x01; 16];
@@ -3611,9 +3965,20 @@ mod tests {
             decode_password_login(&login).unwrap(),
             PasswordLogin {
                 assertion: "asrt".into(),
-                needs_totp: true
+                needs: 1
             }
         );
+        // `needs` is 0, 1 or 2 (protocol/09); anything else is a protocol error.
+        for (wire, want) in [(0, Some(0)), (1, Some(1)), (2, Some(2)), (3, None)] {
+            let login = cbor(|e| {
+                e.array(2).text("asrt").uint(wire);
+            });
+            assert_eq!(
+                decode_password_login(&login).ok().map(|l| l.needs),
+                want,
+                "needs {wire}"
+            );
+        }
         let served = cbor(|e| {
             e.array(4)
                 .uint(2)

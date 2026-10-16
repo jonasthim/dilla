@@ -40,6 +40,11 @@ func TestTheCompositionRootWiresTheResolverACL(t *testing.T) {
 		}
 		return u
 	}
+	// A seeded human owes a second factor as a real sign-up does (web3.6 S1); this test is about
+	// the ACL, so the factor is satisfied.
+	for i := range seeded {
+		satisfyFactor(t, srv, user(i))
+	}
 
 	repo := srv.Repo()
 	now := srv.Now().Unix()

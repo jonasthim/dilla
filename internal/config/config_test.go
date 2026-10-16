@@ -231,6 +231,33 @@ func TestValidationRules(t *testing.T) {
 		c.LiveKit.Enabled = false
 		return c
 	}
+	// web3.6: every account needs a second factor, so an instance must offer one.
+	t.Run("auth.methods must include totp or passkey", func(t *testing.T) {
+		c := base()
+		c.Derive()
+		c.Auth.Methods = []string{"password"}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "auth.methods must include totp or passkey: every account needs a second factor") {
+			t.Fatalf("auth.methods = [password]: Validate = %v, want the second-factor error", err)
+		}
+		c.Auth.Methods = []string{"password", "totp"}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("auth.methods = [password, totp]: Validate = %v, want nil", err)
+		}
+	})
+	// web3.6 review (wire 7): the client decodes at most 16 backup codes.
+	t.Run("auth.totp.recovery_codes is at most 16", func(t *testing.T) {
+		c := base()
+		c.Derive()
+		c.Auth.TOTP.RecoveryCodes = 17
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "auth.totp.recovery_codes") {
+			t.Fatalf("recovery_codes = 17: Validate = %v, want an error naming the key", err)
+		}
+		c.Auth.TOTP.RecoveryCodes = 16
+		if err := c.Validate(); err != nil {
+			t.Fatalf("recovery_codes = 16: Validate = %v, want nil", err)
+		}
+	})
 	t.Run("behind_proxy needs trusted_proxy_cidrs", func(t *testing.T) {
 		c := base()
 		c.TLS.Mode = config.TLSModeBehindProxy

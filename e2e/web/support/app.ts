@@ -11,6 +11,7 @@ import { test as persistentTest } from './persistent';
 import { WebDriver, type PeerAttachRequest, type PeerAttached, type PeerDm, type PeerEnrolled, type PeerFetched, type PeerReceived, type PeerSendOptions, type PeerSetup } from './driver';
 export type { PeerAttachment, PeerAttachRequest, PeerAttached, PeerDm, PeerEnrolled, PeerFetched, PeerOpenedDm, PeerReceived, PeerSendOptions, PeerSetup } from './driver';
 import { runAxe } from './axe';
+import { nextCode } from './totp';
 import { arr, decode } from '../../../packages/client-core/src/cbor/index';
 import { en } from '../../../packages/web/src/strings/en';
 import { t } from '../../../packages/web/src/strings/index';
@@ -29,6 +30,12 @@ export const RK_GROUP = /^[0-9A-HJKMNP-TV-Z]{4}$/;
 export const HEX32 = /^[0-9a-f]{32}$/;
 /** The console line Chromium and WebKit print for a response the client answers or retries by design (E2E-CI-01). */
 export const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server responded with a status of (401|404|409|410|429|503) \(/;
+/**
+ * The line Firefox prints when it cancels a font download because the page went away mid-load (a tab taken
+ * over or a context closed): status 2152398850 is 0x804B0002, NS_BINDING_ABORTED. A font the host fails to
+ * serve prints another status and still fails the test.
+ */
+export const ABORTED_FONT_LINE = /^\[JavaScript Error: "downloadable font: download failed \(.*\): status=2152398850 source: /;
 
 // The copy keys the e2e drives: L-COPY-01 (onboarding) and the keys tasks 22 and 24 add to en.ts. The
 // values always come from the app's own strings, so a reworded text never breaks the suite.
@@ -328,7 +335,8 @@ function newGuard(projectName: string): Guard {
         // paced 429 and 503; any other status, or a line of another shape, still fails the test (E2E-CI-01).
         // Firefox printed nothing for them and keeps the full guard.
         const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
-        if (m.type() === 'error' && !resourceLine) {
+        const abortedFont = projectName.startsWith('firefox') && ABORTED_FONT_LINE.test(m.text());
+        if (m.type() === 'error' && !resourceLine && !abortedFont) {
           consoleErrors.push(m.text());
         }
       });
@@ -421,20 +429,27 @@ export function messageRow(page: Page, channel: string, text: string): Locator {
 // ---------------------------------------------------------------------------------------------------
 // Flows.
 
-export interface Account { username: string; display: string; password: string; recoveryKey: string[]; }
+export interface Account {
+  username: string; display: string; password: string; recoveryKey: string[];
+  /** web3.6: the control URL of the host the account lives on, the authenticator secret, the backup codes and the last TOTP counter used. */
+  control: string; totpSecret: string | null; backupCodes: string[]; lastCounter: number;
+}
 
 export async function readRecoveryKey(page: Page): Promise<string[]> {
   return page.locator(`${CLASS.recoveryKey} li`).allInnerTexts();
 }
 
 /** A new account's details: a random username, the given display name and the suite's password. */
-export function newAccount(display = 'web tester'): Account {
-  return { username: `w${randomInt(0, 0xffff_ffff).toString(16).padStart(8, '0')}`, display, password: 'e2e-password-1234', recoveryKey: [] };
+export function newAccount(display = 'web tester', control = CONTROL_URL): Account {
+  return {
+    username: `w${randomInt(0, 0xffff_ffff).toString(16).padStart(8, '0')}`, display, password: 'e2e-password-1234', recoveryKey: [],
+    control, totpSecret: null, backupCodes: [], lastCounter: -1,
+  };
 }
 
 /** The whole onboarding with the pointer; returns what the person would have written down. */
-export async function signUp(page: Page, invite: string, instanceName: string, display = 'web tester'): Promise<Account> {
-  const account = newAccount(display);
+export async function signUp(page: Page, invite: string, instanceName: string, display = 'web tester', control = CONTROL_URL): Promise<Account> {
+  const account = newAccount(display, control);
   await page.goto(`/welcome?invite=${encodeURIComponent(invite)}`);
   return completeSignUp(page, account, instanceName);
 }
@@ -455,10 +470,32 @@ export async function completeSignUp(page: Page, account: Account, instanceName:
   await nextButton(page).click();
   await expectHeading(page, COPY.deviceTitle);
   await submitButton(page).click();
+  await completeFactorStep(page, account);
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);
   return account;
+}
+
+/** web3.6 sign-up step 5: choose the authenticator app, copy the setup key, confirm with a code, tick the backup codes. */
+export async function completeFactorStep(page: Page, account: Account, onStep?: (state: 'choose' | 'totp' | 'codes') => Promise<void>): Promise<void> {
+  await expectHeading(page, 'factor.choose.title');
+  await onStep?.('choose');
+  await page.getByRole('radio', { name: new RegExp(escapeRegExp(copy('factor.choose.app'))) }).check();
+  await page.getByRole('button', { name: copy('factor.choose.next'), exact: true }).click();
+  await expectHeading(page, 'factor.totp.title');
+  const key = page.getByLabel(copy('factor.totp.key'), { exact: true });
+  await expect(key).toHaveValue(/^[A-Z2-7]{16,}$/, { timeout: WAIT });
+  await onStep?.('totp');
+  account.totpSecret = await key.inputValue();
+  await page.getByLabel(copy('factor.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
+  await page.getByRole('button', { name: copy('factor.totp.submit'), exact: true }).click();
+  await expectHeading(page, 'factor.codes.title');
+  await onStep?.('codes');
+  account.backupCodes = (await page.getByRole('list', { name: copy('factor.codes.label'), exact: true }).locator('li').allInnerTexts())
+    .map((c) => c.replace(/\s+/g, ''));
+  await page.getByRole('checkbox', { name: copy('factor.codes.ack'), exact: true }).check();
+  await page.getByRole('button', { name: copy('factor.codes.next'), exact: true }).click();
 }
 
 /** The shell is up (the rail is present, even with no server) and no onboarding step is showing. */
@@ -571,6 +608,12 @@ export async function finishSignIn(page: Page, account: Account, instanceName: s
   await page.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
   await page.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
   await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+  // web3.6: a new browser takes the code too.
+  await expect(heading(page, 'signin.totp.title').or(heading(page, SIGNIN.doneTitle))).toBeVisible({ timeout: WAIT });
+  if (await heading(page, 'signin.totp.title').isVisible()) {
+    await page.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
+    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+  }
   await expectHeading(page, SIGNIN.doneTitle);
   await expect(page.getByText(copy(SIGNIN.doneBody, { username: account.username, instance: instanceName }), { exact: true })).toBeVisible();
   await page.getByRole('button', { name: copy(SIGNIN.doneNext), exact: true }).click();

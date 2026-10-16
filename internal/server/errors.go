@@ -76,6 +76,18 @@ const (
 	// groups are not allowed for this channel, because the channel is
 	// server-readable") and which the delivery service uses with that meaning.
 	CodeChannelMode Code = "E_CHANNEL_MODE"
+	// The second-factor codes (dilla web3.6). Each is 403 and distinct, so a client tells the
+	// cases apart by code and never by detail. CodeFactorRequired: the session's account owes a
+	// second factor and the route is not on protocol/09's `F`/`P` allow-list. CodeTargetNoFactor:
+	// require_mod_2fa refuses a grant to a user who holds no second factor. CodeStepUp: a factor
+	// change without a valid step-up token.
+	CodeFactorRequired Code = "E_FACTOR_REQUIRED"
+	CodeTargetNoFactor Code = "E_TARGET_NO_FACTOR"
+	CodeStepUp         Code = "E_STEP_UP"
+	// CodePasskeyUnknown is 401: a passkey login whose credential this instance does not hold
+	// (web3.6). Distinct from E_UNAUTHENTICATED so the client can say "this passkey is not
+	// registered here" without reading a detail.
+	CodePasskeyUnknown Code = "E_PASSKEY_UNKNOWN"
 	// CodeUnsupportedMedia is not in the table: a wrong Content-Type is answered
 	// with 415 and E_INVALID_REQUEST, because the table's rule is "malformed
 	// request" and a client that sent JSON has exactly that problem.
@@ -105,10 +117,11 @@ func (e *Error) Status() int {
 	case CodeInvalidRequest, CodeBindingInvalid, CodeVersion,
 		CodeEnvelopeShape, CodeEnvelopeType, CodeEnvelopeLimit:
 		return http.StatusBadRequest
-	case CodeUnauthenticated:
+	case CodeUnauthenticated, CodePasskeyUnknown:
 		return http.StatusUnauthorized
 	case CodeForbidden, CodeLeafNotCurrent, CodeModeReadable, CodeNotUploader,
-		CodeProvisionalOutsidePairing, CodeChannelMode:
+		CodeProvisionalOutsidePairing, CodeChannelMode,
+		CodeFactorRequired, CodeTargetNoFactor, CodeStepUp:
 		return http.StatusForbidden
 	case CodeNotFound:
 		return http.StatusNotFound

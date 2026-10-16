@@ -71,8 +71,10 @@ func Default() *Config {
 			Argon2MemoryKiB: 19456, Argon2Iterations: 2, Argon2Parallelism: 1,
 			Argon2SaltBytes: 16, Argon2KeyBytes: 32, HashMemoryBudgetMiB: 256,
 		},
-		TOTP:     TOTP{Period: 30, Skew: 1, Digits: 6, Algorithm: "SHA1", SecretSize: 20, RecoveryCodes: 10},
-		WebAuthn: WebAuthn{UserVerification: "preferred"},
+		TOTP: TOTP{Period: 30, Skew: 1, Digits: 6, Algorithm: "SHA1", SecretSize: 20, RecoveryCodes: 10},
+		// "required" (web3.6 D2): a passkey counts as the account's whole second factor only when
+		// its assertion verified the user, so the default asks every authenticator for it.
+		WebAuthn: WebAuthn{UserVerification: "required"},
 		OIDC:     OIDC{Scopes: []string{"openid", "profile", "email"}},
 		Session: Session{
 			NativeLifetime: "720h", BrowserLifetime: "168h", BrowserIdle: "12h",

@@ -53,6 +53,11 @@ For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–
   goes away. Its bytes are sender-supplied and are decoded by the browser's media pipeline in the
   page: the same exposure as a decrypted image, which the page's image decoder parses. No player
   autoplays, and no decrypted attachment is kept in any store.
+- Local stores are never downgraded: a client refuses to open a local store written by a newer
+  client (an app schema above the one it knows, or a newer OpenMLS storage version) before any
+  migration or write, so an older client never rewrites or drops what a newer one stored, the
+  group state and keys included. It says so with both numbers and offers no reset, which would
+  delete those keys.
 
 Against adversary 4: forward secrecy and post-compromise security as above; recovery keys are never
 on devices except during signup or recovery.
@@ -77,6 +82,11 @@ Stated plainly in the product's documentation and onboarding:
   broadcast mention, give pin or broadcast rights to any member, or serve different views to
   different members or devices so their pins differ. It cannot read or forge a message, and the
   view never decides which messages are shown.
+- Anyone who knows a username can lock that account's failed-login ledger with wrong passwords
+  (at the per-handle rate). On an instance whose `auth.webauthn.user_verification` is not
+  `required`, that lockout also refuses the owner's presence-only passkey login, because it would
+  still owe a code the lockout forbids guessing. A passkey login with user verification (the
+  default) is the whole login and still works; the lockout ages out over the observation window.
 - The instance may withhold newer device-list history on first sight. Trust on first use cannot
   prove that the served signed head is the newest, so first sight is not called verified.
 - A remote member can repeatedly rotate a changed-UMK leaf and keep an honest sender blocked in

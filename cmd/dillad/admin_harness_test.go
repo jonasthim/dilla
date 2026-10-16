@@ -83,6 +83,20 @@ func (h *cliHarness) SeedUser(t *testing.T, username string) id.ID {
 	return u.ID
 }
 
+// SeedFactor gives the user a confirmed TOTP secret, so a dillad.New over the harness's database
+// (OpenGatewayConn) does not mark the account as owing a second factor at its boot reconcile
+// (web3.6 S1) and the account's sessions reach the gateway.
+func (h *cliHarness) SeedFactor(t *testing.T, user id.ID) {
+	t.Helper()
+	confirmed := h.Now()
+	if err := h.Repo(t).PutTOTP(t.Context(), store.TOTPRow{
+		UserID: user, Secret: make([]byte, 20), Digits: 6, Period: 30, Algorithm: "SHA1",
+		ConfirmedAt: &confirmed, Created: h.Now(),
+	}); err != nil {
+		t.Fatalf("PutTOTP: %v", err)
+	}
+}
+
 func (h *cliHarness) SeedCommunity(t *testing.T, owner id.ID) id.ID {
 	t.Helper()
 	cid := id.New()

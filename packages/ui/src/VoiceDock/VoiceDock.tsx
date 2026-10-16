@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { VOICE_SHORTCUTS, VoiceToolbar, type ToolbarControl } from '../CallControls/CallControls.tsx';
+import { VOICE_ICONS, VOICE_SHORTCUTS, VoiceToolbar, voiceWhy, type ToolbarControl, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
 
 export interface VoiceDockProps {
@@ -8,6 +8,21 @@ export interface VoiceDockProps {
   where: string;
   muted: boolean;
   deafened: boolean;
+  /** The camera is live (a pressed toggle). Shown only with `onCamera`. */
+  camera?: boolean;
+  /** This device shares its screen (a pressed toggle). Shown only with `onShare`. */
+  sharing?: boolean;
+  /** False while the call is paused or held (RV-3): the camera control is aria-disabled. (No caller checks for a camera device yet.) */
+  canCamera?: boolean;
+  /** False without screen capture, or while the call is paused (RV-3): the share control is aria-disabled. */
+  canShare?: boolean;
+  /** True while joining (the stage's `busy`): camera and share are aria-disabled. Mute, deafen and leave stay live. */
+  busy?: boolean;
+  /** True while the call is paused or held; it picks the reason camera and share give. Absent, the paused phase or
+   *  `!canCamera` stands for it. */
+  paused?: boolean;
+  /** Optional: the mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
+  shortcuts?: { mute: string; deafen: string };
   /** The latest polite announcement (join, leave, mute, deafen, the end of a pause, the outgoing ring); '' for none. */
   announcement: string;
   labels: {
@@ -20,11 +35,21 @@ export interface VoiceDockProps {
     /** `voice.dock.paused`, with `{where}`. */
     paused: string;
     mute: string; deafen: string; leave: string;
+    /** `voice.cameraOn`; needed with `onCamera`. */
+    camera?: string;
+    /** `voice.shareOn`; needed with `onShare`. */
+    share?: string;
+    /** The reasons an inert camera or share gives in its tooltip and description (`voice.why.*`); none without it. */
+    why?: VoiceWhyLabels;
   };
   /** Optional: the input meter (an `AudioMeter`), shown under the status line. */
   meter?: ReactNode;
   onMute(): void;
   onDeafen(): void;
+  /** Toggles the camera, as the stage's control does. Without it (or `labels.camera`) the dock shows no camera control. */
+  onCamera?(): void;
+  /** Toggles screen sharing, as the stage's control does. Without it (or `labels.share`) the dock shows no share control. */
+  onShare?(): void;
   onLeave(): void;
 }
 
@@ -32,10 +57,15 @@ const PHASE_GLYPH = { connecting: '◌', connected: '●', reconnecting: '◌', 
 
 /**
  * The voice dock above the user panel while this device is in voice: where it is (a glyph plus the words), the
- * optional meter, then mute, deafen and leave as one toolbar with roving focus (`voice.dock.region`). Its one
- * `role="status"` region announces join, leave, mute, deafen and the end of a pause (flow 06).
+ * optional meter, then mute, deafen, camera, share screen and leave as one toolbar of icon buttons with roving focus
+ * (`voice.dock.region`), the stage's controls under the stage's rules. Its one `role="status"` region announces join,
+ * leave, mute, deafen and the end of a pause (flow 06).
  */
-export function VoiceDock({ phase, where, muted, deafened, announcement, labels, meter, onMute, onDeafen, onLeave }: VoiceDockProps) {
+export function VoiceDock({
+  phase, where, muted, deafened, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, shortcuts,
+  announcement, labels, meter, onMute, onDeafen, onCamera, onShare, onLeave,
+}: VoiceDockProps) {
+  const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const text = {
     connecting: labels.connecting,
     connected: labels.connected.replaceAll('{where}', where),
@@ -43,10 +73,16 @@ export function VoiceDock({ phase, where, muted, deafened, announcement, labels,
     paused: labels.paused.replaceAll('{where}', where),
   }[phase];
   const controls: ToolbarControl[] = [
-    { id: 'mute', label: labels.mute, on: muted, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
-    { id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
-    { id: 'leave', label: labels.leave, danger: true, onAction: onLeave },
+    { id: 'mute', label: labels.mute, on: muted, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute, onAction: onMute },
+    { id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen },
   ];
+  if (onCamera !== undefined && labels.camera !== undefined) {
+    controls.push({ id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera, onAction: onCamera });
+  }
+  if (onShare !== undefined && labels.share !== undefined) {
+    controls.push({ id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare });
+  }
+  controls.push({ id: 'leave', label: labels.leave, danger: true, ...VOICE_ICONS.leave, onAction: onLeave });
   return (
     <div className="d-voice-dock" data-phase={phase}>
       <p className="d-voice-dock__where">

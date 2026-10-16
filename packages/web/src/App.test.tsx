@@ -19,8 +19,19 @@ describe('screenFor', () => {
     for (const p of ['loading', 'unsupported', 'other-tab', 'store-lost', 'revoked', 'error'] as const) expect(screenFor(p)).toBe('boot');
     for (const p of ['needs-signup', 'signup-keys', 'registering'] as const) expect(screenFor(p)).toBe('onboarding');
     expect(screenFor('ready')).toBe('shell');
-    for (const p of ['signin-login', 'signin-totp', 'signin-key', 'enrolling'] as const) expect(screenFor(p)).toBe('signin');
+    for (const p of ['signin-login', 'signin-totp', 'signin-key', 'enrolling', 'signin-passkey'] as const) expect(screenFor(p)).toBe('signin');
     expect(screenFor('cleared')).toBe('boot');
+  });
+  it('routes the factor-setup phase by its origin', () => {
+    expect(screenFor('factor-setup', 'signup')).toBe('onboarding');
+    expect(screenFor('factor-setup', 'signin')).toBe('signin');
+    expect(screenFor('factor-setup', 'required')).toBe('factor');
+    // No origin yet is the forced screen: an account found owing is never let past it.
+    expect(screenFor('factor-setup')).toBe('factor');
+    expect(screenFor('factor-setup', null)).toBe('factor');
+    // The origin only matters in that phase.
+    expect(screenFor('ready', 'signup')).toBe('shell');
+    expect(screenFor('signin-login', 'required')).toBe('signin');
   });
 });
 
@@ -145,6 +156,46 @@ describe('App', () => {
         await Promise.resolve();
       });
       expect(fake.callsOf('resign')).toHaveLength(2);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  // Walk M9: "Use this tab" in a second tab failed while this one was on the forced screen: nothing here listened.
+  it('hands over from the forced screen, and shows it again once this tab leads again', async () => {
+    const channels: { name: string; posted: unknown[]; listeners: Set<(event: { data: unknown }) => void> }[] = [];
+    class FakeChannel {
+      readonly listeners = new Set<(event: { data: unknown }) => void>();
+      readonly posted: unknown[] = [];
+      constructor(readonly name: string) { channels.push(this); }
+      postMessage(value: unknown): void { this.posted.push(value); }
+      addEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.add(cb); }
+      removeEventListener(_type: string, cb: (event: { data: unknown }) => void): void { this.listeners.delete(cb); }
+      close(): void {}
+    }
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    try {
+      const instance = 'ab'.repeat(16);
+      const nonce = '01'.repeat(16);
+      const fake = new FakeClient();
+      fake.handler = c => c.m === 'resign' ? Promise.resolve({ released: true }) : Promise.resolve(null);
+      fake.set('account', account({ phase: 'factor-setup', factorSetup: { origin: 'required' } }));
+      fake.set('factors', { owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
+      fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 1, errors: [] });
+      render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+      expect(screen.getByRole('heading', { level: 1, name: 'Add a second factor' })).toBeInTheDocument();
+      const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0);
+      expect(leader).toBeDefined();
+      await act(async () => {
+        for (const cb of [...leader!.listeners]) cb({ data: { t: 'takeover', instance, nonce } });
+        fake.set('account', account({ phase: 'other-tab' }));
+        await Promise.resolve();
+      });
+      expect(fake.callsOf('resign')).toEqual([{ m: 'resign', nonce }]);
+      expect(screen.getByRole('heading', { name: 'This tab is paused' })).toBeInTheDocument();
+      const forwarded = channels.filter(c => c.name.startsWith('dilla-core:') && c.posted.length > 0);
+      expect(forwarded.map(c => c.posted)).toEqual([[{ t: 'released', instance, nonce }]]);
+      act(() => fake.set('account', account({ phase: 'loading' })));
+      act(() => fake.set('account', account({ phase: 'factor-setup', factorSetup: { origin: 'required' } })));
+      expect(screen.queryByRole('heading', { name: 'This tab is paused' })).toBeNull();
+      expect(screen.getByRole('heading', { level: 1, name: 'Add a second factor' })).toBeInTheDocument();
     } finally { vi.unstubAllGlobals(); }
   });
   // Product walk I7: "Use this tab" ended the other tab's call without a word. The tab that holds dilla says, content-free,
@@ -371,10 +422,10 @@ describe('App sign-in', () => {
   function signInWorker(fake: FakeClient) {
     const move = (over: Partial<ReturnType<typeof account>>) => fake.set('account', { ...fake.get('account')!, ...over });
     fake.handler = c => {
-      if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, needsTotp: false } });
+      if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, needsTotp: false, factor: null } });
       if (c.m === 'signInLogin' || c.m === 'signInKey') move({ phase: 'ready', user: { id: 'bb'.repeat(16), username: 'ada' }, signIn: null });
       if (c.m === 'signInCancel') move({ phase: 'needs-signup', signIn: null });
-      return Promise.resolve(c.m === 'signInLogin' ? { needsTotp: false } : null);
+      return Promise.resolve(c.m === 'signInLogin' ? { needs: 0 } : null);
     };
   }
   const startAt = (fake: FakeClient) => {
@@ -414,7 +465,7 @@ describe('App sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'Create a new account instead' }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Join dilla.test');
     act(() => fake.set('account', account({ phase: 'ready' })));
-    expect(screen.getByText('Step 5 of 5')).toBeInTheDocument();
+    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
     expect(screen.queryByText(/This browser is now a device of/)).toBeNull();
     expect(screen.queryByText('Step 4 of 4')).toBeNull();
   });
@@ -444,7 +495,7 @@ describe('App cleared', () => {
   it('reloads to the eviction message after an evicted sign-in, never through the revoked splash', () => {
     const fake = new FakeClient();
     const reload = vi.fn();
-    fake.set('account', account({ phase: 'enrolling', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false } }));
+    fake.set('account', account({ phase: 'enrolling', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false, factor: null } }));
     render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
     act(() => fake.set('account', account({
       phase: 'cleared', user: null, deviceId: null, signIn: null, error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null },
@@ -467,7 +518,7 @@ describe('App cleared', () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     const reload = vi.fn();
-    fake.set('account', account({ phase: 'signin-key', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false } }));
+    fake.set('account', account({ phase: 'signin-key', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false, factor: null } }));
     fake.handler = c => {
       if (c.m !== 'signInKey') return Promise.resolve(null);
       fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: RACE }));

@@ -84,6 +84,29 @@ The `ACTIVE VOICE` heading (`voice.heading.active`, shown in caps by the token s
 └──┴──────────────────────┴───────────────────────────────────────────────────────────────────────────────┘
 ```
 
+Amended 2026-10-15 (voice icons, plan 2026-10-15; founder): **the voice controls are icon buttons, and the dock holds all five.** The dock and the stage's toolbar show the same five controls in the same order: mute, deafen, camera, share screen and leave. Each is an icon-only button drawn from the vendored Lucide set (monoline, `currentColor`, so forced colours repaint it). Its accessible name is its label, unchanged (`voice.mute`, `voice.deafen`, `voice.cameraOn`, `voice.shareOn`, `voice.leave`), and every toggle keeps `aria-pressed`. The glyph carries the state, never colour alone: muted is `mic-off` (live `mic`), deafened `headphone-off` (`headphones`), a live camera `video` (off `video-off`), sharing `monitor-x` (not sharing `monitor-up`), and leave is always `phone-off` in the danger variant. On top of the glyph, mute and deafen take `--danger` on their glyph and edge while on, camera and share the accent, with a 2 px pressed underline and no fill (review round 1: a filled red mute read like leave). Under forced colours, where the underline is dropped, a pressed control has a 2 px `Highlight` edge. The voice toolbars drop the `[x]` / `[ ]` mark; other toggles keep it. An `aria-disabled` control dims its glyph and dashes its edge, and hover changes nothing on it. In the dock, camera and share follow the stage's rules: `aria-disabled` while paused or held, while joining, and share also without screen capture (no `getDisplayMedia`); mute, deafen and leave stay live while joining, as before. Pressing the dock's camera or share is the stage's toggle, one state for both.
+
+**Glyph rule** (founder's ruling, 2026-10-15, review round 1): the glyph shows what the device is doing now, and a slash means *not sending* or *not hearing*. So a muted mic is `mic-off`, deafened is `headphone-off`, and the camera is `video-off` until it is live. The colour follows a second rule: red means silenced (others do not hear you, or you do not hear them), the accent means you are broadcasting. The one deliberate exception is share, which shows the action, as Meet's "Present now" and "Stop presenting" do: `monitor-up` to start, `monitor-x` while sharing, to stop. Leave's `phone-off` is an action too, kept apart by its place and its danger outline. A new voice icon follows these rules.
+
+**Leave set apart** (review round 1): leave is the last control, after a hairline divider with space on both sides; it keeps its outline-only danger look at rest and fills only on hover. It stays in the same toolbar and the same roving order. Its place and the divider (a border, so forced colours draw it) mark it as well as its colour.
+
+**Tooltip.** A toolbar has one tooltip, shown above the most recently hovered or keyboard-focused control: the label, then the shortcut where one exists, written for the platform (`⌘⇧M` / `⌘⇧D` on macOS and iOS, `Ctrl+Shift+M` / `Ctrl+Shift+D` elsewhere). It is not a `title` (WCAG 1.4.13), and it is never part of a button, so a click on it never presses a control. Hoverable: a mouse or pen hover shows it, and the pointer can move from the control onto it (a transparent bridge covers the 6 px gap); only then does it take the pointer, over its own area. A tip shown by keyboard focus takes no pointer at all, so a click where it shows reaches what is under it. A tap never shows it, and neither does the focus a press gives a control. Dismissable: Escape hides a shown tip wherever focus is (the composer included) and does nothing else; the key is consumed. Persistent: it stays while the pointer or focus is on its control or the pointer is on the tip. A disabled camera or share says why (founder, 2026-10-15): its tip reads the label, an em dash and one reason, `camera — paused`, and the reason is also its description (`aria-describedby`), never part of its name. The reason is `voice.why.joining` while joining, else `voice.why.paused` while paused or held, else, for share without screen capture, `voice.why.noShare`. Only the shortcut describes the control (`aria-describedby`), so the name is not read twice; `aria-keyshortcuts` is unchanged. Each control is at least 40×40 CSS px (44×44 under 48rem of viewport); the only motion is the 150 ms colour change on hover and focus, none under reduced motion.
+
+```text
+the dock (240 px sidebar)                 a tooltip, on hover or keyboard focus
+┌──────────────────────────────┐          ┌───────────────────┐
+│ ● in harbour                 │          │ mute Ctrl+Shift+M │
+│ ▮▮▮▮▮▮▯▯▯▯▯▯                 │          └───────────────────┘
+│ [mic][hp][cam][scr] │ [⌀]    │          [mic]   ← it sits above its control
+└──────────────────────────────┘
+
+mic = mic / mic-off · hp = headphones / headphone-off · cam = video-off / video
+scr = monitor-up / monitor-x · │ = the hairline divider · ⌀ = phone-off (danger)
+the stage's toolbar shows the same five, centred, with the same divider
+```
+
+**One row** (founder's ruling, 2026-10-15, review round 1; replaces the earlier wrap of four plus a full-width leave): the five controls sit in one row, at 40 px on a desktop and 44 px on a phone. In the 240 px desktop sidebar the dock has 221 px inside: four 40 px toggles 2 px apart, the divider's 13 px and leave's 40 px take 219. In the phone drawer (300 px beside the 60 px rail, about 281 px inside) the 44 px controls take 239. The toggles share any spare width; leave keeps its size. The row wraps only as a fallback, when even that does not fit (a larger default font, 200 % zoom); it never scrolls.
+
 Amended 2026-10-14 (product walk I2, I3, M4, M6, M13; controller rulings): a tile with both a camera and a screen shows the screen as the tile and the camera as an inset in its lower right corner. The own tile is a self-view of what this device sends: its camera mirrored, its screen as sent. The own tile says `voice.state.speaking` when the SFU hears this device (as the others' tiles), not from the input meter. The volume range shows its value (`voice.volumeValue`) beside it, marks 100 % and is drawn in Mesh (a hairline track filled with the accent, a square thumb). No tile and no row carries the `voice.tag.web` tag: the page knows the client only of its own device, so the tag would differ between people on the same client; `voice.tag.bot` stays. The sidebar's people say `voice.state.speaking` while the call this device is in hears them.
 
 The disclosure `voice.code` is closed by default. Opened, it shows the call code as 6 groups of 5 digits and `voice.codeHelp` under it; Escape closes it.
@@ -165,6 +188,15 @@ The sidebar sheet (opened with `☰`) holds the dock above the user panel while 
 
 **DM call on the phone.** The stage is full screen with a `messages` toggle that shows the log and composer in its place; the call strip stays under the header.
 
+Amended 2026-10-15 (voice icons, review round 1): the dock's controls are the five icon buttons of § 1280×800, in one row at 44 px, leave after the divider.
+
+```text
+┌──────────────────────────────────┐
+│ in harbour      ▮▮▮▮▮▮▯▯▯▯▯▯      │
+│ [mic] [hp] [cam] [scr]  │  [⌀]   │
+└──────────────────────────────────┘
+```
+
 Amended 2026-10-14 (product walk I4, I5): at 360 the dock is pinned to the bottom of the sidebar column (sticky), compact (where and the meter on one line, mute, deafen and leave on the next), so it stays on screen while a text channel is read. The stage of a voice channel or a DM call is in normal flow there: its controls sit under the tiles, never fixed or overlaid on a tile.
 
 Amended 2026-10-13 (task-9 review): the toggle is `voice.messages`, a pressed toggle (pressed while the log shows). The input mode follows Settings → Voice during a call: switching to push to talk closes the microphone at once, and the dock shows `settings.voice.ptt` while it is in force. The ring's desktop notification shows only while the tab is hidden, and closes when the tab shows again (the banner covers a visible tab).
@@ -180,6 +212,8 @@ Amended 2026-10-13 (task-9 review): the toggle is `voice.messages`, a pressed to
 | anywhere, page focused, push to talk on, focus not in an editable field | hold the push-to-talk key | microphone open while held; `preventDefault`, so nothing is typed; in a text field, `contenteditable` or `select` the key does nothing to the microphone and keeps its usual effect |
 | dock or stage toolbar | Left/Right arrows | previous/next control (roving focus); Home/End first/last |
 | into a toolbar | Tab | the toolbar's last-focused control, then out on the next Tab |
+| a dock or stage control (added 2026-10-15, voice icons) | keyboard focus, or a mouse or pen over it (never a tap) | its toolbar's one tooltip: the label, then the shortcut for this platform where it has one; the most recent hover or focus wins |
+| anywhere, a voice tooltip shown (added 2026-10-15, review round 1) | Escape | hides the tooltip and does nothing else (the key is consumed); focus stays where it is and the call is unchanged; the next focus or hover shows it again |
 | `voice.code` disclosure | Enter/Space | opens or closes; Escape closes and returns focus to it |
 | unsupported dialog | Escape | closes; focus returns to the join button |
 | push-to-talk capture prompt (`settings.voice.pttPrompt`) | one non-text key on its own: F13–F24, Pause, ScrollLock or Insert (accepted, but not suggested: it is the screen readers' modifier key) | that key is saved; any other key, and any key held with Control, Alt, ⌘, Shift or AltGr, is refused with `settings.voice.pttRefused` and the capture goes on; Escape cancels; Tab leaves and cancels |
@@ -212,6 +246,8 @@ Amended 2026-10-13 (controller ruling on the task-8b review, I2; supersedes the 
 | the stage or the DM strip swaps under focus: a failed join, a removal, the end of the call or a lost connection (added 2026-10-14, WB a11y I1) | the notice that says why (or its action), else the join (or call) button | the notice |
 | a ring of two or more is declined or answered (added 2026-10-14, WB a11y m3) | the next ring's `call.ring.answer`, else the main landmark | none |
 | leave from the dock while the call's row or strip is not on screen (added 2026-10-14, WB a11y m5) | the call's own voice row or DM call button when shown, else the sidebar's channel list | `voice.announce.left` |
+| a dock control's tooltip opens or closes (added 2026-10-15, voice icons) | unchanged: the tooltip never takes focus, and the roving tab stop stays on the control | none (the shortcut is the control's description) |
+| the dock's camera or share turns `aria-disabled` under focus (pause, hold, join) (added 2026-10-15) | unchanged: it stays focusable and in the roving order | the pause's own announcements |
 
 ## Announcements
 
@@ -243,6 +279,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `call.where='the call with {name}'` (`{where}` of a DM or group-DM call, with the DM's name; a voice channel's `{where}` is its name; added 2026-10-14, product walk M8)
 - `voice.mute='mute'`, `voice.deafen='deafen'`, `voice.leave='leave'`
 - `voice.cameraOn='camera'`, `voice.shareOn='share screen'`
+- `voice.why.paused='paused'`, `voice.why.joining='connecting'`, `voice.why.noShare='not available in this browser'` (added 2026-10-15, founder: why an inert camera or share control is inert, one reason by priority: joining, then paused or held, then, for share only, no screen capture; its tooltip reads `{label} — {reason}`, an em dash with spaces, and the reason is its description through `aria-describedby`, never its name)
 - `voice.controls.region='call controls'` (the stage's toolbar in a DM or group-DM call), `voice.controls.voice='voice channel controls'` (the stage's toolbar in a voice channel; added 2026-10-14, WB a11y m6: *call* names a DM call only, and the dock's toolbar is `voice.dock.region`)
 
 Amended 2026-10-14 (controller ruling on WB a11y I4): mute, deafen, camera and share screen are toggles with one visible label each (`voice.mute`, `voice.deafen`, `voice.cameraOn`, `voice.shareOn`), `aria-pressed` and the aria-hidden `[x]` mark; the label never swaps (the WAI-ARIA toggle pattern; WCAG 2.5.3 and 4.1.2). `voice.unmute`, `voice.undeafen`, `voice.cameraOff` and `voice.shareOff` are gone.

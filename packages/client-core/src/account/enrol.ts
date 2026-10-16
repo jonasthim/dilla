@@ -9,35 +9,59 @@ export interface EnrolFetched { root: Uint8Array; state: Uint8Array; listBody: U
 
 export class Enrol {
   private assertion: string | null = null;
-  private factorOwed = false;
+  /** What the held assertion still owes (web3.6 `needs`): 0 nothing, 1 an app code or a backup code, 2 a passkey or a
+   *  backup code. It is the assertion's debt, not the account's factor_owed flag. */
+  private assertionOwes: 0 | 1 | 2 = 0;
   constructor(private readonly deps: { core: CorePort; routes: Routes; session: Session; now(): number }) {}
 
-  private take(requireNoFactor: boolean): string {
-    if (this.assertion === null || this.factorOwed === requireNoFactor) throw new Error('E_NO_ASSERTION');
+  /** Spends the held assertion when it owes what `want` asks: 'settled' nothing (the registration), 'code' an app code
+   *  (needs 1), 'owed' anything (a backup code, which settles needs 1 and 2 alike). */
+  private take(want: 'settled' | 'code' | 'owed'): string {
+    const owes = this.assertionOwes;
+    const fits = want === 'settled' ? owes === 0 : want === 'code' ? owes === 1 : owes !== 0;
+    if (this.assertion === null || !fits) throw new Error('E_NO_ASSERTION');
     const assertion = this.assertion;
     this.assertion = null;
-    this.factorOwed = false;
+    this.assertionOwes = 0;
     return assertion;
   }
 
-  async login(username: string, password: string): Promise<{ needsTotp: boolean }> {
+  private hold(assertion: string, owes: 0 | 1 | 2): void {
+    this.assertion = assertion;
+    this.assertionOwes = owes;
+  }
+
+  async login(username: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
     this.assertion = null;
-    this.factorOwed = false;
+    this.assertionOwes = 0;
     const answer = await this.deps.routes.passwordLogin(username, password);
-    this.assertion = answer.assertion;
-    this.factorOwed = answer.needsTotp;
-    return { needsTotp: answer.needsTotp };
+    this.hold(answer.assertion, answer.needs);
+    return { needs: answer.needs };
+  }
+
+  /** A discoverable passkey login (web3.6): needs 0 when the authenticator verified the user, else 1 (a code follows).
+   *  A refused finish leaves any assertion held from an earlier login in place. */
+  async passkey(ceremonyId: Id, response: string): Promise<{ needs: 0 | 1 }> {
+    const answer = await this.deps.routes.passkeyLoginFinish(ceremonyId, response);
+    this.hold(answer.assertion, answer.needs);
+    return { needs: answer.needs };
   }
 
   async totp(code: string): Promise<void> {
-    const assertion = this.take(false);
+    const assertion = this.take('code');
     const answer = await this.deps.routes.totpVerify(assertion, code);
-    this.assertion = answer.assertion;
-    this.factorOwed = false;
+    this.hold(answer.assertion, 0);
+  }
+
+  /** A backup code settles an assertion owing needs 1 or 2; a refused code has spent it (the person logs in again). */
+  async backupCode(code: string): Promise<void> {
+    const assertion = this.take('owed');
+    const answer = await this.deps.routes.recoveryVerify(assertion, code);
+    this.hold(answer.assertion, 0);
   }
 
   async register(instanceId: Id): Promise<{ userId: Id }> {
-    const assertion = this.take(true);
+    const assertion = this.take('settled');
     const { core, routes } = this.deps;
     const id = core.identity();
     let deviceId: Id;
@@ -89,7 +113,7 @@ export class Enrol {
 
   reset(): void {
     this.assertion = null;
-    this.factorOwed = false;
+    this.assertionOwes = 0;
     if (this.deps.core.identity().phase === 3) this.deps.core.enrolReset();
   }
 }

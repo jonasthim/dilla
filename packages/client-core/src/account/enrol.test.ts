@@ -56,7 +56,7 @@ async function upToKey(a: ReturnType<typeof account>): Promise<EnrolFetched> {
 describe('Enrol', () => {
   it('adds this browser: login, a pending registration, the sealed objects, the key, list v2, an enrolled session, the state object', async () => {
     const { server, core, routes, enrol, userId, U, listPath } = account();
-    expect(await enrol.login('ada', PASSWORD)).toEqual({ needsTotp: false });
+    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 0 });
     expect(await enrol.register(INSTANCE)).toEqual({ userId });
     expect(core.identity()).toMatchObject({ phase: 3, userId, deviceId: DEVICE_B });
     const fetched = await enrol.fetch(userId);
@@ -121,12 +121,12 @@ describe('Enrol', () => {
 
   it('verifies the second factor before registering; a wrong code spends the assertion', async () => {
     const { server, core, enrol } = account({ totp: '123456' });
-    expect(await enrol.login('ada', PASSWORD)).toEqual({ needsTotp: true });
+    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 1 });
     await expect(enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
     const wrong = await httpError(enrol.totp('000000'));
     expect([wrong.status, wrong.code]).toEqual([401, 'E_UNAUTHENTICATED']);
     await expect(enrol.totp('123456')).rejects.toThrow('E_NO_ASSERTION');
-    expect(await enrol.login('ada', PASSWORD)).toEqual({ needsTotp: true });
+    expect(await enrol.login('ada', PASSWORD)).toEqual({ needs: 1 });
     await enrol.totp('123456');
     await enrol.register(INSTANCE);
     expect(server.paths()).toEqual([
@@ -384,6 +384,70 @@ describe('Enrol', () => {
     expect(b.core.calls).not.toContain('enrolReset');
     await expect(b.enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
     expect(b.server.paths()).toEqual(['POST /v1/auth/password/login']);
+  });
+});
+
+// web3.6 C2: the assertion's debt (`needs`), a passkey login and a backup code.
+describe('Enrol second factors', () => {
+  it('a passkey-only account owes needs 2: no app code is taken for it', async () => {
+    const a = account();
+    a.server.addPasskey('ada', 'Laptop');
+    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2 });
+    await expect(a.enrol.totp('123456')).rejects.toThrow('E_NO_ASSERTION');
+    expect(a.server.paths()).toEqual(['POST /v1/auth/password/login']);
+  });
+
+  it('a backup code settles an assertion owing needs 2 or needs 1, and the registration spends the new one', async () => {
+    const a = account();
+    a.server.addPasskey('ada', 'Laptop');
+    a.server.factorsOf('ada').codes = ['A'.repeat(26), 'B'.repeat(26)];
+    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2 });
+    await expect(a.enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
+    expect(await a.enrol.login('ada', PASSWORD)).toEqual({ needs: 2 });
+    await a.enrol.backupCode('A'.repeat(26));
+    await a.enrol.register(INSTANCE);
+    expect(a.server.paths().slice(0, 3)).toEqual(['POST /v1/auth/password/login', 'POST /v1/auth/password/login', 'POST /v1/auth/recovery/verify']);
+    const body = arr(decode(a.server.log.find((r) => r.path === `/v1/devices/${B_HEX}/sessions`)?.body ?? new Uint8Array()), 5);
+    expect(body[4]).toEqual(utf8(a.server.assertions.at(-1) ?? ''));
+    expect(a.server.backupCodesOf('ada')).toEqual(['B'.repeat(26)]);
+
+    const b = account({ totp: '123456' });
+    b.server.factorsOf('ada').codes = ['C'.repeat(26)];
+    expect(await b.enrol.login('ada', PASSWORD)).toEqual({ needs: 1 });
+    await b.enrol.backupCode('C'.repeat(26));
+    expect((await b.enrol.register(INSTANCE)).userId).toEqual(b.userId);
+  });
+
+  it('a wrong backup code spends the assertion; a backup code needs an owed assertion', async () => {
+    const a = account();
+    a.server.addPasskey('ada', 'Laptop');
+    a.server.factorsOf('ada').codes = ['A'.repeat(26)];
+    await a.enrol.login('ada', PASSWORD);
+    const wrong = await httpError(a.enrol.backupCode('Z'.repeat(26)));
+    expect([wrong.status, wrong.code]).toEqual([401, 'E_UNAUTHENTICATED']);
+    await expect(a.enrol.backupCode('A'.repeat(26))).rejects.toThrow('E_NO_ASSERTION');
+    const free = account();
+    expect(await free.enrol.login('ada', PASSWORD)).toEqual({ needs: 0 });
+    await expect(free.enrol.backupCode('A'.repeat(26))).rejects.toThrow('E_NO_ASSERTION');
+    expect(free.server.paths()).toEqual(['POST /v1/auth/password/login']);
+  });
+
+  it('a passkey that verified the user registers at once; one that did not owes a code; a refused one keeps the held assertion', async () => {
+    const a = account({ totp: '123456' });
+    const cred = a.server.addPasskey('ada', 'Laptop');
+    const begin = await a.routes.passkeyLoginBegin();
+    expect(await a.enrol.passkey(begin.ceremonyId, `${toHex(cred)}:nouv`)).toEqual({ needs: 1 });
+    await expect(a.enrol.register(INSTANCE)).rejects.toThrow('E_NO_ASSERTION');
+    // An unknown passkey is refused and the code step still has its assertion.
+    const unknown = await httpError(a.enrol.passkey((await a.routes.passkeyLoginBegin()).ceremonyId, 'ee'));
+    expect([unknown.status, unknown.code]).toEqual([401, 'E_PASSKEY_UNKNOWN']);
+    await a.enrol.totp('123456');
+    expect((await a.enrol.register(INSTANCE)).userId).toEqual(a.userId);
+
+    const b = account();
+    const key = b.server.addPasskey('ada', 'Laptop');
+    expect(await b.enrol.passkey((await b.routes.passkeyLoginBegin()).ceremonyId, toHex(key))).toEqual({ needs: 0 });
+    expect((await b.enrol.register(INSTANCE)).userId).toEqual(b.userId);
   });
 });
 

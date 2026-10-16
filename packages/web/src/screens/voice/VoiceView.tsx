@@ -11,6 +11,7 @@ import {
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
+import { voiceShortcutText } from './shortcuts.ts';
 
 /** What the voice surfaces read besides the CallView. */
 export interface VoiceContext {
@@ -198,16 +199,27 @@ function stageTarget(root: HTMLElement | null, joined: boolean): HTMLElement | n
     ?? root.querySelector<HTMLElement>('.dw-voice-join');
 }
 
+/** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
+const VOICE_SHORTCUT_TEXT = voiceShortcutText();
+
+/** Why an inert camera or share is inert, the same for the stage and the dock (founder, 2026-10-15). */
+const VOICE_WHY = () => ({ paused: t('voice.why.paused'), joining: t('voice.why.joining'), noShare: t('voice.why.noShare') });
+
+/** Whether this browser can capture a screen; the stage and the dock offer share screen only then. */
+function canCapture(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+}
+
 function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
   const s = v.call.state;
-  const canShare = typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+  const canShare = canCapture();
   // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
   // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
-      canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null}
+      canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
-        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave') }}
+        camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
       onLeave={v.call.leave} />
   );
@@ -466,8 +478,9 @@ function PttLine({ v }: { v: VoiceContext }) {
 }
 
 /**
- * The dock above the user panel while this device is in voice (flow 06): where, the input meter, mute, deafen and leave,
- * and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
+ * The dock above the user panel while this device is in voice (flow 06): where, the input meter, then mute, deafen,
+ * camera, share screen and leave (the stage's controls, under the stage's rules: camera and share are aria-disabled
+ * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
  * action stand above the dock.
  */
 export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string; stageShown: boolean }): React.JSX.Element | null {
@@ -505,16 +518,19 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
         </div>
       ) : null}
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
+        camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
+        canShare={!paused && canCapture()} busy={call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
-          deafen: t('voice.deafen'), leave: t('voice.leave') }}
+          deafen: t('voice.deafen'), leave: t('voice.leave'), camera: t('voice.cameraOn'), share: t('voice.shareOn'), why: VOICE_WHY() }}
         meter={<>
           <AudioMeter level={call.state?.level ?? 0} label={t('settings.voice.level')} />
           {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
           <HearingLine audio={call.state?.audio} silent={call.state?.deafened === true || call.state?.paused === true} />
         </>}
-        onMute={call.toggleMute} onDeafen={call.toggleDeafen} onLeave={call.leave} />
+        onMute={call.toggleMute} onDeafen={call.toggleDeafen} onCamera={call.toggleCamera} onShare={call.toggleShare}
+        onLeave={call.leave} />
     </div>
   );
 }

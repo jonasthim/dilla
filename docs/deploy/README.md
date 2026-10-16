@@ -7,8 +7,8 @@ container image, a systemd unit, set up by hand or by the install script, and a 
 helper), the TLS modes, and the backup and restore runbook.
 
 `dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
-directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay and the
-blob tree, and prints one line per check. By default its `udp` leg reads WARN "not probed": dillad
+directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay, the
+blob tree and the passkey settings (`webauthn`), and prints one line per check. By default its `udp` leg reads WARN "not probed": dillad
 runs no reflector, so the leg never proves the UDP forward, which can only be checked from outside.
 With `doctor.udp_probe = false` the leg reads OK "skipped", and with `livekit.enabled = false` OK
 with no media port to reach. Run it after every change.
@@ -419,10 +419,56 @@ Add `--check-args` to the same command first: it checks the arguments and change
 
 It checks the new binary and core against `SHA256SUMS` the same way, replaces only those two
 files, restarts `dilla` and runs doctor. The previous pair stays beside them as `dillad.prev` and
-`dilla_core_wasi.wasm.prev`. If the restart fails, it puts them back and restarts again. It never
-runs init and never touches `dilla.toml` or `/var/lib/dillad`, and it refuses mode flags. It does
-not rewrite `/etc/systemd/system/dilla.service` either: when a release changes `deploy/dilla.service`,
-install the new unit yourself and run `systemctl daemon-reload`.
+`dilla_core_wasi.wasm.prev`. It never runs init and never touches `dilla.toml`, and it refuses mode
+flags. It does not rewrite `/etc/systemd/system/dilla.service` either: when a release changes
+`deploy/dilla.service`, install the new unit yourself and run `systemctl daemon-reload`.
+
+Before it replaces anything, it reads the database's schema version with the installed binary
+(`dillad migrate status`) and refuses the upgrade if it cannot. If the restart fails, it rolls
+back:
+
+1. It stops `dilla`, which systemd would otherwise keep restarting.
+2. It reads the schema version again with the **previous** binary. That binary loaded this
+   `dilla.toml` before the upgrade, and it reports a newer schema without refusing it. The new
+   binary may have failed on the config itself, before it migrated anything.
+3. If the new binary migrated the database before it failed, it takes the database back to the
+   version it read first, with the **new** binary:
+   `dillad migrate down --to=<that version> --i-know-what-i-am-doing`. This is the only time it
+   writes to the database.
+4. It puts the previous pair back and restarts.
+
+A `dillad` refuses to start on a database newer than its own migrations. So if the second read
+fails, if `dilla` cannot be stopped before a down migration, or if the down migration fails, it
+does not start the previous binary. It leaves the new binary in place, says whether `dilla` is
+stopped, and prints the ways out, which are the manual rollback below.
+
+#### Rolling back by hand
+
+`dillad.prev` alone does not start on a database that the newer binary has migrated: it exits
+with "database schema N is newer than this binary's highest migration M: refusing to start". To
+go back one release:
+
+1. Stop the service: `systemctl stop dilla`.
+2. Find the schema the previous binary reads. `runuser -u dillad -- /usr/local/bin/dillad.prev migrate status --config=/etc/dilla/dilla.toml`
+   prints `current N, target M`. `M` is that version.
+3. Take the database down to `M` with the **new** binary, which is the only one that knows the
+   way down:
+   `runuser -u dillad -- /usr/local/bin/dillad migrate down --to=M --i-know-what-i-am-doing --config=/etc/dilla/dilla.toml`.
+   Skip this step when `N` is already `M`.
+4. Put the previous pair back:
+   `cp -p /usr/local/bin/dillad.prev /usr/local/bin/dillad` and
+   `cp -p /usr/local/bin/dilla_core_wasi.wasm.prev /usr/local/bin/dilla_core_wasi.wasm`.
+5. Start it again: `systemctl start dilla`.
+
+Always do step 3 before step 4. An older `dillad doctor` does not catch a database left too new: the web-3.5 doctor
+reports `OK database schema version 17` on a web-3.6 database. Only `serve` refuses it.
+
+If step 3 fails on SQLite, there is a fallback: the copy `dillad serve` takes before it migrates,
+`<db.path>.pre-migration-<unix time>` beside the database (`db.pre_migration_backup`, on by
+default). With `dilla` stopped, remove the database's `-wal`, `-shm` and `-journal` files and
+move that copy over the database file. Then do steps 4 and 5. Everything written since the upgrade is lost.
+
+What a down migration removes is listed per release under "Client data version per release" in §5.
 
 #### Behind Pangolin
 
@@ -514,6 +560,12 @@ sudo -u dillad dillad restore --config=/etc/dilla/dilla.toml --from=/srv/backups
 sudo systemctl start dilla
 ```
 
+`dillad backup verify --from=<archive>` is the integrity check to run on every archive before you rely on it,
+and again after copying it off the host. It reads the archive without writing anything, checks each member
+against the SHA-256 in the manifest, and on a damaged or truncated archive prints the failure and exits 65
+(`dillad restore --dry-run` runs the same check). Put it after the backup in whatever schedules your backups, and
+alert on a non-zero exit.
+
 `--include-blobs` is the default; `--include-blobs=false` leaves the attachment files out. A backup
 with a missing blob file is refused unless `--allow-gaps` names the gaps in its manifest, and
 `restore` refuses such an archive, or one from another instance, without `--force`.
@@ -535,6 +587,121 @@ show a resync notice while they catch up.
 In Compose, run the same verbs with `docker compose run --rm dillad backup ...` or
 `docker compose run --rm dillad restore ...` against the stopped service. Mount a directory for
 `--out` and `--from`, and own it 65532:65532.
+
+## 5. Operating a required second factor
+
+From web-3.6 every human account needs a second factor: a confirmed authenticator app (TOTP) or a passkey. The
+instance enforces it: an account without one is refused by every route and by the gateway except the ones that set a
+factor up, until it adds one. This section is what the operator does about that. What people see is in the
+[user guide](../user/getting-started.md#second-factor).
+
+### What happens when you upgrade
+
+- The migration (`00017_second_factor`) adds `users.factor_owed` and marks every live human account that holds no
+  confirmed TOTP secret and no passkey. Those people are not signed out; every browser of theirs stops at "Add a
+  second factor" until they add one. Tell your members before you upgrade, and ask them to open Settings → Sign-in
+  afterwards.
+- **Reload every open dilla tab after upgrading to web-3.6.** A tab loaded from web-3.5 does not know the new
+  refusal. For an account that owes a factor, it shows "Connection lost. Reconnecting…" indefinitely, and a send shows
+  a raw `E_FACTOR_REQUIRED`. A reload loads the web-3.6 client, which shows "Add a second factor". Tell your members.
+- At every start, before it serves, `dillad serve` reconciles the flag both ways. It marks any live human account
+  that holds no usable factor and logs "accounts without a usable second factor now owe one", and it clears the flag
+  from any marked account that holds a usable factor and logs "accounts that hold a usable second factor no longer
+  owe one". A usable passkey is one registered under the current `auth.webauthn.rp_id`, so changing `rp_id` (below)
+  makes every account whose only factor is a passkey owe a new one, and so does restoring an archive made before
+  web-3.6. **If you changed `rp_id` by mistake, put the old value back and restart:** the passkeys count again and
+  the flag is cleared. Adding a factor clears the flag at once, and so does a browser reading its factors while the
+  account holds one.
+- There is no switch that turns the requirement off.
+
+### The configuration it needs
+
+- **`auth.methods`** must include `totp` or `passkey` (the default is `password`, `totp`, `passkey`). With
+  neither, the configuration is refused, because no account could ever hold a factor. `dillad doctor` warns if
+  `totp` is missing, since passkeys are then the only factor and a passkey that stops working locks a new browser out.
+- **`auth.totp.recovery_codes`** is how many backup codes a person gets, from 1 to 16 (default 10). It is
+  checked at start.
+- **`auth.webauthn.rp_id`** defaults to `instance.domain`. It must be a domain name, never an IP address, and
+  **a passkey is bound to it for good**: change it and the passkeys already registered stop counting.
+- **`auth.webauthn.rp_origins`** lists the origins a browser may use, and defaults to `https://<instance.domain>` plus
+  `http.trusted_origins`. The browser's origin includes its port, and the host of each `http` or `https` entry
+  must be `rp_id` or a subdomain of it.
+
+Behind a proxy (`tls.mode = "behind_proxy"`) the address the browser uses is the proxy's, so set both explicitly when
+the public address is not `https://<instance.domain>` on 443. An instance reached at `https://chat.example.org:8443`:
+
+```toml
+[auth.webauthn]
+rp_id = "chat.example.org"
+rp_origins = ["https://chat.example.org:8443"]
+```
+
+`rp_id` has no port; the origin has one. If the browser's origin is not in `rp_origins`, passkeys fail and the
+client can say "Passkeys do not work at this address of {instance}. Use an authenticator app, and tell the operator."
+Authenticator apps keep working.
+
+### The `webauthn` leg of `dillad doctor`
+
+`dillad doctor` reads the passkey settings and contacts nothing. It reads red when `rp_id` is an IP address or an
+`rp_origins` entry's host is neither `rp_id` nor a subdomain of it. It reads WARN when `auth.methods` lacks `totp`,
+and **it reads WARN on every instance with `tls.mode = "behind_proxy"`**: "set auth.webauthn.rp_origins to the public
+origin, with its port". That warning is expected. It is a prompt to check `rp_id` and `rp_origins` once, not a
+fault, and it does not go away. Otherwise it reads OK with the `rp_id` and the number of origins.
+
+### A person has lost their factor: `dillad admin user reset-factors`
+
+```sh
+sudo -u dillad dillad admin user reset-factors --config=/etc/dilla/dilla.toml --username=mira --yes
+```
+
+It takes `--id=ID` or `--username=NAME`, and `--yes` (it refuses without it, because it cannot be undone). It
+removes the person's authenticator app, every passkey and every backup code, marks the account as owing a factor and
+writes a `user.factors_reset` audit row, all in one transaction. A bot account and a deleted account are refused.
+
+- **Verify the person first, out of band.** The reset removes the check that stands between a stolen password and a
+  new browser: whoever signs in next with the password and the recovery key sets up a new factor. Confirm it is
+  them in some other way than dilla (a voice call, in person). If the account may be compromised, **disable it
+  instead** (`dillad admin user disable`), which deletes its sessions, and sort out the account before you enable it.
+- **Sessions are kept.** The person is not signed out, and each of their browsers meets "Add a second factor" before
+  it does anything else. Their recovery key still works, so they can also sign in on a new browser with the password
+  and the recovery key and set up a factor there.
+- **Live connections close within one heartbeat.** `dillad admin` is another process from `dillad serve`, so it
+  closes no socket itself; the serving process notices the owed account on its next liveness tick and closes the
+  connection. The heartbeat interval is `gateway.heartbeat_interval` (30 s by default).
+
+### Client data version per release
+
+The web client keeps its data in the browser, in a store with a schema number. A client refuses a store whose number
+is newer than the one it knows (web-3.6 onwards) and shows "This version of dilla is too old for the data saved in
+this browser" with both numbers: "That data needs data version {found}; this version of dilla reads up to
+{supported}. Update to the newer version of dilla, or ask the host of this server."
+
+| Release | Store schema (browser) | Database schema (dillad) | Note |
+|---|---|---|---|
+| web-3.4 | 4 | 16 | |
+| web-3.5 | 4 | 16 | Three additive tables in the browser store |
+| web-3.6 | 4 | 17 | A client now refuses a store newer than it knows; migration `00017_second_factor` |
+
+**The browser side.** The store schema is the same in all three, so a browser keeps working across a server
+rollback between these releases, and a person is not asked for anything new.
+
+**The server side is not automatic.** `dillad serve` refuses to start on a database schema newer than its own, so
+the web-3.5 binary (`dillad.prev`) does not start on a database that web-3.6 has migrated to 17. Migrate down first:
+use the procedure in §3, "Rolling back by hand". Stop dilla, run `dillad migrate down --to=16
+--i-know-what-i-am-doing` with the web-3.6 binary, put `dillad.prev` back and start it. `install.sh --upgrade` does
+the same by itself when the new binary fails to start. Do not rely on the web-3.5 `dillad doctor` to catch a
+missed step: it reports `OK database schema version 17` and does not say that the schema is newer than it knows.
+
+Going down from 17 to 16 drops only the `users.factor_owed` column. The second-factor tables (TOTP secrets, passkeys,
+backup codes) are older than web-3.6 and are kept with their rows. web-3.5 then runs on the data as it did before,
+with these differences:
+
+- It no longer requires a second factor. An account without one signs in and works without one.
+- A person who set up an authenticator app is still asked for its code at sign-in.
+- It has no backup-code sign-in, so someone who has lost the app cannot sign in with a backup code until you upgrade
+  again.
+
+If you upgrade to web-3.6 again, migration 00017 again marks every account that holds no factor.
 
 ## Capacity
 

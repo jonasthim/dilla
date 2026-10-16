@@ -128,6 +128,10 @@ Every endpoint in this document requires a **device session**. A device session 
    A `device_id` is unique across the instance: `POST /v1/accounts`, `POST /v1/devices`, and
    assertion registration refuse a device id already held by another user with
    `409 E_INVALID_REQUEST`, even if that row is no longer listed.
+8. A session whose account owes a second factor (`09` § Second factors), whatever its scope,
+   reaches only `09`'s `F` and `P` routes (each still within its own scope); every other route,
+   the `E or V` ones included, answers `403 E_FACTOR_REQUIRED`, and the gateway refuses it as it
+   refuses a `pending` session (close 4003).
 
 Refusals: `401 E_UNAUTHENTICATED` for an absent, replayed or expired nonce, a bad signature, an
 unknown device without a registration assertion, an unknown or spent assertion, a user with no
@@ -801,12 +805,16 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 400 | `E_ENVELOPE_TYPE` | the type byte names no envelope type this version knows | do not retry unchanged |
 | 400 | `E_ENVELOPE_LIMIT` | a field or list exceeds a `protocol/04` § Limits bound | shrink the field and resend |
 | 401 | `E_UNAUTHENTICATED` | no device session, or an expired or revoked one | establish a session (`§ Device sessions`) |
+| 401 | `E_PASSKEY_UNKNOWN` | the passkey is not registered on this instance | use another sign-in |
 | 403 | `E_FORBIDDEN` | the session is authenticated but not permitted | none |
 | 403 | `E_CHANNEL_MODE` | the operation is not allowed for this channel's mode | use the surface the mode does allow |
+| 403 | `E_FACTOR_REQUIRED` | the session's account owes a second factor | add one (`09` § Second factors) |
 | 403 | `E_LEAF_NOT_CURRENT` | the sending device's leaf is not in the current tree | resync by external commit; show "you are no longer a member" if refused |
 | 403 | `E_MODE_READABLE` | text groups are not allowed for this channel | none; the channel is server-readable |
 | 403 | `E_NOT_UPLOADER` | only the uploading user may delete this object | none |
 | 403 | `E_PROVISIONAL_OUTSIDE_PAIRING` | a `provisional` session reached anything but its one `pairing` group | finish enrolment, then establish an `enrolled` session |
+| 403 | `E_STEP_UP` | the step-up token is missing, spent, expired, another session's, or its secret was wrong | confirm again |
+| 403 | `E_TARGET_NO_FACTOR` | the user the request names holds no second factor and the community requires one | none; tell the actor |
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
@@ -846,6 +854,13 @@ lease. `E_UNAVAILABLE` is a call route or the signalling proxy that could not ta
 serialisation within its bound (`09` § Voice). None of the last three is a delivery-service code.
 `E_CALL_NOT_ALONE` came with web-3: the conditional end of a call (`09` § Voice), refused unless
 the caller's device is the call group's only current leaf, decided under the group lock.
+`E_FACTOR_REQUIRED`, `E_TARGET_NO_FACTOR` and `E_STEP_UP` came with web3.6, the required second
+factor: an account that owes one (§ Device sessions item 8), a `require_mod_2fa` grant to a user
+who holds none (`09` § Communities), and a factor change without a valid step-up. Each is 403 and
+distinct, so a client tells the three apart by code, never by detail. `E_PASSKEY_UNKNOWN` (401)
+came with them: a passkey login whose credential this instance does not hold (`09` § Second
+factors), distinct from `E_UNAUTHENTICATED` so the client can say which. None is a
+delivery-service code.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

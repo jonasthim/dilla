@@ -14,7 +14,7 @@ import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import {
-  CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
+  CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
@@ -23,18 +23,18 @@ import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
-  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow, type Instance,
-  type Limits, type MemberRow, type NewChannelKind,
+  CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
+  type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
-import { isSettingKey, isSettingValue } from '../state/settings';
+import { PENDING_JOIN_KEY, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
 import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem,
-  type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState,
+  type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -44,6 +44,7 @@ import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
 import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
+import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
 import { authorityFor } from '../admin/authority';
 
 export interface ControllerDeps {
@@ -117,12 +118,16 @@ E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQ
 E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
-E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
+E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED`.split(/\s+/));
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED
+E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
 export function sanitizeWorkerError(e: unknown): WorkerError {
+  // A store a newer client wrote (C4x): core_open rejects with a plain Error, so it is read from the message here.
+  const store = storeNewerOf(e);
+  if (store !== null) return { code: 'E_STORE_NEWER', detail: '', status: 0, retryAfterMs: null, store };
   let code = 'E_INTERNAL';
   if (e instanceof DillaHttpError || e instanceof CoreError || e instanceof SyncError || e instanceof CborError
     || e instanceof AttachmentError || e instanceof Refusal) code = e.code;
@@ -135,10 +140,14 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
 }
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
+  const store = error.code === 'E_STORE_NEWER' && error.store !== undefined
+    && Number.isSafeInteger(error.store.found) && Number.isSafeInteger(error.store.supported)
+    ? { found: error.store.found, supported: error.store.supported } : null;
   return { code: ALLOWED_CODES.has(error.code) ? error.code : 'E_INTERNAL', detail: '',
     status: Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? error.status : 0,
     retryAfterMs: typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
-      && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null };
+      && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null,
+    ...(store === null ? {} : { store }) };
 }
 
 /** An account code thrown as Error(code) by the account modules (enrol.ts, signup.ts, session.ts). */
@@ -185,6 +194,20 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'signInTotp',
   'signInKey',
   'signInCancel',
+  'signInPasskeyBegin',
+  'signInPasskey',
+  'signInBackupCode',
+  'factorSetupDone',
+  'refreshFactors',
+  'factorTotpBegin',
+  'factorTotpConfirm',
+  'factorPasskeyBegin',
+  'factorPasskeyFinish',
+  'stepUp',
+  'stepUpPasskeyBegin',
+  'stepUpPasskeyFinish',
+  'removeFactor',
+  'regenerateBackupCodes',
   'refreshDevices',
   'revokeDevice',
   'signOutRevoke',
@@ -240,6 +263,17 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
 ]);
 const ID = /^[0-9a-f]{32}$/;
 const TOTP = /^[0-9]{6}$/;
+/** A backup code (web3.6): 26 base32 characters once '-' and spaces are dropped and it is upper-cased. */
+const backupCode = normaliseBackupCode;
+/** The WebAuthn response a page hands over for a passkey sign-in: at most 64 KiB of JSON. */
+const PASSKEY_RESPONSE_MAX_BYTES = 65_536;
+/** The account slice's view of GET /v1/instance: auth_methods 0 password, 1 totp, 2 passkey. */
+const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance']> => ({
+  id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
+  passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
+});
+const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
+  ({ username, needsTotp: factor === 'totp', factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
@@ -295,17 +329,22 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   loadInvites: ['communityId'],
   revokeInvite: ['communityId', 'inviteId'],
 };
-/** The commands each phase accepts besides start, which every phase accepts (requirement 1). */
-const ACCEPTS: Record<BootPhase, readonly Method[]> = {
+/** The commands each phase accepts besides start, which every phase accepts (requirement 1). Exported for its tests. */
+export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
   'loading': [], 'other-tab': [], 'paused-error': [], 'unsupported': [], 'error': [], 'registering': [], 'enrolling': [], 'cleared': [],
   // Pre-flight ruling (d) of task 14: a revoked browser can start over (the splash's "forget this browser").
   'revoked': ['forgetBrowser'],
   'store-lost': ['resetDevice'],
   'needs-signup': ['signupBegin', 'signInBegin'],
   'signup-keys': ['signupSubmit', 'signupReset'],
-  'signin-login': ['signInLogin', 'signInCancel'],
-  'signin-totp': ['signInTotp', 'signInCancel'],
+  // web3.6: a passkey on its own signs in from the login step (W2's usePasskey), so signin-login takes its finish too.
+  'signin-login': ['signInLogin', 'signInPasskeyBegin', 'signInPasskey', 'signInCancel'],
+  'signin-totp': ['signInTotp', 'signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
+  'signin-passkey': ['signInPasskeyBegin', 'signInPasskey', 'signInBackupCode', 'signInCancel'],
   'signin-key': ['signInKey', 'signInCancel'],
+  // web3.6: a person owing a factor enrols one (the five that need no step-up) and reads the list; the rest need a factor held.
+  // Walk M9: a tab on the forced screen hands the store to a tab that asks ("Use this tab"), as a ready one does.
+  'factor-setup': ['factorSetupDone', 'forgetBrowser', 'refreshFactors', 'factorTotpBegin', 'factorTotpConfirm', 'factorPasskeyBegin', 'factorPasskeyFinish', 'resign'],
   'ready': [
     'joinCommunity',
     'selectCommunity',
@@ -323,6 +362,16 @@ const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'revokeDevice',
     'signOutRevoke',
     'forgetBrowser',
+    'refreshFactors',
+    'factorTotpBegin',
+    'factorTotpConfirm',
+    'factorPasskeyBegin',
+    'factorPasskeyFinish',
+    'stepUp',
+    'stepUpPasskeyBegin',
+    'stepUpPasskeyFinish',
+    'removeFactor',
+    'regenerateBackupCodes',
     'markRead',
     'setSetting',
     'openDm',
@@ -396,6 +445,7 @@ const optionalId = (v: unknown): boolean => v === null || (typeof v === 'string'
 const VALIDATORS: Partial<Record<Method, (c: Record<string, unknown>) => string | null>> = {
   ...ADMIN_VALIDATORS,
   ...ROLES_VALIDATORS,
+  ...FACTOR_VALIDATORS,
 };
 
 /** The synchronous input checks, in the order requirement 2 fixes; null when the command is well formed.
@@ -468,7 +518,19 @@ function invalid(command: Record<string, unknown>): string | null {
     if (typeof command.password !== 'string' || command.password === '') return 'password is empty';
   }
   if (m === 'signInTotp' && (typeof command.code !== 'string' || !TOTP.test(command.code))) return 'code is not six digits';
-  if ((m === 'signInKey' || m === 'signInLogin' || m === 'signInTotp' || m === 'signOutRevoke') && blank(command.recoveryKey)) {
+  if (m === 'signInBackupCode' && (typeof command.code !== 'string' || !BACKUP_CODE.test(backupCode(command.code)))) {
+    return 'backup code is not 26 letters and digits';
+  }
+  if (m === 'signInPasskey') {
+    if (typeof command.ceremonyId !== 'string' || !ID.test(command.ceremonyId)) return 'ceremonyId is not 32 lowercase hex';
+    const { response } = command;
+    if (typeof response !== 'string' || response === '' || UTF8.encode(response).length > PASSKEY_RESPONSE_MAX_BYTES) {
+      return 'response is not a string of 1..65536 bytes';
+    }
+  }
+  if (m === 'factorSetupDone' && command.invite !== null && typeof command.invite !== 'string') return 'invite is not a string or null';
+  if ((m === 'signInKey' || m === 'signInLogin' || m === 'signInTotp' || m === 'signInPasskey' || m === 'signInBackupCode'
+    || m === 'signOutRevoke') && blank(command.recoveryKey)) {
     return 'the recovery key is empty';
   }
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
@@ -538,6 +600,7 @@ export class Controller {
   private phase: BootPhase = 'loading';
   private accountState: AccountState = {
     phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null,
+    factorSetup: null,
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
@@ -549,6 +612,14 @@ export class Controller {
   private enrol: Enrol | null = null;
   private fetched: EnrolFetched | null = null;
   private signInRunning = false;
+  /** web3.6: the community a signup that stopped at factor-setup was to join (null: none), joined by factorSetupDone. */
+  private pendingJoin: { communityId: Id | null; invite: string } | null = null;
+  /** A signup this worker completed has sent no KeyPackages yet (a V route, refused while owed): enterReady sends them
+   *  once past the factor gate, before any join. */
+  private keyPackagesOwed = false;
+  /** factorSetupDone in flight: a second one is refused E_NOT_READY (as step() does for sign-in), so a double submit never
+   *  runs two enterReady at once. */
+  private factorSetupRunning = false;
   private storeCleared = false;
   private wiping = false;
   private gateway: Gateway | null = null;
@@ -636,6 +707,8 @@ export class Controller {
   private readonly admin: AdminController;
   /** Wave 2a: roles, overwrites and private channels (flow 09). */
   private readonly rolesCtl: RolesController;
+  /** web3.6: second-factor management (flow 10). */
+  private readonly factorsCtl: FactorsController;
   /** The last voice_self the page sent, and the calls this device's own voice_state shows it in (the re-send rule). */
   private lastVoiceSelf: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
   private readonly ownInCall = new Set<string>();
@@ -652,6 +725,11 @@ export class Controller {
       token: () => this.session?.token() ?? null,
       reauthenticate: () => this.reauthenticate(),
       onGeneration: (generation) => { this.setConnection({ generation: generation.toString() }); },
+      // web3.6: an instance that answers E_FACTOR_REQUIRED to a ready account (an operator reset) owns the next step.
+      // Once per transition: onFactorRequired leaves 'ready' synchronously, so the refusals that follow (and any while
+      // factor-setup, signup or sign-in runs) do not re-run it or overwrite its origin. This filter is the C2 brief's
+      // latch; a separate flag could never be observed (C2 review finding 7).
+      onRefusal: (code) => { if (code === 'E_FACTOR_REQUIRED' && this.phase === 'ready') this.onFactorRequired(); },
     });
     this.routes = this.parts.routes(http);
     this.calls = new CallController({
@@ -670,7 +748,7 @@ export class Controller {
       randomId: () => crypto.getRandomValues(new Uint8Array(16)),
       me: () => this.me,
       instance: () => this.instance,
-      settings: () => this.core?.settings() ?? {},
+      settings: () => pageSettings(this.core?.settings() ?? {}),
       nameOf: (user) => this.nameOf(user),
       refreshLeaves: (g) => this.refreshCallLeaves(g),
       serial: (g, job) => (this.sync === null ? job() : this.sync.runOnGroup(g, job)),
@@ -730,6 +808,7 @@ export class Controller {
       accessForgotten: (communityId) => { this.rolesCtl.forget(communityId); this.accessRead.delete(communityId); },
       refusal: (code, detail) => new Refusal(code, detail),
     });
+    this.factorsCtl = new FactorsController({ routes: this.routes, holdsFactors: () => this.phase === 'ready' || this.phase === 'factor-setup', publish: (name, value) => { this.slices.set(name, value); } });
     this.rolesCtl = new RolesController({
       routes: this.routes,
       me: () => this.me,
@@ -851,6 +930,24 @@ export class Controller {
       case 'signInTotp': return this.step(() => this.signInTotp(command.code, command.recoveryKey));
       case 'signInKey': return this.step(() => this.signInKey(command.recoveryKey));
       case 'signInCancel': return this.signInCancel();
+      case 'signInPasskeyBegin': return this.signInPasskeyBegin();
+      case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response, command.recoveryKey));
+      case 'signInBackupCode': return this.step(() => this.signInBackupCode(command.code, command.recoveryKey));
+      case 'factorSetupDone': {
+        if (this.factorSetupRunning) return Promise.reject(new Refusal('E_NOT_READY', 'factorSetupDone is running'));
+        this.factorSetupRunning = true;
+        return this.factorSetupDone(command.invite).finally(() => { this.factorSetupRunning = false; });
+      }
+      case 'refreshFactors': return this.factorsCtl.refresh();
+      case 'factorTotpBegin': return this.factorsCtl.totpBegin(command.stepup);
+      case 'factorTotpConfirm': return this.factorsCtl.totpConfirm(command.code);
+      case 'factorPasskeyBegin': return this.factorsCtl.passkeyBegin(command.stepup);
+      case 'factorPasskeyFinish': return this.factorsCtl.passkeyFinish(command.ceremonyId, command.response, command.name);
+      case 'stepUp': return this.factorsCtl.stepUp(command.method, command.secret);
+      case 'stepUpPasskeyBegin': return this.factorsCtl.stepUpPasskeyBegin();
+      case 'stepUpPasskeyFinish': return this.factorsCtl.stepUpPasskeyFinish(command.ceremonyId, command.response);
+      case 'removeFactor': return this.factorsCtl.removeFactor(command.stepup, command.kind, command.credId);
+      case 'regenerateBackupCodes': return this.factorsCtl.regenerateBackupCodes(command.stepup);
       case 'refreshDevices': return this.refreshDevices();
       case 'revokeDevice': return this.revokeDevice(command.deviceId, command.recoveryKey);
       case 'signOutRevoke': return this.signOutRevoke(command.recoveryKey);
@@ -951,7 +1048,8 @@ export class Controller {
   }
 
   private async startOnce(): Promise<null> {
-    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null });
+    this.setAccount({ phase: 'loading', instance: null, user: null, deviceId: null, recoveryKey: null, error: null, signIn: null, rootMismatch: false, ownTrust: null,
+      factorSetup: null });
     this.setConnection({ status: 'offline', generation: null });
     let instance: Instance;
     try {
@@ -964,10 +1062,7 @@ export class Controller {
     this.instance = instance;
     // A tab that then waits for the lock offers hand-over by this instance (L-WEB-46), so diagnostics names it now.
     this.publishDiagnostics();
-    this.setAccount({ instance: {
-      id: toHex(instance.instanceId), name: instance.name, registrationMode: instance.registrationMode,
-      passwordSignup: instance.authMethods.includes(0),
-    } });
+    this.setAccount({ instance: instanceStateOf(instance) });
     void this.lead(instance);
     return null;
   }
@@ -1015,7 +1110,7 @@ export class Controller {
       if (identity.phase === 1) {
         const resumed = await this.requireSignup().resume();
         if (resumed === 0) this.setAccount({ phase: 'needs-signup' });
-        else if (resumed === 2) await this.enterReady();
+        else if (resumed === 2) { this.keyPackagesOwed = true; await this.enterReady('required'); }
         // A refused device whose account exists: nothing is deleted, signupReset is never called here.
         else this.enterRevoked();
         return;
@@ -1023,7 +1118,7 @@ export class Controller {
       if (identity.phase === 3) {
         // A reload mid-ceremony keeps its place: a registered enrolment resumes at the key step.
         if (identity.userId === null) { enrol.reset(); this.setAccount({ phase: 'needs-signup' }); return; }
-        const signIn = { username: null, needsTotp: false };
+        const signIn = signInOf(null, null);
         try {
           this.fetched = await enrol.fetch(identity.userId);
           this.setAccount({ phase: 'signin-key', signIn, error: null });
@@ -1033,7 +1128,7 @@ export class Controller {
         }
         return;
       }
-      await this.enterReady();
+      await this.enterReady('required');
     } catch (e) {
       // After a revocation the error is its consequence (a 401 that reauthenticate turned into revoked).
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
@@ -1070,8 +1165,23 @@ export class Controller {
 
   // ---- ready and revoked ----
 
-  /** Requirement 11, in order; after every await a revocation that happened meanwhile ends it silently. */
-  private async enterReady(): Promise<void> {
+  /** Requirement 11, in order; after every await a revocation that happened meanwhile ends it silently. web3.6: past (d),
+   *  an account that owes a second factor stops at factor-setup (`origin` says why) with no backup PUT, no KeyPackage and
+   *  no socket: the instance refuses them all until a factor is added (protocol/09 scope F). */
+  private async enterReady(origin: FactorSetupOrigin): Promise<void> {
+    try { await this.enterReadyOnce(origin); }
+    catch (e) {
+      // Final review M5: a reset (or a CLI sweep) landing after the gate read answers E_FACTOR_REQUIRED while the phase is
+      // not yet ready, which the global hook ignores. The account owes a factor: stop the gateway and engine the steps
+      // after the gate built, and take the forced set-up, as the hook does, rather than the error screen.
+      const me = this.me;
+      if (errorOf(e).code !== 'E_FACTOR_REQUIRED' || this.revoked() || this.wiping || this.storeCleared || me === null) throw e;
+      this.onFactorRequired();
+      await this.enterFactorSetup('required', me.userId, me.deviceId);
+    }
+  }
+
+  private async enterReadyOnce(origin: FactorSetupOrigin): Promise<void> {
     const core = this.requireCore();
     const session = this.session;
     if (session === null) throw new CoreError('E_CORE_STATE', 'no session');
@@ -1098,6 +1208,20 @@ export class Controller {
       userId = identity.userId;
       deviceId = identity.deviceId;
       this.me = { userId, deviceId };
+      // The factor gate (web3.6), after (d) and before (e): ensureBackups' PUT is not an F route.
+      const factors = await this.routes.getFactors();
+      if (this.revoked()) return;
+      this.slices.set('factors', factorsState(factors));
+      if (factors.owed) { await this.enterFactorSetup(origin, userId, deviceId); return; }
+      // A signup's first KeyPackages, refused while owed (Signup.submit no longer sends them); before any join.
+      if (this.keyPackagesOwed) {
+        this.keyPackagesOwed = false;
+        const limits = this.limits ?? await this.routes.getLimits();
+        try {
+          await refillKeyPackages(core, this.routes, 0, { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold });
+        } catch { /* the gateway's ready refills from its count */ }
+        if (this.revoked()) return;
+      }
       // (e) the next ready retries a failed upload; a root mismatch is recorded, never dropped.
       await this.ensureBackups(core);
       if (this.revoked()) return;
@@ -1154,7 +1278,7 @@ export class Controller {
     }
     if (this.revoked()) return;
     // (i)
-    this.slices.set('settings', core.settings());
+    this.slices.set('settings', pageSettings(core.settings()));
     this.publishBadges();
     if (this.slices.get('notices') === undefined) this.slices.set('notices', this.noticesState);
     // C4 fix round 1: the removals slice is present from ready on, as notices is.
@@ -1167,7 +1291,7 @@ export class Controller {
     this.noticeFloor = this.serverNowS();
     this.setAccount({
       phase: 'ready', user: { id: toHex(userId), username }, deviceId: toHex(deviceId),
-      recoveryKey: null, error: null, signIn: null,
+      recoveryKey: null, error: null, signIn: null, factorSetup: null,
     });
     this.publishDms();
     // The gateway's first ready can arrive before the phase is ready, when a purge run returns at once.
@@ -1367,6 +1491,117 @@ export class Controller {
     }
   }
 
+  // ---- the second factor (web3.6, flow 10) ----
+
+  /** enterReady's owed branch: the account is named (GET /v1/accounts/me is an F route) and nothing else runs. */
+  private async enterFactorSetup(origin: FactorSetupOrigin, userId: Id, deviceId: Id): Promise<void> {
+    let username = this.requireCore().identity().username;
+    if (username === '') {
+      try { username = (await this.routes.getAccountMe()).username; } catch { /* named at ready */ }
+      if (this.revoked()) return;
+    }
+    // S2 review M5: under instance.discovery = "session" GET /v1/instance is E, F, so the set-up reads the methods it offers
+    // with this session (the start's read had none). Only the same instance's answer is taken; a failure keeps the start's.
+    let instance = this.accountState.instance;
+    try {
+      const read = await this.routes.getInstance();
+      if (this.revoked()) return;
+      if (toHex(read.instanceId) === toHex(this.requireInstance().instanceId)) instance = instanceStateOf(read);
+    } catch { /* the start's read stands */ }
+    this.setAccount({ phase: 'factor-setup', factorSetup: { origin }, user: { id: toHex(userId), username }, deviceId: toHex(deviceId),
+      recoveryKey: null, error: null, signIn: null, instance });
+  }
+
+  /** The page's set-up is done: the factors are read again (still owed: E_FACTOR_REQUIRED, the phase stays), then ready,
+   *  then the join a signup kept, else the invite given, as signupSubmit joins. */
+  private async factorSetupDone(rawInvite: string | null): Promise<{ communityId: string | null; joinError: WorkerError | null }> {
+    const factors = await this.routes.getFactors();
+    this.slices.set('factors', factorsState(factors));
+    if (factors.owed) throw new Refusal('E_FACTOR_REQUIRED', '');
+    const origin = this.accountState.factorSetup?.origin ?? 'required';
+    try {
+      await this.enterReady(origin);
+    } catch (e) {
+      if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
+      throw e;
+    }
+    if (this.phase !== 'ready') return { communityId: null, joinError: null };
+    // The join a signup kept: in memory, else in the store (a page closed at the factor step and opened again).
+    const pending = this.pendingJoin ?? this.storedPendingJoin();
+    this.pendingJoin = null;
+    let communityId: Id | null = null;
+    let invite = '';
+    if (pending !== null) ({ communityId, invite } = pending);
+    else {
+      this.dropStoredPendingJoin();
+      if (rawInvite !== null && rawInvite.trim() !== '') {
+        invite = rawInvite.trim();
+        try { communityId = (await this.routes.getInvite(invite)).communityId; }
+        catch (e) { return { communityId: null, joinError: errorOf(e) }; }
+      }
+    }
+    if (communityId === null) { this.dropStoredPendingJoin(); return { communityId: null, joinError: null }; }
+    const joined = await this.joinAfterReady(communityId, invite);
+    // Spent once tried: a refused join is the signup's result, shown now, and is never tried again at a later set-up.
+    this.dropStoredPendingJoin();
+    return joined;
+  }
+
+  /** A signup stopped at factor-setup: the join waits in memory and in the account's store (one row, one invite), so a
+   *  reload at the forced screen still joins it. Nothing reaches the instance until factorSetupDone finds the debt paid. */
+  private keepPendingJoin(join: { communityId: Id | null; invite: string }): void {
+    this.pendingJoin = join;
+    const core = this.core;
+    if (core === null) return;
+    try {
+      if (join.communityId === null || join.invite === '') core.settingDelete(PENDING_JOIN_KEY);
+      else core.settingPut(PENDING_JOIN_KEY, JSON.stringify({ communityId: toHex(join.communityId), invite: join.invite }));
+    } catch { /* too long for the row, or the store refused: the join is kept in memory only */ }
+  }
+
+  /** The stored join, or null when there is none or the row is not one this worker wrote. */
+  private storedPendingJoin(): { communityId: Id; invite: string } | null {
+    let raw: string | undefined;
+    try { raw = this.core?.settings()[PENDING_JOIN_KEY]; } catch { return null; }
+    if (raw === undefined) return null;
+    try {
+      const v = JSON.parse(raw) as unknown;
+      if (typeof v !== 'object' || v === null) return null;
+      const { communityId, invite } = v as Record<string, unknown>;
+      if (typeof communityId !== 'string' || !/^[0-9a-f]{32}$/.test(communityId) || typeof invite !== 'string' || invite === '') return null;
+      return { communityId: fromHex(communityId), invite };
+    } catch { return null; }
+  }
+
+  private dropStoredPendingJoin(): void {
+    try { this.core?.settingDelete(PENDING_JOIN_KEY); } catch { /* the next set-up finds no row it can read either way */ }
+  }
+
+  /** The global hook (HttpDeps.onRefusal): a ready account the instance now finds owing (an operator reset) stops its
+   *  socket and engine, with no ticket retry, and shows the forced set-up. Once per transition (the hook's phase filter). */
+  private onFactorRequired(): void {
+    if (this.wiping || this.storeCleared) return;
+    this.clearReauthTimer();
+    this.typingOff();
+    this.calls.reset();
+    this.sync?.stop();
+    this.gateway?.stop();
+    // enterReady builds a fresh gateway and engine after factorSetupDone (a stopped engine cannot restart).
+    this.gateway = null;
+    this.sync = null;
+    // Contract 6: what each ready reads once is read again at the next.
+    this.fetchedLeaves.clear();
+    // Web3.6 E3 finding: the factors the ready account held are gone (a reset removes the TOTP secret, the passkeys
+    // and the backup codes, protocol/09 § Admin), so the slice says so before the phase moves. The page never shows the
+    // forced set-up over the old factors, which it would take for one already in place; the read below replaces this.
+    const held = this.slices.get('factors');
+    this.slices.set('factors', { ...NO_FACTORS, owed: true, hasPassword: held?.hasPassword ?? true });
+    this.setAccount({ phase: 'factor-setup', factorSetup: { origin: 'required' }, error: null });
+    void this.barrier.track(this.routes.getFactors().then((f) => {
+      if (this.phase === 'factor-setup') this.slices.set('factors', factorsState(f));
+    }, () => undefined));
+  }
+
   // ---- signup ----
 
   private signupBegin(): Promise<null> {
@@ -1384,7 +1619,8 @@ export class Controller {
 
   /** Requirement 11 (ruling 34): the invite is read first, the account registered, ready entered, and the
    *  community the invite names joined; a refused join is a result, never a failed signup. */
-  private async signupSubmit(c: Extract<Command, { m: 'signupSubmit' }>): Promise<{ communityId: string | null; joinError: WorkerError | null }> {
+  private async signupSubmit(c: Extract<Command, { m: 'signupSubmit' }>):
+    Promise<{ communityId: string | null; joinError: WorkerError | null; factorOwed?: true }> {
     const signup = this.requireSignup();
     const core = this.requireCore();
     const invite = c.invite.trim();
@@ -1412,13 +1648,24 @@ export class Controller {
       // The account exists; entering ready publishes what the submit could not.
     }
     if (this.phase === 'registering') this.setAccount({ recoveryKey: null });
+    if (core.identity().phase === 2) this.keyPackagesOwed = true;
     try {
-      await this.enterReady();
+      await this.enterReady('signup');
     } catch (e) {
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e), recoveryKey: null });
       throw e;
     }
+    // web3.6: the join waits for the factor; factorSetupDone makes it.
+    if (this.phase === 'factor-setup') {
+      this.keepPendingJoin({ communityId, invite });
+      return { communityId: null, joinError: null, factorOwed: true };
+    }
     if (this.phase !== 'ready' || communityId === null) return { communityId: null, joinError: null };
+    return this.joinAfterReady(communityId, invite);
+  }
+
+  /** A refused join is a result, never a failed signup (ruling 34). */
+  private async joinAfterReady(communityId: Id, invite: string): Promise<{ communityId: string | null; joinError: WorkerError | null }> {
     try {
       const joined = await this.joinPath(communityId, invite);
       return { communityId: joined.communityId, joinError: null };
@@ -1439,7 +1686,7 @@ export class Controller {
   private signInBegin(): Promise<null> {
     if (this.storeCleared) return Promise.reject(new Refusal('E_NOT_READY', 'the store was cleared: reload'));
     this.fetched = null;
-    this.setAccount({ phase: 'signin-login', signIn: { username: null, needsTotp: false }, error: null });
+    this.setAccount({ phase: 'signin-login', signIn: signInOf(null, null), error: null });
     return Promise.resolve(null);
   }
 
@@ -1458,24 +1705,79 @@ export class Controller {
    *  with no second factor owed the enrolment runs at once, so the assertion is spent seconds after it was minted
    *  (REGISTRATION-DEVICES-02, coordinator ruling on its concern 3). With a second factor the worker keeps no key:
    *  the page sends it again with the code. */
-  private async signInLogin(rawUsername: string, password: string, recoveryKey: string): Promise<{ needsTotp: boolean }> {
+  private async signInLogin(rawUsername: string, password: string, recoveryKey: string): Promise<{ needs: 0 | 1 | 2 }> {
     const enrol = this.requireEnrol();
     const username = rawUsername.trim();
     this.checkKey(recoveryKey, 'signin-login');
-    let needsTotp: boolean;
+    let needs: 0 | 1 | 2;
     try {
-      ({ needsTotp } = await enrol.login(username, password));
+      ({ needs } = await enrol.login(username, password));
     } catch (e) {
       this.setAccount({ phase: 'signin-login', error: errorOf(e) });
       throw e;
     }
-    if (needsTotp) {
-      this.setAccount({ phase: 'signin-totp', signIn: { username, needsTotp: true }, error: null });
-      return { needsTotp: true };
+    // web3.6: needs 1 asks for the app's code, needs 2 (passkeys and no app) for a passkey; either takes a backup code.
+    if (needs === 1) {
+      this.setAccount({ phase: 'signin-totp', signIn: signInOf(username, 'totp'), error: null });
+      return { needs };
     }
-    this.setAccount({ signIn: { username, needsTotp: false }, error: null });
+    if (needs === 2) {
+      this.setAccount({ phase: 'signin-passkey', signIn: signInOf(username, 'passkey'), error: null });
+      return { needs };
+    }
+    this.setAccount({ signIn: signInOf(username, null), error: null });
     await this.enrolWithKey(recoveryKey);
-    return { needsTotp: false };
+    return { needs };
+  }
+
+  /** web3.6: the passkey ceremony's options for the page's navigator.credentials.get; nothing is held here. */
+  private async signInPasskeyBegin(): Promise<{ ceremonyId: string; options: string }> {
+    try {
+      const ceremony = await this.routes.passkeyLoginBegin();
+      return { ceremonyId: toHex(ceremony.ceremonyId), options: ceremony.options };
+    } catch (e) {
+      this.setAccount({ error: errorOf(e) });
+      throw e;
+    }
+  }
+
+  /** web3.6: a passkey that verified the person signs in on its own (needs 0); one that did not (needs 1) goes on to the
+   *  code step with `factor 'passkey'` for its copy. The passkey names the account, so the typed username is not kept. A
+   *  refused passkey stays at its step with the error, and an assertion held from a login stays usable. */
+  private async signInPasskey(ceremonyId: string, response: string, recoveryKey: string): Promise<{ needs: 0 | 1 }> {
+    const enrol = this.requireEnrol();
+    const back = this.phase;
+    this.checkKey(recoveryKey, back);
+    let needs: 0 | 1;
+    try {
+      ({ needs } = await enrol.passkey(fromHex(ceremonyId), response));
+    } catch (e) {
+      this.setAccount({ phase: back, error: errorOf(e) });
+      throw e;
+    }
+    if (needs === 1) {
+      this.setAccount({ phase: 'signin-totp', signIn: signInOf(null, 'passkey'), error: null });
+      return { needs };
+    }
+    this.setAccount({ signIn: signInOf(null, null), error: null });
+    await this.enrolWithKey(recoveryKey);
+    return { needs };
+  }
+
+  /** web3.6: a backup code in place of the app's code or a passkey. A refused code spends the assertion: the person logs
+   *  in again, the username kept (as signInTotp). */
+  private async signInBackupCode(code: string, recoveryKey: string): Promise<null> {
+    const enrol = this.requireEnrol();
+    const username = this.accountState.signIn?.username ?? null;
+    this.checkKey(recoveryKey, this.phase);
+    try {
+      await enrol.backupCode(backupCode(code));
+    } catch (e) {
+      this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
+      throw e;
+    }
+    await this.enrolWithKey(recoveryKey);
+    return null;
   }
 
   /** A refused code spends the assertion (head ruling 39): the person logs in again, the username kept. */
@@ -1486,7 +1788,7 @@ export class Controller {
     try {
       await enrol.totp(code);
     } catch (e) {
-      this.setAccount({ phase: 'signin-login', signIn: { username, needsTotp: false }, error: errorOf(e) });
+      this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
     await this.enrolWithKey(recoveryKey);
@@ -1502,7 +1804,7 @@ export class Controller {
       return (await enrol.register(this.requireInstance().instanceId)).userId;
     } catch (e) {
       const username = this.accountState.signIn?.username ?? null;
-      this.setAccount({ phase: 'signin-login', signIn: { username, needsTotp: false }, error: errorOf(e) });
+      this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
   }
@@ -1527,7 +1829,7 @@ export class Controller {
   private evicted(): Error {
     this.requireEnrol().reset();
     const username = this.accountState.signIn?.username ?? null;
-    this.setAccount({ phase: 'signin-login', signIn: { username, needsTotp: false },
+    this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null),
       error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null } });
     return new Error('E_SIGNIN_EVICTED');
   }
@@ -1587,7 +1889,7 @@ export class Controller {
     }
     this.fetched = null;
     try {
-      await this.enterReady();
+      await this.enterReady('signin');
     } catch (e) {
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
       throw e;
@@ -2137,7 +2439,7 @@ export class Controller {
       if (!isSettingValue(key, value)) throw new Refusal('E_BAD_INPUT', `value is not allowed for ${key}`);
       core.settingPut(key, value);
     }
-    this.slices.set('settings', core.settings());
+    this.slices.set('settings', pageSettings(core.settings()));
     return Promise.resolve(null);
   }
 
@@ -2365,7 +2667,8 @@ export class Controller {
     }
     this.forgetAccount();
     this.storeCleared = true;
-    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false, ownTrust: null });
+    this.setAccount({ phase: 'cleared', user: null, deviceId: null, recoveryKey: null, signIn: null, error, rootMismatch: false, ownTrust: null,
+      factorSetup: null });
   }
 
   /**
@@ -2386,6 +2689,7 @@ export class Controller {
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
+    this.pendingJoin = null; this.keyPackagesOwed = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.memberReadEnded.clear(); this.voiceLookups.clear();
@@ -2415,6 +2719,7 @@ export class Controller {
     if (this.slices.get('removals') !== undefined) this.slices.set('removals', []);
     this.admin.selfRemoved.clear();
     this.slices.set('trust', []);
+    if (this.slices.get('factors') !== undefined) this.slices.set('factors', NO_FACTORS);
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.calls.reset();
@@ -3071,7 +3376,7 @@ export class Controller {
     const core = this.core;
     this.forgetAccount();
     this.pausedCore = core;
-    this.setAccount({ user: null, deviceId: null, recoveryKey: null, signIn: null, error: null, rootMismatch: false, ownTrust: null });
+    this.setAccount({ user: null, deviceId: null, recoveryKey: null, signIn: null, error: null, rootMismatch: false, ownTrust: null, factorSetup: null });
   }
 
   /**

@@ -8,6 +8,10 @@ import { useSlice } from '../core/use-slice.ts';
 import { extractInviteCode } from '../invite.ts';
 import { useRoute } from '../router.ts';
 import { t, type StringKey } from '../strings/index.ts';
+import { useAnnouncer } from './announcer.ts';
+import { doneProblem, type DoneProblem } from './factor/doneRefusal.ts';
+import { FactorSetup } from './factor/FactorSetup.tsx';
+import { ForgetBrowser } from './factor/ForgetBrowser.tsx';
 
 /** What the done step hands to the App: the value signupSubmit resolved with and the invite code sent. */
 export interface SignupResult { communityId: string | null; joinError: UiError | null; invite: string }
@@ -110,17 +114,26 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   // page never sends signupSubmit again and Reload (Signup.resume in the worker) is the only way on.
   const [stalled, setStalled] = useState(false);
   const [result, setResult] = useState<SignupResult | null>(null);
+  // web3.6: the account was created and now owes its second factor (step 5); the done step (6) waits for the factor.
+  const [viaFactor, setViaFactor] = useState(false);
+  const [factorResult, setFactorResult] = useState<SignupResult | null>(null);
+  const [factorState, setFactorState] = useState<{ busy: boolean; problem: DoneProblem | null }>({ busy: false, problem: null });
+  const { text: announcement, announce } = useAnnouncer();
   const [focusRequest, setFocusRequest] = useState<{ target: FocusTarget; n: number }>({ target: 'heading', n: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
 
   const instance = account?.instance ?? null;
   const ready = account?.phase === 'ready';
+  const inFactor = account?.phase === 'factor-setup' && account.factorSetup?.origin === 'signup';
+  useEffect(() => { if (inFactor) setViaFactor(true); }, [inFactor]);
+  const factorFlow = viaFactor || inFactor;
   // A page reloaded during registration mounts this screen with nothing submitted; the worker's
   // resume then finishes the account, and the ceremony ends at done (pre-flight ruling (f)).
-  const finished: SignupResult | null = result
-    ?? (ready && !submitting && !submitted ? { communityId: null, joinError: null, invite: extractInviteCode(invite) } : null);
-  const shown = ready && finished !== null ? 'done'
-    : (closed || instance?.registrationMode === 2) ? 'closed' : step;
+  const finished: SignupResult | null = factorFlow ? factorResult
+    : result ?? (ready && !submitting && !submitted ? { communityId: null, joinError: null, invite: extractInviteCode(invite) } : null);
+  const shown = factorFlow && finished === null && (inFactor || ready) ? 'factor'
+    : ready && finished !== null ? 'done'
+      : (closed || instance?.registrationMode === 2) ? 'closed' : step;
   const busy = submitting || (submitted && !ready);
   const blocked = busy || beginning || stalled;
 
@@ -227,7 +240,9 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
           m: 'signupSubmit', invite: code, username: username.trim().toLowerCase(), display: display.trim(),
           password: instance.passwordSignup ? password : null, recoveryKeyAcknowledged: true,
         });
-        setResult(resultOf(value, code));
+        const parsed = resultOf(value, code);
+        if (typeof value === 'object' && value !== null && (value as { factorOwed?: unknown }).factorOwed === true) setViaFactor(true);
+        setResult(parsed);
         setSubmitted(true);
         setSubmitting(false);
       } catch (e) {
@@ -238,6 +253,18 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
       }
     };
     void run();
+  };
+  // The factor is in place: the worker reads the factors again, makes the browser ready and joins the invite's server.
+  // Returns the call so FactorSetup knows when it ended: a refusal re-arms its button, which retries.
+  const finishFactor = (): Promise<void> => {
+    setFactorState({ busy: true, problem: null });
+    const code = extractInviteCode(invite);
+    return client.call({ m: 'factorSetupDone', invite: code === '' ? null : code }).then(
+      (value) => {
+        setFactorResult(resultOf(value, code));
+        setFactorState({ busy: false, problem: null });
+      },
+      (e: unknown) => { setFactorState({ busy: false, problem: doneProblem(errorOf(e)) }); throw e; });
   };
   const back = (to: Step) => () => {
     if (blocked) return;
@@ -284,9 +311,19 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
   );
 
   let content: React.JSX.Element;
-  if (shown === 'done' && finished !== null) {
+  if (shown === 'factor') {
     content = (
-      <OnboardingFrame title={t('onboarding.done.title')} stepLabel={stepLabel(5)}
+      <>
+        {factorState.problem === null ? null : <Banner tone="danger">{t(factorState.problem.key, factorState.problem.vars)}</Banner>}
+        <FactorSetup origin="signup" stepLabel={stepLabel(5)} instanceName={name}
+          username={account.user?.username ?? username.trim().toLowerCase()} announce={announce} onDone={finishFactor} />
+        <ForgetBrowser />
+        <p className="d-sr-only" role="status" aria-live="polite" data-testid="onboarding-announcer">{announcement}</p>
+      </>
+    );
+  } else if (shown === 'done' && finished !== null) {
+    content = (
+      <OnboardingFrame title={t('onboarding.done.title')} stepLabel={stepLabel(6)}
         footer={<Button variant="accent" type="button" onClick={() => props.onFinish(finished)}>{t('onboarding.done.next')}</Button>}>
         <p>{t('onboarding.done.body', { username: account.user?.username ?? username.trim().toLowerCase(), instance: name })}</p>
       </OnboardingFrame>

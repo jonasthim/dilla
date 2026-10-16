@@ -9,7 +9,12 @@ import { perm } from './perm.ts';
 import { chperm } from './chperm.ts';
 import { mention } from './mention.ts';
 import { serverNotify } from './serverNotify.ts';
+import { factor } from './factor.ts';
+import { factorSignin } from './factorSignin.ts';
+import { factorSettings } from './factorSettings.ts';
+import { storeNewer } from './storeNewer.ts';
 export const en = {
+  ...storeNewer,
   ...privacy,
   ...admin,
   ...members,
@@ -19,6 +24,9 @@ export const en = {
   ...chperm,
   ...mention,
   ...serverNotify,
+  ...factor,
+  ...factorSignin,
+  ...factorSettings,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
@@ -73,7 +81,7 @@ export const en = {
   'boot.error.detail': 'Error {code}. Reload the page to try again.',
   'boot.error.action': 'Reload',
   'dialog.close': 'Close',
-  'onboarding.step': 'Step {n} of 5',
+  'onboarding.step': 'Step {n} of 6',
   'onboarding.back': 'Back',
   'onboarding.next': 'Continue',
   'onboarding.connect.title': 'Join {instance}',
@@ -104,7 +112,7 @@ export const en = {
   'onboarding.browser.title': 'What this browser keeps',
   'onboarding.browser.device': 'This browser now holds the key of this device, in its storage for {instance}. The key never leaves this browser.',
   'onboarding.browser.clear': 'Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.',
-  'onboarding.browser.oneBrowser': 'To use this account in another browser, sign in there with your password and this recovery key. Messages sent before that browser joins are not shown in it.',
+  'onboarding.browser.oneBrowser': 'To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.',
   'onboarding.browser.private': 'A private window forgets all of this when it closes.',
   'onboarding.browser.submit': 'Create account',
   'onboarding.browser.submitting': 'Creating account…',
@@ -429,6 +437,10 @@ export const en = {
   'voice.leave': 'leave',
   'voice.cameraOn': 'camera',
   'voice.shareOn': 'share screen',
+  // Why an inert camera or share control is inert, in its tooltip and as its description (founder, 2026-10-15).
+  'voice.why.paused': 'paused',
+  'voice.why.joining': 'connecting',
+  'voice.why.noShare': 'not available in this browser',
   'voice.controls.region': 'call controls',
   'voice.controls.voice': 'voice channel controls',
   'voice.state.speaking': 'speaking',

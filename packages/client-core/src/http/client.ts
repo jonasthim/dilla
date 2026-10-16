@@ -29,6 +29,10 @@ export interface HttpDeps {
   token(): string | null;
   reauthenticate(): Promise<boolean>;
   onGeneration(generation: bigint): void;
+  /** web3.6: told the code of every refusal the instance answered (status 100..599), once per request, just before it
+   *  is thrown (after any retry); never for a network failure. The worker turns E_FACTOR_REQUIRED into its factor-setup
+   *  phase. A hook that throws does not replace the refusal. */
+  onRefusal?(code: string): void;
   /** Overrides HTTP_ATTEMPT_TIMEOUT_MS (tests). */
   attemptTimeoutMs?: number;
 }
@@ -106,6 +110,9 @@ export class HttpClient {
         try { await this.deps.sleep(wait, r.signal); }
         catch (e) { if (r.signal?.aborted) throw abort(); throw e; }
         continue;
+      }
+      if (error.status !== 0) {
+        try { this.deps.onRefusal?.(error.code); } catch { /* the refusal is what the caller gets */ }
       }
       throw error;
     }

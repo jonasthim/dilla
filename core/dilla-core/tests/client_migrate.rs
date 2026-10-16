@@ -1745,3 +1745,144 @@ fn a_v2_row_this_build_refuses_still_migrates() {
     drop(conn);
     std::fs::remove_file(&path).expect("cleanup");
 }
+
+/// The database file's bytes with every WAL frame checkpointed into it: anything a refused open
+/// wrote, in the file or in the WAL, shows up here.
+fn file_bytes(conn: &ConnHandle, path: &Path) -> Vec<u8> {
+    conn.lock()
+        .expect("lock")
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .expect("checkpoint");
+    std::fs::read(path).expect("read the store")
+}
+
+/// C4x (web3.6): a store a newer client moved to app schema 5 (a rollback from web3.7) is refused
+/// by `open` and by `migrate_app` with E_STORE_NEWER naming both numbers, and its bytes are
+/// exactly as the newer client left them.
+#[test]
+fn a_v5_store_is_refused_untouched() {
+    let (path, conn) = copy_of(V3_FIXTURE, "v5-refused");
+    drop(ClientCore::open(Arc::clone(&conn)).expect("v4 open"));
+    conn.lock()
+        .expect("lock")
+        .execute_batch("UPDATE app_meta SET v = x'05' WHERE k = 'schema'; DROP TABLE app_roles;")
+        .expect("simulate a v5 store");
+    let before = file_bytes(&conn, &path);
+
+    let error = match ClientCore::open(Arc::clone(&conn)) {
+        Ok(_) => panic!("a v5 store must not open"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        error,
+        ClientError {
+            code: "E_STORE_NEWER",
+            detail: "found 5, supported 4".into(),
+        }
+    );
+    assert_eq!(error.to_string(), "E_STORE_NEWER: found 5, supported 4");
+    match migrate_app(&DillaStorage::new(Arc::clone(&conn))) {
+        Err(dilla_core::mls::StorageError::StoreNewer { found, supported }) => {
+            assert_eq!((found, supported), (5, 4));
+        }
+        other => panic!("migrate_app must refuse a v5 store, got {other:?}"),
+    }
+    assert_eq!(dilla_core::client::APP_SCHEMA_SUPPORTED, 4);
+    assert!(
+        file_bytes(&conn, &path) == before,
+        "the refused store's bytes are unchanged"
+    );
+    assert_eq!(
+        meta_of(&conn.lock().expect("lock"), "schema"),
+        Some(vec![0x05])
+    );
+    drop(conn);
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+/// Every name in `sqlite_master`, sorted.
+fn objects(conn: &ConnHandle) -> Vec<String> {
+    let c = conn.lock().expect("lock");
+    let mut stmt = c
+        .prepare("SELECT name FROM sqlite_master ORDER BY name")
+        .expect("prepare");
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("names")
+}
+
+/// A store seeded with only the given statements, for the refusals that must come before any
+/// migration.
+fn seeded(sql: &str) -> ConnHandle {
+    let conn = memory();
+    conn.lock().expect("lock").execute_batch(sql).expect("seed");
+    conn
+}
+
+const APP_V5: &str = "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
+    INSERT INTO app_meta (k, v) VALUES ('schema', x'05');";
+const PROVIDER_V2: &str = "CREATE TABLE storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO storage_meta (key, value) VALUES ('storage_provider_version', '2'), ('codec', 'cbor');";
+
+fn refusal(conn: &ConnHandle) -> ClientError {
+    match ClientCore::open(Arc::clone(conn)) {
+        Ok(_) => panic!("the store must be refused"),
+        Err(e) => e,
+    }
+}
+
+/// C4x fix: app schema 5 is refused before the OpenMLS storage migration runs: no
+/// `storage_meta` or `openmls_*` table is created in the newer client's store.
+#[test]
+fn a_v5_store_is_refused_before_the_openmls_migration() {
+    let conn = seeded(APP_V5);
+    let before = objects(&conn);
+    assert_eq!(
+        refusal(&conn),
+        ClientError {
+            code: "E_STORE_NEWER",
+            detail: "found 5, supported 4".into(),
+        }
+    );
+    assert_eq!(objects(&conn), before, "nothing was created");
+}
+
+/// C4x fix: a newer store whose OpenMLS provider version is newer too is still E_STORE_NEWER with
+/// the app schema numbers, never E_CORE_STORAGE "UnsupportedStorage".
+#[test]
+fn a_v5_store_with_a_newer_provider_is_e_store_newer() {
+    let conn = seeded(&format!("{APP_V5}{PROVIDER_V2}"));
+    let before = objects(&conn);
+    assert_eq!(
+        refusal(&conn),
+        ClientError {
+            code: "E_STORE_NEWER",
+            detail: "found 5, supported 4".into(),
+        }
+    );
+    assert_eq!(objects(&conn), before, "nothing was created");
+}
+
+/// C4x fix: a store whose only newer part is the OpenMLS provider version is E_STORE_NEWER with
+/// the provider's numbers, refused before the OpenMLS tables are created; another codec is not a
+/// newer store and stays E_CORE_STORAGE.
+#[test]
+fn a_newer_provider_alone_is_e_store_newer_with_its_numbers() {
+    let conn = seeded(PROVIDER_V2);
+    let before = objects(&conn);
+    assert_eq!(
+        refusal(&conn),
+        ClientError {
+            code: "E_STORE_NEWER",
+            detail: "found 2, supported 1".into(),
+        }
+    );
+    assert_eq!(objects(&conn), before, "nothing was created");
+
+    let other = seeded(
+        "CREATE TABLE storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO storage_meta (key, value) VALUES ('storage_provider_version', '1'), ('codec', 'postcard');",
+    );
+    assert_eq!(refusal(&other).code, "E_CORE_STORAGE");
+}

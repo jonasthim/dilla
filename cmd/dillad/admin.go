@@ -20,6 +20,7 @@ import (
 	"github.com/jonasthim/dilla/internal/exit"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/obs"
+	"github.com/jonasthim/dilla/internal/ops"
 	"github.com/jonasthim/dilla/internal/store"
 )
 
@@ -27,7 +28,7 @@ import (
 const adminUsage = `usage: dillad admin <noun> <verb> [flags]
 
 nouns and verbs:
-  user      list | show | disable | enable | delete
+  user      list | show | disable | enable | delete | reset-factors
   invite    create | list | revoke
   community list | show
   device    revoke
@@ -57,6 +58,7 @@ var nounUsage = map[string]string{
   disable  --id=ID | --username=NAME   sets disabled_at and deletes every session
   enable   --id=ID | --username=NAME   clears disabled_at
   delete   --id=ID | --username=NAME --yes   tombstones the account; the handle stays reserved
+  reset-factors  --id=ID | --username=NAME --yes   removes every second factor; the person sets one up at their next sign-in
 `,
 	"invite": `usage: dillad admin invite <verb> [flags]
 
@@ -474,9 +476,55 @@ func adminUser(verb string, args []string, stdout, stderr io.Writer) error {
 				run: func(ctx context.Context, e *adminEnv) error { return deleteUser(ctx, e, sel) },
 			}
 		})
+	case "reset-factors":
+		return runVerb(name, args, stdout, stderr, func(fs *flag.FlagSet) adminAction {
+			sel := userSelector{}.register(fs)
+			yes := fs.Bool("yes", false, "confirm: every second factor and backup code of the account is removed")
+			return adminAction{
+				check: func() error {
+					if err := sel.check(stderr, name); err != nil {
+						return err
+					}
+					if !*yes {
+						return usageError(stderr, name, "removing a person's second factors cannot be undone; pass --yes to confirm")
+					}
+					return nil
+				},
+				run: func(ctx context.Context, e *adminEnv) error { return resetUserFactors(ctx, e, sel) },
+			}
+		})
 	default:
 		return unknownVerb("user", verb, stderr)
 	}
+}
+
+// resetUserFactors is `dillad admin user reset-factors` (web3.6 S3, protocol/09 § Admin): the
+// recovery for a person who lost their authenticator and their backup codes. ops.ResetFactors
+// removes the TOTP secret, the backup codes and the passkeys, sets users.factor_owed and writes the
+// audit row in one transaction under the user lock. The sessions stay (D5): every device of the
+// person meets E_FACTOR_REQUIRED and sets a factor up before it is used again. This is another
+// process from `dillad serve` and holds no gateway, so no socket is closed here (the closer is nil):
+// the serving process's liveness tick finds the owed account and closes it 4003, like a disable
+// closes 4004.
+func resetUserFactors(ctx context.Context, e *adminEnv, sel userSelector) error {
+	u, err := sel.resolve(ctx, e.repo)
+	if err != nil {
+		return err
+	}
+	if u.DeletedAt != nil {
+		return fmt.Errorf("user %s is deleted: %w", u.ID, exit.Data)
+	}
+	if u.Kind != 0 {
+		// A bot signs in with its token and never with a factor: owing one would lock it out.
+		return fmt.Errorf("user %s is a bot account and holds no second factor: %w", u.ID, exit.Data)
+	}
+	if err := ops.ResetFactors(ctx, e.repo, nil, u.ID, e.now()); err != nil {
+		return fmt.Errorf("reset the second factors of %s: %w: %w", u.ID, err, exit.Software)
+	}
+	e.log.Info("second factors reset", "user", u.ID.String())
+	fmt.Fprintf(e.out, "reset the second factors of user %s (%s); sessions are kept, and live connections close within one heartbeat interval; the person sets up a factor at their next sign-in\n",
+		u.ID, printable(u.Username))
+	return nil
 }
 
 // setUserDisabled is protocol/02 §2.2 point 6 from the operator's side: `disable` sets

@@ -7,11 +7,13 @@ import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice } from '../core/use-slice.ts';
 import { t } from '../strings/index.ts';
 
-type Phase = 'loading' | 'unsupported' | 'other-tab' | 'store-lost' | 'resetting' | 'revoked' | 'error';
+type Phase = 'loading' | 'unsupported' | 'other-tab' | 'store-lost' | 'resetting' | 'revoked' | 'store-newer' | 'error';
 
 function bootPhase(account: AccountState | undefined, fatal: UiError | null, resetError: UiError | null, resetting: boolean): Phase {
   if (fatal || resetError) return 'error';
   if (resetting) return 'resetting';
+  // C4x: a store a newer version of dilla wrote is refused untouched; it is explained, never offered for a reset.
+  if (account?.phase === 'error' && account.error?.code === 'E_STORE_NEWER' && account.error.store) return 'store-newer';
   switch (account?.phase) {
     case 'unsupported': case 'other-tab': case 'store-lost': case 'revoked': case 'error': return account.phase;
     default: return 'loading';
@@ -54,6 +56,9 @@ export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
       case 'resetting': return <Splash status={t('boot.resetting.status')} />;
       case 'revoked': return <Splash status={t('boot.revoked.status')} detail={t('boot.revoked.detail')}
         action={{ label: t('boot.revoked.action'), onAction: () => setConfirming(true) }} />;
+      case 'store-newer': return <Splash status={t('boot.storeNewer.status')}
+        detail={t('boot.storeNewer.detail', { found: account?.error?.store?.found ?? 0, supported: account?.error?.store?.supported ?? 0 })}
+        action={{ label: t('boot.storeNewer.action'), onAction: () => browser.reload() }} />;
       case 'error': return <Splash status={t('boot.error.status')}
         detail={t('boot.error.detail', { code: (props.fatal ?? resetError ?? account?.error)?.code ?? 'E_UNKNOWN' })}
         action={{ label: t('boot.error.action'), onAction: () => browser.reload() }} />;

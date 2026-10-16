@@ -20,6 +20,19 @@ func TestConflictingPatternsPanicAtRegistration(t *testing.T) {
 	m.Handle("GET /v1/groups/{other}", h)
 }
 
+// Patterns lists what was registered through the Mux and through its Wrapped views alike, so the
+// route sweep sees the routes a handler group mounts behind the session middleware.
+func TestPatternsListsTheMuxAndItsWrappedViews(t *testing.T) {
+	m := server.NewMux()
+	h := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	m.Handle("GET /v1/a", h)
+	m.Wrapped(func(_ string, h http.Handler) http.Handler { return h }).Handle("POST /v1/b/{id}", h)
+	got := m.Patterns()
+	if len(got) != 2 || got[0] != "GET /v1/a" || got[1] != "POST /v1/b/{id}" {
+		t.Fatalf("Patterns = %q, want both registrations in order", got)
+	}
+}
+
 func TestAutomatic405CarriesAllow(t *testing.T) {
 	m := server.NewMux()
 	m.Handle("POST /v1/accounts", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))

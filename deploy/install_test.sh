@@ -57,7 +57,22 @@ stub getent 'echo "getent $*" >>"'"$LOG"'"; exit 2'
 stub useradd 'echo "useradd $*" >>"'"$LOG"'"'
 stub chown 'echo "chown $*" >>"'"$LOG"'"'
 stub apt-get 'echo "apt-get $*" >>"'"$LOG"'"'
-stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; [ -z "${STUB_SYSTEMCTL_FAIL:-}" ]'
+stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; [ -z "${STUB_SYSTEMCTL_FAIL:-}" ] || exit 1
+# With FAKE_SCHEMA (a file holding the database schema version), a restart models dillad serve:
+# the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails when
+# STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
+# FAKE_V2_CONFIG_FAIL, v2 refuses the config before it migrates anything.
+if [ "$1" = restart ] && [ -n "${FAKE_SCHEMA:-}" ]; then
+	if grep -q "^# fake dillad v2 for" "${DILLA_INSTALL_ROOT:-}/usr/local/bin/dillad"; then
+		[ -z "${FAKE_V2_CONFIG_FAIL:-}" ] || exit 1
+		[ -z "${STUB_RESTART_MIGRATES_TO:-}" ] || echo "$STUB_RESTART_MIGRATES_TO" >"$FAKE_SCHEMA"
+		[ -z "${STUB_FAIL_V2:-}" ] || exit 1
+	elif [ "$(cat "$FAKE_SCHEMA")" -gt 16 ]; then
+		echo "serve: database schema $(cat "$FAKE_SCHEMA") is newer than this binary'"'"'s highest migration 16: refusing to start" >&2
+		exit 1
+	fi
+fi
+exit 0'
 # runuser -u dillad -- cmd args: run cmd args.
 stub runuser 'echo "runuser $*" >>"'"$LOG"'"; while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; shift; exec "$@"'
 
@@ -67,6 +82,11 @@ cat >"$FAKE" <<'FAKE'
 #!/bin/sh
 # fake dillad for deploy/install_test.sh
 echo "dillad $*" >>"${FAKE_LOG:?}"
+# A newer release that refuses the installed dilla.toml refuses it in every verb (config.Load).
+if [ -n "${FAKE_V2_CONFIG_FAIL:-}" ] && grep -q "^# fake dillad v2 for" "$0"; then
+	echo "config: auth.methods must include totp or passkey" >&2
+	exit 78
+fi
 verb="$1"
 shift
 case "$verb" in
@@ -146,6 +166,35 @@ doctor)
 	exit "${FAKE_DOCTOR_EXIT:-0}"
 	;;
 version) echo "dillad fake ${FAKE_VERSION:-1}" ;;
+migrate)
+	# v1's highest migration is 16, v2's is 17. The database's version is in $FAKE_SCHEMA (16
+	# when unset), as `dillad migrate status` prints it.
+	sub="$1"
+	shift
+	target=16
+	grep -q "^# fake dillad v2 for" "$0" && target=17
+	current=16
+	if [ -n "${FAKE_SCHEMA:-}" ] && [ -e "$FAKE_SCHEMA" ]; then current="$(cat "$FAKE_SCHEMA")"; fi
+	case "$sub" in
+	status) echo "current $current, target $target" ;;
+	down)
+		to=""
+		force=""
+		for a in "$@"; do
+			case "$a" in
+			--to=*) to="${a#*=}" ;;
+			--i-know-what-i-am-doing) force=1 ;;
+			esac
+		done
+		[ -n "$force" ] || { echo "dillad migrate down: --i-know-what-i-am-doing is required" >&2; exit 64; }
+		[ -z "${FAKE_DOWN_FAIL:-}" ] || { echo "migrate down --to=$to: failed" >&2; exit 70; }
+		[ "$current" -le "$target" ] || { echo "migrate down: unknown migration $current" >&2; exit 70; }
+		echo "$to" >"$FAKE_SCHEMA"
+		echo "migrated to $to (target $target)"
+		;;
+	*) exit 64 ;;
+	esac
+	;;
 *) exit 64 ;;
 esac
 FAKE
@@ -639,6 +688,86 @@ if [ "$RC" -ne 0 ] && cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" && 
 	pass "a failed upgrade restart rolls the binary and the core back"
 else
 	fail "a failed upgrade restart rolls the binary and the core back" "rc $RC" "stderr: $ERR"
+fi
+if has "$(cat "$LOG")" "migrate down"; then
+	fail "a failed restart that migrated nothing runs no down migration" "log: $(cat "$LOG")"
+else
+	pass "a failed restart that migrated nothing runs no down migration"
+fi
+
+# I1 (web3.6 review): the new binary's start migrated the database (16 -> 17) and then failed.
+# The old binary refuses a schema newer than its own, so the rollback first takes the database
+# back down with the NEW binary, which alone knows 00017's Down, with dilla stopped.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade"
+echo 16 >"$TMP/schema"
+FAKE_SCHEMA="$TMP/schema" STUB_FAIL_V2=1 STUB_RESTART_MIGRATES_TO=17 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+calls="$(cat "$LOG")"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero: the upgrade failed"
+has "$ERR" "the previous release is running" || problems="$problems|stderr does not say the previous release is running"
+[ "$(cat "$TMP/schema")" = 16 ] || problems="$problems|the database is at schema $(cat "$TMP/schema"), want 16"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|the previous binary is not back"
+has "$calls" "systemctl stop dilla" || problems="$problems|dilla was not stopped before the down migration"
+down="$(printf '%s\n' "$calls" | grep -n 'migrate down' | head -1 | cut -d: -f1)"
+stop="$(printf '%s\n' "$calls" | grep -n 'systemctl stop dilla' | head -1 | cut -d: -f1)"
+second="$(printf '%s\n' "$calls" | grep -n 'systemctl restart dilla' | sed -n 2p | cut -d: -f1)"
+if [ -z "$down" ]; then
+	problems="$problems|no down migration ran"
+else
+	has "$calls" "migrate down --to=16 --i-know-what-i-am-doing" || problems="$problems|the down migration is not --to=16 --i-know-what-i-am-doing"
+	[ -n "$stop" ] && [ "$stop" -lt "$down" ] || problems="$problems|the down migration ran before dilla was stopped"
+	[ -n "$second" ] && [ "$down" -lt "$second" ] || problems="$problems|the previous binary was started before the down migration"
+fi
+if [ -z "$problems" ]; then pass "a failed upgrade whose start migrated takes the database down before the previous binary starts"; else
+	IFS='|'
+	fail "a failed upgrade whose start migrated takes the database down before the previous binary starts" $problems "stderr: $ERR" "log: $calls"
+	unset IFS
+fi
+
+# The same, but the down migration fails: the previous binary is never started on the newer
+# schema; the new binary stays installed, and the operator is told what to do.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+[ "$RC" -eq 0 ] || fail "the install before the failed-down case" "rc $RC" "stderr: $ERR"
+echo 16 >"$TMP/schema"
+FAKE_SCHEMA="$TMP/schema" FAKE_DOWN_FAIL=1 STUB_FAIL_V2=1 STUB_RESTART_MIGRATES_TO=17 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+calls="$(cat "$LOG")"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero"
+[ "$(printf '%s\n' "$calls" | grep -c 'systemctl restart dilla')" -eq 1 ] || problems="$problems|dilla was restarted again after the down migration failed"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/fake-v2" || problems="$problems|the new binary was swapped out although the database is still at 17"
+has "$ERR" "migrate down --to=16 --i-know-what-i-am-doing" || problems="$problems|stderr does not give the down-migration command"
+has "$ERR" "pre-migration" || problems="$problems|stderr does not name the pre-migration backup"
+has "$ERR" "dillad.prev" || problems="$problems|stderr does not say where the previous binary is"
+if [ -z "$problems" ]; then pass "a failed down migration never starts the previous binary on the newer schema"; else
+	IFS='|'
+	fail "a failed down migration never starts the previous binary on the newer schema" $problems "stderr: $ERR" "log: $calls"
+	unset IFS
+fi
+
+# The new release refuses the installed dilla.toml (web3.6 refuses auth.methods without totp or
+# passkey): serve exits 78 before any migration, and so does every other verb of the new binary.
+# The database never moved, so the rollback reads it with the previous binary and puts it back.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+[ "$RC" -eq 0 ] || fail "the install before the config-refused case" "rc $RC" "stderr: $ERR"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade"
+echo 16 >"$TMP/schema"
+FAKE_SCHEMA="$TMP/schema" FAKE_V2_CONFIG_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+calls="$(cat "$LOG")"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero: the upgrade failed"
+has "$ERR" "the previous release is running" || problems="$problems|stderr does not say the previous release is running"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|the previous binary is not back"
+[ "$(cat "$TMP/schema")" = 16 ] || problems="$problems|the database is at schema $(cat "$TMP/schema"), want 16"
+has "$calls" "migrate down" && problems="$problems|a down migration ran although the database never moved"
+[ "$(printf '%s\n' "$calls" | grep -c 'systemctl restart dilla')" -eq 2 ] || problems="$problems|the previous binary was not restarted"
+if [ -z "$problems" ]; then pass "a new release that refuses the config rolls back to the previous release running"; else
+	IFS='|'
+	fail "a new release that refuses the config rolls back to the previous release running" $problems "stderr: $ERR" "log: $calls"
+	unset IFS
 fi
 
 # --------------------------------------------------- the real dillad init ----

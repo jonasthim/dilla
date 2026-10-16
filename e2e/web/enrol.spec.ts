@@ -5,6 +5,7 @@ import {
   openChannel, openSettings, railNav, sendText, signIn, signUp, splash, tag, wrongKey,
 } from './support/app';
 import { test } from './support/second';
+import { nextCode } from './support/totp';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
 
@@ -116,6 +117,10 @@ test('a wrong recovery key is refused in place, and the right one typed in lower
   await expectAccessible(b, 'sign-in: login');
   await b.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
   await b.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
+  await forward.click();
+  // web3.6: the password is followed by the code; the key is only checked after it.
+  await expectHeading(b, 'signin.totp.title');
+  await b.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
   await forward.click();
   await expect(b.getByRole('alert').filter({ hasText: copy(SIGNIN.wrongKey) })).toBeVisible({ timeout: WAIT });
   await expect(field).toBeFocused();

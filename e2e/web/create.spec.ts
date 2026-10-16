@@ -60,7 +60,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
 
   // 1. The first person on the instance: the bootstrap invite, then a shell that says how to begin.
   // The host prints its instance invites comma-separated; the first is the one an operator would hand on.
-  await signUp(page, h.invite.split(',')[0], instance, OWNER);
+  await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
   const empty = page.getByRole('region', { name: copy('shell.noServer.title'), exact: true });
   await expect(empty).toBeVisible({ timeout: WAIT });
   // The control main's client lacked (dbe836b): the spec fails here against it.
@@ -138,7 +138,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     // working, not the client's (it is not this suite's to judge).
     await guard.attach(second);
     await openLink.click();
-    await completeSignUp(page2, newAccount(FRIEND), instance);
+    await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
 
     // 5. The second person lands in the server, with #general (review focus 5). "hello from the owner" went out before
     // their browser was in #general's MLS group, so it is not readable here: the log says so instead of looking empty

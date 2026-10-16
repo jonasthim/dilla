@@ -96,7 +96,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
   const h = started();
 
   // 1. Ada signs up with the bootstrap invite and starts "Midgard Crew"; Björn joins through Ada's invite.
-  await signUp(page, h.invite.split(',')[0], instance, OWNER);
+  await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
   await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
   const start = dialogOf(page, 'create.server.title');
   await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
@@ -133,7 +133,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
     await expect(openLink).toHaveAttribute('href', /^\/welcome\?invite=[^&\s]+$/);
     await guard.attach(second);
     await openLink.click();
-    await completeSignUp(page2, newAccount(FRIEND), instance);
+    await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
     await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
     await openChannel(page2, SERVER, 'general');
     await expect(memberRow(page, FRIEND)).toBeVisible({ timeout: WAIT });

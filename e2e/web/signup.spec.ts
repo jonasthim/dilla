@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 import {
   CLASS, COPY, HEX32, RK_GROUP, TEST_TIMEOUT, WAIT, copy, expectHeading, expectShell, nextButton, onboardingFrame,
-  openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
+  completeFactorStep, newAccount, openChannel, railItem, railNav, readKekRecord, readRecoveryKey, submitButton, test,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -36,6 +36,7 @@ test('a server invite, a name and a written-down key make an account that lands 
   // Step 4 registers: its forward button is `Create account`, not `Continue` (L-COPY-01).
   await expectHeading(page, COPY.deviceTitle);
   await submitButton(page).click();
+  await completeFactorStep(page, newAccount());
   await expectHeading(page, COPY.doneTitle);
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);

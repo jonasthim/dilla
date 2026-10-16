@@ -5,6 +5,16 @@ import { decodeSearchHits, validateSearch } from './state/search';
 /** The changed contact a call-gate refusal names (calls.rs `refusal`: `E_UMK_CHANGED: <user id hex>`), decoded once here
  *  at the core's boundary, never by reading `detail` elsewhere (web-3 task 10, concern 3). */
 const CHANGED_USER = /^E_UMK_CHANGED: ([0-9a-f]{32})$/;
+/** A store a newer client wrote (schema.rs `refuse_newer`, error.rs `E_STORE_NEWER`): the app schema it found and the
+ *  highest this build supports, decoded once here at the core's boundary from the error's message (C4x, web3.6). */
+const STORE_NEWER = /^E_STORE_NEWER: found (\d{1,10}), supported (\d{1,10})$/;
+export interface StoreVersions { found: number; supported: number; }
+/** The two schema numbers of an E_STORE_NEWER refusal, from core_open's plain Error or a CoreError; null otherwise. */
+export function storeNewerOf(err: unknown): StoreVersions | null {
+  if (!(err instanceof Error)) return null;
+  const match = STORE_NEWER.exec(err.message);
+  return match ? { found: Number(match[1]), supported: Number(match[2]) } : null;
+}
 
 export class CoreError extends Error {
   readonly code: string;

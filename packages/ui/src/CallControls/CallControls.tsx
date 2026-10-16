@@ -1,5 +1,6 @@
-import { useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { Icon, type IconName } from '../Icon/Icon.tsx';
 import { arrowIndex } from '../internal/arrow-select.ts';
 import './CallControls.css';
 
@@ -41,60 +42,220 @@ export function useToolbarFocus(count: number) {
 export const VOICE_SHORTCUTS = { mute: 'Control+Shift+M Meta+Shift+M', deafen: 'Control+Shift+D Meta+Shift+D' } as const;
 
 /**
- * One control of a voice toolbar. A toggle (`on` given) is the Button primitive's toggle: `aria-pressed`, the `[x]`
- * mark and the pressed style, under one label in both states (WB a11y I4). An inert control is aria-disabled.
+ * The glyphs of the five voice controls (plan 2026-10-15). A toggle's glyph is its state, never colour alone: muted is
+ * mic-off, deafened headphone-off, a live camera video (video-off while off), sharing monitor-x (monitor-up to start).
+ */
+export const VOICE_ICONS = {
+  mute: { icon: 'mic', iconOn: 'mic-off', tint: 'danger' },
+  deafen: { icon: 'headphones', iconOn: 'headphone-off', tint: 'danger' },
+  camera: { icon: 'video-off', iconOn: 'video', tint: 'accent' },
+  share: { icon: 'monitor-up', iconOn: 'monitor-x', tint: 'accent' },
+  leave: { icon: 'phone-off', apart: true },
+} as const satisfies Record<string, Pick<ToolbarControl, 'icon' | 'iconOn' | 'tint' | 'apart'>>;
+
+/**
+ * One control of a voice toolbar: an icon button named by `label` (`aria-label`). A toggle (`on` given) keeps one
+ * label in both states with `aria-pressed` (WB a11y I4); its glyph swaps to `iconOn` while on, and it takes the `tint`
+ * colour. An inert control is aria-disabled.
  */
 export interface ToolbarControl {
   id: string; label: string; on?: boolean; inert?: boolean; danger?: boolean;
+  icon: IconName;
+  /** The glyph while `on`; `icon` when absent. */
+  iconOn?: IconName;
+  /** Set apart from the controls before it by a hairline divider (leave), in the same roving order. */
+  apart?: boolean;
+  /** The colour of the on state: `danger` (mute, deafen; the default) or `accent` (camera, share). */
+  tint?: 'danger' | 'accent';
   /** `aria-keyshortcuts`, e.g. VOICE_SHORTCUTS.mute. */
   keys?: string;
+  /** The shortcut as shown in the tooltip, formatted for the platform by the caller, e.g. "Ctrl+Shift+M" or "⌘⇧M". */
+  shortcut?: string;
+  /** Why an inert control is inert (`voice.why.*`): shown in the tooltip after the label and read as its description. */
+  why?: string;
   onAction(): void;
 }
 
-/** A voice toolbar: the controls as one roving tab stop, named by `label`. */
+/** The reasons an inert camera or share control gives (`voice.why.paused`, `voice.why.joining`, `voice.why.noShare`). */
+export interface VoiceWhyLabels { paused: string; joining: string; noShare: string }
+
+/**
+ * Why camera and share are inert, one reason each, by priority (Jonas, 2026-10-15): joining, then paused, then (share
+ * only) no screen capture. Nothing while a control is live, or without the labels.
+ */
+export function voiceWhy(
+  labels: VoiceWhyLabels | undefined,
+  { busy, paused, canCamera, canShare }: { busy: boolean; paused: boolean; canCamera: boolean; canShare: boolean },
+): { camera?: string; share?: string } {
+  if (labels === undefined) return {};
+  const pick = (inert: boolean, capture: boolean): string | undefined => {
+    if (!inert) return undefined;
+    if (busy) return labels.joining;
+    if (paused) return labels.paused;
+    return capture ? undefined : labels.noShare;
+  };
+  return { camera: pick(busy || !canCamera, true), share: pick(busy || !canShare, canShare) };
+}
+
+/** The space between a control and its tooltip, in CSS px; the tip's transparent bridge covers it (CallControls.css). */
+const TIP_GAP = 6;
+
+type TipOrigin = 'hover' | 'focus';
+
+/**
+ * A voice toolbar: the controls as one roving tab stop, named by `label`, with a control marked `apart` (leave) set
+ * off by a hairline divider. One tooltip serves the toolbar (WCAG 1.4.13), a sibling of the buttons and never part of
+ * a button's hit area. It shows the label and any shortcut of the most recently hovered or keyboard-focused control:
+ * - hover: a mouse or pen only, never a touch; the pointer can move onto the tip (a bridge covers the gap), and the tip
+ *   takes the pointer then, over its own area only;
+ * - keyboard focus: never a focus that a press caused; the tip takes no pointer at all;
+ * - Escape, wherever focus is, hides a shown tip and is consumed (`preventDefault`), and does nothing else.
+ * It is never a `title`. An inert control's tip adds why ("camera — paused"). Only the shortcut and the reason describe
+ * a control (`aria-describedby`), so the name is not read twice.
+ */
 export function VoiceToolbar({ label, controls, className }: { label: string; controls: readonly ToolbarControl[]; className?: string }): ReactNode {
   const bar = useToolbarFocus(controls.length);
+  const uid = useId();
+  const tipRef = useRef<HTMLSpanElement>(null);
+  const pressed = useRef(false);
+  const lastHover = useRef<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
+  const [last, setLast] = useState<TipOrigin>('focus');
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const primary = last === 'hover' ? hovered ?? focused : focused ?? hovered;
+  const origin: TipOrigin = primary !== null && primary === hovered && (last === 'hover' || primary !== focused) ? 'hover' : 'focus';
+  const shown = primary !== null && primary !== dismissed ? controls.find(c => c.id === primary) ?? null : null;
+  const shownId = shown?.id ?? null;
+
+  // Escape hides the tip wherever focus is, and only that: the key is consumed so nothing else acts on it.
+  useEffect(() => {
+    if (shownId === null) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDismissed(shownId);
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => { document.removeEventListener('keydown', onKey, true); };
+  }, [shownId]);
+
+  // Above its control, centred on it and kept inside the toolbar's width.
+  useLayoutEffect(() => {
+    const tip = tipRef.current;
+    const root = bar.ref.current;
+    if (tip === null || root === null || shownId === null) return;
+    const button = Array.from(root.querySelectorAll<HTMLElement>(':scope > button')).find(b => b.dataset.control === shownId);
+    if (button === undefined) return;
+    const left = button.offsetLeft + button.offsetWidth / 2 - tip.offsetWidth / 2;
+    tip.style.left = `${String(Math.max(0, Math.min(left, root.clientWidth - tip.offsetWidth)))}px`;
+    tip.style.top = `${String(button.offsetTop - tip.offsetHeight - TIP_GAP)}px`;
+  });
+
+  const focusVisible = (el: HTMLElement): boolean => {
+    try { return el.matches(':focus-visible'); } catch { return true; }
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => { pressed.current = false; bar.onKeyDown(e); };
+  const intoTip = (to: EventTarget | null): boolean => to instanceof Node && tipRef.current?.contains(to) === true;
+  const describedBy = (c: ToolbarControl): string | undefined => {
+    const ids = [c.shortcut !== undefined ? `${uid}-${c.id}-keys` : null, c.why !== undefined ? `${uid}-${c.id}-why` : null];
+    const list = ids.filter((id): id is string => id !== null);
+    return list.length > 0 ? list.join(' ') : undefined;
+  };
+
   return (
     <div ref={bar.ref} role="toolbar" aria-label={label} aria-orientation="horizontal"
-      className={['d-voice-toolbar', className].filter(Boolean).join(' ')} onKeyDown={bar.onKeyDown} onFocus={bar.onFocus}>
+      className={['d-voice-toolbar', className].filter(Boolean).join(' ')} onKeyDown={onKeyDown} onFocus={bar.onFocus}
+      onPointerDownCapture={() => { pressed.current = true; }}>
       {controls.map((c, i) => (
-        <Button key={c.id} variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
-          pressed={c.on} aria-keyshortcuts={c.keys}
-          aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
-          onClick={() => { if (c.inert !== true) c.onAction(); }}>
-          {c.label}
-        </Button>
+        <Fragment key={c.id}>
+          {c.apart === true ? <span className="d-voice-toolbar__divider" aria-hidden="true" /> : null}
+          <Button variant={c.danger === true ? 'danger' : 'default'} className="d-voice-toolbar__control" data-control={c.id}
+            data-tint={c.on === undefined ? undefined : (c.tint ?? 'danger')} pressed={c.on} mark={false} aria-label={c.label}
+            aria-keyshortcuts={c.keys} aria-describedby={describedBy(c)}
+            aria-disabled={c.inert === true ? true : undefined} tabIndex={bar.tabIndex(i)}
+            onFocus={e => {
+              setDismissed(null);
+              // A press focuses the control too; only a keyboard (or script) focus shows the focus tip.
+              if (pressed.current) { pressed.current = false; return; }
+              if (!focusVisible(e.currentTarget)) return;
+              setFocused(c.id);
+              setLast('focus');
+            }}
+            onBlur={() => { setFocused(f => (f === c.id ? null : f)); }}
+            onPointerEnter={(e: PointerEvent<HTMLButtonElement>) => {
+              if (e.pointerType === 'touch') return;
+              setDismissed(null);
+              lastHover.current = c.id;
+              setHovered(c.id);
+              setLast('hover');
+            }}
+            onPointerLeave={(e: PointerEvent<HTMLButtonElement>) => {
+              if (intoTip(e.relatedTarget)) return;
+              setHovered(h => (h === c.id ? null : h));
+            }}
+            onClick={() => { if (c.inert !== true) c.onAction(); }}>
+            <Icon name={c.on === true ? c.iconOn ?? c.icon : c.icon} />
+          </Button>
+        </Fragment>
       ))}
+      {controls.filter(c => c.shortcut !== undefined).map(c => (
+        <span key={c.id} id={`${uid}-${c.id}-keys`} hidden>{c.shortcut}</span>
+      ))}
+      {controls.filter(c => c.why !== undefined).map(c => (
+        <span key={c.id} id={`${uid}-${c.id}-why`} hidden>{c.why}</span>
+      ))}
+      <span ref={tipRef} className="d-voice-toolbar__tip" role="tooltip" hidden={shown === null}
+        data-for={shown?.id} data-origin={shown === null ? undefined : origin}
+        // Hoverable: the pointer moved from the control onto its tip (over the bridge), so the tip stays.
+        onPointerEnter={e => { if (e.pointerType !== 'touch' && lastHover.current !== null) setHovered(lastHover.current); }}
+        onPointerLeave={e => {
+          const to = e.relatedTarget;
+          if (to instanceof Element && to.closest('[data-control]')?.getAttribute('data-control') === shownId) return;
+          lastHover.current = null;
+          setHovered(null);
+        }}>
+        {shown !== null ? <span>{shown.why !== undefined ? `${shown.label} — ${shown.why}` : shown.label}</span> : null}
+        {shown?.shortcut !== undefined ? <kbd className="d-voice-toolbar__keys">{shown.shortcut}</kbd> : null}
+      </span>
     </div>
   );
 }
 
 export interface CallControlsProps {
   muted: boolean; deafened: boolean; camera: boolean; sharing: boolean;
-  /** False while there is no camera, or while the call is paused (RV-3): the camera control is aria-disabled. */
+  /** False while the call is paused or held (RV-3): the camera control is aria-disabled. (No caller checks for a camera device yet.) */
   canCamera: boolean;
   /** False without screen capture, or while the call is paused (RV-3): the share control is aria-disabled. */
   canShare: boolean;
   /** True while joining: every control is aria-disabled. */
   busy: boolean;
-  labels: { region: string; mute: string; deafen: string; camera: string; share: string; leave: string };
+  /** True while the call is paused or held; it picks the reason camera and share give. Absent, `!canCamera` stands for it. */
+  paused?: boolean;
+  /** `why`: the reasons an inert camera or share gives in its tooltip and description (`voice.why.*`); none without it. */
+  labels: { region: string; mute: string; deafen: string; camera: string; share: string; leave: string; why?: VoiceWhyLabels };
+  /** Optional: the mute and deafen shortcuts as the tooltips show them, formatted per platform by the caller. */
+  shortcuts?: { mute: string; deafen: string };
   onMute(): void; onDeafen(): void; onCamera(): void; onShare(): void; onLeave(): void;
 }
 
 /**
- * The call stage's controls (`role="toolbar"`): mute, deafen, camera, share screen and leave. The toggles are the
- * Button primitive's: one label, `aria-pressed` and the `[x]` mark, never colour alone (WB a11y I4). Mute and deafen
- * carry their shortcuts. Busy (joining) makes every control aria-disabled; it stays focusable.
+ * The call stage's controls (`role="toolbar"`): mute, deafen, camera, share screen and leave, as icon buttons. The
+ * toggles keep one label with `aria-pressed`, and their glyph swaps with the state, never colour alone (WB a11y I4).
+ * Mute and deafen carry their shortcuts. Busy (joining) makes every control aria-disabled; it stays focusable.
  */
 export function CallControls({
-  muted, deafened, camera, sharing, canCamera, canShare, busy, labels, onMute, onDeafen, onCamera, onShare, onLeave,
+  muted, deafened, camera, sharing, canCamera, canShare, busy, paused, labels, shortcuts, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
+  const why = voiceWhy(labels.why, { busy, paused: paused ?? !canCamera, canCamera, canShare });
   const controls: ToolbarControl[] = [
-    { id: 'mute', label: labels.mute, on: muted, inert: busy, keys: VOICE_SHORTCUTS.mute, onAction: onMute },
-    { id: 'deafen', label: labels.deafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, onAction: onDeafen },
-    { id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, onAction: onCamera },
-    { id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, onAction: onShare },
-    { id: 'leave', label: labels.leave, inert: busy, danger: true, onAction: onLeave },
+    { id: 'mute', label: labels.mute, on: muted, inert: busy, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute, onAction: onMute },
+    { id: 'deafen', label: labels.deafen, on: deafened, inert: busy, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen },
+    { id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera, onAction: onCamera },
+    { id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare },
+    { id: 'leave', label: labels.leave, inert: busy, danger: true, ...VOICE_ICONS.leave, onAction: onLeave },
   ];
   return <VoiceToolbar label={labels.region} controls={controls} className="d-call-controls" />;
 }
+

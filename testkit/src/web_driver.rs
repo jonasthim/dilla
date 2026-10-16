@@ -787,9 +787,9 @@ impl WebDriver {
             return Err(scenario("the driver already holds an enrolled device"));
         }
         let login = HttpDs::password_login(&self.ds_url, &name, &password)?;
-        if login.needs_totp {
-            return Err(scenario("the peer's account asks for a second factor"));
-        }
+        let assertion = self
+            .runner
+            .with_session(&name, |_, ds| ds.second_factor_assertion(login))?;
         let seed = self.seed.wrapping_add(0x1_0000_0000);
         let second = self.runner.with_member(&name, |first, _| {
             first.second_device(&format!("{name}-enrolled"), seed)
@@ -798,7 +798,7 @@ impl WebDriver {
             &self.ds_url,
             &second.device(),
             &second.registration(),
-            &login.assertion,
+            &assertion,
         )?;
         let _backups = pending.list_backups()?;
         let served = pending.get_device_list(&established.user_id)?;
@@ -1300,9 +1300,9 @@ impl WebDriver {
             Ok(())
         })?;
         let login = HttpDs::password_login(&self.ds_url, &name, &password)?;
-        if login.needs_totp {
-            return Err(scenario("E_NOT_FOUND"));
-        }
+        let assertion = self
+            .runner
+            .with_session(&name, |_, ds| ds.second_factor_assertion(login))?;
         let seed = self.seed.wrapping_add(0x2_0000_0000);
         let rotated = self
             .runner
@@ -1311,7 +1311,7 @@ impl WebDriver {
             &self.ds_url,
             &rotated.device(),
             &rotated.registration(),
-            &login.assertion,
+            &assertion,
         )?;
         let served = pending.get_device_list(&user)?;
         let prev = Self::served_list(&served.blob, served.version)?;
@@ -1329,6 +1329,11 @@ impl WebDriver {
         }
         let mut ds = HttpDs::with_session(&self.ds_url, rotated.device_id(), enrolled.token)?;
         ds.set_session_expires(enrolled.expires);
+        // The replacement is the peer's session from now on, and the account's authenticator app goes with it.
+        let totp = self
+            .runner
+            .with_session(&name, |_, old| Ok(old.totp().cloned()))?;
+        ds.set_totp(totp);
         let mut rotated = rotated;
         rotated.publish_key_packages(&mut ds, 8)?;
         // The group's own channel and community: a joined group binds the other peer's channel, not this peer's.
@@ -1636,9 +1641,9 @@ impl WebDriver {
             return Err(scenario("the driver already holds a second device"));
         }
         let login = HttpDs::password_login(&self.ds_url, &name, &password)?;
-        if login.needs_totp {
-            return Err(scenario("the peer's account asks for a second factor"));
-        }
+        let assertion = self
+            .runner
+            .with_session(&name, |_, ds| ds.second_factor_assertion(login))?;
         let seed = self.seed.wrapping_add(0x3_0000_0000);
         let forged = self.runner.with_member(&name, |first, _| {
             first.second_device(&format!("{name}-forged"), seed)
@@ -1647,7 +1652,7 @@ impl WebDriver {
             &self.ds_url,
             &forged.device(),
             &forged.registration(),
-            &login.assertion,
+            &assertion,
         )?;
         let served = pending.get_device_list(&established.user_id)?;
         let prev = Self::served_list(&served.blob, served.version)?;

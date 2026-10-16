@@ -1,6 +1,6 @@
 -- name: CreateUser :exec
-INSERT INTO users (id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO users (id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, flags, age_bracket, created, disabled_at, deleted_at, factor_owed)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetUser :one
 SELECT * FROM users WHERE id = ?;
@@ -18,3 +18,32 @@ UPDATE users SET disabled_at = ? WHERE id = ?;
 UPDATE users SET deleted_at = ?, display = '', umk_pub = zeroblob(32), ssk_pub = zeroblob(32),
                  sig_umk_ssk = zeroblob(64), flags = 0
 WHERE id = ?;
+
+-- name: SetFactorOwed :execrows
+UPDATE users SET factor_owed = ? WHERE id = ?;
+
+-- name: MarkFactorOwedWithoutFactor :execrows
+-- The boot reconcile's first half (web3.6 S1): every live human account that holds no confirmed
+-- TOTP secret and no passkey registered for the instance's rp_id owes a second factor.
+UPDATE users SET factor_owed = 1
+ WHERE kind = 0 AND deleted_at IS NULL AND factor_owed = 0
+   AND id NOT IN (SELECT t.user_id FROM totp_secrets t WHERE t.confirmed_at IS NOT NULL)
+   AND id NOT IN (SELECT w.user_id FROM webauthn_credentials w WHERE w.rp_id = sqlc.arg(rp_id));
+
+-- name: ClearFactorOwedWithFactor :execrows
+-- The boot reconcile's second half (web3.6 review I2): an account marked as owing a factor that
+-- holds a confirmed TOTP secret or a passkey registered for the instance's rp_id owes nothing, so
+-- owed holds exactly when no usable factor is held. It is what an rp_id changed and then put back
+-- needs: the first start marks the passkey-only accounts, the start after the revert clears them.
+-- The operator reset deletes the factors in the transaction that sets the flag, so it never
+-- leaves a row this clears.
+UPDATE users SET factor_owed = 0
+ WHERE kind = 0 AND deleted_at IS NULL AND factor_owed = 1
+   AND (id IN (SELECT t.user_id FROM totp_secrets t WHERE t.confirmed_at IS NOT NULL)
+        OR id IN (SELECT w.user_id FROM webauthn_credentials w WHERE w.rp_id = sqlc.arg(rp_id)));
+
+-- name: LockOwedHumans :many
+-- The Postgres twin locks these rows before ClearFactorOwedWithFactor's UPDATE. SQLite has one
+-- writer, so the UPDATE alone is atomic against an operator reset and nothing calls this here; it
+-- exists so the two engines' Querier interfaces stay identical (schema_test.go).
+SELECT id FROM users WHERE kind = 0 AND deleted_at IS NULL AND factor_owed = 1;

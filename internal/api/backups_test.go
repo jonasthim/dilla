@@ -67,7 +67,7 @@ func backupSessions(t *testing.T, d api.Deps) backupTokens {
 	return backupTokens{
 		user:        u,
 		enrolled:    establish(auth.PurposeSession, nil, auth.ScopeEnrolled),
-		pending:     establish(auth.PurposeSession, []byte(d.Assertions.Issue(u.ID, false)), auth.ScopePending),
+		pending:     establish(auth.PurposeSession, []byte(d.Assertions.Issue(u.ID, 0)), auth.ScopePending),
 		provisional: establish(auth.PurposeProvisional, nil, auth.ScopeProvisional),
 	}
 }

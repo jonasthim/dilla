@@ -179,6 +179,7 @@ func (r *Repo) CreateUser(ctx context.Context, u store.UserRow) error {
 		Created:    u.Created,
 		DisabledAt: nullInt64(u.DisabledAt),
 		DeletedAt:  nullInt64(u.DeletedAt),
+		FactorOwed: boolInt(u.FactorOwed),
 	}))
 }
 
@@ -224,6 +225,38 @@ func (r *Repo) TombstoneUser(ctx context.Context, userID id.ID, at int64) error 
 	}))
 }
 
+// SetFactorOwed is ErrNotFound unless the UPDATE matched the user's row.
+func (r *Repo) SetFactorOwed(ctx context.Context, userID id.ID, owed bool) error {
+	n, err := r.w.SetFactorOwed(ctx, sqlitedb.SetFactorOwedParams{FactorOwed: boolInt(owed), ID: userID})
+	if err != nil {
+		return wrap(err)
+	}
+	if n != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repo) MarkFactorOwedWithoutFactor(ctx context.Context, rpID string) (int64, error) {
+	n, err := r.w.MarkFactorOwedWithoutFactor(ctx, sqlitedb.MarkFactorOwedWithoutFactorParams{RpID: rpID})
+	return n, wrap(err)
+}
+
+// ClearFactorOwedWithFactor is one statement: SQLite has one writer, so an operator reset's
+// transaction is either wholly before it or wholly after it.
+func (r *Repo) ClearFactorOwedWithFactor(ctx context.Context, rpID string) (int64, error) {
+	n, err := r.w.ClearFactorOwedWithFactor(ctx, sqlitedb.ClearFactorOwedWithFactorParams{RpID: rpID})
+	return n, wrap(err)
+}
+
+// boolInt is a 0/1 flag column's value.
+func boolInt(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func userRow(row sqlitedb.Users) store.UserRow {
 	return store.UserRow{
 		ID:         row.ID,
@@ -238,6 +271,7 @@ func userRow(row sqlitedb.Users) store.UserRow {
 		Created:    row.Created,
 		DisabledAt: ptrInt64(row.DisabledAt),
 		DeletedAt:  ptrInt64(row.DeletedAt),
+		FactorOwed: row.FactorOwed == 1,
 	}
 }
 
@@ -439,6 +473,7 @@ func (r *Repo) GetSessionByHash(ctx context.Context, tokenHash []byte, now int64
 		Created:     row.Created,
 		Expires:     row.Expires,
 		IdleExpires: row.IdleExpires,
+		FactorOwed:  row.FactorOwed == 1,
 	}, nil
 }
 
@@ -592,6 +627,23 @@ func (r *Repo) ConsumeRecoveryCode(ctx context.Context, userID id.ID, hash []byt
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+func (r *Repo) DeleteRecoveryCodes(ctx context.Context, userID id.ID) error {
+	return wrap(r.w.DeleteRecoveryCodes(ctx, sqlitedb.DeleteRecoveryCodesParams{UserID: userID}))
+}
+
+func (r *Repo) DeleteTOTP(ctx context.Context, userID id.ID) error {
+	return wrap(r.w.DeleteTOTP(ctx, sqlitedb.DeleteTOTPParams{UserID: userID}))
+}
+
+func (r *Repo) DeleteWebauthnCredential(ctx context.Context, userID id.ID, credID []byte) (int64, error) {
+	n, err := r.w.DeleteWebauthnCredential(ctx, sqlitedb.DeleteWebauthnCredentialParams{UserID: userID, CredID: credID})
+	return n, wrap(err)
+}
+
+func (r *Repo) DeleteWebauthnCredentialsByUser(ctx context.Context, userID id.ID) error {
+	return wrap(r.w.DeleteWebauthnCredentialsByUser(ctx, sqlitedb.DeleteWebauthnCredentialsByUserParams{UserID: userID}))
 }
 
 func (r *Repo) CountRecoveryCodes(ctx context.Context, userID id.ID) (int64, error) {

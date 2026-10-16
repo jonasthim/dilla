@@ -21,10 +21,27 @@ import (
 // ceremony is one user gesture.
 const ceremonyTTL = 5 * 60 // seconds
 
+// webauthn_ceremonies.kind is CHECK (kind IN (0, 1)) (schema/003_auth.sql), so a step-up has no
+// kind of its own: it is a ceremonyLogin row WITH user_id set, where a discoverable login's is
+// NULL. FinishLogin refuses a row whose user is set and FinishStepUp one whose user is not the
+// caller, so neither ceremony can be spent as the other.
 const (
 	ceremonyRegister uint8 = 0
 	ceremonyLogin    uint8 = 1
 )
+
+// ErrPasskeyUnknown is FinishLogin's answer for an assertion whose credential id, or whose user
+// handle, is not registered for this instance's rp_id: a passkey the instance does not hold. The
+// route answers it 401 E_PASSKEY_UNKNOWN, distinct from every other failure, so the client can
+// say "this passkey is not registered here" without reading a detail.
+var ErrPasskeyUnknown = errors.New("auth: the passkey is not registered on this instance")
+
+// ErrNoPasskey is BeginStepUp's answer for an account that holds no passkey for this rp_id.
+var ErrNoPasskey = errors.New("auth: the account holds no passkey")
+
+// ErrNotYourCeremony is FinishStepUp's answer for a ceremony that is not a step-up of the caller:
+// a discoverable login's, or another account's step-up.
+var ErrNotYourCeremony = errors.New("auth: the ceremony is not a step-up of this account")
 
 // ConfigFromDilla builds go-webauthn's config from dilla.toml.
 //
@@ -225,7 +242,10 @@ func (p *Passkeys) BeginRegistration(ctx context.Context, userID id.ID) (id.ID, 
 	if err != nil {
 		return id.ID{}, nil, err
 	}
-	creation, session, err := p.wa.BeginRegistration(u)
+	// The account's own credentials are excluded, so an authenticator that already holds one
+	// answers InvalidStateError in the browser instead of minting a second credential for it.
+	creation, session, err := p.wa.BeginRegistration(u,
+		webauthn.WithExclusions(webauthn.Credentials(u.creds).CredentialDescriptors()))
 	if err != nil {
 		return id.ID{}, nil, fmt.Errorf("auth: begin registration: %w", err)
 	}
@@ -240,41 +260,41 @@ func (p *Passkeys) BeginRegistration(ctx context.Context, userID id.ID) (id.ID, 
 	return ceremonyID, options, nil
 }
 
-func (p *Passkeys) FinishRegistration(ctx context.Context, ceremonyID id.ID, response []byte) ([]byte, error) {
+// FinishRegistration takes the ceremony and verifies the response, and returns the credential
+// row it would store, named `name`, WITHOUT storing it: the route writes the row in the same
+// transaction that re-checks the step-up rule under the user lock and clears factor_owed, so a
+// credential is never on the account without the rest of that write. The row's user is the one
+// the ceremony was begun for.
+func (p *Passkeys) FinishRegistration(ctx context.Context, ceremonyID id.ID, response []byte, name string) (store.WebauthnCredentialRow, error) {
 	session, userID, err := p.takeSession(ctx, ceremonyID, ceremonyRegister)
 	if err != nil {
-		return nil, err
+		return store.WebauthnCredentialRow{}, err
 	}
 	if userID == nil {
-		return nil, errors.New("auth: registration ceremony without a user")
+		return store.WebauthnCredentialRow{}, errors.New("auth: registration ceremony without a user")
 	}
 	u, err := p.user(ctx, *userID)
 	if err != nil {
-		return nil, err
+		return store.WebauthnCredentialRow{}, err
 	}
 	parsed, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(string(response)))
 	if err != nil {
-		return nil, fmt.Errorf("auth: parse registration response: %w", err)
+		return store.WebauthnCredentialRow{}, fmt.Errorf("auth: parse registration response: %w", err)
 	}
 	cred, err := p.wa.CreateCredential(u, session, parsed)
 	if err != nil {
-		return nil, fmt.Errorf("auth: create credential: %w", err)
+		return store.WebauthnCredentialRow{}, fmt.Errorf("auth: create credential: %w", err)
 	}
 	extensions, err := marshalExtensions(cred.Extensions)
 	if err != nil {
-		return nil, err
+		return store.WebauthnCredentialRow{}, err
 	}
-	now := p.clk.Now().Unix()
-	row := store.WebauthnCredentialRow{
+	return store.WebauthnCredentialRow{
 		CredID: cred.ID, RPID: p.rpID, UserID: *userID, PublicKey: cred.PublicKey,
 		SignCount: int64(cred.Authenticator.SignCount), AttestationType: cred.AttestationType,
 		AttestationFormat: cred.AttestationFormat, Transports: joinTransports(cred.Transport),
-		Flags: flagBytes(cred.Flags), ExtensionsJSON: extensions, Created: now,
-	}
-	if err := p.repo.PutWebauthnCredential(ctx, row); err != nil {
-		return nil, err
-	}
-	return cred.ID, nil
+		Flags: flagBytes(cred.Flags), ExtensionsJSON: extensions, Name: name, Created: p.clk.Now().Unix(),
+	}, nil
 }
 
 // marshalExtensions is credentials()' inverse: the curated CredentialExtensions
@@ -311,14 +331,29 @@ func (p *Passkeys) BeginLogin(ctx context.Context) (id.ID, []byte, error) {
 // FinishLogin uses ValidatePasskeyLogin, which hands back the resolved user as
 // well as the credential, so dillad never has to ask for a handle first. The
 // plain discoverable variant returns only the credential.
-func (p *Passkeys) FinishLogin(ctx context.Context, ceremonyID id.ID, response []byte) (id.ID, error) {
-	session, _, err := p.takeSession(ctx, ceremonyID, ceremonyLogin)
+//
+// uv is THIS assertion's authenticator-data UV flag, read from the parsed response. The
+// credential ValidatePasskeyLogin returns is no source for it: at go-webauthn v0.18.2 its
+// Flags.UserVerified is the STORED credential's, latched (CredentialFlags.Update keeps the
+// stored UV and drops the assertion's; login.go:416-422), so a credential registered with UV
+// would report UV on every later presence-only assertion.
+//
+// A ceremony with a user set is a step-up (BeginStepUp), never a login, and is refused. An
+// assertion naming a credential id or a user handle this rp_id does not hold is ErrPasskeyUnknown.
+func (p *Passkeys) FinishLogin(ctx context.Context, ceremonyID id.ID, response []byte) (id.ID, bool, error) {
+	session, owner, err := p.takeSession(ctx, ceremonyID, ceremonyLogin)
 	if err != nil {
-		return id.ID{}, err
+		return id.ID{}, false, err
+	}
+	if owner != nil {
+		return id.ID{}, false, errors.New("auth: a step-up ceremony is not a login")
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(string(response)))
 	if err != nil {
-		return id.ID{}, fmt.Errorf("auth: parse assertion: %w", err)
+		return id.ID{}, false, fmt.Errorf("auth: parse assertion: %w", err)
+	}
+	if err := p.known(ctx, parsed); err != nil {
+		return id.ID{}, false, err
 	}
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		userID, err := p.repo.GetWebauthnUserByHandle(ctx, p.rpID, userHandle)
@@ -333,20 +368,99 @@ func (p *Passkeys) FinishLogin(ctx context.Context, ceremonyID id.ID, response [
 	}
 	_, cred, err := p.wa.ValidatePasskeyLogin(handler, session, parsed)
 	if err != nil {
-		return id.ID{}, fmt.Errorf("auth: validate passkey login: %w", err)
+		return id.ID{}, false, fmt.Errorf("auth: validate passkey login: %w", err)
 	}
 	row, err := p.repo.GetWebauthnCredential(ctx, cred.ID)
 	if err != nil {
-		return id.ID{}, err
+		return id.ID{}, false, err
 	}
 	if row.RPID != p.rpID {
-		return id.ID{}, errors.New("auth: credential belongs to another relying party")
+		return id.ID{}, false, errors.New("auth: credential belongs to another relying party")
 	}
 	if err := p.repo.UpdateWebauthnCredential(ctx, cred.ID, int64(cred.Authenticator.SignCount),
 		flagBytes(cred.Flags), p.clk.Now().Unix()); err != nil {
-		return id.ID{}, err
+		return id.ID{}, false, err
 	}
-	return row.UserID, nil
+	return row.UserID, parsed.Response.AuthenticatorData.Flags.HasUserVerified(), nil
+}
+
+// known refuses, with ErrPasskeyUnknown, an assertion whose credential id or user handle is not
+// registered for this rp_id. It runs after the ceremony is taken, so a probe costs a ceremony
+// like any other failure.
+func (p *Passkeys) known(ctx context.Context, parsed *protocol.ParsedCredentialAssertionData) error {
+	row, err := p.repo.GetWebauthnCredential(ctx, parsed.RawID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return ErrPasskeyUnknown
+	case err != nil:
+		return err
+	case row.RPID != p.rpID:
+		return ErrPasskeyUnknown
+	}
+	if _, err := p.repo.GetWebauthnUserByHandle(ctx, p.rpID, parsed.Response.UserHandle); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrPasskeyUnknown
+		}
+		return err
+	}
+	return nil
+}
+
+// BeginStepUp starts a passkey step-up for an account already signed in: an assertion over this
+// account's credentials only, user verification required. Its ceremony row is kind 1 with the
+// user set (see ceremonyLogin).
+func (p *Passkeys) BeginStepUp(ctx context.Context, userID id.ID) (id.ID, []byte, error) {
+	u, err := p.user(ctx, userID)
+	if err != nil {
+		return id.ID{}, nil, err
+	}
+	if len(u.creds) == 0 {
+		return id.ID{}, nil, ErrNoPasskey
+	}
+	assertion, session, err := p.wa.BeginLogin(u, webauthn.WithUserVerification(protocol.VerificationRequired))
+	if err != nil {
+		return id.ID{}, nil, fmt.Errorf("auth: begin step-up: %w", err)
+	}
+	ceremonyID, err := p.storeSession(ctx, ceremonyLogin, &userID, session)
+	if err != nil {
+		return id.ID{}, nil, err
+	}
+	options, err := json.Marshal(assertion)
+	if err != nil {
+		return id.ID{}, nil, err
+	}
+	return ceremonyID, options, nil
+}
+
+// FinishStepUp verifies a step-up assertion for caller. The ceremony must be a step-up begun for
+// caller (ErrNotYourCeremony otherwise: a discoverable login's ceremony, or another account's),
+// the assertion must verify against caller's credentials for this rp_id, and THIS assertion must
+// carry UV.
+func (p *Passkeys) FinishStepUp(ctx context.Context, ceremonyID id.ID, response []byte, caller id.ID) error {
+	session, owner, err := p.takeSession(ctx, ceremonyID, ceremonyLogin)
+	if err != nil {
+		return err
+	}
+	if owner == nil || *owner != caller {
+		return ErrNotYourCeremony
+	}
+	u, err := p.user(ctx, caller)
+	if err != nil {
+		return err
+	}
+	parsed, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(string(response)))
+	if err != nil {
+		return fmt.Errorf("auth: parse step-up assertion: %w", err)
+	}
+	cred, err := p.wa.ValidateLogin(u, session, parsed)
+	if err != nil {
+		return fmt.Errorf("auth: validate step-up: %w", err)
+	}
+	if !parsed.Response.AuthenticatorData.Flags.HasUserVerified() {
+		return errors.New("auth: the step-up assertion did not verify the user")
+	}
+	return p.repo.UpdateWebauthnCredential(ctx, cred.ID, int64(cred.Authenticator.SignCount),
+		flagBytes(cred.Flags), p.clk.Now().Unix())
 }
 
 // PruneCeremonies drops expired rows. It is also what the upgrade path calls:

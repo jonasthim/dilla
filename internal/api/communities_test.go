@@ -172,8 +172,8 @@ func TestRequireMod2FARefusesRoleGrantWithoutASecondFactor(t *testing.T) {
 	if status != http.StatusForbidden {
 		t.Fatalf("grant = %d, want 403 (%x)", status, body)
 	}
-	if code := e.ErrCode(body); code != "E_FORBIDDEN" {
-		t.Fatalf("code = %s", code)
+	if code := e.ErrCode(body); code != "E_TARGET_NO_FACTOR" {
+		t.Fatalf("code = %s, want E_TARGET_NO_FACTOR", code)
 	}
 
 	// With TOTP confirmed, the same grant succeeds.

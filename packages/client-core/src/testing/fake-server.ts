@@ -29,6 +29,46 @@ export interface LoggedRequest { method: string; path: string; query: string; au
 export type Reply = { status: number; body?: CborInput } | 'network' | 'lose';
 interface Account { userId: Uint8Array; username: string; display: string }
 
+// ---- web3.6: second factors (flow 10) ----
+/** The code the fake accepts for a TOTP enrolment, a TOTP login and a TOTP step-up. */
+export const FAKE_TOTP_CODE = '123456';
+/** The setup key the fake's enrol answers. */
+export const FAKE_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
+export const FAKE_STEP_UP_EXPIRES_S = 300;
+/** dillad's lockout (auth.lockout defaults): four free failures, the fifth is itself 429, and a failure counts for the
+ *  observation window of 15 minutes. The fake holds a lockout until the failures age out of the window, which is stricter
+ *  than dillad's growing lockouts (one attempt passes each time a lockout runs out). It has one client address, so dillad's
+ *  per-address budgets (the login_failed bucket the step-up gate peeks) are not modelled. */
+const FREE_ATTEMPTS = 4;
+const OBSERVATION_WINDOW_S = 900;
+/** The passkeys one account may hold (dillad MaxPasskeys, the client's PASSKEYS_MAX). */
+const MAX_PASSKEYS = 1024;
+const BACKUP_CODES = 10;
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+/** What one account holds: an app (totpCode), passkeys, unused backup codes, and the owed flag. */
+export interface FakeFactorState {
+  owed: boolean;
+  totpCode: string | null;
+  /** How many app codes were accepted: each is burnt, as dillad's last_counter is, so the app's next code is another. */
+  totpUsed: number;
+  /** An enrolment not yet confirmed, and whether its enroll spent a step-up (dillad keeps the same record per user). */
+  totpEnrol: { steppedUp: boolean } | null;
+  passkeys: { credId: Uint8Array; name: string; created: number; lastUsed: number | null }[];
+  codes: string[];
+}
+/** Routes an owed account may still call (protocol/09 scope F, and the P routes that pass by their scope). */
+const OWED_OK = [
+  /^GET \/v1\/accounts\/me$/, /^GET \/v1\/auth\/factors$/, /^POST \/v1\/auth\/totp\/(enroll|confirm)$/,
+  /^POST \/v1\/auth\/passkey\/register\/(begin|finish)$/, /^DELETE \/v1\/devices\/[0-9a-f]{32}\/sessions$/,
+  /^(PUT|GET) \/v1\/users\/[0-9a-f]{32}\/device-list$/, /^GET \/v1\/backups(\/[01]\/0)?$/,
+];
+
+/** The "E or V" routes a provisional session reaches (keypackages.go: orProvisional). */
+const E_OR_V = [/^POST \/v1\/keypackages$/, /^(GET|DELETE) \/v1\/welcomes(\/[0-9]+)?$/];
+/** dillad's passkey name rule (validPasskeyName): 1-64 bytes of UTF-8 without control characters. */
+const validPasskeyName = (name: CborValue): boolean => typeof name === 'string' && name.length > 0
+  && new TextEncoder().encode(name).length <= 64 && !/\p{Cc}/u.test(name);
+
 function reply(status: number, body?: CborInput): Response {
   if (body === undefined) return new Response(null, { status, headers: { 'X-Dilla-Generation': '1' } });
   return new Response(new Uint8Array(encode(body)), {
@@ -55,7 +95,24 @@ export class FakeServer {
   readonly passwords = new Map<string, { password: string; totp: string | null }>();
   /** Every assertion issued, including ones subsequently spent. */
   readonly assertions: string[] = [];
-  private readonly activeAssertions = new Map<string, { user: string; needsTotp: boolean }>();
+  private readonly activeAssertions = new Map<string, { user: string; needs: 0 | 1 | 2 }>();
+  /** When true, an account created through POST /v1/accounts is owed a second factor, as dillad does. */
+  factorRequired = false;
+  private readonly factorStates = new Map<string, FakeFactorState>();
+  /** Step-up tokens: token → the username and the session token they were issued to. Single use. */
+  private readonly stepUps = new Map<string, { username: string; session: string }>();
+  /** Step-up failures of this (the one) client address per account: a success clears them. */
+  private readonly stepUpFailures = new Map<string, number>();
+  /** dillad's account-wide step-up ledger: failure times from every address; a success never clears it. */
+  private readonly stepUpAccount = new Map<string, number[]>();
+  /** dillad's account login ledger (the lockout): failure times of password logins and second-factor codes. */
+  private readonly loginFailures = new Map<string, number[]>();
+  /** Open WebAuthn ceremonies: the id (hex) → what it is for and for whom. */
+  private readonly ceremonies = new Map<string, { kind: 'register' | 'login' | 'stepup'; username: string | null; steppedUp: boolean }>();
+  private stepUpN = 0;
+  private ceremonyN = 0;
+  private credN = 0;
+  private codeN = 0;
   readonly backups = new Map<string, { object: Uint8Array; created: bigint }>();
   readonly listHistory = new Map<string, { version: bigint; blob: Uint8Array; sig: Uint8Array; prev: Uint8Array }[]>();
   readonly revoked = new Map<string, number>();
@@ -123,6 +180,67 @@ export class FakeServer {
   }
   setPassword(username: string, password: string, totp: string | null = null): void {
     this.passwords.set(username, { password, totp });
+    // An app planted here shows `totp` as its first code (nothing burnt yet).
+    if (totp !== null) this.factorsOf(username).totpUsed = 0;
+  }
+  /** What the account holds; created empty. */
+  factorsOf(username: string): FakeFactorState {
+    let state = this.factorStates.get(username);
+    if (state === undefined) {
+      state = { owed: false, totpCode: null, totpUsed: 0, totpEnrol: null, passkeys: [], codes: [] };
+      this.factorStates.set(username, state);
+    }
+    return state;
+  }
+  /** Marks the account as owing a second factor (a legacy account, an abandoned sign-up, an operator reset). */
+  setOwed(username: string, owed = true): void {
+    this.factorsOf(username).owed = owed;
+  }
+  /** A passkey the account already holds; its response string for the fake's login is `credIdHex(credId)`. */
+  addPasskey(username: string, name: string): Uint8Array {
+    const credId = new Uint8Array(32).fill(0xc0);
+    credId[0] = ++this.credN;
+    this.factorsOf(username).passkeys.push({ credId, name, created: this.nowS, lastUsed: null });
+    return credId;
+  }
+  /** Unused backup codes the account holds (the fake keeps them in the clear). */
+  backupCodesOf(username: string): readonly string[] {
+    return this.factorsOf(username).codes;
+  }
+  private totpOf(username: string): string | null {
+    return this.factorsOf(username).totpCode ?? this.passwords.get(username)?.totp ?? null;
+  }
+  /** The code the account's app shows now: its first code until one is accepted, then the next (one code per use, so a
+   *  replayed code is refused as dillad refuses a counter at or below last_counter). null without an app. */
+  totpCodeNow(username: string): string | null {
+    const base = this.totpOf(username);
+    if (base === null) return null;
+    const used = this.factorsOf(username).totpUsed;
+    return used === 0 ? base : String((Number.parseInt(base, 10) + used) % 1_000_000).padStart(6, '0');
+  }
+  /** Accepts the app's current code once. */
+  private spendTotp(username: string, code: CborValue): boolean {
+    const now = this.totpCodeNow(username);
+    if (now === null || code !== now) return false;
+    this.factorsOf(username).totpUsed += 1;
+    return true;
+  }
+  private needsOf(username: string): 0 | 1 | 2 {
+    if (this.totpOf(username) !== null) return 1;
+    return this.factorsOf(username).passkeys.length > 0 ? 2 : 0;
+  }
+  private holdsFactor(username: string): boolean {
+    return this.needsOf(username) !== 0;
+  }
+  private mintCodes(username: string): string[] {
+    const codes = Array.from({ length: BACKUP_CODES }, () => {
+      let n = ++this.codeN;
+      let tail = '';
+      while (n > 0) { tail = BASE32[26 + (n % 6)] + tail; n = Math.floor(n / 6); }
+      return tail.padStart(26, 'A');
+    });
+    this.factorsOf(username).codes = codes;
+    return codes;
   }
   publishList(userId: Uint8Array, entries: readonly { deviceId: Uint8Array; revokedAt?: bigint | null }[], at: bigint = BigInt(this.nowS)): bigint {
     const user = toHex(userId);
@@ -293,10 +411,13 @@ export class FakeServer {
       const body = arr(decode(r.body), 2);
       const username = str(body[0] ?? null);
       const password = str(body[1] ?? null);
+      // The standing lockout gate before the password is looked at; the ledger is cleared only by a login owing nothing.
+      if (this.loginLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
       const stored = this.passwords.get(username);
-      if (stored === undefined || stored.password !== password) return refuse(401, 'E_UNAUTHENTICATED');
-      const assertion = this.assertion(username, stored.totp !== null);
-      return reply(200, [assertion, stored.totp === null ? 0 : 1]);
+      if (stored === undefined || stored.password !== password) return this.loginFailure(username);
+      const needs = this.needsOf(username);
+      if (needs === 0) this.loginFailures.delete(username);
+      return reply(200, [this.assertion(username, needs), needs]);
     }
     if (line === 'POST /v1/auth/totp/verify') {
       const body = arr(decode(r.body), 2);
@@ -304,9 +425,51 @@ export class FakeServer {
       const code = str(body[1] ?? null);
       const assertion = this.activeAssertions.get(value);
       this.activeAssertions.delete(value);
-      if (assertion === undefined || !assertion.needsTotp || this.passwords.get(assertion.user)?.totp !== code)
-        return refuse(401, 'E_UNAUTHENTICATED');
-      return reply(200, [this.assertion(assertion.user, false)]);
+      if (assertion === undefined || assertion.needs !== 1) return refuse(401, 'E_UNAUTHENTICATED');
+      // dillad: a locked account is refused before its code is looked at; the assertion is already spent.
+      if (this.loginLocked(assertion.user)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
+      if (!this.spendTotp(assertion.user, code)) return this.loginFailure(assertion.user);
+      this.loginFailures.delete(assertion.user);
+      return reply(200, [this.assertion(assertion.user, 0)]);
+    }
+    if (line === 'POST /v1/auth/recovery/verify') {
+      const body = arr(decode(r.body), 2);
+      const value = str(body[0] ?? null);
+      const code = str(body[1] ?? null);
+      const assertion = this.activeAssertions.get(value);
+      this.activeAssertions.delete(value);
+      if (assertion === undefined || assertion.needs === 0) return refuse(401, 'E_UNAUTHENTICATED');
+      if (this.loginLocked(assertion.user)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
+      const state = this.factorsOf(assertion.user);
+      const at = state.codes.indexOf(code);
+      if (at < 0) return this.loginFailure(assertion.user);
+      state.codes.splice(at, 1);
+      this.loginFailures.delete(assertion.user);
+      return reply(200, [this.assertion(assertion.user, 0)]);
+    }
+    if (line === 'POST /v1/auth/passkey/login/begin') {
+      const id = `c-${++this.ceremonyN}`;
+      this.ceremonies.set(id, { kind: 'login', username: null, steppedUp: false });
+      return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
+    }
+    if (line === 'POST /v1/auth/passkey/login/finish') {
+      const body = arr(decode(r.body), 2);
+      const ceremony = this.takeCeremony(body[0] ?? null, 'login');
+      const response = str(body[1] ?? null);
+      if (ceremony === null) return refuse(401, 'E_UNAUTHENTICATED');
+      // The fake's authenticator answers with the credential id in hex, and ":nouv" when it did not verify the user.
+      const [credHex, flagText] = response.split(':');
+      for (const account of this.accounts.values()) {
+        const held = this.factorsOf(account.username).passkeys.find((k) => toHex(k.credId) === credHex);
+        if (held === undefined) continue;
+        const needs = flagText === 'nouv' ? 1 : 0;
+        // dillad: a login that would owe a code the lockout forbids guessing gets no assertion; a complete one clears it.
+        if (needs === 1 && this.loginLocked(account.username)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
+        if (needs === 0) this.loginFailures.delete(account.username);
+        held.lastUsed = this.nowS;
+        return reply(200, [this.assertion(account.username, needs), needs]);
+      }
+      return refuse(401, 'E_PASSKEY_UNKNOWN');
     }
     if (line === 'GET /v1/instance/limits') {
       return reply(200, [131072, 104857600, 4, 2, 32, 8, 1073741824, 30000, 131584, 30, 30]);
@@ -323,6 +486,22 @@ export class FakeServer {
     const device = r.auth === null ? undefined : this.tokens.get(r.auth);
     const user = device === undefined ? undefined : this.devices.get(device);
     if (device === undefined || user === undefined || this.revoked.has(device)) return refuse(401, 'E_UNAUTHENTICATED');
+    const username = this.accounts.get(user)?.username;
+    if (username !== undefined) {
+      // dillad's order (session.go middleware): the scope check first, then the owed rule for every scope. The session
+      // routes of § Second factors are E (enrolled only): a pending token is E_FORBIDDEN there, a provisional one
+      // E_PROVISIONAL_OUTSIDE_PAIRING. An owed account is refused on every route but the F allow-list and the P routes,
+      // enrolled sessions and provisional ones on the "E or V" routes alike; a pending one never passes the scope check
+      // to a non-P route (the fake's later pending check answers that).
+      const scope = this.tokenScope.get(r.auth!) ?? 0;
+      const factorLine = line.startsWith('GET /v1/auth/factors') || line.startsWith('POST /v1/auth/');
+      if (factorLine && scope === 1) return refuse(403, 'E_FORBIDDEN');
+      if (factorLine && scope === 2) return refuse(403, 'E_PROVISIONAL_OUTSIDE_PAIRING');
+      const reachesOwedRule = scope === 0 || (scope === 2 && E_OR_V.some((re) => re.test(line)));
+      if (reachesOwedRule && this.factorsOf(username).owed && !OWED_OK.some((re) => re.test(line))) return refuse(403, 'E_FACTOR_REQUIRED');
+      const factorRoute = this.factorRoute(r, line, username);
+      if (factorRoute !== null) return factorRoute;
+    }
     const callRoute = this.callRoute(r, line);
     if (callRoute !== null) return callRoute;
     const list =/^(PUT|GET) \/v1\/users\/([0-9a-f]{32})\/device-list$/.exec(line);
@@ -459,15 +638,233 @@ export class FakeServer {
     const userId = this.register(username, deviceId, dskPub);
     this.tiers.set(toHex(deviceId), Number(arr(b[7] ?? null, 5)[2]) as 0 | 1);
     const account = this.accounts.get(toHex(userId));
-    if (account !== undefined) account.display = display;
+    if (account !== undefined) {
+      account.display = display;
+      if (this.factorRequired) this.factorsOf(account.username).owed = true;
+    }
     return reply(200, [userId, deviceId, this.mint(toHex(deviceId), 0), this.nowS + SESSION_S]);
   }
 
-  private assertion(user: string, needsTotp: boolean): string {
+  private assertion(user: string, needs: 0 | 1 | 2): string {
     const value = `asrt-${++this.assertionN}`;
     this.assertions.push(value);
-    this.activeAssertions.set(value, { user, needsTotp });
+    this.activeAssertions.set(value, { user, needs });
     return value;
+  }
+  private ceremonyBytes(id: string): Uint8Array {
+    const out = new Uint8Array(16);
+    out.set(new TextEncoder().encode(id.slice(0, 16)));
+    return out;
+  }
+  private peekCeremony(raw: CborValue): { kind: 'register' | 'login' | 'stepup'; username: string | null } | undefined {
+    if (!(raw instanceof Uint8Array)) return undefined;
+    return this.ceremonies.get(new TextDecoder().decode(raw).replace(/\0+$/, ''));
+  }
+  private takeCeremony(raw: CborValue, kind: 'register' | 'login' | 'stepup'): { username: string | null; steppedUp: boolean } | null {
+    if (!(raw instanceof Uint8Array)) return null;
+    const id = new TextDecoder().decode(raw).replace(/\0+$/, '');
+    const open = this.ceremonies.get(id);
+    this.ceremonies.delete(id);
+    return open !== undefined && open.kind === kind ? open : null;
+  }
+  private spendStepUp(token: CborValue, username: string, session: string | null): boolean {
+    if (typeof token !== 'string') return false;
+    const held = this.stepUps.get(token);
+    // Only its own session spends it: another session's attempt is refused and does not burn the owner's token.
+    if (held === undefined || held.username !== username || held.session !== session) return false;
+    this.stepUps.delete(token);
+    return true;
+  }
+  private recent(ledger: Map<string, number[]>, username: string): number[] {
+    const kept = (ledger.get(username) ?? []).filter((at) => at > this.nowS - OBSERVATION_WINDOW_S);
+    ledger.set(username, kept);
+    return kept;
+  }
+  /** Step-up failures made at other client addresses: they count on the account-wide ledger only. */
+  stepUpFailuresElsewhere(username: string, count: number): void {
+    for (let i = 0; i < count; i += 1) this.recent(this.stepUpAccount, username).push(this.nowS);
+  }
+  private stepUpLocked(username: string): boolean {
+    return (this.stepUpFailures.get(username) ?? 0) > FREE_ATTEMPTS || this.recent(this.stepUpAccount, username).length > FREE_ATTEMPTS;
+  }
+  /** A failed step-up guess (a secret, a passkey or an old password): counted on both ledgers; true when it locks them. */
+  private stepUpFail(username: string): boolean {
+    const here = (this.stepUpFailures.get(username) ?? 0) + 1;
+    this.stepUpFailures.set(username, here);
+    const all = this.recent(this.stepUpAccount, username);
+    all.push(this.nowS);
+    return here > FREE_ATTEMPTS || all.length > FREE_ATTEMPTS;
+  }
+  /** 403 E_STEP_UP, or 429 on the failure that passes the free attempts. */
+  private stepUpFailure(username: string): Response {
+    return this.stepUpFail(username) ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_STEP_UP');
+  }
+  /** A success clears this address's count only; the account-wide one ages out. */
+  private stepUpPass(username: string): void {
+    this.stepUpFailures.delete(username);
+  }
+  private loginLocked(username: string): boolean {
+    return this.recent(this.loginFailures, username).length > FREE_ATTEMPTS;
+  }
+  /** A wrong password or second-factor code: 401, or 429 on the failure that locks the account. */
+  private loginFailure(username: string): Response {
+    const all = this.recent(this.loginFailures, username);
+    all.push(this.nowS);
+    return all.length > FREE_ATTEMPTS ? refuse(429, 'E_RATE_LIMITED', '', 30_000) : refuse(401, 'E_UNAUTHENTICATED');
+  }
+  private issueStepUp(username: string, session: string | null): Response {
+    const token = `su-${++this.stepUpN}`;
+    this.stepUps.set(token, { username, session: session ?? '' });
+    return reply(201, [token, this.nowS + FAKE_STEP_UP_EXPIRES_S]);
+  }
+
+  /** The second-factor routes of protocol/09 § Second factors that need a session. */
+  private factorRoute(r: LoggedRequest, line: string, username: string): Response | null {
+    if (!line.startsWith('GET /v1/auth/factors') && !line.startsWith('POST /v1/auth/')) return null;
+    const state = this.factorsOf(username);
+    const session = r.auth;
+    let body: CborValue[] = [];
+    if (r.method === 'POST') {
+      try { body = arr(decode(r.body)); } catch { return refuse(400, 'E_INVALID_REQUEST'); }
+    }
+    const held = this.holdsFactor(username);
+    // [stepup|null] exactly (dillad's stepUpRequest): any other arity does not decode.
+    if ((line === 'POST /v1/auth/totp/enroll' || line === 'POST /v1/auth/passkey/register/begin' || line === 'POST /v1/auth/recovery/codes')
+      && (body.length !== 1 || (body[0] !== null && typeof body[0] !== 'string'))) return refuse(400, 'E_INVALID_REQUEST');
+    switch (line) {
+      case 'GET /v1/auth/factors':
+        return reply(200, [state.owed ? 1 : 0, this.totpOf(username) === null ? null : NOW_S,
+          state.passkeys.map((k) => [k.credId, k.name, k.created, k.lastUsed]), state.codes.length, this.passwords.has(username) ? 1 : 0]);
+      case 'POST /v1/auth/totp/enroll':
+        if (this.totpOf(username) !== null) return refuse(403, 'E_FORBIDDEN');
+        if (held && !this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        // Each enroll replaces the unconfirmed secret and records whether it spent a step-up (S2's in-memory record).
+        state.totpEnrol = { steppedUp: held };
+        return reply(200, [FAKE_TOTP_SECRET, `otpauth://totp/dilla:${username}?secret=${FAKE_TOTP_SECRET}&issuer=dilla`]);
+      case 'POST /v1/auth/totp/confirm': {
+        // dillad reads the enrolled secret row (none: 404), refuses a code that does not match it or was used
+        // (400 E_INVALID_REQUEST), then re-checks the step-up rule: a factor held now that the enroll did not step up
+        // for is 403 E_STEP_UP, and nothing is written.
+        const enrol = state.totpEnrol;
+        if (enrol === null || this.totpOf(username) !== null) return refuse(404, 'E_NOT_FOUND');
+        if (body[0] !== FAKE_TOTP_CODE) return refuse(400, 'E_INVALID_REQUEST', 'the code does not match this secret');
+        if (held && !enrol.steppedUp) return refuse(403, 'E_STEP_UP');
+        state.totpEnrol = null;
+        state.totpCode = FAKE_TOTP_CODE;
+        state.totpUsed = 1;
+        state.owed = false;
+        return reply(200, [state.codes.length === 0 ? this.mintCodes(username) : []]);
+      }
+      case 'POST /v1/auth/passkey/register/begin': {
+        // dillad: the cap before any token is spent.
+        if (state.passkeys.length >= MAX_PASSKEYS) return refuse(409, 'E_INVALID_REQUEST', 'this account holds the most passkeys it may');
+        if (held && !this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        const id = `r-${++this.ceremonyN}`;
+        this.ceremonies.set(id, { kind: 'register', username, steppedUp: held });
+        return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
+      }
+      case 'POST /v1/auth/passkey/register/finish': {
+        // dillad checks the name before it touches the ceremony, which a refused name leaves open; an unknown, spent or
+        // other account's ceremony is one answer, 400 E_INVALID_REQUEST.
+        const name = body[2] ?? null;
+        if (!validPasskeyName(name) || typeof name !== 'string') return refuse(400, 'E_INVALID_REQUEST');
+        // Another account's ceremony is refused before it is taken, so the account that began it can still finish it.
+        const open = this.peekCeremony(body[0] ?? null);
+        if (open !== undefined && open.kind === 'register' && open.username !== username)
+          return refuse(400, 'E_INVALID_REQUEST', 'the registration response was not accepted');
+        const ceremony = this.takeCeremony(body[0] ?? null, 'register');
+        if (ceremony === null || ceremony.username !== username) return refuse(400, 'E_INVALID_REQUEST', 'the registration response was not accepted');
+        if (held && !ceremony.steppedUp) return refuse(403, 'E_STEP_UP');
+        if (state.passkeys.length >= MAX_PASSKEYS) return refuse(409, 'E_INVALID_REQUEST', 'this account holds the most passkeys it may');
+        const credId = this.addPasskey(username, name);
+        state.owed = false;
+        return reply(200, [credId, state.codes.length === 0 ? this.mintCodes(username) : []]);
+      }
+      case 'POST /v1/auth/stepup': {
+        const secret = body[1];
+        if ((body[0] !== 0n && body[0] !== 1n && body[0] !== 2n) || typeof secret !== 'string') return refuse(400, 'E_INVALID_REQUEST');
+        if (this.stepUpLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
+        let ok = false;
+        if (body[0] === 0n) ok = this.passwords.get(username)?.password === secret;
+        else if (body[0] === 1n) ok = this.spendTotp(username, secret);
+        else {
+          const at = state.codes.indexOf(secret);
+          if (at >= 0) { state.codes.splice(at, 1); ok = true; }
+        }
+        if (!ok) return this.stepUpFailure(username);
+        this.stepUpPass(username);
+        return this.issueStepUp(username, session);
+      }
+      case 'POST /v1/auth/stepup/passkey/begin': {
+        if (state.passkeys.length === 0) return refuse(400, 'E_INVALID_REQUEST', 'this account holds no passkey');
+        const id = `s-${++this.ceremonyN}`;
+        this.ceremonies.set(id, { kind: 'stepup', username, steppedUp: false });
+        return reply(200, [this.ceremonyBytes(id), '{"publicKey":{"challenge":"fake"}}']);
+      }
+      case 'POST /v1/auth/stepup/passkey/finish': {
+        // The same ledger as POST /v1/auth/stepup (dillad: stepUpFailure).
+        if (this.stepUpLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
+        const ceremony = this.takeCeremony(body[0] ?? null, 'stepup');
+        if (ceremony === null || ceremony.username !== username) return this.stepUpFailure(username);
+        const credHex = typeof body[1] === 'string' ? body[1].split(':')[0] : null;
+        if (!state.passkeys.some((k) => toHex(k.credId) === credHex)) return this.stepUpFailure(username);
+        this.stepUpPass(username);
+        return this.issueStepUp(username, session);
+      }
+      case 'POST /v1/auth/password': {
+        // [old|null, new] (E). The old password is this route's step-up: guesses go on the step-up ledgers, never on
+        // the login ledger. A first password (no old one) needs a fresh session in dillad; the fake does not model that.
+        const old = body[0] ?? null;
+        const next = body[1];
+        if (body.length !== 2 || (old !== null && typeof old !== 'string') || typeof next !== 'string') return refuse(400, 'E_INVALID_REQUEST');
+        if (next === '') return refuse(400, 'E_INVALID_REQUEST', 'the new password is empty');
+        const stored = this.passwords.get(username);
+        if (stored !== undefined) {
+          if (old === null) return refuse(403, 'E_FORBIDDEN', 'changing a password needs the old one');
+          if (this.stepUpLocked(username)) return refuse(429, 'E_RATE_LIMITED', '', 60_000);
+          if (stored.password !== old) {
+            return this.stepUpFail(username) ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_FORBIDDEN', 'the old password is wrong');
+          }
+          this.stepUpPass(username);
+        }
+        this.passwords.set(username, { password: next, totp: stored?.totp ?? null });
+        this.loginFailures.delete(username);
+        return reply(204);
+      }
+      case 'POST /v1/auth/factors/remove': {
+        // dillad validates kind and cred_id before it spends the token, which a malformed body leaves unspent.
+        const kind = body[1];
+        const cred = body[2] ?? null;
+        if (kind !== 0n && kind !== 1n) return refuse(400, 'E_INVALID_REQUEST', 'kind is 0 (totp) or 1 (passkey)');
+        if (kind === 1n && !(cred instanceof Uint8Array && cred.length > 0)) return refuse(400, 'E_INVALID_REQUEST', 'a passkey removal names its cred_id');
+        if (!this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        if (kind === 0n) {
+          // The app row, confirmed or not (an unconfirmed enrolment is deleted too), then the recount.
+          if (this.totpOf(username) === null && state.totpEnrol === null) return refuse(404, 'E_NOT_FOUND');
+          const keep = state.passkeys.length > 0;
+          if (!keep) return refuse(409, 'E_INVALID_REQUEST', 'it is the last factor');
+          state.totpEnrol = null;
+          state.totpCode = null;
+          state.totpUsed = 0;
+          const stored = this.passwords.get(username);
+          if (stored !== undefined) stored.totp = null;
+          return reply(204);
+        }
+        if (cred instanceof Uint8Array) {
+          const at = state.passkeys.findIndex((k) => same(k.credId, cred));
+          if (at < 0) return refuse(404, 'E_NOT_FOUND');
+          if (state.passkeys.length === 1 && this.totpOf(username) === null) return refuse(409, 'E_INVALID_REQUEST', 'it is the last factor');
+          state.passkeys.splice(at, 1);
+          return reply(204);
+        }
+        return refuse(400, 'E_INVALID_REQUEST');
+      }
+      case 'POST /v1/auth/recovery/codes':
+        if (!this.spendStepUp(body[0] ?? null, username, session)) return refuse(403, 'E_STEP_UP');
+        return reply(200, [this.mintCodes(username)]);
+      default:
+        return null;
+    }
   }
   private mint(deviceHex: string, scope: 0 | 1): string {
     this.sessions += 1;
@@ -496,7 +893,7 @@ export class FakeServer {
       }
       const assertion = this.activeAssertions.get(login);
       this.activeAssertions.delete(login);
-      if (assertion === undefined || assertion.needsTotp) return refuse(401, 'E_UNAUTHENTICATED');
+      if (assertion === undefined || assertion.needs !== 0) return refuse(401, 'E_UNAUTHENTICATED');
       const account = [...this.accounts].find(([, value]) => value.username === assertion.user);
       if (account === undefined) return refuse(401, 'E_UNAUTHENTICATED');
       if (user !== undefined) {

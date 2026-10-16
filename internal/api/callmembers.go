@@ -38,10 +38,12 @@ type membership struct {
 	added uint64
 }
 
-// admission is a membership a device was admitted to a room with, and when.
+// admission is a membership a device was admitted to a room with, and when: at by the instance
+// clock (the join window, the sweep), sfuAt by the SFU's (what a session's join time is compared
+// with: LiveKit stamps it with its own clock, which the instance clock need not match).
 type admission struct {
 	membership
-	at time.Time
+	at, sfuAt time.Time
 }
 
 type admitKey struct {
@@ -78,7 +80,7 @@ func (h *Calls) noteAdmission(ctx context.Context, row store.VoiceSessionRow, de
 			continue
 		}
 		k := admitKey{room: row.LivekitRoom, dev: dev}
-		a := admission{membership: membership{leaf: m.LeafIndex, added: m.AddedEpoch}, at: h.clk.Now()}
+		a := admission{membership: membership{leaf: m.LeafIndex, added: m.AddedEpoch}, at: h.clk.Now(), sfuAt: h.sfuNow()}
 		h.memMu.Lock()
 		if h.admissions == nil {
 			h.admissions = map[admitKey][]admission{}
@@ -94,14 +96,14 @@ func (h *Calls) noteAdmission(ctx context.Context, row store.VoiceSessionRow, de
 }
 
 // admittedAs is the membership dev was admitted to room with for the session LiveKit reports joined
-// at joinedAt: the latest admission at or before it (a session is admitted before it joins), or the
-// latest of all when the event names no join time.
+// at joinedAt (the SFU's clock): the latest admission at or before it by that clock (a session is
+// admitted before it joins), or the latest of all when the event names no join time.
 func (h *Calls) admittedAs(room string, dev id.ID, joinedAt time.Time) (membership, bool) {
 	h.memMu.Lock()
 	defer h.memMu.Unlock()
 	list := h.admissions[admitKey{room: room, dev: dev}]
 	for i := len(list) - 1; i >= 0; i-- {
-		if joinedAt.IsZero() || !list[i].at.After(joinedAt) {
+		if joinedAt.IsZero() || !list[i].sfuAt.After(joinedAt) {
 			return list[i].membership, true
 		}
 	}

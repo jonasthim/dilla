@@ -41,17 +41,19 @@ describe('Signup', () => {
     expect(() => signup.begin(INSTANCE)).toThrow(CoreError);
   });
 
-  it('registers, stores the session, signs the device list, publishes it and the KeyPackages, in that order', async () => {
+  it('registers, stores the session, signs the device list and publishes it, in that order; no KeyPackages while a factor may be owed', async () => {
     const { signup, core, server } = setup();
     signup.begin(INSTANCE);
     await signup.submit(INPUT);
     const userId = core.identity().userId;
     if (userId === null) throw new Error('no user id');
     const listPath = `/v1/users/${toHex(userId)}/device-list`;
-    expect(server.paths()).toEqual(['POST /v1/accounts', `PUT ${listPath}`, 'GET /v1/instance/limits', 'POST /v1/keypackages']);
-    expect(server.log.map((r) => r.auth)).toEqual([null, 'tok-1', null, 'tok-1']);
+    // web3.6 C2: POST /v1/keypackages is refused while the account owes a factor; enterReady sends them past its gate.
+    expect(server.paths()).toEqual(['POST /v1/accounts', `PUT ${listPath}`]);
+    expect(server.log.map((r) => r.auth)).toEqual([null, 'tok-1']);
     const steps = ['signupRequest', 'sessionStore', 'signupComplete', 'deviceListPublished', 'keyPackages'];
-    expect(core.calls.filter((c) => steps.includes(c))).toEqual(steps);
+    expect(core.calls).not.toContain('keyPackages');
+    expect(core.calls.filter((c) => steps.includes(c))).toEqual(steps.slice(0, 4));
     const account = arr(decode(server.log[0]?.body ?? new Uint8Array()), 8);
     expect(account.slice(0, 3)).toEqual(['INVITE', 'ada', 'Ada']);
     expect(account[6]).toBeNull();
@@ -59,7 +61,7 @@ describe('Signup', () => {
     expect(core.session()).toEqual({ token: 'tok-1', expires: BigInt(NOW_S + SESSION_S), idleExpires: BigInt(NOW_S + SESSION_S) });
     const list = arr(decode(server.log[1]?.body ?? new Uint8Array()), 4);
     expect(decode(bin(list[1] ?? null))).toEqual(['fake.list', userId, DEVICE, BigInt(NOW_S)]);
-    expect(server.keyPackages).toEqual([{ device: DEV_HEX, count: 32, lastResort: true }]);
+    expect(server.keyPackages).toEqual([]);
   });
 
   it('keeps phase 1 when the server refuses, and a second submit with other fields succeeds', async () => {
@@ -101,7 +103,7 @@ describe('Signup', () => {
     expect(server.paths().slice(0, 3)).toEqual([`POST /v1/devices/${DEV_HEX}/sessions/challenge`, `POST /v1/devices/${DEV_HEX}/sessions`,
       'GET /v1/accounts/me']);
     expect(server.deviceLists.get(toHex(userId))?.version).toBe(1n);
-    expect(server.keyPackages).toEqual([{ device: DEV_HEX, count: 32, lastResort: true }]);
+    expect(server.keyPackages).toEqual([]);
   });
 
   it('a resumed signup that was never registered starts over', async () => {

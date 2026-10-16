@@ -19,6 +19,10 @@ pub fn test_force_missing_fts5(on: bool) {
 /// Rows of `app_handshake_tail` kept per group; the oldest are deleted in the inserting unit.
 pub const HANDSHAKE_TAIL: usize = 64;
 
+/// The highest app schema this build reads and migrates to. A store whose `app_meta` schema is
+/// above it was written by a newer client and is refused untouched (`StorageError::StoreNewer`).
+pub const APP_SCHEMA_SUPPORTED: u32 = 4;
+
 pub(crate) const SCHEMA: &str = "schema";
 pub(crate) const SIGNUP: &str = "signup";
 pub(crate) const IDENTITY: &str = "identity";
@@ -338,9 +342,36 @@ CREATE TABLE IF NOT EXISTS app_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL) WI
 UPDATE app_meta SET v = x'02' WHERE k = 'schema';
 ";
 
-/// Runs `APP_SCHEMA`, then v1-to-v2, v2-to-v3 and v3 indexes as needed. Returns the version it
-/// found before migrating; the caller's unit runs the appropriate backfills.
+/// Refuses a store whose `app_meta` schema is above `APP_SCHEMA_SUPPORTED`, reading only: it runs
+/// before `APP_SCHEMA`, whose `CREATE ... IF NOT EXISTS` would otherwise recreate in a newer
+/// client's store whatever its migrations dropped. A store with no `app_meta` table or no schema
+/// row passes (a fresh store), and so does a malformed row, which `migrate_conn` refuses as before.
+pub(crate) fn refuse_newer(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let has_meta: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_meta {
+        return Ok(());
+    }
+    let Some(bytes) = meta_get(c, SCHEMA)? else {
+        return Ok(());
+    };
+    match decode_strict(&bytes, |d| d.uint()) {
+        Ok(found) if found > u64::from(APP_SCHEMA_SUPPORTED) => Err(StorageError::StoreNewer {
+            found: u32::try_from(found).unwrap_or(u32::MAX),
+            supported: APP_SCHEMA_SUPPORTED,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Refuses a newer store untouched (`refuse_newer`), then runs `APP_SCHEMA`, then v1-to-v2,
+/// v2-to-v3 and v3 indexes as needed. Returns the version it found before migrating, at most
+/// `APP_SCHEMA_SUPPORTED`; the caller's unit runs the appropriate backfills.
 pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError> {
+    refuse_newer(c)?;
     c.execute_batch(APP_SCHEMA)?;
     let bytes = meta_get(c, SCHEMA)?
         .ok_or_else(|| StorageError::Codec("app_meta schema is malformed".into()))?;
@@ -594,8 +625,9 @@ fn migrate_trust_artifact_pairs(c: &rusqlite::Connection) -> Result<(), StorageE
     Ok(())
 }
 
-/// Runs the schema migrations and their backfills in one unit. Returns the value it found: 1 or
-/// 2 (migrated now), 3 (current; a fresh store reads 3), or a value above 3, unchanged.
+/// Runs the schema migrations and their backfills in one unit. Returns the value it found: 1 to 3
+/// (migrated now; a fresh store reads 3) or 4 (current). A value above `APP_SCHEMA_SUPPORTED` is
+/// `StorageError::StoreNewer`, and the store is left untouched.
 ///
 /// The backfill runs here as in `ClientCore::open` (pre-flight ruling (a)): a v1 store must never
 /// end at schema 3 with a v1 identity record, which `open` would then refuse for ever. It loads
@@ -658,5 +690,111 @@ mod search_upgrade_tests {
             )
             .expect("old table");
         assert_eq!(old, 0);
+    }
+}
+
+/// C4x (web3.6): a store written by a newer client (a rollback) is refused before anything
+/// touches it; schema 4 and below migrate as before.
+#[cfg(test)]
+mod newer_store_tests {
+    use super::{APP_SCHEMA_SUPPORTED, migrate_conn};
+    use crate::mls::StorageError;
+
+    type Snapshot = (
+        Vec<(String, String, Option<String>)>,
+        Vec<(String, Vec<u8>)>,
+    );
+
+    /// Every schema object and every `app_meta` row, in a stable order: the store as a reader
+    /// sees it.
+    fn snapshot(db: &rusqlite::Connection) -> Snapshot {
+        let objects = db
+            .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+            .expect("schema query")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("schema rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("schema");
+        let meta = db
+            .prepare("SELECT k, v FROM app_meta ORDER BY k")
+            .expect("meta query")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("meta rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("meta");
+        (objects, meta)
+    }
+
+    /// A store as this build leaves it, then moved on as a newer client might: schema 5 and one
+    /// app table gone (renamed or dropped by its migration), which `APP_SCHEMA` would recreate.
+    fn v5_store() -> rusqlite::Connection {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        assert_eq!(migrate_conn(&db).expect("fresh"), 3);
+        db.execute_batch("UPDATE app_meta SET v = x'05' WHERE k = 'schema'; DROP TABLE app_roles;")
+            .expect("simulate a v5 store");
+        db
+    }
+
+    #[test]
+    fn the_supported_schema_is_4() {
+        assert_eq!(APP_SCHEMA_SUPPORTED, 4);
+    }
+
+    #[test]
+    fn a_v5_store_is_refused_with_both_numbers_and_left_unchanged() {
+        let db = v5_store();
+        let before = snapshot(&db);
+        let changes = db.total_changes();
+        match migrate_conn(&db) {
+            Err(StorageError::StoreNewer { found, supported }) => {
+                assert_eq!((found, supported), (5, 4));
+            }
+            other => panic!("a v5 store must be refused as StoreNewer, got {other:?}"),
+        }
+        assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
+        assert_eq!(db.total_changes(), changes, "no row written");
+    }
+
+    #[test]
+    fn the_refusal_names_both_numbers() {
+        let e = StorageError::StoreNewer {
+            found: 5,
+            supported: 4,
+        };
+        assert_eq!(
+            e.to_string(),
+            "app schema 5 is newer than this build, which supports up to 4"
+        );
+    }
+
+    #[test]
+    fn schemas_up_to_4_still_migrate_and_end_at_4() {
+        for found in [3u8, 4] {
+            let db = rusqlite::Connection::open_in_memory().expect("db");
+            migrate_conn(&db).expect("fresh");
+            db.execute(
+                "UPDATE app_meta SET v = ?1 WHERE k = 'schema'",
+                [[found].as_slice()],
+            )
+            .expect("set schema");
+            assert_eq!(migrate_conn(&db).expect("migrates"), u64::from(found));
+            let schema: Vec<u8> = db
+                .query_row("SELECT v FROM app_meta WHERE k = 'schema'", [], |r| {
+                    r.get(0)
+                })
+                .expect("schema");
+            assert_eq!(schema, vec![0x04]);
+        }
+    }
+
+    #[test]
+    fn a_store_whose_meta_has_no_schema_row_opens_as_fresh() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        db.execute_batch(
+            "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;",
+        )
+        .expect("meta table");
+        assert_eq!(migrate_conn(&db).expect("fresh"), 3);
+        assert_eq!(migrate_conn(&db).expect("current"), 4);
     }
 }

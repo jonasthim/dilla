@@ -6,7 +6,7 @@ import { CHANNEL, COMMUNITY, ME, ModelDs, PEER } from '../sync/testing/model';
 import { DillaHttpError } from '../http/errors';
 import type { Routes } from '../http/routes';
 import { fakeDskPub, fakeListBlob, type FakeListEntry } from './fake-list';
-import { FakeServer, NOW_S, fakeDeviceProof, routesFor } from './fake-server';
+import { FAKE_STEP_UP_EXPIRES_S, FAKE_TOTP_CODE, FAKE_TOTP_SECRET, FakeServer, NOW_S, fakeDeviceProof, routesFor } from './fake-server';
 
 const DEV_A = new Uint8Array(16).fill(0xa1);
 const DEV_B = new Uint8Array(16).fill(0xb1);
@@ -126,7 +126,7 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
 
     const { c, user } = await ada(server);
     const login = await c.routes.passwordLogin('ada', 'pw');
-    expect(login.needsTotp).toBe(false);
+    expect(login.needs).toBe(0);
     const pending = await c.routes.postSessionPending(DEV_B, establishBody(DEV_B, login.assertion));
     expect([pending.scope, pending.userId]).toEqual([1, user]);
     expect((await refusalOf(c.routes.postSessionPending(DEV_B, establishBody(DEV_B, login.assertion)))).status).toBe(401);
@@ -151,7 +151,7 @@ describe('FakeServer answers the web-2a account routes as dillad does', () => {
     const { c } = await ada(server);
     server.setPassword('ada', 'pw', '123456');
     const first = await c.routes.passwordLogin('ada', 'pw');
-    expect(first.needsTotp).toBe(true);
+    expect(first.needs).toBe(1);
     expect((await refusalOf(c.routes.postSessionPending(DEV_B, establishBody(DEV_B, first.assertion)))).status).toBe(401);
     const second = await c.routes.passwordLogin('ada', 'pw');
     expect((await refusalOf(c.routes.totpVerify(second.assertion, '000000'))).status).toBe(401);
@@ -745,5 +745,494 @@ describe('FakeServer calls (L-HTTP-100..104)', () => {
     await c.routes.shareCall(dm);
     await c.routes.unshareCall(dm);
     await c.routes.postCallStats(dm, [0, null, 1, 0, 0, 0]);
+  });
+});
+
+describe('FakeServer answers the web3.6 second-factor routes as dillad does', () => {
+  it('refuses an owed account everywhere but the allow-list; the same account not owed is served', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    expect((await c.routes.listDevices()).length).toBeGreaterThan(0);
+    server.setOwed('ada');
+    expect(await refusalOf(c.routes.listDevices())).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+    expect(await refusalOf(c.routes.postTicket())).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+    expect(await c.routes.getFactors()).toMatchObject({ owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
+    expect((await c.routes.getAccountMe()).username).toBe('ada');
+  });
+
+  it('enrols an app: a wrong code is refused, the right one clears the debt and mints ten codes once', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    const enrol = await c.routes.totpEnroll(null);
+    expect(enrol.secret).toBe(FAKE_TOTP_SECRET);
+    expect(await refusalOf(c.routes.totpConfirm('000000'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    expect(await c.routes.getFactors()).toMatchObject({ owed: true, totp: null });
+    const codes = await c.routes.totpConfirm(FAKE_TOTP_CODE);
+    expect(codes).toHaveLength(10);
+    expect(new Set(codes).size).toBe(10);
+    expect(codes.every((code) => /^[A-Z2-7]{26}$/.test(code))).toBe(true);
+    expect(await c.routes.getFactors()).toMatchObject({ owed: false, backupCodesLeft: 10 });
+    expect((await c.routes.listDevices()).length).toBeGreaterThan(0);
+    expect(await refusalOf(c.routes.totpEnroll(null))).toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    const login = await c.routes.passwordLogin('ada', 'pw');
+    expect(login.needs).toBe(1);
+  });
+
+  it('asks for a step-up once an account holds a factor; a token is single use and bound to its session', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.addPasskey('ada', 'Laptop');
+    expect(await refusalOf(c.routes.totpEnroll(null))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.totpEnroll('su-bogus'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const step = await c.routes.stepUp(0, 'pw');
+    expect(step.expires).toBe(BigInt(NOW_S + FAKE_STEP_UP_EXPIRES_S));
+    expect((await c.routes.totpEnroll(step.token)).secret).toBe(FAKE_TOTP_SECRET);
+    expect(await refusalOf(c.routes.totpEnroll(step.token))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const mine = await c.routes.stepUp(0, 'pw');
+    const other = client(server);
+    const second = await other.routes.postSession(DEV_A, establishBody(DEV_A, null));
+    other.use(second.token);
+    expect(await refusalOf(other.routes.passkeyRegisterBegin(mine.token))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect((await c.routes.passkeyRegisterBegin(mine.token)).options).toContain('publicKey');
+  });
+
+  it('refuses a wrong step-up secret and rate-limits on the fifth (dillad: four free attempts)', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.addPasskey('ada', 'Laptop');
+    for (let i = 0; i < 4; i += 1) expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    expect(await refusalOf(c.routes.stepUp(0, 'pw'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+  });
+
+  it('steps up with the app code, a backup code and a passkey ceremony', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setPassword('ada', 'pw', FAKE_TOTP_CODE);
+    expect((await c.routes.stepUp(1, FAKE_TOTP_CODE)).token).toMatch(/^su-/);
+    expect(await refusalOf(c.routes.stepUp(1, '000000'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const [code] = await c.routes.regenerateBackupCodes((await c.routes.stepUp(0, 'pw')).token);
+    expect((await c.routes.stepUp(2, code ?? '')).token).toMatch(/^su-/);
+    expect(await refusalOf(c.routes.stepUp(2, code ?? ''))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const cred = server.addPasskey('ada', 'Phone');
+    const begin = await c.routes.stepUpPasskeyBegin();
+    expect((await c.routes.stepUpPasskeyFinish(begin.ceremonyId, toHex(cred))).token).toMatch(/^su-/);
+    const again = await c.routes.stepUpPasskeyBegin();
+    expect(await refusalOf(c.routes.stepUpPasskeyFinish(again.ceremonyId, 'ff'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.stepUpPasskeyFinish(again.ceremonyId, toHex(cred)))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+  });
+
+  it('registers a passkey, signs in with it, and says E_PASSKEY_UNKNOWN for one it does not hold', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    const begin = await c.routes.passkeyRegisterBegin(null);
+    const done = await c.routes.passkeyRegisterFinish(begin.ceremonyId, '{}', 'Laptop');
+    expect(done.backupCodes).toHaveLength(10);
+    expect(await c.routes.getFactors()).toMatchObject({ owed: false, passkeys: [{ credId: done.credId, name: 'Laptop', lastUsed: null }] });
+    const anon = client(server);
+    const loginBegin = await anon.routes.passkeyLoginBegin();
+    const finished = await anon.routes.passkeyLoginFinish(loginBegin.ceremonyId, toHex(done.credId));
+    expect(finished.needs).toBe(0);
+    expect((await anon.routes.postSessionPending(DEV_B, establishBody(DEV_B, finished.assertion))).scope).toBe(1);
+    const noUv = await anon.routes.passkeyLoginFinish((await anon.routes.passkeyLoginBegin()).ceremonyId, `${toHex(done.credId)}:nouv`);
+    expect(noUv.needs).toBe(1);
+    const stranger = new Uint8Array(16).fill(8);
+    expect(await refusalOf(anon.routes.postSessionPending(stranger, establishBody(stranger, noUv.assertion)))).toMatchObject({ status: 401 });
+    expect(await refusalOf(anon.routes.passkeyLoginFinish((await anon.routes.passkeyLoginBegin()).ceremonyId, 'ee')))
+      .toMatchObject({ status: 401, code: 'E_PASSKEY_UNKNOWN' });
+    expect(await refusalOf(anon.routes.passkeyLoginFinish(loginBegin.ceremonyId, toHex(done.credId))))
+      .toMatchObject({ status: 401, code: 'E_UNAUTHENTICATED' });
+  });
+
+  it('takes a backup code for an assertion that owes needs 1 or 2, once', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.addPasskey('ada', 'Laptop');
+    const [one, two] = await c.routes.regenerateBackupCodes((await c.routes.stepUp(0, 'pw')).token);
+    const owes2 = await c.routes.passwordLogin('ada', 'pw');
+    expect(owes2.needs).toBe(2);
+    expect((await c.routes.recoveryVerify(owes2.assertion, one ?? '')).assertion).toMatch(/^asrt-/);
+    const again = await c.routes.passwordLogin('ada', 'pw');
+    expect(await refusalOf(c.routes.recoveryVerify(again.assertion, one ?? ''))).toMatchObject({ status: 401 });
+    server.setPassword('ada', 'pw', FAKE_TOTP_CODE);
+    const owes1 = await c.routes.passwordLogin('ada', 'pw');
+    expect(owes1.needs).toBe(1);
+    expect((await c.routes.recoveryVerify(owes1.assertion, two ?? '')).assertion).toMatch(/^asrt-/);
+    expect(server.backupCodesOf('ada')).toHaveLength(8);
+  });
+
+  it('removes a factor with a step-up while another remains, never the last, and says 404 for a stranger', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const cred = server.addPasskey('ada', 'Laptop');
+    const token = async (): Promise<string> => (await c.routes.stepUp(0, 'pw')).token;
+    expect(await refusalOf(c.routes.removeFactor(await token(), 1, cred))).toMatchObject({ status: 409, code: 'E_INVALID_REQUEST' });
+    expect((await c.routes.getFactors()).passkeys).toHaveLength(1);
+    expect(await refusalOf(c.routes.removeFactor('su-bogus', 1, cred))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    server.setPassword('ada', 'pw', FAKE_TOTP_CODE);
+    expect(await refusalOf(c.routes.removeFactor(await token(), 1, new Uint8Array(32).fill(1)))).toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+    await c.routes.removeFactor(await token(), 1, cred);
+    expect((await c.routes.getFactors()).passkeys).toEqual([]);
+    expect(await refusalOf(c.routes.removeFactor(await token(), 0, null))).toMatchObject({ status: 409 });
+    expect((await c.routes.getFactors()).totp).not.toBeNull();
+  });
+
+  it('makes ten new backup codes and the old ones stop working', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.addPasskey('ada', 'Laptop');
+    const first = await c.routes.regenerateBackupCodes((await c.routes.stepUp(0, 'pw')).token);
+    const second = await c.routes.regenerateBackupCodes((await c.routes.stepUp(0, 'pw')).token);
+    expect(first).toHaveLength(10);
+    expect(second).toHaveLength(10);
+    expect(second.filter((code) => first.includes(code))).toEqual([]);
+    expect(await refusalOf(c.routes.regenerateBackupCodes('su-bogus'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await c.routes.getFactors()).toMatchObject({ backupCodesLeft: 10 });
+  });
+});
+
+// C1 review B2 and B3: the fake refuses exactly where dillad does, so a web test cannot pass on leniency.
+describe('FakeServer refuses the second-factor routes as strictly as dillad', () => {
+  /** A pending (scope 1) token on ada's own device, planted as the fake mints none for a listed device. */
+  function pending(server: FakeServer): ReturnType<typeof client> {
+    server.tokens.set('tok-pending', toHex(DEV_A));
+    server.tokenScope.set('tok-pending', 1);
+    const p = client(server);
+    p.use('tok-pending');
+    return p;
+  }
+
+  it('refuses a pending session on the enrolled-only factor routes; the enrolled session is served', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const cred = server.addPasskey('ada', 'Laptop');
+    server.addPasskey('ada', 'Phone');
+    const p = pending(server);
+    const forbidden = { status: 403, code: 'E_FORBIDDEN' };
+    expect(await refusalOf(p.routes.stepUp(0, 'pw'))).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.getFactors())).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.passkeyRegisterBegin(null))).toMatchObject(forbidden);
+    const token = (await c.routes.stepUp(0, 'pw')).token;
+    expect(await refusalOf(p.routes.totpEnroll(token))).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.regenerateBackupCodes(token))).toMatchObject(forbidden);
+    expect(await refusalOf(p.routes.removeFactor(token, 1, cred))).toMatchObject(forbidden);
+    // Control: the same token on its own enrolled session is served, unspent by the refusals above.
+    await c.routes.removeFactor(token, 1, cred);
+    expect((await c.routes.getFactors()).passkeys).toHaveLength(1);
+  });
+
+  it('answers an owed account by scope: a pending token is E_FORBIDDEN, the enrolled one E_FACTOR_REQUIRED', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    const p = pending(server);
+    expect(await refusalOf(p.routes.listDevices())).toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    expect(await refusalOf(p.routes.totpEnroll(null))).toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    expect(await refusalOf(c.routes.listDevices())).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+    expect((await c.routes.totpEnroll(null)).secret).toBe(FAKE_TOTP_SECRET);
+  });
+
+  it('confirms only an enrolled secret, once: no enrol is 404, a wrong code 400, a second confirm 404', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    expect(await refusalOf(c.routes.totpConfirm(FAKE_TOTP_CODE))).toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+    expect(await c.routes.getFactors()).toMatchObject({ owed: true, totp: null });
+    await c.routes.totpEnroll(null);
+    expect(await refusalOf(c.routes.totpConfirm('000000'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    expect(await c.routes.totpConfirm(FAKE_TOTP_CODE)).toHaveLength(10);
+    expect(await refusalOf(c.routes.totpConfirm(FAKE_TOTP_CODE))).toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+  });
+
+  it('burns an app code on use: a replayed code is refused, the next code is accepted', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    await c.routes.totpEnroll(null);
+    await c.routes.totpConfirm(FAKE_TOTP_CODE);
+    // The code that confirmed the app cannot also step up.
+    expect(await refusalOf(c.routes.stepUp(1, FAKE_TOTP_CODE))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const now = server.totpCodeNow('ada') ?? '';
+    expect(now).not.toBe(FAKE_TOTP_CODE);
+    expect((await c.routes.stepUp(1, now)).token).toMatch(/^su-/);
+    expect(await refusalOf(c.routes.stepUp(1, now))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    const login = await c.routes.passwordLogin('ada', 'pw');
+    expect(await refusalOf(c.routes.totpVerify(login.assertion, now))).toMatchObject({ status: 401 });
+    const again = await c.routes.passwordLogin('ada', 'pw');
+    expect((await c.routes.totpVerify(again.assertion, server.totpCodeNow('ada') ?? '')).assertion).toMatch(/^asrt-/);
+  });
+
+  it('re-checks the step-up rule at confirm and finish: a factor added since an unstepped begin is E_STEP_UP', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    await c.routes.totpEnroll(null);
+    const register = await c.routes.passkeyRegisterBegin(null);
+    // Another device registers a passkey meanwhile, which clears the debt there.
+    server.addPasskey('ada', 'Other device');
+    server.setOwed('ada', false);
+    expect(await refusalOf(c.routes.totpConfirm(FAKE_TOTP_CODE))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(register.ceremonyId, '{}', 'Laptop'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await c.routes.getFactors()).toMatchObject({ totp: null, passkeys: [{ name: 'Other device' }] });
+    // Control: the same ceremonies begun with a step-up are served.
+    await c.routes.totpEnroll((await c.routes.stepUp(0, 'pw')).token);
+    expect(await c.routes.totpConfirm(FAKE_TOTP_CODE)).toHaveLength(10);
+    const stepped = await c.routes.passkeyRegisterBegin((await c.routes.stepUp(0, 'pw')).token);
+    expect((await c.routes.passkeyRegisterFinish(stepped.ceremonyId, '{}', 'Laptop')).backupCodes).toEqual([]);
+  });
+
+  it('an unstepped begin with no factor held meanwhile is served (control)', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setOwed('ada');
+    const register = await c.routes.passkeyRegisterBegin(null);
+    expect((await c.routes.passkeyRegisterFinish(register.ceremonyId, '{}', 'Laptop')).backupCodes).toHaveLength(10);
+  });
+});
+
+// The S2 review's wire-mismatch list: dillad (auth.go, session.go) is the authority.
+describe('FakeServer answers the second-factor edges as dillad does (S2 review)', () => {
+  const plant = (server: FakeServer, token: string, scope: 1 | 2): ReturnType<typeof client> => {
+    server.tokens.set(token, toHex(DEV_A));
+    server.tokenScope.set(token, scope);
+    const p = client(server);
+    p.use(token);
+    return p;
+  };
+
+  it('stepup/passkey/begin for an account without a passkey is 400 E_INVALID_REQUEST; with one it begins', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    expect(await refusalOf(c.routes.stepUpPasskeyBegin())).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    server.addPasskey('ada', 'Laptop');
+    expect((await c.routes.stepUpPasskeyBegin()).options).toContain('publicKey');
+  });
+
+  it('register/finish checks the name first and keeps the ceremony; a bad or foreign ceremony is 400', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const begin = await c.routes.passkeyRegisterBegin(null);
+    const badName = (name: string) => raw(server, 'POST', '/v1/auth/passkey/register/finish', [...server.tokens.keys()][0] ?? null,
+      encode([begin.ceremonyId, '{}', name]));
+    expect((await badName('')).status).toBe(400);
+    expect((await badName('Lap\u0007top')).status).toBe(400);
+    expect((await badName('x'.repeat(65))).status).toBe(400);
+    // The refused names did not spend the ceremony.
+    expect((await c.routes.passkeyRegisterFinish(begin.ceremonyId, '{}', 'Laptop')).backupCodes).toHaveLength(10);
+    // Spent, unknown and another account's ceremonies are one answer: 400 E_INVALID_REQUEST.
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(begin.ceremonyId, '{}', 'Phone'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(new Uint8Array(16).fill(9), '{}', 'Phone'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    const bea = client(server);
+    server.register('bea', DEV_B);
+    bea.use((await bea.routes.postSession(DEV_B, establishBody(DEV_B, null))).token);
+    const foreign = await bea.routes.passkeyRegisterBegin(null);
+    const step = await c.routes.stepUp(0, 'pw');
+    const mine = await c.routes.passkeyRegisterBegin(step.token);
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(foreign.ceremonyId, '{}', 'Phone'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    // Control: the account's own ceremony with the same name is served.
+    expect((await c.routes.passkeyRegisterFinish(mine.ceremonyId, '{}', 'Phone')).backupCodes).toEqual([]);
+  });
+
+  it('a successful step-up does not clear the account-wide count: it ages out over 15 minutes', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    for (let i = 0; i < 4; i += 1) await refusalOf(c.routes.stepUp(0, 'nope'));
+    expect((await c.routes.stepUp(0, 'pw')).token).toMatch(/^su-/);
+    expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    // Control: once the failures are older than the window, a wrong secret is a plain 403 again and the right one serves.
+    server.nowS += 901;
+    expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect((await c.routes.stepUp(0, 'pw')).token).toMatch(/^su-/);
+  });
+
+  it('passkey step-up failures charge the same ledger: the fifth failure of either kind is 429, and so is any attempt after', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const cred = server.addPasskey('ada', 'Laptop');
+    for (let i = 0; i < 3; i += 1) expect(await refusalOf(c.routes.stepUp(0, 'nope'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.stepUpPasskeyFinish((await c.routes.stepUpPasskeyBegin()).ceremonyId, 'ff'))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+    expect(await refusalOf(c.routes.stepUpPasskeyFinish((await c.routes.stepUpPasskeyBegin()).ceremonyId, 'ff'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    expect(await refusalOf(c.routes.stepUpPasskeyFinish((await c.routes.stepUpPasskeyBegin()).ceremonyId, toHex(cred)))).toMatchObject({ status: 429 });
+    expect(await refusalOf(c.routes.stepUp(0, 'pw'))).toMatchObject({ status: 429 });
+    // Control: another account's ledger is its own.
+    const other = new FakeServer();
+    const o = await ada(other);
+    const key = other.addPasskey('ada', 'Laptop');
+    expect((await o.c.routes.stepUpPasskeyFinish((await o.c.routes.stepUpPasskeyBegin()).ceremonyId, toHex(key))).token).toMatch(/^su-/);
+  });
+
+  it('an owed provisional session is refused E_FACTOR_REQUIRED on the E-or-V routes; not owed it is served', async () => {
+    const server = new FakeServer();
+    await ada(server);
+    const p = plant(server, 'tok-provisional', 2);
+    server.setOwed('ada');
+    expect(await refusalOf(p.routes.postKeyPackages(encode([[new Uint8Array(4)], null])))).toMatchObject({ status: 403, code: 'E_FACTOR_REQUIRED' });
+    server.setOwed('ada', false);
+    await p.routes.postKeyPackages(encode([[new Uint8Array(4)], null]));
+    expect(server.keyPackages).toHaveLength(1);
+  });
+
+  it('a provisional session on a factor route is E_PROVISIONAL_OUTSIDE_PAIRING, a pending one E_FORBIDDEN', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    expect(await refusalOf(plant(server, 'tok-provisional', 2).routes.getFactors())).toMatchObject({ status: 403, code: 'E_PROVISIONAL_OUTSIDE_PAIRING' });
+    expect(await refusalOf(plant(server, 'tok-pending', 1).routes.getFactors())).toMatchObject({ status: 403, code: 'E_FORBIDDEN' });
+    expect((await c.routes.getFactors()).owed).toBe(false);
+  });
+
+  it('factors/remove checks kind before it spends the token', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const cred = server.addPasskey('ada', 'Laptop');
+    server.addPasskey('ada', 'Phone');
+    const token = (await c.routes.stepUp(0, 'pw')).token;
+    const session = [...server.tokens.keys()][0] ?? null;
+    expect((await raw(server, 'POST', '/v1/auth/factors/remove', session, encode([token, 2, null]))).status).toBe(400);
+    expect((await raw(server, 'POST', '/v1/auth/factors/remove', session, encode([token, 1, null]))).status).toBe(400);
+    // Control: the same token, unspent, removes the passkey.
+    await c.routes.removeFactor(token, 1, cred);
+    expect((await c.routes.getFactors()).passkeys).toHaveLength(1);
+  });
+
+  it('kind 0 removes an unconfirmed app enrolment too (204); with no app row at all it is 404', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.addPasskey('ada', 'Laptop');
+    expect(await refusalOf(c.routes.removeFactor((await c.routes.stepUp(0, 'pw')).token, 0, null))).toMatchObject({ status: 404 });
+    await c.routes.totpEnroll((await c.routes.stepUp(0, 'pw')).token);
+    await c.routes.removeFactor((await c.routes.stepUp(0, 'pw')).token, 0, null);
+    // The enrolment is gone: its confirm finds nothing.
+    expect(await refusalOf(c.routes.totpConfirm(FAKE_TOTP_CODE))).toMatchObject({ status: 404, code: 'E_NOT_FOUND' });
+  });
+
+  it('totp/enroll, passkey/register/begin and recovery/codes take exactly [stepup|null]: [] is 400', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const session = [...server.tokens.keys()][0] ?? null;
+    for (const path of ['/v1/auth/totp/enroll', '/v1/auth/passkey/register/begin', '/v1/auth/recovery/codes']) {
+      expect((await raw(server, 'POST', path, session, encode([]))).status).toBe(400);
+    }
+    // Control: [null] is served for an account without a factor.
+    expect((await raw(server, 'POST', '/v1/auth/totp/enroll', session, encode([null]))).status).toBe(200);
+    expect((await raw(server, 'POST', '/v1/auth/passkey/register/begin', session, encode([null]))).status).toBe(200);
+    expect(await c.routes.getFactors()).toMatchObject({ totp: null });
+  });
+});
+
+// The server's guess caps (w3-srv 9bbde5c8): every guess at a second factor is capped per account.
+describe('FakeServer caps guesses as dillad does', () => {
+  const sessionOf = (server: FakeServer): string | null => [...server.tokens.keys()][0] ?? null;
+  const changePassword = (server: FakeServer, old: string | null, next: string) =>
+    raw(server, 'POST', '/v1/auth/password', sessionOf(server), encode([old, next]));
+  /** Five wrong password logins: the account's login ledger locks on the fifth. */
+  async function lockLogin(c: ReturnType<typeof client>): Promise<void> {
+    for (let i = 0; i < 4; i += 1) expect(await refusalOf(c.routes.passwordLogin('ada', 'nope'))).toMatchObject({ status: 401 });
+    expect(await refusalOf(c.routes.passwordLogin('ada', 'nope'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+  }
+
+  it('POST /v1/auth/password: a wrong old password is 403 on the step-up ledgers; the fifth is 429, then the right one too', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    for (let i = 0; i < 4; i += 1) expect(await changePassword(server, 'nope', 'new pw')).toMatchObject({ status: 403, body: ['E_FORBIDDEN', 'the old password is wrong', null] });
+    expect((await changePassword(server, 'nope', 'new pw')).status).toBe(429);
+    expect((await changePassword(server, 'pw', 'new pw')).status).toBe(429);
+    // The same ledgers as the step-ups; the owner's login ledger is untouched and nothing changed.
+    expect(await refusalOf(c.routes.stepUp(0, 'pw'))).toMatchObject({ status: 429 });
+    expect((await c.routes.passwordLogin('ada', 'pw')).needs).toBe(0);
+  });
+
+  it('POST /v1/auth/password with the right old password changes it (204); without one, or with an empty new one, it is refused', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    expect((await changePassword(server, null, 'new pw')).status).toBe(403);
+    expect((await changePassword(server, 'pw', '')).status).toBe(400);
+    expect((await changePassword(server, 'pw', 'new pw')).status).toBe(204);
+    expect((await c.routes.passwordLogin('ada', 'new pw')).needs).toBe(0);
+    expect(await refusalOf(c.routes.passwordLogin('ada', 'pw'))).toMatchObject({ status: 401 });
+  });
+
+  it('/totp/verify and /recovery/verify answer 429 while the account is locked, and the assertion is spent', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setPassword('ada', 'pw', FAKE_TOTP_CODE);
+    server.factorsOf('ada').codes = ['A'.repeat(26)];
+    const forCode = await c.routes.passwordLogin('ada', 'pw');
+    const forBackup = await c.routes.passwordLogin('ada', 'pw');
+    expect(forCode.needs).toBe(1);
+    await lockLogin(c);
+    expect(await refusalOf(c.routes.totpVerify(forCode.assertion, FAKE_TOTP_CODE))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    expect(await refusalOf(c.routes.recoveryVerify(forBackup.assertion, 'A'.repeat(26)))).toMatchObject({ status: 429 });
+    server.nowS += 901;
+    // Spent: the same assertions are refused once the lockout is over.
+    expect(await refusalOf(c.routes.totpVerify(forCode.assertion, FAKE_TOTP_CODE))).toMatchObject({ status: 401 });
+    expect(await refusalOf(c.routes.recoveryVerify(forBackup.assertion, 'A'.repeat(26)))).toMatchObject({ status: 401 });
+    // Control: unlocked, a fresh assertion takes the code and the backup code.
+    expect((await c.routes.totpVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, FAKE_TOTP_CODE)).assertion).toMatch(/^asrt-/);
+    expect((await c.routes.recoveryVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, 'A'.repeat(26))).assertion).toMatch(/^asrt-/);
+  });
+
+  it('wrong second-factor codes charge the account ledger: the fifth is 429', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.setPassword('ada', 'pw', FAKE_TOTP_CODE);
+    for (let i = 0; i < 4; i += 1) {
+      expect(await refusalOf(c.routes.totpVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, '000000'))).toMatchObject({ status: 401 });
+    }
+    expect(await refusalOf(c.routes.totpVerify((await c.routes.passwordLogin('ada', 'pw')).assertion, '000000'))).toMatchObject({ status: 429 });
+    expect(await refusalOf(c.routes.passwordLogin('ada', 'pw'))).toMatchObject({ status: 429 });
+  });
+
+  it('passkey/login/finish is 429 with no assertion when the login would owe a code while locked; a verified one serves and clears', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const cred = server.addPasskey('ada', 'Laptop');
+    const anon = client(server);
+    await lockLogin(c);
+    const issued = server.assertions.length;
+    expect(await refusalOf(anon.routes.passkeyLoginFinish((await anon.routes.passkeyLoginBegin()).ceremonyId, `${toHex(cred)}:nouv`)))
+      .toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+    expect(server.assertions).toHaveLength(issued);
+    // Control: a passkey that verified the user owes nothing, is served, and clears the account's ledger.
+    expect((await anon.routes.passkeyLoginFinish((await anon.routes.passkeyLoginBegin()).ceremonyId, toHex(cred))).needs).toBe(0);
+    expect((await c.routes.passwordLogin('ada', 'pw')).needs).toBe(2);
+  });
+
+  it('step-up failures from other addresses count on the account-wide ledger', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    server.stepUpFailuresElsewhere('ada', 4);
+    // Control: four elsewhere leave this address its guess.
+    expect((await c.routes.stepUp(0, 'pw')).token).toMatch(/^su-/);
+    server.stepUpFailuresElsewhere('ada', 1);
+    expect(await refusalOf(c.routes.stepUp(0, 'pw'))).toMatchObject({ status: 429, code: 'E_RATE_LIMITED' });
+  });
+
+  it('at 1024 passkeys register/begin (before the token is spent) and register/finish are 409', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    for (let i = 0; i < 1023; i += 1) server.addPasskey('ada', `key ${String(i)}`);
+    const step = (await c.routes.stepUp(0, 'pw')).token;
+    const open = await c.routes.passkeyRegisterBegin(step);
+    server.addPasskey('ada', 'the 1024th');
+    const token = (await c.routes.stepUp(0, 'pw')).token;
+    expect(await refusalOf(c.routes.passkeyRegisterBegin(token))).toMatchObject({ status: 409, code: 'E_INVALID_REQUEST' });
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(open.ceremonyId, '{}', 'one more'))).toMatchObject({ status: 409, code: 'E_INVALID_REQUEST' });
+    // Control: the token the capped begin refused is unspent, and below the cap a ceremony finishes.
+    await c.routes.removeFactor(token, 1, server.factorsOf('ada').passkeys[0].credId);
+    const again = await c.routes.passkeyRegisterBegin((await c.routes.stepUp(0, 'pw')).token);
+    expect((await c.routes.passkeyRegisterFinish(again.ceremonyId, '{}', 'one more')).credId.length).toBeGreaterThan(0);
+  });
+
+  it('register/finish with another account\'s ceremony is 400 and leaves it for its own account to finish', async () => {
+    const server = new FakeServer();
+    const { c } = await ada(server);
+    const bea = client(server);
+    server.register('bea', DEV_B);
+    bea.use((await bea.routes.postSession(DEV_B, establishBody(DEV_B, null))).token);
+    const theirs = await bea.routes.passkeyRegisterBegin(null);
+    expect(await refusalOf(c.routes.passkeyRegisterFinish(theirs.ceremonyId, '{}', 'Phone'))).toMatchObject({ status: 400, code: 'E_INVALID_REQUEST' });
+    expect((await bea.routes.passkeyRegisterFinish(theirs.ceremonyId, '{}', 'Phone')).backupCodes).toHaveLength(10);
   });
 });

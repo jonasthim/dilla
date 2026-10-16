@@ -5,6 +5,7 @@ import {
   A, BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
+import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -591,4 +592,130 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
       await waitFor(() => expect(said().some(s => /^You joined /.test(s) && s.endsWith(` ${t('voice.audioBlocked')}`))).toBe(true));
     });
   }
+});
+
+describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', () => {
+  const dock = () => within(screen.getByRole('toolbar', { name: 'voice controls' }));
+  const stage = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
+  // jsdom has no getDisplayMedia; the stage and the dock both read it, so give them one.
+  const withCapture = () => {
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getDisplayMedia: vi.fn() } });
+  };
+  afterEach(() => { Reflect.deleteProperty(navigator, 'mediaDevices'); });
+
+  it('the dock holds mute, deafen, camera, share screen and leave, and its camera and share are the stage’s toggles', async () => {
+    withCapture();
+    const app = await inVoice();
+    expect(dock().getAllByRole('button').map(b => b.getAttribute('aria-label')))
+      .toEqual([t('voice.mute'), t('voice.deafen'), t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
+    await app.user.click(dock().getByRole('button', { name: t('voice.cameraOn') }));
+    await waitFor(() => expect(app.session.state.camera).toBe(true));
+    // One state: the stage's camera shows pressed too, and pressing it there turns the camera off again.
+    await waitFor(() => expect(stage().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true'));
+    expect(dock().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true');
+    await app.user.click(stage().getByRole('button', { name: t('voice.cameraOn') }));
+    await waitFor(() => expect(app.session.state.camera).toBe(false));
+    await app.user.click(dock().getByRole('button', { name: t('voice.shareOn') }));
+    await waitFor(() => expect(app.session.state.sharing).toBe(true));
+    await waitFor(() => expect(stage().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-pressed', 'true'));
+  });
+
+  it('without screen capture, share is aria-disabled in the dock as on the stage', async () => {
+    await inVoice();
+    expect(dock().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
+    expect(stage().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
+    expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('while paused, the dock’s camera and share are aria-disabled and do nothing; mute and leave stay live', async () => {
+    withCapture();
+    const app = await inVoice({ trust: [bobChanged()], withSettings: true });
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await screen.findByText('paused in general');
+    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
+      expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+      expect(stage().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+      await app.user.click(dock().getByRole('button', { name }));
+    }
+    expect(app.session.state.camera).toBe(false);
+    expect(app.session.state.sharing).toBe(false);
+    for (const name of [t('voice.mute'), t('voice.deafen'), t('voice.leave')]) expect(dock().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('while joining, the dock’s camera and share are aria-disabled; mute, deafen and leave stay live', async () => {
+    withCapture();
+    const app = renderVoiceShell();
+    const release = app.holdStart();
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    await screen.findByRole('toolbar', { name: 'voice controls' });
+    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+    for (const name of [t('voice.mute'), t('voice.deafen'), t('voice.leave')]) expect(dock().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+    await waitFor(() => expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-disabled'));
+    expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('the dock’s and the stage’s mute and deafen are described by their shortcut, as this platform writes it', async () => {
+    await inVoice();
+    expect(dock().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
+    expect(dock().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
+    expect(stage().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
+  });
+
+  // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*), in the dock and on the stage; the name stays.
+  it('a disabled camera or share says why: not available, paused, connecting', async () => {
+    const app = await inVoice();
+    // No getDisplayMedia here: share says so, and camera, live, says nothing.
+    for (const bar of [dock(), stage()]) {
+      const share = bar.getByRole('button', { name: t('voice.shareOn') });
+      expect(share).toHaveAccessibleName(t('voice.shareOn'));
+      expect(share).toHaveAccessibleDescription(t('voice.why.noShare'));
+      expect(bar.getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby');
+    }
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await screen.findByText('paused in general');
+    for (const bar of [dock(), stage()]) {
+      for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
+        expect(bar.getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.paused'));
+      }
+    }
+  });
+
+  it('while joining, the dock’s camera and share say connecting', async () => {
+    withCapture();
+    const app = renderVoiceShell();
+    const release = app.holdStart();
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    await screen.findByRole('toolbar', { name: 'voice controls' });
+    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
+      expect(dock().getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.joining'));
+    }
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+    await waitFor(() => expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby'));
+    expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-describedby');
+  });
+});
+
+describe('voiceShortcutText', () => {
+  it('writes ⌘⇧M and ⌘⇧D on Apple platforms and Ctrl+Shift+M and Ctrl+Shift+D elsewhere', () => {
+    expect(voiceShortcutText(true)).toEqual({ mute: '⌘⇧M', deafen: '⌘⇧D' });
+    expect(voiceShortcutText(false)).toEqual({ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' });
+  });
+
+  it('reads the platform from userAgentData first, then navigator.platform', () => {
+    expect(isApplePlatform({ userAgentData: { platform: 'macOS' }, platform: 'Linux x86_64' })).toBe(true);
+    expect(isApplePlatform({ platform: 'MacIntel' })).toBe(true);
+    expect(isApplePlatform({ platform: 'iPhone' })).toBe(true);
+    expect(isApplePlatform({ userAgentData: { platform: 'Windows' }, platform: 'MacIntel' })).toBe(false);
+    expect(isApplePlatform({ platform: 'Linux x86_64' })).toBe(false);
+    expect(isApplePlatform({ platform: '' })).toBe(false);
+    // Review round 1 (#7): Chromium reports an empty UA-CH platform when it does not know; navigator.platform decides then.
+    expect(isApplePlatform({ userAgentData: { platform: '' }, platform: 'MacIntel' })).toBe(true);
+  });
 });

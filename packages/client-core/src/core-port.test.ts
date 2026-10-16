@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decode, encode, type CborInput } from './cbor';
-import { CoreError, trustBlock, wrapCore, type CoreHandle } from './core-port';
+import { CoreError, storeNewerOf, trustBlock, wrapCore, type CoreHandle } from './core-port';
 import { fromHex } from './hex';
 
 const G = new Uint8Array(16).fill(0x67);
@@ -298,6 +298,14 @@ describe('wrapCore errors', () => {
     const original = new CoreError('E_CORE_MLS', 'x');
     expect(CoreError.from(original)).toBe(original);
     expect(CoreError.from('boom')).toMatchObject({ code: 'E_CORE_WASM', detail: 'boom' });
+  });
+
+  it('reads both schema numbers of E_STORE_NEWER from a plain Error or a CoreError, and nothing else (C4x)', () => {
+    expect(storeNewerOf(new Error('E_STORE_NEWER: found 5, supported 4'))).toEqual({ found: 5, supported: 4 });
+    expect(storeNewerOf(CoreError.from(new Error('E_STORE_NEWER: found 7, supported 4')))).toEqual({ found: 7, supported: 4 });
+    expect(storeNewerOf(new Error('E_STORE_NEWER'))).toBeNull();
+    expect(storeNewerOf(new Error('E_CORE_STATE: found 5, supported 4'))).toBeNull();
+    expect(storeNewerOf('E_STORE_NEWER: found 5, supported 4')).toBeNull();
   });
 });
 

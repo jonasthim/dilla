@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -106,6 +107,11 @@ type HostOptions struct {
 	// domain's wss:// URL (dillad.Options.LiveKitURL); "" keeps that. dilla-testhost passes
 	// ws://<listen> when it serves a web root beside an SFU, so a browser on loopback reaches /rtc.
 	LiveKitURL string
+	// WebAuthnOrigin is the origin a browser (or a virtual authenticator) reaches this host from,
+	// for example "http://localhost:9999". When set, the relying party id is its hostname, rp_origins
+	// is exactly [origin], and its host is added to http.trusted_origins so the gateway's upgrade
+	// accepts it too. "" keeps the instance domain's own relying party.
+	WebAuthnOrigin string
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -278,6 +284,11 @@ func hostConfig(o HostOptions) *config.Config {
 	// The harness runs no TURN relay, and writes no turn.shared_secret_file for one: the call
 	// routes New mounts would otherwise read that file to mint relay credentials.
 	c.TURN.Enabled = false
+	if u, err := url.Parse(o.WebAuthnOrigin); o.WebAuthnOrigin != "" && err == nil && u.Hostname() != "" {
+		c.Auth.WebAuthn.RPID = u.Hostname()
+		c.Auth.WebAuthn.RPOrigins = []string{o.WebAuthnOrigin}
+		c.HTTP.TrustedOrigins = append(c.HTTP.TrustedOrigins, u.Host)
+	}
 	c.Derive()
 	return c
 }

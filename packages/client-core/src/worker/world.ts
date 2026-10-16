@@ -5,10 +5,10 @@ import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
 import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
-import { type Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
+import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { OWNER_TOP, type BanRow, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow, type Routes } from '../http/routes';
+import { OWNER_TOP, Routes, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
 import type { AccountState, BadgeState, ChannelSummary, ConnectionState, NoticesState, TimelineState } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { Controller, type ControllerDeps, type ControllerParts } from './controller';
@@ -38,6 +38,8 @@ export function fakeFetch(paths: string[]): typeof fetch {
     paths.push(path);
     if (path === '/v1/instance') return cbor(INSTANCE_DOC);
     if (path === '/v1/instance/limits') return cbor(LIMITS);
+    // web3.6: enterReady's factor gate reads the factors; this account owes nothing.
+    if (path === '/v1/auth/factors') return cbor([0, 1_700_000_000, [], 10, 1]);
     return cbor(['E_NOT_FOUND', 'not modelled by this test', null], 404);
   }) as typeof fetch;
 }
@@ -203,8 +205,14 @@ export const NOW_S = 1_700_000_000n;
 // `now` is an addition to the brief's double (pre-flight ruling (a)): a test of the notice floor moves the clock.
 // `realAccount` (WORKER-WEB-01) composes the real Session and Enrol over these doubles, so the session record the
 // core keeps decides what ensure() does.
+// web3.6 C2: `owed` is the account's second-factor debt as GET /v1/auth/factors answers it; `realGateway` builds the real
+// Gateway over `WebSocket`, and `httpTicket` sends postTicket through the real Routes and HttpClient over `fetch`, so a
+// refused ticket reaches the controller's HttpDeps.onRefusal as it does in the worker.
 export function world(opts: {
   phase?: 0 | 1 | 2 | 3; enrolUser?: boolean; realRoutes?: boolean; realAccount?: boolean; fetch?: typeof fetch; now?: () => number;
+  owed?: boolean; realGateway?: boolean; WebSocket?: typeof WebSocket; httpTicket?: boolean;
+  /** S2 review M5: getInstance through the real Routes and HttpClient over `fetch` (the bearer it sends is observable). */
+  httpInstance?: boolean;
 } = {}) {
   // An account that is already registered (phase 2) is already a member of the community, so that a
   // selectCommunity of it passes pre-flight ruling 1(v); a signup or sign-in world starts outside it.
@@ -221,6 +229,7 @@ export function world(opts: {
     // v0.1.0-web3.1: the servers and channels this account created, as the instance would list them after the create.
     created: [] as { id: Uint8Array; name: string }[],
     newChannels: [] as { communityId: Uint8Array; row: Awaited<ReturnType<Routes['listChannels']>>[number] }[],
+    owed: opts.owed === true,
   };
   /* eslint-disable @typescript-eslint/no-unused-vars -- the typed parameters give the doubles their call signatures */
   const core = {
@@ -364,6 +373,12 @@ export function world(opts: {
     }),
     postTicket: vi.fn(() => Promise.resolve({ ticket: 'ticket', expires: 0n })),
     postKeyPackages: vi.fn((_body: Uint8Array) => Promise.resolve()),
+    // web3.6: the account's factors (owed while state.owed), and the passkey sign-in ceremony's begin.
+    getFactors: vi.fn((): Promise<Factors> => {
+      return Promise.resolve({ owed: state.owed, totp: state.owed ? null : 1_700_000_000, passkeys: [], backupCodesLeft: state.owed ? 0 : 10,
+        hasPassword: true });
+    }),
+    passkeyLoginBegin: vi.fn(() => Promise.resolve({ ceremonyId: new Uint8Array(16).fill(0xce), options: '{"publicKey":{}}' })),
     getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n })),
     listDms: vi.fn(() => { calls.push('listDms'); return Promise.resolve(state.dms); }),
     getChannel: vi.fn((_id: Uint8Array) => Promise.resolve({
@@ -410,8 +425,10 @@ export function world(opts: {
     resume: vi.fn((): Promise<0 | 2 | 'revoked'> => Promise.resolve(2)),
   };
   const enrol = {
-    login: vi.fn((_username: string, _password: string) => { calls.push('enrol.login'); return Promise.resolve({ needsTotp: false }); }),
+    login: vi.fn((_username: string, _password: string): Promise<{ needs: 0 | 1 | 2 }> => { calls.push('enrol.login'); return Promise.resolve({ needs: 0 }); }),
     totp: vi.fn((_code: string) => { calls.push('enrol.totp'); return Promise.resolve(); }),
+    passkey: vi.fn((_ceremonyId: Uint8Array, _response: string): Promise<{ needs: 0 | 1 }> => { calls.push('enrol.passkey'); return Promise.resolve({ needs: 0 }); }),
+    backupCode: vi.fn((_code: string) => { calls.push('enrol.backupCode'); return Promise.resolve(); }),
     register: vi.fn((_instanceId: Uint8Array) => { calls.push('enrol.register'); state.phase = 3; state.enrolUser = USER; return Promise.resolve({ userId: USER }); }),
     fetch: vi.fn((_userId: Uint8Array) => { calls.push('enrol.fetch'); return Promise.resolve(FETCHED); }),
     complete: vi.fn((_key: string, _fetched: unknown, _username: string) => { calls.push('enrol.complete'); state.phase = 2; return Promise.resolve(); }),
@@ -440,11 +457,16 @@ export function world(opts: {
   /* eslint-enable @typescript-eslint/no-unused-vars */
   const wiped: string[] = [];
   const parts: Partial<ControllerParts> = {
-    ...(opts.realRoutes === true ? {} : { routes: () => routes as unknown as Routes }),
+    ...(opts.realRoutes === true ? {} : { routes: (http) => {
+      const real = new Routes(http);
+      if (opts.httpTicket === true) routes.postTicket.mockImplementation(() => real.postTicket());
+      if (opts.httpInstance === true) routes.getInstance.mockImplementation(() => real.getInstance());
+      return routes as unknown as Routes;
+    } }),
     session: opts.realAccount === true ? (d) => new Session(d) : () => session as unknown as Session,
     signup: () => signup as unknown as Signup,
     enrol: opts.realAccount === true ? (d) => new Enrol(d) : () => enrol as unknown as Enrol,
-    gateway: (deps) => { gatewayDeps.value = deps; return gateway as unknown as Gateway; },
+    gateway: (deps) => { gatewayDeps.value = deps; return opts.realGateway === true ? new Gateway(deps) : gateway as unknown as Gateway; },
     sync: (deps) => { sync.deps = deps; sync.builds += 1; return sync as unknown as SyncEngine; },
     publishDeviceList: account.publishDeviceList,
     ensureBackups: account.ensureBackups,
@@ -457,6 +479,7 @@ export function world(opts: {
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.WebSocket ? { WebSocket: opts.WebSocket } : {}),
     parts,
   });
   // The brief's literal put `account` (the three account-part doubles) after `...h`, which shadowed h.account()

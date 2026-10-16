@@ -17,14 +17,17 @@ import (
 	"github.com/jonasthim/dilla/internal/dillad"
 )
 
-// namedAccount registers username with code and returns its first device session.
-func namedAccount(t *testing.T, h http.Handler, code, username string) string {
+// namedAccount registers username with code and returns its first device session, the account's
+// second factor satisfied.
+func namedAccount(t *testing.T, srv *dillad.Server, code, username string) string {
 	t.Helper()
-	rec := call(t, h, http.MethodPost, "/v1/accounts", "", newAccountRequest(code, username, newTestDevice(t)))
+	rec := call(t, srv.Handler(), http.MethodPost, "/v1/accounts", "", newAccountRequest(code, username, newTestDevice(t)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /v1/accounts %s = %d %q", username, rec.Code, errorCode(rec))
 	}
-	token, _ := decodeArray(t, rec)[2].(string)
+	out := decodeArray(t, rec)
+	satisfyFactor(t, srv, idOf(t, out[0]))
+	token, _ := out[2].(string)
 	return token
 }
 
@@ -64,9 +67,9 @@ func TestAChannelCreateTellsEveryMemberAndNoOneElse(t *testing.T) {
 	t.Cleanup(ts.Close)
 	h := srv.Handler()
 
-	owner := accountToken(t, h, code)
-	member := namedAccount(t, h, mintInvite(t, srv), "friend")
-	stranger := namedAccount(t, h, mintInvite(t, srv), "stranger")
+	owner := accountToken(t, srv, code)
+	member := namedAccount(t, srv, mintInvite(t, srv), "friend")
+	stranger := namedAccount(t, srv, mintInvite(t, srv), "stranger")
 
 	rec := call(t, h, http.MethodPost, "/v1/communities", owner, []any{"fika", []byte("{}"), uint64(0), uint64(0)})
 	if rec.Code != http.StatusCreated {

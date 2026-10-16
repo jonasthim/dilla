@@ -6,6 +6,9 @@ import type {
 } from '../../packages/client-core/src/index';
 import { WebDriver, instanceInvite, testHostUrl, testkitEnv, type PeerReceived } from './support/driver';
 import { expect, test } from './support/second-harness';
+import { completeFactor, nextCode } from './support/totp';
+
+const CONTROL = process.env.DILLA_TESTKIT_CONTROL ?? 'http://127.0.0.1:8454';
 
 const CI = process.env.CI === 'true';
 const WAIT = CI ? 90_000 : 30_000;
@@ -71,10 +74,12 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       expect(keys.recoveryKey).toHaveLength(13);
       for (const group of keys.recoveryKey!) expect(group).toMatch(CROCKFORD_GROUP);
       // An instance invite names no community, so the signup joins nothing (L-TS-09 signupSubmit result).
+      // web3.6: the signup stops at factor-setup until an authenticator app is confirmed.
       expect(await ok(page, {
         m: 'signupSubmit', invite: instanceInvite(), username, display: 'Web Harness',
         password: keys.instance!.passwordSignup ? 'harness password 1' : null, recoveryKeyAcknowledged: true,
-      })).toEqual({ communityId: null, joinError: null });
+      })).toEqual({ communityId: null, joinError: null, factorOwed: true });
+      expect((await completeFactor(page, CONTROL)).result).toEqual({ communityId: null, joinError: null });
       const ready = (await slice<AccountState>(page, 'account'))!;
       expect(ready.phase).toBe('ready');
       expect(ready.user?.username).toBe(username);
@@ -198,6 +203,7 @@ test('a second browser joins the account by password and recovery key, badges an
     const username = `enr${(peer.seed & 0xff_ffff).toString(16).padStart(6, '0')}`;
     let recoveryKey: string[] = [];
     let userId = '';
+    let factor!: Awaited<ReturnType<typeof completeFactor>>;
     let deviceA = '';
     let deviceB = '';
 
@@ -210,6 +216,7 @@ test('a second browser joins the account by password and recovery key, badges an
       recoveryKey = [...keys.recoveryKey!];
       expect(recoveryKey).toHaveLength(13);
       await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username, display: 'Enrol A', password, recoveryKeyAcknowledged: true });
+      factor = await completeFactor(page, CONTROL);
       const ready = (await slice<AccountState>(page, 'account'))!;
       expect(ready.phase).toBe('ready');
       userId = ready.user!.id;
@@ -233,8 +240,11 @@ test('a second browser joins the account by password and recovery key, badges an
       const wrong = [...recoveryKey];
       const first = wrong[0]!;
       wrong[0] = (first[0] === 'A' ? 'B' : 'A') + first.slice(1);
-      expect(await call(b, { m: 'signInLogin', username, password, recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
-      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username, needsTotp: false } });
+      // web3.6: the password is followed by the code, and the root refuses the key once the code is in.
+      await ok(b, { m: 'signInLogin', username, password, recoveryKey: wrong.join(' ') });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-totp', signIn: { username, needsTotp: true } });
+      expect(await call(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor), recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username } });
       await ok(b, { m: 'signInKey', recoveryKey: recoveryKey.join('-').toLowerCase() });
       const ready = (await slice<AccountState>(b, 'account'))!;
       expect(ready).toMatchObject({ phase: 'ready', user: { id: userId, username }, signIn: null, error: null });
@@ -334,6 +344,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
     const itemsOf = async (p: Page): Promise<TimelineItem[]> => (await slice<TimelineState>(p, `timeline:${ch}`))?.items ?? [];
     const itemOf = async (p: Page, msgId: string): Promise<TimelineItem | null> => (await itemsOf(p)).find((i) => i.msgId === msgId) ?? null;
     let userId = '';
+    let factor!: Awaited<ReturnType<typeof completeFactor>>;
     let recoveryKey = '';
 
     await test.step('A signs up with a password and opens the channel', async () => {
@@ -342,6 +353,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
       await ok(page, { m: 'signupBegin' });
       recoveryKey = (await slice<AccountState>(page, 'account'))!.recoveryKey!.join(' ');
       await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username, display: 'Fold A', password, recoveryKeyAcknowledged: true });
+      factor = await completeFactor(page, CONTROL);
       userId = (await slice<AccountState>(page, 'account'))!.user!.id;
       expect(await ok(page, { m: 'joinCommunity', invite: s.invite_code })).toEqual({ communityId: s.community_id });
       await ok(page, { m: 'selectCommunity', communityId: s.community_id });
@@ -357,6 +369,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
       await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
       await ok(b, { m: 'signInBegin' });
       await ok(b, { m: 'signInLogin', username, password, recoveryKey });
+      await ok(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor), recoveryKey });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'ready', user: { id: userId } });
       await ok(b, { m: 'selectCommunity', communityId: s.community_id });
       await ok(b, { m: 'openChannel', channelId: ch });
@@ -481,6 +494,7 @@ test('a pause failure retains the old Web Lock and leaves the follower outside',
   await ok(page, { m: 'signupBegin' });
   const keys = (await slice<AccountState>(page, 'account'))!;
   await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username: `busy${Date.now()}`, display: 'Busy Holder', password: keys.instance!.passwordSignup ? 'busy password 1' : null, recoveryKeyAcknowledged: true });
+  await completeFactor(page, CONTROL);
   await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
   const other = { page: await context.newPage() };
   try {
@@ -517,6 +531,7 @@ test('a real core joins a DM call group and maps the SFU-less 501 to failed afte
     const keys = (await slice<AccountState>(page, 'account'))!;
     await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username: `join${Date.now() % 1_000_000}`, display: 'Joiner',
       password: keys.instance!.passwordSignup ? 'join password 1' : null, recoveryKeyAcknowledged: true });
+    await completeFactor(page, CONTROL);
     await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
     const account = (await slice<AccountState>(page, 'account'))!;
     const dm = await peer.openDm(account.user!.id);
@@ -563,6 +578,7 @@ test('a real core registers a DM call group and maps the SFU-less 501 to failed 
     const keys = (await slice<AccountState>(page, 'account'))!;
     await ok(page, { m: 'signupSubmit', invite: instanceInvite(), username: `call${Date.now() % 1_000_000}`, display: 'Caller',
       password: keys.instance!.passwordSignup ? 'call password 1' : null, recoveryKeyAcknowledged: true });
+    await completeFactor(page, CONTROL);
     await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
     const me = (await slice<AccountState>(page, 'account'))!.user!.id;
     const dm = await peer.openDm(me);

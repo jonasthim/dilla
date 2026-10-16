@@ -1,0 +1,21 @@
+// Flow 10 (docs/design/flows/10-second-factor.md): second factor copy. Keys: factorSignin.*
+export const factorSignin = {
+  'factorSignin.usePasskey': 'Sign in with a passkey',
+  'factorSignin.passkey.title': 'Use your passkey',
+  'factorSignin.passkey.body': 'This account signs in with a passkey. Your browser asks for it when you continue.',
+  'factorSignin.passkey.submit': 'Use passkey',
+  'factorSignin.passkey.working': 'Waiting for your passkey…',
+  'factorSignin.passkey.failed': 'The passkey did not sign you in. Try again, or use a backup code.',
+  'factorSignin.passkey.unusable': 'This browser cannot use passkeys here. Use a backup code instead, or sign in from a browser that can.',
+  'factorSignin.passkey.unknown': '{instance} does not know this passkey. It may belong to another account or another server.',
+  'factorSignin.passkey.needsCode': 'This passkey did not check that it is you, so {instance} also asks for your code.',
+  'factorSignin.useBackup': 'Use a backup code instead',
+  'factorSignin.backup.title': 'Use a backup code',
+  'factorSignin.backup.body': 'Type one of the backup codes you saved when you added your second factor. Each code works once.',
+  'factorSignin.backup.label': 'Backup code',
+  'factorSignin.backup.failed': 'That backup code did not work. Sign in again and try another one.',
+  'factorSignin.backup.format': 'A backup code has 26 letters and digits. Hyphens and spaces do not matter.',
+  'factorSignin.lost': 'Lost your phone? Use a backup code, or ask the operator of {instance} to reset your second factor.',
+  'factorSignin.left.one': 'You have 1 backup code left. Make new ones in Settings, under sign-in.',
+  'factorSignin.left.other': 'You have {count} backup codes left. Make new ones in Settings, under sign-in.',
+} as const;

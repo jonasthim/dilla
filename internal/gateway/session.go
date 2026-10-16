@@ -187,14 +187,17 @@ func (g *Gateway) identify(ctx context.Context, token string) (auth.Session, err
 	// admitted, it would receive every `message.plain` and voice-state frame of the user's
 	// (branch review REGISTRATION-DEVICES-01). No provisional session carries a pairing group yet
 	// (deviation B27); if pairing needs the socket it must be admitted for that group alone. Both
-	// are refused like a token that does not resolve, and so is any scope added later.
-	if session.Scope != auth.ScopeEnrolled {
+	// are refused like a token that does not resolve, and so is any scope added later. So is an
+	// enrolled session whose account owes a second factor (web3.6 S1, protocol/02 § Device
+	// sessions item 8): it reaches only protocol/09's `F` and `P` routes, and the socket is none.
+	if session.Scope != auth.ScopeEnrolled || session.FactorOwed {
 		return auth.Session{}, errNotEnrolledSession
 	}
 	return session, nil
 }
 
-// errNotEnrolledSession is identify's refusal of a pending or provisional session.
+// errNotEnrolledSession is identify's refusal of a pending or provisional session, and of an
+// enrolled one whose account owes a second factor.
 var errNotEnrolledSession = errors.New("gateway: only an enrolled session opens a gateway connection")
 
 // wsSink adapts a coder/websocket connection to the writer's sink. Binary frames only: dilla's

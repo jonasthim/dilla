@@ -184,6 +184,10 @@ type Session struct {
 	PairingGroup *id.ID
 	Expires      int64
 	IdleExpires  int64
+	// FactorOwed is the account's users.factor_owed when the token was resolved (web3.6 S1): the
+	// account holds no second factor yet, so an enrolled session of it reaches only protocol/09's
+	// `F` and `P` routes (Middleware, MiddlewareOwedOK) and never the gateway.
+	FactorOwed bool
 }
 
 // InPairingGroup reports whether this session may act on a group. An enrolled or admin session is
@@ -862,6 +866,7 @@ func (s *Sessions) Resolve(ctx context.Context, bearer string) (Session, error) 
 	return Session{
 		UserID: row.UserID, DeviceID: row.DeviceID, Scope: Scope(row.Scope),
 		TokenHash: row.TokenHash, Expires: row.Expires, IdleExpires: idleExpires,
+		FactorOwed: row.FactorOwed,
 	}, nil
 }
 
@@ -926,8 +931,22 @@ func (s *Sessions) RevokeUser(ctx context.Context, userID id.ID) error {
 
 type ctxKey struct{}
 
-// Middleware resolves the bearer token and enforces the wanted scope.
+// Middleware resolves the bearer token and enforces the wanted scope. An enrolled session whose
+// account owes a second factor is refused with E_FACTOR_REQUIRED on every route that does not also
+// admit a pending session (protocol/02 § Device sessions item 8): default-deny, so a route added
+// later is closed to it unless it is mounted through MiddlewareOwedOK.
 func (s *Sessions) Middleware(next http.Handler, want Scope) http.Handler {
+	return s.middleware(next, want, false)
+}
+
+// MiddlewareOwedOK is Middleware for the short allow-list protocol/09 marks `F`: the routes an
+// account that owes a second factor needs in order to add one (its own profile, the factor
+// enrolments, logging a device out).
+func (s *Sessions) MiddlewareOwedOK(next http.Handler, want Scope) http.Handler {
+	return s.middleware(next, want, true)
+}
+
+func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		sess, err := s.Resolve(r.Context(), bearer)
@@ -941,6 +960,16 @@ func (s *Sessions) Middleware(next http.Handler, want Scope) http.Handler {
 		}
 		if want == ScopeEnrolled && sess.Scope != ScopeEnrolled {
 			server.WriteError(w, scopeRefusal(sess.Scope))
+			return
+		}
+		// `want != ScopePending`, not `want == ScopeEnrolled`: the "E or V" routes (want =
+		// ScopeProvisional: POST /v1/keypackages and the welcomes) admit an enrolled session too,
+		// and an owed one must not reach them. Only the `P` routes and the `F` allow-list do.
+		// Every scope of an owed account is checked, not only an enrolled one: a provisional
+		// session reaches the "E or V" routes as well (S1 review). A pending session never gets
+		// past the scope checks above to a non-`P` route anyway.
+		if sess.FactorOwed && want != ScopePending && !owedOK {
+			server.WriteError(w, server.Errorf(server.CodeFactorRequired, "the account owes a second factor"))
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), sess)))

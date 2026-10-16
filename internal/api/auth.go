@@ -12,8 +12,13 @@ import (
 	"net/url"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -34,10 +39,18 @@ type Assertions struct {
 }
 
 type assertion struct {
-	userID            id.ID
-	needsSecondFactor bool
-	expires           time.Time
+	userID  id.ID
+	needs   uint8
+	expires time.Time
 }
+
+// The `needs` of protocol/09 § Second factors: what a login still owes before its assertion is
+// complete.
+const (
+	needsNothing uint8 = 0 // complete
+	needsCode    uint8 = 1 // a TOTP code (/totp/verify) or a backup code (/recovery/verify)
+	needsPasskey uint8 = 2 // passkeys and no TOTP: a passkey login, or a backup code
+)
 
 // auth.Sessions spends an assertion on the pending path of POST
 // /v1/devices/{device_id}/sessions through this interface — internal/api
@@ -49,7 +62,7 @@ func NewAssertions(clk clock.Clock, ttl time.Duration) *Assertions {
 	return &Assertions{clk: clk, ttl: ttl, items: map[string]assertion{}}
 }
 
-func (a *Assertions) Issue(userID id.ID, needsSecondFactor bool) string {
+func (a *Assertions) Issue(userID id.ID, needs uint8) string {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		panic("api: crypto/rand failed: " + err.Error())
@@ -58,32 +71,39 @@ func (a *Assertions) Issue(userID id.ID, needsSecondFactor bool) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sweepLocked()
-	a.items[token] = assertion{userID: userID, needsSecondFactor: needsSecondFactor,
-		expires: a.clk.Now().Add(a.ttl)}
+	a.items[token] = assertion{userID: userID, needs: needs, expires: a.clk.Now().Add(a.ttl)}
 	return token
 }
 
-// Spend consumes an assertion. It deletes before it checks the expiry, so a
-// replay of an expired token cannot be distinguished from a replay of a live
-// one, and neither can be retried.
+// Spend consumes an assertion and reports whether it still owes anything: the
+// auth.AssertionSpender view, for the session endpoint, which accepts only a
+// complete assertion.
 func (a *Assertions) Spend(token string) (id.ID, bool, bool) {
+	userID, needs, ok := a.SpendNeeds(token)
+	return userID, needs != needsNothing, ok
+}
+
+// SpendNeeds consumes an assertion and returns what it still owes. It deletes
+// before it checks the expiry, so a replay of an expired token cannot be
+// distinguished from a replay of a live one, and neither can be retried.
+func (a *Assertions) SpendNeeds(token string) (id.ID, uint8, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	item, ok := a.items[token]
 	if !ok {
-		return id.ID{}, false, false
+		return id.ID{}, 0, false
 	}
 	delete(a.items, token)
 	if a.clk.Now().After(item.expires) {
-		return id.ID{}, false, false
+		return id.ID{}, 0, false
 	}
-	return item.userID, item.needsSecondFactor, true
+	return item.userID, item.needs, true
 }
 
 // Upgrade replaces an assertion that has cleared its second factor with a fresh
 // one that has not, so the TOTP and recovery routes hand back something the
 // session endpoint will accept.
-func (a *Assertions) Upgrade(userID id.ID) string { return a.Issue(userID, false) }
+func (a *Assertions) Upgrade(userID id.ID) string { return a.Issue(userID, needsNothing) }
 
 func (a *Assertions) sweepLocked() {
 	now := a.clk.Now()
@@ -135,7 +155,7 @@ type assertionRequest struct {
 }
 
 // PasswordLogin is POST /v1/auth/password/login →
-// [assertion(tstr), needs_totp(uint)].
+// [assertion(tstr), needs(uint)]: what the login still owes (loginNeeds).
 //
 // An unknown handle, a handle that fails normalisation, an account with no
 // password credential and a wrong password are four different server-side facts
@@ -245,45 +265,75 @@ func (d Deps) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A success clears the account's ledger, both the in-memory one the lockout
-	// curve reads and the durable one the admin CLI reports.
-	d.Throttle.Clear(user.ID)
-	if cerr := d.Repo.ClearLoginFailures(ctx, user.ID); cerr != nil {
-		d.logf(r, "api: ClearLoginFailures", "err", cerr)
-	}
 	d.recordAttempt(r, user, true, addrKey, methodPassword, true)
 
-	pending, terr := d.secondFactorPending(ctx, user.ID)
+	needs, terr := d.loginNeeds(ctx, user.ID)
 	if terr != nil {
 		server.WriteError(w, d.storeError(r, terr))
 		return
 	}
-	needsTOTP := uint64(0)
-	if pending {
-		needsTOTP = 1
+	// A complete login clears the account's ledger, both the in-memory one the
+	// lockout curve reads and the durable one the admin CLI reports. One that still
+	// owes a factor does not: guesses at the code that follows accumulate on the
+	// same ledger, and verifySecondFactor clears it once the code is right.
+	if needs == needsNothing {
+		d.Throttle.Clear(user.ID)
+		if cerr := d.Repo.ClearLoginFailures(ctx, user.ID); cerr != nil {
+			d.logf(r, "api: ClearLoginFailures", "err", cerr)
+		}
 	}
-	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, pending), needsTOTP})
+	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(user.ID, needs), uint64(needs)})
 }
 
-// secondFactorPending reports whether the account owes a second factor before
-// its assertion is complete: it has a TOTP enrolment and that enrolment is
-// CONFIRMED. An unconfirmed row is a half-finished enrolment that no client can
-// satisfy — /v1/auth/totp/verify refuses it — so it must not gate a login.
-//
-// It is one function because every route that ends a login has to make the same
-// decision. PasswordLogin is not the only way into an account: a passkey ends a
-// login too, and one that answered this question differently would be a way
-// around the factor the other enforces.
-func (d Deps) secondFactorPending(ctx context.Context, userID id.ID) (bool, error) {
-	row, err := d.Repo.GetTOTP(ctx, userID)
+// rpID is the instance's relying party, auth.webauthn.rp_id: a passkey counts as a factor only
+// under it.
+func (d Deps) rpID() string {
+	if d.Config == nil {
+		return ""
+	}
+	return d.Config.Auth.WebAuthn.RPID
+}
+
+// holdsFactor is protocol/09 § Second factors' "holds a factor": a CONFIRMED TOTP secret, or at
+// least one passkey registered for rpID. An unconfirmed TOTP row is a half-finished enrolment, and
+// backup codes are not a factor. It is the one definition: the login rules, the step-up rule, the
+// last-factor rule and require_mod_2fa all read it, inside their transaction where they write.
+func holdsFactor(ctx context.Context, repo store.Repository, userID id.ID, rpID string) (bool, error) {
+	t, err := repo.GetTOTP(ctx, userID)
 	switch {
-	case err == nil:
-		return row.ConfirmedAt != nil, nil
-	case errors.Is(err, store.ErrNotFound):
-		return false, nil
-	default:
+	case err == nil && t.ConfirmedAt != nil:
+		return true, nil
+	case err != nil && !errors.Is(err, store.ErrNotFound):
 		return false, err
 	}
+	creds, err := repo.ListWebauthnCredentials(ctx, userID, rpID)
+	if err != nil {
+		return false, err
+	}
+	return len(creds) > 0, nil
+}
+
+// loginNeeds is what a password (or OIDC) login of the account still owes: a confirmed TOTP → 1
+// (a code); else any passkey for this rp_id → 2 (a passkey login, or a backup code); else 0.
+//
+// It is one function because every route that ends a login has to make the same decision; one
+// that answered differently would be a way around the factor the other enforces.
+func (d Deps) loginNeeds(ctx context.Context, userID id.ID) (uint8, error) {
+	t, err := d.Repo.GetTOTP(ctx, userID)
+	switch {
+	case err == nil && t.ConfirmedAt != nil:
+		return needsCode, nil
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		return 0, err
+	}
+	creds, err := d.Repo.ListWebauthnCredentials(ctx, userID, d.rpID())
+	if err != nil {
+		return 0, err
+	}
+	if len(creds) > 0 {
+		return needsPasskey, nil
+	}
+	return needsNothing, nil
 }
 
 // loginLedger is the key a login attempt's failures are counted under. A found
@@ -336,7 +386,8 @@ func (d Deps) recordAttempt(r *http.Request, user store.UserRow, found bool, add
 	}
 }
 
-// ChangePassword is POST /v1/auth/password: [old(tstr|null), new(tstr)] → 204.
+// ChangePassword is POST /v1/auth/password: [old(tstr|null), new(tstr), stepup(tstr|null)?] → 204.
+// The third element is optional; a two-element body is a null step-up.
 //
 // protocol/09-http-api.md marks this route "E (step-up)", and it has two kinds
 // of account to step up. Where the account HAS a credential the old password is
@@ -347,6 +398,13 @@ func (d Deps) recordAttempt(r *http.Request, user store.UserRow, found bool, add
 // /v1/accounts/me does. An enrolled session alone must NOT be enough there
 // either: planting a password on a passkey-only account creates a second,
 // persistent login path that survives revoking the passkey.
+//
+// Nor is freshness enough once the account holds a second factor (web3.6 review
+// M7): a browser re-establishes a fresh session from its device key at will, so
+// a stolen browser could plant a password, step up with it (method 0) and add or
+// remove factors the passkey step-up was meant to guard. A first password on
+// such an account also spends a step-up token (403 E_STEP_UP otherwise), after
+// the freshness check, so a stale session leaves the token unspent.
 func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -363,13 +421,25 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		_   struct{} `cbor:",toarray"`
-		Old *string
-		New string
+		Old    *string
+		New    string
+		StepUp *string
 	}
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+	var body []cbor.RawMessage
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	if len(body) != 2 && len(body) != 3 {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the body is [old, new] or [old, new, stepup]"))
+		return
+	}
+	fields := []any{&req.Old, &req.New, &req.StepUp}
+	for i, raw := range body {
+		if err := cborx.Unmarshal(raw, fields[i]); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body element %d: %v", i, err))
+			return
+		}
 	}
 	if req.New == "" {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the new password is empty"))
@@ -386,16 +456,29 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, server.Errorf(server.CodeForbidden, "changing a password needs the old one"))
 			return
 		}
+		// The old password is this route's step-up, so guesses at it are counted on the step-up
+		// ledgers (before the check, per account across addresses), never on the owner's login
+		// ledger: a thief behind a stolen session neither guesses freely nor locks the owner out.
+		try, gerr := d.stepUpGate(r, sess.UserID)
+		if gerr != nil {
+			server.WriteError(w, gerr)
+			return
+		}
 		valid, _, verr := d.Hasher.Verify(ctx, *req.Old, phc)
 		if verr != nil {
+			try.cancel()
 			server.WriteError(w, verr)
 			return
 		}
 		if !valid {
-			d.Throttle.RecordFailure(sess.UserID, server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+			if locked := try.fail(d, r); locked > 0 {
+				server.WriteError(w, server.RateLimitedAfter(locked))
+				return
+			}
 			server.WriteError(w, server.Errorf(server.CodeForbidden, "the old password is wrong"))
 			return
 		}
+		try.pass()
 	} else {
 		now := d.Clock.Now().Unix()
 		row, serr := d.Repo.GetSessionByHash(ctx, sess.TokenHash, now)
@@ -406,6 +489,10 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		if window := int64(d.Config.Auth.Session.ReauthWindow.Value().Seconds()); now-row.Created > window {
 			server.WriteError(w, server.Errorf(server.CodeForbidden,
 				"setting a first password needs a session established in the last %d seconds", window))
+			return
+		}
+		if _, err := d.requireStepUp(ctx, sess, req.StepUp); err != nil {
+			server.WriteError(w, err)
 			return
 		}
 	}
@@ -435,7 +522,8 @@ func (d Deps) totpParams() auth.TOTPParams {
 		SecretSize: c.SecretSize, Digits: c.Digits, Algorithm: c.Algorithm}
 }
 
-// EnrollTOTP is POST /v1/auth/totp/enroll: [] → [secret(tstr), otpauth_url(tstr)].
+// EnrollTOTP is POST /v1/auth/totp/enroll: [stepup(tstr|null)] →
+// [secret(tstr), otpauth_url(tstr)].
 //
 // The row is written UNCONFIRMED (confirmed_at NULL): an enrolment nobody has
 // proved they can compute codes for must never make the account's second factor
@@ -444,11 +532,15 @@ func (d Deps) totpParams() auth.TOTPParams {
 //
 // An account that already has a CONFIRMED authenticator is refused. totp_secrets
 // is one row per user, so enrolling over a confirmed secret would overwrite it
-// and clear confirmed_at — and `needs_totp` is read from confirmed_at, so a
-// stolen session token could turn the victim's second factor off by starting an
-// enrolment it never finishes. Rotating an authenticator needs a removal route
-// protocol/09 § Auth ceremonies does not declare; until it does, this refuses
-// rather than downgrades.
+// and clear confirmed_at — a stolen session token could turn the victim's second
+// factor off by starting an enrolment it never finishes. Removing one is POST
+// /v1/auth/factors/remove. The refusal is taken again under the user lock, so an
+// enrol racing another device's confirm cannot overwrite the secret it confirmed.
+//
+// When the account already holds a factor the enrolment needs a step-up token
+// (403 E_STEP_UP otherwise); when it holds none the token is ignored. Whether the
+// begin carried a valid step-up is recorded for the confirm, which re-checks the
+// rule under the user lock (the begin/confirm window).
 //
 // The secret is stored as its base32 TEXT in the BLOB column, which is the same
 // spelling the otpauth URL carries and the one pquerna/otp validates against;
@@ -459,18 +551,23 @@ func (d Deps) EnrollTOTP(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	if d.Config == nil {
-		d.logf(r, "api: the TOTP enrolment route has no config")
-		server.WriteError(w, server.Errorf(server.CodeInternal, "the TOTP policy is not wired"))
+	if d.Config == nil || d.StepUps == nil || d.enrolments == nil {
+		d.logf(r, "api: the TOTP enrolment route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the TOTP enrolment route is not wired"))
+		return
+	}
+	var req stepUpRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	ctx := r.Context()
-	switch existing, err := d.Repo.GetTOTP(ctx, sess.UserID); {
-	case err == nil && existing.ConfirmedAt != nil:
-		server.WriteError(w, server.Errorf(server.CodeForbidden,
-			"this account already has a confirmed authenticator"))
+	if err := refuseConfirmedTOTP(ctx, d.Repo, sess.UserID); err != nil {
+		server.WriteError(w, d.storeError(r, err))
 		return
-	case err != nil && !errors.Is(err, store.ErrNotFound):
+	}
+	steppedUp, err := d.requireStepUp(ctx, sess, req.StepUp)
+	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
@@ -487,9 +584,25 @@ func (d Deps) EnrollTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := d.Clock.Now().Unix()
-	if err := d.Repo.PutTOTP(ctx, store.TOTPRow{
-		UserID: sess.UserID, Secret: []byte(secret), Digits: uint64(p.Digits), //nolint:gosec // G115: TOTP digits are 6 or 8
-		Period: uint64(p.Period), Algorithm: p.Algorithm, Created: now,
+	if err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(ctx, sess.UserID); err != nil {
+			return err
+		}
+		if err := refuseConfirmedTOTP(ctx, tx, sess.UserID); err != nil {
+			return err
+		}
+		if err := tx.PutTOTP(ctx, store.TOTPRow{
+			UserID: sess.UserID, Secret: []byte(secret), Digits: uint64(p.Digits), //nolint:gosec // G115: TOTP digits are 6 or 8
+			Period: uint64(p.Period), Algorithm: p.Algorithm, Created: now,
+		}); err != nil {
+			return err
+		}
+		// Recorded under the lock, in the order the rows are written, and bound to this
+		// secret: a confirm inherits this step-up only for the secret this enroll wrote, never
+		// for one a racing enrolment put in the row since. A transaction that then fails to
+		// commit leaves a record bound to a secret no row holds, which nothing can match.
+		d.enrolments.record(totpEnrolment(sess.UserID), sess.UserID, steppedUp, []byte(secret))
+		return nil
 	}); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
@@ -497,21 +610,37 @@ func (d Deps) EnrollTOTP(w http.ResponseWriter, r *http.Request) {
 	d.write(w, r, http.StatusOK, []any{secret, url})
 }
 
-// ConfirmTOTP is POST /v1/auth/totp/confirm: [code(tstr)] → [recovery_codes([tstr])].
+// refuseConfirmedTOTP is EnrollTOTP's 403 E_FORBIDDEN over a confirmed secret.
+func refuseConfirmedTOTP(ctx context.Context, repo store.Repository, userID id.ID) error {
+	existing, err := repo.GetTOTP(ctx, userID)
+	switch {
+	case err == nil && existing.ConfirmedAt != nil:
+		return server.Errorf(server.CodeForbidden, "this account already has a confirmed authenticator")
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		return err
+	}
+	return nil
+}
+
+// ConfirmTOTP is POST /v1/auth/totp/confirm: [code(tstr)] → [backup_codes([tstr])].
 //
-// The accepted counter is consumed in the same write that sets confirmed_at, so
-// the code the user just typed cannot also be the code that clears their first
-// second-factor challenge. Regenerating the recovery codes here invalidates
-// every earlier set, which is what a re-enrolment must do.
+// One transaction under the user lock: re-read the enrolment and check the code against it,
+// re-check the step-up rule (a factor that appeared since an enrol that carried no step-up is 403
+// E_STEP_UP, nothing written), confirm the row with the accepted counter consumed, clear
+// factor_owed, and mint ten backup codes only when the account holds no unused one — re-minting on
+// every confirm silently invalidated codes a person had already printed.
+//
+// No pending enrolment (none, or the row is already confirmed) is 404 E_NOT_FOUND; a code that
+// does not match it is 400 E_INVALID_REQUEST.
 func (d Deps) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	if d.Config == nil {
-		d.logf(r, "api: the TOTP confirm route has no config")
-		server.WriteError(w, server.Errorf(server.CodeInternal, "the TOTP policy is not wired"))
+	if d.Config == nil || d.enrolments == nil {
+		d.logf(r, "api: the TOTP confirm route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the TOTP confirm route is not wired"))
 		return
 	}
 	var req struct {
@@ -523,35 +652,42 @@ func (d Deps) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	row, err := d.Repo.GetTOTP(ctx, sess.UserID)
-	if err != nil {
-		server.WriteError(w, d.storeError(r, err))
-		return
-	}
-	counter, ok := auth.ValidateTOTP(req.Code, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now())
-	if !ok || counter <= row.LastCounter {
-		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the code does not match this secret"))
-		return
-	}
-	now := d.Clock.Now().Unix()
-	confirmed := now
-	row.ConfirmedAt = &confirmed
-	row.LastCounter = counter
-	codes, hashes := auth.GenerateRecoveryCodes(d.Config.Auth.TOTP.RecoveryCodes)
+	key := totpEnrolment(sess.UserID)
+	var codes []string
 	if err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(ctx, sess.UserID); err != nil {
+			return err
+		}
+		row, err := tx.GetTOTP(ctx, sess.UserID)
+		if err != nil {
+			return err
+		}
+		if row.ConfirmedAt != nil {
+			return server.Errorf(server.CodeNotFound, "there is no enrolment to confirm")
+		}
+		counter, ok := auth.ValidateTOTP(req.Code, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now())
+		if !ok || counter <= row.LastCounter {
+			return server.Errorf(server.CodeInvalidRequest, "the code does not match this secret")
+		}
+		// The enroll's step-up counts only for the secret that enroll wrote (M1).
+		steppedUp := d.enrolments.steppedUp(key, sess.UserID, row.Secret)
+		if err := d.recheckStepUp(ctx, tx, sess.UserID, steppedUp); err != nil {
+			return err
+		}
+		now := d.Clock.Now().Unix()
+		row.ConfirmedAt = &now
+		row.LastCounter = counter
 		if err := tx.PutTOTP(ctx, row); err != nil {
 			return err
 		}
-		return tx.PutRecoveryCodes(ctx, sess.UserID, hashes, now)
+		codes, err = d.settleFirstFactor(ctx, tx, sess.UserID, now)
+		return err
 	}); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	out := make([]any, 0, len(codes))
-	for _, c := range codes {
-		out = append(out, c)
-	}
-	d.write(w, r, http.StatusOK, []any{out})
+	d.enrolments.drop(key)
+	d.write(w, r, http.StatusOK, []any{stringsAny(codes)})
 }
 
 // rowParams is the enrolled policy: digits, period and algorithm come from the
@@ -575,7 +711,10 @@ func rowParams(row store.TOTPRow, current auth.TOTPParams) auth.TOTPParams {
 // once writes zero rows the second time and the verify is refused even though
 // the code is still "valid".
 func (d Deps) VerifyTOTP(w http.ResponseWriter, r *http.Request) {
-	d.verifySecondFactor(w, r, methodTOTP, func(userID id.ID, code string) error {
+	// Only an assertion owing a code (needs 1): a needs-2 assertion's account had no confirmed
+	// TOTP at login, and a TOTP confirmed since must not stand in for the passkey it owes.
+	accept := func(needs uint8) bool { return needs == needsCode }
+	d.verifySecondFactor(w, r, methodTOTP, accept, func(userID id.ID, code string) error {
 		ctx := r.Context()
 		row, err := d.Repo.GetTOTP(ctx, userID)
 		if err != nil {
@@ -594,9 +733,11 @@ func (d Deps) VerifyTOTP(w http.ResponseWriter, r *http.Request) {
 
 // VerifyRecovery is POST /v1/auth/recovery/verify: [assertion, code] →
 // [assertion]. ConsumeRecoveryCode's UPDATE — `used_at IS NULL` — is the
-// single-use guard, exactly as the counter is TOTP's.
+// single-use guard, exactly as the counter is TOTP's. A backup code clears an
+// assertion owing either a code or a passkey (needs 1 or 2).
 func (d Deps) VerifyRecovery(w http.ResponseWriter, r *http.Request) {
-	d.verifySecondFactor(w, r, methodRecovery, func(userID id.ID, code string) error {
+	accept := func(needs uint8) bool { return needs == needsCode || needs == needsPasskey }
+	d.verifySecondFactor(w, r, methodRecovery, accept, func(userID id.ID, code string) error {
 		return d.Repo.ConsumeRecoveryCode(r.Context(), userID,
 			auth.RecoveryCodeHash(code), d.Clock.Now().Unix())
 	})
@@ -609,7 +750,8 @@ func (d Deps) VerifyRecovery(w http.ResponseWriter, r *http.Request) {
 // The assertion is spent BEFORE check runs, so a wrong code costs the client its
 // assertion and a fresh password login. That is the point: without it the
 // assertion is a bearer token an attacker may brute-force six digits against.
-func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method uint8, check func(id.ID, string) error) {
+func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method uint8,
+	accept func(needs uint8) bool, check func(id.ID, string) error) {
 	if d.Throttle == nil || d.Assertions == nil || d.Config == nil {
 		d.logf(r, "api: a second-factor route is not wired")
 		server.WriteError(w, server.Errorf(server.CodeInternal, "the second-factor routes are not wired"))
@@ -626,23 +768,40 @@ func (d Deps) verifySecondFactor(w http.ResponseWriter, r *http.Request, method 
 		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
-	userID, needsSecondFactor, ok := d.Assertions.Spend(req.Assertion)
-	if !ok || !needsSecondFactor {
-		// An unknown, expired, replayed or already-cleared assertion is one
-		// answer: there is nothing here a client can act on but "log in again".
+	userID, needs, ok := d.Assertions.SpendNeeds(req.Assertion)
+	if !ok || !accept(needs) {
+		// An unknown, expired, replayed or already-cleared assertion, or one owing
+		// something this route cannot clear, is one answer: there is nothing here
+		// a client can act on but "log in again".
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	// The guess is counted on the account ledger BEFORE the code is compared, in one step
+	// with the lockout check (auth.Throttle.Begin), so a burst of assertions minted while the
+	// account was unlocked cannot all reach the comparison, and a locked account is refused
+	// before its code is looked at. The assertion is already spent.
+	attempt, locked := d.Throttle.Begin(userID)
+	if locked > 0 {
+		server.WriteError(w, server.RateLimitedAfter(locked))
 		return
 	}
 	if err := check(userID, req.Code); err != nil {
 		if !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrConflict) {
+			// Undecided: a store failure is not a guess, and refunds only itself.
+			attempt.Pass()
 			server.WriteError(w, d.storeError(r, err))
 			return
 		}
 		d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, method, false)
-		server.WriteError(w, d.failure(userID, ip))
+		if locked := attempt.Fail(ip); locked > 0 {
+			server.WriteError(w, server.RateLimitedAfter(locked))
+			return
+		}
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
-	d.Throttle.Clear(userID)
+	// A complete login: the guess is refunded and the account's ledger cleared.
+	attempt.Pass(userID)
 	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, method, true)
 	d.write(w, r, http.StatusOK, []any{d.Assertions.Upgrade(userID)})
 }
@@ -690,7 +849,11 @@ func (d Deps) passkeys() (*auth.Passkeys, error) {
 }
 
 // BeginPasskeyRegistration is POST /v1/auth/passkey/register/begin:
-// [] → [ceremony_id(bstr16), options(tstr)].
+// [stepup(tstr|null)] → [ceremony_id(bstr16), options(tstr)].
+//
+// The step-up rule is EnrollTOTP's, and what the begin carried is recorded under the ceremony id
+// for the finish. The account's own credentials are excluded in the options. An account already
+// holding MaxPasskeys passkeys for this rp_id is 409 E_INVALID_REQUEST, before any token is spent.
 func (d Deps) BeginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -702,24 +865,46 @@ func (d Deps) BeginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	if d.StepUps == nil || d.enrolments == nil {
+		d.logf(r, "api: the passkey registration route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the passkey registration route is not wired"))
+		return
+	}
+	var req stepUpRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := d.refuseAtPasskeyCap(r.Context(), d.Repo, sess.UserID); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	steppedUp, err := d.requireStepUp(r.Context(), sess, req.StepUp)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
 	ceremonyID, options, err := p.BeginRegistration(r.Context(), sess.UserID)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	d.enrolments.record(passkeyEnrolment(ceremonyID), sess.UserID, steppedUp, nil)
 	d.write(w, r, http.StatusOK, []any{ceremonyID, string(options)})
 }
 
 // FinishPasskeyRegistration is POST /v1/auth/passkey/register/finish:
-// [ceremony_id(bstr16), response(tstr)] → [cred_id(bstr)].
+// [ceremony_id(bstr16), response(tstr), name(tstr)] → [cred_id(bstr), backup_codes([tstr])].
 //
-// The ceremony row carries the user id the registration began for and
-// auth.Passkeys files the credential against THAT id, never against this
-// request's session: a ceremony begun by one account and finished from another
-// account's session still stores the credential where it was begun, and the
-// library's own challenge check refuses the response long before that.
+// `name` is checked first, so a refused name does not spend the ceremony. A ceremony this
+// instance recorded as begun by another account is refused before it is taken, so the account
+// that began it can still finish it; past a restart, when no record is left, the ceremony row's
+// own user decides after the take. The credential is then written in ConfirmTOTP's one
+// transaction under the user lock: the step-up re-check, the MaxPasskeys re-check (409), the
+// insert, factor_owed cleared, backup codes minted only when none is unused.
 func (d Deps) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
-	if _, ok := session(r); !ok {
+	sess, ok := session(r)
+	if !ok {
 		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
@@ -728,22 +913,102 @@ func (d Deps) FinishPasskeyRegistration(w http.ResponseWriter, r *http.Request) 
 		server.WriteError(w, err)
 		return
 	}
-	var req ceremonyRequest
+	if d.Config == nil || d.enrolments == nil {
+		d.logf(r, "api: the passkey registration route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the passkey registration route is not wired"))
+		return
+	}
+	var req struct {
+		_          struct{} `cbor:",toarray"`
+		CeremonyID id.ID
+		Response   string
+		Name       string
+	}
 	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	credID, err := p.FinishRegistration(r.Context(), req.CeremonyID, []byte(req.Response))
+	if !validPasskeyName(req.Name) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+			"name is 1-64 bytes of UTF-8 without control characters"))
+		return
+	}
+	ctx := r.Context()
+	key := passkeyEnrolment(req.CeremonyID)
+	if owner, ok := d.enrolments.owner(key); ok && owner != sess.UserID {
+		d.logf(r, "api: finish passkey registration", "err", "the ceremony was begun by another account")
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
+			"the registration response was not accepted"))
+		return
+	}
+	steppedUp := d.enrolments.steppedUp(key, sess.UserID, nil)
+	d.enrolments.drop(key)
+	row, err := p.FinishRegistration(ctx, req.CeremonyID, []byte(req.Response), req.Name)
+	if err == nil && row.UserID != sess.UserID {
+		err = errors.New("api: the ceremony was begun by another account")
+	}
 	if err != nil {
-		// One answer for an unknown ceremony, an expired one, a replayed one and
-		// a response the authenticator got wrong: none of them is something a
+		// One answer for an unknown ceremony, an expired one, a replayed one, another
+		// account's, and a response the authenticator got wrong: none of them is something a
 		// client can act on but "start the ceremony again".
 		d.logf(r, "api: finish passkey registration", "err", err)
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest,
 			"the registration response was not accepted"))
 		return
 	}
-	d.write(w, r, http.StatusOK, []any{credID})
+	var codes []string
+	if err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(ctx, sess.UserID); err != nil {
+			return err
+		}
+		if err := d.recheckStepUp(ctx, tx, sess.UserID, steppedUp); err != nil {
+			return err
+		}
+		if err := d.refuseAtPasskeyCap(ctx, tx, sess.UserID); err != nil {
+			return err
+		}
+		if err := tx.PutWebauthnCredential(ctx, row); err != nil {
+			return err
+		}
+		codes, err = d.settleFirstFactor(ctx, tx, sess.UserID, d.Clock.Now().Unix())
+		return err
+	}); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{row.CredID, stringsAny(codes)})
+}
+
+// MaxPasskeys is how many passkeys an account may hold for this rp_id: the bound the client's
+// decode of GET /v1/auth/factors enforces.
+const MaxPasskeys = 1024
+
+// refuseAtPasskeyCap answers 409 E_INVALID_REQUEST when the account already holds MaxPasskeys
+// passkeys for this rp_id.
+func (d Deps) refuseAtPasskeyCap(ctx context.Context, repo store.Repository, userID id.ID) error {
+	creds, err := repo.ListWebauthnCredentials(ctx, userID, d.rpID())
+	if err != nil {
+		return err
+	}
+	if len(creds) >= MaxPasskeys {
+		return server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
+			"this account already holds %d passkeys", MaxPasskeys))
+	}
+	return nil
+}
+
+// validPasskeyName is register/finish's rule for `name`: 1-64 bytes of UTF-8, no control
+// character.
+func validPasskeyName(name string) bool {
+	if len(name) == 0 || len(name) > 64 || !utf8.ValidString(name) {
+		return false
+	}
+	for _, c := range name {
+		if unicode.IsControl(c) {
+			return false
+		}
+	}
+	return true
 }
 
 // BeginPasskeyLogin is POST /v1/auth/passkey/login/begin:
@@ -777,23 +1042,18 @@ func (d Deps) BeginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // FinishPasskeyLogin is POST /v1/auth/passkey/login/finish:
-// [ceremony_id(bstr16), response(tstr)] → [assertion(tstr)].
+// [ceremony_id(bstr16), response(tstr)] → [assertion(tstr), needs(uint 0|1)].
 //
-// The response shape is protocol/09's: one element, no `needs_totp`. What the
-// assertion is WORTH is decided here, by the same secondFactorPending the
-// password path uses, and for the reason facts-auth.md §3.6 gives: a passkey is
-// two factors only when user verification actually happened, and
-// auth.webauthn.user_verification defaults to "preferred", so `validateLogin`'s
-// shouldVerifyUser is false and a ceremony that proves possession alone is
-// accepted. Issuing a complete assertion from one would let a passkey walk past
-// the confirmed TOTP the password path is forced through, which is a downgrade
-// of the account's own second factor, not a property of the credential.
+// What the assertion is worth is decided by THIS assertion's UV flag, for the
+// reason facts-auth.md §3.6 gives: a passkey is two factors only when user
+// verification actually happened. With UV it is the whole login (needs 0).
+// Without it — possible only where auth.webauthn.user_verification is not
+// "required", because the library refuses a non-UV assertion outright there —
+// it proved possession alone and owes a code (needs 1).
 //
-// So an account with a confirmed TOTP gets an assertion that still owes it, and
-// the client spends that on /v1/auth/totp/verify exactly as it does after a
-// password — a route that already takes [assertion, code] and answers
-// [assertion], so nothing on the wire changes shape. An account with no second
-// factor gets a complete assertion, because the passkey IS the whole login.
+// A passkey this instance does not hold is 401 E_PASSKEY_UNKNOWN; every other
+// failure is 401 E_UNAUTHENTICATED. Both charge the address. A step-up
+// ceremony (kind 1 with a user) is refused like any other bad ceremony.
 //
 // The ceremony row is single-use in the store, so a replayed body finds no row
 // and is refused before a signature is looked at.
@@ -827,25 +1087,40 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.RateLimitedAfter(wait))
 		return
 	}
-	userID, err := p.FinishLogin(ctx, req.CeremonyID, []byte(req.Response))
+	userID, uv, err := p.FinishLogin(ctx, req.CeremonyID, []byte(req.Response))
 	if err != nil {
 		d.logf(r, "api: finish passkey login", "err", err)
 		d.recordAttempt(r, store.UserRow{}, false, addrKey, methodPasskey, false)
 		d.Throttle.RecordFailure(passkeyFailureLedger, ip)
-		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		code := server.CodeUnauthenticated
+		if errors.Is(err, auth.ErrPasskeyUnknown) {
+			code = server.CodePasskeyUnknown
+		}
+		server.WriteError(w, server.Errorf(code, ""))
 		return
 	}
-	d.Throttle.Clear(userID)
-	if cerr := d.Repo.ClearLoginFailures(ctx, userID); cerr != nil {
-		d.logf(r, "api: ClearLoginFailures", "err", cerr)
+	needs := needsNothing
+	if !uv {
+		needs = needsCode
+	}
+	// The account's failed-login ledger is cleared only by a complete login. A presence-only
+	// assertion still owes a code, and verifySecondFactor clears the ledger once that is given;
+	// clearing it here would hand someone holding a PIN-less key a fresh lockout curve per login.
+	if needs != needsNothing {
+		if locked := d.Throttle.LockedFor(userID); locked > 0 {
+			// It would owe a code the lockout forbids guessing: no assertion is issued.
+			server.WriteError(w, server.RateLimitedAfter(locked))
+			return
+		}
+	}
+	if needs == needsNothing {
+		d.Throttle.Clear(userID)
+		if cerr := d.Repo.ClearLoginFailures(ctx, userID); cerr != nil {
+			d.logf(r, "api: ClearLoginFailures", "err", cerr)
+		}
 	}
 	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodPasskey, true)
-	pending, terr := d.secondFactorPending(ctx, userID)
-	if terr != nil {
-		server.WriteError(w, d.storeError(r, terr))
-		return
-	}
-	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(userID, pending)})
+	d.write(w, r, http.StatusOK, []any{d.Assertions.Issue(userID, needs), uint64(needs)})
 }
 
 // OIDC (protocol/09-http-api.md § Auth ceremonies).
@@ -1036,14 +1311,686 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 	d.recordAttempt(r, store.UserRow{ID: userID}, true, addrKey, methodOIDC, true)
 	// An OIDC login is exactly as strong as the identity provider made it, and
 	// dillad cannot tell from an id_token whether a second factor was involved.
-	// So an account with a confirmed TOTP still owes it, for the same reason a
-	// passkey login does: a login path that walked past the account's own
-	// second factor would be a downgrade of that factor, not a property of the
-	// provider.
-	pending2FA, terr := d.secondFactorPending(ctx, userID)
+	// So the assertion owes a factor whenever the account holds one, exactly as
+	// after a password: a login path that walked past the account's own second
+	// factor would be a downgrade of that factor, not a property of the provider.
+	needs, terr := d.loginNeeds(ctx, userID)
 	if terr != nil {
 		server.WriteError(w, d.storeError(r, terr))
 		return
 	}
-	http.Redirect(w, r, d.oidcReturnURL(d.Assertions.Issue(userID, pending2FA)), http.StatusFound)
+	http.Redirect(w, r, d.oidcReturnURL(d.Assertions.Issue(userID, needs)), http.StatusFound)
+}
+
+// Second factors (protocol/09 § Second factors): step-up, the factor list, removal and fresh
+// backup codes.
+
+// StepUpTTL is how long a step-up token lives.
+const StepUpTTL = 300 * time.Second
+
+// StepUps holds the short-lived step-up tokens POST /v1/auth/stepup and its passkey twin mint, and
+// the four factor-changing routes spend. A token is bound to the session that minted it (by the
+// session token's hash), is single use and lives StepUpTTL; like an assertion it lives only in
+// memory, so a restart asks the person to confirm again.
+type StepUps struct {
+	clk clock.Clock
+	ttl time.Duration
+
+	mu    sync.Mutex
+	items map[string]stepUp
+}
+
+type stepUp struct {
+	userID  id.ID
+	session []byte // the minting session's token hash
+	expires time.Time
+}
+
+func NewStepUps(clk clock.Clock, ttl time.Duration) *StepUps {
+	return &StepUps{clk: clk, ttl: ttl, items: map[string]stepUp{}}
+}
+
+// Issue mints a token for userID bound to the session whose token hashes to sessHash, and returns
+// it with its expiry in unix seconds.
+func (s *StepUps) Issue(userID id.ID, sessHash []byte) (string, int64) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		panic("api: crypto/rand failed: " + err.Error())
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	expires := s.clk.Now().Add(s.ttl)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.clk.Now()
+	for k, v := range s.items {
+		if now.After(v.expires) {
+			delete(s.items, k)
+		}
+	}
+	s.items[token] = stepUp{userID: userID, session: append([]byte(nil), sessHash...), expires: expires}
+	return token, expires.Unix()
+}
+
+// Spend consumes a token presented by the session whose token hashes to sessHash. The session is
+// compared in constant time. A token presented by another session is refused and NOT consumed: it
+// stays good for the session that minted it, which a holder of the other session cannot be.
+func (s *StepUps) Spend(token string, sessHash []byte) (id.ID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.items[token]
+	if !ok || subtle.ConstantTimeCompare(item.session, sessHash) != 1 {
+		return id.ID{}, false
+	}
+	delete(s.items, token)
+	if s.clk.Now().After(item.expires) {
+		return id.ID{}, false
+	}
+	return item.userID, true
+}
+
+// enrolmentTTL is how long the record of an enrolment's begin is kept: a passkey ceremony's
+// lifetime (auth's ceremonyTTL), and the same for a TOTP enrolment.
+const enrolmentTTL = 5 * time.Minute
+
+// enrolments remembers, per enrolment in flight, whether its begin carried a valid step-up, so the
+// confirm or finish can re-check the step-up rule under the user lock. A TOTP enrolment is keyed by
+// its user (a new enrol replaces it), a passkey registration by its ceremony id. Memory only: a
+// missing record — after a restart, or past enrolmentTTL — counts as not stepped up.
+type enrolments struct {
+	clk clock.Clock
+	ttl time.Duration
+
+	mu    sync.Mutex
+	items map[string]enrolment
+}
+
+type enrolment struct {
+	userID    id.ID
+	steppedUp bool
+	secret    [32]byte // SHA-256 of the TOTP secret the enroll wrote; zero for a passkey
+	expires   time.Time
+}
+
+// secretHash is what a TOTP enrolment record is bound to; nil (a passkey's) is the zero hash.
+func secretHash(secret []byte) [32]byte {
+	if secret == nil {
+		return [32]byte{}
+	}
+	return sha256.Sum256(secret)
+}
+
+func newEnrolments(clk clock.Clock, ttl time.Duration) *enrolments {
+	return &enrolments{clk: clk, ttl: ttl, items: map[string]enrolment{}}
+}
+
+func totpEnrolment(userID id.ID) string        { return "totp\x00" + userID.String() }
+func passkeyEnrolment(ceremonyID id.ID) string { return "passkey\x00" + ceremonyID.String() }
+
+func (e *enrolments) record(key string, userID id.ID, steppedUp bool, secret []byte) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := e.clk.Now()
+	for k, v := range e.items {
+		if now.After(v.expires) {
+			delete(e.items, k)
+		}
+	}
+	e.items[key] = enrolment{userID: userID, steppedUp: steppedUp, secret: secretHash(secret), expires: now.Add(e.ttl)}
+}
+
+// steppedUp reports whether the enrolment under key was begun by userID with a valid step-up, for
+// this secret (nil for a passkey), and has not expired.
+func (e *enrolments) steppedUp(key string, userID id.ID, secret []byte) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, ok := e.items[key]
+	return ok && item.userID == userID && item.steppedUp && item.secret == secretHash(secret) &&
+		!e.clk.Now().After(item.expires)
+}
+
+// owner is the account a live enrolment record under key was begun by.
+func (e *enrolments) owner(key string) (id.ID, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, ok := e.items[key]
+	if !ok || e.clk.Now().After(item.expires) {
+		return id.ID{}, false
+	}
+	return item.userID, true
+}
+
+func (e *enrolments) drop(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.items, key)
+}
+
+// stepUpRequest is the body of the two enrolment begins and of POST /v1/auth/recovery/codes:
+// [stepup(tstr|null)].
+type stepUpRequest struct {
+	_      struct{} `cbor:",toarray"`
+	StepUp *string
+}
+
+func stepUpRefusal() error {
+	return server.Errorf(server.CodeStepUp, "a valid step-up token is required")
+}
+
+// spendStepUp spends token for sess, or answers 403 E_STEP_UP.
+func (d Deps) spendStepUp(sess auth.Session, token *string) error {
+	if token == nil {
+		return stepUpRefusal()
+	}
+	if uid, ok := d.StepUps.Spend(*token, sess.TokenHash); !ok || uid != sess.UserID {
+		return stepUpRefusal()
+	}
+	return nil
+}
+
+// requireStepUp is the step-up rule at an enrolment's begin: when the account holds a factor a
+// valid token is spent (403 E_STEP_UP otherwise) and the begin is stepped up; when it holds none
+// the token is ignored and left unspent.
+func (d Deps) requireStepUp(ctx context.Context, sess auth.Session, token *string) (bool, error) {
+	holds, err := holdsFactor(ctx, d.Repo, sess.UserID, d.rpID())
+	if err != nil || !holds {
+		return false, err
+	}
+	if err := d.spendStepUp(sess, token); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// recheckStepUp is the same rule inside the confirm or finish transaction, under the user lock: a
+// factor that appeared since a begin that carried no step-up refuses the write with E_STEP_UP.
+func (d Deps) recheckStepUp(ctx context.Context, tx store.Repository, userID id.ID, steppedUp bool) error {
+	if steppedUp {
+		return nil
+	}
+	holds, err := holdsFactor(ctx, tx, userID, d.rpID())
+	if err != nil {
+		return err
+	}
+	if holds {
+		return stepUpRefusal()
+	}
+	return nil
+}
+
+// settleFirstFactor is the tail of every factor write, inside its transaction: the account no
+// longer owes a factor, and when it holds no unused backup code it gets a fresh set, which is
+// returned; otherwise nothing is minted and the printed codes keep working.
+func (d Deps) settleFirstFactor(ctx context.Context, tx store.Repository, userID id.ID, now int64) ([]string, error) {
+	if err := tx.SetFactorOwed(ctx, userID, false); err != nil {
+		return nil, err
+	}
+	left, err := tx.CountRecoveryCodes(ctx, userID)
+	if err != nil || left > 0 {
+		return nil, err
+	}
+	codes, hashes := auth.GenerateRecoveryCodes(d.Config.Auth.TOTP.RecoveryCodes)
+	if err := tx.PutRecoveryCodes(ctx, userID, hashes, now); err != nil {
+		return nil, err
+	}
+	return codes, nil
+}
+
+// settleOwedHolder clears the owed mark of an account that holds a usable factor and reports
+// whether it did. The check and the write are one transaction under the user lock, which the
+// operator reset takes too before it deletes the factors and sets the mark: a reset is wholly
+// before the check (no factor, nothing cleared) or waits for the commit (and then sets the mark
+// again), so it never ends with an owed account cleared.
+func (d Deps) settleOwedHolder(ctx context.Context, userID id.ID) (bool, error) {
+	settled := false
+	err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(ctx, userID); err != nil {
+			return err
+		}
+		u, err := tx.GetUser(ctx, userID)
+		if err != nil || !u.FactorOwed {
+			settled = err == nil
+			return err
+		}
+		holds, err := holdsFactor(ctx, tx, userID, d.rpID())
+		if err != nil || !holds {
+			return err
+		}
+		if err := tx.SetFactorOwed(ctx, userID, false); err != nil {
+			return err
+		}
+		settled = true
+		return nil
+	})
+	return settled, err
+}
+
+// stringsAny is a []string as the CBOR array the wire carries ([] for none, never null).
+func stringsAny(in []string) []any {
+	out := make([]any, 0, len(in))
+	for _, s := range in {
+		out = append(out, s)
+	}
+	return out
+}
+
+// The step-up methods of POST /v1/auth/stepup.
+const (
+	stepUpPassword uint64 = 0
+	stepUpTOTP     uint64 = 1
+	stepUpBackup   uint64 = 2
+)
+
+// stepUpLedger is the failure ledger step-ups of userID are charged to. It is NOT the account's
+// own (loginLedger's user id): a thief failing step-ups behind a stolen session must not lock the
+// owner's password login.
+//
+// It is keyed by the account AND the client address (web3.6 review M2): the owner stepping up
+// from elsewhere clears only the owner's own count, never a thief's.
+func stepUpLedger(userID id.ID, addrKey string) id.ID {
+	return loginLedger(store.UserRow{}, false, "\x00stepup"+userID.String()+"\x00"+addrKey)
+}
+
+// stepUpAccountLedger is the account-wide step-up ledger: every step-up guess at the account,
+// from any address, is counted on it, so guesses spread over many addresses are capped per
+// account. A success never clears it (it ages out over the observation window), so the owner's
+// success cannot reset a thief's count either. The price: a thief can hold the owner's step-ups
+// locked, for at most lockout_ceiling; the owner's login ledger is never touched.
+func stepUpAccountLedger(userID id.ID) id.ID {
+	return loginLedger(store.UserRow{}, false, "\x00stepup-acct"+userID.String())
+}
+
+// stepUpTry is one guess at a step-up secret in flight: counted on both step-up ledgers before
+// the secret is checked (auth.Throttle.Begin), so concurrent guesses count against each other.
+type stepUpTry struct {
+	attempt *auth.Attempt
+	address id.ID // the account+address ledger, the one a success clears
+}
+
+// stepUpGate is the standing refusal before a step-up secret is looked at: the address's failure
+// budget, PEEKED as PasswordLogin peeks it, then the account-wide and the account+address step-up
+// ledgers, checked and counted in one step.
+func (d Deps) stepUpGate(r *http.Request, userID id.ID) (stepUpTry, error) {
+	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+	if ok, wait := d.Throttle.Peek(classLoginFailed, addrKey); !ok {
+		return stepUpTry{}, server.RateLimitedAfter(wait)
+	}
+	address := stepUpLedger(userID, addrKey)
+	attempt, locked := d.Throttle.Begin(stepUpAccountLedger(userID), address)
+	if locked > 0 {
+		return stepUpTry{}, server.RateLimitedAfter(locked)
+	}
+	return stepUpTry{attempt: attempt, address: address}, nil
+}
+
+// fail keeps the guess counted and charges the address; it reports the lockout the guess earned.
+func (s stepUpTry) fail(d Deps, r *http.Request) time.Duration {
+	return s.attempt.Fail(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
+}
+
+// pass refunds the guess and clears the account+address ledger; the account-wide one ages out.
+func (s stepUpTry) pass() { s.attempt.Pass(s.address) }
+
+// cancel refunds a guess that was never decided (a store failure).
+func (s stepUpTry) cancel() { s.attempt.Pass() }
+
+// stepUpFailure charges a failed step-up and answers 403 E_STEP_UP, or 429 E_RATE_LIMITED once a
+// step-up ledger is past its free attempts.
+func (d Deps) stepUpFailure(r *http.Request, try stepUpTry) error {
+	if locked := try.fail(d, r); locked > 0 {
+		return server.RateLimitedAfter(locked)
+	}
+	return stepUpRefusal()
+}
+
+// StepUp is POST /v1/auth/stepup: [method(uint), secret(tstr)] → 201 [stepup(tstr), expires(uint)].
+// Method 0 is the password, 1 a TOTP code (its counter consumed, as at /totp/verify), 2 a backup
+// code (spent). A wrong secret is 403 E_STEP_UP; past the step-up ledger's free attempts every
+// attempt, right or wrong, is 429 until the lockout runs out.
+func (d Deps) StepUp(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	if d.Config == nil || d.Throttle == nil || d.Hasher == nil || d.StepUps == nil {
+		d.logf(r, "api: the step-up route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the step-up route is not wired"))
+		return
+	}
+	var req struct {
+		_      struct{} `cbor:",toarray"`
+		Method uint64
+		Secret string
+	}
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if req.Method > stepUpBackup {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "method is 0, 1 or 2"))
+		return
+	}
+	try, err := d.stepUpGate(r, sess.UserID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	good, err := d.checkStepUpSecret(ctx, sess.UserID, req.Method, req.Secret)
+	if err != nil {
+		try.cancel()
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	if !good {
+		server.WriteError(w, d.stepUpFailure(r, try))
+		return
+	}
+	try.pass()
+	token, expires := d.StepUps.Issue(sess.UserID, sess.TokenHash)
+	d.write(w, r, http.StatusCreated, []any{token, uint64(expires)}) //nolint:gosec // G115: a unix time after 1970
+}
+
+// checkStepUpSecret reports whether secret proves the account by method. A store failure is an
+// error; a wrong, absent or already-spent secret is false.
+func (d Deps) checkStepUpSecret(ctx context.Context, userID id.ID, method uint64, secret string) (bool, error) {
+	miss := func(err error) (bool, error) {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
+	switch method {
+	case stepUpPassword:
+		phc, err := d.Repo.GetPasswordCredential(ctx, userID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return false, err
+		}
+		// An account without a password still costs a (dummy) hash, as at login.
+		ok, _, verr := d.Hasher.Verify(ctx, secret, phc)
+		if verr != nil {
+			return false, verr
+		}
+		return ok && phc != "", nil
+	case stepUpTOTP:
+		row, err := d.Repo.GetTOTP(ctx, userID)
+		if err != nil {
+			return miss(err)
+		}
+		if row.ConfirmedAt == nil {
+			return false, nil
+		}
+		counter, ok := auth.ValidateTOTP(secret, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now())
+		if !ok {
+			return false, nil
+		}
+		if err := d.Repo.ConsumeTOTPCounter(ctx, userID, counter); err != nil {
+			return miss(err)
+		}
+		return true, nil
+	default:
+		if err := d.Repo.ConsumeRecoveryCode(ctx, userID, auth.RecoveryCodeHash(secret), d.Clock.Now().Unix()); err != nil {
+			return miss(err)
+		}
+		return true, nil
+	}
+}
+
+// BeginPasskeyStepUp is POST /v1/auth/stepup/passkey/begin: [] → [ceremony_id, options], over this
+// account's credentials only, user verification required. An account without a passkey is 400.
+func (d Deps) BeginPasskeyStepUp(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	p, err := d.passkeys()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var req struct {
+		_ struct{} `cbor:",toarray"`
+	}
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ceremonyID, options, err := p.BeginStepUp(r.Context(), sess.UserID)
+	if errors.Is(err, auth.ErrNoPasskey) {
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "this account holds no passkey"))
+		return
+	}
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{ceremonyID, string(options)})
+}
+
+// FinishPasskeyStepUp is POST /v1/auth/stepup/passkey/finish: [ceremony_id, response] → 201
+// [stepup, expires]. A ceremony that is not this account's step-up (a discoverable login's, or
+// another account's) and an assertion that does not verify are 403 E_STEP_UP, charged to the
+// step-up ledger like a wrong secret.
+func (d Deps) FinishPasskeyStepUp(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	p, err := d.passkeys()
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if d.Config == nil || d.Throttle == nil || d.StepUps == nil {
+		d.logf(r, "api: the passkey step-up route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the passkey step-up route is not wired"))
+		return
+	}
+	var req ceremonyRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	try, err := d.stepUpGate(r, sess.UserID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := p.FinishStepUp(r.Context(), req.CeremonyID, []byte(req.Response), sess.UserID); err != nil {
+		d.logf(r, "api: finish passkey step-up", "err", err)
+		server.WriteError(w, d.stepUpFailure(r, try))
+		return
+	}
+	try.pass()
+	token, expires := d.StepUps.Issue(sess.UserID, sess.TokenHash)
+	d.write(w, r, http.StatusCreated, []any{token, uint64(expires)}) //nolint:gosec // G115: a unix time after 1970
+}
+
+// Factors is GET /v1/auth/factors → [owed(uint), totp(uint|null), passkeys([[cred_id(bstr),
+// name(tstr), created(uint), last_used(uint|null)]]), backup_codes_left(uint), password(uint)].
+// totp is the confirmed_at of a CONFIRMED secret, else null; passkeys are this rp_id's, by created.
+//
+// An account marked as owing a factor that holds a usable one is settled here (web3.6 review I2):
+// owed means no usable factor is held, and the mark can outlive that (an rp_id changed and put
+// back, before the restart whose reconcile clears it), leaving a forced set-up that cannot finish.
+func (d Deps) Factors(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	ctx := r.Context()
+	u, err := d.Repo.GetUser(ctx, sess.UserID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	if u.FactorOwed {
+		settled, err := d.settleOwedHolder(ctx, sess.UserID)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		u.FactorOwed = !settled
+	}
+	var totp any
+	switch row, err := d.Repo.GetTOTP(ctx, sess.UserID); {
+	case err == nil && row.ConfirmedAt != nil:
+		totp = uint64(*row.ConfirmedAt) //nolint:gosec // G115: a unix time after 1970
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	creds, err := d.Repo.ListWebauthnCredentials(ctx, sess.UserID, d.rpID())
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	passkeys := make([]any, 0, len(creds))
+	for _, c := range creds {
+		var lastUsed any
+		if c.LastUsed != nil {
+			lastUsed = uint64(*c.LastUsed) //nolint:gosec // G115: a unix time after 1970
+		}
+		passkeys = append(passkeys, []any{c.CredID, c.Name, uint64(c.Created), lastUsed}) //nolint:gosec // G115: a unix time after 1970
+	}
+	left, err := d.Repo.CountRecoveryCodes(ctx, sess.UserID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	password := uint64(0)
+	switch _, err := d.Repo.GetPasswordCredential(ctx, sess.UserID); {
+	case err == nil:
+		password = 1
+	case !errors.Is(err, store.ErrNotFound):
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	owed := uint64(0)
+	if u.FactorOwed {
+		owed = 1
+	}
+	d.write(w, r, http.StatusOK, []any{owed, totp, passkeys, uint64(left), password}) //nolint:gosec // G115: a count
+}
+
+// The kinds of POST /v1/auth/factors/remove.
+const (
+	factorTOTP    uint64 = 0
+	factorPasskey uint64 = 1
+)
+
+// RemoveFactor is POST /v1/auth/factors/remove: [stepup(tstr), kind(uint), cred_id(bstr|null)] →
+// 204. The token is spent first (403 E_STEP_UP). Then, in one transaction under the user lock:
+// the delete (a passkey the caller does not hold, or no TOTP, is 404 E_NOT_FOUND), the recount,
+// and on zero factors a rollback with 409 E_INVALID_REQUEST. Two devices removing the last two
+// factors at once serialize on the lock, and the second finds nothing left to stand on. Backup
+// codes are not a factor and stay.
+func (d Deps) RemoveFactor(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	if d.StepUps == nil {
+		d.logf(r, "api: the factor removal route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the factor removal route is not wired"))
+		return
+	}
+	var req struct {
+		_      struct{} `cbor:",toarray"`
+		StepUp string
+		Kind   uint64
+		CredID []byte
+	}
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	switch {
+	case req.Kind == factorPasskey && len(req.CredID) == 0:
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "a passkey removal names its cred_id"))
+		return
+	case req.Kind > factorPasskey:
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "kind is 0 (totp) or 1 (passkey)"))
+		return
+	}
+	if err := d.spendStepUp(sess, &req.StepUp); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	if err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(ctx, sess.UserID); err != nil {
+			return err
+		}
+		if req.Kind == factorTOTP {
+			if _, err := tx.GetTOTP(ctx, sess.UserID); err != nil {
+				return err
+			}
+			if err := tx.DeleteTOTP(ctx, sess.UserID); err != nil {
+				return err
+			}
+		} else {
+			n, err := tx.DeleteWebauthnCredential(ctx, sess.UserID, req.CredID)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return server.Errorf(server.CodeNotFound, "no such passkey")
+			}
+		}
+		holds, err := holdsFactor(ctx, tx, sess.UserID, d.rpID())
+		if err != nil {
+			return err
+		}
+		if !holds {
+			return server.WithStatus(http.StatusConflict,
+				server.Errorf(server.CodeInvalidRequest, "this is the account's last second factor"))
+		}
+		return nil
+	}); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.noContent(w, r)
+}
+
+// RecoveryCodes is POST /v1/auth/recovery/codes: [stepup(tstr)] → [backup_codes([tstr])]. The
+// token is spent first (403 E_STEP_UP); the fresh set replaces every earlier code, under the user
+// lock.
+func (d Deps) RecoveryCodes(w http.ResponseWriter, r *http.Request) {
+	sess, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	if d.Config == nil || d.StepUps == nil {
+		d.logf(r, "api: the backup codes route is not wired")
+		server.WriteError(w, server.Errorf(server.CodeInternal, "the backup codes route is not wired"))
+		return
+	}
+	var req stepUpRequest
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := d.spendStepUp(sess, req.StepUp); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	codes, hashes := auth.GenerateRecoveryCodes(d.Config.Auth.TOTP.RecoveryCodes)
+	if err := d.Repo.Tx(ctx, func(tx store.Repository) error {
+		if err := tx.LockUserForDeviceRegistration(ctx, sess.UserID); err != nil {
+			return err
+		}
+		return tx.PutRecoveryCodes(ctx, sess.UserID, hashes, d.Clock.Now().Unix())
+	}); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	d.write(w, r, http.StatusOK, []any{stringsAny(codes)})
 }

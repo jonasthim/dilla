@@ -76,6 +76,16 @@ describe('MemberRolesFlow', () => {
       expect(await dialog().findByRole('alert')).toHaveTextContent(text);
     });
   }
+  it('maps E_TARGET_NO_FACTOR to the second-factor copy by its code', async () => {
+    const first = setup({ handler: () => Promise.reject(refusal({ code: 'E_TARGET_NO_FACTOR', status: 403 })) });
+    await first.user.click(dialog().getByRole('checkbox', { name: 'mods' }));
+    expect(await dialog().findByRole('alert')).toHaveTextContent(en['roles.assign.error.twoFactor'].replace('{name}', 'Bob'));
+  });
+  it('reads no detail: a 403 E_FORBIDDEN whose detail says "second factor" is the forbidden copy', async () => {
+    const { user } = setup({ handler: () => Promise.reject(refusal({ code: 'E_FORBIDDEN', status: 403, detail: 'second factor required' })) });
+    await user.click(dialog().getByRole('checkbox', { name: 'mods' }));
+    expect(await dialog().findByRole('alert')).toHaveTextContent('You cannot give or take mods.');
+  });
   it('maps a 404 to the role-gone copy when the role is no longer listed, else to the member-gone copy', async () => {
     const { user } = setup({ handler: (c, f) => {
       f.set(`roles:${SERVER}`, ROLES_WITHOUT_MODS);

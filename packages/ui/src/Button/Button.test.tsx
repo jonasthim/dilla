@@ -38,6 +38,14 @@ describe('Button', () => {
     expect(screen.queryByText('[x]')).not.toBeInTheDocument();
     expect(screen.queryByText('[ ]')).not.toBeInTheDocument();
   });
+  // Voice toolbars (plan 2026-10-15): an icon toggle swaps its glyph instead, so it opts out of the mark.
+  it('a toggle with mark={false} keeps aria-pressed but draws no [x] / [ ] mark', () => {
+    const { rerender } = render(<Button pressed mark={false}>Mute</Button>);
+    expect(screen.getByRole('button', { name: 'Mute' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('[x]')).not.toBeInTheDocument();
+    rerender(<Button pressed={false} mark={false}>Mute</Button>);
+    expect(screen.queryByText('[ ]')).not.toBeInTheDocument();
+  });
   it('sets data-variant and data-size', () => {
     render(<Button variant="danger" size="sm">Leave</Button>);
     const btn = screen.getByRole('button', { name: 'Leave' });

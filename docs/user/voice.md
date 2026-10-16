@@ -43,14 +43,17 @@ seconds while the instance finishes your earlier leave; a screen reader hears "R
 30 seconds."
 
 You can keep talking while you read: open any text channel and the dock stays above your user panel, with the input
-level, **mute**, **deafen** and **leave**.
+level and the same five buttons as under the tiles, **mute**, **deafen**, **camera**, **share screen** and **leave**, so
+you can turn your camera or a share on and off from any channel. The buttons are icons in one row, with **leave** set
+apart at the end after a thin line. Point at one, or reach it with Tab and the arrow keys, and its name shows above it,
+with its shortcut for **mute** and **deafen**; Escape hides the name again.
 
-![Mira in #general while she stays in harbour: the dock "in harbour" with its meter and the buttons mute, deafen and
-leave](screenshots/voice-dock-desktop.png)
+![Mira in #general while she stays in harbour: the dock "in harbour" with its meter and the icon buttons mute,
+deafen, camera, share screen and leave](screenshots/voice-dock-desktop.png)
 
 At phone width the tiles take the full width, one above the other, the call's buttons sit under them, every control
 is at least 44 by 44 pixels, and the dock stays pinned at the bottom of the channel list, above the conversation, so
-**mute**, **deafen** and **leave** are on screen while you read a text channel.
+its five buttons are on screen, in one row, while you read a text channel.
 
 ![The voice channel at 360 pixels wide](screenshots/voice-stage-phone.png)
 
@@ -63,7 +66,8 @@ someone joins. You do not have to do anything.
 
 **mute** turns your microphone off ("Microphone muted.") and, pressed again, on ("Microphone on."). **deafen** turns
 off everything you hear, and mutes you too ("Sound off."); pressed again, it turns it back on ("Sound on."). These
-buttons keep their names: while one is on it shows `[x]` before its name, and a screen reader says "pressed".
+buttons keep their names: while one is on its icon changes (a crossed-out microphone, crossed-out headphones) and is
+drawn in red with a line under it, and a screen reader says "pressed".
 
 This browser keeps your mute and deafen for your next call: if you were muted when you left, you join muted. If
 you join deafened, pressing **deafen** again turns your sound back on but leaves you muted; press **mute** to talk.
@@ -111,7 +115,8 @@ Settings → voice also holds:
 
 ## Camera and screen
 
-**camera** sends your camera to everyone in the call, and pressed again ends it. Your own tile shows what you send:
+**camera** sends your camera to everyone in the call, and pressed again ends it; it and **share screen** are in the dock
+as well as under the tiles, and show in green while they are on. Your own tile shows what you send:
 your camera, mirrored as a mirror shows you (the others see it the right way round). **share screen** lets the browser
 ask which screen, window or tab to share, and pressed again ends it; your own tile shows your screen too. With the
 camera and a share both on, every tile shows the screen, with the camera in its corner. The only sound a share
@@ -236,7 +241,7 @@ checks every device again.
 ### You see people speaking but hear nothing
 
 If the dock says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
-you press something on the page. The line and its button sit above **mute**, **deafen** and **leave**; one press
+you press something on the page. The line and its button sit above the dock's buttons; one press
 starts the call's sound and the line goes. Nothing else about the call changes. This happens when the browser did not
 let the call start its sound, for example when the browser or your system suspended audio, or a stricter autoplay
 setting in the browser held it back.
