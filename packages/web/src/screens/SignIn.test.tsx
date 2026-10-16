@@ -1,11 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import type { AccountState, BootPhase, Command } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, INSTANCE } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
+import { en } from '../strings/en.ts';
 import { SignIn } from './SignIn.tsx';
 
 const KEY = '7K2MQX9DH4TBR8NWC3VFJ6PZA1GEY5KSM0QTB7XHW2DNF9RCP4ZA';
@@ -442,5 +443,89 @@ describe('refusals', () => {
     await user.click(button('Add this browser'));
     expect(screen.getByRole('alert')).toHaveTextContent('Signing in did not work (E_TIER_MISMATCH). Try again.');
     expect(screen.queryByText(/not the recovery key/)).toBeNull();
+  });
+});
+
+describe('the key step recognises a backup code (R44)', () => {
+  const BACKUP = 'abcd-efgh-ijkl-mnop-qrst-uvwxyz';
+  const OUTSIDE = '0189-0189-0189-0189-0189-018901';
+  const LONG = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ23456723456723456723456723';
+  const NOTE = en['signIn.key.isBackupCode'];
+  const key = () => field('Recovery key');
+  const note = () => document.getElementById('signin-key-backup');
+  const typeInto = (text: string) => { act(() => { fireEvent.change(key(), { target: { value: text } }); }); };
+  const wait = (ms: number) => { act(() => { vi.advanceTimersByTime(ms); }); };
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('shows the note after 600 ms of rest, describes the field with it and keeps the submit disabled', async () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    wait(599);
+    expect(note()).toBeNull();
+    wait(1);
+    expect(note()).toHaveTextContent(NOTE);
+    expect(note()).not.toHaveAttribute('role');
+    expect(key().getAttribute('aria-describedby')).toContain('signin-key-backup');
+    expect(button('Add this browser')).toHaveAttribute('aria-disabled', 'true');
+    vi.useRealTimers(); // axe schedules with timers
+    await expectNoAxeViolations(document.body);
+  });
+
+  it('shows the note at once on blur', () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    expect(note()).toBeNull();
+    act(() => { fireEvent.blur(key()); });
+    expect(note()).toHaveTextContent(NOTE);
+  });
+
+  it('restarts the wait on every change', () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    wait(400);
+    typeInto(BACKUP.toUpperCase());
+    wait(400);
+    expect(note()).toBeNull();
+    wait(200);
+    expect(note()).toHaveTextContent(NOTE);
+  });
+
+  it('never shows the note while a 52-character key is typed one character at a time', () => {
+    setup('signin-key');
+    for (let i = 1; i <= LONG.length; i += 1) {
+      typeInto(LONG.slice(0, i));
+      expect(note()).toBeNull();
+      wait(50);
+      expect(note()).toBeNull();
+    }
+    wait(2000);
+    expect(note()).toBeNull();
+  });
+
+  it('hides the note when the entry grows into a 52-character key', () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    wait(600);
+    expect(note()).not.toBeNull();
+    typeInto(LONG);
+    expect(note()).toBeNull();
+    expect(key().getAttribute('aria-describedby') ?? '').not.toContain('signin-key-backup');
+  });
+
+  it('shows nothing for 26 characters outside the backup alphabet', () => {
+    setup('signin-key');
+    typeInto(OUTSIDE);
+    wait(2000);
+    act(() => { fireEvent.blur(key()); });
+    expect(note()).toBeNull();
+  });
+
+  it('has no axe violations without the note', async () => {
+    setup('signin-key');
+    typeInto(LONG);
+    vi.useRealTimers();
+    await expectNoAxeViolations(document.body);
   });
 });

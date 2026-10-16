@@ -22,6 +22,9 @@ const FIELD_ID: Readonly<Record<Field, string>> = {
 };
 const FIELD_ORDER: readonly Field[] = ['username', 'password', 'code', 'backup', 'key'];
 const LENGTH_ID = 'signin-key-length';
+const BACKUP_ID = 'signin-key-backup';
+/** How long the key field rests before a backup code is named (R44): a key being typed passes 26 characters on the way. */
+const BACKUP_NOTE_MS = 600;
 
 interface BannerState { tone: 'warn' | 'danger'; key: StringKey; vars: Record<string, string | number> }
 interface RefusalView { field?: Field; fieldKey?: StringKey; focus?: Field; banner?: BannerState; noBackup?: true }
@@ -107,6 +110,16 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const factors = useSlice('factors');
   const [focusRequest, setFocusRequest] = useState<{ target: 'heading' | Field; n: number }>({ target: 'heading', n: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
+
+  // R44: the note shows only once a backup-code-shaped entry has rested, or the field is left while it holds.
+  const [noteSettled, setNoteSettled] = useState(false);
+  const looksBackup = BACKUP_CODE.test(normaliseBackupCode(key));
+  useEffect(() => {
+    setNoteSettled(false);
+    if (!looksBackup) return undefined;
+    const timer = setTimeout(() => { setNoteSettled(true); }, BACKUP_NOTE_MS);
+    return () => { clearTimeout(timer); };
+  }, [key, looksBackup]);
 
   const phase = account?.phase;
   const instance = account?.instance ?? null;
@@ -381,6 +394,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   } else if (shown === 'key') {
     const n = normaliseRecoveryKey(key).length;
     const short = n !== KEY_LENGTH;
+    const showBackup = looksBackup && noteSettled;
     const working = busy === 'key' || enrolling;
     // The text cannot change under a running enrolment.
     const onKey = change('key', setKey);
@@ -394,7 +408,9 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     </>, <>
       <p>{t('signin.key.body')}</p>
       <RecoveryKeyField id={FIELD_ID.key} label={t('signin.key.label')} value={key}
-        onChange={value => { if (!blocked) onKey(value); }} hint={t('signin.key.hint', { n })} error={errorText('key')} />
+        onChange={value => { if (!blocked) { setNoteSettled(false); onKey(value); } }}
+        onBlur={() => { if (looksBackup) setNoteSettled(true); }} describedBy={showBackup ? BACKUP_ID : undefined} hint={t('signin.key.hint', { n })} error={errorText('key')} />
+      {showBackup ? <p id={BACKUP_ID}>{t('signIn.key.isBackupCode')}</p> : null}
       {short ? <p id={LENGTH_ID}>{t('signin.error.keyLength')}</p> : null}
       {/* A11Y-DESIGN-04: the live region is there before its text, so the text is announced when it arrives. */}
       <p role="status">{working ? t('signin.key.working') : null}</p>
