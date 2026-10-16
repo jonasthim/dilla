@@ -15,6 +15,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ['src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
+    // The dist guard reads a build; it runs after one (npm run test:dist), not with the unit tests.
+    exclude: ['**/node_modules/**', 'src/**/*.dist.test.ts'],
     css: false,
   },
 });
