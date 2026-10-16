@@ -110,7 +110,7 @@ func TestDoctorExitsZeroOnAYellowOnlyReport(t *testing.T) {
 			t.Fatalf("report lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "FAIL") {
+	if regexp.MustCompile(`(?m)^FAIL `).MatchString(out) {
 		t.Fatalf("a red leg in a report that exited 0:\n%s", out)
 	}
 	// The report is the stable form: two runs are identical (it carries no
@@ -151,6 +151,27 @@ func TestDoctorNeverTakesTheDataDirectoryLock(t *testing.T) {
 	}
 	if err := lock.Release(); err != nil {
 		t.Fatalf("Release: %v", err)
+	}
+}
+
+func TestDoctorEndsWithASummaryLineUnlessQuiet(t *testing.T) {
+	stubWasi(t, nil)
+	cfgPath, _ := initDoctorInstance(t)
+	summary := regexp.MustCompile(`(?m)^(OK|WARN|FAIL) +summary +\d+ checks: \d+ OK, \d+ WARN, \d+ FAIL\n\z`)
+
+	out, _, err := run(t, "doctor", "--config="+cfgPath)
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	if !summary.MatchString(out) {
+		t.Fatalf("the report does not end with a summary line:\n%s", out)
+	}
+	quiet, _, err := run(t, "doctor", "--quiet", "--config="+cfgPath)
+	if err != nil {
+		t.Fatalf("doctor --quiet: %v\n%s", err, quiet)
+	}
+	if strings.Contains(quiet, "summary") {
+		t.Fatalf("--quiet printed the summary:\n%s", quiet)
 	}
 }
 

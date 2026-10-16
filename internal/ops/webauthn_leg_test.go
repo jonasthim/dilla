@@ -55,7 +55,7 @@ func TestTheWebAuthnLegWarnsBehindAProxyAndWithoutTOTP(t *testing.T) {
 	behind := webauthnConfig("chat.example", "https://chat.example:8443")
 	behind.TLS.Mode = config.TLSModeBehindProxy
 	leg := ops.WebAuthnLeg(behind)
-	if leg.Status != ops.Yellow || !strings.Contains(leg.Detail+leg.Fix, "set auth.webauthn.rp_origins to the public origin, with its port") {
+	if leg.Status != ops.Yellow || !strings.Contains(leg.Detail, behindWant) {
 		t.Fatalf("behind_proxy leg = %+v", leg)
 	}
 
@@ -72,5 +72,38 @@ func TestTheWebAuthnLegWarnsBehindAProxyAndWithoutTOTP(t *testing.T) {
 	leg = ops.WebAuthnLeg(both)
 	if leg.Status != ops.Red || !strings.Contains(leg.Detail, "IP address") || !strings.Contains(leg.Detail, "passkeys are the only second factor") {
 		t.Fatalf("combined leg = %+v", leg)
+	}
+}
+
+const behindWant = "tls.mode is behind_proxy and auth.webauthn.rp_origins lacks the public origin https://chat.example; add the origin the browser shows"
+
+func TestTheWebAuthnLegWarnsBehindAProxyOnlyWhenTheOriginIsMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		behind bool
+		origin string
+		want   ops.Status
+	}{
+		{"the public origin is listed", true, "https://chat.example", ops.Green},
+		{"only a subdomain is listed", true, "https://other.chat.example", ops.Yellow},
+		{"not behind a proxy, defaults", false, "https://chat.example", ops.Green},
+		{"the origin in another case", true, "https://Chat.Example", ops.Green},
+		{"the origin with a foreign port", true, "https://chat.example:8443", ops.Yellow},
+		{"the origin with port 443", true, "https://chat.example:443", ops.Green},
+		{"the origin over http", true, "http://chat.example", ops.Yellow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := webauthnConfig("chat.example", tc.origin)
+			if tc.behind {
+				cfg.TLS.Mode = config.TLSModeBehindProxy
+			}
+			leg := ops.WebAuthnLeg(cfg)
+			if leg.Status != tc.want {
+				t.Fatalf("leg = %+v, want %v", leg, tc.want)
+			}
+			if tc.want == ops.Yellow && leg.Detail != behindWant {
+				t.Fatalf("detail = %q, want %q", leg.Detail, behindWant)
+			}
+		})
 	}
 }

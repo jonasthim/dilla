@@ -644,9 +644,10 @@ Authenticator apps keep working.
 
 `dillad doctor` reads the passkey settings and contacts nothing. It reads red when `rp_id` is an IP address or an
 `rp_origins` entry's host is neither `rp_id` nor a subdomain of it. It reads WARN when `auth.methods` lacks `totp`,
-and **it reads WARN on every instance with `tls.mode = "behind_proxy"`**: "set auth.webauthn.rp_origins to the public
-origin, with its port". That warning is expected. It is a prompt to check `rp_id` and `rp_origins` once, not a
-fault, and it does not go away. Otherwise it reads OK with the `rp_id` and the number of origins.
+and **with `tls.mode = "behind_proxy"` it reads WARN only when no `rp_origins` entry is the public origin**: an
+`https` origin on the instance domain (compared without case) with no port or port 443. Add the origin the browser
+shows, and the warning goes. Otherwise it reads OK with the `rp_id` and the number of origins. The last line sums the
+checks up.
 
 ### A person has lost their factor: `dillad admin user reset-factors`
 

@@ -92,6 +92,9 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 		fmt.Fprint(stdout, out.Text())
+		if !*quiet {
+			fmt.Fprint(stdout, report.Summary())
+		}
 		if report.Worst() == ops.Red {
 			return fmt.Errorf("doctor: one or more checks failed: %w", exit.Unavailable)
 		}

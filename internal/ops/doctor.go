@@ -88,6 +88,24 @@ func (r Report) Worst() Status {
 	return w
 }
 
+// Summary is the one line that sums the report up: the worst status, the count
+// of checks and how many came out OK, WARN and FAIL. Text does not carry it, so
+// a runbook that diffs Text is unaffected.
+func (r Report) Summary() string {
+	var ok, warn, fail int
+	for _, l := range r.Legs {
+		switch l.Status {
+		case Green:
+			ok++
+		case Yellow:
+			warn++
+		default:
+			fail++
+		}
+	}
+	return fmt.Sprintf("%-6s%-13s%d checks: %d OK, %d WARN, %d FAIL\n", r.Worst(), "summary", len(r.Legs), ok, warn, fail)
+}
+
 // maxClockRTT is the round trip past which a sample is discarded: the midpoint
 // estimate's error is at most rtt/2, so a slow answer says little.
 const maxClockRTT = 2 * time.Second
@@ -399,8 +417,8 @@ func UDPLeg(cfg config.Config) Leg {
 //   - an https/http rp_origins host that is neither rp_id nor a subdomain of it fails: the browser
 //     refuses the ceremony (custom-scheme origins, like the desktop shell's dilla://app, are not web
 //     origins and are not judged);
-//   - behind a proxy warns: the origin the browser sees is the proxy's, and rp_origins defaults to
-//     the instance domain without its port;
+//   - behind a proxy warns only when no rp_origins entry is the public origin (https, the instance
+//     domain, no port or 443): the origin the browser sees is the proxy's;
 //   - auth.methods without totp warns: passkeys become the only second factor.
 func WebAuthnLeg(cfg config.Config) Leg {
 	const name = "webauthn"
@@ -422,8 +440,12 @@ func WebAuthnLeg(cfg config.Config) Leg {
 			bad = append(bad, fmt.Sprintf("auth.webauthn.rp_origins has %s, whose host %s is neither rp_id %s nor a subdomain of it", origin, host, rpID))
 		}
 	}
-	if cfg.BehindProxy() {
-		warn = append(warn, "tls.mode is behind_proxy: set auth.webauthn.rp_origins to the public origin, with its port")
+	if cfg.BehindProxy() && !slices.ContainsFunc(cfg.Auth.WebAuthn.RPOrigins, func(origin string) bool {
+		u, err := url.Parse(origin)
+		return err == nil && u.Scheme == "https" && strings.EqualFold(u.Hostname(), cfg.Instance.Domain) &&
+			(u.Port() == "" || u.Port() == "443")
+	}) {
+		warn = append(warn, fmt.Sprintf("tls.mode is behind_proxy and auth.webauthn.rp_origins lacks the public origin https://%s; add the origin the browser shows", cfg.Instance.Domain))
 	}
 	if !slices.Contains(cfg.Auth.Methods, "totp") {
 		warn = append(warn, "auth.methods lacks totp: passkeys are the only second factor; an instance whose passkeys stop working locks new browsers out")
