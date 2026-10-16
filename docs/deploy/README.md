@@ -613,8 +613,12 @@ factor up, until it adds one. This section is what the operator does about that.
   the flag is cleared. Adding a factor clears the flag at once, and so does a browser reading its factors while the
   account holds one.
 - There is no switch that turns the requirement off.
-- `dillad admin user list` shows each account's factors; `owed` marks the accounts that meet the forced set-up screen
-  at their next use. `dillad admin user show` adds the `totp`, `passkeys`, `backup_codes` and `factor_owed` lines.
+- `dillad admin user list` has a `factors` column between `flags` and `status`. It reads `totp`, `passkey×N` (the
+  passkeys registered under the current `rp_id`), `codes:N` (unused backup codes) and `owed`, in that order and
+  comma-separated, or `-` for an account with none. An authenticator app that was never confirmed does not count.
+  `owed` marks the accounts that meet the forced set-up screen at their next use: `totp,codes:10` is an account in
+  good order, `owed` or `codes:10,owed` one that must still add a factor. `dillad admin user show` adds the `totp`,
+  `passkeys`, `backup_codes` and `factor_owed` lines.
 
 ### The configuration it needs
 
@@ -648,8 +652,16 @@ Authenticator apps keep working.
 `rp_origins` entry's host is neither `rp_id` nor a subdomain of it. It reads WARN when `auth.methods` lacks `totp`,
 and **with `tls.mode = "behind_proxy"` it reads WARN only when no `rp_origins` entry is the public origin**: an
 `https` origin on the instance domain (compared without case) with no port or port 443. Add the origin the browser
-shows, and the warning goes. Otherwise it reads OK with the `rp_id` and the number of origins. The last line sums the
-checks up.
+shows, and the warning goes. Otherwise it reads OK with the `rp_id` and the number of origins.
+
+The report ends with one summary line, printed after the legs unless you pass `--quiet`:
+
+```text
+WARN  summary      9 checks: 7 OK, 1 WARN, 1 FAIL
+```
+
+The first word is the worst status of the run (OK, WARN or FAIL) and the counts follow. The exit code does not change,
+and a script that compares the legs' text is unaffected, because the line is not part of it.
 
 ### A person has lost their factor: `dillad admin user reset-factors`
 
@@ -684,9 +696,17 @@ this browser" with both numbers: "That data needs data version {found}; this ver
 | web-3.4 | 4 | 16 | |
 | web-3.5 | 4 | 16 | Three additive tables in the browser store |
 | web-3.6 | 4 | 17 | A client now refuses a store newer than it knows; migration `00017_second_factor` |
+| web-3.7 | 5 | 18 | One-way: a browser that opened web-3.7 shows the "too old" screen if the server is rolled back to web-3.6; redeploy web-3.7, or clear site data and sign in again with the recovery key. Migration `00018_message_class` |
 
-**The browser side.** The store schema is the same in all three, so a browser keeps working across a server
-rollback between these releases, and a person is not asked for anything new.
+**The browser side, web-3.4 to web-3.6.** The store schema is the same in all three (4: no change
+from web-3.5 to web-3.6), so a browser keeps working across a server rollback between these releases, and a person is
+not asked for anything new.
+
+**The browser side, web-3.7 is one-way.** A browser that has opened web-3.7 has moved its store to schema 5. If you
+then roll the server back to web-3.6, that browser shows the "too old" screen above, with data version 5 found and 4
+supported, and does not open the app. Redeploy web-3.7 and it opens again. If you must stay on web-3.6, each person
+clears this site's data in the browser and signs in again with their recovery key: the messages that browser held are
+gone from it, and a browser that never opened web-3.7 is not affected. Tell your members before you roll back.
 
 **The server side is not automatic.** `dillad serve` refuses to start on a database schema newer than its own, so
 the web-3.5 binary (`dillad.prev`) does not start on a database that web-3.6 has migrated to 17. Migrate down first:
@@ -705,6 +725,18 @@ with these differences:
   again.
 
 If you upgrade to web-3.6 again, migration 00017 again marks every account that holds no factor.
+
+### Upgrading to web-3.7: migration 00018
+
+Migration `00018_message_class` adds a nullable `class` column to the stored messages and a small table, `slowmode_marks`,
+that holds the time of each person's last post in a channel with slow mode. It changes no existing row. From web-3.7 the
+host refuses a post from a person without **send messages** and enforces slow mode (a refused post says how long to
+wait), in server channels; DMs are not checked. A page that a person loaded before the upgrade keeps working but does
+not know slow mode until it reloads (it skips the wait, and the host still checks who may post), so ask people to
+reload their tabs.
+
+To go back to web-3.6 run the rollback by hand above with `--to=17`. Going down from 18 to 17 drops the `class` column and
+the `slowmode_marks` table and keeps every message. The browser side is one-way, as in the table above.
 
 ## Capacity
 

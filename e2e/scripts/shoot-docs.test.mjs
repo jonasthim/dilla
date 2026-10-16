@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { DOC_SHOTS, DOC_VIEWPORTS, shootNamedState } from './shoot-docs.mjs';
+import { DOC_SHOTS, DOC_VIEWPORTS, PHONE_APP, PHONE_SHOTS, shootNamedState } from './shoot-docs.mjs';
 
 test('new guide images have unique state names and the required real viewport sizes', () => {
   assert.deepEqual(DOC_VIEWPORTS, { desktop: { width: 1280, height: 800 }, phone: { width: 360, height: 740 } });
@@ -13,7 +13,7 @@ test('new guide images have unique state names and the required real viewport si
     'search-results-desktop', 'search-results-phone', 'settings-diagnostics-desktop',
     'settings-diagnostics-phone', 'tabs-handover-desktop', 'tabs-handover-phone',
     // L-DOC-24 (web-3): the voice guide's six states.
-    'voice-stage-desktop', 'voice-stage-phone', 'voice-dock-desktop', 'voice-dock-phone',
+    'voice-stage-desktop', 'voice-stage-phone', 'voice-dock-desktop',
     'voice-settings-desktop', 'voice-settings-phone', 'voice-blocked-desktop', 'voice-blocked-phone',
     'call-ring-desktop', 'call-ring-phone', 'media-player-desktop', 'media-player-phone',
   ]);
@@ -38,6 +38,14 @@ test('every screenshot the voice guide names is one the shooter makes', () => {
   const guide = readFileSync(new URL('../../docs/user/voice.md', import.meta.url), 'utf8');
   const named = [...guide.matchAll(/screenshots\/([a-z0-9-]+)\.png/g)].map((m) => m[1]);
   assert.ok(named.length > 0, 'docs/user/voice.md names no screenshot');
-  const shot = new Set(DOC_SHOTS.map((s) => s.name));
-  for (const name of named) assert.ok(shot.has(name), `docs/user/voice.md names ${name}.png, which DOC_SHOTS does not make`);
+  const shot = new Set([...DOC_SHOTS.map((s) => s.name), ...PHONE_SHOTS]);
+  for (const name of named) assert.ok(shot.has(name), `docs/user/voice.md names ${name}.png, which the shooter does not make`);
+});
+
+test('the phone set is shot at 390 by 844 and every image of "On your phone" is one the shooter makes', () => {
+  assert.deepEqual(PHONE_APP, { width: 390, height: 844 });
+  assert.deepEqual(PHONE_SHOTS, ['phone-servers', 'phone-channel', 'phone-activity', 'phone-callbar']);
+  const guide = readFileSync(new URL('../../docs/user/getting-started.md', import.meta.url), 'utf8');
+  const named = [...guide.matchAll(/screenshots\/(phone-[a-z0-9-]+)\.png/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(named)].sort(), [...PHONE_SHOTS].sort());
 });

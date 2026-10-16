@@ -42,7 +42,7 @@ The slow-mode Select is a native select in the settings sheet. The thread is a f
 
 ## Focus rules
 
-- Opening a thread focuses the thread composer.
+- Opening a thread focuses its composer in the desktop aside, and its back control on the phone sheet and the narrow overlay (the sheet convention).
 - Closing returns focus to the message toolbar item or chip that opened it.
 
 ## Announcements
