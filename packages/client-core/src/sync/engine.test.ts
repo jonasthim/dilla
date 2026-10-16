@@ -311,6 +311,9 @@ describe('catch-up on every ready (rule 2)', () => {
 describe('live frames (rule 3)', () => {
   // web3.7 RB1: op 19's 7th element, the upload class, becomes the catch-up row's 9th, so the core applies its
   // class/type rule to a live frame as to a fetched row. A web3.6 host's six elements keep the 8-element row.
+  // The class-1 case shows its type-0 post only because ModelCore ignores the class: it does not model the mismatch
+  // rule, which the real core applies (client_fold.rs class_mismatch_is_neither_shown_nor_folded). Here only the
+  // re-encoded row is under test.
   it.each([
     ['class 1', [1n], 9],
     ['a null class', [null], 9],

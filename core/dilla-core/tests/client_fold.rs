@@ -2699,30 +2699,46 @@ fn class_mismatch_is_neither_shown_nor_folded() {
         post(&mut peer, &mut relay, 0x71, Message, None, "the target"),
         2
     );
+    // A reply that mentions me, sent as a fold: without the rule it would show, count as an
+    // unread mention and keep its reply_to.
+    let mention = format!("hey <@{}> sent as a fold", "a1".repeat(16));
     assert_eq!(
-        post(
-            &mut peer,
-            &mut relay,
-            0x72,
-            Message,
-            None,
-            "a post sent as a fold"
-        ),
+        post(&mut peer, &mut relay, 0x72, Message, Some(TARGET), &mention),
         3
     );
     assert_eq!(
         post(&mut peer, &mut relay, 0xa1, ReactionAdd, Some(TARGET), "👍"),
         4
     );
+    assert_eq!(post(&mut peer, &mut relay, 0xa2, Pin, Some(TARGET), ""), 5);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa3, Edit, Some(TARGET), "edited"),
+        6
+    );
     serve_class(&mut relay, 2, Some(0));
     serve_class(&mut relay, 3, Some(1));
-    serve_class(&mut relay, 4, Some(0));
+    for fold in 4..=6 {
+        serve_class(&mut relay, fold, Some(0));
+    }
     me.sync(&relay);
     let dropped = (1, "E_CLASS_MISMATCH".to_owned(), Some(255), true, true, 0);
-    assert_eq!(stored(&me, 3), dropped, "a post sent as class 1");
+    assert_eq!(
+        stored(&me, 3),
+        dropped,
+        "a mentioning reply sent as class 1"
+    );
     assert_eq!(stored(&me, 4), dropped, "a reaction sent as class 0");
-    assert_eq!(seqs(&me), vec![2], "neither row is shown");
+    assert_eq!(stored(&me, 5), dropped, "a pin sent as class 0");
+    assert_eq!(stored(&me, 6), dropped, "an edit sent as class 0");
+    assert_eq!(seqs(&me), vec![2], "no lying row is shown");
+    let target = row_at(&me, 2);
+    assert_eq!(
+        (target.body.as_str(), target.edited_seq, target.pinned),
+        ("the target", 0, 0),
+        "neither the edit nor the pin is folded"
+    );
     assert!(chips(&me, 2).is_empty(), "the reaction is not folded");
+    assert!(pins(&me).is_empty(), "the pin is not listed");
     assert_eq!(unread(&me), (1, 0, 2), "activity counts the target only");
 }
 
@@ -2786,4 +2802,52 @@ fn a_matching_class_is_kept() {
     assert_eq!((stored(&me, 2).0, stored(&me, 2).2), (0, Some(0)));
     assert_eq!((stored(&me, 3).0, stored(&me, 3).2), (0, Some(3)));
     assert_eq!(unread(&me), (1, 0, 2));
+}
+
+/// The class is checked before the sender's trust: a lying row from a sender whose device list is
+/// not loaded yet is never parked as pending history, so a later release cannot show it. The
+/// honest row from the same sender, parked the same way, is released (the control).
+#[test]
+fn a_lying_row_from_an_unlisted_sender_is_never_released() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut me = ready_core(0xa1, "alice");
+    me.create_and_register(&mut relay, &instance);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    assert_eq!(peer.join_external(&mut relay), 1);
+    me.sync(&relay);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x71, Message, None, "honest"),
+        2
+    );
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "lying"), 3);
+    serve_class(&mut relay, 2, Some(0));
+    serve_class(&mut relay, 3, Some(1));
+    me.sync(&relay);
+    assert!(seqs(&me).iter().all(|s| *s != 3), "the lie is not shown");
+    assert_eq!(
+        count(&me, "SELECT count(*) FROM app_pending_history"),
+        1,
+        "only the honest row is parked"
+    );
+    ingest_list_body(
+        &mut me,
+        &relay,
+        peer.user,
+        peer.device,
+        &peer.device_list_body(),
+    );
+    me.core
+        .revalidate_pending(&GROUP, relay.leaf_of(peer.device), 256)
+        .expect("revalidate_pending");
+    assert_eq!(
+        seqs(&me),
+        vec![2],
+        "the honest row is released, the lie is not"
+    );
+    assert_eq!(stored(&me, 2).0, 0);
+    assert_eq!(
+        stored(&me, 3),
+        (1, "E_CLASS_MISMATCH".to_owned(), Some(255), true, true, 0)
+    );
 }

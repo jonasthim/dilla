@@ -100,7 +100,6 @@ fn a_pruned_row_served_at_a_seq_already_stored_is_skipped() {
         franking_tag: [0x01; 32],
         recv_ts: NOW,
         deleted: false,
-
         class: None,
     };
     let applied = apply(&mut b, &[&pruned], mine);
