@@ -21,7 +21,7 @@ export function buildBadges(activity: readonly ActivityRow[], channelOf: Readonl
   return badges;
 }
 
-export function noticeOf(input: { row: TimelineRow; channelId: string; communityId: string | null; dm: boolean; mention: boolean; senderName: string }): NoticeDraft {
+export function noticeOf(input: { row: TimelineRow; channelId: string; communityId: string | null; dm: boolean; mention: boolean; senderName: string; threadRoot: string | null }): NoticeDraft {
   const { row } = input;
   return {
     channelId: input.channelId,
@@ -31,6 +31,7 @@ export function noticeOf(input: { row: TimelineRow; channelId: string; community
     senderName: input.senderName,
     body: Array.from(row.body).slice(0, NOTICE_BODY_MAX).join(''),
     ts: Number(row.recvTs),
+    threadRoot: input.threadRoot,
   };
 }
 

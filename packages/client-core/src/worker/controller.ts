@@ -2464,16 +2464,37 @@ export class Controller {
     const dm = this.dms.has(channelId);
     const communityId = dm ? null : this.channels.get(channelId)?.communityId ?? null;
     const drafts: NoticeDraft[] = [];
-    const rows = core.timeline(groupId, 0n, Math.min(result.newSeqs.length, NOTICE_READ_MAX));
-    for (const row of rows) {
+    for (const { row, threadRoot } of this.freshRows(core, groupId, fresh, floor)) {
       if (!this.noticeable(row, fresh, ownUser, floor)) continue;
       const senderName = this.nameOf(toHex(row.senderUser as Id));
       // FACTS-SECURITY-07: the core's flag, set once at apply on the row's original body; never the shown body, which may
       // hold another member's edit folded in the same apply (ruling 4, ruling 34).
-      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: after > before && row.mention, senderName }));
+      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: after > before && row.mention, senderName, threadRoot }));
     }
     this.noticesState = appendNotices(this.noticesState, drafts);
     this.slices.set('notices', this.noticesState);
+  }
+
+  /** The apply's new rows, oldest first, at most NOTICE_READ_MAX, each with the thread root it shows under (hex, or null).
+   *  FX-core (final review I1): since TB1 the main timeline leaves out a reply whose root is held, so a new seq it does not
+   *  hold is looked for in the threads, which the core lists latest reply first: a new reply's thread is at the top.
+   *  Only threads with a reply since the notice floor are read, at most NOTICE_READ_MAX of them, and never more rows than
+   *  the main read left to find, so at most NOTICE_READ_MAX rows in all. */
+  private freshRows(core: CorePort, groupId: Id, fresh: ReadonlySet<string>, floor: bigint): { row: TimelineRow; threadRoot: string | null }[] {
+    const limit = Math.min(fresh.size, NOTICE_READ_MAX);
+    const found = core.timeline(groupId, 0n, limit).filter((row) => fresh.has(row.seq.toString()))
+      .map((row) => ({ row, threadRoot: null as string | null }));
+    const missing = (): number => limit - found.length;
+    if (missing() > 0) {
+      for (const t of core.threads(groupId).slice(0, NOTICE_READ_MAX)) {
+        if (missing() <= 0 || t.lastTs < floor) break;
+        const threadRoot = toHex(t.rootMsgId);
+        for (const row of core.threadTimeline(groupId, t.rootMsgId, 0n, missing()).rows) {
+          if (fresh.has(row.seq.toString())) found.push({ row, threadRoot });
+        }
+      }
+    }
+    return found.sort((a, b) => (a.row.seq < b.row.seq ? -1 : a.row.seq > b.row.seq ? 1 : 0));
   }
 
   /** A new, readable message from another user (on any device: head ruling 29), received live. */

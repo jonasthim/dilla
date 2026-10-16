@@ -3,6 +3,7 @@ import type { ChannelSummary } from '@dilla/client-core';
 import { EmptyState, Icon, Pill } from '@dilla/ui';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { t } from '../strings/index.ts';
+import { requestThread } from '../thread-request.ts';
 import { mergeMembers, messageTime, nameBook, plainBody, rowBadge } from './shell-model.ts';
 
 const CATEGORY = 2;
@@ -10,7 +11,8 @@ const CHEVRON = 'chevron-right';
 
 /**
  * The phone's Activity tab (flow 12): the mentions and direct messages the worker noticed since this tab opened,
- * newest first, then every other channel or DM with something unread. A row opens the channel or DM it names.
+ * newest first, then every other channel or DM with something unread. A row opens the channel or DM it names, and a
+ * reply that shows in a thread opens that thread too.
  */
 export function Activity(props: { onOpen(target: { communityId: string | null; channelId: string }): void }): React.JSX.Element {
   const notices = useSlice('notices');
@@ -52,7 +54,10 @@ export function Activity(props: { onOpen(target: { communityId: string | null; c
             const place = communityName(n.communityId);
             return (
               <li key={n.id}>
-                <button type="button" className="dw-phone-row" onClick={() => props.onOpen({ communityId: n.communityId, channelId: n.channelId })}>
+                <button type="button" className="dw-phone-row" onClick={() => {
+                  props.onOpen({ communityId: n.communityId, channelId: n.channelId });
+                  if (n.threadRoot !== null && n.communityId !== null) requestThread(n.channelId, n.threadRoot);
+                }}>
                   <span className="dw-phone-row__text">
                     <span className="dw-phone-row__line">
                       <strong className="dw-phone-row__who">{n.senderName}</strong>

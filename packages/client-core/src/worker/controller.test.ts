@@ -2544,7 +2544,7 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
     expect(w.notices()).toEqual({ nextId: 2, items: [{
       id: 1, channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), kind: 'message', senderUser: toHex(STRANGER),
-      senderName: '5a5a5a5a', body: 'from a stranger 1', ts: 1_700_000_000,
+      senderName: '5a5a5a5a', body: 'from a stranger 1', ts: 1_700_000_000, threadRoot: null,
     }] });
     const mention: TimelineRow = { ...strangerRow(2), body: `<@${toHex(USER)}> look`, mention: true };
     const own: TimelineRow = { ...strangerRow(3), senderUser: USER, senderDevice: DEVICE, body: 'mine' };
@@ -4514,6 +4514,34 @@ describe('threads (web3.7 TB2)', () => {
     w.state.rows = [{ ...strangerRow(2), reply: { replyTo: ROOT_ID, targetSeq: 2n, targetUser: STRANGER, excerpt: 'q', state: 0, threadRoot: ROOT_ID } }];
     w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([2n]));
     expect(w.timeline()?.items[0]?.reply?.threadRoot).toBe(ROOT_HEX);
+  });
+
+  // FX-core (final review I1): since TB1 the main timeline leaves out a reply whose root is held, so the notice read finds
+  // such a reply in its thread.
+  const mentionReply = (seq: number): TimelineRow => ({ ...replyRow(seq), body: `<@${toHex(USER)}> look`, mention: true });
+  const listed = (lastTs: bigint): ThreadRow[] => [{ rootMsgId: ROOT_ID, rootSeq: 1n, count: 3, lastTs, excerpt: 'from a stranger 1' }];
+
+  it('a thread reply that mentions me raises a mention notice that names its thread', async () => {
+    const w = await threadWorld();
+    w.state.rows = [{ ...rootRow(), thread: { count: 3, lastTs: 1_700_000_009n } }];
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [mentionReply(4), replyRow(3), replyRow(2)] });
+    w.state.threadList = listed(1_700_000_009n);
+    w.state.activity = [act(GROUP, 1, 1)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n]));
+    expect(w.notices()?.items).toEqual([{
+      id: 1, channelId: CH, communityId: toHex(COMMUNITY), kind: 'mention', senderUser: toHex(STRANGER),
+      senderName: '5a5a5a5a', body: `<@${toHex(USER)}> look`, ts: 1_700_000_000, threadRoot: ROOT_HEX,
+    }]);
+  });
+
+  it('a thread reply and a channel post in one apply both raise a notice; the post names no thread', async () => {
+    const w = await threadWorld();
+    w.state.rows = [strangerRow(5), { ...rootRow(), thread: { count: 3, lastTs: 1_700_000_009n } }];
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [replyRow(4), replyRow(3), replyRow(2)] });
+    w.state.threadList = listed(1_700_000_009n);
+    w.state.activity = [act(GROUP, 2, 0)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n, 5n]));
+    expect(w.notices()?.items.map((n) => [n.body, n.threadRoot])).toEqual([['reply 4', ROOT_HEX], ['from a stranger 5', null]]);
   });
 
   async function withThreadsOpen(): Promise<World> {

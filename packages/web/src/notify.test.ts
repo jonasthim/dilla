@@ -13,7 +13,7 @@ const DM = '9a'.repeat(16);
 const ch = (id: string, name: string): ChannelSummary =>
   ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' });
 const notice = (over: Partial<Notice> = {}): Notice => ({
-  id: 0, channelId: RAND, communityId: A, kind: 'message', senderUser: '28'.repeat(16), senderName: 'bob', body: 'hi', ts: 1_790_000_000, ...over,
+  id: 0, channelId: RAND, communityId: A, kind: 'message', senderUser: '28'.repeat(16), senderName: 'bob', body: 'hi', ts: 1_790_000_000, threadRoot: null, ...over,
 });
 const dmNotice = (over: Partial<Notice> = {}): Notice => notice({ channelId: DM, communityId: null, kind: 'dm', ...over });
 const ctx = (over: Partial<NotifyContext> = {}): NotifyContext => ({ permission: 'granted', settings: {}, visible: true, onScreen: GEN, ...over });

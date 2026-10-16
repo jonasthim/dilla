@@ -16,7 +16,7 @@ const row = (seq: number, body: string): TimelineRow => ({
   senderDevice: new Uint8Array(16).fill(0x5b), senderKind: 0, senderTier: 0, msgId: new Uint8Array(16).fill(seq), type: 0, body,
   editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false, thread: null,
 });
-const draft = (n: number): NoticeDraft => ({ channelId: CH, communityId: COMMUNITY, kind: 'message', senderUser: null, senderName: 'p', body: `m${n}`, ts: n });
+const draft = (n: number): NoticeDraft => ({ channelId: CH, communityId: COMMUNITY, kind: 'message', senderUser: null, senderName: 'p', body: `m${n}`, ts: n, threadRoot: null });
 
 describe('buildBadges', () => {
   it('keys counts by channel and drops a group bound to no known channel', () => {
@@ -37,18 +37,25 @@ describe('buildBadges', () => {
 
 describe('notices', () => {
   it('builds a notice from a stored row', () => {
-    expect(noticeOf({ row: row(4, 'hello'), channelId: CH, communityId: COMMUNITY, dm: false, mention: false, senderName: 'Peer' })).toEqual({
+    expect(noticeOf({ row: row(4, 'hello'), channelId: CH, communityId: COMMUNITY, dm: false, mention: false, senderName: 'Peer', threadRoot: null })).toEqual({
       channelId: CH, communityId: COMMUNITY, kind: 'message', senderUser: '5a'.repeat(16), senderName: 'Peer', body: 'hello', ts: 1_700_000_004,
+      threadRoot: null,
     });
   });
 
+  it('carries the thread root a reply shows under (FX-core)', () => {
+    const root = '71'.repeat(16);
+    expect(noticeOf({ row: row(4, 'hello'), channelId: CH, communityId: COMMUNITY, dm: false, mention: true, senderName: 'Peer', threadRoot: root }))
+      .toMatchObject({ kind: 'mention', threadRoot: root });
+  });
+
   it('a DM is dm whatever the mention, a mention outside DMs is mention', () => {
-    expect(noticeOf({ row: row(1, 'x'), channelId: CH, communityId: null, dm: true, mention: true, senderName: 'p' }).kind).toBe('dm');
-    expect(noticeOf({ row: row(1, 'x'), channelId: CH, communityId: COMMUNITY, dm: false, mention: true, senderName: 'p' }).kind).toBe('mention');
+    expect(noticeOf({ row: row(1, 'x'), channelId: CH, communityId: null, dm: true, mention: true, senderName: 'p', threadRoot: null }).kind).toBe('dm');
+    expect(noticeOf({ row: row(1, 'x'), channelId: CH, communityId: COMMUNITY, dm: false, mention: true, senderName: 'p', threadRoot: null }).kind).toBe('mention');
   });
 
   it('cuts the body at 200 code points', () => {
-    const long = noticeOf({ row: row(1, '😀'.repeat(250)), channelId: CH, communityId: null, dm: true, mention: false, senderName: 'p' });
+    const long = noticeOf({ row: row(1, '😀'.repeat(250)), channelId: CH, communityId: null, dm: true, mention: false, senderName: 'p', threadRoot: null });
     expect(Array.from(long.body)).toHaveLength(NOTICE_BODY_MAX);
     expect(long.body).toBe('😀'.repeat(200));
   });

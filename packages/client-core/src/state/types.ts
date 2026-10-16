@@ -117,7 +117,9 @@ export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecti
   devices: number; errors: { code: string; at: number }[] }
 export interface TypingState { userId: string; name: string; expiresAt: number }
 export interface BadgeState { unread: number; mentions: number; }
-export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number; }
+// threadRoot (FX-core): the 32-hex msg id of the thread root the message shows under (a reply whose root is held), else null.
+export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number;
+  threadRoot: string | null; }
 export interface NoticesState { nextId: number; items: Notice[]; }      // items ≤ 32, oldest first; ids increase for the worker's life
 // ---- web-3: calls, voice presence and rings (L-TS-51). A call's media key is never in a slice or a command result: it
 // reaches the page only as a `callKeys` push (L-TS-52).

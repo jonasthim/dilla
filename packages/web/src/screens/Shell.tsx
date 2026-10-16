@@ -35,6 +35,7 @@ import { ServerSettings, type AdminTab } from './admin/ServerSettings.tsx';
 import { ChannelEditFlow } from './admin/ChannelEditFlow.tsx';
 import { useSounds } from './voice/useSounds.tsx';
 import { Activity } from './Activity.tsx';
+import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
 
 /**
@@ -1020,6 +1021,19 @@ export function Shell(): React.JSX.Element {
     setSide({ channelId: channel.id, view: 'thread', rootMsgId });
   }
   openThreadRef.current = openThread;
+  // FX-core (final review I1): a notice of a thread reply (an Activity row, a notification click) opens its thread once its
+  // channel is the open one, as a search hit does; a request whose channel is no longer the route's is dropped.
+  const threadRequest = useThreadRequest();
+  useEffect(() => {
+    if (threadRequest === null) return;
+    if (channelId !== threadRequest.channelId) { takeThreadRequest(); return; }
+    if (channel === null) return;
+    takeThreadRequest();
+    sideOpener.current = null;
+    sideRoot.current = threadRequest.rootMsgId;
+    if (phone) setMembersOpen(false);
+    setSide({ channelId: channel.id, view: 'thread', rootMsgId: threadRequest.rootMsgId });
+  }, [threadRequest, channelId, channel, phone]);
   function openList(): void {
     if (channel === null) return;
     noteOpener();
