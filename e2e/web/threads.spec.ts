@@ -138,6 +138,11 @@ test('a reply in a thread shows its count on both sides, the pane sits in the as
       await expect(paneRow(page, ok)).toBeVisible({ timeout: WAIT });
       await expect(chip(rootRow, 'thread.summary.one')).toBeVisible({ timeout: WAIT });
       await expect(logRegion(page, GENERAL)).not.toContainText(ok);
+      // Bjorn's reply is not Ada's: her toolbar offers no edit or delete on it.
+      await paneRow(page, ok).focus();
+      await expect(rowToolbar(paneRow(page, ok))).toBeVisible();
+      await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.edit'), exact: true })).toHaveCount(0);
+      await expect(rowToolbar(paneRow(page, ok)).getByRole('button', { name: copy('shell.message.delete'), exact: true })).toHaveCount(0);
 
       // Ada replies from the pane: Björn receives it, and both counts read 2.
       const go = `go ${tag()}`;
@@ -196,15 +201,19 @@ test('a mention in a thread badges the channel, and the reply stays out of the c
     await channelRow(page, SECOND).click();
     await expect(composerBox(page, SECOND)).toBeEnabled({ timeout: WAIT });
     await expect(channelRow(page, GENERAL)).toHaveAttribute('data-mentions', '0');
+    // Control: a mention-free thread reply in a channel Ada is not viewing gives no mention badge.
+    await peer.send(`plain ${tag()}`, general, { threadId: root.msg_id });
+    await expect(channelRow(page, GENERAL)).toHaveAttribute('data-unread', /[1-9]/, { timeout: WAIT });
+    await expect(channelRow(page, GENERAL)).toHaveAttribute('data-mentions', '0');
     const note = `ok ${tag()}`;
     await peer.send(`<@${ada}> ${note}`, general, { threadId: root.msg_id });
     await expect(channelRow(page, GENERAL)).toHaveAttribute('data-mentions', '1', { timeout: WAIT });
-    // Control: a second mention-free reply adds nothing, and a mention in the other channel's main timeline adds to its own row.
+    // Control: a mention in the other channel adds to that row, not to #general's.
     await peer.send(`<@${ada}> side ${tag()}`, second);
     await expect(channelRow(page, GENERAL)).toHaveAttribute('data-mentions', '1');
     await channelRow(page, GENERAL).click();
     await expect(composerBox(page, GENERAL)).toBeEnabled({ timeout: WAIT });
-    await expect(chip(rowById(page, GENERAL, root.msg_id), 'thread.summary.one')).toBeVisible({ timeout: WAIT });
+    await expect(chip(rowById(page, GENERAL, root.msg_id), 'thread.summary.other', 2)).toBeVisible({ timeout: WAIT });
     await expect(logRegion(page, GENERAL)).not.toContainText(note);
     await expect(channelRow(page, GENERAL)).toHaveAttribute('data-mentions', '0', { timeout: WAIT });
   } finally { await peer.close(); }
@@ -260,8 +269,11 @@ test('a thread opens from a search hit', async ({ page }) => {
     await sendText(page, GENERAL, plan);
     const root = await peer.waitFor(plan, general);
     const needle = `quokka${tag()}`;
-    const reply = await peer.send(`${needle} in a thread`, general, { threadId: root.msg_id });
+    await peer.send(`${needle} in a thread`, general, { threadId: root.msg_id });
+    const decoy = await peer.send(`decoy ${tag()}`, general);
+    await peer.send(`decoyreply ${tag()}`, general, { threadId: decoy.msg_id });
     await expect(chip(rowById(page, GENERAL, root.msg_id), 'thread.summary.one')).toBeVisible({ timeout: WAIT });
+    await expect(chip(rowById(page, GENERAL, decoy.msg_id), 'thread.summary.one')).toBeVisible({ timeout: WAIT });
     // The reply is not a row of the channel, so a search hit cannot focus it there: it opens the thread.
     await expect(threadPane(page)).toHaveCount(0);
     await page.keyboard.press('ControlOrMeta+K');
@@ -273,6 +285,7 @@ test('a thread opens from a search hit', async ({ page }) => {
     await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
     await expect(paneRow(page, needle)).toBeVisible({ timeout: WAIT });
     await expect(paneRow(page, plan)).toBeVisible();
+    await expect(threadPane(page).getByText(/decoy/)).toHaveCount(0);
   } finally { await peer.close(); }
 });
 
@@ -285,7 +298,10 @@ test('a thread opens from the pin of a reply', async ({ page }) => {
     const root = await peer.waitFor(plan, general);
     const needle = `quokka${tag()}`;
     const reply = await peer.send(`${needle} in a thread`, general, { threadId: root.msg_id });
+    const decoy = await peer.send(`decoy ${tag()}`, general);
+    await peer.send(`decoyreply ${tag()}`, general, { threadId: decoy.msg_id });
     await expect(chip(rowById(page, GENERAL, root.msg_id), 'thread.summary.one')).toBeVisible({ timeout: WAIT });
+    await expect(chip(rowById(page, GENERAL, decoy.msg_id), 'thread.summary.one')).toBeVisible({ timeout: WAIT });
     // A pin of the reply: the pins dialog's jump opens the thread too.
     await peer.send('', general, { type: 5, replyTo: reply.msg_id });
     await page.locator(CLASS.channelHeader).getByRole('button', { name: copy('shell.pins.open'), exact: true }).click();
@@ -296,6 +312,8 @@ test('a thread opens from the pin of a reply', async ({ page }) => {
     await expect(pins).toBeHidden();
     await expect(threadPane(page)).toBeVisible({ timeout: WAIT });
     await expect(paneRow(page, needle)).toBeVisible({ timeout: WAIT });
+    await expect(paneRow(page, plan)).toBeVisible();
+    await expect(threadPane(page).getByText(/decoy/)).toHaveCount(0);
   } finally { await peer.close(); }
 });
 
@@ -334,11 +352,13 @@ test('on a phone the thread is a full-screen sheet, the system back closes it an
     expect(page.url(), 'back closes the sheet and the channel view remains').toBe(channelUrl);
     await expect(composerBox(page, GENERAL)).toBeVisible();
     await expect(chip(row, 'thread.summary.one')).toBeVisible({ timeout: WAIT });
-    // A real click on the chip opens it again.
-    await chip(row, 'thread.summary.one').click();
+    await expect.poll(() => row.evaluate((r) => r.contains(document.activeElement)), { timeout: WAIT, message: 'focus returns to the opener row' }).toBe(true);
+    // A tap on the chip opens it again.
+    await chip(row, 'thread.summary.one').tap();
     await expect(sheet).toBeVisible({ timeout: WAIT });
     await page.goBack();
     await expect(sheet).toBeHidden({ timeout: WAIT });
+    await expect.poll(() => row.evaluate((r) => r.contains(document.activeElement)), { timeout: WAIT, message: 'focus returns to the opener row' }).toBe(true);
   } finally {
     await context.close();
     await peer.close();
