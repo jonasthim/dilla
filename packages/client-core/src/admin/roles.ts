@@ -27,7 +27,7 @@ export interface RolesDeps {
   /** The admin controller's access read (permissions, roles, overwrites); never rejects. */
   loadAccess(communityId: string): Promise<void>;
   /** The worker's own refusal (its code reaches the page as E_BAD_INPUT and the like). */
-  refusal(code: string, detail: string): Error;
+  refusal(code: string, detail: string, reason?: string): Error;
 }
 
 type RolesCommand = Extract<Command, { m: 'createRole' | 'updateRole' | 'moveRole' | 'deleteRole' | 'grantRole' | 'revokeRole'
@@ -300,18 +300,23 @@ export class RolesController {
    *  @everyone skipped). A creator who is neither owner nor administrator must tick a role she holds, else the create is
    *  refused here with no request: she would lose the right to post in the channel she made. */
   async announcementOverwrites(communityId: string, roleIds: readonly string[]): Promise<NewOverwrite[]> {
-    const { everyoneId, owner } = await this.access(communityId);
+    const { everyoneId, owner, rows, top } = await this.access(communityId);
     const out: NewOverwrite[] = [{ kind: 0, targetId: fromHex(everyoneId), allow: 0, deny: PERM.sendMessages }];
     for (const roleId of new Set(roleIds)) {
       if (roleId !== everyoneId) out.push({ kind: 0, targetId: fromHex(roleId), allow: PERM.sendMessages, deny: 0 });
     }
-    // The instance accepts no self entry here (it exempts only a view-only one), so the creator keeps her right to post
-    // through a ticked role she holds; the owner and an administrator need none.
-    if (!owner && !this.administrator(communityId)) {
+    // The instance accepts no self entry here, and refuses a role entry at or above the creator's own rank, so the creator
+    // keeps her right to post through a ticked role she holds below her top; the owner and an administrator need none.
+    // With her own roles not yet loaded nothing is refused here: the instance answers.
+    const members = this.deps.get(`members:${communityId}`);
+    if (!owner && !this.administrator(communityId) && members !== undefined) {
       const me = this.deps.me();
       const mine = me === null ? undefined : toHex(me.userId);
-      const held = new Set(this.deps.get(`members:${communityId}`)?.find((m) => m.userId === mine)?.roleIds ?? []);
-      if (![...new Set(roleIds)].some((r) => r !== everyoneId && held.has(r))) throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_HELD_ROLE_REASON);
+      const held = new Set(members.find((m) => m.userId === mine)?.roleIds ?? []);
+      const rank = new Map(rows.map((r) => [toHex(r.id), r.position]));
+      if (![...new Set(roleIds)].some((r) => r !== everyoneId && held.has(r) && (rank.get(r) ?? top) < top)) {
+        throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_HELD_ROLE_REASON, 'announce.noHeldRole');
+      }
     }
     if (out.length > OVERWRITES_PER_CREATE_MAX) throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_ROLES_REASON);
     return out;

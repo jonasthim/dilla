@@ -280,10 +280,26 @@ describe('roles: announcement channels', () => {
   });
   it('a non-owner who holds none of the ticked roles is refused locally, with no request', async () => {
     const m = await member();
-    expect(await run(m, create({ announce: { roleIds: [HEX.b] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(await run(m, create({ announce: { roleIds: [HEX.b] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', reason: 'announce.noHeldRole' } });
     expect(await run(m, create({ announce: { roleIds: [HEX.everyone] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
     expect(await run(m, create({}))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
     expect(m.routes.createChannel).not.toHaveBeenCalled();
+  });
+  it('a held role at the creator\'s own top is refused locally; one below it is sent', async () => {
+    const at = await ready({ owner: false, top: 1, bits: 0xffn | BigInt(PERM.manageChannels), roleIds: [A] });
+    expect(await run(at, create({ announce: { roleIds: [HEX.a] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', reason: 'announce.noHeldRole' } });
+    expect(at.routes.createChannel).not.toHaveBeenCalled();
+    const below = await ready({ owner: false, top: 2, bits: 0xffn | BigInt(PERM.manageChannels), roleIds: [A] });
+    expect(await run(below, create({ announce: { roleIds: [HEX.a] } }))).toMatchObject({ ok: true });
+    expect(below.routes.createChannel).toHaveBeenCalledTimes(1);
+  });
+  it('with her own roles not loaded nothing is refused locally; the instance answers', async () => {
+    const m = await ready({ owner: false, top: 5, bits: 0xffn | BigInt(PERM.manageChannels) });
+    // The member list is dropped from the slice store, as before its first read.
+    const held = (m.controller as unknown as { slices: { held: Map<string, unknown> } }).slices.held;
+    expect(held.delete(`members:${CID}`)).toBe(true);
+    expect(await run(m, create({ announce: { roleIds: [HEX.b] } }))).toMatchObject({ ok: true });
+    expect(m.routes.createChannel).toHaveBeenCalledTimes(1);
   });
   it('the owner may tick no role', async () => {
     const o = await ready();

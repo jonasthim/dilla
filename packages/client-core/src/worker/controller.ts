@@ -98,7 +98,7 @@ export const REAL_PARTS: ControllerParts = {
 
 /** A refusal of the controller's own (E_BAD_INPUT, E_NOT_READY, E_INVITE_NOT_COMMUNITY, E_SETTING_KEY). */
 class Refusal extends Error {
-  constructor(readonly code: string, readonly detail: string) {
+  constructor(readonly code: string, readonly detail: string, readonly reason?: string) {
     super(detail === '' ? code : `${code}: ${detail}`);
     this.name = 'Refusal';
   }
@@ -137,8 +137,11 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
   if (!ALLOWED_CODES.has(code)) code = 'E_INTERNAL';
   const status = e instanceof DillaHttpError && Number.isInteger(e.status) && e.status >= 100 && e.status <= 599 ? e.status : 0;
   const retry = e instanceof DillaHttpError ? e.retryAfterMs : null;
-  return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null };
+  return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null,
+    ...(e instanceof Refusal && e.reason !== undefined && REFUSAL_REASONS.has(e.reason) ? { reason: e.reason } : {}) };
 }
+/** The stable reasons a local refusal may carry to the page. */
+const REFUSAL_REASONS = new Set(['announce.noHeldRole']);
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
   const store = error.code === 'E_STORE_NEWER' && error.store !== undefined
@@ -148,7 +151,7 @@ function sanitizePageError(error: WorkerError): WorkerError {
     status: Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? error.status : 0,
     retryAfterMs: typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
       && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null,
-    ...(store === null ? {} : { store }) };
+    ...(store === null ? {} : { store }), ...(error.reason !== undefined && REFUSAL_REASONS.has(error.reason) ? { reason: error.reason } : {}) };
 }
 
 /** An account code thrown as Error(code) by the account modules (enrol.ts, signup.ts, session.ts). */
@@ -831,7 +834,7 @@ export class Controller {
       communityOf: (channelId) => this.channels.get(channelId)?.communityId ?? null,
       reloadMembers: (communityId) => this.reloadMembers(communityId),
       loadAccess: (communityId) => this.admin.loadAccess(communityId),
-      refusal: (code, detail) => new Refusal(code, detail),
+      refusal: (code, detail, reason) => new Refusal(code, detail, reason),
     });
   }
 
