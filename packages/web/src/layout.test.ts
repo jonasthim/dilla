@@ -132,6 +132,20 @@ describe('usePhoneSheet', () => {
     again.mockRestore();
   });
 
+  it('close() does not pop an entry this instance did not push', () => {
+    window.history.replaceState({ phoneSheet: 'members' }, '', '/c/x');
+    const onClose = vi.fn();
+    // Closed, so the stale key is stripped; an open sheet whose own entry was lost (a replace) is the other case.
+    const { result, rerender } = renderHook(({ open }) => usePhoneSheet('members', open, onClose), { initialProps: { open: true } });
+    rerender({ open: false });
+    window.history.replaceState({ phoneSheet: 'members' }, '', '/c/x');
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    act(() => result.current.close());
+    expect(back).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    back.mockRestore();
+  });
+
   it('calls onClose at once when the sheet has no entry', () => {
     window.history.replaceState(null, '', '/c/x');
     const onClose = vi.fn();

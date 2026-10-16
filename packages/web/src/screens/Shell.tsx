@@ -1111,9 +1111,9 @@ export function Shell(): React.JSX.Element {
   // the list's heading, when a pane or a tab comes back. Never on the first render.
   const paneKey = `${phonePane}:${phoneTab}`;
   const lastPane = useRef<string | null>(null);
-  // The name of the conversation the view showed, so back lands on its row.
-  const openedName = useRef<string | null>(null);
-  if (phone && phonePane === 'view' && (channel?.name ?? dm?.name) !== undefined) openedName.current = channel?.name ?? dm?.name ?? null;
+  // The id of the conversation the view showed, so back lands on its row.
+  const openedId = useRef<string | null>(null);
+  if (phone && phonePane === 'view' && targetId !== null) openedId.current = targetId;
   useLayoutEffect(() => {
     const before = lastPane.current;
     lastPane.current = paneKey;
@@ -1123,17 +1123,19 @@ export function Shell(): React.JSX.Element {
       if (focusLost() && title !== null) { title.tabIndex = -1; title.focus(); }
       return;
     }
-    const opened = openedName.current;
+    const opened = openedId.current;
+    // The list's rows are in the order of their ids; the row is found by position, never by its text.
+    const rowIds = phoneTab === 'dms' ? (dms ?? []).map(d => d.id) : ordered.filter(c => !isVoice(c)).map(c => c.id);
+    const at = opened === null ? -1 : rowIds.indexOf(opened);
     const row = openSettings.current !== null ? document.querySelector<HTMLElement>(`[data-settings-section="${openSettings.current}"]`)
-      : opened === null ? null : Array.from(document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list button'))
-        .find(b => b.textContent?.includes(opened)) ?? null;
-    openedName.current = null;
+      : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list button')[at] ?? null;
+    openedId.current = null;
     openSettings.current = null;
     const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-empty-state h2');
     if (target === null) return;
     target.tabIndex = row === null ? -1 : target.tabIndex;
     target.focus();
-  }, [paneKey, phone, phonePane]);
+  }, [paneKey, phone, phonePane, phoneTab, dms, ordered]);
   return (
     <>
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>

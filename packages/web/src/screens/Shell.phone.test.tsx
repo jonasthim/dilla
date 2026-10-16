@@ -3,7 +3,7 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
-import { A, callState, DM, GENV, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
+import { A, callState, CHANNELS, DM, GENV, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
 
 /** A window of the given kind: only the phone query matches, so the wide-window defaults (the members column) stay off. */
 function media(phone: boolean) {
@@ -236,6 +236,17 @@ describe('the phone shell: history', () => {
     goto(`/c/${A}`, { phoneBack: true });
     await screen.findByRole('button', { name: 'lobby' });
     await waitFor(() => expect(screen.getByRole('button', { name: 'lobby' })).toHaveFocus());
+  });
+
+  it('focuses the exact row it left when another name starts with it', async () => {
+    const { user, client } = phone({ path: `/c/${A}` });
+    const more = ['general', 'gen'].map((name, i) => ({ id: `${i}f`.repeat(16), communityId: A, kind: 0 as const, mode: 0 as const, name,
+      topic: '', parentId: null, position: 5 + i, group: 'active' as const }));
+    act(() => client.set(`channels:${A}`, [...CHANNELS, ...more]));
+    await user.click(await screen.findByRole('button', { name: 'gen' }));
+    await screen.findByRole('log');
+    goto(`/c/${A}`, { phoneBack: true });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'gen' })).toHaveFocus());
   });
 
   it('closes Settings with Escape the way the header back does, with no duplicate entry', async () => {
