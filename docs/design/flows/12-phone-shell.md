@@ -28,7 +28,7 @@ The grid is banner / pane / call bar / tab bar. The tab bar is hidden on pushed 
 
 ## 1280×800
 
-Desktop layout unchanged from flow 04 and flow 06, except the dock shows no controls while the stage is open (only minimal call info and mute/leave buttons).
+Desktop layout unchanged from flow 04 and flow 06, except the dock shows no controls while the stage is open.
 
 ## Keyboard map
 
@@ -36,7 +36,7 @@ Desktop layout unchanged from flow 04 and flow 06, except the dock shows no cont
 |---|---|---|
 | Tab | Tab bar | Move through tabs in order. |
 | Enter or Space | Tab link | Activates the tab. |
-| Escape | Pushed view or sheet | Returns to the list or previous view. The back button is the first focusable control on a pushed view. |
+| Escape | Sheet | Closes the sheet. On a pushed view, back is the first control. |
 
 ## Focus rules
 
