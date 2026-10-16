@@ -3,12 +3,14 @@
 // tab bar's servers list, a channel is a pushed view with a back, the other tabs name themselves, the link banner follows
 // the network, every tap target is 44 x 44 CSS px, and focus lands where flow 12 says. Chromium and WebKit only: Firefox has
 // no mobile emulation (R23).
-import { expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
+import { mkdirSync, rmSync } from 'node:fs';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
   messageRow, type Account,
 } from './support/app';
+import { PROFILE_ROOT } from './support/persistent';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -40,10 +42,18 @@ function started(): StartedHost {
   return host;
 }
 
-/** A phone context of its own: the suite's persistent context carries no touch or mobile emulation. */
-async function phoneContext(browser: Browser): Promise<BrowserContext> {
-  return browser.newContext({ ...PHONE, baseURL: `http://127.0.0.1:${String(HOST.port)}` });
+/** A phone context of its own, with touch and mobile emulation. It is persistent (launchPersistentContext on its own profile
+ *  dir), as a real phone's browser is: WebKit's ephemeral contexts behave like Safari private browsing, where the app cannot start. */
+type PhoneFixtures = Pick<PlaywrightWorkerArgs, 'playwright'> & Pick<PlaywrightWorkerOptions, 'browserName' | 'launchOptions' | 'headless' | 'channel'>;
+async function phoneContext(f: PhoneFixtures, dir: string): Promise<BrowserContext> {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const { launchOptions, headless, channel } = f;
+  return f.playwright[f.browserName].launchPersistentContext(dir, {
+    ...launchOptions, headless, channel, ...PHONE, baseURL: `http://127.0.0.1:${String(HOST.port)}`,
+  });
 }
+const phoneDir = (project: string, workerIndex: number, n: number) => `${PROFILE_ROOT}/${project}-${workerIndex}-phone${String(n)}`;
 
 /** Every visible input, textarea and select is at least 16 px, so no browser zooms on focus. A checkbox, a radio and a button
  *  take no typing, so no browser zooms to them and their own 13.33 px default is left alone. */
@@ -88,9 +98,10 @@ async function expectTapTargets(controls: Locator, state: string): Promise<void>
   expect(small, `${state}: controls under 44x44 CSS px`).toEqual([]);
 }
 
-test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs, the link, tap targets and focus', async ({ browser, guard }) => {
+test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs, the link, tap targets and focus', async ({ playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
   const h = started();
-  const context = await phoneContext(browser);
+  const dir = phoneDir(testInfo.project.name, testInfo.workerIndex, 1);
+  const context = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, dir);
   await guard.attach(context);
   const page = await context.newPage();
   const ada: Account = newAccount('Ada', h.control);
@@ -321,12 +332,14 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
   } finally {
     await guard.collectWorkers();
     await context.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ browser, guard }) => {
+test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwright, browserName, launchOptions, headless, channel, guard }, testInfo) => {
   started();
-  const context = await phoneContext(browser);
+  const dir = phoneDir(testInfo.project.name, testInfo.workerIndex, 2);
+  const context = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, dir);
   await guard.attach(context);
   const page = await context.newPage();
   const key = Array.from({ length: 13 }, () => 'ABCD').join(' ');
@@ -346,5 +359,6 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ browse
   } finally {
     await guard.collectWorkers();
     await context.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
