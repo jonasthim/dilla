@@ -92,11 +92,11 @@ describe('the phone shell: pushed views', () => {
   it('names the channel menu: pins and members, and edit channel for a person who may', async () => {
     const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
     await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('members.toggle')]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('thread.list'), t('members.toggle')]);
     await user.keyboard('{Escape}');
     manage(client);
     await user.click(screen.getByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('admin.channel.open'), t('members.toggle')]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('thread.list'), t('admin.channel.open'), t('members.toggle')]);
   });
 
   it('opens a DM as a pushed view with a pins menu', async () => {

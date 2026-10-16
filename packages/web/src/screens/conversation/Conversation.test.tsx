@@ -95,8 +95,8 @@ describe('the toolbar (L-UI-41)', () => {
       peerRow(P2, '4', '', { state: 'deleted' }),
     ] });
     const labels = (row: HTMLElement) => within(toolbarOf(row)).getAllByRole('button').map(b => b.textContent);
-    expect(labels(rowOf(P1))).toEqual(['react', 'reply', 'pin']);
-    expect(labels(rowOf(O1))).toEqual(['react', 'reply', 'edit', 'unpin', 'delete']);
+    expect(labels(rowOf(P1))).toEqual(['react', 'reply', 'reply in thread', 'pin']);
+    expect(labels(rowOf(O1))).toEqual(['react', 'reply', 'reply in thread', 'edit', 'unpin', 'delete']);
     expect(within(rowOf(O2)).queryByRole('toolbar')).toBeNull();
     expect(within(rowOf(P2)).queryByRole('toolbar')).toBeNull();
     expect(screen.getAllByRole('toolbar')).toHaveLength(2);

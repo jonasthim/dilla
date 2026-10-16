@@ -7,6 +7,7 @@ import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { Settings } from './Settings.tsx';
+import { PHONE_QUERY } from '../layout.ts';
 
 const C = 'a1'.repeat(16);
 const CH = 'c3'.repeat(16);
@@ -134,6 +135,20 @@ describe('Settings', () => {
     expect(window.history.length).toBe(depth);
     expect(window.history.state).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('closes by the live layout: a viewport flipped back to desktop closes the desktop way in the same tick', async () => {
+    let phoneNow = true;
+    window.matchMedia = ((query: string) => ({
+      get matches() { return phoneNow && query === PHONE_QUERY; }, media: query,
+      addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { user } = setup('/settings/notifications', `/c/${C}/${CH}`);
+      // The change event has not reached React yet (no re-render): only the live query knows.
+      phoneNow = false;
+      await user.keyboard('{Escape}');
+      expect(window.location.pathname).toBe(`/c/${C}/${CH}`);
+    } finally { Reflect.deleteProperty(window, 'matchMedia'); }
   });
   it('closes to / from a deep link, by the close button', async () => {
     const { user } = setup('/settings', null);

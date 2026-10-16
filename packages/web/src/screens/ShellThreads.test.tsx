@@ -1,0 +1,286 @@
+// W-Shell-B: threads in the aside (one aside) and as a phone sheet, slow mode in the composer, the channel rows (flow 11).
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary, type TimelineItem } from '@dilla/client-core';
+import { CoreProvider } from '../core/context.tsx';
+import { FakeClient } from '../test/fake-client.ts';
+import { account, ME, timelineItem } from '../test/fixtures.ts';
+import { PHONE_QUERY } from '../layout.ts';
+import { en, t } from '../strings/index.ts';
+import { Shell } from './Shell.tsx';
+
+const A = 'a1'.repeat(16);
+const GEN = 'c3'.repeat(16);
+const NEWS = 'd4'.repeat(16);
+const SLOW = 'd5'.repeat(16);
+const OWNER = 'ee'.repeat(16);
+const BOB = '28'.repeat(16);
+const EVERYONE = 'ab'.repeat(16);
+const ROOT = '71'.repeat(16);
+const ROOT2 = '72'.repeat(16);
+const ch = (id: string, name: string, position: number, slowmode = 0): ChannelSummary =>
+  ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position, slowmode, announcement: false, group: 'none' });
+const role = (allow: number): RoleSummary =>
+  ({ id: EVERYONE, name: '@everyone', color: 0, position: 0, hoist: false, mentionable: true, allow, deny: 0, members: 0 });
+const BASE = PERM.viewChannel | PERM.sendMessages | PERM.readHistory;
+const MEMBERS: MemberSummary[] = [
+  { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [] },
+  { userId: BOB, username: 'bob', display: 'Bob', kind: 0, roleIds: [] },
+];
+const access = (): CommunityAccess => ({ top: 5, owner: false, manageCommunity: false, manageChannels: false,
+  kickMembers: false, banMembers: false, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE });
+const rootRow = (id: string, seq: string, body: string, count: number): TimelineItem =>
+  timelineItem({ key: `s${seq}`, msgId: id, seq, body, senderUser: BOB, senderDevice: BOB, ts: 1_700_000_000, thread: { count, lastTs: 1_700_000_100 } });
+
+const WIDTH = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
+// jsdom has no layout: a wide shell needs a width for the aside to be a column (AppShell measures its root).
+function media(phone: boolean) {
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => (phone ? 390 : 1600) });
+  window.matchMedia = vi.fn((query: string) => ({
+    matches: query === PHONE_QUERY ? phone : !phone && query === '(min-width: 64rem)', media: query,
+    addEventListener: () => undefined, removeEventListener: () => undefined,
+  })) as unknown as typeof window.matchMedia;
+}
+afterEach(() => {
+  if (WIDTH !== undefined) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', WIDTH);
+  Reflect.deleteProperty(window, 'matchMedia');
+  // eslint-disable-next-line no-restricted-properties -- clears the tab memory the shell writes
+  window.sessionStorage.clear();
+  vi.restoreAllMocks();
+});
+
+function setup(o: { phone?: boolean; base?: number; path?: string } = {}) {
+  media(o.phone === true);
+  window.history.replaceState(null, '', o.path ?? `/c/${A}/${GEN}`);
+  const fake = new FakeClient();
+  fake.set('account', account());
+  fake.set('connection', { status: 'online', generation: '7' });
+  fake.set('communities', [{ id: A, name: 'Midgard', owner: OWNER }]);
+  fake.set(`channels:${A}`, [ch(GEN, 'general', 0), ch(NEWS, 'news', 1), ch(SLOW, 'slowpoke', 2, 30)]);
+  fake.set(`members:${A}`, MEMBERS);
+  fake.set(`roles:${A}`, [role(o.base ?? BASE)]);
+  fake.set(`overwrites:${A}`, { [NEWS]: [{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }] });
+  fake.set(`permissions:${A}`, access());
+  fake.set('removals', []);
+  fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false, items: [rootRow(ROOT, '1', 'the first root', 2)] });
+  fake.set(`timeline:${NEWS}`, { channelId: NEWS, group: 'active', items: [], hasEarlier: false });
+  fake.set(`timeline:${SLOW}`, { channelId: SLOW, group: 'active', items: [], hasEarlier: false });
+  fake.set(`threads:${GEN}`, [
+    { rootMsgId: ROOT, rootSeq: '1', count: 2, lastTs: 5, excerpt: 'the first root' },
+    { rootMsgId: ROOT2, rootSeq: '4', count: 1, lastTs: 9, excerpt: 'the second root' },
+  ]);
+  fake.set(`thread:${GEN}`, { channelId: GEN, rootMsgId: ROOT, root: rootRow(ROOT, '1', 'the first root', 2), items: [], hasEarlier: false });
+  const user = userEvent.setup();
+  const view = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
+  return { fake, user, view };
+}
+const members = () => screen.queryByRole('complementary', { name: 'members of Midgard' });
+const threadPane = () => screen.queryByRole('complementary', { name: en['thread.title'] });
+const listPane = () => screen.queryByRole('complementary', { name: en['thread.list'] });
+const toggle = () => screen.getByRole('button', { name: en['members.toggle'] });
+const wait = (fake: FakeClient) => fake.set(`slow:${GEN}`, { until: Date.now() + 60_000, queued: false });
+
+describe('threads on a desktop shell (one aside)', () => {
+  it('replaces the member list while a thread is open, labels the aside thread.title, and restores the members on close', async () => {
+    const { fake, user } = setup();
+    expect(await screen.findByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
+    expect(toggle()).toHaveAttribute('aria-pressed', 'true');
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(members()).toBeNull();
+    expect(document.querySelectorAll('aside')).toHaveLength(1);
+    expect(fake.callsOf('openThread')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    expect(await screen.findByRole('complementary', { name: 'members of Midgard' })).toBeInTheDocument();
+    expect(toggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(fake.callsOf('closeThread')).toHaveLength(1);
+  });
+
+  it('keeps the main log and composer first in the DOM, the thread pane after them', async () => {
+    const { user } = setup();
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    const logs = document.querySelectorAll('[role="log"]');
+    expect(logs).toHaveLength(2);
+    expect(logs[0].closest('main')).not.toBeNull();
+    expect(logs[1].closest('aside')).not.toBeNull();
+    const composers = document.querySelectorAll('.d-composer textarea');
+    expect(composers[0].closest('main')).not.toBeNull();
+    expect(composers[1].closest('aside')).not.toBeNull();
+  });
+
+  it('closes the thread when the members toggle is pressed, and shows the members', async () => {
+    const { user } = setup();
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(toggle()).toHaveAttribute('aria-pressed', 'false');
+    await user.click(toggle());
+    await waitFor(() => expect(threadPane()).toBeNull());
+    expect(members()).not.toBeNull();
+  });
+
+  it('closes the thread on a channel switch, and does not bring it back on return', async () => {
+    const { user } = setup();
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    await user.click(screen.getByRole('button', { name: 'news' }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    await user.click(await screen.findByRole('button', { name: 'general' }));
+    await screen.findByRole('button', { name: '2 replies' });
+    expect(threadPane()).toBeNull();
+  });
+
+  it('opens a thread from the toolbar item of a message', async () => {
+    const { user } = setup();
+    const message = (await screen.findByText('the first root')).closest<HTMLElement>('.d-message-row')!;
+    message.focus();
+    await user.click(within(message).getByRole('button', { name: en['thread.open'] }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+  });
+
+  it('opens a thread from a reply quote or a pin that carries threadRoot', async () => {
+    const { fake, user } = setup();
+    const quoting = timelineItem({ key: 's9', msgId: '90'.repeat(16), seq: '9', body: 'quoting', senderUser: BOB, senderDevice: BOB, ts: 1_700_000_200,
+      reply: { msgId: ROOT2, state: 'ok', senderUser: BOB, excerpt: 'the second root', seq: '4', threadRoot: ROOT } });
+    act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false, items: [rootRow(ROOT, '1', 'the first root', 2), quoting] }));
+    const line = (await screen.findByText('quoting')).closest<HTMLElement>('.d-message-row')!;
+    await user.click(within(line).getByRole('button', { name: /the second root/ }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT });
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    act(() => fake.set(`pins:${GEN}`, [{ msgId: ROOT2, seq: '4', senderUser: BOB, excerpt: 'the second root', pinnedBy: BOB, pinnedSeq: '5', ts: 1_700_000_000, threadRoot: ROOT }]));
+    await user.click(screen.getByRole('button', { name: en['shell.pins.open'] }));
+    await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(fake.callsOf('openThread')).toHaveLength(2);
+  });
+
+  it('opens a thread from a search hit that carries threadRoot', async () => {
+    const { fake, user } = setup();
+    await screen.findByRole('button', { name: '2 replies' });
+    await user.keyboard('{Control>}k{/Control}');
+    await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'reply');
+    act(() => fake.set('search', { requestId: 4, hits: [{ channelId: GEN, communityId: A, seq: '4', snippet: 'a reply', rank: '1', threadRoot: ROOT }], cursor: null }));
+    const hit = await screen.findByRole('option', { name: /a reply/ });
+    await user.click(hit);
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT });
+  });
+});
+
+describe('the thread list', () => {
+  it('opens from the header button, lists the threads, opens one in its place, and Escape closes the list returning focus to the button', async () => {
+    const { fake, user } = setup();
+    await user.click(await screen.findByRole('button', { name: en['thread.list'] }));
+    const aside = await screen.findByRole('complementary', { name: en['thread.list'] });
+    expect(members()).toBeNull();
+    expect(fake.callsOf('loadThreads')).toEqual([{ m: 'loadThreads', channelId: GEN }]);
+    await user.click(within(aside).getByRole('button', { name: /the second root/ }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(fake.callsOf('openThread').at(-1)).toEqual({ m: 'openThread', channelId: GEN, rootMsgId: ROOT2 });
+    expect(listPane()).toBeNull();
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    await user.click(screen.getByRole('button', { name: en['thread.list'] }));
+    await screen.findByRole('complementary', { name: en['thread.list'] });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(listPane()).toBeNull());
+    expect(screen.getByRole('button', { name: en['thread.list'] })).toHaveFocus();
+  });
+});
+
+describe('threads on a phone (a sheet)', () => {
+  it('opens full screen as a history entry, closes on the system back, keeps the tab bar hidden and returns focus to the chip', async () => {
+    const { fake, user } = setup({ phone: true });
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(sheet.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
+    expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
+    expect(within(sheet).getAllByRole('button', { name: en['thread.close'] })).toHaveLength(1);
+    expect(screen.queryByRole('navigation', { name: t('nav.tabs.label') })).toBeNull();
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(threadPane()).toBeNull());
+    expect(fake.callsOf('closeThread')).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole('button', { name: '2 replies' })).toHaveFocus());
+  });
+
+  it('closes on Escape and by its own back control, popping its entry', async () => {
+    const { user } = setup({ phone: true });
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    const length = window.history.length;
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(threadPane()).toBeNull());
+    expect(window.history.length).toBe(length);
+    expect((window.history.state as { phoneSheet?: unknown } | null)?.phoneSheet).toBeUndefined();
+    await user.click(screen.getByRole('button', { name: '2 replies' }));
+    await user.click(await screen.findByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    expect(window.history.length).toBe(length);
+  });
+
+  it('opens the thread list from the channel menu as a sheet, and a row opens its thread in the same entry', async () => {
+    const { user } = setup({ phone: true });
+    const menu = await screen.findByRole('button', { name: t('nav.channel.menu') });
+    await user.click(menu);
+    await user.click(screen.getByRole('menuitem', { name: en['thread.list'] }));
+    const sheet = await screen.findByRole('complementary', { name: en['thread.list'] });
+    expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
+    const length = window.history.length;
+    await user.click(within(sheet).getByRole('button', { name: /the first root/ }));
+    expect(await screen.findByRole('complementary', { name: en['thread.title'] })).toBeInTheDocument();
+    expect(listPane()).toBeNull();
+    expect(window.history.length).toBe(length);
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(threadPane()).toBeNull());
+  });
+});
+
+describe('slow mode in the composer', () => {
+  it('shows the countdown from the slow:<channel> slice', async () => {
+    const { fake } = setup();
+    await screen.findByRole('textbox', { name: 'message #general' });
+    expect(document.querySelector('.d-composer__notice')).toBeNull();
+    act(() => wait(fake));
+    expect(document.querySelector('.d-composer__notice')).toHaveTextContent(/Slow mode is on/);
+  });
+
+  it('shows no countdown for a person with the bypass bit (bit 19)', async () => {
+    const { fake } = setup({ base: BASE | PERM.bypassSlowmode });
+    await screen.findByRole('textbox', { name: 'message #general' });
+    act(() => wait(fake));
+    expect(document.querySelector('.d-composer__notice')).toBeNull();
+  });
+
+  it('speaks a queued send through the shell announcer', async () => {
+    const { fake } = setup();
+    await screen.findByRole('textbox', { name: 'message #general' });
+    const note = screen.getByTestId('shell-announcer');
+    act(() => fake.set(`slow:${GEN}`, { until: Date.now() + 60_000, queued: true }));
+    await waitFor(() => expect(note).toHaveTextContent(en['slow.queued']));
+  });
+
+  it('says only some people can post in an announcement channel', async () => {
+    setup({ path: `/c/${A}/${NEWS}` });
+    expect(await screen.findAllByText(en['announce.readOnly'].replace('{name}', 'news'))).not.toHaveLength(0);
+  });
+});
+
+describe('the channel rows', () => {
+  it('lists an announcement channel with the announcement kind and a slow channel with the badge', async () => {
+    setup();
+    const row = (name: string) => screen.getByText(name, { selector: '.d-chrow__name' }).closest<HTMLElement>('.d-chrow')!;
+    await screen.findByText('news', { selector: '.d-chrow__name' });
+    expect(row('news')).toHaveAttribute('data-kind', 'announcement');
+    expect(row('slowpoke')).toHaveAttribute('data-kind', 'text');
+    expect(within(row('slowpoke')).getByText(en['slow.badge'])).toBeInTheDocument();
+    expect(row('general')).toHaveAttribute('data-kind', 'text');
+    expect(row('general').querySelector('.d-chrow__badge')).toBeNull();
+    expect(row('news').querySelector('.d-chrow__badge')).toBeNull();
+  });
+});
+
+void render;

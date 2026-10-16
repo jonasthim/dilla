@@ -15,9 +15,11 @@ import { rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualVie
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow, InviteFlow } from './Create.tsx';
-import { Conversation, focusComposer, focusLog, useConversationUi } from './conversation/Conversation.tsx';
+import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
+import { ThreadView } from './conversation/ThreadView.tsx';
+import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
@@ -100,7 +102,10 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
  * when focus is not in the row (a pointer that does not focus buttons).
  */
 /** A channel row's or DM row's props: what ChannelList draws, with the badge of requirement 6. */
-type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm'; readable: boolean; unread: number; mentions: number; muted: boolean };
+type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean };
+
+/** What the aside shows instead of the member list (web3.7): a channel's thread, or the list of its threads. */
+type Side = { channelId: string; view: 'list' } | { channelId: string; view: 'thread'; rootMsgId: string };
 
 /**
  * The signed-in shell: the server rail, the selected server's channels and the direct messages, the open
@@ -197,10 +202,16 @@ export function Shell(): React.JSX.Element {
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
+  // web3.7: one aside. A thread or the thread list of the open channel takes the member list's place; the members' own state is kept
+  // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
+  const [side, setSide] = useState<Side | null>(null);
+  useEffect(() => { setSide(current => (current !== null && current.channelId !== channelId ? null : current)); }, [channelId]);
   const toggleMembers = () => {
     const narrowNow = typeof window.matchMedia !== 'function' || !window.matchMedia('(min-width: 64rem)').matches;
-    openedNarrow.current = !membersOpen && narrowNow;
-    setMembersOpen(!membersOpen);
+    const open = side !== null && side.channelId === channelId ? true : !membersOpen;
+    openedNarrow.current = open && narrowNow;
+    setSide(null);
+    setMembersOpen(open);
   };
   const [adminFor, setAdminFor] = useState<string | null>(null);
   const [adminTab, setAdminTab] = useState<AdminTab>('overview');
@@ -322,7 +333,24 @@ export function Shell(): React.JSX.Element {
   const bits = useChannelBits(channel === null ? null : communityId, channel?.id ?? null);
   const roles = useSlice(`roles:${communityId ?? ''}`);
   const broadcast = channel !== null;
-  const [ui, dispatch] = useConversationUi(targetId);
+  const [ui, rawDispatch] = useConversationUi(targetId);
+  const slow = useSlice(`slow:${targetId ?? ''}`);
+  const overwrites = useSlice(`overwrites:${communityId ?? ''}`);
+  // A jump to a message that shows in a thread (a reply quote, a pin) opens that thread; any other jump stays in the channel.
+  const threadOfJump = useRef<(msgId: string) => string | null>(() => null);
+  threadOfJump.current = msgId => {
+    if (channelId === null) return null;
+    const pinned = client.get(`pins:${channelId}`)?.find(pin => pin.msgId === msgId)?.threadRoot ?? null;
+    return pinned ?? client.get(`timeline:${channelId}`)?.items.find(item => item.reply?.msgId === msgId)?.reply?.threadRoot ?? null;
+  };
+  const openThreadRef = useRef<(rootMsgId: string) => void>(() => undefined);
+  const dispatch = useCallback((a: ConversationAction) => {
+    if (a.type === 'jump') {
+      const root = threadOfJump.current(a.msgId);
+      if (root !== null) { rawDispatch({ type: 'pins', open: false }); openThreadRef.current(root); return; }
+    }
+    rawDispatch(a);
+  }, [rawDispatch]);
   const group: ChannelGroupState = channel !== null
     ? unsupported ? 'unsupported' : timeline?.group ?? channel.group
     : dm !== null ? timeline?.group ?? dm.group : 'none';
@@ -746,7 +774,8 @@ export function Shell(): React.JSX.Element {
   const log = (label: string) => targetId === null || logKey === null ? null : <Conversation key={targetId} channelId={targetId}
     logKey={logKey} label={label} timeline={timeline} book={book} encodeWith={encodeWith} broadcast={broadcast} bits={bits} roles={roles}
     pinsTitle={channel !== null ? t('shell.pins.title', { channel: channel.name }) : t('shell.pins.titleDm', { name: dm?.name ?? '' })}
-    ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report} />;
+    ui={ui} dispatch={dispatch} loadingEarlier={loadingEarlier === targetId} onLoadEarlier={loadEarlier} onError={report}
+    {...(channel !== null ? { onOpenThread: openThread } : {})} />;
   const openFailed = (id: string, error: UiError) => (
     <EmptyState title={t('shell.openFailed.title')} body={t('shell.openFailed.body', { code: error.code })}
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
@@ -792,8 +821,12 @@ export function Shell(): React.JSX.Element {
   }
 
   // Badges (Q02, Q09, ruling 15): what each row shows, a muted row's unread hidden; the rail and the tabs sum them.
+  // An announcement channel is a text channel whose @everyone overwrite denies send_messages (R36); slow mode is a badge.
+  const everyoneDenied = (id: string) => (overwrites?.[id] ?? []).some(o => o.kind === 0 && o.targetId === access?.everyoneId && (o.deny & PERM.sendMessages) !== 0);
+  const isAnnouncement = (c: ChannelSummary) => c.kind === 0 && (c.announcement || everyoneDenied(c.id));
   const channelRows: ListRow[] = ordered.map(c => ({
-    id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : 'text', readable: c.mode === 1, ...rowBadge(badges, settings, c.id, communityId ?? undefined),
+    id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : isAnnouncement(c) ? 'announcement' : 'text', readable: c.mode === 1,
+    ...(c.slowmode > 0 ? { badge: t('slow.badge') } : {}), ...rowBadge(badges, settings, c.id, communityId ?? undefined),
   }));
   const dmRows: ListRow[] = (dms ?? []).map(d => ({ id: d.id, name: d.name, kind: 'dm', readable: false, ...rowBadge(badges, settings, d.id) }));
   const channelCounts = sumBadges(channelRows);
@@ -929,30 +962,97 @@ export function Shell(): React.JSX.Element {
       blocked={reasonKey === null ? null : t(reasonKey)} broadcast={broadcast} bits={bits} roles={roles} channelName={channel?.name}
       encodeWith={encodeWith} candidates={candidates}
       items={timeline?.items ?? []} book={book} draft={draft.channelId === targetId ? draft.text : ''}
-      onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report} />
+      onDraft={text => setDraft({ channelId: targetId, text })} ui={ui} dispatch={dispatch} onSend={send} onError={report}
+      {...(slow !== undefined ? { slow } : {})} bypass={bits !== null && (bits & PERM.bypassSlowmode) !== 0}
+      announcement={channel !== null && isAnnouncement(channel)} announce={announce} />
   );
 
+  // The pane belongs to a server shown by a channel route; a DM route, voice stage or Settings has none beside it.
+  const channelAside = base.name === 'channel' && community !== null && channel !== null && voiceChannel === null;
+  const sideNow = channelAside && side !== null && side.channelId === channel.id ? side : null;
+  const membersShown = membersOpen && channelAside && sideNow === null;
+  const asideShown = membersShown || sideNow !== null;
+  // On a phone the member list is a sheet: a history entry, so the system back closes it and not the channel under it (R13).
+  const memberSheet = usePhoneSheet('members', phone && membersShown, () => setMembersOpen(false));
+  // A thread (or the list of threads) is a sheet of its own on a phone, with the same history rules.
+  const threadSheet = usePhoneSheet('thread', phone && sideNow !== null, () => setSide(null));
+  const closeSide = phone ? threadSheet.close : () => setSide(null);
+  // Where focus goes when the sheet or drawer closes: the control that opened it (kept from the first open, not from a list row),
+  // else the root's message row, else the header's button.
+  const sideOpener = useRef<Element | null>(null);
+  const sideRoot = useRef<string | null>(null);
+  const noteOpener = () => {
+    if (side !== null && side.channelId === channelId) return;
+    sideOpener.current = document.activeElement;
+    sideRoot.current = null;
+  };
+  function openThread(rootMsgId: string): void {
+    if (channel === null) return;
+    noteOpener();
+    sideRoot.current = rootMsgId;
+    setSide({ channelId: channel.id, view: 'thread', rootMsgId });
+  }
+  openThreadRef.current = openThread;
+  function openList(): void {
+    if (channel === null) return;
+    noteOpener();
+    setSide({ channelId: channel.id, view: 'list' });
+  }
+  const sideReturn = useMemo<RefObject<HTMLElement | null>>(() => ({
+    get current() {
+      const opener = sideOpener.current;
+      if (opener instanceof HTMLElement && opener.isConnected && opener !== document.body) return opener;
+      const row = sideRoot.current === null ? null : document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${sideRoot.current}"]`);
+      return row ?? document.querySelector<HTMLElement>('[data-thread-list-toggle], [data-members-toggle], [data-focus-key="channel-menu"]');
+    },
+  }), []);
+  // The list ends on Escape from wherever focus is (the pane is no drawer in a wide shell), and focus goes back to its button.
+  const listOpen = sideNow?.view === 'list';
+  useEffect(() => {
+    if (!listOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      closeSideRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [listOpen]);
+  const closeSideRef = useRef(closeSide);
+  closeSideRef.current = closeSide;
+  // Opening the list puts focus in it; closing it hands focus back to the control that opened it.
+  const listWas = useRef(false);
+  useEffect(() => {
+    const was = listWas.current;
+    listWas.current = listOpen;
+    if (listOpen) document.querySelector<HTMLElement>('.d-app-shell__aside')?.focus();
+    else if (was && (focusLost() || document.activeElement?.closest('.d-app-shell__aside') != null)) sideReturn.current?.focus();
+  }, [listOpen, sideReturn]);
   // Back on a phone: the history's back for a view the app pushed, else the tab's list (a deep link, a reload).
   const listRoute: Route = dmId !== null ? { name: 'dms' } : communityId !== null ? { name: 'channel', communityId, channelId: null } : { name: 'root' };
   const onBack = () => goBack(listRoute, navigate);
   const pinsOpen = () => dispatch({ type: 'pins', open: true });
   const pinsItem = openId !== null ? [{ id: 'pins', label: t('shell.pins.open') }] : [];
+  const listItem = channel !== null && openId !== null ? [{ id: 'threads', label: t('thread.list') }] : [];
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} /> : null) : channel !== null
     ? <ChannelHeader name={channel.name} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, menu: (
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
-          items={[...pinsItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
+          items={[...pinsItem, ...listItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
           onSelect={id => {
             if (id === 'pins') pinsOpen();
+            else if (id === 'threads') openList();
             else if (id === 'edit') setEditChannelId(channel.id);
             else if (!membersOpen) toggleMembers();
           }} />
       ) } : undefined}
       actions={<>
         {openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : null}
+        {openId !== null ? <Button data-thread-list-toggle="" pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())}>
+          {t('thread.list')}</Button> : null}
         {canManageChannels ? <Button onClick={() => setEditChannelId(channel.id)}>{t('admin.channel.open')}</Button> : null}
-        <Button data-members-toggle="" pressed={membersOpen} onClick={toggleMembers}>
+        <Button data-members-toggle="" pressed={membersShown} onClick={toggleMembers}>
           {t('members.toggle')}</Button>
       </>} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
@@ -973,6 +1073,14 @@ export function Shell(): React.JSX.Element {
     const known = hit.communityId === null ? dms?.some(row => row.id === hit.channelId)
       : (railSlices.flat() as ChannelSummary[]).some(row => row.id === hit.channelId && row.communityId === hit.communityId);
     if (!known) return false;
+    const threadRoot = (hit as SearchHitView & { threadRoot?: string | null }).threadRoot ?? null;
+    if (threadRoot !== null && hit.communityId !== null) {
+      // A reply shows in its thread, not in the channel's timeline: the thread opens beside the channel.
+      navigate({ name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
+      leaveSearchLayer();
+      setSide({ channelId: hit.channelId, view: 'thread', rootMsgId: threadRoot });
+      return true;
+    }
     const name = `timeline:${hit.channelId}` as const;
     const available = () => client.get(name)?.items.some(item => item.seq === hit.seq && item.state === 'ok') === true;
     navigate(hit.communityId === null ? { name: 'dm', channelId: hit.channelId }
@@ -1064,10 +1172,6 @@ export function Shell(): React.JSX.Element {
     </>
   ) : undefined;
 
-  // The pane belongs to a server shown by a channel route; a DM route, voice stage or Settings has none beside it.
-  const asideShown = membersOpen && base.name === 'channel' && community !== null && channel !== null && voiceChannel === null;
-  // On a phone the member list is a sheet: a history entry, so the system back closes it and not the channel under it (R13).
-  const memberSheet = usePhoneSheet('members', phone && asideShown, () => setMembersOpen(false));
   // The tabs (flow 12): a tab opens where it was last left, else at its root; the counts are what the sidebar's badges sum to.
   const serverRoot: Route = (routeCommunity ?? fallbackCommunity) !== null
     ? { name: 'channel', communityId: (routeCommunity ?? fallbackCommunity) as string, channelId: null } : { name: 'root' };
@@ -1174,11 +1278,20 @@ export function Shell(): React.JSX.Element {
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
         </> : banner}
-        aside={asideShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
-          onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
-          announce={announce} /> : undefined}
-        asideLabel={community === null ? undefined : t('members.region', { server: community.name })}
-        asideOpen={asideShown} onAsideClose={phone ? memberSheet.close : () => setMembersOpen(false)} asideCloseLabel={t('members.close')} asideReturnRef={membersToggle}
+        aside={sideNow?.view === 'thread' && channel !== null
+          ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
+            onClose={closeSide} announce={announce} />
+          : sideNow?.view === 'list' && channel !== null
+            ? <ThreadList channelId={channel.id} channelName={channel.name} onOpen={openThread} />
+            : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
+              onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
+              announce={announce} /> : undefined}
+        asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'list' ? t('thread.list')
+          : community === null ? undefined : t('members.region', { server: community.name })}
+        asideOpen={asideShown}
+        onAsideClose={sideNow !== null ? closeSide : phone ? memberSheet.close : () => setMembersOpen(false)}
+        asideCloseLabel={sideNow?.view === 'thread' ? undefined : sideNow?.view === 'list' ? t(phone ? 'nav.back' : 'dialog.close') : t('members.close')}
+        asideReturnRef={sideNow !== null ? sideReturn : membersToggle}
       >
         {main}
       </AppShell>

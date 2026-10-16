@@ -1115,6 +1115,9 @@ describe('keyboard', () => {
     if (header === null) throw new Error('no header');
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'pinned' }));
     await user.tab();
+    // web3.7: the thread list sits after pins and before the members toggle.
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'threads' }));
+    await user.tab();
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: /members/ }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('article'));

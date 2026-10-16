@@ -638,6 +638,12 @@ export async function openSettings(page: Page, section: SettingsSection): Promis
 }
 /** Escape closes Settings and returns to the route it was opened from (L-TS-27). */
 export async function closeSettings(page: Page): Promise<void> {
+  // A viewport change reaches the app a tick late: Escape waits until the shell's data-layout agrees with the window.
+  await page.waitForFunction(() => {
+    const shell = document.querySelector('.d-app-shell');
+    const phone = window.matchMedia('(max-width: 47.99rem)').matches;
+    return shell === null || (shell.getAttribute('data-layout') === 'phone') === phone;
+  }, undefined, { timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(settingsDialog(page)).toBeHidden({ timeout: WAIT });
 }

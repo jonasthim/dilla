@@ -1,6 +1,6 @@
 import { PhoneHeader, SettingsFrame, SettingsNav } from '@dilla/ui';
 import { goBack, routeOf, useRoute, type SettingsSection } from '../router.ts';
-import { usePhoneLayout } from '../layout.ts';
+import { phoneNow, usePhoneLayout } from '../layout.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
 import { Devices } from './settings/Devices.tsx';
@@ -108,7 +108,8 @@ export function Settings(): React.JSX.Element {
   };
   const close = () => {
     setComparison(null);
-    if (phone) goBack({ name: 'you' }, navigate);
+    // The live layout, not the render's: an Escape right after a viewport change must close the way the window is now.
+    if (phoneNow()) goBack({ name: 'you' }, navigate);
     else navigate(from === null ? { name: 'root' } : routeOf(from), true);
   };
 

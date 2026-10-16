@@ -11,6 +11,9 @@ function subscribe(onChange: () => void): () => void {
 }
 const snapshot = (): boolean => typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches;
 
+/** The layout right now, read from the window (not from a render): for handlers that must act on the live viewport. */
+export const phoneNow = snapshot;
+
 /** True on a phone-width window; false where there is no matchMedia (the server, the test DOM). */
 export function usePhoneLayout(): boolean {
   return useSyncExternalStore(subscribe, snapshot, () => false);
