@@ -4362,4 +4362,14 @@ describe('slow mode slices (CB2)', () => {
     w.sync.deps!.onSlow(DM_GROUP, 0, false);
     expect(slowSlices(w)).toEqual([]);
   });
+
+  it('sign-out resets the slow slice', async () => {
+    const { w } = await slowWorld(10);
+    w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toMatchObject({ ok: true }));
+    expect(w.last('communities')).toEqual([]);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: 0, queued: false });
+  });
+
 });

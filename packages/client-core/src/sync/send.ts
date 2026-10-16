@@ -23,7 +23,7 @@ export function retrySend(s: SyncInternals, msgId: Id): void {
   const g = owner(s, msgId);
   const failed = g === undefined ? undefined : s.deps.core.outbox(g).find((x) => toHex(x.msgId) === toHex(msgId));
   s.deps.core.sendRetry(msgId);
-  s.count425.delete(toHex(msgId));
+  s.count425.delete(toHex(msgId)); s.slowed.delete(toHex(msgId));
   if (g === undefined) return;
   const key = `${toHex(g)}:${toHex(msgId)}`;
   s.reframedOnce.delete(key); s.trustRetried.delete(key);
@@ -91,17 +91,24 @@ function targetsQueuedPost(rows: readonly OutboxRow[], fold: OutboxRow): boolean
   const t = toHex(target);
   return rows.some((x) => x.type === 0 && x.state === 0 && toHex(x.msgId) === t);
 }
+/** CB2 (R38): while a slow-mode wait is armed the group posts nothing; the first queued fold (types 1..6) still drains,
+ *  unless a 429 requeued it: then every fold behind it waits for the timer too, so folds keep their queue order (two edits
+ *  of one message must reach the host in order). A fold whose target is a post still queued waits with that post. */
+function foldBesideWait(s: SyncInternals, rows: readonly OutboxRow[]): OutboxRow | undefined {
+  for (const x of rows) {
+    if (x.state !== 0 || x.type === 0) continue;
+    if (s.slowed.has(toHex(x.msgId))) return undefined;
+    if (!targetsQueuedPost(rows, x)) return x;
+  }
+  return undefined;
+}
 export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   const hex = toHex(g);
   if (s.stopped() || s.echoWait.has(hex) || s.row(g)?.state !== 2) return;
   const rows = s.deps.core.outbox(g);
   const inFlight = rows.find((x) => x.state === 1);
   if (inFlight !== undefined) { await afterLostResponse(s, g, inFlight.msgId); return; }
-  // CB2 (R38): while a slow-mode wait is armed the group posts nothing; a fold (types 1..6) still drains unless its
-  // target is a post still queued in the outbox (it waits with that post, so it never reaches the host before it) or
-  // a 429 requeued it (it waits for the timer). Folds keep their queue order among themselves.
-  const row: OutboxRow | undefined = s.slowWait.has(hex) ? rows.find((x) => x.state === 0 && x.type !== 0
-    && !s.slowed.has(toHex(x.msgId)) && !targetsQueuedPost(rows, x)) : rows.find((x) => x.state === 0);
+  const row: OutboxRow | undefined = s.slowWait.has(hex) ? foldBesideWait(s, rows) : rows.find((x) => x.state === 0);
   if (row === undefined) return;
   const msgId = row.msgId; const msgHex = toHex(msgId);
   const reframeKey = `${hex}:${msgHex}`;
@@ -119,7 +126,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state === 0)) { s.requestDrain(g); return; }
       const code = e instanceof DillaHttpError ? (e.status === 404 ? 'E_ATTACHMENT_MISSING' : e.code)
         : e instanceof CoreError ? e.code : 'E_INTERNAL';
-      s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g);
+      s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); s.slowed.delete(msgHex); s.deps.onOutboxChanged(g); s.requestDrain(g);
       return;
     }
     if (s.stopped()) return;
@@ -147,7 +154,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       return;
     }
     if (e instanceof CoreError) {
-      s.deps.core.sendFail(msgId, e.code); s.reframedOnce.delete(reframeKey); s.trustRetried.delete(reframeKey);
+      s.deps.core.sendFail(msgId, e.code); s.reframedOnce.delete(reframeKey); s.slowed.delete(msgHex); s.trustRetried.delete(reframeKey);
       s.deps.onOutboxChanged(g); s.requestDrain(g); return;
     }
     throw e;
@@ -163,7 +170,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
     }
     s.reframedOnce.delete(reframeKey); s.trustRetried.delete(reframeKey); s.deps.onOutboxChanged(g); s.count425.delete(msgHex);
     // The clear first, so the countdown onPosted starts is not cleared after it.
-    if (s.slowed.delete(msgHex) && !s.slowWait.has(hex)) s.deps.onSlow(g, 0, false);
+    if (s.slowed.delete(msgHex) && row.type === 0 && !s.slowWait.has(hex)) s.deps.onSlow(g, 0, false);
     s.deps.onPosted(g, row.type);
     s.requestDrain(g);
   } catch (e) {
@@ -176,7 +183,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       const reached = await s.catchUpNow(g, 'catch-up');
       const current = s.deps.core.outbox(g).find((x) => toHex(x.msgId) === msgHex);
       if (!reached || current?.state !== 1 || s.row(g)?.state !== 2) {
-        if (current?.state === 1) { s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); }
+        if (current?.state === 1) { s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); s.slowed.delete(msgHex); }
         s.deps.onOutboxChanged(g); s.requestDrain(g);
         return;
       }
@@ -191,9 +198,15 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       s.deps.core.sendRequeue(msgId); s.deps.onOutboxChanged(g);
       s.slowed.add(msgHex);
       const wait = e instanceof DillaHttpError && e.retryAfterMs !== null ? e.retryAfterMs : 1000;
-      const old = s.slowWait.get(hex); if (old !== undefined) s.cancelTimer(old);
-      s.slowWait.set(hex, s.armTimer(wait, () => { s.slowWait.delete(hex); s.requestDrain(g); }));
-      s.deps.onSlow(g, s.deps.now() + wait, true);
+      const until = s.deps.now() + wait;
+      // The later deadline wins: a fold's short 429 never cuts a post's wait short.
+      const old = s.slowWait.get(hex);
+      if (old === undefined || until > old.until) {
+        if (old !== undefined) s.cancelTimer(old.timer);
+        s.slowWait.set(hex, { timer: s.armTimer(wait, () => { s.slowWait.delete(hex); s.requestDrain(g); }), until });
+      }
+      // Only a post's wait is the person's: a fold's 429 is waited out silently.
+      if (row.type === 0) s.deps.onSlow(g, until, true);
       s.requestDrain(g);
       return;
     }
@@ -201,7 +214,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       s.deps.core.sendRequeue(msgId); s.deps.onOutboxChanged(g);
       const n = (s.count425.get(msgHex) ?? 0) + 1; s.count425.set(msgHex, n);
       if (n >= SYNC.commitRetryMax) {
-        s.deps.core.sendFail(msgId, 'E_COMMIT_REQUIRED'); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g);
+        s.deps.core.sendFail(msgId, 'E_COMMIT_REQUIRED'); s.reframedOnce.delete(reframeKey); s.slowed.delete(msgHex); s.deps.onOutboxChanged(g); s.requestDrain(g);
       } else {
         const old = s.epochWait.get(hex); if (old !== undefined) s.cancelTimer(old);
         s.epochWait.set(hex, s.armTimer(SYNC.membershipWaitMs, () => {
@@ -217,7 +230,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       // 502/504 come from the operator's proxy (L-HTTP-10) and say nothing about whether dillad stored it.
       await afterLostResponse(s, g, msgId);
     } else {
-      s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); s.deps.onOutboxChanged(g); s.requestDrain(g);
+      s.deps.core.sendFail(msgId, code); s.reframedOnce.delete(reframeKey); s.slowed.delete(msgHex); s.deps.onOutboxChanged(g); s.requestDrain(g);
     }
   }
 }

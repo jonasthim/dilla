@@ -64,7 +64,7 @@ export class SyncEngine implements SyncInternals {
   readonly queues: SerialQueues;
   readonly echoWait = new Map<string, { msgHex: string; timer: number }>();
   readonly epochWait = new Map<string, number>();
-  readonly slowWait = new Map<string, number>();
+  readonly slowWait = new Map<string, { timer: number; until: number }>();
   readonly slowed = new Set<string>();
   readonly count425 = new Map<string, number>();
   readonly reframedOnce = new Set<string>();
@@ -102,7 +102,6 @@ export class SyncEngine implements SyncInternals {
     this.joinAll.stop();
     this.isStopped = true;
     this.unsubscribe?.(); this.unsubscribe = null;
-    for (const id of this.slowWait.values()) this.cancelTimer(id);
     for (const id of this.timers) this.deps.clearTimeout(id);
     this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.slowWait.clear(); this.slowed.clear(); this.echoWait.clear(); this.reframedOnce.clear(); this.trustRetried.clear();
     this.queues.clear();

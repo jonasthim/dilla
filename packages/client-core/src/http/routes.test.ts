@@ -828,6 +828,16 @@ describe('Routes: retries and inputs', () => {
     expect(outcome).toMatchObject({ status: 0, code: 'E_NETWORK' });
   });
 
+  it('a 429 on postMessage is not waited out: the send lane requeues it (CB2)', async () => {
+    const { t, routes } = setup();
+    t.replies.push(refusal(429, 'E_RATE_LIMITED', 'slowmode', 5000), bytesReply(200, UPLOADED));
+    const outcome = await routes.postMessage(GROUP, BODY).then(() => 'sent', (e: unknown) => e);
+    expect(outcome).toBeInstanceOf(DillaHttpError);
+    expect(outcome).toMatchObject({ status: 429, code: 'E_RATE_LIMITED', retryAfterMs: 5000 });
+    expect(t.seen).toHaveLength(1);
+    expect(t.sleeps).toEqual([]);
+  });
+
   it('postAccount is sent once after a 500', async () => {
     const { t, routes } = setup();
     t.replies.push(refusal(500, 'E_INTERNAL'), cborReply(200, [USER, DEVICE, 'tok-new', 1]));

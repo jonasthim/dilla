@@ -27,8 +27,9 @@ export interface SyncInternals {
   cancelTimer(id: number): void;
   echoWait: Map<string, { msgHex: string; timer: number }>;
   epochWait: Map<string, number>;
-  /** CB2: group hex → the timer of its slow-mode wait (a 429 requeued a row); while it is armed the group posts nothing. */
-  slowWait: Map<string, number>;
+  /** CB2: group hex → its slow-mode wait (a 429 requeued a row): the timer and its deadline (ms since the epoch); while
+   *  it is armed the group posts nothing. A later 429 only ever moves the deadline later. */
+  slowWait: Map<string, { timer: number; until: number }>;
   /** CB2: msg hex of rows a 429 requeued; their confirmation clears the wait (onSlow(g, 0, false)). */
   slowed: Set<string>;
   count425: Map<string, number>;

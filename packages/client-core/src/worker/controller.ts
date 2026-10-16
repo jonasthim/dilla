@@ -2726,7 +2726,10 @@ export class Controller {
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
-    this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear(); this.slowUntil.clear();
+    this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
+    // CB2 fix round 1: the next account in this tab must not see this one's wait.
+    for (const channelId of this.slowUntil.keys()) this.slices.set(`slow:${channelId}`, { until: 0, queued: false });
+    this.slowUntil.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.memberReadEnded.clear(); this.voiceLookups.clear();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;

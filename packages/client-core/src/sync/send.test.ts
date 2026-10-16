@@ -677,4 +677,70 @@ describe('slow mode in the send lane (CB2)', () => {
     expect(d.posted.map((x) => x.type)).toEqual([0, 1]);
     expect(d.core.timeline(g, 0n, 100).map((x) => [toHex(x.msgId as Id), x.body])).toEqual([[toHex(p), 'edited']]);
   });
+
+  // Fix round 1.
+  it('two edits on one target keep their order when the first is refused 429', async () => {
+    const earlier = d.engine.send(g, 'earlier');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(5000) });
+    d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'one', attachments: [] });
+    await settle();
+    await clock.advance(1500);
+    d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'two', attachments: [] });
+    await settle();
+    expect(posts()).toBe(2);
+    await clock.advance(5000);
+    expect(sent()).toEqual(['earlier', 'one', 'two']);
+  });
+
+  it('a fold 429 in a slow-mode group does not shorten a post wait or publish', async () => {
+    const earlier = d.engine.send(g, 'earlier');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(9000) });
+    const t0 = clock.now();
+    d.engine.send(g, 'P');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(1000) });
+    d.engine.sendRequest(g, reaction(earlier));
+    await settle();
+    expect(d.slow.map((x) => [x.until - t0, x.queued])).toEqual([[9000, true]]);
+    await clock.advance(8999);
+    expect(sent()).toEqual(['earlier']);
+    await clock.advance(1);
+    expect(sent()).toEqual(['earlier', 'P', '👍']);
+    expect(d.slow.map((x) => [x.until === 0 ? 0 : x.until - t0, x.queued])).toEqual([[9000, true], [0, false]]);
+  });
+
+  it('a later deadline replaces the wait: the earlier timer never drains', async () => {
+    const earlier = d.engine.send(g, 'earlier');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(1000) });
+    d.engine.send(g, 'P');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(5000) });
+    d.engine.sendRequest(g, reaction(earlier));
+    await settle();
+    await clock.advance(1000);
+    expect(sent()).toEqual(['earlier']);
+    await clock.advance(4000);
+    expect(sent()).toEqual(['earlier', 'P', '👍']);
+  });
+
+  it('a slowed fold that then fails is no longer held once it is retried', async () => {
+    const earlier = d.engine.send(g, 'earlier');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(2000) });
+    const f = d.engine.sendRequest(g, { type: 1, replyTo: earlier, body: 'edit', attachments: [] });
+    await settle();
+    ds.inject('postMessage', { fail: httpError(403, 'E_FORBIDDEN') });
+    await clock.advance(2000);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId: f, state: 2 }]);
+    ds.inject('postMessage', { fail: slowed(5000) });
+    d.engine.send(g, 'P');
+    await settle();
+    d.engine.retry(f);
+    await settle();
+    expect(sent()).toEqual(['earlier', 'edit']);
+  });
+
 });
