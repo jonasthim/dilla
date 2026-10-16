@@ -219,6 +219,7 @@ const REQUIRED_STEPS = {
     'npm run typecheck -w @dilla/client-core',
     'npm run typecheck -w @dilla/web',
     'npm run build -w @dilla/web',
+    'npm run -w @dilla/web test:dist',
     'npm run build:harness -w @dilla/client-core',
     'go test -tags webdist ./internal/web/...',
     'name: dilla-web-dist',

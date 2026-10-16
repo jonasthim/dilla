@@ -169,6 +169,7 @@ jobs:
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
       - run: npm run build -w @dilla/web
+      - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core
       - run: go test -tags webdist ./internal/web/...
       - uses: actions/upload-artifact@v7
