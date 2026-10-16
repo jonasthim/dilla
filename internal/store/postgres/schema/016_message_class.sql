@@ -3,7 +3,6 @@
 -- legacy two-element upload, accepted in web3.7 only: checked for send_messages, never slowed
 -- (protocol/02 § Upload class).
 ALTER TABLE mls_app_messages ADD COLUMN class SMALLINT CHECK (class IS NULL OR class IN (0, 1));
-CREATE INDEX mls_app_messages_by_class ON mls_app_messages(group_id, class, uploader_device, created);
 -- slowmode_marks is slow mode's durable mark for end-to-end encrypted posts (web3.7 SB1 fix round
 -- 1): the time of a user's last accepted class-0 upload into any text group of a community
 -- channel, upserted in the upload's own transaction. Retention never prunes it, so a post the
