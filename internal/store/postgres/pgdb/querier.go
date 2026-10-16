@@ -154,6 +154,9 @@ type Querier interface {
 	// unreferenced blob's file is on disk until the sweeper collects it. The cast keeps SUM's
 	// NUMERIC an int64, as UserBlobBytes does.
 	InstanceBlobBytes(ctx context.Context) (int64, error)
+	// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the newest class-0 upload by any
+	// device of the user into any text group of the channel. A tombstoned message still counts.
+	LastClassZeroUploadAt(ctx context.Context, arg LastClassZeroUploadAtParams) (int64, error)
 	// The slowmode gate's read. A deleted message still counts: deleting the last message must not
 	// reset the gate, or delete-and-repost would bypass slowmode.
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)

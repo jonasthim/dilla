@@ -13,7 +13,7 @@ import (
 )
 
 const getAppMessage = `-- name: GetAppMessage :one
-SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id FROM mls_app_messages WHERE group_id = ? AND seq = ?
+SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id, class FROM mls_app_messages WHERE group_id = ? AND seq = ?
 `
 
 type GetAppMessageParams struct {
@@ -37,6 +37,7 @@ func (q *Queries) GetAppMessage(ctx context.Context, arg GetAppMessageParams) (M
 		&i.Expires,
 		&i.DeletedAt,
 		&i.FrankingKeyID,
+		&i.Class,
 	)
 	return i, err
 }
@@ -63,8 +64,30 @@ func (q *Queries) GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCur
 	return i, err
 }
 
+const lastClassZeroUploadAt = `-- name: LastClassZeroUploadAt :one
+SELECT m.created FROM mls_app_messages m
+JOIN mls_groups g ON g.group_id = m.group_id
+JOIN devices d ON d.id = m.uploader_device
+WHERE g.target_id = ? AND g.kind = 0 AND m.class = 0 AND d.user_id = ?
+ORDER BY m.created DESC LIMIT 1
+`
+
+type LastClassZeroUploadAtParams struct {
+	TargetID id.ID
+	UserID   id.ID
+}
+
+// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the newest class-0 upload by any
+// device of the user into any text group of the channel. A tombstoned message still counts.
+func (q *Queries) LastClassZeroUploadAt(ctx context.Context, arg LastClassZeroUploadAtParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lastClassZeroUploadAt, arg.TargetID, arg.UserID)
+	var created int64
+	err := row.Scan(&created)
+	return created, err
+}
+
 const listAppMessages = `-- name: ListAppMessages :many
-SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id FROM mls_app_messages WHERE group_id = ? AND seq >= ?
+SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id, class FROM mls_app_messages WHERE group_id = ? AND seq >= ?
 ORDER BY seq LIMIT ?3
 `
 
@@ -96,6 +119,7 @@ func (q *Queries) ListAppMessages(ctx context.Context, arg ListAppMessagesParams
 			&i.Expires,
 			&i.DeletedAt,
 			&i.FrankingKeyID,
+			&i.Class,
 		); err != nil {
 			return nil, err
 		}
@@ -212,8 +236,8 @@ func (q *Queries) PruneAppMessages(ctx context.Context, arg PruneAppMessagesPara
 
 const putAppMessage = `-- name: PutAppMessage :exec
 INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, commitment_c,
-                              franking_tag, size, created, expires, deleted_at, franking_key_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              franking_tag, size, created, expires, deleted_at, franking_key_id, class)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type PutAppMessageParams struct {
@@ -229,6 +253,7 @@ type PutAppMessageParams struct {
 	Expires        sql.NullInt64
 	DeletedAt      sql.NullInt64
 	FrankingKeyID  id.ID
+	Class          sql.NullInt64
 }
 
 func (q *Queries) PutAppMessage(ctx context.Context, arg PutAppMessageParams) error {
@@ -245,6 +270,7 @@ func (q *Queries) PutAppMessage(ctx context.Context, arg PutAppMessageParams) er
 		arg.Expires,
 		arg.DeletedAt,
 		arg.FrankingKeyID,
+		arg.Class,
 	)
 	return err
 }

@@ -4,7 +4,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/ds"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -75,10 +78,8 @@ func (h *Messages) upload(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	var body uploadRequest
-	// The 4096-byte allowance over the ciphertext cap is the CBOR framing around it: the
-	// two-element array header, the epoch and the byte-string header.
-	if err := server.DecodeBody(w, r, h.maxCiphertext()+4096, &body); err != nil {
+	body, class, err := h.decodeUpload(w, r)
+	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -87,7 +88,7 @@ func (h *Messages) upload(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	out, err := h.DS.Upload(r.Context(), session, groupID, body.Epoch, body.PrivateMessage)
+	out, err := h.DS.Upload(r.Context(), session, groupID, body.Epoch, body.PrivateMessage, class)
 	if err != nil {
 		server.WriteError(w, dsError(err))
 		return
@@ -97,6 +98,47 @@ func (h *Messages) upload(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		server.WriteError(w, err)
 	}
+}
+
+// decodeUpload reads endpoint 7's body, [epoch, private_message(bstr), class(uint 0|1)] (web3.7
+// SB1, protocol/02 § Upload class), as decodeCreateChannel reads its own: the raw array first,
+// then the first two elements re-encoded and decoded into uploadRequest, so every rule of the
+// two-element body holds unchanged. A two-element body is a legacy upload, accepted in web3.7
+// only: its class is nil (R28). Any other length, or a class that is not the uint 0 or 1, is 400.
+func (h *Messages) decodeUpload(w http.ResponseWriter, r *http.Request) (uploadRequest, *uint8, error) {
+	var body uploadRequest
+	var raw []cbor.RawMessage
+	// The 4096-byte allowance over the ciphertext cap is the CBOR framing around it: the array
+	// header, the epoch, the byte-string header and the class.
+	if err := server.DecodeBody(w, r, h.maxCiphertext()+4096, &raw); err != nil {
+		return body, nil, err
+	}
+	shape := func(err error) error {
+		return server.Errorf(server.CodeInvalidRequest, "body is not deterministic CBOR: %v", err)
+	}
+	if len(raw) != 2 && len(raw) != 3 {
+		return body, nil, server.Errorf(server.CodeInvalidRequest,
+			"body must be [epoch, private_message, class], got %d elements", len(raw))
+	}
+	b, err := cborx.Marshal(raw[:2])
+	if err != nil {
+		return body, nil, err
+	}
+	if err := cborx.Unmarshal(b, &body); err != nil {
+		return body, nil, shape(err)
+	}
+	if len(raw) == 2 {
+		return body, nil, nil
+	}
+	var c uint64
+	if err := cborx.Unmarshal(raw[2], &c); err != nil {
+		return body, nil, shape(err)
+	}
+	if c > 1 {
+		return body, nil, server.Errorf(server.CodeInvalidRequest, "class must be 0 or 1")
+	}
+	class := uint8(c)
+	return body, &class, nil
 }
 
 type messageItem struct {
@@ -109,6 +151,8 @@ type messageItem struct {
 	FrankingTag    []byte
 	RecvTS         uint64
 	Deleted        uint8
+	// Class is the upload class (web3.7 SB1): 0 or 1, null for a legacy upload.
+	Class *uint64
 }
 
 func (h *Messages) list(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +183,10 @@ func (h *Messages) list(w http.ResponseWriter, r *http.Request) {
 		}
 		if row.DeletedAt != nil {
 			item.Deleted = 1
+		}
+		if row.Class != nil {
+			c := uint64(*row.Class)
+			item.Class = &c
 		}
 		out = append(out, item)
 	}

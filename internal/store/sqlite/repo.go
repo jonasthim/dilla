@@ -1735,6 +1735,7 @@ func (r *Repo) PutAppMessage(ctx context.Context, m store.AppMessageRow) error {
 		Expires:        nullInt64(m.Expires),
 		DeletedAt:      nullInt64(m.DeletedAt),
 		FrankingKeyID:  m.FrankingKeyID,
+		Class:          nullClass(m.Class),
 	}))
 }
 
@@ -1776,7 +1777,26 @@ func appMessageRow(m sqlitedb.MlsAppMessages) store.AppMessageRow {
 		Expires:        ptrInt64(m.Expires),
 		DeletedAt:      ptrInt64(m.DeletedAt),
 		FrankingKeyID:  m.FrankingKeyID,
+		Class:          ptrClass(m.Class),
 	}
+}
+
+// nullClass and ptrClass convert the upload class (web3.7 SB1) between the
+// store's *uint8 and the generated sql.NullInt64; the column's CHECK keeps it
+// to NULL, 0 or 1.
+func nullClass(v *uint8) sql.NullInt64 {
+	if v == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*v), Valid: true}
+}
+
+func ptrClass(v sql.NullInt64) *uint8 {
+	if !v.Valid {
+		return nil
+	}
+	c := uint8(v.Int64)
+	return &c
 }
 
 // TombstoneAppMessage drops the ciphertext and records when. The row itself
@@ -2686,6 +2706,14 @@ func (r *Repo) GetReadState(ctx context.Context, userID, channelID id.ID) (uint6
 
 func (r *Repo) LastReadableMessageAt(ctx context.Context, channelID, userID id.ID) (int64, error) {
 	at, err := r.r.LastReadableMessageAt(ctx, sqlitedb.LastReadableMessageAtParams{ChannelID: channelID, Sender: userID})
+	if err != nil {
+		return 0, wrap(err)
+	}
+	return at, nil
+}
+
+func (r *Repo) LastClassZeroUploadAt(ctx context.Context, channelID, userID id.ID) (int64, error) {
+	at, err := r.r.LastClassZeroUploadAt(ctx, sqlitedb.LastClassZeroUploadAtParams{TargetID: channelID, UserID: userID})
 	if err != nil {
 		return 0, wrap(err)
 	}

@@ -543,6 +543,11 @@ type Readable interface {
 	// beside P2-D13: the created time of userID's latest message in the channel,
 	// deleted ones included (a delete must not reset the gate), or ErrNotFound.
 	LastReadableMessageAt(ctx context.Context, channelID, userID id.ID) (int64, error)
+	// LastClassZeroUploadAt is slow mode's read for end-to-end encrypted posts
+	// (web3.7 SB1): the created time of the newest class-0 upload by any device
+	// of userID into any text group (kind 0) whose target is channelID,
+	// tombstoned ones included, or ErrNotFound.
+	LastClassZeroUploadAt(ctx context.Context, channelID, userID id.ID) (int64, error)
 	// ListReadableAudience is who a readable channel's message.plain frames
 	// reach, added by Plan 2 task 8 (P2-D14's fan-out): the channel's
 	// materialised channel_members that are still members of its community,

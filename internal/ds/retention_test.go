@@ -95,7 +95,7 @@ func TestAnIneligibleDeviceDoesNotHoldThePruneFloor(t *testing.T) {
 			laggard := h.laggardMember(t, g) // its cursor stays at 0
 			c.make(h, t, g, laggard)
 
-			out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+			out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 			if err != nil {
 				t.Fatalf("Upload: %v", err)
 			}
@@ -132,7 +132,7 @@ func TestALiveDeviceBehindTheStreamHoldsTheFloor(t *testing.T) {
 	laggard := h.laggardMember(t, g)
 	h.online(laggard)
 
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -165,11 +165,11 @@ func TestArchivalRetentionIsIndependentOfDeliveryRetention(t *testing.T) {
 	ctx := context.Background()
 	h := newDSHarness(t)
 	g := h.group(t)
-	kept, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	kept, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	expiring, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	expiring, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestTheSweeperIsIdempotentAndBounded(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	for range 5 {
-		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch())); err != nil {
+		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil); err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
 	}
@@ -251,7 +251,7 @@ func TestAnAdvancedCursorOverHandshakeSeqsDoesNotForceAResync(t *testing.T) {
 		}
 		h.appendHandshake(t, g.id, seq, g.Epoch(), 1, []byte("commit"))
 	}
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -280,11 +280,11 @@ func TestACatchUpBelowACursorFloorPruneIsEPrunedInAYoungGroup(t *testing.T) {
 	ctx := context.Background()
 	h := newDSHarness(t)
 	g := h.group(t)
-	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	second, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	second, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("second Upload: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestAGroupWithOnlyIneligibleCursorsKeepsItsCiphertext(t *testing.T) {
 	g := h.group(t)
 	laggard := h.laggardMember(t, g)
 
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestAClosedGroupStillHasItsCiphertextPruned(t *testing.T) {
 	ctx := context.Background()
 	h := newDSHarness(t)
 	g := h.group(t)
-	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestAQuietMemberIsToldItsCiphertextIsGoneRatherThanServedAShortList(t *test
 
 	var last ds.UploadResult
 	for range 5 {
-		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 		if err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
@@ -420,7 +420,7 @@ func TestAQuietMemberIsToldItsCiphertextIsGoneRatherThanServedAShortList(t *test
 		t.Fatalf("the sweep deleted %d messages, want the 5 uploaded so far: "+
 			"the loss the quiet member has to be told about must be real", report.MessagesPruned)
 	}
-	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload after the sweep: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestAReturningIdleDeviceIsToldItsCiphertextIsGone(t *testing.T) {
 
 	var last ds.UploadResult
 	for range 3 {
-		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 		if err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
@@ -483,7 +483,7 @@ func TestAReturningIdleDeviceIsToldItsCiphertextIsGone(t *testing.T) {
 		t.Fatalf("the sweep deleted %d messages, want the 3 the idle device did not hold",
 			report.MessagesPruned)
 	}
-	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload after the sweep: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestTheRetentionHighWaterNeverWalksBack(t *testing.T) {
 	}
 	var last ds.UploadResult
 	for range 3 {
-		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+		out, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 		if err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
@@ -554,7 +554,7 @@ func TestTheRetentionHighWaterNeverWalksBack(t *testing.T) {
 	if report.MessagesPruned != 3 {
 		t.Fatalf("the first sweep deleted %d messages, want 3", report.MessagesPruned)
 	}
-	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	survivor, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload after the sweep: %v", err)
 	}

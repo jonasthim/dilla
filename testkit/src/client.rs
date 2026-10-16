@@ -762,7 +762,7 @@ impl TestClient {
         body: &str,
     ) -> Result<MsgId, TestkitError> {
         let (epoch, message, msg_id) = self.seal(group_id, body)?;
-        ds.post_message_from(group_id, epoch, message)?;
+        ds.post_message_from(group_id, epoch, message, Some(0))?;
         Ok(msg_id)
     }
 
@@ -774,7 +774,7 @@ impl TestClient {
         body: &str,
     ) -> Result<u64, TestkitError> {
         let (epoch, message, _) = self.seal(group_id, body)?;
-        Ok(ds.post_message_from(group_id, epoch, message)?.seq)
+        Ok(ds.post_message_from(group_id, epoch, message, Some(0))?.seq)
     }
 
     /// Invariant 8's malformed upload: a real message of this group whose `authenticated_data` —
@@ -788,7 +788,12 @@ impl TestClient {
         len: usize,
     ) -> Result<(), TestkitError> {
         let (epoch, message, _) = self.seal(group_id, "a commitment of the wrong length")?;
-        ds.post_message_from(group_id, epoch, with_authenticated_data_len(&message, len)?)?;
+        ds.post_message_from(
+            group_id,
+            epoch,
+            with_authenticated_data_len(&message, len)?,
+            Some(0),
+        )?;
         Ok(())
     }
 
@@ -803,7 +808,13 @@ impl TestClient {
     ) -> Result<(u64, MsgId), TestkitError> {
         let (epoch, message, msg_id) =
             self.seal_envelope(group_id, kind, reply_to, body, attachments)?;
-        Ok((ds.post_message_from(group_id, epoch, message)?.seq, msg_id))
+        // The upload class (web3.7 SB1): 0 for a post, 1 for every other envelope type.
+        let class = if kind == EnvelopeType::Message { 0 } else { 1 };
+        Ok((
+            ds.post_message_from(group_id, epoch, message, Some(class))?
+                .seq,
+            msg_id,
+        ))
     }
 
     pub fn take_deleted(&mut self) -> Vec<(Vec<u8>, u64)> {

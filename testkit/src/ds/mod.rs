@@ -56,11 +56,14 @@ pub trait DeliveryService {
     ) -> Result<CommitResult, DsError>;
     fn post_proposal(&mut self, g: &GroupId, epoch: u64, proposal: Vec<u8>)
     -> Result<u64, DsError>;
+    /// Row 7. `class` is the upload class (web3.7 SB1, protocol/02 § Upload class): `Some(0)` a
+    /// post, `Some(1)` anything else, `None` a legacy two-element upload.
     fn post_message_from(
         &mut self,
         g: &GroupId,
         epoch: u64,
         pm: Vec<u8>,
+        class: Option<u8>,
     ) -> Result<UploadResult, DsError>;
     fn messages(&mut self, g: &GroupId, from: u64) -> Result<Vec<MessageItem>, DsError>;
     fn welcomes(&mut self) -> Result<Vec<WelcomeItem>, DsError>;
@@ -279,7 +282,7 @@ mod tests {
         assert!(matches!(ds.ack_welcome(7), Err(DsError::NotFound)));
         // An upload that is not a PrivateMessage carries no commitment.
         assert!(matches!(
-            DeliveryService::post_message_from(&mut ds, &group, 0, vec![1, 2, 3]),
+            DeliveryService::post_message_from(&mut ds, &group, 0, vec![1, 2, 3], Some(0)),
             Err(DsError::CommitmentInvalid)
         ));
     }

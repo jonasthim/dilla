@@ -75,8 +75,10 @@ func CommitNeededPayload(epoch uint64, refs [][]byte, deadlineMS, round uint64) 
 
 func EpochChangedPayload(epoch, seq uint64) (cbor.RawMessage, error) { return payload(epoch, seq) }
 
-func MessageCTPayload(seq, epoch uint64, uploader id.ID, blob, frankingTag []byte, recvTS uint64) (cbor.RawMessage, error) {
-	return payload(seq, epoch, uploader, blob, frankingTag, recvTS)
+// MessageCTPayload is op 19: [seq, epoch, uploader_device, blob, franking_tag, recv_ts, class]. class
+// is the upload class (web3.7 SB1, protocol/02 § Upload class), null for a legacy upload.
+func MessageCTPayload(seq, epoch uint64, uploader id.ID, blob, frankingTag []byte, recvTS uint64, class *uint8) (cbor.RawMessage, error) {
+	return payload(seq, epoch, uploader, blob, frankingTag, recvTS, optUint8(class))
 }
 
 func WelcomePayload(welcomeID, epoch, commitSeq uint64, blob, ratchetTree, treeHash []byte) (cbor.RawMessage, error) {
@@ -128,6 +130,13 @@ func boolUint(b bool) uint64 {
 		return 1
 	}
 	return 0
+}
+
+func optUint8(v *uint8) any {
+	if v == nil {
+		return nil
+	}
+	return uint64(*v)
 }
 
 func optUint(v *uint32) any {

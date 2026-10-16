@@ -28,8 +28,13 @@ type UploadResult struct {
 }
 
 // Upload is invariant 8. The order is fixed: size, then the freeze, then the current-leaf check,
-// then the commitment, then the tag.
-func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64, pm []byte) (UploadResult, error) {
+// then the post policy, then the commitment, then the tag.
+//
+// class is the upload class (web3.7 SB1, protocol/02 § Upload class): 0 a post, 1 anything else,
+// nil a legacy two-element upload. It is stored on the row and relayed as message.ct's 7th
+// element; the post policy, when one is set, decides every upload by it, a nil class included
+// (R28).
+func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64, pm []byte, class *uint8) (UploadResult, error) {
 	if len(pm) > d.opts.Policy.MaxCiphertextBytes {
 		return UploadResult{}, errTooLarge(len(pm), d.opts.Policy.MaxCiphertextBytes)
 	}
@@ -48,6 +53,13 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 	}
 	if _, err := d.leafOf(ctx, groupID, s.DeviceID); err != nil {
 		return UploadResult{}, err
+	}
+	// send_messages and slow mode, under the group lock: two uploads into one group are decided
+	// one after the other, each against what the one before it stored.
+	if d.opts.PostPolicy != nil {
+		if err := d.opts.PostPolicy.Check(ctx, row, s.UserID, class, d.now()); err != nil {
+			return UploadResult{}, err
+		}
 	}
 
 	inst, err := d.opts.Wasm.Acquire(ctx)
@@ -103,6 +115,7 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 			// The key the tag was made under (Plan 2 task 17, P2-D21): a report selects it by
 			// this id, so a message stays verifiable after the franking key rotates.
 			FrankingKeyID: d.opts.Keys.FrankingKeyID,
+			Class:         class,
 		}); err != nil {
 			return err
 		}
@@ -114,7 +127,7 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 	}
 
 	// R30: the uploader's own devices receive it too, so every device sees a dense seq stream.
-	payload, err := gateway.MessageCTPayload(out.Seq, out.Epoch, s.DeviceID, pm, out.FrankingTag, out.RecvTS)
+	payload, err := gateway.MessageCTPayload(out.Seq, out.Epoch, s.DeviceID, pm, out.FrankingTag, out.RecvTS, class)
 	if err == nil {
 		d.opts.Gateway.DeliverGroup(groupID, gateway.Frame{
 			Op: gateway.OpMessageCT, GroupID: &groupID, Payload: payload, Replay: true,

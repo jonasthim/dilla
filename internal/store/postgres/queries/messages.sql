@@ -1,7 +1,7 @@
 -- name: PutAppMessage :exec
 INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, commitment_c,
-                              franking_tag, size, created, expires, deleted_at, franking_key_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                              franking_tag, size, created, expires, deleted_at, franking_key_id, class)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 
 -- name: ListAppMessages :many
 SELECT * FROM mls_app_messages WHERE group_id = $1 AND seq >= $2
@@ -9,6 +9,15 @@ ORDER BY seq LIMIT sqlc.arg(max_rows)::bigint;
 
 -- name: GetAppMessage :one
 SELECT * FROM mls_app_messages WHERE group_id = $1 AND seq = $2;
+
+-- name: LastClassZeroUploadAt :one
+-- Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the newest class-0 upload by any
+-- device of the user into any text group of the channel. A tombstoned message still counts.
+SELECT m.created FROM mls_app_messages m
+JOIN mls_groups g ON g.group_id = m.group_id
+JOIN devices d ON d.id = m.uploader_device
+WHERE g.target_id = $1 AND g.kind = 0 AND m.class = 0 AND d.user_id = $2
+ORDER BY m.created DESC LIMIT 1;
 
 -- name: TombstoneAppMessage :exec
 UPDATE mls_app_messages SET blob = NULL, deleted_at = $1

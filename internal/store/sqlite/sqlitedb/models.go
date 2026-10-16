@@ -228,6 +228,7 @@ type MlsAppMessages struct {
 	Expires        sql.NullInt64
 	DeletedAt      sql.NullInt64
 	FrankingKeyID  id.ID
+	Class          sql.NullInt64
 }
 
 type MlsEpochTrees struct {

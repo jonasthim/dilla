@@ -162,7 +162,12 @@ func TestTheCatalogueAndTheCorpusAgreeOnEveryPayloadElementCount(t *testing.T) {
 			if err := cborx.Unmarshal(mustHex(t, c.Payload), &elems); err != nil {
 				t.Fatalf("payload: %v", err)
 			}
-			if want := opSpecs[Op(c.Op)].elements; len(elems) != want {
+			want := opSpecs[Op(c.Op)].elements
+			// Until RB1 converts the message.ct corpus case to 7 elements (web3.7 R29); RB1 deletes this exception.
+			if Op(c.Op) == OpMessageCT && len(elems) == want-1 {
+				return
+			}
+			if len(elems) != want {
 				t.Fatalf("corpus payload has %d elements but opSpecs[%d].elements = %d",
 					len(elems), c.Op, want)
 			}
@@ -398,5 +403,34 @@ func TestCommunityChangedEncodesOneElementAndRoundTrips(t *testing.T) {
 	var got id.ID
 	if err := cborx.Unmarshal(payload[0], &got); err != nil || got != cid {
 		t.Fatalf("community_id = %v (%v), want %v", got, err, cid)
+	}
+}
+
+// The upload class (web3.7 SB1, R29): message.ct carries it as its 7th element, a uint for a class
+// upload and null for a legacy one.
+func TestMessageCTCarriesTheUploadClass(t *testing.T) {
+	if got := opSpecs[OpMessageCT].elements; got != 7 {
+		t.Fatalf("opSpecs[OpMessageCT].elements = %d, want 7", got)
+	}
+	zero := uint8(0)
+	for _, c := range []struct {
+		name  string
+		class *uint8
+		want  string
+	}{{"class 0", &zero, "00"}, {"legacy", nil, "f6"}} {
+		raw, err := MessageCTPayload(1, 2, id.New(), []byte("ct"), make([]byte, 32), 3, c.class)
+		if err != nil {
+			t.Fatalf("%s: MessageCTPayload: %v", c.name, err)
+		}
+		var elems []cbor.RawMessage
+		if err := cborx.Unmarshal(raw, &elems); err != nil {
+			t.Fatalf("%s: decode: %v", c.name, err)
+		}
+		if len(elems) != 7 {
+			t.Fatalf("%s: %d elements, want 7", c.name, len(elems))
+		}
+		if got := hex.EncodeToString(elems[6]); got != c.want {
+			t.Fatalf("%s: the 7th element is %s, want %s", c.name, got, c.want)
+		}
 	}
 }

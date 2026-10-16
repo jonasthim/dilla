@@ -75,7 +75,7 @@ func TestARestartedInstanceDeliversAQuietGroupItSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGroup: %v", err)
 	}
-	out, err := h.ds.Upload(ctx, uploader, reg.GroupID, row.Epoch, privateMessage(t, 32, row.Epoch, 64))
+	out, err := h.ds.Upload(ctx, uploader, reg.GroupID, row.Epoch, privateMessage(t, 32, row.Epoch, 64), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

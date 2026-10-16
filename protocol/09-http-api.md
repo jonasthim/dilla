@@ -637,7 +637,9 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   replaced bytes could never verify.
 - **Slow mode.** Inside `slowmode_seconds` of the caller's previous message in the channel, a post
   is `429 E_RATE_LIMITED` with `retry_after_ms` the time left; `bypass_slowmode` is exempt. A
-  deleted message still counts, so deleting and reposting does not reset the wait.
+  deleted message still counts, so deleting and reposting does not reset the wait. Slow mode and
+  `send_messages` apply to end-to-end encrypted posts too, through the upload class (`02` § Upload
+  class).
 - **Franking.** A readable envelope carries its `k_f` in the clear, so the instance computes `04`'s
   commitment `C` itself, unchanged. The tag `T` is `04`'s with two substitutions, because a
   readable channel has no MLS group: `channel_id` in place of `group_id`, and `0` for the epoch. The
