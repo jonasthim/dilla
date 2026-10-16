@@ -38,6 +38,11 @@ export interface SyncDeps {
   /** Reads the group's leaves' signed lists again (the controller's trust refresh). drainOne calls it once for a queued row
    *  that send_encrypt refused by a leaf verdict, and retrySend before a verdict-failed row is tried again. */
   refreshGroupTrust(groupId: Id): Promise<void>;
+  /** CB2: a 429 requeued the group's row and the group waits until untilMs (ms since the epoch) before it posts again
+   *  (queued: a post waits for it). untilMs 0 with queued false clears it: the waiting row was confirmed. */
+  onSlow(groupId: Id, untilMs: number, queued: boolean): void;
+  /** CB2: an upload of this device was confirmed; type is the row's envelope type. */
+  onPosted(groupId: Id, type: number): void;
 }
 export const SYNC = {
   handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400,
@@ -59,6 +64,8 @@ export class SyncEngine implements SyncInternals {
   readonly queues: SerialQueues;
   readonly echoWait = new Map<string, { msgHex: string; timer: number }>();
   readonly epochWait = new Map<string, number>();
+  readonly slowWait = new Map<string, number>();
+  readonly slowed = new Set<string>();
   readonly count425 = new Map<string, number>();
   readonly reframedOnce = new Set<string>();
   readonly trustRetried = new Map<string, 'pending' | 'done'>();
@@ -95,8 +102,9 @@ export class SyncEngine implements SyncInternals {
     this.joinAll.stop();
     this.isStopped = true;
     this.unsubscribe?.(); this.unsubscribe = null;
+    for (const id of this.slowWait.values()) this.cancelTimer(id);
     for (const id of this.timers) this.deps.clearTimeout(id);
-    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear(); this.trustRetried.clear();
+    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.slowWait.clear(); this.slowed.clear(); this.echoWait.clear(); this.reframedOnce.clear(); this.trustRetried.clear();
     this.queues.clear();
     for (const wake of this.waiters) wake();
     this.waiters.clear();

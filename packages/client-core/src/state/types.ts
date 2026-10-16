@@ -176,10 +176,14 @@ export interface RemovalNotice { id: number; communityId: string; name: string }
  *  id in lower-case hex; times are unix seconds. */
 export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | null;
   passkeys: { id: string; name: string; created: number; lastUsed: number | null }[]; backupCodesLeft: number; hasPassword: boolean }
+/** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
+ *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
+export interface SlowState { until: number; queued: boolean }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
-  | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors';
+  | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
+  | `slow:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
@@ -188,6 +192,7 @@ export interface SliceTypes { account: AccountState; connection: ConnectionState
   /** channel id (hex) → its overwrites; a channel with none is absent. */
   [k: `overwrites:${string}`]: Record<string, OverwriteSummary[]>; [k: `bans:${string}`]: BanSummary[];
   [k: `invites:${string}`]: InviteSummary[]; removals: RemovalNotice[]; factors: FactorsState;
+  [k: `slow:${string}`]: SlowState;
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
   trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState;
   call: CallState; voice: VoiceState; rings: RingsState }

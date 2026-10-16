@@ -557,7 +557,9 @@ export class Routes {
     return { seq: u64(a[0]), epoch: u64(a[1]) };
   }
   async postMessage(groupId: Uint8Array, body: Uint8Array): Promise<MessageUploaded> {
-    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false, { body });
+    // CB2: a 429 (slow mode) goes back to the send lane, which requeues the row and arms its own timer; a sleep here
+    // would hold the group's lane (frames and catch-up) for up to RETRY.maxWaitMs.
+    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false, { body, retry429: false });
     return { raw, seq: u64(atLeast(decode(raw), 1)[0]) };
   }
   async postCursor(groupId: Uint8Array, body: Uint8Array): Promise<void> {

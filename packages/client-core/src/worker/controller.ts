@@ -642,6 +642,8 @@ export class Controller {
   /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
   private readonly communityReloads = new Map<string, number>();
   private readonly channels = new Map<string, KnownChannel>();
+  /** CB2: the `until` last published on each channel's `slow:` slice (ms since the epoch, 0 = cleared), by channel hex. */
+  private readonly slowUntil = new Map<string, number>();
   private readonly dms = new Map<string, KnownDm>();
   private dmsLoading: Promise<void> | null = null;
   private dmsAgain = false;
@@ -1348,6 +1350,8 @@ export class Controller {
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),
+      onSlow: (g, untilMs, queued) => { this.safely(() => { this.onSlow(g, untilMs, queued); }); },
+      onPosted: (g, type) => { this.safely(() => { this.onPosted(g, type); }); },
     });
     this.sync = sync;
     sync.start();
@@ -2722,7 +2726,7 @@ export class Controller {
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
-    this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
+    this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear(); this.slowUntil.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.memberReadEnded.clear(); this.voiceLookups.clear();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
@@ -3534,6 +3538,42 @@ export class Controller {
   }
 
   private pin(channelId: string, msgId: string, on: boolean): Promise<null> { return this.fold(channelId, msgId, on ? 5 : 6, ''); }
+
+  /** CB2: the community channel whose text group g is (the channels table's textGroupId, else the group's target when that
+   *  is a listed channel); a DM group has none. */
+  private slowChannel(g: Id): { channelId: string; slowmode: number } | null {
+    const hex = toHex(g);
+    for (const [channelId, { row }] of this.channels) {
+      if (row.textGroupId !== null && toHex(row.textGroupId) === hex) return { channelId, slowmode: row.slowmode };
+    }
+    const target = this.core?.groupRow(g)?.targetId;
+    const known = target === undefined ? undefined : this.channels.get(toHex(target));
+    return target === undefined || known === undefined ? null : { channelId: toHex(target), slowmode: known.row.slowmode };
+  }
+
+  /** CB2 (R6): the engine requeued a post after a 429 (queued) or confirmed it after the wait (untilMs 0, queued false).
+   *  A wait is published only for a channel with slow mode on; a clear only where a wait was published. The countdown
+   *  is published whether or not the person holds bypass_slowmode: the page hides it for them (WEB-B). */
+  private onSlow(g: Id, untilMs: number, queued: boolean): void {
+    const channel = this.slowChannel(g);
+    if (channel === null) return;
+    if (untilMs === 0 && !queued) { if (!this.slowUntil.has(channel.channelId)) return; }
+    else if (channel.slowmode <= 0) return;
+    this.publishSlow(channel.channelId, untilMs, queued);
+  }
+
+  /** CB2: a confirmed own post (type 0) starts the channel's countdown of slowmode seconds; a fold never does. */
+  private onPosted(g: Id, type: number): void {
+    if (type !== 0) return;
+    const channel = this.slowChannel(g);
+    if (channel === null || channel.slowmode <= 0) return;
+    this.publishSlow(channel.channelId, this.deps.now() + channel.slowmode * 1000, false);
+  }
+
+  private publishSlow(channelId: string, until: number, queued: boolean): void {
+    this.slowUntil.set(channelId, until);
+    this.slices.set(`slow:${channelId}`, { until, queued });
+  }
 
   /** A text group targets its channel or DM (web-2a). */
   private channelOfGroup(g: Id): Id {

@@ -27,6 +27,10 @@ export interface SyncInternals {
   cancelTimer(id: number): void;
   echoWait: Map<string, { msgHex: string; timer: number }>;
   epochWait: Map<string, number>;
+  /** CB2: group hex → the timer of its slow-mode wait (a 429 requeued a row); while it is armed the group posts nothing. */
+  slowWait: Map<string, number>;
+  /** CB2: msg hex of rows a 429 requeued; their confirmation clears the wait (onSlow(g, 0, false)). */
+  slowed: Set<string>;
   count425: Map<string, number>;
   reframedOnce: Set<string>;
   /** `${group hex}:${msg hex}` of rows a leaf verdict refused at send_encrypt: their one trust refresh is out, or done. */

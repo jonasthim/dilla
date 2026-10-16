@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreError, type AttachmentDescriptor, type Id } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC } from './engine';
 import { catchSync, coreCalls, device, openRegistered, readyInfo, type Device } from './testing/harness';
-import { CHANNEL, COMMUNITY, ME, ManualClock, ModelDs, PEER, THIRD, deferred, httpError, idOf, settle, textRequest } from './testing/model';
+import { CHANNEL, CHANNEL_2, COMMUNITY, ME, ManualClock, ModelDs, PEER, THIRD, deferred, httpError, idOf, settle, textRequest } from './testing/model';
 import { fakeDskPub } from '../testing/fake-list';
 
 let ds: ModelDs;
@@ -301,7 +301,6 @@ describe('sending (rule 5)', () => {
     [422, 'E_COMMITMENT_INVALID'],
     [404, 'E_NOT_FOUND'],
     [403, 'E_FORBIDDEN'],
-    [429, 'E_RATE_LIMITED'],
     [503, 'E_UNAVAILABLE'],
   ];
   it.each(refusals)('marks the row failed on %i %s and moves on to the next row', async (status, code) => {
@@ -531,5 +530,151 @@ describe('a queued row refused at send_encrypt by a leaf verdict (client I1, sec
     await settle();
     expect(d.refreshes).toEqual([toHex(g), toHex(g)]);
     expect(sent()).toEqual(['queued before the verdict']);
+  });
+});
+
+// CB2: a 429 (slow mode, or any other) requeues the row and arms a timer; the group's lane is never held (R6, R38).
+describe('slow mode in the send lane (CB2)', () => {
+  const slowed = (ms: number | null = 5000) => httpError(429, 'E_RATE_LIMITED', ms);
+  const coreOf = (m: string): number => d.core.calls.filter((c) => c.m === m && c.g === toHex(g)).length;
+  const reaction = (target: Id) => ({ type: 3 as const, replyTo: target, body: '👍', attachments: [] });
+
+  it('a 429 requeues the row instead of failing it', async () => {
+    ds.inject('postMessage', { fail: slowed() });
+    const t0 = clock.now();
+    const msgId = d.engine.send(g, 'slow');
+    await settle();
+    expect(coreOf('sendRequeue')).toBe(1);
+    expect(coreOf('sendFail')).toBe(0);
+    expect(d.core.outbox(g)).toMatchObject([{ msgId, state: 0, error: '' }]);
+    expect(d.slow).toEqual([{ group: toHex(g), until: t0 + 5000, queued: true }]);
+  });
+
+  it('the timer drains again after retryAfterMs', async () => {
+    ds.inject('postMessage', { fail: slowed() });
+    d.engine.send(g, 'slow');
+    await settle();
+    expect(posts()).toBe(1);
+    await clock.advance(4999);
+    expect(posts()).toBe(1);
+    await clock.advance(1);
+    expect(posts()).toBe(2);
+    expect(sent()).toEqual(['slow']);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.slow.at(-1)).toEqual({ group: toHex(g), until: 0, queued: false });
+    expect(d.slow).toHaveLength(2);
+  });
+
+  it('the lane never sleeps', async () => {
+    const wait = vi.spyOn(d.engine, 'wait');
+    ds.inject('postMessage', { fail: slowed() });
+    d.engine.send(g, 'slow');
+    await settle();
+    await clock.advance(5000);
+    expect(sent()).toEqual(['slow']);
+    expect(wait).not.toHaveBeenCalled();
+  });
+
+  it('other groups drain while one waits', async () => {
+    ds.addChannel(COMMUNITY, CHANNEL_2);
+    const b = await openRegistered(ds, d, CHANNEL_2);
+    ds.inject('postMessage', { fail: slowed() });
+    d.engine.send(g, 'in A');
+    await settle();
+    d.engine.send(b, 'in B');
+    await settle();
+    expect(ds.view(b).messages.map((m) => m.body)).toEqual(['in B']);
+    expect(sent()).toEqual([]);
+    expect(d.core.outbox(g)).toMatchObject([{ state: 0 }]);
+    await clock.advance(5000);
+    expect(sent()).toEqual(['in A']);
+  });
+
+  it('a 429 without retryAfterMs waits 1000 ms', async () => {
+    ds.inject('postMessage', { fail: slowed(null) });
+    const t0 = clock.now();
+    d.engine.send(g, 'slow');
+    await settle();
+    expect(d.slow).toEqual([{ group: toHex(g), until: t0 + 1000, queued: true }]);
+    await clock.advance(999);
+    expect(posts()).toBe(1);
+    await clock.advance(1);
+    expect(posts()).toBe(2);
+  });
+
+  it('stop cancels the wait', async () => {
+    ds.inject('postMessage', { fail: slowed() });
+    d.engine.send(g, 'slow');
+    await settle();
+    expect(d.core.outbox(g)).toMatchObject([{ state: 0 }]);
+    d.engine.stop();
+    await clock.advance(10_000);
+    expect(posts()).toBe(1);
+    expect(clock.pending).toBe(0);
+  });
+
+  it('a confirmed post reports onPosted', async () => {
+    const target = d.engine.send(g, 'first');
+    await settle();
+    expect(d.posted).toEqual([{ group: toHex(g), type: 0 }]);
+    d.engine.sendRequest(g, reaction(target));
+    await settle();
+    expect(d.posted).toEqual([{ group: toHex(g), type: 0 }, { group: toHex(g), type: 3 }]);
+    expect(d.slow).toEqual([]);
+  });
+
+  it('a reaction drains while a post waits (R38)', async () => {
+    const earlier = d.engine.send(g, 'earlier');
+    await settle();
+    ds.inject('postMessage', { fail: slowed() });
+    // Queued behind P before P's upload is answered: the 429 itself must let it drain.
+    const p = d.engine.send(g, 'waiting');
+    const r = d.engine.sendRequest(g, reaction(earlier));
+    await settle();
+    expect(posts()).toBe(3);
+    expect(d.core.outbox(g).map((x) => [toHex(x.msgId), x.state])).toEqual([[toHex(p), 0]]);
+    expect(d.posted.map((x) => x.type)).toEqual([0, 3]);
+    expect(toHex(r)).toHaveLength(32);
+    await clock.advance(5000);
+    expect(posts()).toBe(4);
+    expect(sent()).toEqual(['earlier', '👍', 'waiting']);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('a fold refused 429 waits for the timer too (R6: every 429)', async () => {
+    const earlier = d.engine.send(g, 'earlier');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(2000) });
+    d.engine.sendRequest(g, reaction(earlier));
+    await settle();
+    expect(posts()).toBe(2);
+    expect(d.core.outbox(g)).toMatchObject([{ type: 3, state: 0 }]);
+    await clock.advance(1999);
+    expect(posts()).toBe(2);
+    await clock.advance(1);
+    expect(posts()).toBe(3);
+    expect(d.core.outbox(g)).toEqual([]);
+    expect(d.posted.map((x) => x.type)).toEqual([0, 3]);
+  });
+
+  // The brief's fixture (an edit queued on a post still in the outbox) is unreachable: the core (messages.rs
+  // send_prepare, fold::resolve) and the model refuse a fold whose target is not held, and a queued post is not held
+  // until it is confirmed. So the fold can never reach the host before its post; drainOne's target check is a belt.
+  it('a fold on the waiting post waits with it', async () => {
+    ds.inject('postMessage', { fail: slowed() });
+    const p = d.engine.send(g, 'waiting');
+    await settle();
+    expect(catchSync(() => d.engine.sendRequest(g, { type: 1, replyTo: p, body: 'edited', attachments: [] })))
+      .toMatchObject({ code: 'E_CORE_NOT_FOUND', detail: 'target is not held' });
+    expect(catchSync(() => d.engine.sendRequest(g, reaction(p)))).toMatchObject({ code: 'E_CORE_NOT_FOUND' });
+    expect(d.core.outbox(g).map((x) => [x.type, x.state])).toEqual([[0, 0]]);
+    await clock.advance(5000);
+    expect(posts()).toBe(2);
+    // Once P is confirmed, a fold on it queues and uploads.
+    d.engine.sendRequest(g, { type: 1, replyTo: p, body: 'edited', attachments: [] });
+    await settle();
+    expect(posts()).toBe(3);
+    expect(d.posted.map((x) => x.type)).toEqual([0, 1]);
+    expect(d.core.timeline(g, 0n, 100).map((x) => [toHex(x.msgId as Id), x.body])).toEqual([[toHex(p), 'edited']]);
   });
 });

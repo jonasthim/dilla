@@ -55,6 +55,7 @@ export function discardSend(s: SyncInternals, msgId: Id): void {
   // The row's attachment references are the controller's to delete (L-TS-34).
   if (row !== undefined) s.deps.onDiscarded(g, row);
   s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`); s.trustRetried.delete(`${toHex(g)}:${toHex(msgId)}`);
+  s.slowed.delete(toHex(msgId));
   s.deps.onOutboxChanged(g);
 }
 async function afterLostResponse(s: SyncInternals, g: Id, msgId: Id): Promise<void> {
@@ -83,13 +84,24 @@ function armEchoWait(s: SyncInternals, g: Id, msgId: Id): void {
   });
   s.echoWait.set(hex, { msgHex, timer });
 }
+/** A fold whose target is a post (type 0) still queued in the outbox. */
+function targetsQueuedPost(rows: readonly OutboxRow[], fold: OutboxRow): boolean {
+  const target = fold.replyTo;
+  if (target === null) return false;
+  const t = toHex(target);
+  return rows.some((x) => x.type === 0 && x.state === 0 && toHex(x.msgId) === t);
+}
 export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   const hex = toHex(g);
   if (s.stopped() || s.echoWait.has(hex) || s.row(g)?.state !== 2) return;
   const rows = s.deps.core.outbox(g);
   const inFlight = rows.find((x) => x.state === 1);
   if (inFlight !== undefined) { await afterLostResponse(s, g, inFlight.msgId); return; }
-  const row: OutboxRow | undefined = rows.find((x) => x.state === 0);
+  // CB2 (R38): while a slow-mode wait is armed the group posts nothing; a fold (types 1..6) still drains unless its
+  // target is a post still queued in the outbox (it waits with that post, so it never reaches the host before it) or
+  // a 429 requeued it (it waits for the timer). Folds keep their queue order among themselves.
+  const row: OutboxRow | undefined = s.slowWait.has(hex) ? rows.find((x) => x.state === 0 && x.type !== 0
+    && !s.slowed.has(toHex(x.msgId)) && !targetsQueuedPost(rows, x)) : rows.find((x) => x.state === 0);
   if (row === undefined) return;
   const msgId = row.msgId; const msgHex = toHex(msgId);
   const reframeKey = `${hex}:${msgHex}`;
@@ -149,7 +161,11 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       if (!s.deps.core.outbox(g).some((x) => toHex(x.msgId) === msgHex && x.state !== 2)) s.reframedOnce.delete(reframeKey);
       s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestCatchUp(g); s.requestDrain(g); return;
     }
-    s.reframedOnce.delete(reframeKey); s.trustRetried.delete(reframeKey); s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestDrain(g);
+    s.reframedOnce.delete(reframeKey); s.trustRetried.delete(reframeKey); s.deps.onOutboxChanged(g); s.count425.delete(msgHex);
+    // The clear first, so the countdown onPosted starts is not cleared after it.
+    if (s.slowed.delete(msgHex) && !s.slowWait.has(hex)) s.deps.onSlow(g, 0, false);
+    s.deps.onPosted(g, row.type);
+    s.requestDrain(g);
   } catch (e) {
     if (s.stopped()) return;
     const status = e instanceof DillaHttpError ? e.status : 0;
@@ -167,6 +183,18 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       s.deps.core.sendRequeue(msgId);
       s.reframedOnce.add(reframeKey);
       s.deps.onOutboxChanged(g); s.requestDrain(g);
+      return;
+    }
+    if (status === 429) {
+      // CB2 (R6): every 429 requeues the row and arms one timer for the group; the detail is never read. The lane is
+      // released at once, so frames, catch-up and the folds beside the wait go on (R38).
+      s.deps.core.sendRequeue(msgId); s.deps.onOutboxChanged(g);
+      s.slowed.add(msgHex);
+      const wait = e instanceof DillaHttpError && e.retryAfterMs !== null ? e.retryAfterMs : 1000;
+      const old = s.slowWait.get(hex); if (old !== undefined) s.cancelTimer(old);
+      s.slowWait.set(hex, s.armTimer(wait, () => { s.slowWait.delete(hex); s.requestDrain(g); }));
+      s.deps.onSlow(g, s.deps.now() + wait, true);
+      s.requestDrain(g);
       return;
     }
     if (status === 425) {

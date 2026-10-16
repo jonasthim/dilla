@@ -4305,3 +4305,61 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     expect(w.routes.listChannels.mock.calls.slice(before).map((c) => toHex(c[0]))).toEqual([toHex(COMMUNITY)]);
   });
 });
+
+// CB2: the engine's onSlow and onPosted become a `slow:<channelId>` slice, only for a channel with slow mode on (R6).
+describe('slow mode slices (CB2)', () => {
+  const T0 = 1_700_000_000_000;
+  const slowSlices = (w: World): SliceMessage[] =>
+    w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name.startsWith('slow:'));
+  async function slowWorld(slowmode: number): Promise<{ w: World; clock: { t: number } }> {
+    const clock = { t: T0 };
+    const w = world({ now: () => clock.t });
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '',
+      position: 0, slowmode, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    await vi.waitFor(() => expect(w.channels()?.find((c) => c.id === toHex(CHANNEL))?.slowmode).toBe(slowmode));
+    return { w, clock };
+  }
+
+  it('a 429 on a channel with slow mode publishes the wait; on a channel without it nothing', async () => {
+    const { w } = await slowWorld(10);
+    w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: T0 + 5000, queued: true });
+    const off = await slowWorld(0);
+    off.w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    expect(slowSlices(off.w)).toEqual([]);
+  });
+
+  it('a confirmed own post starts the countdown; a reaction publishes nothing', async () => {
+    const { w, clock } = await slowWorld(10);
+    clock.t = T0 + 123;
+    w.sync.deps!.onPosted(GROUP, 3);
+    expect(slowSlices(w)).toEqual([]);
+    w.sync.deps!.onPosted(GROUP, 0);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: T0 + 123 + 10_000, queued: false });
+  });
+
+  it('the clear publishes until 0; a queued post that then sends ends at its own countdown', async () => {
+    const { w, clock } = await slowWorld(10);
+    w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    clock.t = T0 + 5000;
+    w.sync.deps!.onSlow(GROUP, 0, false);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: 0, queued: false });
+    w.sync.deps!.onPosted(GROUP, 0);
+    expect(slowSlices(w).map((m) => m.value)).toEqual([
+      { until: T0 + 5000, queued: true }, { until: 0, queued: false }, { until: T0 + 5000 + 10_000, queued: false },
+    ]);
+  });
+
+  it('a DM group never publishes', async () => {
+    const { w } = await slowWorld(10);
+    w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+    w.state.groups.push({ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL });
+    w.sync.deps!.onUnexpectedWelcome(DM_GROUP);
+    await vi.waitFor(() => expect(w.last<DmSummary[]>('dms')?.[0]?.id).toBe(toHex(DM_CHANNEL)));
+    w.sync.deps!.onSlow(DM_GROUP, T0 + 5000, true);
+    w.sync.deps!.onPosted(DM_GROUP, 0);
+    w.sync.deps!.onSlow(DM_GROUP, 0, false);
+    expect(slowSlices(w)).toEqual([]);
+  });
+});
