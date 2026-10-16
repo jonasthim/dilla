@@ -137,7 +137,8 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  for (let i = 0; i < 12; i++) {
+  // 14 Tabs: the channel header now carries a search button (walk 1), one stop more than before.
+  for (let i = 0; i < 14; i++) {
     await press('Tab');
     seen.push(await regionOfFocus());
   }

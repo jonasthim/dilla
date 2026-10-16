@@ -7,6 +7,7 @@ import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { formatTime } from '../strings/index.ts';
+import { en } from '../strings/en.ts';
 import { joinErrorState } from '../router.ts';
 import { Shell } from './Shell.tsx';
 
@@ -70,6 +71,28 @@ it('opens scoped search with a modifier and sends the typed query', async () => 
   expect(input).toHaveFocus();
 });
 
+it('opens search from a visible control in the channel header (walk 1)', async () => {
+  const { fake, user } = setup(`/c/${A}/${GEN}`);
+  const header = (await screen.findByRole('heading', { level: 2, name: 'general' })).closest('header')!;
+  await user.click(within(header).getByRole('button', { name: 'search' }));
+  const input = screen.getByRole('combobox', { name: 'Search your messages' });
+  await user.type(input, 'lamp');
+  await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
+});
+// Walk 7: the browser's own offline event shows the banner at once; the gateway status stays online.
+it('shows the offline banner when the browser goes offline, and removes it when it returns', async () => {
+  const { fake } = setup(`/c/${A}/${GEN}`);
+  await screen.findByRole('heading', { level: 2, name: 'general' });
+  expect(fake.get('connection')?.status).toBe('online');
+  expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
+  const online = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+  act(() => { window.dispatchEvent(new Event('offline')); });
+  expect(screen.getByText(en['shell.banner.offline'])).toBeInTheDocument();
+  online.mockReturnValue(true);
+  act(() => { window.dispatchEvent(new Event('online')); });
+  expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
+  online.mockRestore();
+});
 it('persists a chosen search scope through the worker setting', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}k{/Control}');
@@ -786,13 +809,34 @@ describe('composer', () => {
     await user.type(composer(), 'hello{Enter}{Enter}');
     await user.click(sendButton());
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'hello' }]);
-    expect(composer()).toHaveValue('hello');
+    // Walk 3: the box is empty the moment Enter is pressed, so nothing typed next can join the sent text.
+    expect(composer()).toHaveValue('');
     await act(async () => { finish({ msgId: 'ab'.repeat(16) }); await Promise.resolve(); });
     expect(composer()).toHaveValue('');
     // The in-flight mark is cleared: the next message goes out.
     fake.handler = c => Promise.resolve(c.m === 'send' ? { msgId: 'cd'.repeat(16) } : null);
     await user.type(composer(), 'again{Enter}');
     expect(fake.callsOf('send')).toEqual([{ m: 'send', channelId: GEN, text: 'hello' }, { m: 'send', channelId: GEN, text: 'again' }]);
+  });
+  // Walk 3: a key that lands right after Enter starts the next message; it never joins the one just sent.
+  it('clears the draft at once, so the next keys do not repeat the sent text', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    fake.handler = c => (c.m === 'send' ? new Promise(() => {}) : Promise.resolve(null));
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    await user.type(composer(), 'Release night is Friday{Enter}Bring snacks{Enter}');
+    expect(fake.callsOf('send')).toEqual([
+      { m: 'send', channelId: GEN, text: 'Release night is Friday' },
+      { m: 'send', channelId: GEN, text: 'Bring snacks' },
+    ]);
+    expect(composer()).toHaveValue('');
+  });
+  it('puts the text back when the send is refused and nothing new was typed', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    fake.handler = c => (c.m === 'send' ? Promise.reject(refusal({ code: 'E_NOT_READY', detail: 'x' })) : Promise.resolve(null));
+    act(() => fake.set(`timeline:${GEN}`, timeline()));
+    await user.type(composer(), 'hello{Enter}');
+    await screen.findByRole('alert');
+    expect(composer()).toHaveValue('hello');
   });
   // A11Y-DESIGN-04: past the 4000-byte budget the counter says by how much, never a negative "left".
   it('says how far a message is over the budget and sends nothing', async () => {
@@ -1117,6 +1161,9 @@ describe('keyboard', () => {
     await user.tab();
     // web3.7: the thread list sits after pins and before the members toggle.
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'threads' }));
+    await user.tab();
+    // walk 1: the search control follows the thread list.
+    expect(document.activeElement).toBe(within(header).getByRole('button', { name: 'search' }));
     await user.tab();
     expect(document.activeElement).toBe(within(header).getByRole('button', { name: /members/ }));
     await user.tab();

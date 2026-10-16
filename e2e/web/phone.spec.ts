@@ -196,11 +196,33 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectTapTargets(menu, 'the server menu trigger');
       // The owner's menu: new channel, invite, server settings (and "leave" only for a member).
       await menu.click();
-      await expect(page.getByRole('menuitem')).toHaveText([copy('create.channel.open'), copy('invite.open'), copy('admin.open')]);
+      await expect(page.getByRole('menuitem')).toHaveText([copy('search.open'), copy('create.channel.open'), copy('invite.open'), copy('admin.open')]);
       await expectTapTargets(page.getByRole('menuitem'), 'the server menu items');
       await page.keyboard.press('Escape');
       await expect(page.getByRole('menuitem')).toHaveCount(0);
       await expect(menu).toBeFocused();
+    });
+
+    // Walk 1: a phone has no Control+K, so search opens from the servers list menu, full screen; a hit opens its channel.
+    await test.step('search from the servers list menu opens full screen and a hit opens its message', async () => {
+      await page.getByRole('button', { name: copy('nav.server.menu'), exact: true }).click();
+      await page.getByRole('menuitem', { name: copy('search.open'), exact: true }).tap();
+      const palette = page.getByRole('dialog', { name: copy('search.placeholder'), exact: true });
+      await expect(palette).toBeVisible({ timeout: WAIT });
+      const box = await palette.boundingBox();
+      expect(box!.width, 'the palette covers the phone').toBeGreaterThanOrEqual(389);
+      expect(box!.height, 'the palette covers the phone').toBeGreaterThanOrEqual(843);
+      const input = page.getByRole('combobox', { name: copy('search.placeholder'), exact: true });
+      await expect(input).toBeFocused();
+      await input.fill('hej');
+      const hit = palette.getByRole('option').filter({ hasText: 'hej' }).first();
+      await expect(hit).toBeVisible({ timeout: WAIT });
+      await hit.tap();
+      await expect(palette).toBeHidden({ timeout: WAIT });
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
+      await expectComposerReady(page, 'general');
+      await back(page).click();
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
     });
 
     // The channel menu's sheet: closed by the system back and by its own back, focus returns to the menu trigger.

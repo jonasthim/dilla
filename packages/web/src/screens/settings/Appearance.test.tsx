@@ -21,6 +21,13 @@ function setup(stored: 'system' | 'mesh' | 'light' | 'high-contrast' | null) {
 const theme = () => screen.getByRole('radiogroup', { name: 'theme' });
 
 describe('Appearance', () => {
+  it('names the theme control once (walk 23)', async () => {
+    const { ready } = setup('light');
+    await ready;
+    render(<CoreProvider client={new FakeClient()}><Appearance /></CoreProvider>);
+    expect(screen.queryAllByRole('group', { name: 'theme' })).toHaveLength(0);
+    expect(screen.getAllByRole('radiogroup', { name: 'theme' })).toHaveLength(1);
+  });
   it('shows the stored preference and applies and stores a new one', async () => {
     const { user, ready } = setup('light');
     await ready;

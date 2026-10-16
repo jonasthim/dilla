@@ -94,17 +94,19 @@ export function ThreadView(p: {
     else if (ev.kind === 'discard') command({ m: 'discardSend', msgId: ev.msgId });
   };
   const send = (m: OutgoingMessage) => {
-    if (sending.current) return;
-    sending.current = true;
+    const withTray = m.attachments.length > 0;
+    if (withTray && sending.current) return;
+    if (withTray) sending.current = true;
+    setDraft(d => (d === m.raw ? '' : d));
     void (async () => {
       try {
         await client.call({ m: 'send', channelId: p.channelId, text: m.text, threadId: p.rootMsgId,
-          ...(m.attachments.length > 0 ? { attachments: [...m.attachments] } : {}) });
-        setDraft(d => (d === m.raw ? '' : d));
+          ...(withTray ? { attachments: [...m.attachments] } : {}) });
       } catch (e) {
+        setDraft(d => (d === '' ? m.raw : d));
         report(e);
       } finally {
-        sending.current = false;
+        if (withTray) sending.current = false;
       }
     })();
   };

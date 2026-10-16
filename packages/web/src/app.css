@@ -72,8 +72,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-voice-section__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 0.25rem; }
 .dw-voice-section__item > .d-voice-row { grid-column: 1; grid-row: 1; min-width: 0; }
 .dw-voice-section__item > .d-voice-row__people { grid-column: 1 / -1; }
-.dw-voice-section__join { grid-column: 2; grid-row: 1; align-self: center; min-height: 24px; opacity: 0; pointer-events: none; }
-.dw-voice-section__item:hover .dw-voice-section__join, .dw-voice-section__item:focus-within .dw-voice-section__join { opacity: 1; pointer-events: auto; }
+.dw-voice-section__join { grid-column: 2; grid-row: 1; align-self: center; min-height: 24px; position: relative; z-index: 1; opacity: 0; transition: opacity var(--duration-fast); }
+/* Walk 26: shown (and clickable, above the row) on hover and focus-within; always shown where there is no hover, so touch finds it. */
+.dw-voice-section__item:hover .dw-voice-section__join, .dw-voice-section__item:focus-within .dw-voice-section__join { opacity: 1; }
+@media (hover: none) { .dw-voice-section__join { opacity: 1; } }
 /* WB a11y m4 ruling (2026-10-14): the join keeps its own column (nothing reflows on hover), and the row's hover, current
    and accent-bar highlight is painted on the item's first line across both columns, so it runs the sidebar's full width
    with the join inside it, as the text rows' does. The row's own focus ring stays on the row button. */
@@ -174,7 +176,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 
 /* The phone's You and Activity tabs and Settings' phone header (flow 12). One row grammar: 44px targets, hairlines between. */
 .dw-phone-pane { min-height: 100%; background: var(--bg); color: var(--fg); }
-.dw-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-serif-italic); font-style: italic; font-weight: 400; font-size: var(--text-xl); color: var(--fg); }
+.dw-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-mono); font-weight: var(--weight-label); font-size: var(--text-lg, var(--text-base)); color: var(--fg); }
 .dw-phone-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hairline); }
 .dw-phone-row { display: flex; align-items: center; gap: 0.75rem; width: 100%; min-height: 2.75rem; padding: 0.5rem var(--row-pad-x); font: inherit; font-size: var(--text-sm); color: var(--fg); text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--hairline); cursor: pointer; }
 .dw-phone-row:hover { background: var(--surface-2); }
@@ -216,9 +218,10 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-thread-list__title { margin: 0 0 0.5rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
 .dw-thread-list__empty { margin: 0; font-size: var(--text-base); color: var(--fg-3); }
 .dw-thread-list ul { margin: 0; padding: 0; list-style: none; }
-.dw-thread-list__row { display: flex; align-items: center; width: 100%; min-height: 1.75rem; padding: var(--row-pad-y) 8px; margin: var(--row-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
-.dw-thread-list__excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dw-thread-list__count { flex-shrink: 0; white-space: pre; color: var(--fg-3); }
+.dw-thread-list__row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-height: 1.75rem; padding: var(--row-pad-y) 8px; margin: var(--row-gap) 0; font: inherit; font-size: var(--text-base); color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-md); text-align: left; cursor: pointer; transition: background var(--duration-fast), color var(--duration-fast); }
+.dw-thread-list__author { font-size: var(--text-micro); color: var(--fg-3); }
+.dw-thread-list__excerpt { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.dw-thread-list__count { font-size: var(--text-micro); color: var(--fg-3); }
 .dw-thread-list__row:hover { background: var(--surface-2); color: var(--fg); }
 @container d-shell (max-width: 47.99rem) {
   .dw-thread-list__row { min-height: 2.75rem; }

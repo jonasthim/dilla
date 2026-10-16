@@ -140,7 +140,8 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const readOnly = cannotSend && announcement;
   const readOnlyText = t('announce.readOnly', { name: p.channelName ?? '' });
   const blocked = p.blocked ?? (readOnly ? readOnlyText : cannotSend ? t('chperm.cannotSend', { name: p.channelName ?? '' }) : null);
-  const noticeBody = readOnly ? readOnlyText : waiting ? <>
+  // The read-only text is the disabled box's reason (below it): a notice above would say it twice.
+  const noticeBody = readOnly ? null : waiting ? <>
     <span aria-hidden="true">{waitText}</span>{queued ? <span> {t('slow.queued')}</span> : null}
   </> : null;
   return <>

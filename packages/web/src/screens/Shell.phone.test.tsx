@@ -52,18 +52,44 @@ describe('the phone shell: the servers list', () => {
     const { user, client } = phone({ path: `/c/${A}` });
     await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
     const names = () => screen.getAllByRole('menuitem').map(i => i.textContent);
-    expect(names()).toEqual([t('invite.open'), t('admin.open'), t('admin.leave.open')]);
+    expect(names()).toEqual([t('search.open'), t('invite.open'), t('admin.open'), t('admin.leave.open')]);
     await user.keyboard('{Escape}');
     manage(client);
     await user.click(screen.getByRole('button', { name: t('nav.server.menu') }));
-    expect(names()).toEqual([t('create.channel.open'), t('invite.open'), t('admin.open'), t('admin.leave.open')]);
+    expect(names()).toEqual([t('search.open'), t('create.channel.open'), t('invite.open'), t('admin.open'), t('admin.leave.open')]);
     expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
+  });
+
+  it('labels the rail’s join and new buttons with visible captions (walk 24)', async () => {
+    phone({ path: `/c/${A}` });
+    const rail = await screen.findByRole('navigation', { name: t('shell.rail.label') });
+    expect(within(rail).getByText(t('create.rail.join'))).toBeVisible();
+    expect(within(rail).getByText(t('create.rail.new'))).toBeVisible();
   });
 
   it('has no axe violations', async () => {
     const { view } = phone({ path: `/c/${A}` });
     await screen.findByRole('button', { name: t('nav.server.menu') });
     await expectNoAxeViolations(view.container);
+  });
+});
+
+describe('the phone shell: search (walk 1)', () => {
+  it('opens the full-screen search from the servers list menu', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
+    await user.click(screen.getByRole('menuitem', { name: t('search.open') }));
+    const dialog = screen.getByRole('dialog', { name: t('search.placeholder') });
+    expect(dialog.className).toContain('dw-search');
+    expect(screen.getByRole('combobox', { name: t('search.placeholder') })).toHaveFocus();
+  });
+
+  it('opens it from the channel menu, scoped to the conversation', async () => {
+    const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
+    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
+    await user.click(screen.getByRole('menuitem', { name: t('search.open') }));
+    await user.type(screen.getByRole('combobox', { name: t('search.placeholder') }), 'lamp');
+    await waitFor(() => expect(client.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: TEXT, query: 'lamp', cursor: null }));
   });
 });
 
@@ -92,11 +118,11 @@ describe('the phone shell: pushed views', () => {
   it('names the channel menu: pins and members, and edit channel for a person who may', async () => {
     const { user, client } = phone({ path: `/c/${A}/${TEXT}` });
     await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('thread.list'), t('members.toggle')]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('search.open'), t('shell.pins.open'), t('thread.list'), t('members.toggle')]);
     await user.keyboard('{Escape}');
     manage(client);
     await user.click(screen.getByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open'), t('thread.list'), t('admin.channel.open'), t('members.toggle')]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('search.open'), t('shell.pins.open'), t('thread.list'), t('admin.channel.open'), t('members.toggle')]);
   });
 
   it('opens a DM as a pushed view with a pins menu', async () => {
@@ -106,7 +132,7 @@ describe('the phone shell: pushed views', () => {
     expect(window.history.state).toMatchObject({ phoneBack: true });
     expect(tabs()).toBeNull();
     await user.click(screen.getByRole('button', { name: t('nav.channel.menu') }));
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('shell.pins.open')]);
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual([t('search.open'), t('shell.pins.open')]);
   });
 
   it('gives the voice stage a phone header with its name and a back', async () => {

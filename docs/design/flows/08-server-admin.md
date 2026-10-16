@@ -112,12 +112,12 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `mod.kick.error.gone='{name} is no longer in {server}.'`
 - `mod.ban.title='Ban {name} from {server}?'`
 - `mod.ban.body='{name} leaves every channel and call of {server} at once and cannot join again until the ban ends or is lifted. Messages they already received stay on their devices.'`
-- `mod.ban.reason='Reason'`, `mod.ban.reasonHint='Optional. Shown to moderators in the ban list, not to {name}. Up to 512 bytes.'`
+- `mod.ban.reason='Reason'`, `mod.ban.reasonHint='Optional. Shown to moderators in the ban list, not to {name}. Up to 512 characters (fewer for some letters).'`
 - `mod.ban.duration='Ban length'`, `mod.ban.duration.hour='1 hour'`, `mod.ban.duration.day='1 day'`, `mod.ban.duration.week='7 days'`
 - `mod.ban.duration.month='30 days'`, `mod.ban.duration.forever='until lifted'`
 - `mod.ban.confirm='Ban'`, `mod.ban.busy='Banning…'`, `mod.ban.done='{name} was banned.'`
 - `mod.ban.error.forbidden='You cannot ban {name}. Their highest role is at or above yours, or your roles do not allow banning.'`
-- `mod.ban.error.reasonLong='That reason is too long. A reason is up to 512 bytes.'`
+- `mod.ban.error.reasonLong='That reason is too long. A reason is up to 512 characters (fewer for some letters).'`
 - `mod.ban.error.reasonControl='A reason cannot hold control characters other than line breaks and tabs.'`
 - `mod.ban.error.clock='The ban length was refused. Check this device’s clock and try again.'`
 - `mod.error.other='That did not work ({code}). Try again.'`
@@ -128,10 +128,10 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.nav.overview='overview'`, `admin.nav.channels='channels'`, `admin.nav.invites='invites'`, `admin.nav.bans='bans'`
 - `admin.nav.delete='delete server'`, `admin.nav.leave='leave server'`, `admin.cancel='Cancel'`
 - `admin.overview.title='Overview'`, `admin.overview.name='Server name'`
-- `admin.overview.hint='Up to 255 bytes. Everyone in the server, and the host, can read it.'`
+- `admin.overview.hint='Up to 255 characters (fewer for some letters). Everyone in the server, and the host, can read it.'`
 - `admin.overview.save='Save'`, `admin.overview.saving='Saving…'`, `admin.overview.saved='Saved.'`
 - `admin.overview.error.empty='Give the server a name.'`
-- `admin.overview.error.long='That name is too long. A server name is up to 255 bytes.'`
+- `admin.overview.error.long='That name is too long. A server name is up to 255 characters (fewer for some letters).'`
 - `admin.overview.error.refused='That name was refused. Try another.'`
 - `admin.overview.error.forbidden='You cannot rename this server.'`
 - `admin.overview.error.conflict='Someone else changed the server at the same time. Check the name and save again.'`
@@ -144,17 +144,17 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.channels.deleteLabel='delete {name}'`, `admin.channels.noCategory='no category'`, `admin.channels.moved='{name} moved.'`
 - `admin.channels.error.move='Could not move {name} ({code}). Try again.'`
 - `admin.category.title='New category in {server}'`, `admin.category.name='Category name'`
-- `admin.category.hint='Up to 100 bytes. A category groups channels in the list; it holds no messages.'`
+- `admin.category.hint='Up to 100 characters (fewer for some letters). A category groups channels in the list; it holds no messages.'`
 - `admin.category.submit='Create'`, `admin.category.busy='Creating…'`, `admin.category.error.empty='Give the category a name.'`
 - `admin.category.error.other='Could not add the category ({code}). Try again.'`
 - `admin.channel.open='edit channel'`, `admin.channel.titleText='Edit #{name}'`, `admin.channel.titleVoice='Edit {name}'`
-- `admin.channel.titleCategory='Edit category {name}'`, `admin.channel.name='Channel name'`, `admin.channel.nameHint='Up to 100 bytes.'`
+- `admin.channel.titleCategory='Edit category {name}'`, `admin.channel.name='Channel name'`, `admin.channel.nameHint='Up to 100 characters (fewer for some letters).'`
 - `admin.channel.topic='Topic'`
-- `admin.channel.topicHint='Shown under the channel name. Up to 1024 bytes. The host can read it.'`
+- `admin.channel.topicHint='Shown under the channel name. Up to 1024 characters (fewer for some letters). The host can read it.'`
 - `admin.channel.category='Category'`, `admin.channel.save='Save'`, `admin.channel.saving='Saving…'`
 - `admin.channel.error.empty='Give the channel a name.'`
-- `admin.channel.error.long='That name is too long. A channel name is up to 100 bytes.'`
-- `admin.channel.error.topicLong='That topic is too long. A topic is up to 1024 bytes.'`
+- `admin.channel.error.long='That name is too long. A channel name is up to 100 characters (fewer for some letters).'`
+- `admin.channel.error.topicLong='That topic is too long. A topic is up to 1024 characters (fewer for some letters).'`
 - `admin.channel.error.topicControl='A topic cannot hold control characters other than line breaks and tabs.'`
 - `admin.channel.error.forbidden='You cannot change this channel.'`
 - `admin.channel.error.refused='That change was refused. Check the fields and try again.'`

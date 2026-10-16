@@ -36,10 +36,10 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
    "Start a server" says "You own it: you add its channels and invite people. It starts with a text channel and a
    voice channel, both called general."
 
-   ![The dialog "Start a server" with the name Midgard Crew typed into Server name, "Up to 255 bytes." and the
+   ![The dialog "Start a server" with the name Midgard Crew typed into Server name, "Up to 255 characters (fewer for some letters)." and the
    buttons Close and Create](screenshots/create-server-desktop.png)
 
-4. Type a name under "Server name" ("Up to 255 bytes.") and press **Create** or Enter. While it works the button
+4. Type a name under "Server name" ("Up to 255 characters (fewer for some letters).") and press **Create** or Enter. While it works the button
    says "Creating…"; a second press sends nothing more.
 5. The dialog closes, the server is selected and `#general` opens with the cursor in its message field. The server
    also has a voice channel called general. You are its owner.
@@ -64,7 +64,7 @@ If the server is not created, the name field says why:
 | The dialog shows | What to do |
 |---|---|
 | "Give the server a name." | Type a name; spaces alone are not a name |
-| "That name is too long. A server name is up to 255 bytes." | Shorten it. Letters such as å or ü take two bytes each, and an emoji four or more |
+| "That name is too long. A server name is up to 255 characters (fewer for some letters)." | Shorten it. The limit is counted in bytes: letters such as å or ü take two each, and an emoji four or more |
 | "A name cannot hold control characters such as tabs or line breaks." | Take them out |
 | "That name was refused. Try another." | The instance refused it; choose another |
 | "Could not start the server ({code}). Try again." | Press **Create** again. After E_NETWORK the server may have been made anyway: the dialog reads your server list again, and if the server is there it carries on with it. **Create** with the same name reads the list again before it makes anything, so it never makes a second server |
@@ -107,11 +107,11 @@ browser joined are not shown." Everything sent after that reaches them.
 Only the server's owner can add channels for now. Press **+ channel** ("new channel") under the server's name.
 
 ![The dialog "New channel in Midgard Crew": Kind with text selected and voice, Channel name loot, "Shown as #loot.
-Up to 100 bytes." and the buttons Close and Create](screenshots/create-channel-desktop.png)
+Up to 100 characters (fewer for some letters)." and the buttons Close and Create](screenshots/create-channel-desktop.png)
 
 1. Under "Kind", choose **text** or **voice**. The arrow keys move between them.
 2. Type a name under "Channel name". The line under the field shows how it will look: "Shown as #{name}. Up to 100
-   bytes." for a text channel. A text channel's name is kept in lower case, with spaces turned into hyphens:
+   characters (fewer for some letters)." for a text channel. A text channel's name is kept in lower case, with spaces turned into hyphens:
    "Fika på Fredag" becomes `#fika-på-fredag`. A voice channel keeps the name as you typed it.
 3. Press **Create** or Enter ("Creating…"). A new text channel opens with the cursor in its message field and says
    "nothing here yet."; a new voice channel is listed under "voice".
@@ -124,7 +124,7 @@ another.") and nothing is created.
 
 The others in the server see a new channel within about a second, in any dilla tab they have open; a renamed
 server's new name shows the same way. The dialog says "Give the channel a name.", "That name is too long. A channel name is up
-to 100 bytes.", "A name cannot hold control characters such as tabs or line breaks.", "You cannot add channels to
+to 100 characters (fewer for some letters).", "A name cannot hold control characters such as tabs or line breaks.", "You cannot add channels to
 this server.", "That name was refused. Try another." or "Could not add the channel ({code}). Try again." when the
 channel was not added.
 
@@ -141,20 +141,20 @@ Press **server settings** under the server's name. The dialog "Server settings" 
 non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Tab stops once on the
 list and once on the section; Escape closes the dialog and focus goes back to **server settings**.
 
-**Overview** renames the server. Type under "Server name" ("Up to 255 bytes. Everyone in the server, and the host,
+**Overview** renames the server. Type under "Server name" ("Up to 255 characters (fewer for some letters). Everyone in the server, and the host,
 can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
-a name.", "That name is too long. A server name is up to 255 bytes.", "That name was refused. Try another.", "You
+a name.", "That name is too long. A server name is up to 255 characters (fewer for some letters).", "That name was refused. Try another.", "You
 cannot rename this server." or "Could not save ({code}). Try again." If "Someone else changed the server at the same
 time. Check the name and save again.", look at the name that is there now and save again.
 
 **Channels** lists the channels under their categories ("no category" holds the rest). Each row has **edit**, **move
 up**, **move down** and **delete**; the screen announces "{name} moved." after a move.
 
-- **new category** asks for a "Category name" ("Up to 100 bytes. A category groups channels in the list; it holds no
+- **new category** asks for a "Category name" ("Up to 100 characters (fewer for some letters). A category groups channels in the list; it holds no
   messages.") and **Create**.
 - **edit** opens "Edit #{name}" (or "Edit {name}" for a voice channel, "Edit category {name}" for a category). You
-  can change the "Channel name" ("Up to 100 bytes."), the "Topic" of a text channel ("Shown under the channel name.
-  Up to 1024 bytes. The host can read it.") and its "Category". A category has only a name. The header of an open
+  can change the "Channel name" ("Up to 100 characters (fewer for some letters)."), the "Topic" of a text channel ("Shown under the channel name.
+  Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
   text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
@@ -196,7 +196,7 @@ says "Kicking…", then "{name} was kicked."
 **ban** asks "Ban {name} from {server}?": "{name} leaves every channel and call of {server} at once and cannot join
 again until the ban ends or is lifted. Messages they already received stay on their devices." Choose "Ban length"
 (1 hour, 1 day, 7 days, 30 days or until lifted) and, if you like, a "Reason" ("Optional. Shown to moderators in the
-ban list, not to {name}. Up to 512 bytes."). **Ban** says "Banning…", then "{name} was banned." A refused kick or ban
+ban list, not to {name}. Up to 512 characters (fewer for some letters)."). **Ban** says "Banning…", then "{name} was banned." A refused kick or ban
 says so in the dialog: "You cannot kick {name}. Their highest role is at or above yours, or your roles do not allow
 kicking." (and the same for banning), or "{name} is no longer in {server}."
 
@@ -245,7 +245,7 @@ has no buttons. The screen announces "{name} moved." after a move.
 
 **new role** (or **edit** on a row) opens "New role in {server}" (or "Edit {name}"):
 
-- "Role name": up to 100 bytes. Everyone in the server, and the host, can read it.
+- "Role name": up to 100 characters (fewer for some letters). Everyone in the server, and the host, can read it.
 - "Colour": a row of swatches (no colour, red, orange, amber, green, teal, cyan, blue, indigo, purple, pink, brown,
   grey). The colour shows as a dot beside the names of people who hold the role in the member list. The arrow keys
   move between swatches.
@@ -257,7 +257,7 @@ has no buttons. The screen announces "{name} moved." after a move.
   hold is switched off: "You do not hold this permission, so you cannot give or take it."
 
 **Create** or **Save** says "Creating…" or "Saving…", then "{name} created." or "{name} saved." A refusal shows in the
-dialog: "Give the role a name.", "That name is too long. A role name is up to 100 bytes.", "You cannot change this
+dialog: "Give the role a name.", "That name is too long. A role name is up to 100 characters (fewer for some letters).", "You cannot change this
 role. It is at or above your highest role, or it carries a permission you do not hold.", "Someone else moved this
 role at the same time. Check it and save again.", "This server already has 250 roles, the most it can hold." or
 "This role no longer exists."

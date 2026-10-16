@@ -321,7 +321,11 @@ export function CreateChannelFlow(props: {
 
   // The announcement kind is offered to a person who may create one; the worker checks it again.
   const canAnnounce = access !== undefined && canCreateAnnouncement(access);
-  const announceRoles = (roles ?? []).filter(r => r.id !== access?.everyoneId).sort((a, b) => b.position - a.position);
+  // Only roles below the creator's top (all of them for the owner), as for a private channel: the server answers 403 for the rest.
+  const announceRoles = (roles ?? []).filter(r => r.id !== access?.everyoneId && (access?.owner === true || r.position < (access?.top ?? 0)))
+    .sort((a, b) => b.position - a.position);
+  // The kind is missing for a creator who may add channels but not manage roles: say why, in one line.
+  const needsRoles = access !== undefined && !canAnnounce && access.manageChannels && !access.manageRoles;
 
   // A chosen announcement kind falls back to text when the right to create one is lost before submit.
   const kind: NewChannelKind = picked === 'announcement' && !canAnnounce ? 'text' : picked;
@@ -368,7 +372,7 @@ export function CreateChannelFlow(props: {
         // the 98-role cap, which the ticks already prevent: the code cannot tell the cap from "roles not loaded" or "unknown
         // server", and the detail is never read (protocol/02), so it is worded by its code (W2a review 8).
         const { code, reason } = errorOf(e);
-        fail(code === 'E_FORBIDDEN' ? t('create.channel.error.forbidden')
+        fail(code === 'E_FORBIDDEN' ? t(chosen === 'announcement' ? 'announce.roleTooHigh' : 'create.channel.error.forbidden')
           : code === 'E_BAD_INPUT' && reason === 'announce.noHeldRole' ? t('announce.noHeldRole')
           : code === 'E_INVALID_REQUEST' ? t('create.channel.error.refused')
             : t('create.channel.error.other', { code }));
@@ -395,7 +399,7 @@ export function CreateChannelFlow(props: {
           })}
           onToggle={(id, on) => setAnnounceTicked(list => (on ? [...list.filter(x => x !== id), id] : list.filter(x => x !== id)))} />
         <p id="dw-announce-hint" className="d-select__hint">{t('announce.hint')}</p>
-      </> : canPrivate ? <>
+      </> : needsRoles ? <p className="d-select__hint">{t('announce.needsRoles')}</p> : canPrivate ? <>
         <Toggle id="dw-create-private" label={t('chperm.create.private')} showLabel hint={t('chperm.create.privateHint')} checked={priv}
           onChange={on => { setPriv(on); setError(null); }} />
         {priv ? <CheckList label={t('chperm.create.roles')} emptyLabel={t('chperm.create.noRoles')} busyId={null}

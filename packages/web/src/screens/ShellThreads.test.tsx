@@ -273,7 +273,7 @@ describe('slow mode in the composer', () => {
 
   it('says only some people can post in an announcement channel', async () => {
     setup({ path: `/c/${A}/${NEWS}` });
-    expect(await screen.findAllByText(en['announce.readOnly'].replace('{name}', 'news'))).not.toHaveLength(0);
+    expect(await screen.findAllByText(en['announce.readOnly'].replace('{name}', 'news'))).toHaveLength(1);
   });
 });
 

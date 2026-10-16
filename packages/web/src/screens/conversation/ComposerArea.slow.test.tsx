@@ -127,10 +127,11 @@ describe('the slow-mode countdown (web3.7)', () => {
 
 describe('an announcement channel for a reader (web3.7)', () => {
   const SEND_LESS = PERM.viewChannel;
-  it('says it is read-only in the notice and disables the box with that reason', () => {
+  it('says it is read-only once (walk 6), as the reason that disables the box', () => {
     area({ announcement: true, bits: SEND_LESS });
     const text = en['announce.readOnly'].replace('{name}', 'general');
-    expect(notice()).toHaveTextContent(text);
+    expect(notice()).toBeNull();
+    expect(screen.getAllByText(text)).toHaveLength(1);
     const box = screen.getByRole('textbox', { name: 'message #general' });
     expect(box).toHaveAttribute('aria-disabled', 'true');
     expect(box).toHaveAccessibleDescription(new RegExp(text.replace(/[.#]/g, '\\$&')));

@@ -73,7 +73,7 @@ describe('CreateServerFlow', () => {
     expect(nameField('Server name')).toHaveFocus();
     await user.type(nameField('Server name'), 'å'.repeat(128));
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 bytes.');
+    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 characters (fewer for some letters).');
     expect(fake.calls).toEqual([]);
   });
 
@@ -153,7 +153,7 @@ describe('CreateServerFlow', () => {
     await user.click(nameField('Server name'));
     await user.paste(`${edge}y`);
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 bytes.');
+    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 characters (fewer for some letters).');
     expect(fake.calls).toEqual([]);
     await user.keyboard('{Backspace}{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalled());
@@ -556,9 +556,9 @@ describe('CreateChannelFlow', () => {
   it('is titled for the server; shows how the name will look; creates a text channel and hands it over', async () => {
     const { fake, user, onDone } = setup();
     expect(screen.getByRole('dialog', { name: 'New channel in Midgard Crew' })).toBeInTheDocument();
-    expect(nameField('Channel name')).toHaveAccessibleDescription('Up to 100 bytes.');
+    expect(nameField('Channel name')).toHaveAccessibleDescription('Up to 100 characters (fewer for some letters).');
     await user.type(nameField('Channel name'), 'Ship Talk');
-    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as #ship-talk. Up to 100 bytes.');
+    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as #ship-talk. Up to 100 characters (fewer for some letters).');
     await user.keyboard('{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(TEXT, 'text'));
     expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'ship-talk' }]);
@@ -568,7 +568,7 @@ describe('CreateChannelFlow', () => {
     const { fake, user, onDone } = setup(() => Promise.resolve({ channelId: VOICE }));
     await user.click(screen.getByRole('radio', { name: 'voice' }));
     await user.type(nameField('Channel name'), 'The Longhouse');
-    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as The Longhouse. Up to 100 bytes.');
+    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as The Longhouse. Up to 100 characters (fewer for some letters).');
     await user.keyboard('{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(VOICE, 'voice'));
     expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'voice', name: 'The Longhouse' }]);
@@ -588,7 +588,7 @@ describe('CreateChannelFlow', () => {
     await user.click(nameField('Channel name'));
     await user.paste(`${edge}x`);
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A channel name is up to 100 bytes.');
+    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A channel name is up to 100 characters (fewer for some letters).');
     expect(fake.calls).toEqual([]);
     await user.keyboard('{Backspace}{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(VOICE, 'voice'));
@@ -817,13 +817,13 @@ describe('CreateChannelFlow, announcement kind (web3.7)', () => {
     expect(screen.queryByRole('radio', { name: 'announcement' })).toBeNull();
     expect(screen.getAllByRole('radio').map(r => (r as HTMLInputElement).labels?.[0]?.textContent ?? r.getAttribute('aria-label'))).toHaveLength(2);
   });
-  it('lists every role but @everyone with the hint once the kind is chosen, and sends the ticked ones', async () => {
+  it('lists the roles below the creator’s top (not @everyone) with the hint once the kind is chosen, and sends the ticked ones', async () => {
     const { fake, user } = setup();
     expect(screen.queryByRole('group', { name: 'Roles that can post' })).toBeNull();
     await user.click(announcement());
     expect(screen.getByRole('group', { name: 'Roles that can post' })).toBeInTheDocument();
     expect(screen.getByText('Only the roles you tick can post. Everyone can read and react.')).toBeInTheDocument();
-    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Council', 'Players', 'Newcomers']);
+    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Players', 'Newcomers']);
     await user.click(screen.getByRole('checkbox', { name: 'Players' }));
     await user.type(nameField('Channel name'), 'News');
     await user.click(screen.getByRole('button', { name: 'Create' }));
@@ -876,6 +876,37 @@ describe('CreateChannelFlow, announcement kind (web3.7)', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     expect(await screen.findByText('Tick a role of yours that is below your highest role, so that you can post here too.')).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+  it('lists a role above the creator’s top only for the owner (I4)', async () => {
+    const { fake, user } = setup();
+    act(() => fake.set(`permissions:${SERVER}`, { top: 5, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true,
+      createInvite: true, manageRoles: true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true }));
+    await user.click(announcement());
+    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Council', 'Players', 'Newcomers']);
+  });
+  it('says the role is too high when the instance refuses an announcement create with 403 (walk 4)', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_FORBIDDEN' }));
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Pick a role below your highest role.')).toBeInTheDocument();
+    expect(screen.queryByText('You cannot add channels to this server.')).toBeNull();
+  });
+  it('keeps the generic refusal for a text create with 403', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_FORBIDDEN' }));
+    await user.type(nameField('Channel name'), 'open');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('You cannot add channels to this server.')).toBeInTheDocument();
+  });
+  it('says why the kind is missing for a person with manage channels but not manage roles (walk 5)', () => {
+    setup({ manageRoles: false });
+    expect(screen.getByText('Announcement channels need the manage roles permission.')).toBeInTheDocument();
+  });
+  it('says nothing about it with the right to create one', () => {
+    setup();
+    expect(screen.queryByText('Announcement channels need the manage roles permission.')).toBeNull();
   });
   it('words an E_BAD_INPUT without that reason by its code', async () => {
     const { fake, user } = setup();

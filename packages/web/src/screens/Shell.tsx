@@ -128,6 +128,14 @@ export function Shell(): React.JSX.Element {
 
   const account = useSlice('account');
   const connection = useSlice('connection');
+  const [browserOnline, setBrowserOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const sync = () => setBrowserOnline(navigator.onLine);
+    window.addEventListener('online', sync);
+    window.addEventListener('offline', sync);
+    sync();
+    return () => { window.removeEventListener('online', sync); window.removeEventListener('offline', sync); };
+  }, []);
   const communities = useSlice('communities');
   const dms = useSlice('dms');
   const badges = useSlice('badges');
@@ -751,21 +759,27 @@ export function Shell(): React.JSX.Element {
   const send = (m: OutgoingMessage) => {
     if (targetId === null) return;
     const id = targetId;
-    if (sending.current.has(id)) return;
-    sending.current.add(id);
+    // Walk 3: the draft is cleared the moment the send starts, so a key that lands just after Enter begins the next
+    // message and never joins the sent text. A text-only send does not wait for the one before it; only a send that
+    // carries the file tray does, since the tray is cleared by the worker.
+    const withTray = m.attachments.length > 0;
+    if (withTray && sending.current.has(id)) return;
+    if (withTray) sending.current.add(id);
+    setDraft(d => (d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : d));
     const run = async () => {
       try {
         await client.call({ m: 'send', channelId: id, text: m.text,
           ...(m.replyTo !== null ? { replyTo: m.replyTo } : {}),
           ...(m.attachments.length > 0 ? { attachments: [...m.attachments] } : {}) });
-        setDraft(d => (d.channelId === id && d.text === m.raw ? { channelId: id, text: '' } : d));
         if (m.replyTo !== null) dispatch({ type: 'replySent', msgId: m.replyTo });
       } catch (e) {
+        // A refused send gives the text back, unless something new has been typed since.
+        setDraft(d => (d.channelId === id && d.text === '' ? { channelId: id, text: m.raw } : d));
         const error = errorOf(e);
         if (TRUST_BLOCKS.has(error.code)) setRefusedSend({ channelId: id, code: error.code as TrustBlock, gate: client.get('sendBlocks') });
         else report(e);
       } finally {
-        sending.current.delete(id);
+        if (withTray) sending.current.delete(id);
       }
     };
     void run();
@@ -882,13 +896,15 @@ export function Shell(): React.JSX.Element {
     const phoneServerMenu = !phone || !voiceHere ? undefined : (
       <ActionMenu label={t('nav.server.menu')} icon="ellipsis-vertical" open={serverMenuOpen} onOpenChange={setServerMenuOpen}
         items={[
+          { id: 'search', label: t('search.open') },
           ...(canManageChannels ? [{ id: 'channel', label: t('create.channel.open') }] : []),
           { id: 'invite', label: t('invite.open') },
           { id: 'admin', label: t('admin.open') },
           ...(!owner ? [{ id: 'leave', label: t('admin.leave.open'), danger: true }] : []),
         ]}
         onSelect={id => {
-          if (id === 'channel') setChannelOpen(true);
+          if (id === 'search') startSearch('all');
+          else if (id === 'channel') setChannelOpen(true);
           else if (id === 'invite') setInviteOpen(true);
           else openAdmin(id === 'leave' ? 'danger' : 'overview');
         }} />
@@ -904,6 +920,9 @@ export function Shell(): React.JSX.Element {
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={phone && onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
         actions={actions} actionsLabel={t('create.actions')} headerAction={phoneServerMenu}
+        // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one (ChannelList
+        // `titleKind`, packages/ui, FX-ui 38fc8af0). Spread untyped so this lane builds before that commit is integrated.
+        {...(phone && onDms ? ({ titleKind: 'plain' } as object) : {})}
         tabs={phone ? (voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : undefined) : <>
           <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
             { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
@@ -1042,6 +1061,7 @@ export function Shell(): React.JSX.Element {
   const listRoute: Route = dmId !== null ? { name: 'dms' } : communityId !== null ? { name: 'channel', communityId, channelId: null } : { name: 'root' };
   const onBack = () => goBack(listRoute, navigate);
   const pinsOpen = () => dispatch({ type: 'pins', open: true });
+  const searchItem = { id: 'search', label: t('search.open') };
   const pinsItem = openId !== null ? [{ id: 'pins', label: t('shell.pins.open') }] : [];
   const listItem = channel !== null && openId !== null ? [{ id: 'threads', label: t('thread.list') }] : [];
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} /> : null) : channel !== null
@@ -1049,9 +1069,10 @@ export function Shell(): React.JSX.Element {
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, menu: (
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
-          items={[...pinsItem, ...listItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
+          items={[searchItem, ...pinsItem, ...listItem, ...(canManageChannels ? [{ id: 'edit', label: t('admin.channel.open') }] : []), { id: 'members', label: t('members.toggle') }]}
           onSelect={id => {
-            if (id === 'pins') pinsOpen();
+            if (id === 'search') startSearch('channel');
+            else if (id === 'pins') pinsOpen();
             else if (id === 'threads') openList();
             else if (id === 'edit') setEditChannelId(channel.id);
             else if (!membersOpen) toggleMembers();
@@ -1061,16 +1082,20 @@ export function Shell(): React.JSX.Element {
         {openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : null}
         {openId !== null ? <Button data-thread-list-toggle="" pressed={sideNow?.view === 'list'} onClick={() => (sideNow?.view === 'list' ? closeSide() : openList())}>
           {t('thread.list')}</Button> : null}
+        <Button variant="ghost" size="md" onClick={() => startSearch('channel')}>{t('search.open')}</Button>
         {canManageChannels ? <Button onClick={() => setEditChannelId(channel.id)}>{t('admin.channel.open')}</Button> : null}
         <Button data-members-toggle="" pressed={membersShown} onClick={toggleMembers}>
           {t('members.toggle')}</Button>
       </>} />
     : dm !== null ? <ChannelHeader kind="dm" name={dm.name}
-      phone={phone ? { backLabel: t('nav.back'), onBack, menu: pinsItem.length === 0 ? undefined : (
+      phone={phone ? { backLabel: t('nav.back'), onBack, menu: (
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
-          items={pinsItem} onSelect={pinsOpen} />
+          items={[searchItem, ...pinsItem]} onSelect={id => { if (id === 'search') startSearch('channel'); else pinsOpen(); }} />
       ) } : undefined}
-      actions={openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : undefined} /> : null;
+      actions={<>
+        {openId !== null ? <PinsButton onOpen={() => dispatch({ type: 'pins', open: true })} /> : null}
+        <Button variant="ghost" size="md" onClick={() => startSearch('channel')}>{t('search.open')}</Button>
+      </>} /> : null;
   // While Settings covers the conversation, its Privacy section carries the alert and the action instead.
   const changedHere = overlay ? [] : changedMembers;
 
@@ -1144,9 +1169,12 @@ export function Shell(): React.JSX.Element {
   };
 
   const pickerMembers = dmCandidates(members, self?.id ?? null);
-  const status = connection?.status ?? 'connecting';
+  // Walk 7: the gateway reports a drop only after its own timeout (about 17 s); the browser knows at once. While the browser
+  // says it is offline the link is offline; the gateway status still governs everything else (reconnecting, a version refusal).
+  const status = !browserOnline ? 'offline' : connection?.status ?? 'connecting';
+  const linkReason = connection?.status === 'offline' ? connection.reason : undefined;
   const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
-  const offline = connection?.status === 'offline';
+  const offline = status === 'offline';
   // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
   const rootMismatch = account?.rootMismatch === true;
   // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
@@ -1162,8 +1190,8 @@ export function Shell(): React.JSX.Element {
           {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
         </Banner>
       ) : null}
-      {offline && (!phone || connection.reason === 'version') ? (
-        <Banner tone="warn">{t(connection.reason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
+      {offline && (!phone || linkReason === 'version') ? (
+        <Banner tone="warn">{t(linkReason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
       ) : null}
       {removalNotices.map(r => (
         <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {
@@ -1262,8 +1290,8 @@ export function Shell(): React.JSX.Element {
         layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar}
         rail={phone && phoneTab !== 'servers' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
-          joinLabel={t('shell.rail.join')} joinCaption={phone ? undefined : t('create.rail.join')} onJoin={() => setJoinOpen(true)}
-          createLabel={t('create.rail.newLabel')} createCaption={phone ? undefined : t('create.rail.new')} onCreate={() => setCreateOpen(true)}
+          joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}
+          createLabel={t('create.rail.newLabel')} createCaption={t('create.rail.new')} onCreate={() => setCreateOpen(true)}
           settingsLabel={t('shell.rail.settings')} onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
           itemLabel={railLabel} />}
         sidebar={sidebar}
@@ -1288,7 +1316,7 @@ export function Shell(): React.JSX.Element {
           </StatusBar>
         }
         banner={phone ? <>
-          {offline && connection.reason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
+          {linkReason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
         </> : banner}
@@ -1297,7 +1325,7 @@ export function Shell(): React.JSX.Element {
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
-              <ThreadList channelId={channel.id} channelName={channel.name} onOpen={openThread} heading={false} />
+              <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
