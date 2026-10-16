@@ -125,8 +125,8 @@ on the order in which rows reach it.
 - **The upload class.** In an end-to-end encrypted group the delivery service relays each row with
   the upload class its uploader declared (`02` § Upload class): 0 for type 0, 1 for types 1 to 6.
   A receiver that decrypts a row whose MLS sender is the uploading device, and whose class
-  disagrees with its type (class 1 on a type 0, class 0 on a type 1 to 6), drops it before any
-  check of the sender's identity: it is neither shown nor folded, raises no mention, counts toward
+  disagrees with its type (class 1 on a type 0, class 0 on a type 1 to 6), drops it before the
+  sender's trust check: it is neither shown nor folded, raises no mention, counts toward
   no unread, is never a target or a thread root, is never released later, and leaves no
   placeholder. Unlike a sender mismatch, which stays in the timeline as a message that cannot be
   read, such a post vanishes for every other reader, the author's other devices included, while

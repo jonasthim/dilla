@@ -430,7 +430,8 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   class for an end-to-end encrypted one). Because an entry on oneself may only allow
   `view_channel` and a role entry takes the rank rule, a creator who is neither the owner nor an
   administrator keeps the right to post only through a chosen role they hold below their own
-  highest role, and the client refuses the create without one.
+  highest role. Once the member list is loaded, the client refuses the create without one; before
+  that it sends the create and the instance decides.
 
 - A channel whose visibility is `invite` or `discoverable` is **server-readable**. Creating one
   with `mode = 0` is not an error: the instance stores `mode = 1` and answers it, and the client
@@ -652,8 +653,9 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   from slow mode only, never from `send_messages`. A
   deleted message still counts, so deleting and reposting does not reset the wait. Slow mode and
   `send_messages` apply to end-to-end encrypted posts too, through the upload class (`02` § Upload
-  class); there they apply to posts (type 0) only, and an edit, delete, reaction or pin is neither
-  checked for `send_messages` nor slowed.
+  class): an end-to-end encrypted upload of class 1 (an edit, delete, reaction or pin) is neither
+  checked for `send_messages` nor slowed; a legacy two-element upload is checked for
+  `send_messages` whatever it carries, until web3.8.
 - **Franking.** A readable envelope carries its `k_f` in the clear, so the instance computes `04`'s
   commitment `C` itself, unchanged. The tag `T` is `04`'s with two substitutions, because a
   readable channel has no MLS group: `channel_id` in place of `group_id`, and `0` for the epoch. The
@@ -1164,8 +1166,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   joining, it reads the channel's call; when that names another group or none, or the channel
   answers `404`, it only forgets the group, and any other refusal leaves the group as it is; when
   no other device is listed, it ends the call with `DELETE /v1/calls/{call_id}?if_alone=1` and only
-  forgets the group when that ended it or answered `404`; otherwise it posts its self-Remove, then
-  forgets the group. Offline, it sweeps at its next connection instead, and a group a join takes up
+  forgets the group when that ended it or answered `404`; whenever the call did not end, the
+  conditional end refused included (`409 E_CALL_NOT_ALONE` or any other answer), and whenever other
+  devices are listed, it posts its self-Remove, then forgets the group. Offline, it sweeps at its next connection instead, and a group a join takes up
   meanwhile is left alone. The instance learns of the leave from the
   SFU — under a millisecond after a graceful disconnect on loopback, and 20–22 seconds after a crash
   or a lost network (the SFU's ICE timeout plus its cleanup; `docs/spikes/2026-10-livekit-webhooks.md`
