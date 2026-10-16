@@ -67,7 +67,10 @@ export function ThreadView(p: {
   const candidates = useMemo(() => mentionCandidates(members ?? [], self?.id ?? null), [members, self]);
   const current = thread !== undefined && thread !== null && thread.rootMsgId === p.rootMsgId ? thread : null;
   const items = current?.items ?? NO_ITEMS;
-  const active = items.some(i => i.key === activeKey) ? activeKey : items.at(-1)?.key ?? null;
+  // The root and the replies are one roving order: the last row is the tab stop until another takes focus.
+  const rootItem = current?.root ?? null;
+  const ordered = rootItem === null ? items : [rootItem, ...items];
+  const active = ordered.some(i => i.key === activeKey) ? activeKey : ordered.at(-1)?.key ?? null;
   const now = Date.now();
 
   const broadcast = bits !== null ? (bits & PERM.mentionEveryone) !== 0 : true;
@@ -107,11 +110,11 @@ export function ThreadView(p: {
   const rowKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
     const target = e.target as HTMLElement;
-    if (target !== e.currentTarget && !target.classList.contains('d-message-row')) return;
-    const from = target.classList.contains('d-message-row') ? items.findIndex(i => rowEls.current.get(i.key) === target)
-      : items.findIndex(i => i.key === active);
-    const index = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowUp' ? Math.max(0, from - 1) : Math.min(items.length - 1, from + 1);
-    const next = items[index];
+    if (!target.classList.contains('d-message-row') && target.getAttribute('role') !== 'log') return;
+    const from = target.classList.contains('d-message-row') ? ordered.findIndex(i => rowEls.current.get(i.key) === target)
+      : ordered.findIndex(i => i.key === active);
+    const index = e.key === 'Home' ? 0 : e.key === 'End' ? ordered.length - 1 : e.key === 'ArrowUp' ? Math.max(0, from - 1) : Math.min(ordered.length - 1, from + 1);
+    const next = ordered[index];
     if (next !== undefined) { e.preventDefault(); rowEls.current.get(next.key)?.focus(); }
   };
   const row = (item: TimelineItem, key: string, isActive: boolean) => (
@@ -131,22 +134,23 @@ export function ThreadView(p: {
   );
   const rootNode = current === null ? null
     : current.root === null ? <p className="dw-thread-missing">{t('thread.rootMissing')}</p>
-      : row(current.root, `root-${current.root.key}`, false);
+      : row(current.root, `root-${current.root.key}`, current.root.key === active);
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- arrow keys bubbled from the rows, which are the focusable elements
     <div ref={root} className="dw-thread" onFocus={e => {
       const el = (e.target as Element).closest<HTMLElement>('.d-message-row');
-      const key = el === null ? undefined : items.find(i => rowEls.current.get(i.key) === el)?.key;
+      const key = el === null ? undefined : ordered.find(i => rowEls.current.get(i.key) === el)?.key;
       if (key !== undefined) setActiveKey(key);
-    }}>
+    }} onKeyDown={rowKey}>
       <ThreadPane title={t('thread.title')} closeLabel={t('thread.close')} onClose={p.onClose} phone={p.phone} root={rootNode}
         composer={
           <ComposerArea channelId={p.channelId} label={t('thread.composer')} placeholder={t('thread.composer')} blocked={null}
             broadcast bits={bits} roles={roles} channelName={p.channelName} encodeWith={encodeWith} candidates={candidates} items={items}
             book={book} draft={draft} onDraft={setDraft} ui={ui} dispatch={dispatch} onSend={send} onError={report}
-            threadId={p.rootMsgId} announce={p.announce} />
+            threadId={p.rootMsgId} />
         }>
-        <MessageLog label={t('thread.title')} emptyLabel={current === null ? '' : t('thread.noReplies')} busy={current === null} onKeyDown={rowKey}>
+        <MessageLog label={t('thread.title')} emptyLabel={current === null ? '' : t('thread.noReplies')} busy={current === null}>
           {items.map(item => row(item, item.key, item.key === active))}
         </MessageLog>
       </ThreadPane>

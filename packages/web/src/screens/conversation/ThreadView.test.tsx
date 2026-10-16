@@ -8,6 +8,7 @@ import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { en } from '../../strings/index.ts';
+import { formatTime } from '../../strings/index.ts';
 import { A, GEN, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
 import { ThreadView } from './ThreadView.tsx';
 
@@ -144,6 +145,45 @@ describe('ThreadView (web3.7)', () => {
     const { fake, user } = setup({ thread: thread({ items: [peerRow(P2, '2', 'first reply', { reactions: [reaction] })] }) });
     await user.click(screen.getByRole('button', { name: /thumbs|👍/ }));
     expect(fake.callsOf('react')).toEqual([{ m: 'react', channelId: GEN, msgId: P2, emoji: '👍', on: true }]);
+  });
+  it('reaches the root row and its toolbar by keyboard, like the replies', async () => {
+    const { user } = setup();
+    const rootRow = document.querySelector('.d-thread-pane__root .d-message-row') as HTMLElement;
+    // The active (last) row is the one tab stop of the rows: the root is reached with the arrows and Home.
+    const lastRow = document.querySelector(`.d-thread-pane .d-message-row[data-msg-id="${O1}"]`) as HTMLElement;
+    expect(lastRow.tabIndex).toBe(0);
+    expect(rootRow.tabIndex).toBe(-1);
+    lastRow.focus();
+    await user.keyboard('{Home}');
+    expect(rootRow).toHaveFocus();
+    expect(rootRow.tabIndex).toBe(0);
+    await user.tab();
+    expect(within(rootRow).getByRole('button', { name: en['shell.message.react'] })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(screen.getAllByRole('dialog', { name: en['shell.emoji.label'] }).length).toBeGreaterThan(0);
+  });
+  it('takes the root as the tab stop when there are no replies', () => {
+    setup({ thread: thread({ items: [] }) });
+    expect((document.querySelector('.d-thread-pane__root .d-message-row') as HTMLElement).tabIndex).toBe(0);
+  });
+  it('shows times as the channel rows do', () => {
+    setup();
+    const row = document.querySelector(`.d-thread-pane .d-message-row[data-msg-id="${P2}"]`) as HTMLElement;
+    expect(row).toHaveTextContent(formatTime(Math.floor(Date.now() / 1000)));
+  });
+  it('does not announce a queued send itself (the channel’s composer does, once)', () => {
+    window.history.replaceState(null, '', `/c/${A}/${GEN}`);
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set(`members:${A}`, MEMBERS);
+    fake.set(`thread:${GEN}`, thread());
+    fake.set(`slow:${GEN}`, { until: Date.now() + 30_000, queued: true });
+    const announce = vi.fn();
+    render(<div className="d-root"><CoreProvider client={fake}>
+      <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={false} onClose={vi.fn()} announce={announce} />
+    </CoreProvider></div>);
+    expect(document.querySelector('.d-composer__notice')).toHaveTextContent(en['slow.queued']);
+    expect(announce).not.toHaveBeenCalled();
   });
   it('returns focus to the control that opened it when it closes (contract 2)', async () => {
     window.history.replaceState(null, '', `/c/${A}/${GEN}`);

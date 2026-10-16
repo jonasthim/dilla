@@ -45,6 +45,13 @@ describe('the slow-mode countdown (web3.7)', () => {
     expect(notice()).toBeNull();
     expect(box).not.toHaveAttribute('aria-disabled');
   });
+  it('is over exactly at the deadline, not at the next whole second', () => {
+    area({ slow: { until: T0 + 10_400, queued: false }, bypass: false });
+    tick(10_399);
+    expect(notice()).toHaveTextContent(waitText(1));
+    tick(1);
+    expect(notice()).toBeNull();
+  });
   it('stops its timer at 0', () => {
     area({ slow: { until: T0 + 2000, queued: false }, bypass: false });
     expect(vi.getTimerCount()).toBeGreaterThan(0);

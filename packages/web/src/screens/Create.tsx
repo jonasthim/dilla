@@ -294,7 +294,7 @@ export function CreateChannelFlow(props: {
   open: boolean; community: { id: string; name: string } | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
 }): React.JSX.Element {
   const client = useCore();
-  const [kind, setKind] = useState<NewChannelKind>('text');
+  const [picked, setKind] = useState<NewChannelKind>('text');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -323,11 +323,14 @@ export function CreateChannelFlow(props: {
   const canAnnounce = access !== undefined && canCreateAnnouncement(access);
   const announceRoles = (roles ?? []).filter(r => r.id !== access?.everyoneId).sort((a, b) => b.position - a.position);
 
+  // A chosen announcement kind falls back to text when the right to create one is lost before submit.
+  const kind: NewChannelKind = picked === 'announcement' && !canAnnounce ? 'text' : picked;
+
   const fail = (message: string) => { setError(message); setAttempt(a => a + 1); };
 
   const shown = channelName(kind, name);
   const hint = shown === '' ? t('create.channel.hint')
-    : t(kind === 'text' ? 'create.channel.hintText' : 'create.channel.hintVoice', { name: shown });
+    : t(kind !== 'voice' ? 'create.channel.hintText' : 'create.channel.hintVoice', { name: shown });
 
   const submit = () => {
     const community = props.community;
@@ -340,7 +343,7 @@ export function CreateChannelFlow(props: {
     // dillad keeps no uniqueness on channel names: a name this server already lists for the kind is refused here (walk M2).
     const listedKind = kind === 'voice' ? 1 : 0;
     if ((client.get(`channels:${community.id}`) ?? []).some(c => c.kind === listedKind && c.name === shown)) {
-      fail(t(kind === 'text' ? 'create.channel.error.takenText' : 'create.channel.error.takenVoice', { name: shown }));
+      fail(t(kind !== 'voice' ? 'create.channel.error.takenText' : 'create.channel.error.takenVoice', { name: shown }));
       return;
     }
     running.current = true;
@@ -378,20 +381,20 @@ export function CreateChannelFlow(props: {
 
   return (
     <CreateChannel open={props.open} kind={kind} kinds={canAnnounce ? ['text', 'voice', 'announcement'] : ['text', 'voice']}
-      onKind={k => { if (k === 'announcement' && !canAnnounce) return; setKind(k); setError(null); }} name={name}
+      onKind={k => { setKind(k); setError(null); }} name={name}
       onName={v => { setName(v); setError(null); }} hint={hint} error={error} busy={busy} attempt={attempt}
       labels={{ title: t('create.channel.title', { server: props.community?.name ?? '' }), kind: t('create.channel.kind'),
         text: t('create.channel.text'), voice: t('create.channel.voice'), announcement: t('announce.kind'), name: t('create.channel.name'), submit: t('create.channel.submit'),
         busy: t('create.channel.busy'), close: t('dialog.close') }}
       onSubmit={submit} onClose={() => props.onClose()}>
       {kind === 'announcement' ? <>
-        <CheckList label={t('announce.roles')} emptyLabel={t('announce.noRoles')} busyId={null}
+        <CheckList label={t('announce.roles')} emptyLabel={t('announce.noRoles')} busyId={null} describedBy="dw-announce-hint"
           items={announceRoles.map(r => {
             const checked = announceTicked.includes(r.id);
             return { id: r.id, label: r.name, color: r.color, checked, disabled: !checked && announceTicked.length >= ANNOUNCE_ROLES_MAX };
           })}
           onToggle={(id, on) => setAnnounceTicked(list => (on ? [...list.filter(x => x !== id), id] : list.filter(x => x !== id)))} />
-        <p className="d-select__hint">{t('announce.hint')}</p>
+        <p id="dw-announce-hint" className="d-select__hint">{t('announce.hint')}</p>
       </> : canPrivate ? <>
         <Toggle id="dw-create-private" label={t('chperm.create.private')} showLabel hint={t('chperm.create.privateHint')} checked={priv}
           onChange={on => { setPriv(on); setError(null); }} />

@@ -846,6 +846,22 @@ describe('CreateChannelFlow, announcement kind (web3.7)', () => {
     await user.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'open' }]));
   });
+  it('ties the hint to the role list', async () => {
+    const { user } = setup();
+    await user.click(announcement());
+    expect(screen.getByRole('group', { name: 'Roles that can post' })).toHaveAccessibleDescription('Only the roles you tick can post. Everyone can read and react.');
+  });
+  it('falls back to text when the right to create one is lost while it is chosen', async () => {
+    const { fake, user } = setup();
+    await user.click(announcement());
+    act(() => fake.set(`permissions:${SERVER}`, { top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: false, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true }));
+    expect(screen.queryByRole('radio', { name: 'announcement' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Roles that can post' })).toBeNull();
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'news' }]));
+  });
   it('has no private switch beside the announcement roles', async () => {
     const { user } = setup();
     expect(screen.getByRole('switch', { name: 'private channel' })).toBeInTheDocument();
@@ -873,7 +889,7 @@ describe('CreateChannelFlow, announcement kind (web3.7)', () => {
     const { fake, user } = setup();
     act(() => fake.set(`roles:${SERVER}`, [role(EVERYONE, '@everyone', 0)]));
     await user.click(announcement());
-    expect(screen.getByText('No roles yet. Make a role in Server settings → Roles first.')).toBeInTheDocument();
+    expect(screen.getByText('No roles yet. Make one in Server settings, under roles.')).toBeInTheDocument();
     await user.type(nameField('Channel name'), 'news');
     await user.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(fake.calls[0]).toMatchObject({ kind: 'announcement', announce: { roleIds: [] } }));

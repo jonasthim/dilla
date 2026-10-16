@@ -54,11 +54,10 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
   const waiting = remaining > 0;
   useEffect(() => {
     if (until <= Date.now()) return;
-    const id = window.setInterval(() => {
-      tick();
-      if (Date.now() >= until) window.clearInterval(id);
-    }, 1000);
-    return () => window.clearInterval(id);
+    // The visible text ticks each second; the end is its own timer, so "over" is exact.
+    const id = window.setInterval(tick, 1000);
+    const end = window.setTimeout(() => { window.clearInterval(id); tick(); }, until - Date.now());
+    return () => { window.clearInterval(id); window.clearTimeout(end); };
   }, [until]);
   // The visible text changes each second and is hidden from the assistive tree; a polite status speaks on a change of
   // minute or of 10 s step only (flow 11).

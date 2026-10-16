@@ -223,3 +223,5 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 @container d-shell (max-width: 47.99rem) {
   .dw-thread-list__row { min-height: 2.75rem; }
 }
+/* The thread composer's label is its accessible name; the pane's title gives the context. */
+.dw-thread .d-composer__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

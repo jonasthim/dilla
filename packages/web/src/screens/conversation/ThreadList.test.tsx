@@ -57,6 +57,16 @@ describe('ThreadList (web3.7)', () => {
     act(() => fake.set(`threads:${GEN}`, [row(P1, 4, 40, 'root')]));
     expect(screen.getByRole('button')).toHaveTextContent(en['thread.summary.other'].replace('{count}', '4'));
   });
+  it('says the threads could not be loaded when the read fails', async () => {
+    const fake = new FakeClient();
+    fake.handler = () => Promise.reject(new Error('x'));
+    render(<div className="d-root"><CoreProvider client={fake}><ThreadList channelId={GEN} channelName="general" onOpen={vi.fn()} /></CoreProvider></div>);
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['thread.loadFailed']);
+  });
+  it('keeps list semantics on the rows', () => {
+    setup([row(P1, 1, 10, 'root')]);
+    expect(screen.getByRole('list')).toBeInTheDocument();
+  });
   it('has no serious axe violations', async () => {
     const { view } = setup([row(P1, 1, 10, 'root'), row(P2, 2, 20, '')]);
     await expectNoAxeViolations(view.container);
