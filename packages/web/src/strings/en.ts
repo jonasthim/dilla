@@ -12,6 +12,13 @@ import { serverNotify } from './serverNotify.ts';
 import { factor } from './factor.ts';
 import { factorSignin } from './factorSignin.ts';
 import { factorSettings } from './factorSettings.ts';
+import { nav } from './nav.ts';
+import { activity } from './activity.ts';
+import { you } from './you.ts';
+import { slow } from './slow.ts';
+import { announce } from './announce.ts';
+import { thread } from './thread.ts';
+import { signInHint } from './signInHint.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
   ...storeNewer,
@@ -27,6 +34,13 @@ export const en = {
   ...factor,
   ...factorSignin,
   ...factorSettings,
+  ...nav,
+  ...activity,
+  ...you,
+  ...slow,
+  ...announce,
+  ...thread,
+  ...signInHint,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',

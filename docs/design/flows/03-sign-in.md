@@ -379,6 +379,8 @@ refusal show `factorSignin.passkey.failed`, with focus back on the button that s
 backup code (`401 E_UNAUTHENTICATED`) returns to step 2 with `factorSignin.backup.failed`, the password field
 empty and the recovery key kept.
 
+Key step, a backup code typed. Step 1 shows a hint under the recovery key field when a backup code is typed there by mistake. The hint explains that backup codes go in step 3, not step 1. The hint text is `signIn.key.isBackupCode`. The submit button stays disabled while a backup code (or anything that looks like one) is in the recovery key field, because the field needs exactly 52 characters of a well-formed recovery key.
+
 Empty fields: a submit of step 2 or 3 with an empty `Username`, `Password` or `Code` sends nothing; every
 empty field shows the field error `signin.error.required` (`role="alert"`) and focus moves to the first
 of them. Typing in a field clears its error:
