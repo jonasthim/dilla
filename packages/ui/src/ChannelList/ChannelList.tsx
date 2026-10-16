@@ -8,6 +8,8 @@ import './ChannelList.css';
 export interface ChannelListProps {
   label: string;
   title: string;
+  /** 'server' (default) sets the title in the display serif, which is only for the server name. 'plain' (a list's own heading, such as direct messages) is the mono heading style. */
+  titleKind?: 'server' | 'plain';
   channels: readonly { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; readable: boolean; unread?: number; mentions?: number; muted?: boolean; badge?: string }[];
   activeId: string | null;
   onSelect(id: string): void;
@@ -42,7 +44,7 @@ export interface ChannelListProps {
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction }: ChannelListProps) {
+export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server' }: ChannelListProps) {
   const activeIndex = channels.findIndex(c => c.id === activeId);
   const roving = useRovingFocus(activeIndex);
   const body = content !== undefined ? content : channels.length === 0 ? (
@@ -77,8 +79,8 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
   return (
     <nav className="d-channel-list" aria-label={label}>
       {headerAction !== undefined ? (
-        <div className="d-channel-list__head"><h1 className="d-channel-list__title">{title}</h1>{headerAction}</div>
-      ) : <h1 className="d-channel-list__title">{title}</h1>}
+        <div className="d-channel-list__head"><h1 className="d-channel-list__title" data-kind={titleKind === 'plain' ? 'plain' : undefined}>{title}</h1>{headerAction}</div>
+      ) : <h1 className="d-channel-list__title" data-kind={titleKind === 'plain' ? 'plain' : undefined}>{title}</h1>}
       {actions !== undefined ? <div className="d-channel-list__actions" role="group" aria-label={actionsLabel}>{actions}</div> : null}
       {tabs !== undefined ? (
         <>

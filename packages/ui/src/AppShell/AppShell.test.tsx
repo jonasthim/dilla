@@ -419,6 +419,14 @@ describe('phone layout', () => {
     expect(slot.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it.each(['view', 'list'] as const)('the ring stays out of the inert scope while a sheet is open on the %s pane, so it can be answered', pane => {
+    const ring = <section aria-label="incoming calls"><button type="button">answer</button></section>;
+    const { container } = render(<ComposedShell ring={ring} shell={phone({ phonePane: pane, aside: <button type="button">pane</button>, asideLabel: 'threads', asideOpen: true, onAsideClose: vi.fn(), asideCloseLabel: 'back' })} />);
+    expect(container.querySelector('.d-app-shell__backdrop')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'answer' }).closest('[inert]')).toBeNull();
+    expect(container.querySelector('main')).toHaveAttribute('inert');
+  });
+
   it('desktop unchanged: no layout prop renders the same markup as layout="desktop", with no phone attributes', () => {
     // useId differs between renders; the markup is compared with the ids made alike.
     const markup = (el: HTMLElement) => el.innerHTML.replace(/_r_[0-9a-z]+_/g, '_id_');

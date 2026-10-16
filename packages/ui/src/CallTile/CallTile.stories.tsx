@@ -76,3 +76,9 @@ export const ScreenAndCamera: Story = { args: { view: { ...VIEW, video: true, sc
 export const OwnSelfView: Story = { args: { view: { ...VIEW, name: 'you', deviceId: 'd0', userId: 'u0', video: true }, own: true, mirror: 'media' }, render: args => <WithCamera {...args} /> };
 /** Product walk M6: the volume above 100 %, its value beside the range. */
 export const LouderVolume: Story = { args: { volume: 150 } };
+
+// Walk 37 #18: the volume row fits a 360 px phone, with a three-digit value and a long name.
+export const Phone360: Story = {
+  args: { volume: 100, labels: { ...LABELS, volume: 'volume for ada-lovelace' } },
+  render: args => <div style={{ width: 'calc(100vw - 32px)', boxSizing: 'border-box' }}><CallTile {...args} /></div>,
+};

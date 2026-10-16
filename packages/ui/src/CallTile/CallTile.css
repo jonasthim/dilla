@@ -26,8 +26,11 @@
 .d-call-tile__state[data-state="unverified"] { color: var(--warn); }
 .d-call-tile__tag { padding: 0 0.25rem; font-size: var(--text-xs); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); text-transform: lowercase; }
 .d-call-tile__volume { display: grid; gap: 0.125rem; width: 100%; max-width: 14rem; font-size: var(--text-xs); color: var(--fg-2); }
-.d-call-tile__volume-row { display: flex; align-items: center; gap: 0.5rem; }
-.d-call-tile__volume-value { flex: 0 0 auto; min-width: 5ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
+.d-call-tile__volume { box-sizing: border-box; min-width: 0; }
+.d-call-tile__volume-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Walk 37 #18: the row never outgrows the tile; the slider gives way, the value keeps its room. */
+.d-call-tile__volume-row { display: flex; align-items: center; gap: 0.25rem; min-width: 0; }
+.d-call-tile__volume-value { flex: 0 0 auto; min-width: 4.5ch; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 /* The range is a voice control: its hit box is 40 px high on a desktop and 44 px on a phone (flow 06). Product walk M6:
    drawn in Mesh (a hairline track filled with the accent up to the value, a square thumb, a tick at 100 %) in every
    engine, rather than the browser's own control. */

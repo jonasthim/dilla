@@ -12,6 +12,8 @@
    At (0,3,0) this beats the global `.d-root :focus-visible` (0,2,0) whatever the stylesheet order. */
 .d-composer .d-composer__input:focus-visible { outline: 2px solid transparent; }
 .d-composer__input::placeholder { color: var(--fg-3); }
+/* Walk 37 #16: an empty field keeps its placeholder on one line, cut with an ellipsis, in a narrow pane (the thread's 240px aside). */
+.d-composer__input:placeholder-shown { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .d-composer[data-disabled="true"] .d-composer__input { color: var(--fg-3); cursor: not-allowed; }
 .d-composer__reason { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
 .d-composer__counter { margin: 0; font-size: var(--text-xs); color: var(--fg-3); text-align: right; }

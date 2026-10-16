@@ -10,7 +10,7 @@
 .d-tab-bar__icon { position: relative; display: inline-flex; }
 .d-tab-bar__label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); line-height: 1.2; }
 .d-tab-bar__link[aria-current="page"] .d-tab-bar__label { font-weight: var(--weight-display); }
-.d-tab-bar__chip { position: absolute; top: -0.4375rem; left: calc(100% - 0.5rem); min-width: 1rem; height: 1rem; padding: 0 0.25rem; display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-micro); font-weight: 700; line-height: 1; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-pill); box-shadow: 0 0 0 2px var(--surface); }
+.d-tab-bar__chip { position: absolute; top: 0; left: calc(100% - 0.5rem); min-width: 1rem; height: 1rem; padding: 0 0.25rem; display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-micro); font-weight: 700; line-height: 1; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-pill); box-shadow: 0 0 0 2px var(--surface); }
 @media (prefers-reduced-motion: reduce) { .d-root .d-tab-bar__link { transition: none; } }
 @media (forced-colors: active) {
   .d-root .d-tab-bar__link[aria-current="page"]::before { background: Highlight; }

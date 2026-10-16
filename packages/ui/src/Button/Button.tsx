@@ -1,10 +1,11 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './Button.css';
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'default' | 'accent' | 'danger' | 'ghost';
   size?: 'sm' | 'md';
-  /** A keybind shown after the label, e.g. "M" or "⌘↵". Decorative for assistive tech. */
+  /** A keybind shown after the label, e.g. "M" or "⌘↵". Decorative for assistive tech. Not shown on a phone layout (no keyboard). */
   keyHint?: string;
   /**
    * For toggle buttons (mute, deafen): exposes aria-pressed and shows an aria-hidden `[x]` / `[ ]` mark, so the state
@@ -33,6 +34,7 @@ export function Button({
   ...rest
 }: ButtonProps) {
   const isToggle = pressed !== undefined;
+  const phone = usePhoneLayout();
   return (
     <button type={type} className={['d-btn', className].filter(Boolean).join(' ')} data-variant={variant} data-size={size}
       aria-pressed={isToggle ? pressed : undefined} {...rest}>
@@ -40,7 +42,7 @@ export function Button({
         <span className="d-btn__pressed-mark" aria-hidden="true">{pressed ? '[x]' : '[ ]'}</span>
       ) : null}
       <span className="d-btn__label">{children}</span>
-      {keyHint ? <kbd className="d-btn__kbd" aria-hidden="true">{keyHint}</kbd> : null}
+      {keyHint && !phone ? <kbd className="d-btn__kbd" aria-hidden="true">{keyHint}</kbd> : null}
     </button>
   );
 }

@@ -28,6 +28,12 @@ function props(over: Partial<ChannelListProps> = {}): ChannelListProps {
 }
 
 describe('ChannelList', () => {
+  it('marks a title that is not the server name as plain, so it is set in mono rather than the display serif', () => {
+    const { rerender } = render(<ChannelList {...props()} />);
+    expect(screen.getByRole('heading', { level: 1 })).not.toHaveAttribute('data-kind');
+    rerender(<ChannelList {...props({ title: 'direct messages', titleKind: 'plain' })} />);
+    expect(screen.getByRole('heading', { level: 1, name: 'direct messages' })).toHaveAttribute('data-kind', 'plain');
+  });
   it('keeps a badge in the row name when the row is unread, mentioned or muted', () => {
     render(<ChannelList {...props({ rowLabel, channels: [
       { id: 'n', name: 'news', kind: 'announcement', readable: false, badge: 'slow mode', unread: 3 },

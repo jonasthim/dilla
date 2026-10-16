@@ -156,8 +156,9 @@ export function AppShell({
       <div ref={rootRef} className="d-app-shell" data-layout="phone" data-pane={phonePane} data-rail={listPane && rail === null ? 'none' : undefined}>
         <a className="d-app-shell__skip" href={`#${listPane ? sidebarId : mainId}`} onClick={onSkip}>{skipLabel}</a>
         <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
-          {/* The ring is outside main (the list pane hides main), above whichever pane shows, and clears the notch. */}
-          {hasRing ? <div ref={ringRef} className="d-app-shell__ring" inert={inert}>{ring}</div> : null}
+          {/* The ring is outside main (the list pane hides main), above whichever pane shows, and clears the notch. It is
+              never inert and sits above the sheet (final fix I3), so a call can be answered while a sheet is open. */}
+          {hasRing ? <div ref={ringRef} className="d-app-shell__ring">{ring}</div> : null}
           {hasBanner ? <div className="d-app-shell__banner" inert={inert}>{banner}</div> : null}
           {listPane ? (
             <>

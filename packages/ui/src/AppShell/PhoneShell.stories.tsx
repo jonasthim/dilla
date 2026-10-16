@@ -44,7 +44,7 @@ const rowLabel = (c: { name: string; unread: number; mentions: number; muted: bo
 const itemLabel = (i: { name: string; unread: number; mentions: number }) => `${i.name}, unread ${i.unread}, mentions ${i.mentions}`;
 
 const rail = (
-  <CommunityRail label="servers" activeId="a1" onSelect={noop} joinLabel="join a server" onJoin={noop} settingsLabel="settings" onSettings={noop}
+  <CommunityRail label="servers" activeId="a1" onSelect={noop} joinLabel="join a server" joinCaption="join" onJoin={noop} createLabel="new server" createCaption="new" onCreate={noop} settingsLabel="settings" onSettings={noop}
     itemLabel={itemLabel}
     items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 2, mentions: 2 }]} />
 );
@@ -77,7 +77,7 @@ const dmChannels = (
 
 // Static rows for the Activity and You tabs: the same row grammar as the channel list, at the phone's 44px target.
 const pane: CSSProperties = { height: '100%', overflowY: 'auto', background: 'var(--bg)' };
-const heading: CSSProperties = { margin: 0, padding: '0.75rem var(--row-pad-x) 0.5rem', fontFamily: 'var(--font-serif-italic)', fontStyle: 'italic', fontWeight: 400, fontSize: 'var(--text-xl)', color: 'var(--fg)' };
+const heading: CSSProperties = { margin: 0, padding: '0.75rem var(--row-pad-x) 0.5rem', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 'var(--text-md)', letterSpacing: 'var(--label-tracking)', color: 'var(--fg)' };
 const list: CSSProperties = { listStyle: 'none', margin: 0, padding: 0 };
 const row: CSSProperties = {
   display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%', minHeight: '2.75rem', padding: '0.5rem var(--row-pad-x)', font: 'inherit',
@@ -268,6 +268,17 @@ export const ThreadSheet: Story = {
   render: () => (
     <Phone>
       <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer}
+        aside={<ThreadPane title="Thread" closeLabel="close thread" onClose={noop} root={threadRoot} composer={threadComposer} phone>{threadReplies}</ThreadPane>}
+        asideLabel="thread" asideOpen onAsideClose={noop}>{log}</AppShell>
+    </Phone>
+  ),
+};
+
+// Final fix I3: a call arrives while a thread sheet is open. The ring stays above the sheet and can be answered.
+export const RingOverThreadSheet: Story = {
+  render: () => (
+    <Phone>
+      <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer} ring={ring}
         aside={<ThreadPane title="Thread" closeLabel="close thread" onClose={noop} root={threadRoot} composer={threadComposer} phone>{threadReplies}</ThreadPane>}
         asideLabel="thread" asideOpen onAsideClose={noop}>{log}</AppShell>
     </Phone>
