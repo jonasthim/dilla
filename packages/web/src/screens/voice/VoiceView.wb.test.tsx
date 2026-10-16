@@ -66,10 +66,14 @@ describe('a join can be cancelled (wb-client I1)', () => {
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.log).toContain(`callJoin:${GENV}`));
     await waitFor(() => expect(dockEl()).not.toBeNull());
+    // The stage has the controls while it is on screen; the dock has them off it (web3.7).
+    await toLobby();
     await app.user.click(within(dockEl()!).getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.log).toContain(`aborted:${GENV}`));
     expect(app.client.callsOf('callLeave').length).toBeGreaterThan(0);
     await waitFor(() => expect(dockEl()).toBeNull());
+    window.history.pushState(null, '', `/c/${A}/${GENV}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
     expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
     expect(screen.queryByText(t('voice.failed'))).toBeNull();
     expect(app.sessions).toHaveLength(0);
@@ -175,6 +179,7 @@ describe('focus and announcements across the swaps (wb-web-a11y I1-I4)', () => {
     const app = await inVoice();
     await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
     expect(main().getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
+    await toLobby();
     expect(within(screen.getByRole('toolbar', { name: 'voice controls' })).getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByRole('button', { name: 'unmute' })).toBeNull();
   });

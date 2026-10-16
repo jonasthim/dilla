@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { baseRoute, parseRoute, routeOf, routePath, SETTINGS_FROM, useRoute, type Route } from './router.ts';
+import { baseRoute, goBack, parseRoute, PHONE_BACK, routeOf, routePath, SETTINGS_FROM, tabOf, useRoute, type Route } from './router.ts';
 
 const C = '0123456789abcdef'.repeat(2);
 const CH = 'fedcba9876543210'.repeat(2);
@@ -142,5 +142,85 @@ describe('baseRoute', () => {
     expect(baseRoute({ name: 'settings', section: 'devices', from: `/c/${C}/${CH}` })).toEqual({ name: 'channel', communityId: C, channelId: CH });
     expect(baseRoute({ name: 'settings', section: 'notifications', from: null })).toEqual({ name: 'root' });
     expect(baseRoute({ name: 'dm', channelId: CH })).toEqual({ name: 'dm', channelId: CH });
+  });
+});
+
+describe('the phone routes', () => {
+  it('parses /dm, /activity and /you and writes them back', () => {
+    expect(parseRoute('/dm', '')).toEqual({ name: 'dms' });
+    expect(parseRoute('/activity', '')).toEqual({ name: 'activity' });
+    expect(parseRoute('/you', '')).toEqual({ name: 'you' });
+    expect(parseRoute('/dm/', '')).toEqual({ name: 'root' });
+    expect(routePath({ name: 'dms' })).toBe('/dm');
+    expect(routePath({ name: 'activity' })).toBe('/activity');
+    expect(routePath({ name: 'you' })).toBe('/you');
+    expect(routeOf('/you')).toEqual({ name: 'you' });
+  });
+
+  it('tabOf names the tab of every route', () => {
+    expect(tabOf({ name: 'channel', communityId: C, channelId: null })).toBe('servers');
+    expect(tabOf({ name: 'root' })).toBe('servers');
+    expect(tabOf({ name: 'welcome', invite: null, signin: null })).toBe('servers');
+    expect(tabOf({ name: 'dm', channelId: DM })).toBe('dms');
+    expect(tabOf({ name: 'dms' })).toBe('dms');
+    expect(tabOf({ name: 'activity' })).toBe('activity');
+    expect(tabOf({ name: 'you' })).toBe('you');
+    expect(tabOf({ name: 'settings', section: 'devices', from: null })).toBe('you');
+  });
+});
+
+function PhoneProbe() {
+  const [route, go] = useRoute();
+  return (
+    <>
+      <output>{JSON.stringify(route)}</output>
+      <button type="button" onClick={() => go({ name: 'channel', communityId: C, channelId: CH }, false, { phoneBack: true })}>push back</button>
+      <button type="button" onClick={() => go({ name: 'settings', section: 'devices', from: null }, false, { phoneBack: true })}>open settings</button>
+      <button type="button" onClick={() => go({ name: 'you' })}>plain</button>
+    </>
+  );
+}
+
+describe('navigate with phoneBack', () => {
+  it('writes phoneBack into the pushed state, and only when asked', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/you');
+    render(<PhoneProbe />);
+    await user.click(screen.getByRole('button', { name: 'push back' }));
+    expect(window.history.state).toEqual({ [PHONE_BACK]: true });
+    window.history.replaceState(null, '', '/activity');
+    await user.click(screen.getByRole('button', { name: 'plain' }));
+    expect(window.history.state).toBeNull();
+  });
+
+  it('keeps settingsFrom beside phoneBack on a settings route', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/you');
+    render(<PhoneProbe />);
+    await user.click(screen.getByRole('button', { name: 'open settings' }));
+    expect(window.history.state).toEqual({ [SETTINGS_FROM]: '/you', [PHONE_BACK]: true });
+  });
+});
+
+describe('goBack', () => {
+  it('goes back in history when the entry was pushed by the app', () => {
+    window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    const navigate = vi.fn();
+    goBack({ name: 'channel', communityId: C, channelId: null }, navigate);
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+    back.mockRestore();
+  });
+
+  it('replaces with the fallback on a deep link', () => {
+    window.history.replaceState(null, '', `/c/${C}/${CH}`);
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    const navigate = vi.fn();
+    const fallback: Route = { name: 'channel', communityId: C, channelId: null };
+    goBack(fallback, navigate);
+    expect(back).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith(fallback, true);
+    back.mockRestore();
   });
 });

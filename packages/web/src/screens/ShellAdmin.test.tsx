@@ -88,7 +88,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   // Final fix B2: the open-by-default pane belongs to the wide column; narrowing closes it unless the person used the toggle.
   it('starts open when wide; narrowing closes it with nothing inert; the toggle opens it again', async () => {
     const listeners: ((e: { matches: boolean }) => void)[] = [];
-    window.matchMedia = ((query: string) => ({ matches: true, media: query, onchange: null, dispatchEvent: () => false,
+    window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, dispatchEvent: () => false,
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.splice(listeners.indexOf(cb), 1); },
       addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
@@ -105,7 +105,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
 
   it('a pane toggled off and on while wide still closes on narrowing: nothing inert', async () => {
     const listeners: ((e: { matches: boolean }) => void)[] = [];
-    window.matchMedia = ((query: string) => ({ matches: true, media: query, onchange: null, dispatchEvent: () => false,
+    window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, dispatchEvent: () => false,
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
     const { user } = setup();

@@ -477,6 +477,15 @@ function PttLine({ v }: { v: VoiceContext }) {
   );
 }
 
+/** The call's phase as the dock and the phone's call bar show it: paused on a held group, else connecting, reconnecting or connected. */
+export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockProps['phase'] {
+  const { call } = v;
+  const id = call.channelId;
+  const paused = id !== null && v.slice?.channelId === id && v.slice.phase === 'paused';
+  return paused ? 'paused' : call.session === null || call.state?.phase === 'connecting' ? 'connecting'
+    : call.state?.phase === 'reconnecting' ? 'reconnecting' : 'connected';
+}
+
 /**
  * The dock above the user panel while this device is in voice (flow 06): where, the input meter, then mute, deafen,
  * camera, share screen and leave (the stage's controls, under the stage's rules: camera and share are aria-disabled
@@ -497,8 +506,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
     markPauseFocused();
   }, [bannerText, pauseFocusPending, markPauseFocused]);
   if (id === null) return null;
-  const phase: VoiceDockProps['phase'] = paused ? 'paused' : call.session === null || call.state?.phase === 'connecting' ? 'connecting'
-    : call.state?.phase === 'reconnecting' ? 'reconnecting' : 'connected';
+  const phase = callPhase(v);
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
       {banner !== null ? (
@@ -517,7 +525,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
           <Button aria-describedby="dw-voice-dock-audio" onClick={call.startAudio}>{t('voice.audioStart')}</Button>
         </div>
       ) : null}
-      <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
+      <VoiceDock phase={phase} controls={!stageShown} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
         camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
         canShare={!paused && canCapture()} busy={call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
         announcement={call.announcement}

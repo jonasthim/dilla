@@ -232,7 +232,7 @@ describe('the dock says where and how (product walk M7, M8)', () => {
     const where = t('call.where', { name: 'bob' });
     await waitFor(() => expect(document.querySelector('.d-voice-dock__text')).toHaveTextContent(t('voice.dock.connected', { where })));
     expect(dockStatus()).toHaveTextContent(t('voice.announce.joined', { where }));
-    await app.user.click(within(document.querySelector('.d-voice-dock') as HTMLElement).getByRole('button', { name: 'leave' }));
+    await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(document.querySelector('.dw-voice-lasting')).toHaveTextContent(t('voice.announce.left', { where })));
   });
 });

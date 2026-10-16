@@ -1,5 +1,6 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { errorOf, type UiError } from './core/errors.ts';
+import type { PhoneTab } from './layout.ts';
 
 export type SettingsSection =
   | 'devices'
@@ -14,6 +15,8 @@ export type SignInNotice = 'race' | 'evicted';
 export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null; signin: SignInNotice | null }
   | { name: 'channel'; communityId: string; channelId: string | null }
   | { name: 'dm'; channelId: string }
+  /** The phone's DMs tab (and, on a desktop, the DMs sidebar tab with no DM open). */
+  | { name: 'dms' } | { name: 'activity' } | { name: 'you' }
   | { name: 'settings'; section: SettingsSection; from: string | null;
     /** Privacy only: the contact whose comparison opens at once (the voice pause banner's action, flow 06). */
     compare?: string };
@@ -22,6 +25,9 @@ export type Route = { name: 'root' } | { name: 'welcome'; invite: string | null;
 export const SETTINGS_FROM = 'settingsFrom';
 /** The history-state key that carries a privacy route's `compare`: a 32-hex user id, nothing else. */
 export const SETTINGS_COMPARE = 'compareUser';
+
+/** The history-state key that marks an entry this app pushed on a phone: back is then `history.back()`, else a deep link's fallback. */
+export const PHONE_BACK = 'phoneBack';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
 const SETTINGS_SECTION = /^\/settings\/(devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
@@ -57,6 +63,9 @@ export function parseRoute(pathname: string, search: string, state: unknown = nu
   if (match) return { name: 'channel', communityId: match[1], channelId: match[2] ?? null };
   const dm = DM.exec(pathname);
   if (dm) return { name: 'dm', channelId: dm[1] };
+  if (pathname === '/dm') return { name: 'dms' };
+  if (pathname === '/activity') return { name: 'activity' };
+  if (pathname === '/you') return { name: 'you' };
   if (pathname === '/settings') return { name: 'settings', section: 'devices', from: fromState(state) };
   const section = SETTINGS_SECTION.exec(pathname);
   if (section) {
@@ -77,6 +86,9 @@ export function routePath(route: Route): string {
     }
     case 'channel': return `/c/${route.communityId}${route.channelId ? `/${route.channelId}` : ''}`;
     case 'dm': return `/dm/${route.channelId}`;
+    case 'dms': return '/dm';
+    case 'activity': return '/activity';
+    case 'you': return '/you';
     case 'settings': return `/settings/${route.section}`;
   }
 }
@@ -108,18 +120,39 @@ const snapshot = () => location.pathname + location.search;
  * current route is not a settings route, else the current route's own `from` (a section switch keeps it). The
  * `from` of the route given is ignored. Every other route writes no state.
  */
-function navigate(route: Route, replace = false): void {
+function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; from?: string | null }): void {
   const path = routePath(route);
   if (!replace && path === snapshot()) return;
-  let state: { [SETTINGS_FROM]: string | null; [SETTINGS_COMPARE]?: string } | null = null;
+  let state: { [SETTINGS_FROM]?: string | null; [SETTINGS_COMPARE]?: string; [PHONE_BACK]?: true } | null = null;
   if (route.name === 'settings') {
     const current = parseRoute(location.pathname, location.search, history.state);
-    state = { [SETTINGS_FROM]: current.name === 'settings' ? current.from : snapshot() };
+    state = { [SETTINGS_FROM]: opts?.from !== undefined ? opts.from : current.name === 'settings' ? current.from : snapshot() };
     if (route.section === 'privacy' && route.compare !== undefined && HEX32.test(route.compare)) state[SETTINGS_COMPARE] = route.compare;
   }
+  if (opts?.phoneBack === true) state = { ...state, [PHONE_BACK]: true };
   if (replace) history.replaceState(state, '', path);
   else history.pushState(state, '', path);
   for (const listener of listeners) listener();
+}
+
+/**
+ * Back on a phone's pushed view: `history.back()` when this entry was pushed by the app (`phoneBack`), else (a deep
+ * link, a reload into the view) the tab's list route, replacing the entry, so back never leaves the app.
+ */
+export function goBack(fallback: Route, go: (route: Route, replace?: boolean) => void): void {
+  const state: unknown = history.state;
+  if (typeof state === 'object' && state !== null && (state as Record<string, unknown>)[PHONE_BACK] === true) history.back();
+  else go(fallback, true);
+}
+
+/** The phone tab a route belongs to: a channel is servers, a DM is dms, Settings is you. */
+export function tabOf(route: Route): PhoneTab {
+  switch (route.name) {
+    case 'dm': case 'dms': return 'dms';
+    case 'activity': return 'activity';
+    case 'you': case 'settings': return 'you';
+    case 'channel': case 'root': case 'welcome': return 'servers';
+  }
 }
 
 /**
@@ -139,7 +172,7 @@ export function readJoinError(state: unknown): UiError | null {
   return errorOf(joinError);
 }
 
-export function useRoute(): [Route, (r: Route, replace?: boolean) => void] {
+export function useRoute(): [Route, (r: Route, replace?: boolean, opts?: { phoneBack?: boolean; from?: string | null }) => void] {
   const path = useSyncExternalStore(subscribe, snapshot);
   const route = useMemo(() => {
     const mark = path.indexOf('?');

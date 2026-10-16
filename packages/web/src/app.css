@@ -115,18 +115,19 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
   .dw-dm-call .d-call-stage__controls { position: static; }
   .dw-voice-dock__paused .d-btn, .dw-voice-dock__audio .d-btn { min-height: 2.75rem; }
   .dw-voice-dock__mode .d-btn { min-height: 2.75rem; }
-  /* The narrow sidebar (35dvh, AppShell) scrolls as one column: the list and the dock stack instead of overlapping.
-     Product walk I4: the dock is pinned to the bottom of that column, so its controls stay on screen while a text
-     channel is read; it is compact there (where and meter on one line, the five controls on the next, in one row: the
-     voice toolbar's own flex layout, with leave set apart; review round 1 of the voice icons, #1). */
-  .dw-sidebar { height: auto; }
-  .dw-sidebar > .d-channel-list { flex: none; height: auto; }
-  .dw-sidebar > .dw-voice-dock { position: sticky; bottom: 0; z-index: 1; border-top: 1px solid var(--hairline); }
-  .dw-sidebar .d-voice-dock { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.375rem 0.75rem; padding: 0.5rem; border-radius: 0; }
-  .dw-sidebar .d-voice-dock__where { align-self: center; }
+  /* The desktop's narrow sidebar scrolls as one column (a phone shows one pane at a time, so these do not apply to it): the
+     list and the dock stack instead of overlapping. Product walk I4: the dock is pinned to the bottom of that column, so its
+     controls stay on screen while a text channel is read; it is compact there (where and meter on one line, the five
+     controls on the next, in one row: the voice toolbar's own flex layout, with leave set apart; review round 1 of the voice
+     icons, #1). */
+  .d-app-shell:not([data-layout="phone"]) .dw-sidebar { height: auto; }
+  .d-app-shell:not([data-layout="phone"]) .dw-sidebar > .d-channel-list { flex: none; height: auto; }
+  .d-app-shell:not([data-layout="phone"]) .dw-sidebar > .dw-voice-dock { position: sticky; bottom: 0; z-index: 1; border-top: 1px solid var(--hairline); }
+  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.375rem 0.75rem; padding: 0.5rem; border-radius: 0; }
+  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__where { align-self: center; }
   /* With no meter beside it, the status takes the whole row; a name too long for it still ends in an ellipsis. */
-  .dw-sidebar .d-voice-dock__where:not(:has(+ .d-voice-dock__meter)) { grid-column: 1 / -1; }
-  .dw-sidebar .d-voice-dock__controls { grid-column: 1 / -1; }
+  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__where:not(:has(+ .d-voice-dock__meter)) { grid-column: 1 / -1; }
+  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__controls { grid-column: 1 / -1; }
 }
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;
@@ -170,3 +171,42 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-factor-group__rows { list-style: none; margin: 0; padding: 0 0 0 1rem; }
 .dw-factor-group__rows > .d-factor-row:last-child { border-bottom: 0; }
 .dw-factor-group__actions { display: flex; flex-wrap: wrap; gap: var(--group-gap); padding-left: 1rem; }
+
+/* The phone's You and Activity tabs and Settings' phone header (flow 12). One row grammar: 44px targets, hairlines between. */
+.dw-phone-pane { min-height: 100%; background: var(--bg); color: var(--fg); }
+.dw-phone-heading { margin: 0; padding: 0.75rem var(--row-pad-x) 0.5rem; font-family: var(--font-serif-italic); font-style: italic; font-weight: 400; font-size: var(--text-xl); color: var(--fg); }
+.dw-phone-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hairline); }
+.dw-phone-row { display: flex; align-items: center; gap: 0.75rem; width: 100%; min-height: 2.75rem; padding: 0.5rem var(--row-pad-x); font: inherit; font-size: var(--text-sm); color: var(--fg); text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--hairline); cursor: pointer; }
+.dw-phone-row:hover { background: var(--surface-2); }
+.dw-phone-row:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.dw-phone-row__text { flex: 1; min-width: 0; display: grid; gap: 0.125rem; }
+.dw-phone-row__line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-phone-row__who { font-weight: var(--weight-display); }
+.dw-phone-row__meta { font-size: var(--text-xs); color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-phone-note { margin: 0; padding: 0.75rem var(--row-pad-x); font-size: var(--text-xs); color: var(--fg-3); }
+.dw-you__account { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem var(--row-pad-x) 1rem; }
+.dw-you__who { display: grid; gap: 0.125rem; min-width: 0; }
+.dw-you__name { font-weight: var(--weight-display); font-size: var(--text-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dw-you__card { margin: 0 var(--row-pad-x) 1rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.dw-you__cardhead { margin: 0; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--hairline-2); }
+.dw-you__facts { margin: 0; padding: 0; }
+.dw-you__fact { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 2.25rem; padding: 0 0.75rem; font-size: var(--text-sm); }
+.dw-you__fact dt, .dw-you__fact dd { margin: 0; }
+.dw-you__fact dd { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.dw-you__listhead { margin: 0; padding: 0.25rem var(--row-pad-x) 0.5rem; }
+.dw-you__signout { border-bottom: 1px solid var(--hairline); }
+.dw-you__signout .d-btn { width: 100%; min-height: 2.75rem; justify-content: flex-start; padding: 0.5rem var(--row-pad-x); background: transparent; border: 0; border-radius: 0; box-shadow: none; font-size: var(--text-sm); color: var(--danger); }
+.dw-you__signout .d-btn:hover { background: var(--surface-2); }
+
+/* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
+@media (max-width: 47.99rem) {
+  .d-settings-frame:has(.d-phone-header) { width: 100vw; height: var(--d-vvh, 100dvh); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
+  .d-settings-frame:has(.d-phone-header) .d-settings-frame__panel { display: block; }
+  .d-settings-frame:has(.d-phone-header) .d-settings-frame__side, .d-settings-frame:has(.d-phone-header) .d-settings-frame__bar { display: none; }
+  .d-settings-frame:has(.d-phone-header) .d-settings-frame__pane { height: 100%; }
+  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body { padding: 0 0 max(1.5rem, env(safe-area-inset-bottom)); }
+  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > :not(.d-phone-header):not(dialog) { margin-left: var(--row-pad-x); margin-right: var(--row-pad-x); }
+  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > .d-phone-header + * { margin-top: 1rem; }
+}
+
+.dw-phone-footer { padding: 0.5rem 0.75rem; }
