@@ -1,7 +1,8 @@
 // E-reload (web3.7, R31): a reload in a call leaves exactly one tile for the reloaded person, and a reload that is never
 // followed by a rejoin leaves no ghost either. The second half suppresses the pagehide leave (an init script that stops
-// the event before the app's own listener sees it), so the room's departure timeout (90 s in this suite) and the boot
-// sweep are the only things left that can remove alice's old device: only the sweep is fast enough to pass.
+// the event before the app's own listener sees it). Locally the SFU still drops the reloaded participant within about
+// 300 ms, so the peer-visible checks (bob's roster and tiles) pin the outcome, not the cause. The request check pins that
+// the boot sweep runs (it is red with the sweep stubbed); sweep.test.ts covers the sweep's self-Remove.
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
@@ -72,9 +73,9 @@ test('a reload mid-call leaves one tile for alice, and a reload without a rejoin
 
     await test.step('alice reloads again with the pagehide leave suppressed and does not rejoin: the boot sweep removes her old device', async () => {
       expect(await pagehideIsSuppressed(alice.page), 'the page that is about to reload suppresses its pagehide leave').toBe(true);
-      // The boot sweep's own request: alice's worker reads the call of the channel it was in, with no join pressed.
+      // Pins that the boot sweep runs: alice's worker reads the call of the channel it was in, with no join pressed.
       const reads: string[] = [];
-      alice.context.on('request', (r) => { if (r.method() === 'GET' && r.url().endsWith(`/v1/channels/${s.voice_channel_id}/call`)) reads.push(r.url()); });
+      alice.context.on('request', (r) => { if (r.method() === 'GET' && new URL(r.url()).pathname === `/v1/channels/${s.voice_channel_id}/call`) reads.push(r.url()); });
       await alice.page.reload();
       await expectShellReady(alice.page);
       await expect.poll(() => reads.length, { timeout: SWEEP_BOUND, message: 'the reloaded page sweeps the call it left behind' }).toBeGreaterThan(0);
