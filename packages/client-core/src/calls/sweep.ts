@@ -18,10 +18,15 @@ export interface SweepDeps {
   heldGroup(): Id | null;
   /** True once the sweep must stop (a sign-out, the core detached, a handover): it sends nothing more. */
   stopped(): boolean;
+  /** The signal every request for a group of this channel carries (review I3): the controller aborts it on a stop, and
+   *  when a join of the channel passes its wait's bound. None: the requests cannot be cancelled. */
+  signal?(channelId: Id): AbortSignal;
 }
 
 /** The status of a failed request (0: the instance could not be reached), else null. */
 export const statusOf = (e: unknown): number | null => (e instanceof DillaHttpError ? e.status : null);
+/** A request the sweep's signal cancelled. */
+const aborted = (e: unknown): boolean => e instanceof Error && e.name === 'AbortError';
 
 export async function sweepStaleCalls(d: SweepDeps): Promise<void> {
   const core = d.core();
@@ -31,12 +36,17 @@ export async function sweepStaleCalls(d: SweepDeps): Promise<void> {
   catch { return; }
   for (const g of leftover) {
     if (!live(d, core, g.groupId)) { if (d.stopped()) return; continue; }
+    const signal = d.signal?.(g.targetId);
     let read: ChannelCall;
-    try { read = await d.routes.getChannelCall(g.targetId); }
+    try { read = await d.routes.getChannelCall(g.targetId, signal); }
     catch (e) {
-      // Offline (status 0): nothing is forgotten and nothing more is read; the next sweep takes the group up. Any other
-      // refusal leaves this group as it is.
+      // Cancelled: this group is left to whoever cancelled it (a join of its channel, or a stop).
+      if (aborted(e)) continue;
+      // Offline (status 0): nothing is forgotten and nothing more is read; the next sweep takes the group up.
       if (statusOf(e) === 0) return;
+      // Review I2: a 404 (the channel is gone, or no longer visible) never names another group, so it is forgotten
+      // locally. Any other refusal leaves this group as it is.
+      if (statusOf(e) === 404) { await forget(d, core, g.groupId); continue; }
       continue;
     }
     if (!live(d, core, g.groupId)) { if (d.stopped()) return; continue; }
@@ -52,12 +62,15 @@ export async function sweepStaleCalls(d: SweepDeps): Promise<void> {
       // Alone: the conditional end (the call id is its channel's id, protocol/09 § Voice). Only an ended call, or a 404
       // (no call to end), is forgotten without a self-Remove (teardown's N-m3 rule).
       let ended: boolean;
-      try { ended = await d.routes.endCallIfAlone(read.callId ?? g.targetId); }
-      catch (e) { ended = statusOf(e) === 404; }
-      if (d.stopped()) return;
+      try { ended = await d.routes.endCallIfAlone(read.callId ?? g.targetId, signal); }
+      catch (e) {
+        if (aborted(e)) continue;
+        ended = statusOf(e) === 404;
+      }
+      // forget and leave check on the lane that the sweep runs and the group is not held (review m2: no check here).
       if (ended) { await forget(d, core, g.groupId); continue; }
     }
-    await leave(d, core, g.groupId);
+    await leave(d, core, g.groupId, signal);
   }
 }
 
@@ -79,12 +92,13 @@ async function forget(d: SweepDeps, core: CorePort, groupId: Id): Promise<void> 
 }
 
 /** leaveGroup's self-Remove (a refusal leaves the leaf to the instance) and the forget, on the group's lane. */
-async function leave(d: SweepDeps, core: CorePort, groupId: Id): Promise<void> {
+async function leave(d: SweepDeps, core: CorePort, groupId: Id, signal: AbortSignal | undefined): Promise<void> {
   await d.serial(groupId, async () => {
     if (!live(d, core, groupId)) return;
-    try { await d.routes.postProposal(groupId, core.callLeaveProposal(groupId)); }
-    catch { /* E_REMOVE_PENDING, or the instance removes the leaf when the call ends */ }
-    if (d.stopped() || d.core() !== core) return;
+    try { await d.routes.postProposal(groupId, core.callLeaveProposal(groupId), signal); }
+    catch { /* E_REMOVE_PENDING, cancelled, or the instance removes the leaf when the call ends */ }
+    // Review I1: a join that took the group up while the self-Remove was in flight keeps it.
+    if (!live(d, core, groupId)) return;
     try { core.callGroupForget(groupId); } catch { /* forgotten already */ }
   });
 }

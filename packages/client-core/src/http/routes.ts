@@ -295,7 +295,7 @@ export class Routes {
   constructor(private readonly http: HttpClient) {}
 
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
-    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes'> = {}): Promise<Uint8Array> {
+    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes' | 'signal'> = {}): Promise<Uint8Array> {
     return (await this.http.request({ method, path, bucket, idempotent, ...options })).body;
   }
 
@@ -690,9 +690,9 @@ export class Routes {
   // ---- web-3 calls (L-HTTP-100..104, L-TS-55) ----
 
   /** L-HTTP-100: the channel's call group (the live call's, else the newest open one, else null), its live call and who
-   *  is in it. */
-  async getChannelCall(channelId: Uint8Array): Promise<ChannelCall> {
-    const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}/call`, 'read', true)), 3);
+   *  is in it. `signal` (web3.7 3a-client: the boot sweep's) aborts it and its retries. */
+  async getChannelCall(channelId: Uint8Array, signal?: AbortSignal): Promise<ChannelCall> {
+    const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}/call`, 'read', true, { signal })), 3);
     return { groupId: opt(a[0], (v) => bin(v, 16)), callId: opt(a[1], (v) => bin(v, 16)), participants: participants(a[2]) };
   }
   /** L-HTTP-101: the live calls of the community's voice channels the caller may view. */
@@ -725,9 +725,9 @@ export class Routes {
    *  call group's only current leaf, decided under the group lock; true once it has ended (204, also when it already
    *  had), false when another device holds a leaf (409 E_CALL_NOT_ALONE: the call goes on). The client never sends the
    *  unconditional form (web-3 task 10 fix, f10app I1). */
-  async endCallIfAlone(callId: Uint8Array): Promise<boolean> {
+  async endCallIfAlone(callId: Uint8Array, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.body('DELETE', callPath(callId, '?if_alone=1'), 'write', true, { ok: [204] });
+      await this.body('DELETE', callPath(callId, '?if_alone=1'), 'write', true, { ok: [204], signal });
       return true;
     } catch (e) {
       if (e instanceof DillaHttpError && e.status === 409 && e.code === 'E_CALL_NOT_ALONE') return false;
@@ -742,8 +742,8 @@ export class Routes {
     await this.body('POST', callPath(callId, '/stats'), 'write', false, { body: encode(report), ok: [204], retry429: false });
   }
   /** L-HTTP-103: a core-built [epoch, proposal] body, unchanged. */
-  async postProposal(groupId: Uint8Array, body: Uint8Array): Promise<{ seq: bigint }> {
-    const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/proposal`, 'commit', false, { body })), 1);
+  async postProposal(groupId: Uint8Array, body: Uint8Array, signal?: AbortSignal): Promise<{ seq: bigint }> {
+    const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/proposal`, 'commit', false, { body, signal })), 1);
     return { seq: u64(a[0]) };
   }
   /** L-HTTP-104: the body echoes the ring's expires_ts, so a late decline never stops a later ring of the same DM. */

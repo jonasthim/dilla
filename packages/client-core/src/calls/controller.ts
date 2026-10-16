@@ -89,6 +89,8 @@ interface Live {
  *  'reset' (forgotten locally, nothing sent), a drop of its server with 'dropped' (torn down as a leave, then phase
  *  removed); `done` settles once the join has torn down or finished. web3.7 3a-client: `waiting` while it waits for the
  *  boot sweep (it holds no group yet), and `wake` ends that wait at once when it is cancelled. */
+/** Review I3: a channel's sweep requests: the signal they carry and those still in flight. */
+interface SweepChannel { abort: AbortController; inflight: Set<Promise<unknown>> }
 interface JoinToken { cancelled: 'leave' | 'reset' | 'dropped' | null; done: Promise<void>; channel: string; waiting: boolean; wake: (() => void) | null }
 
 const IN_A_CALL: readonly CallPhase[] = ['joining', 'in', 'paused', 'leaving'];
@@ -109,6 +111,8 @@ export class CallController {
   private sweeping: Promise<void> | null = null;
   /** The sweep in progress is the one of this generation; a stop (sign-out, the core detached) moves it on. */
   private sweepGen = 0;
+  /** Review I3: the running sweep's requests by channel hex: their signal and the requests still in flight. */
+  private sweepChannels = new Map<string, SweepChannel>();
 
   constructor(private readonly deps: CallDeps) {
     this.book = new VoiceBook({
@@ -147,16 +151,37 @@ export class CallController {
     const stopped = (): boolean => this.sweepGen !== gen;
     let offline = false;
     const routes = this.deps.routes;
+    const channels = new Map<string, SweepChannel>();
+    this.sweepChannels = channels;
+    /** A request of the sweep, counted in flight under the channel whose signal it carries. */
+    const tracked = <T>(signal: AbortSignal | undefined, request: Promise<T>): Promise<T> => {
+      const entry = [...channels.values()].find((c) => c.abort.signal === signal);
+      if (entry === undefined) return request;
+      entry.inflight.add(request);
+      void request.catch(() => undefined).finally(() => { entry.inflight.delete(request); });
+      return request;
+    };
     const run = sweepStaleCalls({
       core: () => this.deps.core(),
       me: () => this.deps.me(),
       routes: {
-        getChannelCall: async (channel) => {
-          try { return await routes.getChannelCall(channel); }
+        getChannelCall: async (channel, signal) => {
+          try { return await tracked(signal, routes.getChannelCall(channel, signal)); }
           catch (e) { if (statusOf(e) === 0) offline = true; throw e; }
         },
-        endCallIfAlone: (callId) => routes.endCallIfAlone(callId),
-        postProposal: (groupId, body) => routes.postProposal(groupId, body),
+        endCallIfAlone: (callId, signal) => tracked(signal, routes.endCallIfAlone(callId, signal)),
+        postProposal: (groupId, body, signal) => tracked(signal, routes.postProposal(groupId, body, signal)),
+      },
+      signal: (channelId) => {
+        const key = toHex(channelId);
+        let entry = channels.get(key);
+        if (entry === undefined) {
+          entry = { abort: new AbortController(), inflight: new Set() };
+          // A stop that came first: every later request of this sweep is cancelled at once.
+          if (stopped()) entry.abort.abort();
+          channels.set(key, entry);
+        }
+        return entry.abort.signal;
       },
       serial: async <T>(groupId: Id, job: () => Promise<T>): Promise<T> => {
         let out: { value: T } | null = null;
@@ -172,10 +197,12 @@ export class CallController {
     this.sweeping = run;
   }
 
-  /** The boot sweep stops where it is and sends nothing more; the next startSweep sweeps again. */
+  /** The boot sweep stops where it is and sends nothing more (review I3: its requests in flight are aborted, retries
+   *  included); the next startSweep sweeps again. */
   private stopSweep(): void {
     this.sweepGen += 1;
     this.sweeping = null;
+    for (const entry of this.sweepChannels.values()) entry.abort.abort();
   }
 
   /** The group the sweep never touches: the live call's, else the channel's call group of a join past its sweep wait. */
@@ -190,17 +217,26 @@ export class CallController {
     }
   }
 
-  /** web3.7 3a-client: the join's wait for the boot sweep, at most SWEEP_JOIN_WAIT_MS, ended at once by a cancel. */
+  /** web3.7 3a-client: the join's wait for the boot sweep, at most SWEEP_JOIN_WAIT_MS, ended at once by a cancel. Review
+   *  I3: a wait the bound ends holds the channel's group from then on, aborts the sweep's requests for the channel and
+   *  waits for them to settle (at once, once aborted), so the join's own read of the call comes after them. */
   private async awaitSweep(token: JoinToken): Promise<void> {
     const sweeping = this.sweeping;
     if (sweeping === null) return;
     let timer: number | null = null;
+    let bound = false;
     await Promise.race([sweeping, new Promise<void>((resolve) => {
       token.wake = resolve;
-      timer = this.deps.setTimeout(resolve, SWEEP_JOIN_WAIT_MS);
+      timer = this.deps.setTimeout(() => { bound = true; resolve(); }, SWEEP_JOIN_WAIT_MS);
     })]);
     if (timer !== null) this.deps.clearTimeout(timer);
     token.wake = null;
+    if (!bound || token.cancelled !== null) return;
+    token.waiting = false;
+    const entry = this.sweepChannels.get(token.channel);
+    if (entry === undefined) return;
+    entry.abort.abort();
+    await Promise.allSettled([...entry.inflight]);
   }
 
   /** A join in flight is cancelled (`reset` overrides an earlier reason; the others keep the first), and its wait for

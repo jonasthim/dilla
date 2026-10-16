@@ -2108,6 +2108,22 @@ describe('the boot sweep of leftover call groups (web3.7 3a-client, R32)', () =>
     expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(1);
   });
 
+  it('a gateway ready before the phase is ready starts no sweep; the end of the ready does (review m1)', async () => {
+    let held = { release: (): void => {}, reached: Promise.resolve() };
+    const seed = leftover((b) => { held = b.server.hold('GET members'); });
+    // The socket reports ready while the ready path still waits for the member list.
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await held.reached;
+    w.reconnect();
+    await settled(w);
+    expect((w.slice('account') as { phase: string }).phase).not.toBe('ready');
+    expect(count(w, 'GET channel call')).toBe(0);
+    held.release();
+    for (let i = 0; i < 40 && coreCalls(w, 'callGroupForget', seed.group()) === 0; i++) await settled(w);
+    expect(count(w, 'GET channel call')).toBe(1);
+    expect(count(w, 'DELETE call')).toBe(1);
+  });
+
   it('an offline boot forgets nothing and sweeps at the first online; the join is not held meanwhile', async () => {
     const seed = leftover((b) => { b.server.refuseAll('GET channel call', 0, 'E_NETWORK'); });
     const w = await harness({ voiceChannel: true, before: seed.before });

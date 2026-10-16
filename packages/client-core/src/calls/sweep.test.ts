@@ -40,7 +40,11 @@ class SweepCore {
 interface Fakes {
   core: SweepCore;
   deps: SweepDeps;
-  calls: { read: (channel: Id) => Promise<ChannelCall>; end: (call: Id) => Promise<boolean> };
+  calls: {
+    read: (channel: Id, signal?: AbortSignal) => Promise<ChannelCall>;
+    end: (call: Id, signal?: AbortSignal) => Promise<boolean>;
+    propose: (groupId: Id, signal?: AbortSignal) => Promise<{ seq: bigint }>;
+  };
   held: { group: Id | null };
   stop: { value: boolean };
   current: { core: SweepCore | null };
@@ -55,16 +59,17 @@ function fakes(): Fakes {
     read: (channel: Id): Promise<ChannelCall> => Promise.resolve({ groupId: toHex(channel) === toHex(CHANNEL) ? G : G2, callId: channel,
       participants: [{ userId: ME.userId, deviceId: ME.deviceId, flags: 1 }] }),
     end: (): Promise<boolean> => Promise.resolve(true),
+    propose: () => Promise.resolve({ seq: 1n }),
   };
   const deps: SweepDeps = {
     core: () => current.core as unknown as CorePort | null,
     me: () => ME,
     routes: {
-      getChannelCall: (channel) => { core.log.push(`GET call ${toHex(channel)}`); return calls.read(channel); },
-      endCallIfAlone: (call) => { core.log.push(`DELETE call ${toHex(call)}`); return calls.end(call); },
-      postProposal: (groupId, body) => {
+      getChannelCall: (channel, signal) => { core.log.push(`GET call ${toHex(channel)}`); return calls.read(channel, signal); },
+      endCallIfAlone: (call, signal) => { core.log.push(`DELETE call ${toHex(call)}`); return calls.end(call, signal); },
+      postProposal: (groupId, body, signal) => {
         core.log.push(`POST proposal ${toHex(groupId)} [${Array.from(body).join(',')}]${core.lane === toHex(groupId) ? ' on its lane' : ''}`);
-        return Promise.resolve({ seq: 1n });
+        return calls.propose(groupId, signal);
       },
     },
     serial: async <T>(groupId: Id, run: () => Promise<T>): Promise<T> => {
@@ -78,6 +83,25 @@ function fakes(): Fakes {
 }
 
 const routesOf = (log: string[]): string[] => log.filter((l) => l !== 'groups');
+
+/** A request that never answers on its own: an abort of its signal rejects it (AbortError) and logs `abort <label>`. */
+function hang<T>(log: string[], label: string, signal: AbortSignal | undefined): Promise<T> {
+  return new Promise<T>((_resolve, reject) => {
+    signal?.addEventListener('abort', () => { log.push(`abort ${label}`); reject(new DOMException('aborted', 'AbortError')); });
+  });
+}
+/** A request the HTTP client retries every 2 s (a 503 with Retry-After), up to five attempts, until its signal aborts. */
+async function retrying(log: string[], label: string, clock: ManualClock, signal: AbortSignal | undefined): Promise<boolean> {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (signal?.aborted === true) throw new DOMException('aborted', 'AbortError');
+    log.push(`attempt ${label} ${String(attempt)}`);
+    await new Promise<void>((resolve, reject) => {
+      const t = clock.setTimeout(resolve, 2_000);
+      signal?.addEventListener('abort', () => { clock.clearTimeout(t); reject(new DOMException('aborted', 'AbortError')); });
+    });
+  }
+  throw httpError(503, 'E_UNAVAILABLE');
+}
 const g = toHex(G);
 const c = toHex(CHANNEL);
 const LEAVE = `POST proposal ${g} [170,1] on its lane`;
@@ -200,6 +224,66 @@ describe('sweepStaleCalls (web3.7 3a-client, R32)', () => {
     expect(routesOf(f.core.log)).toEqual([`GET call ${c}`]);
   });
 
+  it('a group the join takes up while the self-Remove is in flight is not forgotten (review I1, P1)', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    f.calls.read = () => Promise.resolve({ groupId: G, callId: CHANNEL, participants: [
+      { userId: ME.userId, deviceId: ME.deviceId, flags: 1 }, { userId: id(0x21), deviceId: OTHER, flags: 1 }] });
+    let answer: () => void = () => {};
+    f.calls.propose = () => new Promise((resolve) => { answer = () => { resolve({ seq: 1n }); }; });
+    const run = sweepStaleCalls(f.deps);
+    await settle();
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, LEAVE]);
+    f.held.group = G;            // the join passed its 5 s bound and holds G now
+    answer();
+    await run;
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, LEAVE]);
+  });
+
+  it('a leftover group whose channel answers 404 is forgotten (review I2, P2)', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    f.calls.read = () => Promise.reject(httpError(404, 'E_NOT_FOUND'));
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, FORGET]);
+  });
+
+  it('a leftover group whose channel read answers 403 is left as it is (the I2 control)', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    f.calls.read = () => Promise.reject(httpError(403, 'E_FORBIDDEN'));
+    await sweepStaleCalls(f.deps);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`]);
+  });
+
+  it('every sweep request carries the group\'s channel signal; an aborted end sends nothing more for that group', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    const abort = new AbortController();
+    const seen: (AbortSignal | undefined)[] = [];
+    f.deps.signal = (channel) => { expect(toHex(channel)).toBe(c); return abort.signal; };
+    f.calls.read = (_ch, signal) => { seen.push(signal); return Promise.resolve({ groupId: G, callId: CHANNEL, participants: [] }); };
+    f.calls.end = (_call, signal) => { seen.push(signal); return hang(f.core.log, 'end', signal); };
+    const run = sweepStaleCalls(f.deps);
+    await settle();
+    abort.abort();
+    await run;
+    expect(seen).toEqual([abort.signal, abort.signal]);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, `DELETE call ${c}`, 'abort end']);
+  });
+
+  it('the self-Remove carries the signal too', async () => {
+    const f = fakes();
+    f.core.hold(G, CHANNEL);
+    const abort = new AbortController();
+    f.deps.signal = () => abort.signal;
+    f.calls.end = () => Promise.resolve(false);
+    let seen: AbortSignal | undefined;
+    f.calls.propose = (_g, signal) => { seen = signal; return Promise.resolve({ seq: 1n }); };
+    await sweepStaleCalls(f.deps);
+    expect(seen).toBe(abort.signal);
+  });
+
   it('a read refused for one group leaves that group and sweeps the next', async () => {
     const f = fakes();
     f.core.hold(G, CHANNEL);
@@ -219,9 +303,9 @@ function controller(f: Fakes, clock: ManualClock): { calls: CallController; trac
   const deps = {
     core: () => f.deps.core(),
     routes: {
-      getChannelCall: (channel: Id) => f.deps.routes.getChannelCall(channel),
-      endCallIfAlone: (call: Id) => f.deps.routes.endCallIfAlone(call),
-      postProposal: (groupId: Id, body: Uint8Array) => f.deps.routes.postProposal(groupId, body),
+      getChannelCall: (channel: Id, signal?: AbortSignal) => f.deps.routes.getChannelCall(channel, signal),
+      endCallIfAlone: (call: Id, signal?: AbortSignal) => f.deps.routes.endCallIfAlone(call, signal),
+      postProposal: (groupId: Id, body: Uint8Array, signal?: AbortSignal) => f.deps.routes.postProposal(groupId, body, signal),
     },
     post: () => {}, publish: () => {},
     errorOf: (e: unknown) => ({ code: e instanceof DillaHttpError ? e.code : 'E_INTERNAL', status: e instanceof DillaHttpError ? e.status : 0 }),
@@ -239,9 +323,9 @@ function controller(f: Fakes, clock: ManualClock): { calls: CallController; trac
 }
 
 /** A join that, once past its wait, reads the channel's call and is refused there (500): what it reached is logged. */
-function joinRefusedAtItsRead(f: Fakes, sweepRead: (channel: Id) => Promise<ChannelCall>): void {
+function joinRefusedAtItsRead(f: Fakes, sweepRead: (channel: Id, signal?: AbortSignal) => Promise<ChannelCall>): void {
   let n = 0;
-  f.calls.read = (channel) => { n += 1; return n === 1 ? sweepRead(channel) : Promise.reject(httpError(500)); };
+  f.calls.read = (channel, signal) => { n += 1; return n === 1 ? sweepRead(channel, signal) : Promise.reject(httpError(500)); };
 }
 
 describe('CallController.startSweep and the join (web3.7 3a-client)', () => {
@@ -270,7 +354,9 @@ describe('CallController.startSweep and the join (web3.7 3a-client)', () => {
   it('the join waits at most 5 s', async () => {
     const f = fakes();
     const clock = new ManualClock();
-    f.core.hold(G, CHANNEL);
+    // The sweep is stuck on another channel's read (one that ignores its abort): the join of this channel is not held
+    // past the bound, nor by that read.
+    f.core.hold(G2, CHANNEL2);
     joinRefusedAtItsRead(f, () => new Promise(() => {}));
     const { calls } = controller(f, clock);
     calls.startSweep();
@@ -278,13 +364,13 @@ describe('CallController.startSweep and the join (web3.7 3a-client)', () => {
     const join = calls.join(toHex(CHANNEL), 'vp8');
     join.catch(() => undefined);
     await clock.advance(SWEEP_JOIN_WAIT_MS - 1);
-    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`]);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${toHex(CHANNEL2)}`]);
     await clock.advance(1);
     await settle();
     await expect(join).rejects.toMatchObject({ status: 500 });
     expect(SWEEP_JOIN_WAIT_MS).toBe(5000);
     // Past the bound the join reads on its own; the stuck sweep's read is still in flight.
-    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, `GET call ${c}`]);
+    expect(routesOf(f.core.log)).toEqual([`GET call ${toHex(CHANNEL2)}`, `GET call ${c}`]);
     expect(clock.pending).toBe(0);
   });
 
@@ -314,6 +400,100 @@ describe('CallController.startSweep and the join (web3.7 3a-client)', () => {
     expect(routesOf(f.core.log)).toEqual([`GET call ${c}`]);
     expect(clock.pending).toBe(0);
   });
+
+  it('a slow end retrying past the bound is aborted, and no further attempt is sent (review I3)', async () => {
+    const f = fakes();
+    const clock = new ManualClock();
+    f.core.hold(G, CHANNEL);
+    joinRefusedAtItsRead(f, () => Promise.resolve({ groupId: G, callId: CHANNEL, participants: [] }));
+    f.calls.end = (_call, signal) => retrying(f.core.log, 'end', clock, signal);
+    const { calls } = controller(f, clock);
+    calls.startSweep();
+    await settle();
+    const join = calls.join(toHex(CHANNEL), 'vp8');
+    join.catch(() => undefined);
+    await clock.advance(SWEEP_JOIN_WAIT_MS);
+    await settle();
+    await expect(join).rejects.toMatchObject({ status: 500 });
+    await clock.advance(60_000);
+    await settle();
+    // Attempts at 0, 2 and 4 s; the abort at 5 s ends the retries; the join then reads the call again, on its own.
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, `DELETE call ${c}`, 'attempt end 1', 'attempt end 2', 'attempt end 3', `GET call ${c}`]);
+  });
+
+  it('the join after the bound reads the call again once the sweep\'s read of its channel is aborted (review I3)', async () => {
+    const f = fakes();
+    const clock = new ManualClock();
+    f.core.hold(G, CHANNEL);
+    joinRefusedAtItsRead(f, (_channel, signal) => hang(f.core.log, 'sweep read', signal));
+    const { calls } = controller(f, clock);
+    calls.startSweep();
+    await settle();
+    const join = calls.join(toHex(CHANNEL), 'vp8');
+    join.catch(() => undefined);
+    await clock.advance(SWEEP_JOIN_WAIT_MS);
+    await settle();
+    await expect(join).rejects.toMatchObject({ status: 500 });
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, 'abort sweep read', `GET call ${c}`]);
+  });
+
+  it('sign-out mid-sweep aborts the request in flight; nothing is sent afterwards (review I3)', async () => {
+    const f = fakes();
+    const clock = new ManualClock();
+    f.core.hold(G, CHANNEL);
+    f.core.hold(G2, CHANNEL2);
+    f.calls.read = (channel) => Promise.resolve({ groupId: toHex(channel) === c ? G : G2, callId: channel, participants: [] });
+    f.calls.end = (_call, signal) => retrying(f.core.log, 'end', clock, signal);
+    const { calls } = controller(f, clock);
+    calls.startSweep();
+    await settle();
+    await calls.shutdown();
+    await clock.advance(60_000);
+    await settle();
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, `DELETE call ${c}`, 'attempt end 1']);
+  });
+
+  it('a reset mid-sweep aborts the request in flight too', async () => {
+    const f = fakes();
+    const clock = new ManualClock();
+    f.core.hold(G, CHANNEL);
+    f.calls.read = (_channel, signal) => hang(f.core.log, 'read', signal);
+    const { calls } = controller(f, clock);
+    calls.startSweep();
+    await settle();
+    calls.reset();
+    await settle();
+    expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, 'abort read']);
+  });
+
+  // Review I4: the normal reload. The end of G is on the wire and answers only late (the abort does not reach an attempt
+  // already sent); the join passes its bound into the same leftover G. Whatever the end then answers, the sweep neither
+  // forgets nor self-Removes G: the join holds it.
+  for (const ended of [true, false]) {
+    it(`a join past its bound into the same leftover group keeps it, when the late end answers ${String(ended)} (review I4)`, async () => {
+      const f = fakes();
+      const clock = new ManualClock();
+      f.core.hold(G, CHANNEL);
+      let answer: (v: boolean) => void = () => {};
+      f.calls.end = () => new Promise((resolve) => { answer = resolve; });
+      // The join's read names G; it then joins G (here: it stays at its read, holding G).
+      let n = 0;
+      f.calls.read = () => { n += 1; return n === 1 ? Promise.resolve({ groupId: G, callId: CHANNEL, participants: [] }) : new Promise(() => {}); };
+      const { calls } = controller(f, clock);
+      calls.startSweep();
+      await settle();
+      const join = calls.join(toHex(CHANNEL), 'vp8');
+      join.catch(() => undefined);
+      await clock.advance(SWEEP_JOIN_WAIT_MS);
+      await settle();
+      expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, `DELETE call ${c}`]);
+      answer(ended);
+      await settle();
+      await clock.advance(0);
+      expect(routesOf(f.core.log)).toEqual([`GET call ${c}`, `DELETE call ${c}`, `GET call ${c}`]);
+      expect(f.core.groupRow(G)?.state).toBe(2);
+    });
+  }
 
   it('a late pagehide leave does nothing more', async () => {
     const f = fakes();

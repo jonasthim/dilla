@@ -1161,6 +1161,26 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect(t.seen[0].body).toEqual(BODY);
   });
 
+  // web3.7 3a-client review I3: the boot sweep's requests can be cancelled; an abort stops the client's retries.
+  it('getChannelCall, endCallIfAlone and postProposal hand their signal to the client', async () => {
+    const { t, http, routes } = setup();
+    const abort = new AbortController();
+    t.replies.push(cborReply(200, [null, null, []]), noContent(), cborReply(201, [1]));
+    await routes.getChannelCall(CHANNEL, abort.signal);
+    await routes.endCallIfAlone(CALL, abort.signal);
+    await routes.postProposal(GROUP, BODY, abort.signal);
+    expect(http.requests.map((r) => r.signal)).toEqual([abort.signal, abort.signal, abort.signal]);
+  });
+
+  it('an end retrying on 503 stops once its signal aborts: no further attempt is sent', async () => {
+    const { t, routes } = setup();
+    const abort = new AbortController();
+    t.replies.push(() => { abort.abort(); return refusal(503, 'E_UNAVAILABLE', '', 1000); });
+    t.replies.push(noContent());
+    await expect(routes.endCallIfAlone(CALL, abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(t.seen).toHaveLength(1);
+  });
+
   it('declineCall(callId, 1700000030) sends [1700000030] and gives 204; its 404 is surfaced as E_NOT_FOUND', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
