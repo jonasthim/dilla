@@ -1047,3 +1047,128 @@ fn a_thread_reply_is_reachable_from_search_pins_and_quotes() {
     found.sort();
     assert_eq!(found, vec![(root, None), (reply, Some(ROOT))]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// FX-core (final review I2): threads exist only in community channel groups. A DM peer's
+// `thread_id` is ignored, so it cannot hide its posts from the DM, and a DM send names none.
+
+/// "me" (alice) created and registered DM_GROUP for DM_CHANNEL (no community); the raw peer
+/// joined it by external commit and me ingested its device list.
+fn start_dm() -> (Instance, Relay, Core, RawPeer) {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(DM_GROUP);
+    let mut me = ready_core(0xa1, "alice");
+    me.create_and_register_in(&mut relay, &instance, None, &DM_CHANNEL);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    assert_eq!(
+        peer.join_external_as(&mut relay, &dm_binding(DM_CHANNEL)),
+        1
+    );
+    me.sync(&relay);
+    ingest_list_body(
+        &mut me,
+        &relay,
+        peer.user,
+        peer.device,
+        &peer.device_list_body(),
+    );
+    (instance, relay, me, peer)
+}
+
+#[test]
+fn a_dm_row_with_a_thread_id_shows_in_the_dm_timeline_and_counts_normally() {
+    let (_i, mut relay, mut me, mut peer) = start_dm();
+    let me_hex: String = me.user.iter().map(|b| format!("{b:02x}")).collect();
+    let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
+    let reply = post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        Some(ROOT),
+        &format!("hidden? <@{me_hex}>"),
+    );
+    me.sync(&relay);
+    let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
+    assert_eq!(
+        shown,
+        vec![root, reply],
+        "the reply shows in the DM timeline"
+    );
+    assert_eq!(me.row_at(&DM_GROUP, root).thread, None, "no thread summary");
+    let row = activity(&me.core)
+        .into_iter()
+        .find(|a| a.group_id == DM_GROUP)
+        .expect("activity");
+    assert_eq!((row.unread, row.mentions), (2, 1));
+    assert!(
+        decode_threads(&me.core.threads(&DM_GROUP).expect("threads")).is_empty(),
+        "a DM lists no threads"
+    );
+    let (_, replies) = decode_thread_timeline(
+        &me.core
+            .thread_timeline(&DM_GROUP, &ROOT, 0, 50)
+            .expect("thread_timeline"),
+    );
+    assert!(replies.is_empty(), "a DM thread has no replies");
+    assert_eq!(
+        stored_thread_in(&me, &DM_GROUP, reply),
+        None,
+        "a DM stores no thread id"
+    );
+    // A row stored with a thread id before this fix still shows: the held-root exclusion and the
+    // search, pin and quote thread root apply in community channel groups only.
+    me.probe
+        .lock()
+        .expect("lock")
+        .execute(
+            "UPDATE app_messages SET thread_id = ?3 WHERE group_id = ?1 AND seq = ?2",
+            rusqlite::params![DM_GROUP.as_slice(), reply as i64, ROOT.as_slice()],
+        )
+        .expect("plant a stored thread id");
+    let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
+    assert_eq!(
+        shown,
+        vec![root, reply],
+        "a stored DM thread id hides nothing"
+    );
+}
+
+fn stored_thread_in(me: &Core, group: &[u8; 16], seq: u64) -> Option<Vec<u8>> {
+    me.probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT thread_id FROM app_messages WHERE group_id = ?1 AND seq = ?2",
+            rusqlite::params![group.as_slice(), seq as i64],
+            |r| r.get(0),
+        )
+        .expect("thread_id")
+}
+
+#[test]
+fn send_prepare_in_a_dm_refuses_a_thread_id() {
+    let (_i, mut relay, mut me, mut peer) = start_dm();
+    post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
+    me.sync(&relay);
+    let refused = me
+        .core
+        .send_prepare(
+            &DM_GROUP,
+            &thread_request(0, None, "in a DM thread", Some(&ROOT)),
+            NOW,
+        )
+        .unwrap_err();
+    assert_eq!(
+        (refused.code, refused.detail.as_str()),
+        ("E_CORE_INPUT", "threads are for channel groups only")
+    );
+    assert!(
+        me.outbox(&DM_GROUP).is_empty(),
+        "the refusal writes nothing"
+    );
+    // The control: the same message without a thread queues.
+    me.prepare_request(&DM_GROUP, &thread_request(0, None, "plain", None), NOW);
+    assert_eq!(me.outbox(&DM_GROUP).len(), 1);
+}

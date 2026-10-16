@@ -155,7 +155,9 @@ A client shows a mention as the name it stands for, never as the raw token.
 ## Threads
 
 A thread is a run of type-0 envelopes under one root message (a public thread: every member of the
-group reads it).
+group reads it). Threads apply to community channel groups only: a sender sets no `thread_id` in
+any other group (a DM or a group DM), and a receiver ignores one there and shows the envelope in
+the timeline as a message without a thread.
 
 - **Root.** A type-0 envelope's `thread_id` names its root: in an end-to-end encrypted group the
   root's `msg_id`, on a server-readable channel the root's channel `seq` (§ Envelope). The root is

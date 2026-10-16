@@ -821,6 +821,19 @@ describe('ModelCore keeps public threads as the core does (web3.7)', () => {
     expect(core.timeline(G, 0n, 200).map((x) => x.seq)).toEqual([1n]);
   });
 
+  // FX-core (final review I2): threads exist only in community channel groups.
+  it('keeps a DM row with a thread id in the DM timeline, and refuses a DM thread send', () => {
+    const core = new ModelCore(ME);
+    core.groupCreate(G, null, CHANNEL);
+    core.groupRegistered(G, 1n);
+    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'hidden?', R));
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread])).toEqual([[1n, null], [2n, null]]);
+    expect(core.threads(G)).toEqual([]);
+    expect(core.threadTimeline(G, R, 0n, 50).rows).toEqual([]);
+    expect(() => core.sendPrepare(G, { ...request(0, null, 'x'), threadId: R }, 9n)).toThrow('threads are for channel groups only');
+    expect(core.outbox(G)).toEqual([]);
+  });
+
   it('gives a thread to the first root before it, never to a later row with its id (fix round 1, I1)', () => {
     const core = fresh();
     apply(core, threadApp(1n, reply(1), 'early', R), threadApp(2n, R, 'root', null), threadApp(3n, reply(2), 'r1', R),
