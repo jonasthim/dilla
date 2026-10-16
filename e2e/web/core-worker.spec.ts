@@ -102,6 +102,7 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       expect(await slice<ChannelSummary[]>(page, `channels:${s.community_id}`)).toEqual([{
         id: s.channel_id, communityId: s.community_id, kind: 0, mode: 0, name: 'general', topic: '',
         parentId: null, position: 0, group: expect.stringMatching(/^(none|joining|active)$/) as unknown as string,
+        slowmode: 0, announcement: false,
       }]);
       const members = (await slice<MemberSummary[]>(page, `members:${s.community_id}`))!;
       expect(members).toHaveLength(2);
@@ -418,7 +419,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
       peerSeq = held.seq!;
       const answer = ((await ok(b, { m: 'send', channelId: ch, text: 'answer', replyTo: peerMsg })) as { msgId: string }).msgId;
       await expect.poll(async () => (await itemOf(page, answer))?.reply ?? null, { timeout: WAIT })
-        .toEqual({ msgId: peerMsg, state: 'ok', senderUser: s.user_id, excerpt: 'peer says hi', seq: peerSeq });
+        .toEqual({ msgId: peerMsg, state: 'ok', senderUser: s.user_id, excerpt: 'peer says hi', seq: peerSeq, threadRoot: null });
       expect(await peerSees((r) => r.msg_id === answer, 'the reply')).toMatchObject({ type: 0, reply_to: peerMsg, body: 'answer' });
     });
 
@@ -429,7 +430,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
       await ok(page, { m: 'loadPins', channelId: ch });
       await expect.poll(async () => await slice<PinnedItem[]>(page, `pins:${ch}`), { timeout: WAIT }).toEqual([{
         msgId: peerMsg, seq: peerSeq, senderUser: s.user_id, excerpt: 'peer says hi', pinnedBy: userId,
-        pinnedSeq: expect.stringMatching(/^[1-9][0-9]*$/) as unknown as string, ts: peerTs,
+        pinnedSeq: expect.stringMatching(/^[1-9][0-9]*$/) as unknown as string, ts: peerTs, threadRoot: null,
       }]);
       await expect.poll(async () => (await itemOf(b, peerMsg))?.pinned ?? null, { timeout: WAIT }).toBe(true);
       await ok(page, { m: 'closePins', channelId: ch });
