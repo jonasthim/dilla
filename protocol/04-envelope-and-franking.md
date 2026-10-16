@@ -122,6 +122,17 @@ on the order in which rows reach it.
 - **The role view.** The view is served by the instance and is not authenticated by the group
   (`08` § Residual trust): it decides only which pins and mentions a receiver counts, never which
   messages it shows. A DM has no role view.
+- **The upload class.** In an end-to-end encrypted group the delivery service relays each row with
+  the upload class its uploader declared (`02` § Upload class): 0 for type 0, 1 for types 1 to 6.
+  A receiver that decrypts a row whose MLS sender is the uploading device, and whose class
+  disagrees with its type (class 1 on a type 0, class 0 on a type 1 to 6), drops it before any
+  check of the sender's identity: it is neither shown nor folded, raises no mention, counts toward
+  no unread, is never a target or a thread root, is never released later, and leaves no
+  placeholder. Unlike a sender mismatch, which stays in the timeline as a message that cannot be
+  read, such a post vanishes for every other reader, the author's other devices included, while
+  the device that sent it, which keeps its own copy and never decrypts its own upload, still shows
+  it. A row with a null class (a legacy upload, or one served by an instance before the class) is
+  never dropped for it.
 - A fold that breaks a rule is ignored, never an error; only § Envelope refuses an envelope.
 
 ## Mentions

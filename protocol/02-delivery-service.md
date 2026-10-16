@@ -453,28 +453,33 @@ An application message upload names its **upload class**, the third element of
 read the envelope, so the class is what lets it enforce a channel's posting rules on end-to-end
 encrypted messages without throttling the folds. It stores the class with the message and relays
 it as the 9th element of a `GET /v1/groups/{id}/messages` row and the 7th of `message.ct`, `null`
-for a legacy upload. A class other than the uint 0 or 1, or a body of any length but 2 or 3, is
-`400 E_INVALID_REQUEST`.
+for a legacy upload. A class other than the uint 0 or 1 (a null third element included), or a body
+of any length but 2 or 3, is `400 E_INVALID_REQUEST`. A client reads a row of eight elements and a
+`message.ct` of six, from an instance before this version, as carrying a null class; a class other
+than 0, 1 or null is a shape error (`E_FRAME_SHAPE` for the frame).
 
 The host's two rules apply to text groups of community channels only; direct messages, group DMs
-and call groups are unchecked. They are decided under the group's lock, before the message is
-stored:
+and call groups are unchecked. They are decided under the group's lock, after the current-leaf
+check and before the message is stored:
 
 - A class-0 upload needs `send_messages` in the channel (`09` § Permissions), else
   `403 E_FORBIDDEN`.
 - A class-0 upload within the channel's `slowmode_seconds` of the user's last class-0 upload into
   any text group of the channel, from any of their devices, is `429 E_RATE_LIMITED` with
   `retry_after_ms` the time left, unless the user holds `bypass_slowmode`. The instance keeps the
-  time of that last post as a durable mark beside the channel, so a deleted message still counts,
-  and so does one retention has since removed.
+  time of that last post as a durable mark per channel and user, raised by every accepted class-0
+  upload and by nothing else, so a deleted message still counts, and so does one retention has
+  since removed.
 
-A class-1 upload is never checked or slowed. An upload of any class into the text group of a
-channel that has been deleted is `403 E_FORBIDDEN`, and an upload into a closed group (a deleted
-channel's, or one a restore replaced) is `404 E_NOT_FOUND`, as for a group that does not exist.
+A class-1 upload is never checked for `send_messages` nor slowed. Whatever the class, an upload
+into the text group of a community channel that has been deleted is `403 E_FORBIDDEN`, and an
+upload into a closed group of any kind (a deleted channel's, or one a mode change or a restore
+replaced) is `404 E_NOT_FOUND`, as for a group that does not exist, before the freeze and the
+current-leaf check.
 
 A two-element body is a legacy upload: in this version it is stored with a null class, checked for
-`send_messages` whatever it carries (the host cannot tell its type), and never slowed; the next
-version refuses it with `400`.
+`send_messages` whatever it carries (the host cannot tell its type), and never slowed; it sets no
+slow-mode mark. The next version refuses it with `400`.
 
 Receivers drop a row whose class disagrees with its decrypted type (`04` § Semantics).
 

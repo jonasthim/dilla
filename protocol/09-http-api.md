@@ -420,6 +420,15 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   The create's audit records `channel.create` and one `channel.overwrite.put` per entry, and
   `community_changed` (`02`) is sent once.
 
+- **Announcement channels** (informative) have no kind of their own: the web client creates one as
+  a text channel whose overwrites deny `send_messages` to `@everyone` and allow it to each role
+  chosen to post, and labels any text channel whose `@everyone` overwrite denies `send_messages`
+  as one. The instance enforces it like any other overwrite (§ Readable channels, and `02` § Upload
+  class for an end-to-end encrypted one). Because an entry on oneself may only allow
+  `view_channel` and a role entry takes the rank rule, a creator who is neither the owner nor an
+  administrator keeps the right to post only through a chosen role they hold below their own
+  highest role, and the client refuses the create without one.
+
 - A channel whose visibility is `invite` or `discoverable` is **server-readable**. Creating one
   with `mode = 0` is not an error: the instance stores `mode = 1` and answers it, and the client
   labels the channel from the answer. A `PATCH` that would make a visible channel end-to-end
@@ -639,7 +648,8 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   is `429 E_RATE_LIMITED` with `retry_after_ms` the time left; `bypass_slowmode` is exempt. A
   deleted message still counts, so deleting and reposting does not reset the wait. Slow mode and
   `send_messages` apply to end-to-end encrypted posts too, through the upload class (`02` § Upload
-  class).
+  class); there they apply to posts (type 0) only, and an edit, delete, reaction or pin is neither
+  checked for `send_messages` nor slowed.
 - **Franking.** A readable envelope carries its `k_f` in the clear, so the instance computes `04`'s
   commitment `C` itself, unchanged. The tag `T` is `04`'s with two substitutions, because a
   readable channel has no MLS group: `channel_id` in place of `group_id`, and `0` for the epoch. The
@@ -1144,7 +1154,15 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   way the client retries with a fresh `GET /v1/channels/{id}/call`. So a call group that a member poisoned with a
   device no list names, and that no call keeps live, refuses honest joiners for at most 10 minutes.
 - **Leaving.** A device leaves a call by posting its self-Remove proposal to the call group (`01`
-  § Joining) and only then disconnecting from the SFU. The instance learns of the leave from the
+  § Joining) and only then disconnecting from the SFU. A client whose page went away in a call
+  without leaving it (a reload, a crash, a closed tab) leaves at its next ready, before it serves a
+  join (a join waits for this at most 5 seconds): for each call group it still holds and is not
+  joining, it reads the channel's call; when that names another group or none, or the channel
+  answers `404`, it only forgets the group, and any other refusal leaves the group as it is; when
+  no other device is listed, it ends the call with `DELETE /v1/calls/{call_id}?if_alone=1` and only
+  forgets the group when that ended it or answered `404`; otherwise it posts its self-Remove, then
+  forgets the group. Offline, it sweeps at its next connection instead, and a group a join takes up
+  meanwhile is left alone. The instance learns of the leave from the
   SFU — under a millisecond after a graceful disconnect on loopback, and 20–22 seconds after a crash
   or a lost network (the SFU's ICE timeout plus its cleanup; `docs/spikes/2026-10-livekit-webhooks.md`
   measured 20.4–21.9 seconds with a killed client) — and the SFU's reports can arrive up to about 45
@@ -1159,7 +1177,20 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   as a resync does — the `Remove` is of the leaf it holds now, provided the SFU shows the device out
   of the room and it was not admitted in the last 30 seconds; otherwise the sweep below decides.
   The admission is recorded only for a join the signalling proxy lets through to the SFU: a request
-  it refuses records none. A leave of a session the device has
+  it refuses records none. A leave is bound to the admission recorded at its session's join, else,
+  when that join was not seen, to the latest admission at or before the join time the leave names;
+  a leave that names no join time binds only a member recorded at its session's join, never the
+  device's latest admission. When the device was **admitted again** by a fresh join after the admission a leave is
+  bound to (a reload and rejoin, or a full reconnect that keeps its leaf; a signal resume of the same
+  session is not a new admission), the leave is of an earlier session and never cuts the newer one:
+  it proposes no `Remove`, neither of the earlier leaf nor of the one the device holds now, and
+  announces nothing, and self flags the newer session has set are kept; that session's own events
+  and the room sweep decide its membership. Should the newer session never join, the held-back leave
+  completes once that admission is older than the 30-second join window and the SFU lists the device
+  out of the room: the instance announces the device out (`voice_state` flags 0) and drops its self
+  flags, and leaves its leaf to the room sweep's two-sighting rule (below). The background loop
+  looks at no more than 8 held-back leaves a pass, within 4 seconds, after its repairs and never on
+  their budget, so a revocation is never held up by them. A leave of a session the device has
   already replaced by rejoining, and a leave the SFU reports after the call has ended, change
   nothing. A device that stays out of the call's room while it holds a leaf of the call group — its
   leave report lost, or disconnected by the instance and the report of that lost — loses the leaf
