@@ -228,8 +228,14 @@ test('a second browser joins the account by password and recovery key, badges an
       await expect.poll(async () => (await slice<TimelineState>(page, `timeline:${s.channel_id}`))?.group, { timeout: WAIT }).toBe('active');
     });
 
-    const { page: b } = await secondBrowser();
+    const { context: bContext, page: b } = await secondBrowser();
     b.on('pageerror', (e) => pageErrors.push(e.message));
+    // CI1: B reads the peer's device list 3 s late, so the peer's message below arrives before B trusts its sender and
+    // is held, then released by the trust refresh: the badge and notice checks cover that path on every run.
+    await bContext.route(new RegExp(`/v1/users/${s.user_id}/device-list`), async (route) => {
+      await new Promise((resolve) => { setTimeout(resolve, 3_000); });
+      await route.continue();
+    });
 
     await test.step('browser B signs in with the password and the recovery key; a wrong key is refused first', async () => {
       await openHarness(b);

@@ -604,6 +604,12 @@ export const COMMUNITY_RELOAD_DEBOUNCE_MS = 250;
 /** web3.4 C4: the removals slice keeps this many notices, the newest (the page dismisses them locally). */
 export const REMOVALS_MAX = 8;
 
+/** CI1: the reasons a row waits for its sender's trust (core revalidate_pending's set), and the most such live rows
+ *  the worker remembers for their notice. */
+const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
+export const HELD_LIVE_MAX = 64;
+const heldForTrust = (row: TimelineRow): boolean => row.status === 1 && HELD_REASONS.has(row.reason);
+
 export class Controller {
   private readonly parts: ControllerParts;
   /** The id of the last removal notice (web3.4 C4). */
@@ -662,6 +668,8 @@ export class Controller {
   /** Pre-flight ruling (a): rows the server received before this second (the session's first ready, then every
    *  gateway ready) were caught up, not delivered live; they badge but raise no notice. null before ready. */
   private noticeFloor: bigint | null = null;
+  /** CI1: live rows the core held for their sender's trust, oldest first, at most HELD_LIVE_MAX (noticeReleased). */
+  private heldLive: { groupId: Id; seq: bigint }[] = [];
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
   /** This browser's clock (ms) when that ticket's answer arrived: the instance clock advances from ticketTime by what
@@ -2465,6 +2473,7 @@ export class Controller {
     const communityId = dm ? null : this.channels.get(channelId)?.communityId ?? null;
     const drafts: NoticeDraft[] = [];
     for (const { row, threadRoot } of this.freshRows(core, groupId, fresh, floor)) {
+      if (fresh.has(row.seq.toString()) && heldForTrust(row) && row.recvTs >= floor) { this.holdLive(groupId, row.seq); continue; }
       if (!this.noticeable(row, fresh, ownUser, floor)) continue;
       const senderName = this.nameOf(toHex(row.senderUser as Id));
       // FACTS-SECURITY-07: the core's flag, set once at apply on the row's original body; never the shown body, which may
@@ -2473,6 +2482,56 @@ export class Controller {
     }
     this.noticesState = appendNotices(this.noticesState, drafts);
     this.slices.set('notices', this.noticesState);
+  }
+
+  /** CI1: remembers a live row the core holds for its sender's trust, at most HELD_LIVE_MAX, the oldest dropped first. */
+  private holdLive(groupId: Id, seq: bigint): void {
+    const hex = toHex(groupId);
+    if (this.heldLive.some((h) => h.seq === seq && toHex(h.groupId) === hex)) return;
+    this.heldLive.push({ groupId, seq });
+    if (this.heldLive.length > HELD_LIVE_MAX) this.heldLive.splice(0, this.heldLive.length - HELD_LIVE_MAX);
+  }
+
+  /** CI1 (controller ruling on ruling (a)): a row that arrived live, was held for its sender's trust and is now readable
+   *  raises the notice it would have raised on arrival. A row still held stays remembered; any other is forgotten. */
+  private noticeReleased(): void {
+    const core = this.core;
+    const me = this.me;
+    const floor = this.noticeFloor;
+    if (this.heldLive.length === 0) return;
+    if (core === null || me === null || floor === null) { this.heldLive = []; return; }
+    const channelOf = this.channelMap(core.groups());
+    const ownUser = toHex(me.userId);
+    const drafts: NoticeDraft[] = [];
+    const kept: { groupId: Id; seq: bigint }[] = [];
+    for (const held of this.heldLive) {
+      const channelId = channelOf.get(toHex(held.groupId));
+      if (channelId === undefined) continue;
+      const found = this.rowAt(core, held.groupId, held.seq);
+      if (found === null) continue;
+      if (heldForTrust(found.row)) { kept.push(held); continue; }
+      const seqs = new Set([held.seq.toString()]);
+      if (!this.noticeable(found.row, seqs, ownUser, floor)) continue;
+      const dm = this.dms.has(channelId);
+      const communityId = dm ? null : this.channels.get(channelId)?.communityId ?? null;
+      const senderName = this.nameOf(toHex(found.row.senderUser as Id));
+      drafts.push(noticeOf({ row: found.row, channelId, communityId, dm, mention: found.row.mention, senderName, threadRoot: found.threadRoot }));
+    }
+    this.heldLive = kept;
+    if (drafts.length === 0) return;
+    this.noticesState = appendNotices(this.noticesState, drafts);
+    this.slices.set('notices', this.noticesState);
+  }
+
+  /** The row at `seq`, from the main timeline or else from one of the latest NOTICE_READ_MAX threads, or null. */
+  private rowAt(core: CorePort, groupId: Id, seq: bigint): { row: TimelineRow; threadRoot: string | null } | null {
+    const main = core.timeline(groupId, seq + 1n, 1).find((row) => row.seq === seq);
+    if (main !== undefined) return { row: main, threadRoot: null };
+    for (const t of core.threads(groupId).slice(0, NOTICE_READ_MAX)) {
+      const reply = core.threadTimeline(groupId, t.rootMsgId, seq + 1n, 1).rows.find((row) => row.seq === seq);
+      if (reply !== undefined) return { row: reply, threadRoot: toHex(t.rootMsgId) };
+    }
+    return null;
   }
 
   /** The apply's new rows, oldest first, at most NOTICE_READ_MAX, each with the thread root it shows under (hex, or null).
@@ -2780,7 +2839,7 @@ export class Controller {
     this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
-    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
+    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     // CB2 fix round 1: the next account in this tab must not see this one's wait.
@@ -3217,6 +3276,9 @@ export class Controller {
       this.slices.set(`timeline:${channelId}`, { channelId, group, items: [], hasEarlier: false });
       if (this.threadOpen.has(channelId)) this.slices.set(`thread:${channelId}`, null);
     }
+    // CI1: a row the write released counts as unread whether or not its channel is open, and raises its notice.
+    this.publishBadges();
+    this.noticeReleased();
     this.publishTrust();
   }
 

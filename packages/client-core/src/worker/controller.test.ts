@@ -8,6 +8,7 @@ import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
+import { HELD_LIVE_MAX } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
@@ -2578,6 +2579,62 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     // No await between the report and the read: both slices were posted inside the synchronous handler.
     const names = w.posted.slice(from).filter((m): m is SliceMessage => m.t === 'slice').map((m) => m.name);
     expect(names.filter((n) => n === 'badges' || n === 'notices')).toEqual(['badges', 'notices']);
+  });
+
+  it('a live message held for its sender\'s trust badges and notifies once, when the trust refresh releases it (CI1)', async () => {
+    const w = world();
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [textGroup(2)];
+    // The general channel is never opened: only the badges and notices slices can show the message.
+    w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_DEVICE_LIST_STALE', senderUser: null, msgId: null, type: null, body: '' }];
+    w.state.activity = [act(GROUP, 0, 0)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
+    expect(w.badges()).toEqual({ [ch]: { unread: 0, mentions: 0 } });
+    expect(w.notices()).toEqual({ nextId: 1, items: [] });
+    await settle();   // the ready's own trust refresh has ended
+
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+    w.core.revalidatePending.mockImplementation(() => {
+      w.state.rows = [strangerRow(1)];
+      w.state.activity = [act(GROUP, 1, 0)];
+      w.core.trustGeneration.mockReturnValue(1n);
+      return 1;
+    });
+    w.call(883, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(883)).toMatchObject({ ok: true }));
+    expect(w.core.revalidatePending).toHaveBeenCalledWith(GROUP, 1, 256);
+    expect(w.badges()).toEqual({ [ch]: { unread: 1, mentions: 0 } });
+    expect(w.notices()).toEqual({ nextId: 2, items: [{
+      id: 1, channelId: ch, communityId: toHex(COMMUNITY), kind: 'message', senderUser: toHex(STRANGER),
+      senderName: '5a5a5a5a', body: 'from a stranger 1', ts: 1_700_000_000, threadRoot: null,
+    }] });
+
+    // A later trust change re-reads nothing it already noticed.
+    w.core.trustGeneration.mockReturnValue(2n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.notices()?.items).toHaveLength(1);
+  });
+
+  it(`the worker remembers at most ${HELD_LIVE_MAX} held live rows, dropping the oldest (CI1)`, async () => {
+    const w = world();
+    await toReady(w);
+    w.state.groups = [textGroup(2)];
+    const held = (seq: number): TimelineRow => ({ ...strangerRow(seq), status: 1, reason: 'E_DEVICE_LIST_STALE', senderUser: null, msgId: null, type: null, body: '' });
+    const all = Array.from({ length: HELD_LIVE_MAX + 1 }, (_, i) => i + 1);
+    for (const seq of all) {
+      w.state.rows = all.filter((s) => s <= seq).map(held);
+      w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([BigInt(seq)]));
+    }
+    // Seq 1 is released first: it fell out of the remembered list, so it raises nothing; seq 2 is still remembered.
+    w.state.rows = [strangerRow(1), ...all.slice(1).map(held)];
+    w.core.trustGeneration.mockReturnValue(1n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.notices()?.items).toEqual([]);
+    w.state.rows = [strangerRow(1), strangerRow(2), ...all.slice(2).map(held)];
+    w.core.trustGeneration.mockReturnValue(2n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.notices()?.items.map((n) => n.body)).toEqual(['from a stranger 2']);
   });
 
   it('an unexpected Welcome reloads the DMs, coalesced, and expects the new DM group', async () => {
