@@ -24,6 +24,7 @@ export function ChannelHeader({ name, topic, readable, readableLabel, kind = 'ch
   if (phone !== undefined) {
     return (
       <PhoneHeader backLabel={phone.backLabel} onBack={phone.onBack} actions={phone.menu}
+        marker={readable ? <span role="img" aria-label={readableLabel ?? 'Readable by this server'}><Icon name="eye" size={14} /></span> : undefined}
         title={<><span className="d-channel-header__bracket" aria-hidden="true">{kind === 'dm' ? '[ @ ' : '[ # '}</span>{name}<span className="d-channel-header__bracket" aria-hidden="true"> ]</span></>} />
     );
   }

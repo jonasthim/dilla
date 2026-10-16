@@ -398,6 +398,27 @@ describe('phone layout', () => {
     expect(onAsideClose).toHaveBeenCalledTimes(2);
   });
 
+  it('the list pane main is out of the accessibility tree, and in it on the view pane', () => {
+    const list = render(<ComposedShell shell={phone()} />);
+    expect(screen.queryByRole('main')).toBeNull();
+    expect(screen.getByRole('main', { hidden: true })).toHaveAttribute('hidden');
+    list.unmount();
+    render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+    expect(screen.getByRole('main')).toBeInTheDocument();
+  });
+
+  it.each(['list', 'view'] as const)('the ring renders outside main on the %s pane, before the banner and rail', pane => {
+    const ring = <section aria-label="incoming calls"><button type="button">answer</button></section>;
+    const { container } = render(<ComposedShell ring={ring} shell={phone({ phonePane: pane })} />);
+    const slot = container.querySelector('.d-app-shell__ring') as HTMLElement;
+    expect(slot).not.toBeNull();
+    expect(slot.closest('main')).toBeNull();
+    expect(screen.getByRole('button', { name: 'answer' })).toBeVisible();
+    expect(container.querySelector('main')?.querySelector('.d-app-shell__ring')).toBeNull();
+    const next = container.querySelector(pane === 'list' ? '.d-app-shell__rail' : 'main') as Node;
+    expect(slot.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('desktop unchanged: no layout prop renders the same markup as layout="desktop", with no phone attributes', () => {
     // useId differs between renders; the markup is compared with the ids made alike.
     const markup = (el: HTMLElement) => el.innerHTML.replace(/_r_[0-9a-z]+_/g, '_id_');

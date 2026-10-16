@@ -74,6 +74,17 @@ describe('ChannelHeader', () => {
       render(<ChannelHeader kind="dm" name="ada" phone={{ backLabel: 'back', onBack: () => {} }} />);
       expect(screen.getByRole('heading', { level: 2, name: 'ada' }).textContent).toBe('[ @ ada ]');
     });
+    it('keeps the readable cue next to the title on a phone', () => {
+      const { container } = render(<ChannelHeader name="lfg" readable readableLabel="readable by dilla.thim.dev" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      const cue = screen.getByRole('img', { name: 'readable by dilla.thim.dev' });
+      expect(cue.querySelector('[data-icon="eye"]')).not.toBeNull();
+      expect(container.querySelector('.d-phone-header')).toContainElement(cue);
+      expect(screen.getByRole('heading', { level: 2 })).toHaveAccessibleName('lfg');
+    });
+    it('shows no cue on a phone for a channel the server cannot read', () => {
+      render(<ChannelHeader name="lfg" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      expect(screen.queryByRole('img')).toBeNull();
+    });
     it('without phone the markup is the desktop header', () => {
       const { container } = render(<ChannelHeader name="general" />);
       expect(container.querySelector('.d-phone-header')).toBeNull();

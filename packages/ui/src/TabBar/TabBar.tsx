@@ -31,13 +31,13 @@ const isModified = (e: MouseEvent) => e.button !== 0 || e.ctrlKey || e.metaKey |
 export function TabBar({ label, items, onSelect }: TabBarProps) {
   return (
     <nav className="d-tab-bar" aria-label={label}>
-      <ul className="d-tab-bar__list">
+      <ul className="d-tab-bar__list" role="list">
         {items.map(item => {
           const count = item.count ?? 0;
           return (
             <li key={item.id} className="d-tab-bar__item">
               <a className="d-tab-bar__link" href={item.href} aria-current={item.current ? 'page' : undefined}
-                aria-label={count > 0 ? item.countLabel : undefined}
+                aria-label={count > 0 ? item.countLabel ?? `${item.label}, ${count > 99 ? '99+' : count}` : undefined}
                 onClick={e => {
                   if (isModified(e)) return;
                   e.preventDefault();

@@ -17,6 +17,7 @@ import { StateDot } from '../StateDot/StateDot.tsx';
 import { TabBar, type TabBarItem } from '../TabBar/TabBar.tsx';
 import { CallBar } from '../CallBar/CallBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
+import { RingBanner } from '../RingBanner/RingBanner.tsx';
 
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (mesh, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
@@ -219,6 +220,26 @@ export const Offline: Story = {
 export const CallBarOnList: Story = {
   name: 'CallBar',
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={serverChannels} tabBar={tabBar('servers')} callBar={callBar}>{null}</AppShell></Phone>,
+};
+// A channel the server can read: the small eye stays beside the title on a phone.
+const readableHeader = <ChannelHeader name="lfg" readable readableLabel="readable by dilla.thim.dev" phone={{ backLabel: 'back to channels', onBack: noop, menu }} />;
+export const ReadableChannelView: Story = {
+  render: () => (
+    <Phone><AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={readableHeader} composer={composer}>{log}</AppShell></Phone>
+  ),
+};
+// In a call on the view pane: the call bar is the bottom row and clears the home indicator.
+export const ChannelViewInCall: Story = {
+  render: () => (
+    <Phone><AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer} callBar={callBar}>{log}</AppShell></Phone>
+  ),
+};
+// A ring shows above the list pane, whose main is hidden.
+const ring = (
+  <RingBanner rings={[{ callId: 'c1', text: 'ada is calling', busy: false }]} labels={{ region: 'incoming calls', answer: 'answer', decline: 'decline' }} onAnswer={noop} onDecline={noop} />
+);
+export const RingOnList: Story = {
+  render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={rail} sidebar={serverChannels} tabBar={tabBar('servers')} ring={ring}>{null}</AppShell></Phone>,
 };
 export const MembersSheet: Story = {
   render: () => (

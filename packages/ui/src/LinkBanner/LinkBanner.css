@@ -1,4 +1,6 @@
 /* The first row on a phone: its top padding is the notch's safe area. One line, cut with an ellipsis. */
 .d-link-banner { display: flex; align-items: center; gap: 0.5rem; min-width: 0; padding: calc(0.375rem + env(safe-area-inset-top)) var(--row-pad-x) 0.375rem; font-size: var(--text-sm); color: var(--fg-2); background: var(--surface-2); border-bottom: 1px solid var(--hairline-2); }
 .d-link-banner[data-status="offline"] { border-bottom-color: var(--danger); color: var(--fg); }
+/* Online: the region stays in the tree for the screen reader but takes no room. */
+.d-link-banner:empty { padding: 0; border: 0; height: 0; overflow: hidden; }
 .d-link-banner__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

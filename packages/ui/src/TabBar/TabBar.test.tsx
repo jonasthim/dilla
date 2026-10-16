@@ -46,6 +46,13 @@ describe('TabBar', () => {
     expect(dms.querySelector('.d-tab-bar__chip')).toHaveAttribute('aria-hidden', 'true');
     expect(screen.getByRole('link', { name: 'activity, 3 unread' }).querySelector('.d-tab-bar__chip')).toHaveTextContent('3');
   });
+  it('is a list for VoiceOver, and a count without a countLabel is still announced', () => {
+    render(<TabBar label="main" items={items({ dms: { count: 3 }, activity: { count: 120 } })} onSelect={() => {}} />);
+    expect(screen.getByRole('list')).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(4);
+    expect(screen.getByRole('link', { name: 'dms, 3' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'activity, 99+' })).toBeInTheDocument();
+  });
   it('shows no chip and no aria-label without a count, or with 0', () => {
     render(<TabBar label="main" items={items({ dms: { count: 0, countLabel: 'dms, 0 unread' } })} onSelect={() => {}} />);
     expect(document.querySelectorAll('.d-tab-bar__chip')).toHaveLength(0);

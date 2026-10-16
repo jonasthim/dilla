@@ -146,7 +146,6 @@ export function AppShell({
     const inert = overlay || undefined;
     const mainEl = (
       <main id={mainId} ref={mainRef} tabIndex={-1} className="d-app-shell__main" hidden={listPane || undefined} inert={inert}>
-        {hasRing ? <div ref={ringRef} className="d-app-shell__ring">{ring}</div> : null}
         {header}
         <div className="d-app-shell__content">{children}</div>
         {composer}
@@ -157,6 +156,8 @@ export function AppShell({
       <div ref={rootRef} className="d-app-shell" data-layout="phone" data-pane={phonePane} data-rail={listPane && rail === null ? 'none' : undefined}>
         <a className="d-app-shell__skip" href={`#${listPane ? sidebarId : mainId}`} onClick={onSkip}>{skipLabel}</a>
         <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
+          {/* The ring is outside main (the list pane hides main), above whichever pane shows, and clears the notch. */}
+          {hasRing ? <div ref={ringRef} className="d-app-shell__ring" inert={inert}>{ring}</div> : null}
           {hasBanner ? <div className="d-app-shell__banner" inert={inert}>{banner}</div> : null}
           {listPane ? (
             <>
