@@ -81,8 +81,8 @@ type callDevice struct {
 	tracks map[string]livekit.TrackSource // published track SID → source
 	// member is the call-group membership this session was admitted with at the /rtc gate (DS-7, N2):
 	// a leave of this session proposes the Remove of that membership only, never of one the device
-	// rejoined the group with since.
-	member *membership
+	// rejoined the group with since. Its sfuAt tells a later admission of the device from this one.
+	member *admission
 }
 
 // roomIncarnations is an SFU that can name the incarnation of a room it holds now: its LiveKit room
@@ -387,9 +387,9 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 	}
 	// The session is bound to the membership the /rtc gate admitted it with (N2), not to what the
 	// device holds when this (possibly late) event is processed.
-	var member *membership
-	if m, ok := c.calls.admittedAs(row.LivekitRoom, dev, joinedAt); ok {
-		member = &m
+	var member *admission
+	if a, ok := c.calls.admittedAs(row.LivekitRoom, dev, joinedAt); ok {
+		member = &a
 	}
 	c.mu.Lock()
 	r := c.roomLocked(row.LivekitRoom)
@@ -423,12 +423,19 @@ func joinedAt(p *livekit.ParticipantInfo) time.Time {
 // resync re-added its leaf in a later epoch, or it rejoined by external commit — the Remove is bound
 // to the membership it holds now, under the sweep's rules (M-4 of the integration re-review): only
 // while the SFU shows the device out of the room and it was not admitted within its join window.
-// Otherwise nothing is proposed and the room sweep decides.
-func (c *CallEvents) proposeLeave(ctx context.Context, row store.VoiceSessionRow, dev id.ID, m membership) {
+// Otherwise nothing is proposed and the room sweep decides. Nor is it when the device was admitted
+// again after the leaving session's admission (web3.7, a page reload and rejoin): the membership it
+// holds now is the newer session's, whose own leave or the room sweep decides it.
+func (c *CallEvents) proposeLeave(ctx context.Context, row store.VoiceSessionRow, dev id.ID, a admission) {
 	group := *row.GroupID
-	err := c.dsvc.ProposeRemoveOfMember(ctx, group, m.leaf, dev, m.added, id.New())
+	err := c.dsvc.ProposeRemoveOfMember(ctx, group, a.leaf, dev, a.added, id.New())
 	if errors.Is(err, ds.ErrRemoveTargetGone) {
-		cur, out := c.calls.currentMembershipOut(ctx, row, dev, m)
+		if c.calls.newerAdmission(row.LivekitRoom, dev, a.sfuAt) {
+			c.log.InfoContext(ctx, "a leave of an earlier admission proposes nothing: the device was admitted again",
+				"group_id", group.String(), "device_id", dev.String())
+			return
+		}
+		cur, out := c.calls.currentMembershipOut(ctx, row, dev, a)
 		if !out {
 			c.log.InfoContext(ctx, "a leave of an earlier membership proposes nothing: the device rejoined the call group or left it",
 				"group_id", group.String(), "device_id", dev.String())
@@ -504,7 +511,7 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 	now := c.clk.Now()
 	c.mu.Lock()
 	var user id.ID
-	var joined *membership
+	var joined *admission
 	known, otherSession := false, false
 	if r := c.rooms[row.LivekitRoom]; r != nil {
 		if d := r.devices[dev]; d != nil && (d.sid == "" || sid == "" || d.sid == sid) {
@@ -531,13 +538,15 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 	}
 	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	if joined == nil {
+	if joined == nil && !joinedAt.IsZero() {
 		// The join was not seen (lost, or the session joined before a restart of this state): the
 		// leave is bound to the admission that preceded the session's join, never to whatever leaf
-		// the device holds now. With no admission known, no Remove is proposed here; the room sweep
-		// removes a leaf that stays out of the room (ruling (a)).
-		if m, ok := c.calls.admittedAs(row.LivekitRoom, dev, joinedAt); ok {
-			joined = &m
+		// the device holds now. A leave that names no join time is bound to the member recorded at
+		// its session's join only, never to the latest admission (a newer session's, after a
+		// reload). With no admission known, no Remove is proposed here; the room sweep removes a
+		// leaf that stays out of the room (ruling (a)).
+		if a, ok := c.calls.admittedAs(row.LivekitRoom, dev, joinedAt); ok {
+			joined = &a
 		}
 	}
 	switch {
@@ -557,6 +566,11 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil {
 		c.log.ErrorContext(ctx, "reading a call's channel failed", "err", err)
+		return
+	}
+	if joined != nil && c.calls.newerAdmission(row.LivekitRoom, dev, joined.sfuAt) {
+		// The device was admitted again since this session's admission: it is joining under its
+		// newer session, whose participant_joined and leave announce it.
 		return
 	}
 	c.announce(ctx, ch, row.CallID, user, dev, 0)

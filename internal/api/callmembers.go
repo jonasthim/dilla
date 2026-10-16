@@ -96,19 +96,37 @@ func (h *Calls) noteAdmission(ctx context.Context, row store.VoiceSessionRow, de
 	}
 }
 
-// admittedAs is the membership dev was admitted to room with for the session LiveKit reports joined
+// admittedAs is the admission dev was admitted to room with for the session LiveKit reports joined
 // at joinedAt (the SFU's clock): the latest admission at or before it by that clock (a session is
 // admitted before it joins), or the latest of all when the event names no join time.
-func (h *Calls) admittedAs(room string, dev id.ID, joinedAt time.Time) (membership, bool) {
+func (h *Calls) admittedAs(room string, dev id.ID, joinedAt time.Time) (admission, bool) {
 	h.memMu.Lock()
 	defer h.memMu.Unlock()
 	list := h.admissions[admitKey{room: room, dev: dev}]
 	for i := len(list) - 1; i >= 0; i-- {
 		if joinedAt.IsZero() || !list[i].sfuAt.After(joinedAt) {
-			return list[i].membership, true
+			return list[i], true
 		}
 	}
-	return membership{}, false
+	return admission{}, false
+}
+
+// newerAdmission reports whether dev was admitted to room again after than (the SFU's clock): an
+// admission whose sfuAt is after it. A leave of the session admitted at than is then of an earlier
+// session (a page reload and rejoin), and the newer session's own events decide its membership. A
+// zero than is no admission, so nothing is newer than it.
+func (h *Calls) newerAdmission(room string, dev id.ID, than time.Time) bool {
+	if than.IsZero() {
+		return false
+	}
+	h.memMu.Lock()
+	defer h.memMu.Unlock()
+	for _, a := range h.admissions[admitKey{room: room, dev: dev}] {
+		if a.sfuAt.After(than) {
+			return true
+		}
+	}
+	return false
 }
 
 // currentMembershipOut is the membership dev holds now in row's call group, when a leave's bound
@@ -116,7 +134,7 @@ func (h *Calls) admittedAs(room string, dev id.ID, joinedAt time.Time) (membersh
 // current leaf of an open, epoch-known group that is not gone itself, whose device the SFU lists out
 // of the room and that was not admitted within admissionJoinWindow — the rules the sweep removes a
 // leaf under. When the SFU cannot list the room, or anything else is unknown, it answers false.
-func (h *Calls) currentMembershipOut(ctx context.Context, row store.VoiceSessionRow, dev id.ID, gone membership) (membership, bool) {
+func (h *Calls) currentMembershipOut(ctx context.Context, row store.VoiceSessionRow, dev id.ID, gone admission) (membership, bool) {
 	if row.GroupID == nil || h.sfu == nil {
 		return membership{}, false
 	}
@@ -135,7 +153,7 @@ func (h *Calls) currentMembershipOut(ctx context.Context, row store.VoiceSession
 			cur, found = membership{leaf: m.LeafIndex, added: m.AddedEpoch}, true
 		}
 	}
-	if !found || cur == gone {
+	if !found || cur == gone.membership {
 		return membership{}, false
 	}
 	lctx, cancel := sfuCtx(ctx)

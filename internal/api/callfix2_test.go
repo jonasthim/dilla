@@ -68,18 +68,9 @@ func TestALateJoinAndLeaveAreBoundToTheAdmittedMembership(t *testing.T) {
 	}
 }
 
-// N2: a leave whose join was never seen is still bound to the admitted membership — never the
-// device's current leaf, unbound.
-func TestALeaveWithoutASeenJoinIsBoundToTheAdmittedMembership(t *testing.T) {
-	f := newEventsFixture(t, api.CallsConfig{})
-	admitThroughProxy(t, f.calls, f.room, f.dev)
-	f.sendAs(t, webhook.EventParticipantLeft, f.dev.String(), "PA_1", nil)
-	got := f.ds.memberRemovals()
-	if len(got) != 1 || got[0].Device != f.dev || got[0].Added != 3 || got[0].Group != f.group {
-		t.Fatalf("membership-bound Removes = %+v (all Removes %v), want one of the admitted epoch-3 membership",
-			got, f.ds.removeDevices())
-	}
-}
+// A leave whose join was never seen and that names no join time: TestAZeroJoinTimeBindsTheRecordedMember
+// (callleave_test.go, web3.7) replaced the test that bound it to the latest admission, which after a
+// reload is the newer session's.
 
 // Ruling (a): a member whose participant_left never arrives is removed from the call group by the
 // sweep: absent in one sweep, still absent a sweep period later, it gets a Remove bound to its
