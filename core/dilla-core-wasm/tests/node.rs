@@ -749,3 +749,46 @@ fn role_ids_are_zero_to_sixty_four_ids_of_sixteen_bytes() {
         "role_ids: expected 0..=64 ids of 16 bytes, got 1040 bytes"
     );
 }
+
+/// web3.7 TB1, a source pin: `thread_timeline` and `threads` are exported in the `timeline`
+/// pattern (each 16-byte id checked by name before the core is borrowed, the CBOR handed back as
+/// a boxed copy) and call the core's reads of the same name. ABI 11 is unchanged (R3).
+#[wasm_bindgen_test]
+fn the_thread_reads_are_exported_in_the_timeline_pattern() {
+    let src = include_str!("../src/facade.rs");
+    let method = |name: &str| {
+        let start = src
+            .find(&format!("pub fn {name}("))
+            .unwrap_or_else(|| panic!("CoreHandle::{name}"));
+        let body = &src[start..];
+        body[..body.find("\n    }\n").expect("end of the method")].to_owned()
+    };
+    let thread = method("thread_timeline");
+    for want in [
+        "-> Result<Box<[u8]>, JsError>",
+        "js_fixed_arg::<16>(\"group_id\", group_id)?",
+        "js_fixed_arg::<16>(\"root_msg_id\", root_msg_id)?",
+        "c.thread_timeline(&group_id, &root_msg_id, before_seq, limit)",
+        ".map(Vec::into_boxed_slice)",
+    ] {
+        assert!(
+            thread.contains(want),
+            "thread_timeline lacks {want}:\n{thread}"
+        );
+    }
+    let threads = method("threads");
+    for want in [
+        "-> Result<Box<[u8]>, JsError>",
+        "js_fixed_arg::<16>(\"group_id\", group_id)?",
+        "c.threads(&group_id)",
+        ".map(Vec::into_boxed_slice)",
+    ] {
+        assert!(threads.contains(want), "threads lacks {want}:\n{threads}");
+    }
+    assert_eq!(
+        fixed_arg::<16>("root_msg_id", &[0x5a; 15])
+            .unwrap_err()
+            .detail,
+        "root_msg_id: expected 16 bytes, got 15"
+    );
+}

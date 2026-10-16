@@ -743,6 +743,78 @@ function fresh(): ModelCore {
   return core;
 }
 
+// web3.7 TB1: the thread rule, held to core/dilla-core/tests/client_threads.rs.
+describe('ModelCore keeps public threads as the core does (web3.7)', () => {
+  const R = T;
+  const R2 = T2;
+  const threadApp = (seq: bigint, msgId: Id, body: string, threadId: Id | null, opts: { type?: number; replyTo?: Id | null } = {}) =>
+    ModelDs.row.app(seq, 0n, PEER, msgId, body, { ...opts, threadId });
+  const reply = (n: number): Id => idOf(0x5e, n);
+
+  it('takes a reply whose root is held out of the main timeline and sums it on the root', () => {
+    const core = fresh();
+    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'one', R), threadApp(3n, reply(2), 'two', R));
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread])).toEqual([[1n, { count: 2, lastTs: 1_700_000_003n }]]);
+  });
+
+  it('keeps an unheld root, a nested thread and a fold in the channel', () => {
+    const core = fresh();
+    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'a reply', R),
+      threadApp(3n, reply(2), 'nested', reply(1)), threadApp(4n, reply(3), 'orphan', FOLD_UNHELD),
+      threadApp(5n, fold(5n), '👍', R, { type: 3, replyTo: R }));
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread?.count ?? null])).toEqual([[1n, 1], [3n, null], [4n, null]]);
+    expect(shown(core, 1n).reactions).toEqual([{ emoji: '👍', count: 1, mine: false }]);
+  });
+
+  it('does not count a deleted reply', () => {
+    const core = fresh();
+    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'one', R), threadApp(3n, reply(2), 'two', R),
+      threadApp(4n, fold(4n), '', null, { type: 2, replyTo: reply(2) }));
+    expect(shown(core, 1n).thread).toEqual({ count: 1, lastTs: 1_700_000_002n });
+    expect(core.timeline(G, 0n, 200).map((x) => x.seq)).toEqual([1n]);
+  });
+
+  it('reads a thread newest first with its root, pages it, and lists the threads by their last reply', () => {
+    const core = fresh();
+    apply(core, threadApp(1n, R, 'root a', null), threadApp(2n, R2, 'root b', null), threadApp(3n, reply(1), 'a1', R),
+      threadApp(4n, reply(2), 'a2', R), threadApp(5n, reply(3), 'b1', R2), threadApp(6n, reply(4), 'orphan', FOLD_UNHELD),
+      threadApp(7n, reply(5), 'nested', reply(1)));
+    const t = core.threadTimeline(G, R, 0n, 50);
+    expect([t.root?.seq, t.rows.map((x) => x.seq)]).toEqual([1n, [4n, 3n]]);
+    expect(core.threadTimeline(G, R, 4n, 1).rows.map((x) => x.seq)).toEqual([3n]);
+    expect(core.threadTimeline(G, FOLD_UNHELD, 0n, 50).root).toBeNull();
+    expect(() => core.threadTimeline(G, R, 0n, 0)).toThrow('E_CORE_INPUT');
+    expect(core.threads(G)).toEqual([
+      { rootMsgId: FOLD_UNHELD, rootSeq: null, count: 1, lastTs: 1_700_000_006n, excerpt: '' },
+      { rootMsgId: R2, rootSeq: 2n, count: 1, lastTs: 1_700_000_005n, excerpt: 'root b' },
+      { rootMsgId: R, rootSeq: 1n, count: 2, lastTs: 1_700_000_004n, excerpt: 'root a' },
+    ]);
+  });
+
+  it('refuses a thread id on a reply, a non-post, an unheld id and types 1 to 6, and frames an accepted one', () => {
+    const core = fresh();
+    apply(core, threadApp(1n, R, 'the root', null), threadApp(2n, reply(1), 'a reply', R),
+      threadApp(3n, fold(3n), '👍', null, { type: 3, replyTo: R }));
+    const thread = (threadId: Id, type: SendRequest['type'] = 0, replyTo: Id | null = null, body = 'x'): SendRequest =>
+      ({ ...request(type, replyTo, body), threadId });
+    expect(() => core.sendPrepare(G, thread(reply(1)), 9n)).toThrow('the thread root is a thread reply');
+    expect(() => core.sendPrepare(G, thread(fold(3n)), 9n)).toThrow('E_CORE_INPUT');
+    expect(() => core.sendPrepare(G, thread(FOLD_UNHELD), 9n)).toThrow('target is not held');
+    expect(() => core.sendPrepare(G, thread(R, 3, R, '👍'), 9n)).toThrow('only a message starts or joins a thread');
+    expect(core.outbox(G)).toEqual([]);
+    const id = own(core, 4n, thread(R));
+    expect(core.threadTimeline(G, R, 0n, 50).rows.map((x) => [x.seq, x.msgId])).toEqual([[4n, id], [2n, reply(1)]]);
+    expect(core.timeline(G, 0n, 200).map((x) => x.seq)).toEqual([1n]);
+  });
+
+  it('counts a thread reply toward unread and mentions', () => {
+    const core = fresh();
+    const root = own(core, 1n, textRequest('my root'));
+    apply(core, threadApp(2n, reply(1), `hey <@${toHex(ME.user)}>`, root));
+    expect(core.activity().map((a) => [a.unread, a.mentions])).toEqual([[1, 1]]);
+  });
+});
+
 describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CORE-34)', () => {
   it('stores and lists fold rows but shows only displayable rows', () => {
     const core = fresh();

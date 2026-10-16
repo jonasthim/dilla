@@ -16,7 +16,7 @@ function row(seq: number, over: Partial<TimelineRow> = {}): TimelineRow {
     seq: BigInt(seq), epoch: 1n, recvTs: 1_700_000_000n + BigInt(seq), status: 0, reason: '',
     senderUser: id(PEER_USER), senderDevice: id(PEER_DEVICE), senderKind: 0, senderTier: 0,
     msgId: id(0x30 + seq), type: 0, body: `body ${seq}`,
-    editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false, ...over,
+    editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false, thread: null, ...over,
   };
 }
 

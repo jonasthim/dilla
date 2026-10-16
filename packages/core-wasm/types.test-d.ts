@@ -53,6 +53,8 @@ interface ExpectedCoreHandle {
   send_discard(msg_id: Uint8Array): void;
   outbox(group_id: Uint8Array): Uint8Array;
   timeline(group_id: Uint8Array, before_seq: bigint, limit: number): Uint8Array;
+  thread_timeline(group_id: Uint8Array, root_msg_id: Uint8Array, before_seq: bigint, limit: number): Uint8Array;
+  threads(group_id: Uint8Array): Uint8Array;
   group_row(group_id: Uint8Array): Uint8Array;
   mark_read(group_id: Uint8Array, seq: bigint, now: bigint): void;
   activity(): Uint8Array;
@@ -152,6 +154,9 @@ expectTrue<Equals<H['send_retry'], E['send_retry']>>();
 expectTrue<Equals<H['send_discard'], E['send_discard']>>();
 expectTrue<Equals<H['outbox'], E['outbox']>>();
 expectTrue<Equals<H['timeline'], E['timeline']>>();
+// web3.7 TB1 (ABI 11 unchanged, R3): the thread reads.
+expectTrue<Equals<H['thread_timeline'], E['thread_timeline']>>();
+expectTrue<Equals<H['threads'], E['threads']>>();
 expectTrue<Equals<H['group_row'], E['group_row']>>();
 expectTrue<Equals<H['mark_read'], E['mark_read']>>();
 expectTrue<Equals<H['activity'], E['activity']>>();

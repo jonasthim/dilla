@@ -26,14 +26,58 @@ pub(crate) const REASON_SENDER_MISMATCH: &str = "E_SENDER_MISMATCH";
 pub(crate) const REASON_CLASS_MISMATCH: &str = "E_CLASS_MISMATCH";
 pub(crate) const TYPE_CLASS_MISMATCH: i64 = 255;
 
-pub(super) const TIMELINE_SQL: &str = "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
+/// The select list every timeline read shares, through the `FROM` keyword: the stored columns,
+/// whether the row is a fold target (not a repeat), its `thread_id`, and its thread summary (the
+/// count and latest `recv_ts` of the shown type-0 replies naming it, read on a type-0 row without
+/// a `thread_id` only, through `app_messages_by_thread`).
+macro_rules! timeline_select {
+    () => {
+        "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
      m.sender_kind,m.sender_tier,m.msg_id,m.type,m.body,m.edit_body,m.edit_seq,m.reply_to,m.envelope,m.mention, \
      NOT EXISTS (SELECT 1 FROM app_messages e INDEXED BY app_messages_by_msg WHERE e.group_id=m.group_id AND e.msg_id=m.msg_id \
      AND e.type=0 AND e.status IN (0,2) AND e.seq<m.seq) \
      AND NOT EXISTS (SELECT 1 FROM app_messages r INDEXED BY app_messages_by_pin WHERE r.group_id=m.group_id \
-     AND r.reply_to=m.msg_id AND r.type IN (0,1,2,3,4,5,6) AND r.seq<m.seq) \
-     FROM app_messages m WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
-     AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3";
+     AND r.reply_to=m.msg_id AND r.type IN (0,1,2,3,4,5,6) AND r.seq<m.seq), \
+     m.thread_id, \
+     CASE WHEN m.type=0 AND m.thread_id IS NULL THEN (SELECT COUNT(*) FROM app_messages s INDEXED BY app_messages_by_thread \
+     WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.status=0) ELSE 0 END, \
+     CASE WHEN m.type=0 AND m.thread_id IS NULL THEN (SELECT MAX(s.recv_ts) FROM app_messages s INDEXED BY app_messages_by_thread \
+     WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.status=0) END \
+     FROM app_messages m "
+    };
+}
+
+/// The main timeline: displayable rows, except a reply whose thread root is held (a type-0 row
+/// without a `thread_id`), which shows in its thread only (protocol/04 § Threads).
+pub(super) const TIMELINE_SQL: &str = concat!(
+    timeline_select!(),
+    "WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
+     AND (m.thread_id IS NULL OR NOT EXISTS (SELECT 1 FROM app_messages t INDEXED BY app_messages_by_msg WHERE t.group_id=m.group_id AND t.msg_id=m.thread_id AND t.type=0 AND t.thread_id IS NULL)) \
+     AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3"
+);
+
+/// A thread's replies (web3.7): the type-0 rows naming `?2`, newest first.
+pub(super) const THREAD_SQL: &str = concat!(
+    timeline_select!(),
+    "INDEXED BY app_messages_by_thread WHERE m.group_id=?1 AND m.thread_id=?2 AND m.type=0 \
+     AND (?3=0 OR m.seq<?3) ORDER BY m.seq DESC LIMIT ?4"
+);
+
+/// A thread's held root (web3.7): the earliest type-0 row with msg id `?2` and no `thread_id`.
+pub(super) const THREAD_ROOT_SQL: &str = concat!(
+    timeline_select!(),
+    "INDEXED BY app_messages_by_msg WHERE m.group_id=?1 AND m.msg_id=?2 AND m.type=0 AND m.thread_id IS NULL \
+     ORDER BY m.seq LIMIT 1"
+);
+
+/// The group's threads (web3.7): each `thread_id` with a shown type-0 reply, its reply count and
+/// latest `recv_ts`, unless the id names a reply and no root (a nested thread, shown in the
+/// channel); at most 50, the latest reply first.
+pub(super) const THREADS_SQL: &str = "SELECT x.thread_id, COUNT(*), MAX(x.recv_ts) FROM app_messages x \
+     INDEXED BY app_messages_by_thread WHERE x.group_id=?1 AND x.thread_id IS NOT NULL AND x.type=0 AND x.status=0 \
+     AND (EXISTS (SELECT 1 FROM app_messages t INDEXED BY app_messages_by_msg WHERE t.group_id=x.group_id AND t.msg_id=x.thread_id AND t.type=0 AND t.thread_id IS NULL) \
+     OR NOT EXISTS (SELECT 1 FROM app_messages n INDEXED BY app_messages_by_msg WHERE n.group_id=x.group_id AND n.msg_id=x.thread_id AND n.type=0)) \
+     GROUP BY x.thread_id ORDER BY MAX(x.recv_ts) DESC, x.thread_id LIMIT 50";
 
 pub(super) struct StoredMessage<'a> {
     pub group_id: &'a [u8; 16],
@@ -51,6 +95,8 @@ pub(super) struct StoredMessage<'a> {
     pub msg_id: Option<&'a [u8; 16]>,
     pub ty: Option<u8>,
     pub reply_to: Option<&'a [u8; 16]>,
+    /// The envelope's `thread_id`; `insert_message` stores it for a type-0 row only.
+    pub thread_id: Option<&'a [u8; 16]>,
     pub body: &'a str,
     pub envelope: Option<&'a [u8]>,
     pub franking_tag: &'a [u8; 32],
@@ -63,8 +109,8 @@ pub(super) fn insert_message(
     c.execute(
         "INSERT INTO app_messages \
          (group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
-          sender_leaf,sender_sig_key,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention,reply_to) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+          sender_leaf,sender_sig_key,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention,reply_to,thread_id) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             m.group_id.as_slice(),
             m.seq as i64,
@@ -85,6 +131,8 @@ pub(super) fn insert_message(
             m.franking_tag.as_slice(),
             i64::from(m.mention),
             m.reply_to.map(|v| v.as_slice()),
+            // web3.7: a thread is a property of a message (type 0); a fold names its target only.
+            m.thread_id.filter(|_| m.ty == Some(0)).map(|v| v.as_slice()),
         ],
     )?;
     super::search::index_fold(c, m.group_id, m.seq)?;
@@ -264,6 +312,196 @@ impl ClientCore {
         Ok(e.into_vec())
     }
 }
+/// `before_seq` as SQLite's bound (a value above its signed range is later than every stored
+/// sequence, so 0: from the newest), after the page size's range check (1..=200).
+fn page_bound(before_seq: u64, limit: u32) -> Result<i64, ClientError> {
+    if !(1..=200).contains(&limit) {
+        return Err(ClientError::new(E_CORE_INPUT, "limit out of range"));
+    }
+    Ok(if before_seq > i64::MAX as u64 {
+        0
+    } else {
+        before_seq as i64
+    })
+}
+
+/// One row of a `timeline_select!` query, before its view is built.
+struct RawRow {
+    seq: i64,
+    epoch: i64,
+    recv_ts: i64,
+    status: i64,
+    reason: String,
+    sender_user: Option<Vec<u8>>,
+    sender_device: Vec<u8>,
+    sender_kind: Option<i64>,
+    sender_tier: Option<i64>,
+    msg_id: Option<[u8; 16]>,
+    ty: Option<i64>,
+    body: String,
+    edit_body: Option<String>,
+    edit_seq: i64,
+    reply_to: Option<[u8; 16]>,
+    envelope: Option<Vec<u8>>,
+    mention: i64,
+    is_target: bool,
+    thread_id: Option<[u8; 16]>,
+    thread_count: i64,
+    thread_last: Option<i64>,
+}
+
+/// The views of a `timeline_select!` query's rows, in the query's order: one non-generic
+/// instance for every timeline read (wasm size).
+#[inline(never)]
+fn timeline_views(
+    c: &rusqlite::Connection,
+    sql: &str,
+    args: &[&dyn rusqlite::ToSql],
+    id: &[u8; 16],
+    own_user: &[u8; 16],
+) -> Result<Vec<wire::TimelineView>, StorageError> {
+    let mut s = c.prepare(sql)?;
+    let it = s.query_map(args, |r| {
+        Ok(RawRow {
+            seq: r.get(0)?,
+            epoch: r.get(1)?,
+            recv_ts: r.get(2)?,
+            status: r.get(3)?,
+            reason: r.get(4)?,
+            sender_user: r.get(5)?,
+            sender_device: r.get(6)?,
+            sender_kind: r.get(7)?,
+            sender_tier: r.get(8)?,
+            msg_id: r.get(9)?,
+            ty: r.get(10)?,
+            body: r.get(11)?,
+            edit_body: r.get(12)?,
+            edit_seq: r.get(13)?,
+            reply_to: r.get(14)?,
+            envelope: r.get(15)?,
+            mention: r.get(16)?,
+            is_target: r.get::<_, i64>(17)? != 0,
+            thread_id: r.get(18)?,
+            thread_count: r.get(19)?,
+            thread_last: r.get(20)?,
+        })
+    })?;
+    let raw: Vec<RawRow> = it.collect::<Result<_, _>>()?;
+    raw.into_iter()
+        .map(|r| view_of(c, id, own_user, r))
+        .collect()
+}
+
+/// The 19-element view of one stored row: the folded body, the reply reference, reactions, the
+/// pin flag, attachment summaries and, on a held thread root with a shown reply, its summary.
+fn view_of(
+    c: &rusqlite::Connection,
+    id: &[u8; 16],
+    own_user: &[u8; 16],
+    r: RawRow,
+) -> Result<wire::TimelineView, StorageError> {
+    let body = if r.status == STATUS_OK {
+        r.edit_body.unwrap_or(r.body)
+    } else {
+        String::new()
+    };
+    let reply = if r.status == STATUS_OK {
+        r.reply_to
+            .map(|reply_to| {
+                let target = fold::resolve(c, id, &reply_to)?;
+                Ok::<_, StorageError>(wire::ReplyView {
+                    reply_to,
+                    target_seq: target.as_ref().map(|t| t.seq),
+                    target_user: target.as_ref().and_then(|t| t.sender_user),
+                    excerpt: target
+                        .as_ref()
+                        .filter(|t| t.status == STATUS_OK)
+                        .map_or_else(String::new, |t| fold::excerpt(&t.shown_body)),
+                    state: target
+                        .as_ref()
+                        .map_or(1, |t| if t.status == STATUS_OK { 0 } else { 2 }),
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let mut reactions = Vec::new();
+    let mut pinned = false;
+    if r.status == STATUS_OK
+        && r.ty == Some(0)
+        && r.is_target
+        && let Some(msg) = r.msg_id
+    {
+        let mut q = c.prepare("SELECT emoji, n, mine FROM (SELECT emoji, COUNT(*) AS n, MAX(user_id = ?3) AS mine, MIN(seq) AS first FROM app_reactions WHERE group_id = ?1 AND target = ?2 GROUP BY emoji ORDER BY n DESC, first, emoji LIMIT 20) ORDER BY first, emoji")?;
+        reactions = q
+            .query_map(
+                params![id.as_slice(), msg.as_slice(), own_user.as_slice()],
+                |x| {
+                    Ok((
+                        x.get(0)?,
+                        x.get::<_, i64>(1)? as u64,
+                        x.get::<_, i64>(2)? != 0,
+                    ))
+                },
+            )?
+            .collect::<Result<_, _>>()?;
+        pinned = c
+            .query_row(
+                "SELECT 1 FROM app_pins WHERE group_id = ?1 AND target = ?2",
+                params![id.as_slice(), msg.as_slice()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+    }
+    let attachments = if r.status == STATUS_OK && r.ty == Some(0) {
+        r.envelope
+            .as_deref()
+            .and_then(|bytes| Envelope::decode(bytes).ok())
+            .map_or_else(Vec::new, |env| {
+                env.attachments
+                    .into_iter()
+                    .map(|a| wire::AttachmentView {
+                        size: a.size,
+                        mime: a.mime,
+                        w: a.w,
+                        h: a.h,
+                        has_thumb: a.thumb.is_some(),
+                        name: a.name,
+                    })
+                    .collect()
+            })
+    } else {
+        Vec::new()
+    };
+    // A root is a type-0 row without a thread id; the summary needs a shown reply.
+    let thread =
+        (r.ty == Some(0) && r.thread_id.is_none() && r.msg_id.is_some() && r.thread_count > 0)
+            .then(|| (r.thread_count as u64, r.thread_last.unwrap_or(0) as u64));
+    Ok(wire::TimelineView {
+        seq: r.seq as u64,
+        epoch: r.epoch as u64,
+        recv_ts: r.recv_ts as u64,
+        status: r.status as u64,
+        reason: r.reason,
+        sender_user: r.sender_user,
+        sender_device: r.sender_device,
+        sender_kind: r.sender_kind.map(|v| v as u64),
+        sender_tier: r.sender_tier.map(|v| v as u64),
+        msg_id: r.msg_id.map(|m| m.to_vec()),
+        ty: r.ty.map(|v| v as u64),
+        body,
+        edited_seq: r.edit_seq as u64,
+        reply,
+        reactions,
+        pinned,
+        attachments,
+        mention: r.mention != 0,
+        thread,
+    })
+}
+
 fn outbox_state(s: i64) -> ClientError {
     ClientError::new(E_CORE_STATE, format!("outbox row in state {s}"))
 }
@@ -295,6 +533,7 @@ fn own_message<'a>(
         msg_id: Some(env.msg_id.as_bytes()),
         ty: Some(env.kind.as_u8()),
         reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
+        thread_id: env.thread_id.as_ref().map(MsgId::as_bytes),
         body: &env.body,
         envelope: Some(bytes),
         franking_tag: tag,
@@ -421,10 +660,48 @@ pub(super) fn mention_needle(user_id: &[u8; 16]) -> [u8; 35] {
     needle
 }
 
+/// What a send's `thread_id` names in the group (web3.7, protocol/04 § Threads).
+enum ThreadRoot {
+    /// A held type-0 row without a `thread_id`: a root.
+    Root,
+    /// Only type-0 rows that carry a `thread_id` themselves: a reply, never a root.
+    Reply,
+    /// Only rows of another type (a fold).
+    NotAPost,
+    /// No row with that msg id.
+    Unheld,
+}
+
+fn thread_root(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    msg_id: &[u8; 16],
+) -> Result<ThreadRoot, StorageError> {
+    // The best row first: a root, then any type-0 row, then any other.
+    let best: Option<(Option<i64>, bool)> = c
+        .query_row(
+            "SELECT type, thread_id IS NULL FROM app_messages INDEXED BY app_messages_by_msg \
+             WHERE group_id = ?1 AND msg_id = ?2 \
+             ORDER BY (type = 0 AND thread_id IS NULL) DESC, type = 0 DESC, seq LIMIT 1",
+            params![group_id.as_slice(), msg_id.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match best {
+        None => ThreadRoot::Unheld,
+        Some((Some(0), true)) => ThreadRoot::Root,
+        Some((Some(0), false)) => ThreadRoot::Reply,
+        Some(_) => ThreadRoot::NotAPost,
+    })
+}
+
 impl ClientCore {
     /// `request` = [type uint 0..=6, reply_to b16|null, body tstr,
-    ///              attachments [[blob_id b32, key b32, nonce b12, size uint, mime tstr, w uint|null, h uint|null, thumb bstr|null, name tstr]]]
-    /// (the L-CORE-30 attachment element, in order). Returns [msg_id b16] as before. Phase 2; the group must be in state 2.
+    ///              attachments [[blob_id b32, key b32, nonce b12, size uint, mime tstr, w uint|null, h uint|null, thumb bstr|null, name tstr]],
+    ///              thread_id b16|null]
+    /// (the L-CORE-30 attachment element, in order; `thread_id` since web3.7, and a 4-element request has none).
+    /// Returns [msg_id b16] as before. Phase 2; the group must be in state 2.
+    /// A `thread_id` is for type 0 only and must name a held type-0 root that has no `thread_id` itself.
     /// Every refusal writes nothing (L-CORE-36).
     pub fn send_prepare(
         &mut self,
@@ -444,14 +721,25 @@ impl ClientCore {
                 "only a message carries attachments",
             ));
         }
-        // One read: the group row, then the target (the ledger's resolution, `fold::resolve`).
-        let (row, target) = self.read_one(|c| {
+        if t.ty != 0 && t.thread_id.is_some() {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "only a message starts or joins a thread",
+            ));
+        }
+        // One read: the group row, then the target (the ledger's resolution, `fold::resolve`)
+        // and the thread root.
+        let (row, target, root) = self.read_one(|c| {
             let row = group_row(c, id)?;
             let target = match (&row, t.reply_to) {
                 (Some(_), Some(reply_to)) => fold::resolve(c, id, &reply_to)?,
                 _ => None,
             };
-            Ok((row, target))
+            let root = match (&row, t.thread_id) {
+                (Some(_), Some(thread)) => Some(thread_root(c, id, &thread)?),
+                _ => None,
+            };
+            Ok((row, target, root))
         })?;
         let row = row.ok_or_else(not_found)?;
         if row.kind != 0 {
@@ -476,6 +764,12 @@ impl ClientCore {
             }
             if t.reply_to.is_some() && target.is_none() {
                 return Err(unheld());
+            }
+            match root {
+                None | Some(ThreadRoot::Root) => {}
+                Some(ThreadRoot::Unheld) => return Err(unheld()),
+                Some(ThreadRoot::Reply) => return input("the thread root is a thread reply"),
+                Some(ThreadRoot::NotAPost) => return input("the thread root is not a message"),
             }
         } else {
             if t.reply_to.is_none() {
@@ -511,7 +805,7 @@ impl ClientCore {
             v: 1,
             msg_id: MsgId::from_bytes(msg_id),
             kind: EnvelopeType::from_u64(t.ty)?,
-            thread_id: None,
+            thread_id: t.thread_id.map(MsgId::from_bytes),
             reply_to: t.reply_to.map(MsgId::from_bytes),
             body: t.body,
             attachments: t.attachments,
@@ -935,83 +1229,93 @@ impl ClientCore {
         limit: u32,
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
-        if !(1..=200).contains(&limit) {
-            return Err(ClientError::new(E_CORE_INPUT, "limit out of range"));
-        }
-        // A value above SQLite's signed range is later than every stored sequence.
-        let before = if before_seq > i64::MAX as u64 {
-            0
-        } else {
-            before_seq as i64
-        };
+        let before = page_bound(before_seq, limit)?;
         self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
-        struct Raw {
-            seq: i64,
-            epoch: i64,
-            recv_ts: i64,
-            status: i64,
-            reason: String,
-            sender_user: Option<Vec<u8>>,
-            sender_device: Vec<u8>,
-            sender_kind: Option<i64>,
-            sender_tier: Option<i64>,
-            msg_id: Option<[u8; 16]>,
-            ty: Option<i64>,
-            body: String,
-            edit_body: Option<String>,
-            edit_seq: i64,
-            reply_to: Option<[u8; 16]>,
-            envelope: Option<Vec<u8>>,
-            mention: i64,
-            is_target: bool,
-        }
-        let rows = self.read(|c| {
-            let mut s = c.prepare(TIMELINE_SQL)?;
-            let it = s.query_map(params![id.as_slice(), before, i64::from(limit)], |r| {
-                Ok(Raw { seq: r.get(0)?, epoch: r.get(1)?, recv_ts: r.get(2)?, status: r.get(3)?,
-                    reason: r.get(4)?, sender_user: r.get(5)?, sender_device: r.get(6)?,
-                    sender_kind: r.get(7)?, sender_tier: r.get(8)?, msg_id: r.get(9)?, ty: r.get(10)?,
-                    body: r.get(11)?, edit_body: r.get(12)?, edit_seq: r.get(13)?, reply_to: r.get(14)?,
-                    envelope: r.get(15)?, mention: r.get(16)?, is_target: r.get::<_, i64>(17)? != 0 })
-            })?;
-            let mut raw: Vec<Raw> = it.collect::<Result<_, _>>()?;
-            raw.reverse();
-            let mut views = Vec::with_capacity(raw.len());
-            for r in raw {
-                let body = if r.status == STATUS_OK { r.edit_body.unwrap_or(r.body) } else { String::new() };
-                let reply = if r.status == STATUS_OK {
-                    r.reply_to.map(|reply_to| {
-                        let target = fold::resolve(c, id, &reply_to)?;
-                        Ok::<_, StorageError>(wire::ReplyView {
-                            reply_to, target_seq: target.as_ref().map(|t| t.seq), target_user: target.as_ref().and_then(|t| t.sender_user),
-                            excerpt: target.as_ref().filter(|t| t.status == STATUS_OK).map_or_else(String::new, |t| fold::excerpt(&t.shown_body)),
-                            state: target.as_ref().map_or(1, |t| if t.status == STATUS_OK { 0 } else { 2 }),
-                        })
-                    }).transpose()?
-                } else { None };
-                let mut reactions = Vec::new();
-                let mut pinned = false;
-                if r.status == STATUS_OK && r.ty == Some(0) && r.is_target && let Some(msg) = r.msg_id {
-                    let mut q = c.prepare("SELECT emoji, n, mine FROM (SELECT emoji, COUNT(*) AS n, MAX(user_id = ?3) AS mine, MIN(seq) AS first FROM app_reactions WHERE group_id = ?1 AND target = ?2 GROUP BY emoji ORDER BY n DESC, first, emoji LIMIT 20) ORDER BY first, emoji")?;
-                    reactions = q.query_map(params![id.as_slice(), msg.as_slice(), own.user_id.as_slice()], |x| Ok((x.get(0)?, x.get::<_, i64>(1)? as u64, x.get::<_, i64>(2)? != 0)))?.collect::<Result<_, _>>()?;
-                    pinned = c.query_row("SELECT 1 FROM app_pins WHERE group_id = ?1 AND target = ?2", params![id.as_slice(), msg.as_slice()], |_| Ok(())).optional()?.is_some();
-                }
-                let attachments = if r.status == STATUS_OK && r.ty == Some(0) {
-                    r.envelope.as_deref().and_then(|bytes| Envelope::decode(bytes).ok()).map_or_else(Vec::new, |env| env.attachments.into_iter().map(|a| wire::AttachmentView {
-                        size: a.size, mime: a.mime, w: a.w, h: a.h, has_thumb: a.thumb.is_some(), name: a.name,
-                    }).collect())
-                } else { Vec::new() };
-                views.push(wire::TimelineView {
-                    seq: r.seq as u64, epoch: r.epoch as u64, recv_ts: r.recv_ts as u64, status: r.status as u64,
-                    reason: r.reason, sender_user: r.sender_user, sender_device: r.sender_device,
-                    sender_kind: r.sender_kind.map(|v| v as u64), sender_tier: r.sender_tier.map(|v| v as u64),
-                    msg_id: r.msg_id.map(|m| m.to_vec()), ty: r.ty.map(|v| v as u64), body,
-                    edited_seq: r.edit_seq as u64, reply, reactions, pinned, attachments, mention: r.mention != 0,
+        let rows = self.read_one(|c| {
+            let mut views = timeline_views(
+                c,
+                TIMELINE_SQL,
+                params![id.as_slice(), before, i64::from(limit)],
+                id,
+                &own.user_id,
+            )?;
+            views.reverse();
+            Ok(views)
+        })?;
+        Ok(wire::encode_timeline(&rows))
+    }
+
+    /// web3.7 (R25): `[root_row|null, [row…]]`. The root row is the held type-0 root of `root`
+    /// (one without a `thread_id`), else null; the rows are the type-0 rows whose `thread_id` is
+    /// `root`, newest first, below `before_seq` (0 = from the newest), at most `limit` (1..=200).
+    /// Both in the 19-element timeline shape.
+    pub fn thread_timeline(
+        &self,
+        id: &[u8; 16],
+        root: &[u8; 16],
+        before_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<u8>, ClientError> {
+        let own = self.own()?;
+        let before = page_bound(before_seq, limit)?;
+        self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
+        let (head, rows) = self.read_one(|c| {
+            let head = timeline_views(
+                c,
+                THREAD_ROOT_SQL,
+                params![id.as_slice(), root.as_slice()],
+                id,
+                &own.user_id,
+            )?
+            .pop();
+            let rows = timeline_views(
+                c,
+                THREAD_SQL,
+                params![id.as_slice(), root.as_slice(), before, i64::from(limit)],
+                id,
+                &own.user_id,
+            )?;
+            Ok((head, rows))
+        })?;
+        Ok(wire::encode_thread_timeline(head.as_ref(), &rows))
+    }
+
+    /// web3.7: the group's threads, `[[root_msg_id, root_seq|null, count, last_ts, excerpt]]`, at
+    /// most 50, the latest reply first. A thread is a `thread_id` with at least one shown reply
+    /// whose root is held (a type-0 row without a `thread_id`) or not held at all; an id naming a
+    /// reply (a nested thread, shown in the channel) is none. `root_seq` and `excerpt` (the root's
+    /// shown body, `fold::excerpt`) come from the held root; null and `''` when it is not held.
+    pub fn threads(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
+        self.own()?;
+        self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
+        let rows = self.read_one(|c| {
+            let mut q = c.prepare(THREADS_SQL)?;
+            let threads: Vec<([u8; 16], i64, i64)> = q
+                .query_map([id.as_slice()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?;
+            let mut views = Vec::with_capacity(threads.len());
+            for (root, count, last_ts) in threads {
+                let held: Option<(i64, i64, String)> = c
+                    .query_row(
+                        "SELECT seq, status, COALESCE(edit_body, body) FROM app_messages INDEXED BY app_messages_by_msg \
+                         WHERE group_id = ?1 AND msg_id = ?2 AND type = 0 AND thread_id IS NULL ORDER BY seq LIMIT 1",
+                        params![id.as_slice(), root.as_slice()],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                views.push(wire::ThreadView {
+                    root,
+                    root_seq: held.as_ref().map(|h| h.0 as u64),
+                    count: count as u64,
+                    last_ts: last_ts as u64,
+                    excerpt: held
+                        .filter(|h| h.1 == STATUS_OK)
+                        .map_or_else(String::new, |h| fold::excerpt(&h.2)),
                 });
             }
             Ok(views)
         })?;
-        Ok(wire::encode_timeline(&rows))
+        Ok(wire::encode_threads(&rows))
     }
 
     pub fn pins(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {

@@ -126,11 +126,21 @@ pub(crate) struct SendRequest {
     pub reply_to: Option<[u8; 16]>,
     pub body: String,
     pub attachments: Vec<Attachment>,
+    /// web3.7: the thread root the message joins; absent (a 4-element request) means none.
+    pub thread_id: Option<[u8; 16]>,
 }
 
+/// `[type, reply_to b16|null, body, attachments]`, or since web3.7 the same with a fifth element,
+/// `thread_id b16|null`. Any other length is malformed.
 pub(crate) fn decode_send_request(bytes: &[u8]) -> Result<SendRequest, ClientError> {
     decode_strict(bytes, |d| {
-        d.array(4)?;
+        let len = d.array_len()?;
+        if len != 4 && len != 5 {
+            return Err(CborError::WrongArrayLen {
+                expected: 5,
+                actual: len,
+            });
+        }
         let ty = d.uint()?;
         let reply_to = d.opt_bytes_exact::<16>()?;
         let body = d.text()?.to_owned();
@@ -150,11 +160,17 @@ pub(crate) fn decode_send_request(bytes: &[u8]) -> Result<SendRequest, ClientErr
                 name: d.text()?.to_owned(),
             });
         }
+        let thread_id = if len == 5 {
+            d.opt_bytes_exact::<16>()?
+        } else {
+            None
+        };
         Ok(SendRequest {
             ty,
             reply_to,
             body,
             attachments,
+            thread_id,
         })
     })
     .map_err(|_| ClientError::new(E_CORE_INPUT, "request is malformed"))
@@ -230,6 +246,8 @@ pub(crate) struct TimelineView {
     pub pinned: bool,
     pub attachments: Vec<AttachmentView>,
     pub mention: bool,
+    /// `(count, last_ts)` of a held thread root with at least one shown reply (web3.7).
+    pub thread: Option<(u64, u64)>,
 }
 pub(crate) struct PinView {
     pub target_seq: u64,
@@ -245,7 +263,58 @@ pub(crate) fn encode_timeline(rows: &[TimelineView]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(rows.len());
     for r in rows {
-        e.array(18)
+        timeline_row(&mut e, r);
+    }
+    e.into_vec()
+}
+
+/// `[root_row|null, [row…]]` (web3.7 R25): the held root, then the replies.
+pub(crate) fn encode_thread_timeline(
+    root: Option<&TimelineView>,
+    rows: &[TimelineView],
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(2);
+    match root {
+        Some(r) => timeline_row(&mut e, r),
+        None => {
+            e.null();
+        }
+    }
+    e.array(rows.len());
+    for r in rows {
+        timeline_row(&mut e, r);
+    }
+    e.into_vec()
+}
+
+pub(crate) struct ThreadView {
+    pub root: [u8; 16],
+    pub root_seq: Option<u64>,
+    pub count: u64,
+    pub last_ts: u64,
+    pub excerpt: String,
+}
+
+/// `[[root_msg_id b16, root_seq uint|null, count uint, last_ts uint, excerpt tstr]]` (web3.7).
+pub(crate) fn encode_threads(rows: &[ThreadView]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(rows.len());
+    for r in rows {
+        e.array(5)
+            .bytes(&r.root)
+            .opt_uint(r.root_seq)
+            .uint(r.count)
+            .uint(r.last_ts)
+            .text(&r.excerpt);
+    }
+    e.into_vec()
+}
+
+/// One 19-element timeline row (18 before web3.7; the 19th is the thread summary).
+fn timeline_row(e: &mut Encoder, r: &TimelineView) {
+    {
+        e.array(19)
             .uint(r.seq)
             .uint(r.epoch)
             .uint(r.recv_ts)
@@ -285,8 +354,15 @@ pub(crate) fn encode_timeline(rows: &[TimelineView]) -> Vec<u8> {
                 .text(&a.name);
         }
         e.uint(u64::from(r.mention));
+        match r.thread {
+            Some((count, last_ts)) => {
+                e.array(2).uint(count).uint(last_ts);
+            }
+            None => {
+                e.null();
+            }
+        }
     }
-    e.into_vec()
 }
 
 pub(crate) fn encode_pins(rows: &[PinView]) -> Vec<u8> {

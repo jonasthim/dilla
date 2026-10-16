@@ -295,7 +295,7 @@ pub struct AttachmentSummary {
     pub name: String,
 }
 
-/// The 18-element row of L-CORE-34 (web-2b task 2).
+/// The row of L-CORE-34 (web-2b task 2), 19 elements since web3.7: the 19th is the thread summary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineRow {
     pub seq: u64,
@@ -316,6 +316,8 @@ pub struct TimelineRow {
     pub pinned: u64,
     pub attachments: Vec<AttachmentSummary>,
     pub mention: u64,
+    /// `[count, last_ts]` of a held thread root with at least one reply (web3.7 TB1), else None.
+    pub thread: Option<(u64, u64)>,
 }
 
 pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
@@ -323,7 +325,20 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
         let n = d.array_len()?;
         let mut rows = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(18)?;
+            rows.push(decode_timeline_row(d)?);
+        }
+        Ok(rows)
+    })
+    .expect("timeline shape")
+}
+
+/// One 19-element timeline row.
+pub fn decode_timeline_row(
+    d: &mut dilla_core::cbor::Decoder<'_>,
+) -> Result<TimelineRow, dilla_core::cbor::CborError> {
+    {
+        {
+            d.array(19)?;
             let seq = d.uint()?;
             let epoch = d.uint()?;
             let recv_ts = d.uint()?;
@@ -386,7 +401,13 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
                 });
             }
             let mention = d.uint()?;
-            rows.push(TimelineRow {
+            let thread = if d.try_null()? {
+                None
+            } else {
+                d.array(2)?;
+                Some((d.uint()?, d.uint()?))
+            };
+            Ok(TimelineRow {
                 seq,
                 epoch,
                 recv_ts,
@@ -405,11 +426,58 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
                 pinned,
                 attachments,
                 mention,
+                thread,
+            })
+        }
+    }
+}
+
+/// thread_timeline's `[root_row|null, [row…]]` (web3.7 TB1).
+pub fn decode_thread_timeline(bytes: &[u8]) -> (Option<TimelineRow>, Vec<TimelineRow>) {
+    decode_strict(bytes, |d| {
+        d.array(2)?;
+        let root = if d.try_null()? {
+            None
+        } else {
+            Some(decode_timeline_row(d)?)
+        };
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            rows.push(decode_timeline_row(d)?);
+        }
+        Ok((root, rows))
+    })
+    .expect("thread timeline shape")
+}
+
+/// One `threads` row: [root_msg_id, root_seq|null, count, last_ts, excerpt] (web3.7 TB1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadRow {
+    pub root: [u8; 16],
+    pub root_seq: Option<u64>,
+    pub count: u64,
+    pub last_ts: u64,
+    pub excerpt: String,
+}
+
+pub fn decode_threads(bytes: &[u8]) -> Vec<ThreadRow> {
+    decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(5)?;
+            rows.push(ThreadRow {
+                root: d.bytes_exact::<16>()?,
+                root_seq: d.opt_uint()?,
+                count: d.uint()?,
+                last_ts: d.uint()?,
+                excerpt: d.text()?.to_owned(),
             });
         }
         Ok(rows)
     })
-    .expect("timeline shape")
+    .expect("threads shape")
 }
 
 /// These are the test decoders of L-CORE-35; task 3 reads them unchanged.
@@ -530,6 +598,23 @@ pub fn request(
             .opt_bytes(a.thumb.as_deref())
             .text(&a.name);
     }
+    e.into_vec()
+}
+
+/// The web3.7 request: the L-CORE-36 request with a fifth element, `thread_id` (b16 or null).
+pub fn thread_request(
+    ty: u64,
+    reply_to: Option<&[u8; 16]>,
+    body: &str,
+    thread_id: Option<&[u8; 16]>,
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(5)
+        .uint(ty)
+        .opt_bytes(reply_to.map(|r| r.as_slice()))
+        .text(body)
+        .array(0)
+        .opt_bytes(thread_id.map(|t| t.as_slice()));
     e.into_vec()
 }
 

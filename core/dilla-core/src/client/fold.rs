@@ -350,6 +350,14 @@ mod tests {
             .join("\n")
     }
 
+    /// A store at app schema 5 (web3.7): the thread column and its index.
+    fn v5(c: &rusqlite::Connection) {
+        c.execute_batch(super::super::schema::MIGRATE_V4_TO_V5)
+            .expect("thread column");
+        c.execute_batch(super::super::schema::APP_INDEXES_V5)
+            .expect("thread index");
+    }
+
     #[test]
     fn every_fold_statement_is_an_index_search() {
         let c = rusqlite::Connection::open_in_memory().expect("open");
@@ -359,6 +367,7 @@ mod tests {
             .expect("indexes");
         c.execute_batch(super::super::schema::APP_AUTHORITY)
             .expect("authority");
+        v5(&c);
         let cases: [(&str, &str, &str); 9] = [
             (
                 "UNHELD_DELETERS",
@@ -451,6 +460,59 @@ mod tests {
                 "{name} scans: {p}"
             );
         }
+    }
+
+    /// web3.7 TB1: the thread summary and the held-root exclusion of the main timeline, the thread
+    /// reads and `threads` are index searches: the summary probes `app_messages_by_thread` by
+    /// (group, thread, type), the exclusion probes `app_messages_by_msg` by (group, msg id).
+    #[test]
+    fn the_timeline_plan_uses_the_thread_index() {
+        let c = rusqlite::Connection::open_in_memory().expect("open");
+        c.execute_batch(super::super::schema::APP_SCHEMA)
+            .expect("schema");
+        c.execute_batch(super::super::schema::APP_INDEXES_V3)
+            .expect("indexes");
+        v5(&c);
+        let summary =
+            "SEARCH s USING INDEX app_messages_by_thread (group_id=? AND thread_id=? AND type=?)";
+        let p = plan(&c, super::super::messages::TIMELINE_SQL);
+        assert!(
+            p.contains(summary),
+            "the summary does not search app_messages_by_thread: {p}"
+        );
+        assert!(
+            p.contains("SEARCH t USING INDEX app_messages_by_msg (group_id=? AND msg_id=?)"),
+            "the held-root exclusion does not search by message id: {p}"
+        );
+        for (name, sql, main) in [
+            (
+                "THREAD_SQL",
+                super::super::messages::THREAD_SQL,
+                "SEARCH m USING INDEX app_messages_by_thread (group_id=? AND thread_id=? AND type=?",
+            ),
+            (
+                "THREAD_ROOT_SQL",
+                super::super::messages::THREAD_ROOT_SQL,
+                "SEARCH m USING INDEX app_messages_by_msg (group_id=? AND msg_id=?)",
+            ),
+            (
+                "THREADS_SQL",
+                super::super::messages::THREADS_SQL,
+                "SEARCH x USING INDEX app_messages_by_thread (group_id=? AND thread_id>?)",
+            ),
+        ] {
+            let p = plan(&c, sql);
+            assert!(p.contains(main), "{name} is not bounded by its index: {p}");
+            assert!(
+                p.lines().all(|l| !l.starts_with("SCAN")
+                    || l.starts_with("SCAN m") && name == "THREAD_ROOT_SQL"),
+                "{name} scans: {p}"
+            );
+        }
+        assert!(
+            plan(&c, super::super::messages::THREAD_SQL).contains(summary),
+            "THREAD_SQL's summary does not search app_messages_by_thread"
+        );
     }
 
     #[test]

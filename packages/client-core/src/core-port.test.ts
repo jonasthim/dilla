@@ -237,7 +237,7 @@ describe('wrapCore decoding', () => {
     expect(port.sendEncrypt(MSG)).toEqual({ groupId: G, messageBody: new Uint8Array([5, 6]) });
     expect(port.sendConfirm(MSG, new Uint8Array([1]))).toEqual({ groupId: G, seq: 42n });
     expect(port.outbox(G)).toEqual([{ msgId: MSG, state: 2, error: 'E_TOO_LARGE', created: 1_700_000_000n, body: 'hi', type: 0, replyTo: null, attachments: [] }]);
-    const plain = { editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false };
+    const plain = { editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false, thread: null };
     expect(port.timeline(G, 0n, 100)).toEqual([
       { seq: 5n, epoch: 7n, recvTs: 1_700_000_000n, status: 0, reason: '', senderUser: USER, senderDevice: DEV, senderKind: 0, senderTier: 1, msgId: MSG, type: 0, body: 'hi', ...plain },
       { seq: 6n, epoch: 7n, recvTs: 1_700_000_001n, status: 1, reason: 'E_PRUNED', senderUser: null, senderDevice: DEV, senderKind: null, senderTier: null, msgId: null, type: null, body: '', ...plain },
@@ -246,8 +246,41 @@ describe('wrapCore decoding', () => {
         reactions: [{ emoji: '👍', count: 2, mine: true }, { emoji: '🎉', count: 1, mine: false }], pinned: true,
         attachments: [{ index: 0, size: 1234, mime: 'image/png', w: 640, h: 480, hasThumb: true, name: 'map.png' },
           { index: 1, size: 70000, mime: 'application/pdf', w: null, h: null, hasThumb: false, name: '' }],
-        mention: true },
+        mention: true, thread: null },
     ]);
+  });
+
+  it('reads the thread summary of a 19-element row, and an 18-element row as no thread (web3.7)', () => {
+    const base: CborInput[] = [5, 7, 1_700_000_000, 0, '', USER, DEV, 0, 1, MSG, 0, 'root', 0, null, [], 0, [], 0];
+    const { port } = stub({ timeline: () => encode([[...base, [3, 1_700_000_009]], [...base, null], base]) });
+    expect(port.timeline(G, 0n, 100).map((r) => r.thread)).toEqual([{ count: 3, lastTs: 1_700_000_009n }, null, null]);
+    const decodeOne = (row: CborInput[]) => caught(() => stub({ timeline: () => encode([row]) }).port.timeline(G, 0n, 100)).code;
+    expect(decodeOne([...base, [3]])).toBe('E_CORE_DECODE');
+    expect(decodeOne([...base, [3, 1, 2]])).toBe('E_CORE_DECODE');
+    expect(decodeOne([...base, null, null])).toBe('E_CORE_DECODE');
+  });
+
+  it('reads a thread timeline and the threads of a group, in the facade argument order (web3.7)', () => {
+    const root: CborInput[] = [5, 7, 1_700_000_000, 0, '', USER, DEV, 0, 1, MSG, 0, 'root', 0, null, [], 0, [], 0, [1, 1_700_000_002]];
+    const reply: CborInput[] = [6, 7, 1_700_000_002, 0, '', USER, DEV, 0, 1, MSG2, 0, 'reply', 0, null, [], 0, [], 0, null];
+    const s = stub({
+      thread_timeline: () => encode([root, [reply]]),
+      threads: () => encode([[MSG, 5, 1, 1_700_000_002, 'root'], [MSG2, null, 2, 1_700_000_001, '']]),
+    });
+    const t = s.port.threadTimeline(G, MSG, 0n, 50);
+    expect(s.calls[0]).toEqual({ method: 'thread_timeline', args: [G, MSG, 0n, 50] });
+    expect(t.root?.seq).toBe(5n);
+    expect(t.root?.thread).toEqual({ count: 1, lastTs: 1_700_000_002n });
+    expect(t.rows.map((r) => [r.seq, r.body, r.thread])).toEqual([[6n, 'reply', null]]);
+    expect(s.port.threads(G)).toEqual([
+      { rootMsgId: MSG, rootSeq: 5n, count: 1, lastTs: 1_700_000_002n, excerpt: 'root' },
+      { rootMsgId: MSG2, rootSeq: null, count: 2, lastTs: 1_700_000_001n, excerpt: '' },
+    ]);
+    expect(s.calls[1]).toEqual({ method: 'threads', args: [G] });
+    const unheld = stub({ thread_timeline: () => encode([null, [reply]]) });
+    expect(unheld.port.threadTimeline(G, MSG, 0n, 50).root).toBeNull();
+    expect(caught(() => stub({ thread_timeline: () => encode([[reply]]) }).port.threadTimeline(G, MSG, 0n, 50)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => stub({ threads: () => encode([[MSG, 5, 1, 2]]) }).port.threads(G)).code).toBe('E_CORE_DECODE');
   });
 
   it('refuses a timeline row of the web-2a shape or with out-of-range values (L-CORE-34)', () => {
@@ -461,11 +494,14 @@ describe('wrapCore web-2b', () => {
     expect(s.calls[0]?.method).toBe('send_prepare');
     expect(s.calls[0]?.args[0]).toBe(G);
     expect(s.calls[0]?.args[2]).toBe(7n);
-    expect(decode(s.calls[0]?.args[1] as Uint8Array)).toEqual([0n, MSG, 'look', [[BLOB, KEY, NONCE, 1234n, 'image/png', 640n, 480n, THUMB, 'map.png']]]);
-    s.port.sendPrepare(G, { type: 3, replyTo: MSG, body: '👍', attachments: [] }, 8n);
-    expect(decode(s.calls[1]?.args[1] as Uint8Array)).toEqual([3n, MSG, '👍', []]);
+    expect(decode(s.calls[0]?.args[1] as Uint8Array)).toEqual([0n, MSG, 'look', [[BLOB, KEY, NONCE, 1234n, 'image/png', 640n, 480n, THUMB, 'map.png']], null]);
+    s.port.sendPrepare(G, { type: 3, replyTo: MSG, body: '👍', attachments: [], threadId: null }, 8n);
+    expect(decode(s.calls[1]?.args[1] as Uint8Array)).toEqual([3n, MSG, '👍', [], null]);
     s.port.sendPrepare(G, { type: 0, replyTo: null, body: 'x', attachments: [{ ...descriptor, w: null, h: null, thumb: null, name: '' }] }, 9n);
-    expect(decode(s.calls[2]?.args[1] as Uint8Array)).toEqual([0n, null, 'x', [[BLOB, KEY, NONCE, 1234n, 'image/png', null, null, null, '']]]);
+    expect(decode(s.calls[2]?.args[1] as Uint8Array)).toEqual([0n, null, 'x', [[BLOB, KEY, NONCE, 1234n, 'image/png', null, null, null, '']], null]);
+    // web3.7: the fifth element is the thread root.
+    s.port.sendPrepare(G, { type: 0, replyTo: null, body: 'in a thread', attachments: [], threadId: MSG2 }, 10n);
+    expect(decode(s.calls[3]?.args[1] as Uint8Array)).toEqual([0n, null, 'in a thread', [], MSG2]);
   });
 
   it('reads the eight-element outbox row', () => {

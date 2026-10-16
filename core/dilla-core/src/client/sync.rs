@@ -55,6 +55,7 @@ fn empty_message<'a>(
         msg_id: None,
         ty: None,
         reply_to: None,
+        thread_id: None,
         body: "",
         envelope: None,
         franking_tag: &row.franking_tag,
@@ -85,6 +86,7 @@ fn own_message<'a>(
         msg_id: Some(env.msg_id.as_bytes()),
         ty: Some(env.kind.as_u8()),
         reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
+        thread_id: env.thread_id.as_ref().map(MsgId::as_bytes),
         body: &env.body,
         envelope: Some(bytes),
         franking_tag: &row.franking_tag,
@@ -225,6 +227,7 @@ fn apply_message(
                 msg_id: Some(env.msg_id.as_bytes()),
                 ty: Some(env.kind.as_u8()),
                 reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
+                thread_id: env.thread_id.as_ref().map(MsgId::as_bytes),
                 ..empty_message(id, row, STATUS_DELETED, "")
             };
             insert_message(c, &marker)?;
@@ -376,7 +379,8 @@ impl ClientCore {
                                 sender_sig_key: Some(member.signature_key.as_slice()),
                                 sender_kind: Some(sender.kind.as_u8()), sender_tier: Some(sender.tier.as_u8()),
                                 msg_id: Some(envelope.msg_id.as_bytes()), ty: Some(envelope.kind.as_u8()),
-                                reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes), body: &envelope.body,
+                                reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes),
+                                thread_id: envelope.thread_id.as_ref().map(MsgId::as_bytes), body: &envelope.body,
                                 envelope: Some(envelope_bytes), franking_tag: franking,
                                 mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
                                     && mentions_me_gated(&envelope.body, &own.user_id, &roles, &mentionable, broadcast),
@@ -873,6 +877,7 @@ impl ClientCore {
                                             msg_id: Some(r.envelope.msg_id.as_bytes()),
                                             ty: Some(r.envelope.kind.as_u8()),
                                             reply_to: r.envelope.reply_to.as_ref().map(MsgId::as_bytes),
+                                            thread_id: r.envelope.thread_id.as_ref().map(MsgId::as_bytes),
                                             body: &r.envelope.body,
                                             envelope: bytes.as_deref(),
                                             franking_tag: &m.franking_tag,

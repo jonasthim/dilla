@@ -141,6 +141,23 @@ role ids count from any sender. The receiver's own user id counts from any sende
 `<@here>` as `<@everyone>`. An edit never raises a mention.
 A client shows a mention as the name it stands for, never as the raw token.
 
+## Threads
+
+A thread is a run of type-0 envelopes under one root message (a public thread: every member of the
+group reads it).
+
+- **Root.** A type-0 envelope's `thread_id` names the `msg_id` of a type-0 root that carries no
+  `thread_id` itself. A sender sets it only on type 0 and only to a root it holds; an envelope of
+  type 1 to 6 carries a null `thread_id`, and a receiver ignores one it finds there.
+- **Where a reply shows.** A receiver shows a reply whose root it holds only in that thread, not in
+  the channel. A reply whose root it does not hold, or whose root is itself a reply (a nested
+  thread), it shows in the channel, as a message without a thread.
+- **Summary.** A receiver shows on a root the number of its replies that are not deleted and the
+  time of the latest.
+- **Folds.** Edits, deletes, reactions and pins of a reply work as on any message (§ Semantics); a
+  deleted reply stays in its thread as deleted and no longer counts in the summary.
+- **Counts.** Replies count toward unread and mentions (§ Mentions) as any other type-0 message.
+
 ## Deterministic CBOR
 
 RFC 8949 §4.2.1 core deterministic encoding: shortest integer form, definite lengths, no maps,
