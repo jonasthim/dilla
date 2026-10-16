@@ -40,7 +40,8 @@ type membership struct {
 
 // admission is a membership a device was admitted to a room with, and when: at by the instance
 // clock (the join window, the sweep), sfuAt by the SFU's (what a session's join time is compared
-// with: LiveKit stamps it with its own clock, which the instance clock need not match).
+// with: LiveKit stamps it with its own clock, which the instance clock need not match, and reports it
+// in whole milliseconds, so sfuAt is truncated to the millisecond).
 type admission struct {
 	membership
 	at, sfuAt time.Time
@@ -80,7 +81,7 @@ func (h *Calls) noteAdmission(ctx context.Context, row store.VoiceSessionRow, de
 			continue
 		}
 		k := admitKey{room: row.LivekitRoom, dev: dev}
-		a := admission{membership: membership{leaf: m.LeafIndex, added: m.AddedEpoch}, at: h.clk.Now(), sfuAt: h.sfuNow()}
+		a := admission{membership: membership{leaf: m.LeafIndex, added: m.AddedEpoch}, at: h.clk.Now(), sfuAt: h.sfuNow().Truncate(time.Millisecond)}
 		h.memMu.Lock()
 		if h.admissions == nil {
 			h.admissions = map[admitKey][]admission{}

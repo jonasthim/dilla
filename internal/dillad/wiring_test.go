@@ -1,25 +1,35 @@
 package dillad_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/webhook"
 
+	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/mlswasi"
+	"github.com/jonasthim/dilla/internal/sfu"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // wiring_test.go is task 27a: the composition root builds the gateway and the delivery service,
@@ -664,4 +674,125 @@ func TestTheCompositionRootSweepsTheLoginThrottle(t *testing.T) {
 		t.Fatal("a recorded failure left nothing in the throttle")
 	}
 	advanceUntil(t, clk, 5*time.Minute, func() bool { return s.Throttle().Tracked() == 0 })
+}
+
+// tokenSFU is upstreamSFU that reads a call token as "<identity>@<room>", a microphone grant.
+type tokenSFU struct{ upstreamSFU }
+
+func (tokenSFU) VerifyToken(token string) (sfu.RoomToken, error) {
+	ident, room, ok := strings.Cut(token, "@")
+	if !ok {
+		return sfu.RoomToken{}, errors.New("not a token")
+	}
+	grant := &auth.VideoGrant{RoomJoin: true, Room: room}
+	grant.UpdateFromPermission(sfu.PublishGrant(true, false, false))
+	return sfu.RoomToken{Identity: ident, Room: room, Claims: &auth.ClaimGrants{Identity: ident, Video: grant}}, nil
+}
+
+// lockedBuffer is a log sink the call events write to off the test's goroutine.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// The composition root stamps an admission on the SFU's clock, the wall clock, and not on the
+// instance's: with the instance clock frozen an hour in the past, a device admitted through the real
+// /rtc gate holds an admission stamped now, so a session LiveKit reports joined a minute ago has none
+// (its leave proposes no Remove and the room sweep decides), while one joined just after binds it.
+// Were the admission stamped by the frozen clock, the minute-old join would bind it.
+func TestTheCompositionRootStampsAdmissionsOnTheSFUsClock(t *testing.T) {
+	cfg, code := testConfigInvite(t)
+	logs := &lockedBuffer{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer upstream.Close()
+	srv, err := dillad.New(context.Background(), dillad.Options{
+		Config: cfg, Clock: clock.NewFake(time.Now().Add(-time.Hour)), Wasm: sharedRuntime(t),
+		SFU: tokenSFU{upstreamSFU{url: upstream.URL}}, Log: slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("dillad.New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	h := srv.Handler()
+	tok := accountToken(t, srv, code)
+	repo, ctx := srv.Repo(), t.Context()
+	user, err := repo.GetUserByUsername(ctx, "jonas")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	devices, err := repo.ListDevicesByUser(ctx, user.ID)
+	if err != nil || len(devices) != 1 {
+		t.Fatalf("ListDevicesByUser = %v, %v", devices, err)
+	}
+	dev := devices[0].ID
+	rec := call(t, h, http.MethodPost, "/v1/communities", tok, []any{"lounge", []byte("{}"), uint64(0), uint64(0)})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/communities = %d", rec.Code)
+	}
+	cid := idOf(t, decodeArray(t, rec)[0])
+	rec = call(t, h, http.MethodPost, "/v1/communities/"+cid.String()+"/channels", tok,
+		[]any{uint64(api.ChannelVoice), uint64(1), uint64(2), nil, "voice", "", uint64(0), uint64(0)})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST voice channel = %d %s", rec.Code, errorCode(rec))
+	}
+	ch := idOf(t, decodeArray(t, rec)[0])
+	group := store.GroupRow{
+		GroupID: id.New(), Binding: []byte{0x80}, Kind: api.GroupCall, CommunityID: &cid, TargetID: ch,
+		CallID: &ch, Ciphersuite: 1, Epoch: 7, ExternalSenderKeyID: id.New(),
+		E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: srv.Now().Unix(),
+	}
+	if err := repo.CreateGroup(ctx, group); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := repo.ReplaceMembers(ctx, group.GroupID, 7, []store.MemberRow{{
+		GroupID: group.GroupID, LeafIndex: 0, UserID: user.ID, DeviceID: dev, SignatureKey: make([]byte, 32), AddedEpoch: 7,
+	}}); err != nil {
+		t.Fatalf("ReplaceMembers: %v", err)
+	}
+	rec = call(t, h, http.MethodPost, "/v1/channels/"+ch.String()+"/calls", tok, []any{})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST calls = %d %s", rec.Code, errorCode(rec))
+	}
+	row, err := repo.GetVoiceSession(ctx, ch)
+	if err != nil {
+		t.Fatalf("GetVoiceSession: %v", err)
+	}
+
+	// The join the /rtc proxy lets through: the gate admits the device and records the admission.
+	rtc := httptest.NewRequestWithContext(ctx, http.MethodGet,
+		"/rtc?access_token="+dev.String()+"@"+row.LivekitRoom+"&protocol="+strconv.Itoa(sfu.ClientProtocol), nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, rtc)
+	if rr.Code != http.StatusTeapot {
+		t.Fatalf("GET /rtc = %d, want the SFU's answer", rr.Code)
+	}
+
+	const unbound = "a leave whose admission is unknown proposes no Remove"
+	leave := func(sid string, joined time.Time) {
+		srv.CallEvents().Handle(ctx, &livekit.WebhookEvent{Event: webhook.EventParticipantLeft, Id: "EV_" + id.New().String(),
+			Room:        &livekit.Room{Name: row.LivekitRoom},
+			Participant: &livekit.ParticipantInfo{Identity: dev.String(), Sid: sid, JoinedAtMs: joined.UnixMilli()}})
+	}
+	leave("PA_after", time.Now().Add(time.Second))
+	if strings.Contains(logs.String(), unbound) {
+		t.Fatalf("a session joined just after the admission found no admission:\n%s", logs.String())
+	}
+	leave("PA_before", time.Now().Add(-time.Minute))
+	if !strings.Contains(logs.String(), unbound) {
+		t.Fatalf("a session joined a minute before the admission bound it: the admission was stamped on the instance's frozen clock:\n%s", logs.String())
+	}
 }

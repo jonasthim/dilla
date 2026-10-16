@@ -259,6 +259,9 @@ type RelayRevoker interface {
 // in-process LiveKit reads the process's wall clock whatever the instance's clock is; a session's
 // leave is bound to its admission by comparing the two stamps, so they must come from one clock.
 // Unset, the instance's clock stands in (an instance whose clock is the wall clock, a test).
+//
+// An SFU on another host stamps joins with that host's clock: keep both hosts on NTP, or a leave binds
+// to no admission and the room sweep removes the leaf instead, after admissionJoinWindow.
 func (h *Calls) WithSFUClock(c clock.Clock) *Calls {
 	h.sfuClk = c
 	return h

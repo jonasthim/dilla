@@ -71,6 +71,13 @@ func (h *Calls) SharersOf(call id.ID) []id.ID {
 	return out
 }
 
+// AdmittedAsForTest is the leaf and added epoch of the membership dev was admitted to room with for
+// the session LiveKit reports joined at joinedAt (zero: the latest), and whether there is one.
+func (h *Calls) AdmittedAsForTest(room string, dev id.ID, joinedAt time.Time) (leaf uint32, added uint64, ok bool) {
+	m, ok := h.admittedAs(room, dev, joinedAt)
+	return m.leaf, m.added, ok
+}
+
 // SetMemberPageForTest lowers the notifier's member page size to n and returns the restore.
 func SetMemberPageForTest(n int32) func() {
 	old := memberPage
