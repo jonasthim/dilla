@@ -817,4 +817,13 @@ describe('slow mode in the send lane (CB2)', () => {
     expect(posts()).toBe(3);
   });
 
+  it('a row already in the outbox when the engine started drains before rows queued after start, in one second', async () => {
+    tiesReversed();
+    // Queued by a previous session: the core holds it, this engine's queue does not.
+    d.core.sendPrepare(g, textRequest('from before'), BigInt(Math.floor(clock.now() / 1000)));
+    d.engine.send(g, 'after start');
+    await settle();
+    expect(sent()).toEqual(['from before', 'after start']);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
 });

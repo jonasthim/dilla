@@ -45,6 +45,14 @@ describe('ChannelHeader', () => {
     expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ # general ]');
   });
 
+  it('heads an announcement channel with the megaphone in place of #, named by the name alone', () => {
+    const { container } = render(<ChannelHeader name="news" kind="announcement" />);
+    expect(screen.getByRole('heading', { level: 2, name: 'news' })).toBeInTheDocument();
+    expect(container.querySelector('.d-channel-header__name [data-icon="megaphone"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('#');
+    expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ news ]');
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><ChannelHeader name="lfg" topic="looking for group" readable /></div>);
     await expectNoAxeViolations(container);
@@ -69,6 +77,12 @@ describe('ChannelHeader', () => {
       expect(screen.getByRole('button', { name: 'more' })).toBeInTheDocument();
       await userEvent.setup().click(screen.getByRole('button', { name: 'back to channels' }));
       expect(onBack).toHaveBeenCalledTimes(1);
+    });
+    it('uses the megaphone for an announcement channel', () => {
+      const { container } = render(<ChannelHeader kind="announcement" name="news" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      expect(screen.getByRole('heading', { level: 2, name: 'news' }).textContent).toBe('[ news ]');
+      expect(container.querySelector('[data-icon="megaphone"]')).not.toBeNull();
+      expect(container.textContent).not.toContain('#');
     });
     it('uses the @ bracket for a direct message', () => {
       render(<ChannelHeader kind="dm" name="ada" phone={{ backLabel: 'back', onBack: () => {} }} />);

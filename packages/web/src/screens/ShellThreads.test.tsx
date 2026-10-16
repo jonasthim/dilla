@@ -1,6 +1,6 @@
 // W-Shell-B: threads in the aside (one aside) and as a phone sheet, slow mode in the composer, the channel rows (flow 11).
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PERM, type ChannelSummary, type CommunityAccess, type MemberSummary, type RoleSummary, type TimelineItem } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -424,3 +424,17 @@ describe('the shell wires slow mode into the composers', () => {
 });
 
 void render;
+
+describe('the channel header of an announcement channel (walk 17)', () => {
+  it('shows the megaphone in place of # for an announcement channel, and # for a plain one', async () => {
+    setup({ path: `/c/${A}/${NEWS}` });
+    const head = await screen.findByRole('heading', { level: 2, name: 'news' });
+    expect(head.querySelector('[data-icon="megaphone"]')).not.toBeNull();
+    expect(head.textContent).toBe('[ news ]');
+    cleanup();
+    setup({ path: `/c/${A}/${GEN}` });
+    const plain = await screen.findByRole('heading', { level: 2, name: 'general' });
+    expect(plain.querySelector('[data-icon="megaphone"]')).toBeNull();
+    expect(plain.textContent).toBe('[ # general ]');
+  });
+});

@@ -5,6 +5,7 @@
 .d-channel-header__name { display: flex; min-width: 0; margin: 0; font-size: var(--text-md); font-weight: var(--weight-display); letter-spacing: var(--label-tracking); color: var(--fg); white-space: nowrap; }
 .d-channel-header__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .d-channel-header__bracket { flex-shrink: 0; white-space: pre; color: var(--fg-3); font-weight: var(--weight-body); }
+.d-channel-header__bracket svg { vertical-align: -2px; margin-right: 0.25rem; }
 .d-channel-header__readable { color: var(--fg-3); }
 .d-channel-header__topic { margin: 0; min-width: 0; padding-left: 0.75rem; border-left: 1px solid var(--hairline-2); font-size: var(--text-sm); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* web-2b (L-UI-54): the caller's actions (the pins button), pushed to the end of the header. */

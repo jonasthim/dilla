@@ -55,8 +55,6 @@ export function CreateChannel({ open, kind, kinds = ['text', 'voice'], onKind, n
       footer={<Button variant="accent" type="submit" form={formId} aria-disabled={busy || undefined}>{busy ? labels.busy : labels.submit}</Button>}>
       <form id={formId} className="d-create-channel" noValidate onSubmit={submit}>
         <div className="d-create-channel__kind">
-          {/* The group carries the same text as its own (visually hidden) label. */}
-          <span className="d-create-channel__label" aria-hidden="true">{labels.kind}</span>
           <Segmented id={`${base}-kind`} label={labels.kind} value={kind} onChange={v => onKind(v === 'voice' || v === 'announcement' ? v : 'text')}
             options={kinds.map(k => ({ value: k, label: labels[k] }))} />
         </div>

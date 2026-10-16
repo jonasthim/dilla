@@ -28,6 +28,12 @@ describe('CreateChannel', () => {
     expect(field).toHaveAccessibleDescription(HINT);
   });
 
+  it('names the kind group once: one label text, none visible in a second copy', () => {
+    render(<CreateChannel {...props({ kinds: ['text', 'voice', 'announcement'] })} />);
+    expect(screen.getAllByText(labels.kind)).toHaveLength(1);
+    expect(document.querySelector('.d-create-channel__label')).toBeNull();
+  });
+
   it('selection follows the arrows in the kind group; typing and Enter report to the caller', async () => {
     const user = userEvent.setup();
     const p = props({ name: 'ship' });

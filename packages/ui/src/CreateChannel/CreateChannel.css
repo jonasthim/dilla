@@ -1,4 +1,2 @@
 .d-create-channel { display: grid; gap: 0.875rem; min-width: min(26rem, calc(100vw - 4.25rem)); }
 .d-create-channel__kind { display: grid; gap: 0.375rem; justify-items: start; }
-/* The same label style as TextField's, so the two controls read as one form. */
-.d-create-channel__label { font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }

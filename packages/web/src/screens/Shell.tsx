@@ -921,9 +921,8 @@ export function Shell(): React.JSX.Element {
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={phone && onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
         actions={actions} actionsLabel={t('create.actions')} headerAction={phoneServerMenu}
-        // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one (ChannelList
-        // `titleKind`, packages/ui, FX-ui 38fc8af0). Spread untyped so this lane builds before that commit is integrated.
-        {...(phone && onDms ? ({ titleKind: 'plain' } as object) : {})}
+        // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one.
+        titleKind={phone && onDms ? 'plain' : 'server'}
         tabs={phone ? (voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : undefined) : <>
           <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
             { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
@@ -1079,7 +1078,7 @@ export function Shell(): React.JSX.Element {
   const pinsItem = openId !== null ? [{ id: 'pins', label: t('shell.pins.open') }] : [];
   const listItem = channel !== null && openId !== null ? [{ id: 'threads', label: t('thread.list') }] : [];
   const header = voiceChannel !== null ? (phone ? <PhoneHeader title={voiceChannel.name} backLabel={t('nav.back')} onBack={onBack} /> : null) : channel !== null
-    ? <ChannelHeader name={channel.name} topic={channel.topic === '' ? undefined : channel.topic}
+    ? <ChannelHeader name={channel.name} kind={isAnnouncement(channel) ? 'announcement' : 'channel'} topic={channel.topic === '' ? undefined : channel.topic}
       readable={channel.mode === 1} readableLabel={t('shell.readable')}
       phone={phone ? { backLabel: t('nav.back'), onBack, menu: (
         <ActionMenu label={t('nav.channel.menu')} icon="ellipsis-vertical" focusKey="channel-menu" open={channelMenuOpen} onOpenChange={setChannelMenuOpen}
