@@ -163,10 +163,6 @@ func TestTheCatalogueAndTheCorpusAgreeOnEveryPayloadElementCount(t *testing.T) {
 				t.Fatalf("payload: %v", err)
 			}
 			want := opSpecs[Op(c.Op)].elements
-			// Until RB1 converts the message.ct corpus case to 7 elements (web3.7 R29); RB1 deletes this exception.
-			if Op(c.Op) == OpMessageCT && len(elems) == want-1 {
-				return
-			}
 			if len(elems) != want {
 				t.Fatalf("corpus payload has %d elements but opSpecs[%d].elements = %d",
 					len(elems), c.Op, want)

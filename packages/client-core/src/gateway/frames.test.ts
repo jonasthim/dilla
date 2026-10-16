@@ -34,6 +34,8 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'call_ring with 4 elements': 'E_FRAME_SHAPE',
   // The instance answers E_FRAME_TYPE (op 54 is S->C); this client decodes op 54 and refuses two elements, not one.
   'community_changed with 2 elements': 'E_FRAME_SHAPE',
+  // The instance answers E_FRAME_TYPE (op 19 is S->C); this client decodes op 19 and refuses eight elements (web3.7).
+  'message.ct with 8 elements': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -48,9 +50,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 31 cases and 18 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(31);
-    expect(vectors.rejects).toHaveLength(18);
+  it('holds the 32 cases and 19 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(32);
+    expect(vectors.rejects).toHaveLength(19);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 
@@ -93,6 +95,21 @@ describe('frame shape', () => {
     expect(() => encodeFrame(256, 0, null, [])).toThrow('E_FRAME_SHAPE');
     expect(() => encodeFrame(Op.heartbeat, -1, null, [0, 1])).toThrow('E_FRAME_SHAPE');
     expect(() => encodeFrame(Op.heartbeat, 1.5, null, [0, 1])).toThrow('E_FRAME_SHAPE');
+  });
+
+  // web3.7 (R29): message.ct carries the upload class as its 7th element (0, 1 or null). Six elements is a web3.6
+  // host, kept for one release as a unit case only; the corpus holds the 7-element shape.
+  it('reads message.ct with or without its class, and refuses another count or class', () => {
+    const ct = [4130, 42, fid(8), new Uint8Array([1, 2, 3]), new Uint8Array(32).fill(10), 1758659700];
+    const g = fid(7);
+    expect(decodeFrame(encode([19, 9, g, [...ct, 0]])).payload[6]).toBe(0n);
+    expect(decodeFrame(encode([19, 9, g, [...ct, 1]])).payload[6]).toBe(1n);
+    expect(decodeFrame(encode([19, 9, g, [...ct, null]])).payload[6]).toBeNull();
+    expect(decodeFrame(encode([19, 9, g, ct])).payload).toHaveLength(6);
+    expect(verdict(encode([19, 9, g, [...ct, 0, 0]]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encode([19, 9, g, [...ct, 2n]]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encode([19, 9, g, [...ct, 'post']]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encode([19, 9, null, [...ct, 0]]))).toBe('E_FRAME_SHAPE');
   });
 
   it('pins the opcode numbers', () => {

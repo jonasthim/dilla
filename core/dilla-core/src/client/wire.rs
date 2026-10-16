@@ -2,7 +2,7 @@
 
 use super::ClientError;
 use super::error::{E_CORE_INPUT, E_CORE_LIMIT, E_CORE_MLS};
-use crate::cbor::{Decoder, Encoder, decode_strict};
+use crate::cbor::{CborError, Decoder, Encoder, decode_strict};
 use crate::envelope::Attachment;
 use crate::identity::DeviceList;
 use crate::mls::StorageError;
@@ -27,6 +27,9 @@ pub(crate) struct MessageRow {
     pub franking_tag: [u8; 32],
     pub recv_ts: u64,
     pub deleted: bool,
+    /// The upload class the host stored (web3.7): 0 for a post, 1 for every other type, `None`
+    /// for a legacy row (eight elements, or a null ninth).
+    pub class: Option<u64>,
 }
 pub(crate) struct ApplyResult {
     pub state: u8,
@@ -362,7 +365,15 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
         let n = d.array_len()?;
         let mut rows = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
-            d.array(8)?;
+            // Nine elements since web3.7, the ninth the upload class (uint or null); eight from a
+            // host that predates it. Any other length is a shape error.
+            let len = d.array_len()?;
+            if len != 8 && len != 9 {
+                return Err(CborError::WrongArrayLen {
+                    expected: 9,
+                    actual: len,
+                });
+            }
             rows.push((
                 d.uint()?,
                 d.uint()?,
@@ -372,6 +383,7 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
                 d.bytes_exact::<32>()?,
                 d.uint()?,
                 d.uint()?,
+                if len == 9 { d.opt_uint()? } else { None },
             ));
         }
         Ok(rows)
@@ -379,9 +391,22 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
     .map_err(|e| shape("messages", e))?;
     rows.into_iter()
         .map(
-            |(seq, epoch, uploader_device, blob, commitment, franking_tag, recv_ts, deleted)| {
+            |(
+                seq,
+                epoch,
+                uploader_device,
+                blob,
+                commitment,
+                franking_tag,
+                recv_ts,
+                deleted,
+                class,
+            )| {
                 if deleted > 1 {
                     return Err(shape("messages", format!("deleted {deleted} at seq {seq}")));
+                }
+                if class.is_some_and(|c| c > 1) {
+                    return Err(shape("messages", format!("class {class:?} at seq {seq}")));
                 }
                 Ok(MessageRow {
                     seq,
@@ -392,6 +417,7 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
                     franking_tag,
                     recv_ts,
                     deleted: deleted == 1,
+                    class,
                 })
             },
         )
@@ -759,5 +785,57 @@ mod proposal_limit_tests {
                 .code,
             "E_CORE_LIMIT"
         );
+    }
+}
+
+#[cfg(test)]
+mod message_row_tests {
+    use super::*;
+
+    /// One messages row: the eight elements of web3.6, then `class` when `ninth` is `Some`
+    /// (`Some(None)` writes a null ninth).
+    fn rows(ninth: Option<Option<u64>>, tenth: bool) -> Vec<u8> {
+        let mut e = Encoder::new();
+        let len = 8 + usize::from(ninth.is_some()) + usize::from(tenth);
+        e.array(1)
+            .array(len)
+            .uint(5)
+            .uint(2)
+            .bytes(&[8; 16])
+            .bytes(&[1, 2, 3])
+            .null()
+            .bytes(&[10; 32])
+            .uint(1_758_659_700)
+            .uint(0);
+        if let Some(class) = ninth {
+            e.opt_uint(class);
+        }
+        if tenth {
+            e.uint(0);
+        }
+        e.into_vec()
+    }
+
+    #[test]
+    fn a_nine_element_row_carries_its_class() {
+        let row = &decode_message_rows(&rows(Some(Some(0)), false)).expect("nine")[0];
+        assert_eq!((row.seq, row.class), (5, Some(0)));
+        let row = &decode_message_rows(&rows(Some(Some(1)), false)).expect("nine")[0];
+        assert_eq!(row.class, Some(1));
+    }
+
+    #[test]
+    fn an_eight_element_row_or_a_null_class_is_legacy() {
+        let row = &decode_message_rows(&rows(None, false)).expect("eight")[0];
+        assert_eq!((row.seq, row.recv_ts, row.class), (5, 1_758_659_700, None));
+        let row = &decode_message_rows(&rows(Some(None), false)).expect("null ninth")[0];
+        assert_eq!(row.class, None);
+    }
+
+    #[test]
+    fn ten_elements_or_a_class_of_two_is_a_shape_error() {
+        let code = |b: Vec<u8>| decode_message_rows(&b).err().map(|e| e.code);
+        assert_eq!(code(rows(Some(Some(0)), true)), Some(E_CORE_INPUT));
+        assert_eq!(code(rows(Some(Some(2)), false)), Some(E_CORE_INPUT));
     }
 }

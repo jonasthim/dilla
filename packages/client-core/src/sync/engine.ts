@@ -1,4 +1,4 @@
-import { arr, bin, decode, encode, u64 } from '../cbor';
+import { arr, bin, CborError, decode, encode, u64, type CborInput } from '../cbor';
 import { CoreError, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id, type OutboxRow, type SendRequest } from '../core-port';
 import { Op, type Frame } from '../gateway/frames';
 import type { Gateway, GatewayEvent, ReadyInfo } from '../gateway/gateway';
@@ -191,8 +191,16 @@ export class SyncEngine implements SyncInternals {
         if (p[3] !== null) u64(p[3]);
         bin(p[4]); hs = encode([p]); ms = encode([]);
       } else {
-        const p = arr(f.payload, 6); seq = u64(p[0]); u64(p[1]); bin(p[2], 16); bin(p[3]); bin(p[4], 32); u64(p[5]);
-        hs = encode([]); ms = encode([[p[0]!, p[1]!, p[2]!, p[3]!, null, p[4]!, p[5]!, 0]]);
+        // web3.7: a 7th element is the upload class (0, 1 or null), carried as the row's 9th; six elements (a web3.6
+        // host) keep the 8-element row.
+        const p = arr(f.payload); if (p.length !== 6 && p.length !== 7) throw new CborError('E_CBOR_SHAPE', 'message.ct has 6 or 7 elements');
+        seq = u64(p[0]); u64(p[1]); bin(p[2], 16); bin(p[3]); bin(p[4], 32); u64(p[5]);
+        const row: CborInput[] = [p[0]!, p[1]!, p[2]!, p[3]!, null, p[4]!, p[5]!, 0];
+        if (p.length === 7) {
+          if (p[6] !== null && p[6] !== 0n && p[6] !== 1n) throw new CborError('E_CBOR_SHAPE', 'class is 0, 1 or null');
+          row.push(p[6] ?? null);
+        }
+        hs = encode([]); ms = encode([row]);
       }
     } catch { this.requestCatchUp(g); return; }
     if (seq < r.nextSeq) return;

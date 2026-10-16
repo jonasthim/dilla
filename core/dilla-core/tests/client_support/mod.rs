@@ -1269,6 +1269,9 @@ pub struct MsgRow {
     pub franking_tag: [u8; 32],
     pub recv_ts: u64,
     pub deleted: bool,
+    /// The upload class the host stored (web3.7): `Some` serves the row with nine elements, `None`
+    /// with the legacy eight.
+    pub class: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1322,7 +1325,7 @@ pub fn encode_messages(rows: &[&MsgRow]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(rows.len());
     for m in rows {
-        e.array(8)
+        e.array(if m.class.is_some() { 9 } else { 8 })
             .uint(m.seq)
             .uint(m.epoch)
             .bytes(&m.uploader)
@@ -1331,6 +1334,9 @@ pub fn encode_messages(rows: &[&MsgRow]) -> Vec<u8> {
             .bytes(&m.franking_tag)
             .uint(m.recv_ts)
             .uint(u64::from(m.deleted));
+        if let Some(class) = m.class {
+            e.uint(class);
+        }
     }
     e.into_vec()
 }
@@ -1563,21 +1569,41 @@ impl Relay {
         Ok(pair(seq, epoch))
     }
 
-    /// POST /v1/groups/{id}/message: [epoch, private_message] → [seq, franking_tag, recv_ts].
+    /// POST /v1/groups/{id}/message: [epoch, private_message, class] → [seq, franking_tag,
+    /// recv_ts]. A legacy two-element body stores no class (web3.7).
     pub fn post_message(
         &mut self,
         uploader: [u8; 16],
         body: &[u8],
     ) -> Result<Vec<u8>, &'static str> {
-        let (epoch, blob) = decode_strict(body, |d| {
-            d.array(2)?;
-            Ok((d.uint()?, d.bytes()?.to_vec()))
+        let (epoch, blob, class) = decode_strict(body, |d| {
+            let len = d.array_len()?;
+            let (epoch, blob) = (d.uint()?, d.bytes()?.to_vec());
+            let class = match len {
+                2 => None,
+                3 => Some(d.uint()?),
+                _ => {
+                    return Err(dilla_core::cbor::CborError::WrongArrayLen {
+                        expected: 3,
+                        actual: len,
+                    });
+                }
+            };
+            Ok((epoch, blob, class))
         })
         .map_err(|_| "E_INVALID_REQUEST")?;
-        if epoch != self.epoch() {
-            return Err("E_COMMIT_INVALID");
+        if epoch != self.epoch() || class.is_some_and(|c| c > 1) {
+            return Err(if epoch != self.epoch() {
+                "E_COMMIT_INVALID"
+            } else {
+                "E_INVALID_REQUEST"
+            });
         }
-        Ok(self.push_message(uploader, epoch, Some(blob), false))
+        let answer = self.push_message(uploader, epoch, Some(blob), false);
+        if let Some(row) = self.messages.last_mut() {
+            row.class = class;
+        }
+        Ok(answer)
     }
 
     /// Appends a message row as the delivery service stores it; answers the 200 body.
@@ -1601,6 +1627,7 @@ impl Relay {
             franking_tag,
             recv_ts,
             deleted,
+            class: None,
         });
         let mut e = Encoder::new();
         e.array(3).uint(seq).bytes(&franking_tag).uint(recv_ts);

@@ -100,6 +100,8 @@ fn a_pruned_row_served_at_a_seq_already_stored_is_skipped() {
         franking_tag: [0x01; 32],
         recv_ts: NOW,
         deleted: false,
+
+        class: None,
     };
     let applied = apply(&mut b, &[&pruned], mine);
     assert!(applied.new_seqs.is_empty());
@@ -447,9 +449,11 @@ fn an_own_echo_without_a_served_commitment_is_judged_by_its_ciphertext() {
     let (_, body) = b.encrypt(&third);
     let in_flight = commitment_of(
         &decode_strict(&body, |d| {
-            d.array(2)?;
+            d.array(3)?;
             d.uint()?;
-            Ok(d.bytes()?.to_vec())
+            let blob = d.bytes()?.to_vec();
+            d.uint()?;
+            Ok(blob)
         })
         .expect("message body"),
     );

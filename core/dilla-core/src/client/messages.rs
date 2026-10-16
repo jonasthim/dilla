@@ -21,6 +21,10 @@ pub(crate) const STATUS_DELETED: i64 = 2;
 pub(crate) const REASON_PRUNED: &str = "E_PRUNED";
 pub(crate) const REASON_OWN_UNKNOWN: &str = "E_OWN_UNKNOWN";
 pub(crate) const REASON_SENDER_MISMATCH: &str = "E_SENDER_MISMATCH";
+/// web3.7 (R5): the host's upload class disagrees with the decrypted type. The row is stored
+/// unreadable with type [`TYPE_CLASS_MISMATCH`], outside every displayable and counted query.
+pub(crate) const REASON_CLASS_MISMATCH: &str = "E_CLASS_MISMATCH";
+pub(crate) const TYPE_CLASS_MISMATCH: i64 = 255;
 
 pub(super) const TIMELINE_SQL: &str = "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
      m.sender_kind,m.sender_tier,m.msg_id,m.type,m.body,m.edit_body,m.edit_seq,m.reply_to,m.envelope,m.mention, \
@@ -607,8 +611,18 @@ impl ClientCore {
                     )?;
                     Ok(())
                 })?;
+                // web3.7: the upload class, 0 for a post and 1 for every other type; the host
+                // enforces send and slow mode on class 0 and relays it to every reader.
+                let class = if env.kind == EnvelopeType::Message {
+                    0
+                } else {
+                    1
+                };
                 let mut body = Encoder::new();
-                body.array(2).uint(epoch).bytes(&wire::tls(&message)?);
+                body.array(3)
+                    .uint(epoch)
+                    .bytes(&wire::tls(&message)?)
+                    .uint(class);
                 Ok(body.into_vec())
             });
             if result.is_ok() {

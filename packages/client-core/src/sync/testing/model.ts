@@ -1275,7 +1275,12 @@ export class ModelCore implements CorePort {
     this.log('groupApply', groupId);
     const g = this.must(groupId);
     const hs = arr(decode(handshakes)).map((r) => arr(r, 5));
-    const ms = arr(decode(messages)).map((r) => arr(r, 8));
+    // web3.7: nine elements, the 9th the upload class; eight from a host that predates it (wire.rs decode_message_rows).
+    const ms = arr(decode(messages)).map((r) => {
+      const a = arr(r);
+      if (a.length !== 8 && a.length !== 9) throw coreError('E_CORE_INPUT', `messages row has ${String(a.length)} elements`);
+      return a;
+    });
     this.applyCalls.push({ g: toHex(groupId), through, handshakes: hs.length, messages: ms.length });
     if (g.state !== 2) throw coreError('E_CORE_STATE', `state ${String(g.state)}`);
     const rows = new Map<bigint, { seq: bigint; hs: CborValue[] | null; msg: CborValue[] | null }>();
