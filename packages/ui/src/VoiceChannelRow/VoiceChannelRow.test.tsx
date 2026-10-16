@@ -44,6 +44,13 @@ describe('VoiceChannelRow', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
+  it('the row marker is an ok dot with people in voice and an off dot with nobody', () => {
+    const { rerender, container } = render(<VoiceChannelRow {...base} participants={[]} />);
+    expect(container.querySelector('.d-voice-row__glyph .d-state-dot')).toHaveAttribute('data-tone', 'off');
+    rerender(<VoiceChannelRow {...base} participants={[person('bo', {})]} />);
+    expect(container.querySelector('.d-voice-row__glyph .d-state-dot')).toHaveAttribute('data-tone', 'ok');
+  });
+
   it('with nobody in voice shows no count and no sub-rows; current and joined are marked', () => {
     const { rerender } = render(<VoiceChannelRow {...base} participants={[]} />);
     expect(screen.queryByRole('list')).toBeNull();
@@ -90,7 +97,8 @@ describe('VoiceChannelRow', () => {
   it('a state is a glyph plus a word in the sub-rows; the glyph is hidden from speech (M7)', () => {
     render(<VoiceChannelRow {...base} participants={[person('bo', { muted: true, screen: true })]} />);
     const row = screen.getByRole('listitem');
-    expect(row.querySelectorAll('[aria-hidden="true"]')).toHaveLength(2);
+    expect(row.querySelectorAll('.d-voice-row__glyph-state[aria-hidden="true"]')).toHaveLength(2);
+    expect(row.querySelector('[data-icon="monitor-up"]')).not.toBeNull();
     expect(spoken(row)).toBe('bo muted sharing screen');
   });
 

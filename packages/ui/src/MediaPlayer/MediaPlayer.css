@@ -14,7 +14,7 @@
 .d-media-player__play .d-btn__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-media-player__glyph { margin-right: 0.5rem; color: var(--accent); }
 .d-media-player__loading { margin: 0; font-size: var(--text-sm); color: var(--fg-2); }
-.d-media-player__loading::before { content: "◌ " / ""; }
+.d-media-player__loading::before { content: "" / ""; display: inline-block; width: 0.75em; height: 0.75em; margin-right: 0.375em; border: 1.5px dashed currentColor; border-radius: 50%; vertical-align: -0.0625em; }
 /* The status region is always present (so the error text is announced); empty, it takes no room. */
 .d-media-player__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
 .d-media-player__error:not(:empty) { margin-bottom: 0.375rem; }

@@ -35,7 +35,7 @@ describe('ChannelList', () => {
     expect(nav).toHaveClass('d-channel-list');
     expect(within(nav).getByRole('heading', { level: 1, name: 'Midgard Crew' })).toBeInTheDocument();
     const rows = within(nav).getAllByRole('button');
-    expect(rows.map(r => r.textContent?.replace(/[#♪◌]/g, '').trim())).toEqual(['general', 'lfg', 'loot', 'longhouse']);
+    expect(rows.map(r => r.textContent?.replace(/[#♪]/g, '').trim())).toEqual(['general', 'lfg', 'loot', 'longhouse']);
     expect(screen.getByRole('button', { name: 'loot' })).toHaveAttribute('aria-current', 'page');
     expect(within(screen.getByRole('button', { name: /^lfg/ })).getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });

@@ -1,0 +1,16 @@
+/* A state dot: shape and fill carry the tone as well as colour (a ring, a dashed ring, a half fill, a bar). */
+.d-state-dot { position: relative; display: inline-block; flex-shrink: 0; box-sizing: border-box; width: 0.5rem; height: 0.5rem; border-radius: 50%; vertical-align: middle; }
+.d-state-dot[data-size="md"] { width: 0.625rem; height: 0.625rem; }
+.d-state-dot[data-tone="ok"] { background: var(--ok); }
+.d-state-dot[data-tone="warn"] { background: var(--warn); }
+.d-state-dot[data-tone="danger"] { background: var(--danger); }
+.d-state-dot[data-tone="off"] { border: 1.5px solid var(--fg-3); background: transparent; }
+.d-state-dot[data-tone="pending"] { border: 1.5px dashed var(--fg-3); }
+.d-state-dot[data-tone="idle"] { background: linear-gradient(90deg, var(--warn) 50%, transparent 50%); border: 1.5px solid var(--warn); }
+.d-state-dot[data-tone="dnd"] { background: var(--danger); }
+.d-state-dot[data-tone="dnd"]::after { content: ""; position: absolute; top: 50%; left: 20%; width: 60%; height: 1.5px; transform: translateY(-50%); background: var(--bg); }
+@media (forced-colors: active) {
+  .d-state-dot { border: 1.5px solid CanvasText; }
+  .d-state-dot[data-tone="ok"], .d-state-dot[data-tone="warn"], .d-state-dot[data-tone="danger"], .d-state-dot[data-tone="dnd"] { background: CanvasText; }
+  .d-state-dot[data-tone="dnd"]::after { background: Canvas; }
+}

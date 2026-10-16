@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 import './StatusBar.css';
+import { Icon } from '../Icon/Icon.tsx';
+import { StateDot } from '../StateDot/StateDot.tsx';
 
 export function StatusBar({ position, label, children }: { position: 'top' | 'bottom'; label: string; children: ReactNode }) {
   // A region, not a toolbar: the bar is a strip of status facts with the
@@ -9,7 +11,7 @@ export function StatusBar({ position, label, children }: { position: 'top' | 'bo
 }
 
 /** Tone is never colour alone: a glyph carries it for sighted users… */
-const TONE_GLYPH = { ok: '●', warn: '▲', danger: '✕' } as const;
+const TONE_GLYPH = { ok: <StateDot tone="ok" />, warn: <Icon name="triangle-alert" size={12} />, danger: <Icon name="x" size={12} /> } as const;
 /** …and a visually hidden word carries it for assistive tech. */
 const TONE_TEXT = { ok: 'ok', warn: 'warning', danger: 'error' } as const;
 

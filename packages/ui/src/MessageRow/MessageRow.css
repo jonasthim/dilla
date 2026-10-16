@@ -5,7 +5,7 @@
 .d-message-row__author { font-weight: var(--weight-display); color: var(--fg); }
 .d-message-row__time, .d-message-row__state { font-size: var(--text-xs); color: var(--fg-3); }
 .d-message-row[data-state="failed"] .d-message-row__state { color: var(--danger); }
-.d-message-row[data-state="failed"] .d-message-row__state::before { content: "✕ " / ""; }
+.d-message-row[data-state="failed"] .d-message-row__state::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
 .d-message-row__body { margin: 0; font-size: var(--text-base); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
 .d-message-row[data-state="pending"] .d-message-row__body { color: var(--fg-2); }
 .d-message-row__note { margin: 0; font-size: var(--text-sm); font-style: italic; color: var(--fg-3); }
@@ -38,7 +38,7 @@
 .d-message-row__pending { margin: 0; font-size: var(--text-xs); color: var(--fg-3); display: flex; gap: 0.5rem; align-items: center; }
 /* A failed action: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */
 .d-message-row__pending[data-tone="failed"] { color: var(--danger); }
-.d-message-row__pending[data-tone="failed"] .d-message-row__pending-label::before { content: "✕ " / ""; }
+.d-message-row__pending[data-tone="failed"] .d-message-row__pending-label::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
 /* Mention pills: mine in the mention colour, a broadcast outlined (bold when it reaches me), anyone else quiet. */
 .d-mention { padding: 0 0.25rem; border-radius: var(--r-sm); background: var(--surface-hi); color: var(--fg); }
 .d-mention[data-me="true"]:not([data-broadcast]) { background: var(--mention); color: var(--mention-ink); }

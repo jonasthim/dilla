@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 import { VOICE_ICONS, VOICE_SHORTCUTS, VoiceToolbar, voiceWhy, type ToolbarControl, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
+import { Icon } from '../Icon/Icon.tsx';
+import { StateDot } from '../StateDot/StateDot.tsx';
 
 export interface VoiceDockProps {
   phase: 'connecting' | 'connected' | 'reconnecting' | 'paused';
@@ -53,7 +55,10 @@ export interface VoiceDockProps {
   onLeave(): void;
 }
 
-const PHASE_GLYPH = { connecting: '◌', connected: '●', reconnecting: '◌', paused: '‖' } as const;
+const PHASE_GLYPH = {
+  connecting: <StateDot tone="pending" />, connected: <StateDot tone="ok" />,
+  reconnecting: <StateDot tone="pending" />, paused: <Icon name="pause" size={14} />,
+} as const;
 
 /**
  * The voice dock above the user panel while this device is in voice: where it is (a glyph plus the words), the

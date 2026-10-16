@@ -14,7 +14,8 @@ describe('Tag', () => {
   it('renders the readable-channel glyph with an accessible name and no visible text', () => {
     render(<Tag kind="readable" />);
     const glyph = screen.getByRole('img', { name: 'Readable by this server' });
-    expect(glyph).toHaveTextContent('◌');
+    expect(glyph.querySelector('[data-icon="eye"]')).not.toBeNull();
+    expect(glyph.textContent).toBe('');
   });
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><Tag kind="web" /><Tag kind="readable" /></div>);

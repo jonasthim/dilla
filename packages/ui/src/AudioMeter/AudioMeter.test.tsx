@@ -22,6 +22,16 @@ describe('AudioMeter', () => {
     expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '0');
   });
 
+  it('bar i rises from 30% to 100% of the meter height', () => {
+    const { container } = render(<AudioMeter level={5} label="input level" />);
+    const bars = Array.from(container.querySelectorAll<HTMLElement>('.d-audio-meter__bar'));
+    expect(bars).toHaveLength(12);
+    bars.forEach((bar, i) => expect(bar.style.height).toBe(`${30 + Math.round((70 * i) / 11)}%`));
+    expect(bars[0].style.height).toBe('30%');
+    expect(bars[11].style.height).toBe('100%');
+    expect(bars.map(b => b.dataset.on).join(',')).toBe('true,true,true,true,true,false,false,false,false,false,false,false');
+  });
+
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
     const { container } = render(<div className="d-root"><AudioMeter {...(meta.args as AudioMeterProps)} /></div>);

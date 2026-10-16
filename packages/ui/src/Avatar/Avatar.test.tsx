@@ -46,6 +46,12 @@ describe('Avatar', () => {
     render(<Avatar name="lina" presence="idle" />);
     expect(screen.getByRole('img', { name: 'lina, idle' }).querySelector('[data-presence="idle"]')).not.toBeNull();
   });
+  it.each([['online', 'ok'], ['idle', 'idle'], ['dnd', 'dnd'], ['offline', 'off']] as const)('presence %s is a %s state dot', (presence, tone) => {
+    render(<Avatar name="lina" presence={presence} />);
+    const dot = screen.getByRole('img', { name: `lina, ${presence}` }).querySelector('.d-state-dot');
+    expect(dot).toHaveAttribute('data-tone', tone);
+    expect(dot).toHaveAttribute('data-size', 'md');
+  });
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><Avatar name="erik" presence="dnd" size="lg" /></div>);
     await expectNoAxeViolations(container);

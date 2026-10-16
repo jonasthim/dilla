@@ -20,7 +20,7 @@ describe('ChannelHeader', () => {
 
   it('shows the readable glyph with its default name, or the name the caller gives', () => {
     const { rerender } = render(<ChannelHeader name="lfg" readable />);
-    expect(screen.getByRole('img', { name: 'Readable by this server' })).toHaveTextContent('◌');
+    expect(screen.getByRole('img', { name: 'Readable by this server' }).querySelector('[data-icon="eye"]')).not.toBeNull();
     rerender(<ChannelHeader name="lfg" readable readableLabel="readable by dilla.thim.dev" />);
     expect(screen.getByRole('img', { name: 'readable by dilla.thim.dev' })).toBeInTheDocument();
   });

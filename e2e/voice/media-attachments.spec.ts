@@ -114,8 +114,9 @@ test('bob plays alice\'s webm and WAV inline; a truncated file shows the error a
       const p = players.nth(2);
       await p.getByRole('button', { name: copy('media.play', { name: 'broken.webm' }), exact: true }).click();
       await expect(p).toHaveAttribute('data-media-state', 'error', { timeout: WAIT });
-      // The error line is a glyph (aria-hidden) and the text, in the player's status region.
-      await expect(p.locator('.d-media-player__error')).toHaveText(`✕${copy('media.error')}`);
+      // The error line is an x icon (aria-hidden) and the text, in the player's status region.
+      await expect(p.locator('.d-media-player__error [data-icon="x"]')).toHaveCount(1);
+      await expect(p.locator('.d-media-player__error')).toHaveText(copy('media.error'));
       await expect(p.locator('.d-media-player__save')).toHaveText(copy('media.save'));
     });
 

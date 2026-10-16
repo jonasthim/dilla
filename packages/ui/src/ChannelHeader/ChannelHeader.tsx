@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import './ChannelHeader.css';
+import { Icon } from '../Icon/Icon.tsx';
 
 export interface ChannelHeaderProps {
   name: string;
@@ -22,7 +23,7 @@ export function ChannelHeader({ name, topic, readable, readableLabel, kind = 'ch
       <h2 className="d-channel-header__name">
         <span className="d-channel-header__bracket" aria-hidden="true">{kind === 'dm' ? '[ @ ' : '[ # '}</span><span className="d-channel-header__text">{name}</span><span className="d-channel-header__bracket" aria-hidden="true"> ]</span>
       </h2>
-      {readable ? <span className="d-channel-header__readable" role="img" aria-label={readableLabel ?? 'Readable by this server'}>◌</span> : null}
+      {readable ? <span className="d-channel-header__readable" role="img" aria-label={readableLabel ?? 'Readable by this server'}><Icon name="eye" size={14} /></span> : null}
       {topic ? <p className="d-channel-header__topic">{topic}</p> : null}
       {actions !== undefined ? <div className="d-channel-header__actions">{actions}</div> : null}
     </header>

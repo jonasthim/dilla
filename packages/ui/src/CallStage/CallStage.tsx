@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 're
 import { CallTile, type CallTileProps } from '../CallTile/CallTile.tsx';
 import '../Button/Button.css';
 import './CallStage.css';
+import { Icon } from '../Icon/Icon.tsx';
 
 export interface CallStageNotice {
   /**
@@ -31,7 +32,7 @@ export interface CallStageProps {
   labels: { code: string; codeHelp: string; empty: string; tiles: string };
 }
 
-const NOTICE_GLYPH = { paused: '‖', blocked: '!', info: '›' } as const;
+const NOTICE_GLYPH = { paused: <Icon name="pause" size={14} />, blocked: '!', info: '›' } as const;
 
 /** Six groups of five digits; anything that is not 30 digits is shown as given. */
 function groupCode(code: string): string {

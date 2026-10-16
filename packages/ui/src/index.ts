@@ -6,6 +6,8 @@ export { Tag } from './Tag/Tag.tsx';
 export type { TagKind } from './Tag/Tag.tsx';
 export { KeyHint } from './KeyHint/KeyHint.tsx';
 export type { KeyHintProps } from './KeyHint/KeyHint.tsx';
+export { StateDot } from './StateDot/StateDot.tsx';
+export type { StateDotProps, StateDotTone } from './StateDot/StateDot.tsx';
 export { Icon } from './Icon/Icon.tsx';
 export type { IconName, IconProps } from './Icon/Icon.tsx';
 export { Avatar, AVATAR_HUES } from './Avatar/Avatar.tsx';

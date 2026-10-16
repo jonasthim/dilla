@@ -5,9 +5,21 @@ import { ICONS, type IconName } from './icons.ts';
 
 const NAMES = ['mic', 'mic-off', 'headphones', 'headphone-off', 'video', 'video-off', 'monitor-up', 'monitor-x', 'phone-off'] as const;
 
+const SHELL_NAMES = [
+  'server', 'message-square', 'activity', 'user', 'chevron-left', 'chevron-right', 'chevron-down', 'x', 'check',
+  'triangle-alert', 'pause', 'ellipsis-vertical', 'hash', 'volume-2', 'megaphone', 'messages-square', 'file', 'play', 'eye',
+] as const;
+
 describe('Icon', () => {
-  it('vendors exactly the nine voice icons', () => {
-    expect(Object.keys(ICONS).sort()).toEqual([...NAMES].sort());
+  it('vendors exactly the voice icons and the shell icons', () => {
+    expect(Object.keys(ICONS).sort()).toEqual([...NAMES, ...SHELL_NAMES].sort());
+  });
+
+  it.each(SHELL_NAMES)('%s renders its geometry', (name: IconName) => {
+    const { container } = render(<Icon name={name} />);
+    const svg = container.querySelector('svg');
+    expect(svg).toHaveAttribute('data-icon', name);
+    expect(svg?.children.length).toBeGreaterThan(0);
   });
 
   it.each(NAMES)('%s renders one hidden, unfocusable, monoline svg with its geometry', (name: IconName) => {
