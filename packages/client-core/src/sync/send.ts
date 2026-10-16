@@ -14,6 +14,7 @@ function owner(s: SyncInternals, msgId: Id): Id | undefined {
 export function sendRequest(s: SyncInternals, g: Id, request: SendRequest): Id {
   if (s.stopped()) throw new SyncError('E_SYNC_STOPPED');
   const id = s.deps.core.sendPrepare(g, request, BigInt(Math.floor(s.deps.now() / 1000)));
+  s.queued.add(toHex(id));
   s.deps.onOutboxChanged(g); s.requestDrain(g); return id;
 }
 export function sendMessage(s: SyncInternals, g: Id, text: string): Id {
@@ -55,7 +56,7 @@ export function discardSend(s: SyncInternals, msgId: Id): void {
   // The row's attachment references are the controller's to delete (L-TS-34).
   if (row !== undefined) s.deps.onDiscarded(g, row);
   s.reframedOnce.delete(`${toHex(g)}:${toHex(msgId)}`); s.trustRetried.delete(`${toHex(g)}:${toHex(msgId)}`);
-  s.slowed.delete(toHex(msgId));
+  s.slowed.delete(toHex(msgId)); s.queued.delete(toHex(msgId));
   s.deps.onOutboxChanged(g);
 }
 async function afterLostResponse(s: SyncInternals, g: Id, msgId: Id): Promise<void> {
@@ -84,6 +85,16 @@ function armEchoWait(s: SyncInternals, g: Id, msgId: Id): void {
   });
   s.echoWait.set(hex, { msgHex, timer });
 }
+/** FX-core (walk #2): the outbox in queue order. The core lists it by (created second, msg_id), and a msg_id is random,
+ *  so two rows queued within one second can come back swapped: a requeued post would then upload after a later one.
+ *  The rows this engine queued keep the order it queued them in. A row it did not queue was queued before it started,
+ *  so it is older than all of those and keeps the core's place, ahead of them. */
+function inQueueOrder(s: SyncInternals, rows: readonly OutboxRow[]): OutboxRow[] {
+  const rank = new Map<string, number>();
+  for (const h of s.queued) rank.set(h, rank.size);
+  return rows.map((x, at) => ({ x, at, r: rank.get(toHex(x.msgId)) ?? -1 }))
+    .sort((a, b) => a.r - b.r || a.at - b.at).map((e) => e.x);
+}
 /** A fold whose target is a post (type 0) still queued in the outbox. */
 function targetsQueuedPost(rows: readonly OutboxRow[], fold: OutboxRow): boolean {
   const target = fold.replyTo;
@@ -105,7 +116,7 @@ function foldBesideWait(s: SyncInternals, rows: readonly OutboxRow[]): OutboxRow
 export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
   const hex = toHex(g);
   if (s.stopped() || s.echoWait.has(hex) || s.row(g)?.state !== 2) return;
-  const rows = s.deps.core.outbox(g);
+  const rows = inQueueOrder(s, s.deps.core.outbox(g));
   const inFlight = rows.find((x) => x.state === 1);
   if (inFlight !== undefined) { await afterLostResponse(s, g, inFlight.msgId); return; }
   const row: OutboxRow | undefined = s.slowWait.has(hex) ? foldBesideWait(s, rows) : rows.find((x) => x.state === 0);
@@ -169,6 +180,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
       s.deps.onOutboxChanged(g); s.count425.delete(msgHex); s.requestCatchUp(g); s.requestDrain(g); return;
     }
     s.reframedOnce.delete(reframeKey); s.trustRetried.delete(reframeKey); s.deps.onOutboxChanged(g); s.count425.delete(msgHex);
+    s.queued.delete(msgHex);
     // The clear first, so the countdown onPosted starts is not cleared after it.
     if (s.slowed.delete(msgHex) && row.type === 0 && !s.slowWait.has(hex)) s.deps.onSlow(g, 0, false);
     s.deps.onPosted(g, row.type);

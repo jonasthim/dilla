@@ -781,4 +781,40 @@ describe('slow mode in the send lane (CB2)', () => {
     expect(sent()).toEqual(['earlier', 'P']);
   });
 
+  // FX-core (walk #2). The core lists the outbox by (created second, msg_id), and a real msg_id is random, so two rows
+  // queued within one second can come back in either order. The model's ids count up; reversing its ties stands in for
+  // the draw that put the later row first.
+  const tiesReversed = (): void => {
+    const listed = d.core.outbox.bind(d.core);
+    vi.spyOn(d.core, 'outbox').mockImplementation((group) => listed(group).map((x, at) => ({ x, at }))
+      .sort((a, b) => (a.x.created !== b.x.created ? (a.x.created < b.x.created ? -1 : 1) : b.at - a.at))
+      .map((e) => e.x));
+  };
+
+  it('two posts in one second, the first refused 429: the host receives them in queue order', async () => {
+    tiesReversed();
+    ds.inject('postMessage', { fail: slowed(5000) });
+    d.engine.send(g, 'slow one');
+    await settle();
+    d.engine.send(g, 'slow two');
+    await settle();
+    expect(posts()).toBe(1);
+    await clock.advance(5000);
+    expect(sent()).toEqual(['slow one', 'slow two']);
+    expect(d.core.outbox(g)).toEqual([]);
+  });
+
+  it('a 429 on the first post while a second is already queued: the host receives them in queue order', async () => {
+    tiesReversed();
+    ds.inject('postMessage', { fail: slowed(5000) });
+    d.engine.send(g, 'slow one');
+    d.engine.send(g, 'slow two');
+    await settle();
+    expect(posts()).toBe(1);
+    expect(sent()).toEqual([]);
+    await clock.advance(5000);
+    expect(sent()).toEqual(['slow one', 'slow two']);
+    expect(posts()).toBe(3);
+  });
+
 });
