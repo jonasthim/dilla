@@ -114,6 +114,20 @@ func (h *Calls) admittedAs(room string, dev id.ID, joinedAt time.Time) (admissio
 	return admission{}, false
 }
 
+// latestFreshAdmission is dev's latest admission to room by a fresh join (a signal resume is no new
+// session), and whether one is remembered.
+func (h *Calls) latestFreshAdmission(room string, dev id.ID) (admission, bool) {
+	h.memMu.Lock()
+	defer h.memMu.Unlock()
+	list := h.admissions[admitKey{room: room, dev: dev}]
+	for i := len(list) - 1; i >= 0; i-- {
+		if !list[i].resume {
+			return list[i], true
+		}
+	}
+	return admission{}, false
+}
+
 // newerAdmission reports whether dev was admitted to room again after than (the SFU's clock): a
 // fresh join's admission whose sfuAt is after it. A leave of the session admitted at than is then
 // of an earlier session (a page reload and rejoin), and the newer session's own events decide its

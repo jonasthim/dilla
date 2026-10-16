@@ -62,6 +62,12 @@ type CallEvents struct {
 	// (call, device), stored by SetSelf for the voice snapshot (L-HTTP-100) and cleared when the
 	// device leaves the call, is evicted from it, or the call ends.
 	self map[announceKey]uint64
+	// deferred is every leave of an earlier admission held back because the device was admitted again
+	// by a fresh join (a reload): it completes — flags 0, the self flags cleared, the newer leaf's
+	// Remove — on the retry loop once that admission's join window passed with no participant_joined
+	// and the SFU does not list the device (completeDeferredLeaves), and ends when the newer session
+	// joins or the call ends.
+	deferred map[announceKey]deferredLeave
 
 	// amu guards the voice_state announcer's queue (voicestate.go): the latest flags per (call,
 	// device), whether its goroutine runs, and whether it is delivering a batch.
@@ -73,6 +79,12 @@ type CallEvents struct {
 
 type callRoom struct {
 	devices map[id.ID]*callDevice
+}
+
+// deferredLeave is a held-back leave: the room the leaving session was in and the device's user.
+type deferredLeave struct {
+	room string
+	user id.ID
 }
 
 type callDevice struct {
@@ -148,8 +160,12 @@ func (c *CallEvents) SetSelf(call, dev id.ID, bits uint64) {
 	c.self[k] = bits & 3
 }
 
-// inCallLocked reports whether dev is in a room of call as the call events saw it. c.mu is held.
+// inCallLocked reports whether dev is in a room of call as the call events saw it, a device whose
+// leave is deferred for its newer session included. c.mu is held.
 func (c *CallEvents) inCallLocked(call, dev id.ID) bool {
+	if _, ok := c.deferred[announceKey{call: call, dev: dev}]; ok {
+		return true
+	}
 	prefix := call.String() + "-"
 	for name, r := range c.rooms {
 		if strings.HasPrefix(name, prefix) && r.devices[dev] != nil {
@@ -394,6 +410,7 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 	c.mu.Lock()
 	r := c.roomLocked(row.LivekitRoom)
 	r.devices[dev] = &callDevice{user: d.UserID, sid: sid, tracks: map[string]livekit.TrackSource{}, member: member}
+	delete(c.deferred, announceKey{call: row.CallID, dev: dev}) // the newer session came: no leave is pending
 	flags := VoiceInCall | c.selfLocked(row.CallID, dev)
 	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
@@ -531,8 +548,10 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 	// takes only the calls' memMu, which nothing holds while taking c.mu.
 	readmitted := joined != nil && c.calls.newerAdmission(row.LivekitRoom, dev, joined.sfuAt)
 	if !otherSession && !readmitted {
-		// The device is out of the call: its self flags go with the session (a rejoin starts clean).
+		// The device is out of the call: its self flags go with the session (a rejoin starts clean),
+		// and a leave deferred for it is done with (this one announces it out).
 		delete(c.self, announceKey{call: row.CallID, dev: dev})
+		delete(c.deferred, announceKey{call: row.CallID, dev: dev})
 	}
 	propose := !otherSession && now.Sub(c.proposed[key]) >= proposeWindow
 	if propose {
@@ -577,7 +596,14 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 	}
 	if joined != nil && c.calls.newerAdmission(row.LivekitRoom, dev, joined.sfuAt) {
 		// The device was admitted again since this session's admission: it is joining under its
-		// newer session, whose participant_joined and leave announce it.
+		// newer session, whose participant_joined and leave announce it. Should that session never
+		// join, the retry loop completes this leave after its join window (completeDeferredLeaves).
+		c.mu.Lock()
+		if c.deferred == nil {
+			c.deferred = map[announceKey]deferredLeave{}
+		}
+		c.deferred[announceKey{call: row.CallID, dev: dev}] = deferredLeave{room: row.LivekitRoom, user: user}
+		c.mu.Unlock()
 		return
 	}
 	c.announce(ctx, ch, row.CallID, user, dev, 0)
@@ -711,6 +737,12 @@ func (c *CallEvents) Evict(ctx context.Context, groupID id.ID, removed []id.ID) 
 			}
 		}
 		delete(c.self, announceKey{call: row.CallID, dev: dev})
+		if dl, ok := c.deferred[announceKey{call: row.CallID, dev: dev}]; ok {
+			delete(c.deferred, announceKey{call: row.CallID, dev: dev})
+			if !known {
+				user, known = dl.user, true
+			}
+		}
 		c.setGauge(c.liveLocked())
 		c.mu.Unlock()
 		if known && chErr == nil {
@@ -730,9 +762,24 @@ func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 			delete(c.self, k)
 		}
 	}
+	// A device whose leave was deferred for a newer session that never joined is announced out too.
+	out := map[id.ID]id.ID{} // device → user
+	if r != nil {
+		for dev, d := range r.devices {
+			out[dev] = d.user
+		}
+	}
+	for k, dl := range c.deferred {
+		if k.call == row.CallID {
+			delete(c.deferred, k)
+			if _, ok := out[k.dev]; !ok {
+				out[k.dev] = dl.user
+			}
+		}
+	}
 	c.setGauge(c.liveLocked())
 	c.mu.Unlock()
-	if r == nil || len(r.devices) == 0 {
+	if len(out) == 0 {
 		return
 	}
 	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
@@ -743,9 +790,95 @@ func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 		c.log.ErrorContext(ctx, "reading an ended call's channel failed", "err", err)
 		return
 	}
-	for dev, d := range r.devices {
-		c.announce(ctx, ch, row.CallID, d.user, dev, 0)
+	for dev, user := range out {
+		c.announce(ctx, ch, row.CallID, user, dev, 0)
 	}
+}
+
+// completeDeferredLeaves completes, on the retry loop, each deferred leave whose newer session never
+// joined: once the device's latest fresh admission is older than admissionJoinWindow and the SFU
+// lists the device out of the room, it is announced out (flags 0), its self flags are cleared and the
+// Remove of the newer membership is proposed, bound to it (ds.ErrRemoveTargetGone: the sweep, a
+// commit or the device itself removed it first). A device the SFU lists, a room it cannot list, or
+// an admission still inside its window waits for the next pass; a newer session's participant_joined,
+// its leave, an eviction or the call's end drops the deferral first.
+func (c *CallEvents) completeDeferredLeaves(ctx context.Context) {
+	c.mu.Lock()
+	pending := make(map[announceKey]deferredLeave, len(c.deferred))
+	for k, dl := range c.deferred {
+		pending[k] = dl
+	}
+	c.mu.Unlock()
+	for k, dl := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+		c.completeDeferred(ctx, k, dl)
+	}
+}
+
+func (c *CallEvents) completeDeferred(ctx context.Context, k announceKey, dl deferredLeave) {
+	drop := func() {
+		c.mu.Lock()
+		if cur, ok := c.deferred[k]; ok && cur == dl {
+			delete(c.deferred, k)
+		}
+		c.mu.Unlock()
+	}
+	row, err := c.repo.GetVoiceSession(ctx, k.call)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (row.Ended != nil || row.LivekitRoom != dl.room)) {
+		drop() // the call ended or moved on: its end announced the device out
+		return
+	}
+	if err != nil {
+		return
+	}
+	newer, ok := c.calls.latestFreshAdmission(dl.room, k.dev)
+	if ok && c.clk.Now().Sub(newer.at) < admissionJoinWindow {
+		return // the newer session may still be connecting
+	}
+	if c.sfu == nil {
+		return
+	}
+	lctx, cancel := sfuCtx(ctx)
+	parts, err := c.sfu.Participants(lctx, dl.room)
+	cancel()
+	if err != nil {
+		return // the room cannot be seen: the next pass decides
+	}
+	for _, p := range parts {
+		if base, _, _ := strings.Cut(p.GetIdentity(), "#"); base == k.dev.String() {
+			return // in the room: its participant_joined is on its way
+		}
+	}
+	c.mu.Lock()
+	cur, still := c.deferred[k]
+	if !still || cur != dl {
+		c.mu.Unlock()
+		return
+	}
+	delete(c.deferred, k)
+	if r := c.rooms[dl.room]; r != nil && r.devices[k.dev] != nil {
+		c.mu.Unlock()
+		return // the newer session's join was processed meanwhile
+	}
+	delete(c.self, k)
+	c.mu.Unlock()
+	c.log.InfoContext(ctx, "a deferred leave completed: the device's newer session never joined",
+		"room", dl.room, "device_id", k.dev.String())
+	if ok && row.GroupID != nil && c.dsvc != nil {
+		err := c.dsvc.ProposeRemoveOfMember(ctx, *row.GroupID, newer.leaf, k.dev, newer.added, id.New())
+		if err != nil && !errors.Is(err, ds.ErrRemoveTargetGone) {
+			c.log.WarnContext(ctx, "proposing the Remove of a device whose newer session never joined failed; the sweep decides",
+				"group_id", row.GroupID.String(), "device_id", k.dev.String(), "err", err)
+		}
+	}
+	ch, err := c.repo.GetChannel(ctx, row.ChannelID)
+	if err != nil {
+		c.log.ErrorContext(ctx, "reading a call's channel failed", "err", err)
+		return
+	}
+	c.announce(ctx, ch, row.CallID, dl.user, k.dev, 0)
 }
 
 // --- the Calls side: every step below runs under the call's lock, or leaves a pending repair. ---

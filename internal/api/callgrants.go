@@ -445,12 +445,16 @@ func (h *Calls) drainPending(ctx context.Context, d grantDeps, ch store.ChannelR
 // next pass. Each call's hold is bounded by callHoldBackground, and the whole pass by retryPassBudget
 // (CALLS-M2: calls that hold only slots spend no repair budget, and each waits up to callLockWait for
 // its lock). A cut or an eviction queued while the pass runs is served between two calls, not after
-// the pass.
+// the pass. First it completes the deferred leaves whose newer session never joined
+// (CallEvents.completeDeferredLeaves).
 func (h *Calls) RetryPending(ctx context.Context) {
 	budget := maxRepairsPerTick
 	pctx, cancel := context.WithTimeout(ctx, retryPassBudget)
 	defer cancel()
 	defer h.flushLeafRemovals(ctx) // a room resync's whole-room reconcile may have decided some
+	if h.events != nil {
+		h.events.completeDeferredLeaves(pctx)
+	}
 	for _, call := range h.leases.trackedCalls() {
 		if budget <= 0 || pctx.Err() != nil {
 			return

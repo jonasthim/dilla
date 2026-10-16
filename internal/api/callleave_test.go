@@ -292,3 +292,90 @@ func TestAZeroJoinTimeBindsTheRecordedMember(t *testing.T) {
 		}
 	})
 }
+
+// deferLeave is the reload whose first session's late leave is deferred: D admitted and joined as
+// PA_1 at leaf 3, then admitted again (A2, leaf 4) by a fresh join that self-mutes before its
+// participant_joined is processed, and PA_1's leave arriving while D is out of the SFU's listing.
+func deferLeave(t *testing.T, f *eventsFixture) {
+	t.Helper()
+	joined := admitFirstSession(t, f)
+	f.e.Clk.Advance(10 * time.Second)
+	placeLeaves(t, f.e, f.group, f.dev, leafAt{leaf: 3, added: 5, removed: 6}, secondAdmission)
+	admitThroughProxy(t, f.calls, f.room, f.dev) // A2
+	f.events.SetSelf(f.callID, f.dev, 1)         // the new session self-mutes
+	f.stub.setPresent(f.room)
+	f.e.Clk.Advance(time.Second)
+	f.sendLeft(t, f.dev, "PA_1", joined)
+	if f.leftAnnounced(f.dev) {
+		t.Fatal("the deferred leave announced D out at once")
+	}
+}
+
+func inParticipants(f *eventsFixture, dev id.ID) bool {
+	for _, p := range f.events.Participants(f.callID) {
+		if p.Device == dev {
+			return true
+		}
+	}
+	return false
+}
+
+// M1/n3: the newer session never joins (its LiveKit join failed, or the page closed). Inside A2's join
+// window the leave stays deferred; once the window has passed with no participant_joined, the retry
+// loop completes it: D is gone from the call, flags 0 is announced, its self flags are cleared, and
+// the newer membership's leaf is removed.
+func TestADeferredLeaveCompletesWhenTheRejoinNeverComes(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	deferLeave(t, f)
+	f.e.Clk.Advance(10 * time.Second) // inside A2's join window
+	f.calls.RetryPending(t.Context())
+	f.events.FlushAnnouncements()
+	if f.leftAnnounced(f.dev) {
+		t.Fatal("the deferred leave completed inside the newer admission's join window")
+	}
+	f.e.Clk.Advance(admissionWindow())
+	f.calls.RetryPending(t.Context())
+	f.events.FlushAnnouncements()
+	if !f.leftAnnounced(f.dev) {
+		t.Fatalf("voice_state = %+v: the rejoin never came and D was never announced out", f.gw.all())
+	}
+	if inParticipants(f, f.dev) {
+		t.Fatal("D is still a participant of the call after its deferred leave completed")
+	}
+	got := f.ds.memberRemovals()
+	if len(got) != 1 || got[0].Leaf != secondAdmission.leaf || got[0].Added != secondAdmission.added {
+		t.Fatalf("membership-bound Removes = %+v, want the one of the never-joined leaf 4 (epoch 7)", got)
+	}
+	// The self flags went with it: D's next session joins without the stale self-mute.
+	admitThroughProxy(t, f.calls, f.room, f.dev)
+	f.e.Clk.Advance(time.Second)
+	f.sendJoined(t, f.dev, "PA_3", f.e.Clk.Now())
+	if last := f.gw.last(); last.Device != f.dev || last.Flags != api.VoiceInCall {
+		t.Fatalf("the next session's voice_state = %+v, want in_call without the stale self-mute", last)
+	}
+}
+
+// The newer session joins inside its window: the deferred leave never completes, nothing announces D
+// out, and the new session keeps its place and its self flags.
+func TestADeferredLeaveEndsWhenTheRejoinJoins(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	deferLeave(t, f)
+	f.e.Clk.Advance(5 * time.Second)
+	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: f.dev.String(), Sid: "PA_2"})
+	f.sendJoined(t, f.dev, "PA_2", f.e.Clk.Now())
+	f.e.Clk.Advance(admissionWindow())
+	f.calls.RetryPending(t.Context())
+	f.events.FlushAnnouncements()
+	if f.leftAnnounced(f.dev) {
+		t.Fatalf("voice_state = %+v: D was announced out though its new session joined", f.gw.all())
+	}
+	if !inParticipants(f, f.dev) {
+		t.Fatal("the new session is no participant of the call")
+	}
+	if got := f.ds.memberRemovals(); len(got) != 0 {
+		t.Fatalf("membership-bound Removes = %+v: the joined session's leaf was removed", got)
+	}
+	if last := f.gw.last(); last.Device != f.dev || last.Flags != api.VoiceInCall|2 {
+		t.Fatalf("the new session's voice_state = %+v, want in_call with its self-mute", last)
+	}
+}
