@@ -9,7 +9,7 @@ import { account } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { en } from '../../strings/index.ts';
 import { formatTime } from '../../strings/index.ts';
-import { A, GEN, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
+import { A, GEN, NOW, MEMBERS, O1, P1, P2, PEER, ownRow, peerRow } from '../../test/conversation.tsx';
 import { ThreadView } from './ThreadView.tsx';
 
 const ROOT = P1;
@@ -169,7 +169,7 @@ describe('ThreadView (web3.7)', () => {
   it('shows times as the channel rows do', () => {
     setup();
     const row = document.querySelector(`.d-thread-pane .d-message-row[data-msg-id="${P2}"]`) as HTMLElement;
-    expect(row).toHaveTextContent(formatTime(Math.floor(Date.now() / 1000)));
+    expect(row).toHaveTextContent(formatTime(NOW));
   });
   it('does not announce a queued send itself (the channel’s composer does, once)', () => {
     window.history.replaceState(null, '', `/c/${A}/${GEN}`);

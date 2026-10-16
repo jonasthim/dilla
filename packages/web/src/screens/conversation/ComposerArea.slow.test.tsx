@@ -52,6 +52,19 @@ describe('the slow-mode countdown (web3.7)', () => {
     tick(1);
     expect(notice()).toBeNull();
   });
+  it('still reaches zero when its timer fires a fraction of a millisecond early', () => {
+    area({ slow: { until: T0 + 10_400, queued: false }, bypass: false });
+    const real = Date.now.bind(Date);
+    // At the deadline itself the clock reads 1 ms short, as it does for a timer that fires early.
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => {
+      const v = real();
+      return v === T0 + 10_400 ? v - 1 : v;
+    });
+    tick(10_400);
+    tick(1);
+    expect(notice()).toBeNull();
+    spy.mockRestore();
+  });
   it('stops its timer at 0', () => {
     area({ slow: { until: T0 + 2000, queued: false }, bypass: false });
     expect(vi.getTimerCount()).toBeGreaterThan(0);

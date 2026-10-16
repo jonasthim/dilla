@@ -56,7 +56,16 @@ export function ComposerArea(p: ComposerAreaProps): React.JSX.Element {
     if (until <= Date.now()) return;
     // The visible text ticks each second; the end is its own timer, so "over" is exact.
     const id = window.setInterval(tick, 1000);
-    const end = window.setTimeout(() => { window.clearInterval(id); tick(); }, until - Date.now());
+    // A timer may fire a fraction of a millisecond early: re-arm for what is left rather than end with "0:01" on screen.
+    let end = 0;
+    const arm = () => {
+      end = window.setTimeout(() => {
+        if (Date.now() < until) { arm(); return; }
+        window.clearInterval(id);
+        tick();
+      }, Math.max(0, until - Date.now()));
+    };
+    arm();
     return () => { window.clearInterval(id); window.clearTimeout(end); };
   }, [until]);
   // The visible text changes each second and is hidden from the assistive tree; a polite status speaks on a change of

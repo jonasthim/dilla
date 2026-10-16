@@ -18,6 +18,7 @@ import { MessageItem, type RowEvent } from './MessageItem.tsx';
 
 const NO_ITEMS: readonly TimelineItem[] = [];
 
+// `announce` is unused here on purpose: the channel's composer announces a queued send once, and a second composer would say it again.
 export function ThreadView(p: {
   channelId: string; rootMsgId: string; channelName: string; phone: boolean; onClose: () => void; announce: (text: string) => void;
 }): React.JSX.Element {
