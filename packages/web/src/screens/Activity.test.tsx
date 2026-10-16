@@ -18,7 +18,7 @@ const DM2 = 'f6'.repeat(16);
 const NOW = Math.floor(Date.now() / 1000);
 const notice = (id: number, over: Partial<Notice>): Notice =>
   ({ id, channelId: LOOT, communityId: A, kind: 'mention', senderUser: null, senderName: 'ada', body: 'hello', ts: NOW - 60 * (10 - id), ...over });
-const ch = (id: string, name: string): ChannelSummary => ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, group: 'none' });
+const ch = (id: string, name: string): ChannelSummary => ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, group: 'none', slowmode: 0, announcement: false });
 
 function setup(opts: { notices?: Notice[]; badges?: Record<string, { unread: number; mentions: number }> } = {}) {
   const fake = new FakeClient();

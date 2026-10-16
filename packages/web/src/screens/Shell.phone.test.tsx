@@ -241,7 +241,7 @@ describe('the phone shell: history', () => {
   it('focuses the exact row it left when another name starts with it', async () => {
     const { user, client } = phone({ path: `/c/${A}` });
     const more = ['general', 'gen'].map((name, i) => ({ id: `${i}f`.repeat(16), communityId: A, kind: 0 as const, mode: 0 as const, name,
-      topic: '', parentId: null, position: 5 + i, group: 'active' as const }));
+      topic: '', parentId: null, position: 5 + i, group: 'active' as const, slowmode: 0, announcement: false }));
     act(() => client.set(`channels:${A}`, [...CHANNELS, ...more]));
     await user.click(await screen.findByRole('button', { name: 'gen' }));
     await screen.findByRole('log');
