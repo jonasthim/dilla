@@ -38,6 +38,17 @@ export function MessageLog({ label, children, earlier, emptyLabel, busy, onKeyDo
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
   };
 
+  // A resize of the log (the shell shrinking under a soft keyboard) keeps the end in view for a reader who is at the end.
+  useLayoutEffect(() => {
+    const el = logRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   // No dependency list: runs after every render.
   useLayoutEffect(() => {
     const el = logRef.current;

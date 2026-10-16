@@ -34,13 +34,11 @@
 .d-root a { color: var(--fg-link); text-decoration-line: none; }
 [data-theme="high-contrast"] .d-root a, .d-root a[data-underline] { text-decoration-line: underline; }
 /* The component library's only stacking value and its first width breakpoint (Global Constraints, plan
-   web-1). The skip link paints above the rail's positioned tiles. Below 48rem of shell width the
-   sidebar stacks above the main pane, so the shell fits a 360px phone without sideways scrolling.
+   web-1). The skip link paints above the rail's positioned tiles. Below 48rem of shell width the phone
+   layout (web3.7, below) shows one pane at a time, so the shell fits a 360px phone without sideways scrolling.
    The selectors carry two classes so they win over AppShell.css whatever the load order. */
 .d-app-shell .d-app-shell__skip { z-index: 1; }
 @container d-shell (max-width: 47.99rem) {
-  .d-app-shell .d-app-shell__grid { grid-template-columns: var(--rail-w) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; grid-template-areas: "banner banner" "rail sidebar" "rail main" "status status"; }
-  .d-app-shell .d-app-shell__sidebar { max-height: 35dvh; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
   /* web3.4 final fix: a narrow header gives its actions (pins, edit channel, members) rows of their own rather than
      widening the page or cutting a button; the name keeps the first row, cut with its ellipsis. */
   .d-app-shell .d-channel-header { flex-wrap: wrap; height: auto; min-height: var(--channel-header-h); padding-block: 0.5rem; row-gap: 0.5rem; }
@@ -49,6 +47,29 @@
      the grid moves down by its height, so the ring never covers the stage controls. */
   .d-app-shell .d-app-shell__ring { position: fixed; top: 0; left: 0; right: 0; z-index: 20; }
   .d-app-shell:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
+}
+/* web3.7: the phone shell (flow 12) shows one pane at a time. --d-shell-h is the story's and the host's fixed height;
+   --d-vvh is the visual viewport's height, set by the web app while a soft keyboard is up, so the composer stays in view. */
+.d-app-shell[data-layout="phone"] { height: var(--d-shell-h, var(--d-vvh, 100dvh)); }
+.d-app-shell[data-layout="phone"] .d-app-shell__grid { grid-template-columns: var(--rail-w) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto; grid-template-areas: "banner banner" "rail sidebar" "callbar callbar" "tabbar tabbar"; }
+.d-app-shell[data-layout="phone"][data-pane="view"] .d-app-shell__grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "banner" "main" "callbar" "tabbar"; }
+.d-app-shell[data-layout="phone"][data-rail="none"] .d-app-shell__grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "banner" "sidebar" "callbar" "tabbar"; }
+.d-app-shell[data-layout="phone"] .d-app-shell__sidebar { max-height: none; overflow-y: auto; border-bottom: 0; }
+.d-app-shell__callbar { grid-area: callbar; min-width: 0; }
+.d-app-shell__tabbar { grid-area: tabbar; min-width: 0; }
+.d-app-shell[data-layout="phone"] .d-app-shell__aside { width: 100%; border-left: 0; padding-top: env(safe-area-inset-top); }
+.d-app-shell[data-layout="phone"] .d-app-shell__aside-head .d-btn[data-size] { height: 2.75rem; min-width: 2.75rem; padding: 0 0.875rem; justify-content: center; }
+/* A finger, not a pointer: the sidebar's rows and the rail's tiles are 44px tall on a phone. */
+.d-app-shell[data-layout="phone"] .d-chrow { min-height: 2.75rem; }
+.d-app-shell[data-layout="phone"] .d-community-rail__item { width: 2.75rem; height: 2.75rem; }
+.d-app-shell[data-layout="phone"] .d-composer { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+/* The list pane has no header of its own: it clears the notch itself, unless the link banner (which does) is the top row. */
+.d-app-shell[data-layout="phone"][data-pane="list"]:not(:has(.d-link-banner)) .d-app-shell__grid { padding-top: env(safe-area-inset-top); box-sizing: border-box; }
+.d-app-shell[data-layout="phone"]:has(.d-link-banner) .d-phone-header { padding-top: 0; }
+/* No zoom on a phone (Jonas, 2026-10-16): a tap never zooms, and no field is under 16px, which is what makes iOS zoom on focus. */
+.d-root { touch-action: manipulation; }
+@media (max-width: 47.99rem) {
+  .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, select, [contenteditable="true"]) { font-size: 1rem; }
 }
 /* web3.4: from 64rem of shell width an open aside (the member list) is a fourth grid column; below that it stays the
    overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */

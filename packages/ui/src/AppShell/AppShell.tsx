@@ -31,6 +31,17 @@ export interface AppShellProps {
   asideCloseLabel?: string;
   /** The control that opens the aside: focus goes back to it when the drawer closes and the opener was `body`. */
   asideReturnRef?: RefObject<HTMLElement | null>;
+  /**
+   * web3.7: 'phone' is the one-pane-at-a-time shell of a phone (flow 12). Absent or 'desktop', the shell renders exactly
+   * the desktop DOM and ignores every phone prop below.
+   */
+  layout?: 'desktop' | 'phone';
+  /** The phone pane: 'list' (rail and sidebar, main hidden) or 'view' (main alone). Default 'list'. */
+  phonePane?: 'list' | 'view';
+  /** The phone's bottom navigation; rendered only on the list pane of a phone. */
+  tabBar?: ReactNode;
+  /** The phone's call strip; rendered on both panes of a phone. */
+  callBar?: ReactNode;
 }
 
 /** The shell width from which the aside is a column (base.css holds the same 64rem in its container query). */
@@ -44,6 +55,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
  */
 export function AppShell({
   skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
+  layout, phonePane = 'list', tabBar, callBar,
 }: AppShellProps) {
   const mainId = useId();
   const mainRef = useRef<HTMLElement>(null);
@@ -117,11 +129,54 @@ export function AppShell({
     return () => observer.disconnect();
   }, [hasRing]);
   const hasBanner = banner !== undefined && banner !== null && banner !== false;
-  // No hash change and no history entry: focus moves to <main> and the URL stays.
+  const phone = layout === 'phone';
+  const listPane = phone && phonePane === 'list';
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  // No hash change and no history entry: focus moves to <main> (on a phone's list pane, the sidebar) and the URL stays.
   const onSkip = (e: MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
-    mainRef.current?.focus();
+    (listPane ? sidebarRef.current : mainRef.current)?.focus();
   };
+  if (phone) {
+    // One pane at a time. DOM order is the focus order: skip link, banner, (list: rail, sidebar, hidden main | view: main),
+    // the aside and its backdrop, the call bar, the tab bar. There is no status bar: the banner says when the link is down.
+    const sidebarId = `${mainId}-list`;
+    const inert = overlay || undefined;
+    const mainEl = (
+      <main id={mainId} ref={mainRef} tabIndex={-1} className="d-app-shell__main" hidden={listPane || undefined} inert={inert}>
+        {hasRing ? <div ref={ringRef} className="d-app-shell__ring">{ring}</div> : null}
+        {header}
+        <div className="d-app-shell__content">{children}</div>
+        {composer}
+      </main>
+    );
+    return (
+      <div ref={rootRef} className="d-app-shell" data-layout="phone" data-pane={phonePane} data-rail={listPane && rail === null ? 'none' : undefined}>
+        <a className="d-app-shell__skip" href={`#${listPane ? sidebarId : mainId}`} onClick={onSkip}>{skipLabel}</a>
+        <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
+          {hasBanner ? <div className="d-app-shell__banner" inert={inert}>{banner}</div> : null}
+          {listPane ? (
+            <>
+              {rail === null ? null : <div className="d-app-shell__rail" inert={inert}>{rail}</div>}
+              <div ref={sidebarRef} id={sidebarId} tabIndex={-1} className="d-app-shell__sidebar" inert={inert}>{sidebar}</div>
+            </>
+          ) : null}
+          {mainEl}
+          {overlay ? <div className="d-app-shell__backdrop" aria-hidden="true" onClick={() => onAsideClose?.()} /> : null}
+          {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside">
+            {overlay && asideCloseLabel !== undefined ? (
+              <div className="d-app-shell__aside-head">
+                <Button variant="ghost" size="sm" onClick={() => onAsideClose?.()}>{asideCloseLabel}</Button>
+              </div>
+            ) : null}
+            {aside}
+          </aside> : null}
+          {callBar !== undefined && callBar !== null && callBar !== false ? <div className="d-app-shell__callbar" inert={inert}>{callBar}</div> : null}
+          {listPane && tabBar !== undefined && tabBar !== null && tabBar !== false ? <div className="d-app-shell__tabbar" inert={inert}>{tabBar}</div> : null}
+        </div>
+      </div>
+    );
+  }
   return (
     <div ref={rootRef} className="d-app-shell">
       <a className="d-app-shell__skip" href={`#${mainId}`} onClick={onSkip}>{skipLabel}</a>

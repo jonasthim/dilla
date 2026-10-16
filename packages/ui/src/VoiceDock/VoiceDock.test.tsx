@@ -33,6 +33,15 @@ describe('VoiceDock', () => {
     expect(container.querySelector('.d-voice-dock__glyph')?.textContent).toBe('');
   });
 
+  it('with controls={false} there is no toolbar, but where, the meter and the status region stay', () => {
+    render(<VoiceDock {...dock} controls={false} meter={<div data-testid="meter" />} announcement="Joined harbour." />);
+    expect(screen.queryByRole('toolbar')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText('in harbour')).toBeInTheDocument();
+    expect(screen.getByTestId('meter')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Joined harbour.');
+  });
+
   it('arrows wrap, Home and End go to the ends, and Tab returns to the last-focused control', async () => {
     render(<><VoiceDock {...dock} /><button type="button">after</button></>);
     const bar = screen.getByRole('toolbar', { name: 'voice controls' });

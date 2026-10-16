@@ -66,6 +66,48 @@ describe('MessageLog', () => {
     expect(el.scrollTop).toBe(1100);
   });
 
+  describe('on a resize of the log', () => {
+    // jsdom has no ResizeObserver: a mock that keeps the callback so the test can fire it after changing a height.
+    const callbacks: Array<() => void> = [];
+    const observed: Element[] = [];
+    class MockResizeObserver {
+      constructor(cb: () => void) { callbacks.push(cb); }
+      observe(el: Element) { observed.push(el); }
+      unobserve() {}
+      disconnect() {}
+    }
+    const install = () => { callbacks.length = 0; observed.length = 0; vi.stubGlobal('ResizeObserver', MockResizeObserver); };
+
+    it('re-pins to the end when the reader was at the end', () => {
+      install();
+      render(log(['a', 'b']));
+      const el = screen.getByRole('log');
+      expect(observed).toContain(el);
+      const m = { scrollHeight: 1000, clientHeight: 400 };
+      metrics(el, m);
+      el.scrollTop = 600;
+      fireEvent.scroll(el);
+      m.clientHeight = 150;
+      callbacks.forEach(cb => cb());
+      expect(el.scrollTop).toBe(1000);
+      vi.unstubAllGlobals();
+    });
+
+    it('leaves the scroll position alone when the reader had scrolled up', () => {
+      install();
+      render(log(['a', 'b']));
+      const el = screen.getByRole('log');
+      const m = { scrollHeight: 1000, clientHeight: 400 };
+      metrics(el, m);
+      el.scrollTop = 100;
+      fireEvent.scroll(el);
+      m.clientHeight = 150;
+      callbacks.forEach(cb => cb());
+      expect(el.scrollTop).toBe(100);
+      vi.unstubAllGlobals();
+    });
+  });
+
   it('stays where the reader scrolled to when rows arrive at the end', () => {
     const { rerender } = render(log(['a', 'b']));
     const el = screen.getByRole('log');

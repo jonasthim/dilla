@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ComposedShell } from './AppShell.fixture.tsx';
+import { AppShell } from './AppShell.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 describe('AppShell', () => {
@@ -277,5 +278,119 @@ describe('AppShell aside', () => {
   it('has no serious axe violations with the aside open', async () => {
     const { container } = render(<div className="d-root"><ComposedShell shell={open()} /></div>);
     await expectNoAxeViolations(container);
+  });
+});
+
+// web3.7 (W-Phone-2): the phone layout. Desktop (no `layout`) renders today's DOM.
+describe('phone layout', () => {
+  const tabs = <nav aria-label="main" data-testid="tab-bar"><a href="/s">servers</a></nav>;
+  const calls = <div role="group" aria-label="call" data-testid="call-bar"><button type="button">open call</button></div>;
+  const phone = (over: Record<string, unknown> = {}) => ({ layout: 'phone', tabBar: tabs, callBar: calls, ...over }) as const;
+
+  it('list pane: tab bar, rail and sidebar render, main is hidden, no status bar, the call bar renders', () => {
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'list' })} />);
+    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    expect(container.querySelector('.d-app-shell__rail')).not.toBeNull();
+    expect(container.querySelector('.d-app-shell__sidebar')).not.toBeNull();
+    const main = container.querySelector('main') as HTMLElement;
+    expect(main).toHaveAttribute('hidden');
+    expect(container.querySelector('.d-app-shell__status')).toBeNull();
+    expect(screen.getByTestId('call-bar')).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute('data-layout', 'phone');
+    expect(container.firstElementChild).toHaveAttribute('data-pane', 'list');
+  });
+
+  it('defaults to the list pane', () => {
+    const { container } = render(<ComposedShell shell={phone()} />);
+    expect(container.firstElementChild).toHaveAttribute('data-pane', 'list');
+  });
+
+  it('list pane: the skip link targets the sidebar and focuses it', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ComposedShell shell={phone()} />);
+    const skip = screen.getByRole('link', { name: 'skip to messages' });
+    const sidebar = container.querySelector('.d-app-shell__sidebar') as HTMLElement;
+    expect(skip.getAttribute('href')).toBe(`#${sidebar.id}`);
+    expect(sidebar.id.endsWith('-list')).toBe(true);
+    expect(sidebar).toHaveAttribute('tabindex', '-1');
+    expect(container.querySelector('main')?.id).toBe(sidebar.id.replace(/-list$/, ''));
+    await user.click(skip);
+    expect(sidebar).toHaveFocus();
+  });
+
+  it('view pane: main shows with header, content and composer; the skip link targets main; no rail, sidebar or tab bar; the call bar stays', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+    const main = screen.getByRole('main');
+    expect(main).not.toHaveAttribute('hidden');
+    expect(within(main).getByRole('heading', { level: 2, name: 'general' })).toBeInTheDocument();
+    expect(within(main).getByRole('log')).toBeInTheDocument();
+    expect(within(main).getByRole('textbox', { name: 'message #general' })).toBeInTheDocument();
+    expect(container.querySelector('.d-app-shell__rail')).toBeNull();
+    expect(container.querySelector('.d-app-shell__sidebar')).toBeNull();
+    expect(screen.queryByTestId('tab-bar')).toBeNull();
+    expect(screen.getByTestId('call-bar')).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute('data-pane', 'view');
+    const skip = screen.getByRole('link', { name: 'skip to messages' });
+    expect(skip.getAttribute('href')).toBe(`#${main.id}`);
+    await user.click(skip);
+    expect(main).toHaveFocus();
+  });
+
+  it('with no rail (the DMs, activity and you tabs) no rail element renders and the root says so', () => {
+    const { container } = render(
+      <AppShell layout="phone" skipLabel="skip" rail={null} sidebar={<p>dms</p>} header={<h2>x</h2>} composer={null} statusBar={null}>
+        <p>content</p>
+      </AppShell>,
+    );
+    expect(container.querySelector('.d-app-shell__rail')).toBeNull();
+    expect(container.firstElementChild).toHaveAttribute('data-rail', 'none');
+    expect(container.querySelector('.d-app-shell__sidebar')).not.toBeNull();
+  });
+
+  it('with a rail the root carries no data-rail', () => {
+    const { container } = render(<ComposedShell shell={phone()} />);
+    expect(container.firstElementChild).not.toHaveAttribute('data-rail');
+  });
+
+  it('keeps the DOM order skip link, banner, rail, sidebar, main, call bar, tab bar', () => {
+    const { container } = render(<ComposedShell banner shell={phone()} />);
+    const order = ['.d-app-shell__skip', '.d-app-shell__banner', '.d-app-shell__rail', '.d-app-shell__sidebar', 'main', '.d-app-shell__callbar', '.d-app-shell__tabbar']
+      .map(s => container.querySelector(s) as Node);
+    order.forEach(n => expect(n).not.toBeNull());
+    for (let i = 1; i < order.length; i += 1) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('the aside is still the overlay drawer on a phone', () => {
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'view', aside: <button type="button">pane</button>, asideLabel: 'members', asideOpen: true, onAsideClose: vi.fn() })} />);
+    expect(screen.getByRole('complementary', { name: 'members' })).toBeInTheDocument();
+    expect(container.querySelector('.d-app-shell__backdrop')).not.toBeNull();
+  });
+
+  it('desktop unchanged: no layout prop renders the same markup as layout="desktop", with no phone attributes', () => {
+    // useId differs between renders; the markup is compared with the ids made alike.
+    const markup = (el: HTMLElement) => el.innerHTML.replace(/_r_[0-9a-z]+_/g, '_id_');
+    const a = render(<ComposedShell />);
+    const html = markup(a.container);
+    a.unmount();
+    const b = render(<ComposedShell shell={{ layout: 'desktop' }} />);
+    expect(markup(b.container)).toBe(html);
+    expect(html).not.toContain('data-layout');
+    expect(html).not.toContain('d-app-shell__tabbar');
+  });
+
+  it('desktop ignores the phone slots', () => {
+    const { container } = render(<ComposedShell shell={{ tabBar: tabs, callBar: calls }} />);
+    expect(screen.queryByTestId('tab-bar')).toBeNull();
+    expect(screen.queryByTestId('call-bar')).toBeNull();
+    expect(container.querySelector('.d-app-shell__status')).not.toBeNull();
+  });
+
+  it('has no serious axe violations on either pane', async () => {
+    const list = render(<div className="d-root"><ComposedShell shell={phone()} /></div>);
+    await expectNoAxeViolations(list.container);
+    list.unmount();
+    const view = render(<div className="d-root"><ComposedShell shell={phone({ phonePane: 'view' })} /></div>);
+    await expectNoAxeViolations(view.container);
   });
 });

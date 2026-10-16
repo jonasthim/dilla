@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { describe, it, expect, vi } from 'vitest';
 import { ChannelHeader } from './ChannelHeader.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
@@ -54,5 +55,29 @@ describe('ChannelHeader', () => {
     const actions = container.querySelector('.d-channel-header__actions')!;
     expect(actions).toContainElement(screen.getByRole('button', { name: 'pinned' }));
     expect(container.querySelector('.d-channel-header__topic')!.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  describe('phone', () => {
+    it('renders a PhoneHeader with the back button, the bracketed channel heading and the menu', async () => {
+      const onBack = vi.fn();
+      const { container } = render(<ChannelHeader name="general" phone={{ backLabel: 'back to channels', onBack, menu: <button type="button">more</button> }} />);
+      expect(container.querySelector('.d-phone-header')).not.toBeNull();
+      expect(container.querySelector('.d-channel-header')).toBeNull();
+      expect(container.querySelector('.d-channel-header__actions')).toBeNull();
+      const heading = screen.getByRole('heading', { level: 2, name: 'general' });
+      expect(heading.textContent).toBe('[ # general ]');
+      expect(screen.getByRole('button', { name: 'more' })).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole('button', { name: 'back to channels' }));
+      expect(onBack).toHaveBeenCalledTimes(1);
+    });
+    it('uses the @ bracket for a direct message', () => {
+      render(<ChannelHeader kind="dm" name="ada" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      expect(screen.getByRole('heading', { level: 2, name: 'ada' }).textContent).toBe('[ @ ada ]');
+    });
+    it('without phone the markup is the desktop header', () => {
+      const { container } = render(<ChannelHeader name="general" />);
+      expect(container.querySelector('.d-phone-header')).toBeNull();
+      expect(container.querySelector('header')).toHaveClass('d-channel-header');
+    });
   });
 });

@@ -44,6 +44,8 @@ export interface VoiceDockProps {
     /** The reasons an inert camera or share gives in its tooltip and description (`voice.why.*`); none without it. */
     why?: VoiceWhyLabels;
   };
+  /** False renders where, the meter and the status region, and no toolbar (the phone's call bar holds the controls). Default true. */
+  controls?: boolean;
   /** Optional: the input meter (an `AudioMeter`), shown under the status line. */
   meter?: ReactNode;
   onMute(): void;
@@ -68,7 +70,7 @@ const PHASE_GLYPH = {
  */
 export function VoiceDock({
   phase, where, muted, deafened, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, shortcuts,
-  announcement, labels, meter, onMute, onDeafen, onCamera, onShare, onLeave,
+  announcement, labels, controls: showControls = true, meter, onMute, onDeafen, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const text = {
@@ -95,7 +97,7 @@ export function VoiceDock({
         <span className="d-voice-dock__text">{text}</span>
       </p>
       {meter !== undefined ? <div className="d-voice-dock__meter">{meter}</div> : null}
-      <VoiceToolbar label={labels.region} controls={controls} className="d-voice-dock__controls" />
+      {showControls ? <VoiceToolbar label={labels.region} controls={controls} className="d-voice-dock__controls" /> : null}
       <p className="d-sr-only" role="status">{announcement}</p>
     </div>
   );
