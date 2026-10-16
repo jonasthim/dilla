@@ -14,7 +14,7 @@ const RAND = 'd4'.repeat(16);
 const VOICE = 'e5'.repeat(16);
 const DM = '9a'.repeat(16);
 const ch = (id: string, name: string, over: Partial<ChannelSummary> = {}): ChannelSummary =>
-  ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, group: 'active', ...over });
+  ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active', ...over });
 const DMS: DmSummary[] = [{ id: DM, kind: 3, members: ['bb'.repeat(16), '28'.repeat(16)], name: 'bob', group: 'active' }];
 
 class FakeNotification {

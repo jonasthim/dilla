@@ -8,7 +8,7 @@ import { FakeClient } from '../test/fake-client.ts';
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
 const ch = (id: string, communityId: string, name: string): ChannelSummary =>
-  ({ id, communityId, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, group: 'none' });
+  ({ id, communityId, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'none' });
 
 let renders = 0;
 let lastArray: unknown = null;

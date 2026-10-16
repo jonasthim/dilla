@@ -43,6 +43,7 @@ import { isTestHook, isToWorker, type Command, type FromWorker } from './protoco
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
+import { PERM } from '../admin/perm';
 import { ROLES_VALIDATORS, RolesController, announceProblem, privateProblem } from '../admin/roles';
 import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
 import { authorityFor } from '../admin/authority';
@@ -811,6 +812,9 @@ export class Controller {
       track: (job) => { void this.barrier.track(job).catch(() => undefined); },
       accessRead: (communityId, roles, bits, overwrites) => {
         this.rolesCtl.accessRead(communityId, roles, bits, overwrites);
+        // The announcement flag follows the overwrites; the list is published again only when a flag changed.
+        const shown = this.slices.get(`channels:${communityId}`) ?? [];
+        if (shown.some((c) => c.announcement !== this.isAnnouncement(communityId, c.id))) this.publishChannels(communityId);
         this.accessRead.add(communityId);
         this.pushAuthority(communityId);
       },
@@ -2252,6 +2256,15 @@ export class Controller {
     this.pushAuthority(known.communityId, groups, hex);
   }
 
+  /** ChannelSummary.announcement: a text channel whose @everyone overwrite denies send_messages, as far as the overwrites
+   *  the page has read tell (false while they are unknown). */
+  private isAnnouncement(communityId: string, channelId: string): boolean {
+    const everyoneId = this.slices.get(`permissions:${communityId}`)?.everyoneId ?? '';
+    if (everyoneId === '' || this.channels.get(channelId)?.row.kind !== 0) return false;
+    return (this.slices.get(`overwrites:${communityId}`)?.[channelId] ?? [])
+      .some((o) => o.kind === 0 && o.targetId === everyoneId && (o.deny & PERM.sendMessages) !== 0);
+  }
+
   private publishChannels(communityId: string): void {
     const groups = this.core?.groups() ?? [];
     const list: ChannelSummary[] = [];
@@ -2261,7 +2274,9 @@ export class Controller {
       list.push({
         id: channelId, communityId, kind: row.kind as ChannelSummary['kind'], mode: row.mode as ChannelSummary['mode'],
         name: row.name, topic: row.topic, parentId: row.parentId === null ? null : toHex(row.parentId), position: row.position,
-        slowmode: row.slowmode, group: channelGroupState(row, groups, this.membership(channelId)),
+        slowmode: row.slowmode,
+        announcement: this.isAnnouncement(communityId, channelId),
+        group: channelGroupState(row, groups, this.membership(channelId)),
       });
     }
     this.slices.set(`channels:${communityId}`, list);

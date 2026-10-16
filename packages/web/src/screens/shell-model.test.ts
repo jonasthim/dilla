@@ -9,7 +9,7 @@ import {
 
 const A = 'a1'.repeat(16);
 function ch(id: string, name: string, over: Partial<ChannelSummary> = {}): ChannelSummary {
-  return { id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, group: 'none', ...over };
+  return { id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'none', ...over };
 }
 const id = (c: string) => c.repeat(32);
 const LIST = [

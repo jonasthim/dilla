@@ -19,7 +19,7 @@ const PEER = '28'.repeat(16);
 const OTHER_OWNER = 'ee'.repeat(16);
 
 const ch = (id: string, communityId: string, name: string, over: Partial<ChannelSummary> = {}): ChannelSummary =>
-  ({ id, communityId, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, group: 'active', ...over });
+  ({ id, communityId, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active', ...over });
 const ME_MEMBER: MemberSummary = { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] };
 const PEER_MEMBER: MemberSummary = { userId: PEER, username: 'bob', display: '', kind: 0, roleIds: [] };
 

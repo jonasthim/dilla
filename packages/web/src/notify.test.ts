@@ -11,7 +11,7 @@ const ROLE = 'f7'.repeat(16);
 const RAND = 'd4'.repeat(16);
 const DM = '9a'.repeat(16);
 const ch = (id: string, name: string): ChannelSummary =>
-  ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, group: 'active' });
+  ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' });
 const notice = (over: Partial<Notice> = {}): Notice => ({
   id: 0, channelId: RAND, communityId: A, kind: 'message', senderUser: '28'.repeat(16), senderName: 'bob', body: 'hi', ts: 1_790_000_000, ...over,
 });

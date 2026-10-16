@@ -16,7 +16,7 @@ const BOB = '28'.repeat(16);
 const EVERYONE = 'ab'.repeat(16);
 const GAME = '71'.repeat(16);
 const ch = (id: string, name: string, position: number): ChannelSummary =>
-  ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position, slowmode: 0, group: 'none' });
+  ({ id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position, slowmode: 0, announcement: false, group: 'none' });
 const role = (id: string, name: string, position: number, allow = 0): RoleSummary =>
   ({ id, name, color: 0, position, hoist: false, mentionable: true, allow, deny: 0, members: 0 });
 const BASE = PERM.viewChannel | PERM.sendMessages | PERM.readHistory;

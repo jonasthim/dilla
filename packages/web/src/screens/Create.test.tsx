@@ -229,7 +229,7 @@ describe('CreateServerFlow', () => {
   it('a retry after a lost answer reads the list first and never makes a second #general', async () => {
     const listed: ChannelSummary[] = [];
     const row = (id: string, kind: 0 | 1): ChannelSummary =>
-      ({ id, communityId: SERVER, kind, mode: 0, name: 'general', topic: '', parentId: null, position: listed.length, slowmode: 0, group: 'none' });
+      ({ id, communityId: SERVER, kind, mode: 0, name: 'general', topic: '', parentId: null, position: listed.length, slowmode: 0, announcement: false, group: 'none' });
     const { fake, user, onDone } = setup((m, n) => {
       const c = fake.calls[n - 1];
       if (m === 'createCommunity') return Promise.resolve({ communityId: SERVER });
@@ -659,8 +659,8 @@ describe('CreateChannelFlow', () => {
     const fake = client();
     fake.handler = () => Promise.resolve({ channelId: VOICE });
     fake.set(`channels:${SERVER}`, [
-      { id: TEXT, communityId: SERVER, kind: 0, mode: 0, name: 'ship-talk', topic: '', parentId: null, position: 0, slowmode: 0, group: 'active' },
-      { id: VOICE, communityId: SERVER, kind: 1, mode: 0, name: 'general', topic: '', parentId: null, position: 1, slowmode: 0, group: 'none' },
+      { id: TEXT, communityId: SERVER, kind: 0, mode: 0, name: 'ship-talk', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' },
+      { id: VOICE, communityId: SERVER, kind: 1, mode: 0, name: 'general', topic: '', parentId: null, position: 1, slowmode: 0, announcement: false, group: 'none' },
     ]);
     const onDone = vi.fn();
     const { user } = mount(fake, <CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={onDone} onClose={vi.fn()} />);

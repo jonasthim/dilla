@@ -19,7 +19,7 @@ const GENERAL = 'c5'.repeat(16);
 const RANDOM = 'c6'.repeat(16);
 
 const row = (id: string, kind: 0 | 1 | 2, name: string, parentId: string | null, position: number, topic = ''): ChannelSummary =>
-  ({ id, communityId: SERVER, kind, mode: 0, name, topic, parentId, position, slowmode: 0, group: 'active' });
+  ({ id, communityId: SERVER, kind, mode: 0, name, topic, parentId, position, slowmode: 0, announcement: false, group: 'active' });
 const CHANNELS: ChannelSummary[] = [
   row(RANDOM, 0, 'random', null, 0),
   row(TALK, 2, 'Talk', null, 0),

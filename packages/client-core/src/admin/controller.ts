@@ -232,8 +232,7 @@ export class AdminController {
     const patch: { name?: string; topic?: string; parent?: Uint8Array | 'top'; slowmode?: number } = {};
     if (name !== null) patch.name = name;
     if (topic !== null) patch.topic = topic;
-    patch.slowmode = slowmode ?? undefined;
-    if (patch.slowmode === undefined) delete patch.slowmode;
+    if (slowmode !== null) patch.slowmode = slowmode;
     if (parent === 'top') patch.parent = 'top';
     else if (parent !== 'keep') patch.parent = fromHex(parent);
     await this.guarded(communityId, () => this.deps.routes.patchChannel(row.id, patch));
