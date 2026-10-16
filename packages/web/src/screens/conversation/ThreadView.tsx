@@ -21,6 +21,8 @@ const NO_ITEMS: readonly TimelineItem[] = [];
 // `announce` is unused here on purpose: the channel's composer announces a queued send once, and a second composer would say it again.
 export function ThreadView(p: {
   channelId: string; rootMsgId: string; channelName: string; phone: boolean; onClose: () => void; announce: (text: string) => void;
+  /** Where focus goes when the thread closes, when the shell knows better than the element focused at opening. */
+  returnFocus?: () => HTMLElement | null;
 }): React.JSX.Element {
   const client = useCore();
   const [route] = useRoute();
@@ -42,6 +44,8 @@ export function ThreadView(p: {
   const rowEls = useRef(new Map<string, HTMLElement>());
   // The control that opened the thread, taken while the thread first renders (it still has the focus then).
   const [opener] = useState<Element | null>(() => document.activeElement);
+  const returnFocus = useRef(p.returnFocus);
+  returnFocus.current = p.returnFocus;
 
   // Open on mount, close on unmount; a different root closes the old thread first (the worker answers in order).
   useEffect(() => {
@@ -58,6 +62,8 @@ export function ThreadView(p: {
     queueMicrotask(() => {
       if (document.activeElement !== document.body && document.activeElement !== null) return;
       const row = document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${p.rootMsgId}"]`);
+      const wanted = returnFocus.current?.() ?? null;
+      if (wanted !== null) { wanted.focus(); return; }
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
       else row?.focus();
     });

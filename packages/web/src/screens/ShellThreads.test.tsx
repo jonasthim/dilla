@@ -9,6 +9,13 @@ import { account, ME, timelineItem } from '../test/fixtures.ts';
 import { PHONE_QUERY } from '../layout.ts';
 import { en, t } from '../strings/index.ts';
 import { Shell } from './Shell.tsx';
+import { ComposerArea } from './conversation/ComposerArea.tsx';
+
+// Every composer renders as before; the spy records the props the shell (and the thread view) hand it.
+vi.mock('./conversation/ComposerArea.tsx', async importOriginal => {
+  const actual = await importOriginal<typeof import('./conversation/ComposerArea.tsx')>();
+  return { ...actual, ComposerArea: vi.fn(actual.ComposerArea) };
+});
 
 const A = 'a1'.repeat(16);
 const GEN = 'c3'.repeat(16);
@@ -281,6 +288,138 @@ describe('the channel rows', () => {
     expect(row('general')).toHaveAttribute('data-kind', 'text');
     expect(row('general').querySelector('.d-chrow__badge')).toBeNull();
     expect(row('news').querySelector('.d-chrow__badge')).toBeNull();
+  });
+});
+
+const rowOfRoot = () => document.querySelector<HTMLElement>(`.d-message-row[data-msg-id="${ROOT}"]`);
+const threadBox = () => screen.getByRole('textbox', { name: en['thread.composer'] });
+const pinFor = (fake: FakeClient) => act(() => fake.set(`pins:${GEN}`, [{ msgId: ROOT2, seq: '4', senderUser: BOB, excerpt: 'the second root', pinnedBy: BOB, pinnedSeq: '5', ts: 1_700_000_000, threadRoot: ROOT }]));
+async function searchThread(fake: FakeClient, user: ReturnType<typeof userEvent.setup>) {
+  await screen.findByRole('button', { name: '2 replies' });
+  await user.keyboard('{Control>}k{/Control}');
+  await user.type(screen.getByRole('combobox', { name: 'Search your messages' }), 'reply');
+  act(() => fake.set('search', { requestId: 4, hits: [{ channelId: GEN, communityId: A, seq: '4', snippet: 'a reply', rank: '1', threadRoot: ROOT }], cursor: null }));
+  await user.click(await screen.findByRole('option', { name: /a reply/ }));
+  return screen.findByRole('complementary', { name: en['thread.title'] });
+}
+
+describe('where focus lands (fix round 2)', () => {
+  it('lands in the thread composer when a thread is picked from the list', async () => {
+    const { user } = setup();
+    await user.click(await screen.findByRole('button', { name: en['thread.list'] }));
+    const aside = await screen.findByRole('complementary', { name: en['thread.list'] });
+    await user.click(within(aside).getByRole('button', { name: /the second root/ }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    await waitFor(() => expect(threadBox()).toHaveFocus());
+  });
+
+  it('returns to the root row when a thread opened from a search hit closes', async () => {
+    const { fake, user } = setup();
+    await searchThread(fake, user);
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    await waitFor(() => expect(rowOfRoot()).toHaveFocus());
+  });
+
+  it('returns to the opening message when a pointer opened the thread with the main composer focused', async () => {
+    const { user } = setup();
+    const box = await screen.findByRole('textbox', { name: 'message #general' });
+    box.focus();
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    await waitFor(() => expect(rowOfRoot()).toHaveFocus());
+  });
+
+  it('returns to the root row on a desktop when a thread opened from a pin closes', async () => {
+    const { fake, user } = setup();
+    await screen.findByRole('button', { name: '2 replies' });
+    pinFor(fake);
+    await user.click(screen.getByRole('button', { name: en['shell.pins.open'] }));
+    await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
+    await screen.findByRole('complementary', { name: en['thread.title'] });
+    await user.click(screen.getByRole('button', { name: en['thread.close'] }));
+    await waitFor(() => expect(threadPane()).toBeNull());
+    await waitFor(() => expect(rowOfRoot()).toHaveFocus());
+  });
+});
+
+describe('phone: a thread from a search hit, a pin and a quote', () => {
+  it('opens from a search hit, replacing an open members sheet so it does not come back', async () => {
+    const { fake, user } = setup({ phone: true });
+    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
+    await user.click(screen.getByRole('menuitem', { name: en['members.toggle'] }));
+    await screen.findByRole('complementary', { name: 'members of Midgard' });
+    await searchThread(fake, user);
+    expect(members()).toBeNull();
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(threadPane()).toBeNull());
+    expect(members()).toBeNull();
+    expect((window.history.state as { phoneSheet?: unknown } | null)?.phoneSheet).toBeUndefined();
+  });
+
+  it('opens a thread sheet from a search hit', async () => {
+    const { fake, user } = setup({ phone: true });
+    const sheet = await searchThread(fake, user);
+    expect(sheet.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
+    expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
+  });
+
+  it('opens a thread sheet from a pin', async () => {
+    const { fake, user } = setup({ phone: true });
+    await screen.findByRole('button', { name: '2 replies' });
+    pinFor(fake);
+    await user.click(screen.getByRole('button', { name: t('nav.channel.menu') }));
+    await user.click(screen.getByRole('menuitem', { name: en['shell.pins.open'] }));
+    await user.click(await screen.findByRole('button', { name: en['shell.pins.jump'] }));
+    const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(sheet.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
+    expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
+  });
+
+  it('opens a thread sheet from a reply quote', async () => {
+    const { fake, user } = setup({ phone: true });
+    const quoting = timelineItem({ key: 's9', msgId: '90'.repeat(16), seq: '9', body: 'quoting', senderUser: BOB, senderDevice: BOB, ts: 1_700_000_200,
+      reply: { msgId: ROOT2, state: 'ok', senderUser: BOB, excerpt: 'the second root', seq: '4', threadRoot: ROOT } });
+    act(() => fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false, items: [rootRow(ROOT, '1', 'the first root', 2), quoting] }));
+    const line = (await screen.findByText('quoting')).closest<HTMLElement>('.d-message-row')!;
+    await user.click(within(line).getByRole('button', { name: /the second root/ }));
+    const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(sheet.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
+    expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
+  });
+});
+
+describe('the shell wires slow mode into the composers', () => {
+  const channelComposer = () => {
+    const calls = vi.mocked(ComposerArea).mock.calls.map(c => c[0]).filter(p => p.channelId === GEN && p.threadId === undefined);
+    return calls.at(-1)!;
+  };
+  it('hands the channel composer the slice, the bypass bit, the announcement flag and the announcer', async () => {
+    const { fake } = setup({ base: BASE | PERM.bypassSlowmode });
+    await screen.findByRole('textbox', { name: 'message #general' });
+    const slice = { until: Date.now() + 60_000, queued: true };
+    act(() => fake.set(`slow:${GEN}`, slice));
+    expect(channelComposer().slow).toEqual(slice);
+    expect(channelComposer().bypass).toBe(true);
+    expect(channelComposer().announcement).toBe(false);
+    expect(typeof channelComposer().announce).toBe('function');
+  });
+  it('says bypass false without the bit, and announcement true for an announcement channel', async () => {
+    setup({ path: `/c/${A}/${NEWS}` });
+    await screen.findByRole('textbox', { name: 'message #news' });
+    const last = vi.mocked(ComposerArea).mock.calls.map(c => c[0]).filter(p => p.channelId === NEWS).at(-1)!;
+    expect(last.bypass).toBe(false);
+    expect(last.announcement).toBe(true);
+  });
+  it('counts down in the thread composer too', async () => {
+    const { fake, user } = setup();
+    await user.click(await screen.findByRole('button', { name: '2 replies' }));
+    const aside = await screen.findByRole('complementary', { name: en['thread.title'] });
+    expect(aside.querySelector('.d-composer__notice')).toBeNull();
+    act(() => wait(fake));
+    expect(aside.querySelector('.d-composer__notice')).toHaveTextContent(/Slow mode is on/);
   });
 });
 

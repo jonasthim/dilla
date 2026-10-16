@@ -981,9 +981,17 @@ export function Shell(): React.JSX.Element {
   // else the root's message row, else the header's button.
   const sideOpener = useRef<Element | null>(null);
   const sideRoot = useRef<string | null>(null);
+  // A pointer open leaves focus where it was (the composer, say): the message row under the pointer is the opener then.
+  const lastPointer = useRef<{ row: Element | null; at: number } | null>(null);
+  useEffect(() => {
+    const note = (e: PointerEvent) => { lastPointer.current = { row: e.target instanceof Element ? e.target.closest('.d-message-row') : null, at: Date.now() }; };
+    document.addEventListener('pointerdown', note, true);
+    return () => document.removeEventListener('pointerdown', note, true);
+  }, []);
   const noteOpener = () => {
     if (side !== null && side.channelId === channelId) return;
-    sideOpener.current = document.activeElement;
+    const pointer = lastPointer.current;
+    sideOpener.current = pointer !== null && pointer.row !== null && Date.now() - pointer.at < 1500 ? pointer.row : document.activeElement;
     sideRoot.current = null;
   };
   function openThread(rootMsgId: string): void {
@@ -1021,13 +1029,15 @@ export function Shell(): React.JSX.Element {
   const closeSideRef = useRef(closeSide);
   closeSideRef.current = closeSide;
   // Opening the list puts focus in it; closing it hands focus back to the control that opened it.
+  // A swap from the list to a thread is no close: the thread takes focus itself.
   const listWas = useRef(false);
+  const sideClosed = sideNow === null;
   useEffect(() => {
     const was = listWas.current;
     listWas.current = listOpen;
     if (listOpen) document.querySelector<HTMLElement>('.d-app-shell__aside')?.focus();
-    else if (was && (focusLost() || document.activeElement?.closest('.d-app-shell__aside') != null)) sideReturn.current?.focus();
-  }, [listOpen, sideReturn]);
+    else if (was && sideClosed && (focusLost() || document.activeElement?.closest('.d-app-shell__aside') != null)) sideReturn.current?.focus();
+  }, [listOpen, sideClosed, sideReturn]);
   // Back on a phone: the history's back for a view the app pushed, else the tab's list (a deep link, a reload).
   const listRoute: Route = dmId !== null ? { name: 'dms' } : communityId !== null ? { name: 'channel', communityId, channelId: null } : { name: 'root' };
   const onBack = () => goBack(listRoute, navigate);
@@ -1078,6 +1088,10 @@ export function Shell(): React.JSX.Element {
       // A reply shows in its thread, not in the channel's timeline: the thread opens beside the channel.
       navigate({ name: 'channel', communityId: hit.communityId, channelId: hit.channelId });
       leaveSearchLayer();
+      // The palette is gone, so the root's row is where focus goes back to; a phone's members sheet gives way to the thread.
+      sideOpener.current = null;
+      sideRoot.current = threadRoot;
+      if (phone) setMembersOpen(false);
       setSide({ channelId: hit.channelId, view: 'thread', rootMsgId: threadRoot });
       return true;
     }
@@ -1280,7 +1294,7 @@ export function Shell(): React.JSX.Element {
         </> : banner}
         aside={sideNow?.view === 'thread' && channel !== null
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
-            onClose={closeSide} announce={announce} />
+            onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
               <ThreadList channelId={channel.id} channelName={channel.name} onOpen={openThread} heading={false} />
