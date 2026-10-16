@@ -11,7 +11,7 @@ Slow mode on a per-channel basis limits how fast people can post, configurable b
 | 3. Channel list with slow mode | A channel row in the list with a badge below or next to the name when slow mode is on. | `slow.badge` |
 | 4. Just sent, countdown | After a post in a channel with slow mode, a notice in the composer area shows the remaining wait. | `slow.wait` |
 | 5. Send queued behind slow mode | A notice above the composer saying a send is queued and waiting for slow mode to expire. | `slow.queued` |
-| 6. Bypass: no countdown | A person with bypass_slowmode sees no countdown or queue for their own posts, and the notice does not show. No copy needed; note "a person with bypass_slowmode sees no countdown". | — |
+| 6. Bypass: no countdown | A person with bypass_slowmode sees no countdown or queue for their own posts, and the notice does not show. | none: a person with bypass_slowmode sees no countdown |
 | 7. New channel, announcement kind | In create channel, a kind selector offers text and announcement. Announcement is selected: it sets the kind and shows roles checkboxes for who can post. | `announce.kind`, `announce.hint`, `announce.roles` |
 | 8. Announcement channel, reader | A person without post permission views the channel and sees a read-only note. | `announce.readOnly` |
 | 9. Message toolbar, thread item | A toolbar item for each message offers a reply-in-thread action. | `thread.open` |
@@ -21,7 +21,7 @@ Slow mode on a per-channel basis limits how fast people can post, configurable b
 
 ## 1280×800
 
-The slow-mode Select sits under the topic in channel settings. The thread pane is the aside, replacing the member list while a thread is open. The countdown appears as a notice in the composer. The thread list is a scrollable pane in the main area.
+The thread pane replaces the member list in the aside (one aside). The slow-mode Select sits under the topic in channel settings. The countdown is the composer notice.
 
 ## 390×844
 
@@ -39,9 +39,7 @@ The slow-mode Select is a native select in the settings sheet. The thread is a f
 ## Focus rules
 
 - Opening a thread focuses the thread composer.
-- Closing a thread returns focus to the message toolbar item or chip that opened it.
-- The thread pane opens in the aside, one section at a time, replacing the member list.
-- On phone, the thread sheet closes on Escape or the back button.
+- Closing returns focus to the message toolbar item or chip that opened it.
 
 ## Announcements
 

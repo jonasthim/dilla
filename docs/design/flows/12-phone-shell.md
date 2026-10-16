@@ -15,24 +15,16 @@ The mobile app shell on phones (390px and narrower): a navigation tab bar at the
 | 7. Activity tab, mentions and DMs | The Activity tab is selected. Shows mentions and direct messages. Title is `activity.title`, with items for mentions (`activity.mention`), direct messages (`activity.dm`), and unread from elsewhere (`activity.elsewhere`). | `activity.title`, `activity.mention`, `activity.dm`, `activity.elsewhere`, `activity.since` |
 | 8. Activity empty | No mentions or DMs. Shows the empty message. | `activity.empty` |
 | 9. Activity unread elsewhere | A row or banner indicating unread activity in channels. | `activity.elsewhere` |
-| 10. You tab | The You tab is selected. Shows status information, device info, and settings. Title is `you.title`, status is `you.status` (this device), settings link is `you.settings`. Also reuses keys from other flows: `shell.status.node`, `shell.status.link`, `shell.status.gen`, `shell.status.devices`, and `devices.signOut`. | `you.title`, `you.status`, `you.settings` |
+| 10. You tab | The You tab is selected. Shows status information, device info, and settings. Title is `you.title`, status is `you.status` (this device), settings link is `you.settings`. Also reuses keys from other flows: `shell.status.node`, `shell.status.link`, `shell.status.gen`, `shell.status.devices`, and `devices.signOut`. | `you.title`, `you.status`, `you.settings`, `shell.status.node`, `shell.status.link`, `shell.status.gen`, `shell.status.devices`, `devices.signOut` |
 | 11. Offline | An offline banner shows: `nav.link.offline`. | `nav.link.offline` |
 | 12. Connecting | A connecting banner shows: `nav.link.connecting` with the node name. | `nav.link.connecting` |
-| 13. Call bar | A mini call bar at the bottom with open call status and controls. Shows `nav.call.open` with the location where the call is (e.g., the server or channel name), and reuses keys `voice.mute` and `voice.leave`. | `nav.call.open` |
-| 14. Call stage and members sheet | The call is active. The stage shows video or avatars, and a sheet shows members. | — |
+| 13. Call bar | A mini call bar at the bottom with open call status and controls. Shows `nav.call.open` with the location where the call is (e.g., the server or channel name), and reuses keys `voice.mute` and `voice.leave`. | `nav.call.open`, `voice.mute`, `voice.leave` |
+| 14. Call stage and members sheet | The call is active. The stage shows video or avatars, and a sheet shows members. | `voice.mute`, `voice.leave` |
 | 15. Key step, backup code hint | Cross-reference to flow 03: when entering a backup code in the sign-in form, a hint appears below the field. The key is `signIn.key.isBackupCode`. | `signIn.key.isBackupCode` |
 
 ## 390×844
 
-The grid layout:
-1. Status banner (offline, connecting)
-2. Header (title, back button if in a view, menu if in a view)
-3. Content pane (scrollable)
-4. Composer (fixed above keyboard, or hidden in some views)
-5. Call bar (if a call is active)
-6. Tab bar (hidden when a view is pushed, hidden during call stage, hidden in thread sheets)
-
-No status bar. Safe areas pad the header, tab bar, and composer. Field padding is 16px.
+The grid is banner / pane / call bar / tab bar. The tab bar is hidden on pushed views. Safe areas pad the header, tab bar and composer. Fields are 16px. No status bar.
 
 ## 1280×800
 
