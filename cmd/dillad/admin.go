@@ -321,6 +321,78 @@ func userFlags(u store.UserRow) string {
 	return strings.Join(f, ",")
 }
 
+// factorSummary is what second factors an account holds: a confirmed authenticator app, the passkeys
+// registered under the configured rp_id, the unused backup codes, and whether the account owes a factor.
+type factorSummary struct {
+	TOTP     bool
+	Passkeys int
+	Codes    int64
+	Owed     bool
+}
+
+// String is the factors column: totp, passkey×N, codes:N, owed, in that order, or "-" for none.
+func (f factorSummary) String() string {
+	var parts []string
+	if f.TOTP {
+		parts = append(parts, "totp")
+	}
+	if f.Passkeys > 0 {
+		parts = append(parts, fmt.Sprintf("passkey×%d", f.Passkeys))
+	}
+	if f.Codes > 0 {
+		parts = append(parts, fmt.Sprintf("codes:%d", f.Codes))
+	}
+	if f.Owed {
+		parts = append(parts, "owed")
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
+}
+
+// userFactors reads the user's second factors. A TOTP secret that was never confirmed does not count,
+// and passkeys count only under rpID, the way sign-in sees them.
+func userFactors(ctx context.Context, repo store.Repository, u store.UserRow, rpID string) (factorSummary, error) {
+	f := factorSummary{Owed: u.FactorOwed}
+	switch totp, err := repo.GetTOTP(ctx, u.ID); {
+	case err == nil:
+		f.TOTP = totp.ConfirmedAt != nil
+	case !errors.Is(err, store.ErrNotFound):
+		return f, fmt.Errorf("read totp: %w: %w", err, exit.Software)
+	}
+	creds, err := repo.ListWebauthnCredentials(ctx, u.ID, rpID)
+	if err != nil {
+		return f, fmt.Errorf("list passkeys: %w: %w", err, exit.Software)
+	}
+	f.Passkeys = len(creds)
+	if f.Codes, err = repo.CountRecoveryCodes(ctx, u.ID); err != nil {
+		return f, fmt.Errorf("count backup codes: %w: %w", err, exit.Software)
+	}
+	return f, nil
+}
+
+// totpConfirmedLine is show's totp value: "confirmed <stamp>", or "-" when there is no confirmed secret.
+func totpConfirmedLine(ctx context.Context, repo store.Repository, uid id.ID) (string, error) {
+	totp, err := repo.GetTOTP(ctx, uid)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return "-", nil
+	case err != nil:
+		return "", fmt.Errorf("read totp: %w: %w", err, exit.Software)
+	case totp.ConfirmedAt == nil:
+		return "-", nil
+	}
+	return "confirmed " + stamp(*totp.ConfirmedAt), nil
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
 // userSelector is the pair of flags that name one user: exactly one of --id and --username.
 type userSelector struct {
 	id       *string
@@ -384,7 +456,7 @@ func adminUser(verb string, args []string, stdout, stderr io.Writer) error {
 				},
 				run: func(ctx context.Context, e *adminEnv) error {
 					tw := newTable(e.out)
-					fmt.Fprintln(tw, "id\tusername\tdisplay\tkind\tflags\tstatus\tcreated")
+					fmt.Fprintln(tw, "id\tusername\tdisplay\tkind\tflags\tfactors\tstatus\tcreated")
 					listed := 0
 					for *limit == 0 || listed < *limit {
 						n := pageSize
@@ -396,8 +468,12 @@ func adminUser(verb string, args []string, stdout, stderr io.Writer) error {
 							return fmt.Errorf("list users: %w: %w", err, exit.Software)
 						}
 						for _, u := range rows {
-							fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", u.ID, printable(u.Username),
-								orDash(u.Display), u.Kind, userFlags(u), userStatus(u), stamp(u.Created))
+							factors, err := userFactors(ctx, e.repo, u, e.cfg.Auth.WebAuthn.RPID)
+							if err != nil {
+								return err
+							}
+							fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", u.ID, printable(u.Username),
+								orDash(u.Display), u.Kind, userFlags(u), factors, userStatus(u), stamp(u.Created))
 							cursor = u.ID
 						}
 						listed += len(rows)
@@ -427,7 +503,19 @@ func adminUser(verb string, args []string, stdout, stderr io.Writer) error {
 					kv(e.out, "username", printable(u.Username))
 					kv(e.out, "display", orDash(u.Display))
 					kv(e.out, "kind", u.Kind)
+					factors, err := userFactors(ctx, e.repo, u, e.cfg.Auth.WebAuthn.RPID)
+					if err != nil {
+						return err
+					}
+					totpLine, err := totpConfirmedLine(ctx, e.repo, u.ID)
+					if err != nil {
+						return err
+					}
 					kv(e.out, "flags", userFlags(u))
+					kv(e.out, "totp", totpLine)
+					kv(e.out, "passkeys", factors.Passkeys)
+					kv(e.out, "backup_codes", factors.Codes)
+					kv(e.out, "factor_owed", yesNo(factors.Owed))
 					kv(e.out, "status", userStatus(u))
 					kv(e.out, "created", stamp(u.Created))
 					kv(e.out, "disabled_at", stampPtr(u.DisabledAt))

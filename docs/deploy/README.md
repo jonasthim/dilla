@@ -613,6 +613,8 @@ factor up, until it adds one. This section is what the operator does about that.
   the flag is cleared. Adding a factor clears the flag at once, and so does a browser reading its factors while the
   account holds one.
 - There is no switch that turns the requirement off.
+- `dillad admin user list` shows each account's factors; `owed` marks the accounts that meet the forced set-up screen
+  at their next use. `dillad admin user show` adds the `totp`, `passkeys`, `backup_codes` and `factor_owed` lines.
 
 ### The configuration it needs
 
