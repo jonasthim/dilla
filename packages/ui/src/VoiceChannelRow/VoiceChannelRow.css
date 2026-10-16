@@ -3,9 +3,7 @@
 .d-voice-row:hover { background: var(--surface-2); color: var(--fg); }
 .d-voice-row[aria-current="page"] { background: var(--surface-hi); color: var(--fg); box-shadow: inset 3px 0 0 var(--accent); }
 .d-voice-row[data-live="true"] { color: var(--fg); }
-.d-voice-row__glyph { width: 0.75rem; text-align: center; color: var(--fg-3); }
-.d-voice-row[data-live="true"] .d-voice-row__glyph { color: var(--fg-2); }
-.d-voice-row[data-joined="true"] .d-voice-row__glyph { color: var(--accent); }
+.d-voice-row__glyph { display: inline-flex; justify-content: center; width: 0.75rem; }
 .d-voice-row__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-voice-row__count { font-size: var(--text-xs); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .d-voice-row__people { margin: 0 0 0.25rem; padding: 0 0 0 1.75rem; list-style: none; font-size: var(--text-sm); }

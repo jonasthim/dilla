@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import { Button } from '../Button/Button.tsx';
 import { MediaPlayer, type MediaPlayerProps } from '../MediaPlayer/MediaPlayer.tsx';
 import './AttachmentCard.css';
+import { Icon } from '../Icon/Icon.tsx';
 
 export interface AttachmentCardProps {
   /** AttachmentSummary.kind (L-TS-58). 'audio' and 'video' render a MediaPlayer when `player` is given. */
@@ -91,7 +92,7 @@ export function AttachmentCard({
   } else {
     content = (
       <div className="d-attachment-card__file">
-        <span className="d-attachment-card__glyph" aria-hidden="true">▤</span>
+        <span className="d-attachment-card__glyph" aria-hidden="true"><Icon name="file" size={20} /></span>
         <span className="d-attachment-card__name">{name}</span>
         <span className="d-attachment-card__size">{size}</span>
         {!tooLarge && onSave ? (

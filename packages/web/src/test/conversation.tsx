@@ -23,7 +23,7 @@ export const O1 = '0a'.repeat(16);
 export const O2 = '0d'.repeat(16);
 export const NOW = Math.floor(Date.now() / 1000);
 
-export const CHANNEL: ChannelSummary = { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, group: 'active' };
+export const CHANNEL: ChannelSummary = { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' };
 // roleIds on MemberSummary (L-TS-36, published by task 7; ruled: web-e2e 6).
 export const MEMBERS: MemberSummary[] = [
   { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [ROLE] },
@@ -38,7 +38,7 @@ export function ownRow(msgId: string, seq: string | null, body: string, over: Pa
   return timelineItem({ key: `o${msgId}`, msgId, seq, body, senderUser: ME.id, senderDevice: 'cc'.repeat(16), own: true, web: true, ts: NOW, ...over });
 }
 export function reply(over: Partial<ReplyRef> = {}): ReplyRef {
-  return { msgId: P1, state: 'ok', senderUser: PEER, excerpt: 'the original', seq: '1', ...over };
+  return { msgId: P1, state: 'ok', senderUser: PEER, excerpt: 'the original', seq: '1', threadRoot: null, ...over };
 }
 export function image(over: Partial<AttachmentSummary> = {}): AttachmentSummary {
   return { index: 0, size: 1234, mime: 'image/png', name: 'map.png', w: 640, h: 480, thumb: true, kind: 'image', tooLarge: false, ...over };

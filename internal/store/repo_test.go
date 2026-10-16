@@ -388,6 +388,53 @@ func TestOneInviteWinsUnderConcurrency(t *testing.T) {
 	}
 }
 
+// A backup code is consumed once under concurrency (web3.7 3f, R20): N goroutines released together
+// spend the SAME code; exactly one succeeds and every other one is ErrNotFound (used). The
+// `used_at IS NULL` guard in the UPDATE is what decides it on both engines.
+func TestABackupCodeIsConsumedOnceUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range engines(t) {
+		t.Run(name, func(t *testing.T) {
+			u := seedUser(ctx, t, repo)
+			hash := make([]byte, 32)
+			for i := range hash {
+				hash[i] = 0x5c
+			}
+			if err := repo.PutRecoveryCodes(ctx, u.ID, [][]byte{hash}, 1); err != nil {
+				t.Fatalf("PutRecoveryCodes: %v", err)
+			}
+			const n = 16
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			results := make(chan error, n)
+			for i := 0; i < n; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					results <- repo.ConsumeRecoveryCode(ctx, u.ID, hash, int64(10+i))
+				}()
+			}
+			close(start)
+			wg.Wait()
+			close(results)
+			won := 0
+			for err := range results {
+				switch {
+				case err == nil:
+					won++
+				case errors.Is(err, store.ErrNotFound):
+				default:
+					t.Fatalf("unexpected consume error: %v", err)
+				}
+			}
+			if won != 1 {
+				t.Fatalf("%d of %d concurrent consumes of one backup code succeeded, want exactly 1", won, n)
+			}
+		})
+	}
+}
+
 // TestTxRollsBackOnPanic pins the one thing a deferred rollback buys that an
 // explicit one does not: a panic inside fn must still close the transaction.
 // On SQLite the write pool is a single connection, so an abandoned *sql.Tx

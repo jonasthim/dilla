@@ -267,14 +267,14 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // and read_state (its FTS5 index is asserted on its own, because a virtual table is not STRICT);
 // Plan 2 task 10 added 008_blobs.sql's blobs, blob_refs, blob_tombstones and backups; Plan 2
 // task 16 added 006f_voice.sql's voice_sessions; dilla-web-3.1 added 014_invite_signups.sql's
-// invite_signups.
+// invite_signups; dilla web3.7 SB1 added 016_message_class.sql's slowmode_marks.
 var wantTables = []string{
 	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
-	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "totp_secrets", "users",
+	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "slowmode_marks", "totp_secrets", "users",
 	"voice_sessions", "webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 

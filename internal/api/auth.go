@@ -403,8 +403,10 @@ func (d Deps) recordAttempt(r *http.Request, user store.UserRow, found bool, add
 // M7): a browser re-establishes a fresh session from its device key at will, so
 // a stolen browser could plant a password, step up with it (method 0) and add or
 // remove factors the passkey step-up was meant to guard. A first password on
-// such an account also spends a step-up token (403 E_STEP_UP otherwise), after
-// the freshness check, so a stale session leaves the token unspent.
+// such an account also needs a step-up token (403 E_STEP_UP otherwise). It is
+// checked after the freshness check and before the hash, so a stale session
+// leaves the token unspent and a bad token costs no Argon2 work, and it is spent
+// after the hash, so a failed hash leaves it for the retry (web3.7 R33).
 func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -491,8 +493,9 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 				"setting a first password needs a session established in the last %d seconds", window))
 			return
 		}
-		if _, err := d.requireStepUp(ctx, sess, req.StepUp); err != nil {
-			server.WriteError(w, err)
+		// Checked, not spent, before the hash: a missing or bad token costs no Argon2 work (R33).
+		if err := d.checkStepUp(ctx, sess, req.StepUp); err != nil {
+			server.WriteError(w, d.storeError(r, err))
 			return
 		}
 	}
@@ -500,6 +503,16 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, err)
 		return
+	}
+	if phc == "" {
+		// Spent after the hash, so a failed hash leaves the token for the retry. The spend is still
+		// the decision: of two requests that both passed the check, the one that finds the token
+		// spent is refused 403 E_STEP_UP. A store failure in PutPasswordCredential after the spend
+		// still spends it: the person steps up again.
+		if _, err := d.requireStepUp(ctx, sess, req.StepUp); err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
 	}
 	if err := d.Repo.PutPasswordCredential(ctx, sess.UserID, next, d.Clock.Now().Unix()); err != nil {
 		server.WriteError(w, d.storeError(r, err))
@@ -665,7 +678,7 @@ func (d Deps) ConfirmTOTP(w http.ResponseWriter, r *http.Request) {
 		if row.ConfirmedAt != nil {
 			return server.Errorf(server.CodeNotFound, "there is no enrolment to confirm")
 		}
-		counter, ok := auth.ValidateTOTP(req.Code, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now())
+		counter, ok := auth.ValidateTOTP(req.Code, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now(), row.LastCounter)
 		if !ok || counter <= row.LastCounter {
 			return server.Errorf(server.CodeInvalidRequest, "the code does not match this secret")
 		}
@@ -723,7 +736,7 @@ func (d Deps) VerifyTOTP(w http.ResponseWriter, r *http.Request) {
 		if row.ConfirmedAt == nil {
 			return store.ErrNotFound
 		}
-		counter, ok := auth.ValidateTOTP(code, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now())
+		counter, ok := auth.ValidateTOTP(code, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now(), row.LastCounter)
 		if !ok {
 			return store.ErrNotFound
 		}
@@ -1388,6 +1401,20 @@ func (s *StepUps) Spend(token string, sessHash []byte) (id.ID, bool) {
 	return item.userID, true
 }
 
+// Valid is Spend's lookup without the spend: whether the session whose token hashes to sessHash
+// holds token, unexpired. It answers a route that must refuse a bad token before costly work;
+// Spend, after that work, stays the decision, so of two requests that both found the token valid
+// only one spends it.
+func (s *StepUps) Valid(token string, sessHash []byte) (id.ID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.items[token]
+	if !ok || subtle.ConstantTimeCompare(item.session, sessHash) != 1 || s.clk.Now().After(item.expires) {
+		return id.ID{}, false
+	}
+	return item.userID, true
+}
+
 // enrolmentTTL is how long the record of an enrolment's begin is kept: a passkey ceremony's
 // lifetime (auth's ceremonyTTL), and the same for a TOTP enrolment.
 const enrolmentTTL = 5 * time.Minute
@@ -1499,6 +1526,23 @@ func (d Deps) requireStepUp(ctx context.Context, sess auth.Session, token *strin
 		return false, err
 	}
 	return true, nil
+}
+
+// checkStepUp is requireStepUp without the spend: when the account holds a factor the token must
+// be one Spend would accept (403 E_STEP_UP otherwise); when it holds none the token is ignored.
+// A route that checks before costly work still spends with requireStepUp after it.
+func (d Deps) checkStepUp(ctx context.Context, sess auth.Session, token *string) error {
+	holds, err := holdsFactor(ctx, d.Repo, sess.UserID, d.rpID())
+	if err != nil || !holds {
+		return err
+	}
+	if token == nil {
+		return stepUpRefusal()
+	}
+	if uid, ok := d.StepUps.Valid(*token, sess.TokenHash); !ok || uid != sess.UserID {
+		return stepUpRefusal()
+	}
+	return nil
 }
 
 // recheckStepUp is the same rule inside the confirm or finish transaction, under the user lock: a
@@ -1720,7 +1764,7 @@ func (d Deps) checkStepUpSecret(ctx context.Context, userID id.ID, method uint64
 		if row.ConfirmedAt == nil {
 			return false, nil
 		}
-		counter, ok := auth.ValidateTOTP(secret, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now())
+		counter, ok := auth.ValidateTOTP(secret, string(row.Secret), rowParams(row, d.totpParams()), d.Clock.Now(), row.LastCounter)
 		if !ok {
 			return false, nil
 		}

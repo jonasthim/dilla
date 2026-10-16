@@ -27,7 +27,7 @@ function shownBeforeRet<T>(w: World, name: string, pred: (v: T) => boolean): boo
 const id16 = (n: number): Uint8Array => new Uint8Array(16).fill(n);
 const channelRow = (n: number, position: number, over: Partial<Awaited<ReturnType<World['routes']['listChannels']>>[number]> = {}) => ({
   id: id16(n), kind: 0, mode: 0, visibility: 0, parentId: null as Uint8Array | null, name: `c${String(n)}`, topic: '', position,
-  seq: 1n, textGroupId: null as Uint8Array | null, ...over,
+  slowmode: 0, seq: 1n, textGroupId: null as Uint8Array | null, ...over,
 });
 
 describe('AdminController: input checks', () => {
@@ -37,12 +37,14 @@ describe('AdminController: input checks', () => {
     ['too long server name', { m: 'renameCommunity', communityId: CID, name: 'x'.repeat(1000) }],
     ['blank category name', { m: 'createCategory', communityId: CID, name: '' }],
     ['too long category name', { m: 'createCategory', communityId: CID, name: 'x'.repeat(1000) }],
-    ['blank channel name', { m: 'updateChannel', channelId, name: ' ', topic: null, parent: 'keep' }],
-    ['too long channel name', { m: 'updateChannel', channelId, name: 'x'.repeat(1000), topic: null, parent: 'keep' }],
-    ['too long topic', { m: 'updateChannel', channelId, name: null, topic: 'x'.repeat(1025), parent: 'keep' }],
-    ['a parent that is not keep, top or an id', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'bogus' }],
-    ['an upper-case parent id', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'A'.repeat(32) }],
-    ['an update that changes nothing', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'keep' }],
+    ['blank channel name', { m: 'updateChannel', channelId, name: ' ', topic: null, parent: 'keep', slowmode: null }],
+    ['too long channel name', { m: 'updateChannel', channelId, name: 'x'.repeat(1000), topic: null, parent: 'keep', slowmode: null }],
+    ['too long topic', { m: 'updateChannel', channelId, name: null, topic: 'x'.repeat(1025), parent: 'keep', slowmode: null }],
+    ['a parent that is not keep, top or an id', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'bogus', slowmode: null }],
+    ['an upper-case parent id', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'A'.repeat(32), slowmode: null }],
+    ['a slow mode that is not a step', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'keep', slowmode: 7 }],
+    ['a slow mode that is a string', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'keep', slowmode: '10' }],
+    ['an update that changes nothing', { m: 'updateChannel', channelId, name: null, topic: null, parent: 'keep', slowmode: null }],
     ['a direction that is not up or down', { m: 'moveChannel', channelId, direction: 'left' }],
     ['a ban shorter than an hour', { m: 'banMember', communityId: CID, userId: STRANGER_HEX, reason: '', seconds: 3599 }],
     ['a ban longer than a century', { m: 'banMember', communityId: CID, userId: STRANGER_HEX, reason: '', seconds: 3_153_600_001 }],
@@ -360,18 +362,33 @@ describe('AdminController: server and channel edits', () => {
     const w = world();
     await toReady(w);
     const channelId = toHex(CHANNEL);
-    await run(w, { m: 'updateChannel', channelId, name: 'lobby', topic: null, parent: 'keep' });
+    await run(w, { m: 'updateChannel', channelId, name: 'lobby', topic: null, parent: 'keep', slowmode: null });
     expect(w.routes.patchChannel).toHaveBeenLastCalledWith(CHANNEL, { name: 'lobby' });
-    await run(w, { m: 'updateChannel', channelId, name: null, topic: '', parent: 'top' });
+    await run(w, { m: 'updateChannel', channelId, name: null, topic: '', parent: 'top', slowmode: null });
     expect(w.routes.patchChannel).toHaveBeenLastCalledWith(CHANNEL, { topic: '', parent: 'top' });
-    await run(w, { m: 'updateChannel', channelId, name: null, topic: 'hello', parent: toHex(id16(0xd1)) });
+    await run(w, { m: 'updateChannel', channelId, name: null, topic: 'hello', parent: toHex(id16(0xd1)), slowmode: null });
     expect(w.routes.patchChannel).toHaveBeenLastCalledWith(CHANNEL, { topic: 'hello', parent: id16(0xd1) });
+  });
+
+  it('updateChannel sends a slow-mode step to the route, 0 included, and shows it after the reload', async () => {
+    const w = world();
+    await toReady(w);
+    const channelId = toHex(CHANNEL);
+    expect(await run(w, { m: 'updateChannel', channelId, name: null, topic: null, parent: 'keep', slowmode: 10 })).toMatchObject({ ok: true });
+    expect(w.routes.patchChannel).toHaveBeenLastCalledWith(CHANNEL, { slowmode: 10 });
+    expect(shownBeforeRet<ChannelSummary[]>(w, `channels:${CID}`, (l) => l.some((c) => c.id === channelId && c.slowmode === 10))).toBe(true);
+    await run(w, { m: 'updateChannel', channelId, name: null, topic: null, parent: 'keep', slowmode: 0 });
+    expect(w.routes.patchChannel).toHaveBeenLastCalledWith(CHANNEL, { slowmode: 0 });
+    w.routes.listChannels.mockResolvedValue([channelRow(0x31, 0, { id: CHANNEL, slowmode: 30 })]);
+    await run(w, { m: 'updateChannel', channelId, name: 'lobby', topic: null, parent: 'keep', slowmode: null });
+    expect(w.routes.patchChannel).toHaveBeenLastCalledWith(CHANNEL, { name: 'lobby' });
+    await vi.waitFor(() => expect(w.last<ChannelSummary[]>(`channels:${CID}`)?.find((c) => c.id === channelId)?.slowmode).toBe(30));
   });
 
   it('updateChannel shows the new name at once', async () => {
     const w = world();
     await toReady(w);
-    await run(w, { m: 'updateChannel', channelId: toHex(CHANNEL), name: 'lobby', topic: 'hi', parent: 'keep' });
+    await run(w, { m: 'updateChannel', channelId: toHex(CHANNEL), name: 'lobby', topic: 'hi', parent: 'keep', slowmode: null });
     expect(shownBeforeRet<ChannelSummary[]>(w, `channels:${CID}`,
       (l) => l.some((c) => c.id === toHex(CHANNEL) && c.name === 'lobby' && c.topic === 'hi'))).toBe(true);
   });

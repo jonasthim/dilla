@@ -170,7 +170,7 @@ describe('BanFlow', () => {
     await user.click(reason);
     await user.paste('x'.repeat(513));
     await user.click(screen.getByRole('button', { name: 'Ban' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That reason is too long. A reason is up to 512 bytes.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('That reason is too long. A reason is up to 512 characters (fewer for some letters).');
     await user.clear(reason);
     await user.paste('bad\u0007bell');
     await user.click(screen.getByRole('button', { name: 'Ban' }));

@@ -30,7 +30,9 @@ describe('StatusBar', () => {
     );
     const toned = screen.getByText('stalled').closest('.d-chunk') as HTMLElement;
     expect(toned).toHaveTextContent(/error/);
-    expect(screen.getByText('✕')).toHaveAttribute('aria-hidden', 'true');
+    const mark = toned.querySelector('.d-chunk__tone');
+    expect(mark).toHaveAttribute('aria-hidden', 'true');
+    expect(mark?.querySelector('[data-icon="x"]')).not.toBeNull();
     const plain = screen.getByText('dilla.thim.dev').closest('.d-chunk') as HTMLElement;
     expect(plain).not.toHaveTextContent(/error|ok|warning/);
     expect(plain.querySelector('[aria-hidden="true"]')).toBeNull();

@@ -152,6 +152,10 @@ type Querier interface {
 	// Fix wave C7: blobs.store_max_bytes. Every row counts, referenced or not: an orphaned or
 	// unreferenced blob's file is on disk until the sweeper collects it.
 	InstanceBlobBytes(ctx context.Context) (int64, error)
+	// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the user's durable mark in the
+	// channel, the time of their last accepted class-0 upload into any of its text groups from any
+	// device. Neither a tombstone nor a retention prune moves it.
+	LastClassZeroUploadAt(ctx context.Context, arg LastClassZeroUploadAtParams) (int64, error)
 	// The slowmode gate's read. A deleted message still counts: deleting the last message must not
 	// reset the gate, or delete-and-repost would bypass slowmode.
 	LastReadableMessageAt(ctx context.Context, arg LastReadableMessageAtParams) (int64, error)
@@ -340,6 +344,9 @@ type Querier interface {
 	PutReport(ctx context.Context, arg PutReportParams) error
 	PutRole(ctx context.Context, arg PutRoleParams) error
 	PutSetting(ctx context.Context, arg PutSettingParams) error
+	// Upload's write of the mark, in the upload's own transaction. Monotone: an older time never
+	// replaces a newer one.
+	PutSlowmodeMark(ctx context.Context, arg PutSlowmodeMarkParams) error
 	PutTOTP(ctx context.Context, arg PutTOTPParams) error
 	// Voice sessions (Plan 2 task 16, P2-D22, 00011_voice.sql).
 	// A call is keyed by its call group's call id (R9), so the next call of the same group reopens

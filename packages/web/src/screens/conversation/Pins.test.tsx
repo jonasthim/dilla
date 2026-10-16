@@ -7,7 +7,7 @@ import { DM, GEN, NOW, P1, P2, PEER, peerRow, renderConversation, rowOf } from '
 import { messageTime } from '../shell-model.ts';
 
 const PINNED_TS = 1700000000;
-const pin = (over: Partial<PinnedItem> = {}): PinnedItem => ({ msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: PINNED_TS, ...over });
+const pin = (over: Partial<PinnedItem> = {}): PinnedItem => ({ msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: PINNED_TS, threadRoot: null, ...over });
 const pinsButton = () => {
   const header = document.querySelector<HTMLElement>('.d-channel-header');
   if (header === null) throw new Error('no header');

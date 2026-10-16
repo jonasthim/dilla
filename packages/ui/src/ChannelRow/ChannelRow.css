@@ -9,3 +9,6 @@
 .d-chrow__spacer { flex: 1; }
 .d-chrow__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-chrow__dot { display: inline-block; width: 0.5rem; height: 0.5rem; vertical-align: middle; background: currentColor; border-radius: var(--r-pill); }
+/* web3.7: a note after the name ("slow mode"), quiet, cut before it widens the row. */
+.d-chrow__badge { flex-shrink: 0; white-space: nowrap; padding: 0 0.25rem; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); border: 1px solid var(--hairline-2); border-radius: var(--r-sm); }
+.d-chrow__glyph .d-icon { display: block; margin: 0 auto; }

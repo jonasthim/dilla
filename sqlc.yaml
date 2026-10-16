@@ -140,6 +140,9 @@ sql:
           - { column: "blob_refs.confirmed",               go_type: { type: "int64" } }
           # 015_second_factor.sql (dilla web3.6 S1).
           - { column: "users.factor_owed",                 go_type: { type: "int64" } }
+          # 016_message_class.sql (dilla web3.7 SB1): nullable, so sql.NullInt64 like SQLite's
+          # INTEGER NULL rather than sqlc's sql.NullInt16.
+          - { column: "mls_app_messages.class", go_type: "database/sql.NullInt64" }
           - { column: "invites.community_id",
               go_type: { import: "github.com/jonasthim/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "invites.created_by",

@@ -13,7 +13,7 @@ import (
 )
 
 const getAppMessage = `-- name: GetAppMessage :one
-SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id FROM mls_app_messages WHERE group_id = $1 AND seq = $2
+SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id, class FROM mls_app_messages WHERE group_id = $1 AND seq = $2
 `
 
 type GetAppMessageParams struct {
@@ -37,6 +37,7 @@ func (q *Queries) GetAppMessage(ctx context.Context, arg GetAppMessageParams) (M
 		&i.Expires,
 		&i.DeletedAt,
 		&i.FrankingKeyID,
+		&i.Class,
 	)
 	return i, err
 }
@@ -63,8 +64,27 @@ func (q *Queries) GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCur
 	return i, err
 }
 
+const lastClassZeroUploadAt = `-- name: LastClassZeroUploadAt :one
+SELECT last_post_at FROM slowmode_marks WHERE channel_id = $1 AND user_id = $2
+`
+
+type LastClassZeroUploadAtParams struct {
+	ChannelID id.ID
+	UserID    id.ID
+}
+
+// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the user's durable mark in the
+// channel, the time of their last accepted class-0 upload into any of its text groups from any
+// device. Neither a tombstone nor a retention prune moves it.
+func (q *Queries) LastClassZeroUploadAt(ctx context.Context, arg LastClassZeroUploadAtParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lastClassZeroUploadAt, arg.ChannelID, arg.UserID)
+	var last_post_at int64
+	err := row.Scan(&last_post_at)
+	return last_post_at, err
+}
+
 const listAppMessages = `-- name: ListAppMessages :many
-SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id FROM mls_app_messages WHERE group_id = $1 AND seq >= $2
+SELECT group_id, seq, epoch, uploader_device, blob, commitment_c, franking_tag, size, created, expires, deleted_at, franking_key_id, class FROM mls_app_messages WHERE group_id = $1 AND seq >= $2
 ORDER BY seq LIMIT $3::bigint
 `
 
@@ -96,6 +116,7 @@ func (q *Queries) ListAppMessages(ctx context.Context, arg ListAppMessagesParams
 			&i.Expires,
 			&i.DeletedAt,
 			&i.FrankingKeyID,
+			&i.Class,
 		); err != nil {
 			return nil, err
 		}
@@ -211,8 +232,8 @@ func (q *Queries) PruneAppMessages(ctx context.Context, arg PruneAppMessagesPara
 
 const putAppMessage = `-- name: PutAppMessage :exec
 INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, commitment_c,
-                              franking_tag, size, created, expires, deleted_at, franking_key_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                              franking_tag, size, created, expires, deleted_at, franking_key_id, class)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 `
 
 type PutAppMessageParams struct {
@@ -228,6 +249,7 @@ type PutAppMessageParams struct {
 	Expires        sql.NullInt64
 	DeletedAt      sql.NullInt64
 	FrankingKeyID  id.ID
+	Class          sql.NullInt64
 }
 
 func (q *Queries) PutAppMessage(ctx context.Context, arg PutAppMessageParams) error {
@@ -244,6 +266,7 @@ func (q *Queries) PutAppMessage(ctx context.Context, arg PutAppMessageParams) er
 		arg.Expires,
 		arg.DeletedAt,
 		arg.FrankingKeyID,
+		arg.Class,
 	)
 	return err
 }
@@ -271,6 +294,25 @@ func (q *Queries) PutCursor(ctx context.Context, arg PutCursorParams) error {
 		arg.LastEpoch,
 		arg.Updated,
 	)
+	return err
+}
+
+const putSlowmodeMark = `-- name: PutSlowmodeMark :exec
+INSERT INTO slowmode_marks (channel_id, user_id, last_post_at) VALUES ($1, $2, $3)
+ON CONFLICT (channel_id, user_id) DO UPDATE
+SET last_post_at = GREATEST(slowmode_marks.last_post_at, excluded.last_post_at)
+`
+
+type PutSlowmodeMarkParams struct {
+	ChannelID  id.ID
+	UserID     id.ID
+	LastPostAt int64
+}
+
+// Upload's write of the mark, in the upload's own transaction. Monotone: an older time never
+// replaces a newer one.
+func (q *Queries) PutSlowmodeMark(ctx context.Context, arg PutSlowmodeMarkParams) error {
+	_, err := q.db.ExecContext(ctx, putSlowmodeMark, arg.ChannelID, arg.UserID, arg.LastPostAt)
 	return err
 }
 

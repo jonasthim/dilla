@@ -5,6 +5,25 @@ import { ChannelRow } from './ChannelRow.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 describe('ChannelRow', () => {
+  it('shows the megaphone for an announcement channel and keeps its accessible name', () => {
+    render(<ChannelRow name="news" kind="announcement" onSelect={() => {}} />);
+    const row = screen.getByRole('button', { name: 'news' });
+    expect(row).toHaveAttribute('data-kind', 'announcement');
+    expect(row.querySelector('svg[data-icon="megaphone"]')).not.toBeNull();
+    expect(row.querySelector('.d-chrow__glyph')?.textContent).not.toContain('#');
+  });
+  it('shows a badge as text after the name, inside the row’s accessible name', () => {
+    render(<ChannelRow name="general" kind="text" badge="slow mode" onSelect={() => {}} />);
+    const row = screen.getByRole('button', { name: 'general slow mode' });
+    const badge = screen.getByText('slow mode');
+    expect(badge).toHaveClass('d-chrow__badge');
+    const name = row.querySelector('.d-chrow__name') as Node;
+    expect(Boolean(name.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+  it('shows no badge by default', () => {
+    const { container } = render(<ChannelRow name="general" kind="text" onSelect={() => {}} />);
+    expect(container.querySelector('.d-chrow__badge')).toBeNull();
+  });
   it('is a button named after the channel and selectable by keyboard', async () => {
     const onSelect = vi.fn();
     render(<ChannelRow name="loot" kind="text" onSelect={onSelect} />);

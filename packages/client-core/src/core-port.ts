@@ -53,10 +53,13 @@ export interface SealedObjects { root: Uint8Array | null; state: Uint8Array | nu
 export interface SignedLists { deviceListBody: Uint8Array; stateSealed: Uint8Array; interrupted: Uint8Array | null; }
 export interface AttachmentDescriptor { blobId: Uint8Array; key: Uint8Array; nonce: Uint8Array; size: number; mime: string;
   w: number | null; h: number | null; thumb: Uint8Array | null; name: string; }
-export interface SendRequest { type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null; body: string; attachments: AttachmentDescriptor[]; }
+/** `threadId` (web3.7) names the held type-0 root a message joins; absent or null is no thread, and only type 0 may
+ *  carry one (the core refuses it on 1..6 with E_CORE_INPUT). */
+export interface SendRequest { type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null; body: string; attachments: AttachmentDescriptor[]; threadId: Id | null; }
 export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created: bigint; body: string; type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null;
   attachments: { blobId: Uint8Array; size: number; mime: string; name: string }[]; }
-export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; }
+/** `threadRoot` (web3.7 fix round 1, M3): the root of the thread the pinned row shows in, null for a channel row. */
+export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; threadRoot: Id | null; }
 export interface PurgeRow { groupId: Id; seq: bigint; channelId: Id; blobIds: Uint8Array[]; }
 export interface PendingLeaf { groupId: Id; leafIndex: number; userId: Id; cachedVersion: bigint; reason: string; }
 /** The stored verdict that blocks a user's leaf (and with it sending in its group); E_UMK_CHANGED wins (ABI 8).
@@ -78,12 +81,20 @@ export function trustBlock(code: string): TrustBlock {
 export interface TrustRecord { userId: Id; umk: Uint8Array; firstSeen: bigint; verified: boolean; changedUmk: Uint8Array | null; blocked: TrustBlock | null; }
 export interface SearchScope { kind: 'channel' | 'community' | 'all'; id: Id | null; }
 export interface SearchCursor { rank: bigint; groupId: Id; seq: bigint; }
-export interface SearchHit { groupId: Id; seq: bigint; snippet: string; rank: bigint; }
-export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; }
+/** `threadRoot` (web3.7 fix round 1, M3): the root of the thread the hit shows in, null for a channel row. */
+export interface SearchHit { groupId: Id; seq: bigint; snippet: string; rank: bigint; threadRoot: Id | null; }
+/** `threadRoot` (web3.7 fix round 1, M3): the root of the thread the quoted row shows in, null for a channel row. */
+export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; threadRoot: Id | null; }
 export interface ReactionInfo { emoji: string; count: number; mine: boolean; }
 export interface AttachmentInfo { index: number; size: number; mime: string; w: number | null; h: number | null; hasThumb: boolean; name: string; }
+/** `thread` (web3.7) is the summary of a held thread root with at least one shown reply: the reply count and the latest
+ *  reply's `recvTs`; null on every other row. */
+export interface ThreadSummary { count: number; lastTs: bigint; }
 export interface TimelineRow { seq: bigint; epoch: bigint; recvTs: bigint; status: 0 | 1 | 2; reason: string; senderUser: Id | null; senderDevice: Id; senderKind: number | null; senderTier: number | null; msgId: Id | null; type: number | null; body: string;
-  editedSeq: bigint; reply: ReplyInfo | null; reactions: ReactionInfo[]; pinned: boolean; attachments: AttachmentInfo[]; mention: boolean; }
+  editedSeq: bigint; reply: ReplyInfo | null; reactions: ReactionInfo[]; pinned: boolean; attachments: AttachmentInfo[]; mention: boolean; thread: ThreadSummary | null; }
+/** One `threads` row (web3.7): a thread of the group, its held root's seq and excerpt (null and '' when the root is not
+ *  held), its shown reply count and the latest reply's `recvTs`. */
+export interface ThreadRow { rootMsgId: Id; rootSeq: bigint | null; count: number; lastTs: bigint; excerpt: string; }
 export interface CorePort {
   pause(): void; resume(): Promise<void>; close(): void;
   identity(): IdentityInfo;
@@ -115,6 +126,11 @@ export interface CorePort {
   sendRequeue(msgId: Id): void; sendFail(msgId: Id, error: string): void; sendRetry(msgId: Id): void; sendDiscard(msgId: Id): void;
   outbox(groupId: Id): OutboxRow[];
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[];
+  /** web3.7 (R25): the held root (null when it is not held) and the thread's replies, newest first, below `beforeSeq`
+   *  (0n = from the newest), at most `limit` (1..=200). */
+  threadTimeline(groupId: Id, rootMsgId: Id, beforeSeq: bigint, limit: number): { root: TimelineRow | null; rows: TimelineRow[] };
+  /** web3.7: the group's threads, at most 50, the latest reply first. */
+  threads(groupId: Id): ThreadRow[];
   groupRow(groupId: Id): GroupInfo | null;
   markRead(groupId: Id, seq: bigint, now: bigint): void;
   activity(): ActivityRow[];
@@ -246,6 +262,8 @@ export interface CoreHandle {
       send_retry(msg_id: Uint8Array): void; send_discard(msg_id: Uint8Array): void;
       outbox(group_id: Uint8Array): Uint8Array;
       timeline(group_id: Uint8Array, before_seq: bigint, limit: number): Uint8Array;
+      thread_timeline(group_id: Uint8Array, root_msg_id: Uint8Array, before_seq: bigint, limit: number): Uint8Array;
+      threads(group_id: Uint8Array): Uint8Array;
       group_row(group_id: Uint8Array): Uint8Array;
       mark_read(group_id: Uint8Array, seq: bigint, now: bigint): void;
       activity(): Uint8Array;
@@ -354,10 +372,13 @@ function readOutbox(v: CborValue): OutboxRow {
     attachments: arr(field(a, 7)).map((x) => { const b = arr(x, 4); return { blobId: bin(field(b, 0), 32), size: u53(field(b, 1)),
       mime: str(field(b, 2)), name: str(field(b, 3)) }; }) };
 }
+/** A pin row: 8 elements since web3.7 fix round 1 (the 8th the thread root); 7 from a core before it. */
 function readPin(v: CborValue): PinRow {
-  const a = arr(v, 7);
+  const a = arr(v);
+  if (a.length !== 7 && a.length !== 8) throw new CborError('E_CBOR_SHAPE', `pin row of ${String(a.length)} elements`);
   return { targetSeq: u64(field(a, 0)), msgId: bin(field(a, 1), 16), pinnedSeq: u64(field(a, 2)), byUser: bin(field(a, 3), 16),
-    author: opt(field(a, 4), (x) => bin(x, 16)), excerpt: str(field(a, 5)), targetTs: u64(field(a, 6)) };
+    author: opt(field(a, 4), (x) => bin(x, 16)), excerpt: str(field(a, 5)), targetTs: u64(field(a, 6)),
+    threadRoot: opt(field(a, 7), (x) => bin(x, 16)) };
 }
 function readDescriptor(v: CborValue): AttachmentDescriptor {
   const a = arr(v, 9);
@@ -369,20 +390,37 @@ function readPurge(v: CborValue): PurgeRow {
   return { groupId: bin(field(a, 0), 16), seq: u64(field(a, 1)), channelId: bin(field(a, 2), 16),
     blobIds: arr(field(a, 3)).map((x) => bin(x, 32)) };
 }
+/** A timeline row: 19 elements since web3.7 (the 19th the thread summary); 18 from a core before it, read as no thread. */
 function readTimeline(v: CborValue): TimelineRow {
-  const a = arr(v, 18);
+  const a = arr(v);
+  if (a.length !== 18 && a.length !== 19) throw new CborError('E_CBOR_SHAPE', `timeline row of ${String(a.length)} elements`);
   return { seq: u64(field(a, 0)), epoch: u64(field(a, 1)), recvTs: u64(field(a, 2)), status: oneOf(field(a, 3), [0, 1, 2]),
     reason: str(field(a, 4)), senderUser: opt(field(a, 5), (x) => bin(x, 16)), senderDevice: bin(field(a, 6), 16),
     senderKind: opt(field(a, 7), u53), senderTier: opt(field(a, 8), u53), msgId: opt(field(a, 9), (x) => bin(x, 16)),
     type: opt(field(a, 10), u53), body: str(field(a, 11)), editedSeq: u64(field(a, 12)),
     reply: opt(field(a, 13), readReply), reactions: arr(field(a, 14)).map(readReaction),
     pinned: oneOf(field(a, 15), [0, 1]) === 1, attachments: arr(field(a, 16)).map(readAttachmentInfo),
-    mention: oneOf(field(a, 17), [0, 1]) === 1 };
+    mention: oneOf(field(a, 17), [0, 1]) === 1, thread: opt(field(a, 18), readThreadSummary) };
 }
-function readReply(v: CborValue): ReplyInfo {
+function readThreadSummary(v: CborValue): ThreadSummary {
+  const a = arr(v, 2);
+  return { count: u53(field(a, 0)), lastTs: u64(field(a, 1)) };
+}
+function readThreadTimeline(v: CborValue): { root: TimelineRow | null; rows: TimelineRow[] } {
+  const a = arr(v, 2);
+  return { root: opt(field(a, 0), readTimeline), rows: arr(field(a, 1)).map(readTimeline) };
+}
+function readThread(v: CborValue): ThreadRow {
   const a = arr(v, 5);
+  return { rootMsgId: bin(field(a, 0), 16), rootSeq: opt(field(a, 1), u64), count: u53(field(a, 2)), lastTs: u64(field(a, 3)),
+    excerpt: str(field(a, 4)) };
+}
+/** A reply reference: 6 elements since web3.7 fix round 1 (the 6th the thread root); 5 from a core before it. */
+function readReply(v: CborValue): ReplyInfo {
+  const a = arr(v);
+  if (a.length !== 5 && a.length !== 6) throw new CborError('E_CBOR_SHAPE', `reply of ${String(a.length)} elements`);
   return { replyTo: bin(field(a, 0), 16), targetSeq: opt(field(a, 1), u64), targetUser: opt(field(a, 2), (x) => bin(x, 16)),
-    excerpt: str(field(a, 3)), state: oneOf(field(a, 4), [0, 1, 2]) };
+    excerpt: str(field(a, 3)), state: oneOf(field(a, 4), [0, 1, 2]), threadRoot: opt(field(a, 5), (x) => bin(x, 16)) };
 }
 function readReaction(v: CborValue): ReactionInfo {
   const a = arr(v, 3);
@@ -454,7 +492,8 @@ export function wrapCore(handle: CoreHandle): CorePort {
     cursorAcked: (groupId, lastSeq, lastEpoch) => call(() => handle.cursor_acked(groupId, lastSeq, lastEpoch)),
     messageDeleted: (groupId, seq) => call(() => decoded('messageDeleted', handle.message_deleted(groupId, seq), readApply)),
     sendPrepare: (groupId, request, now) => call(() => decoded('sendPrepare', handle.send_prepare(groupId,
-      encode([request.type, request.replyTo, request.body, request.attachments.map((a) => [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name])]),
+      encode([request.type, request.replyTo, request.body, request.attachments.map((a) => [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name]),
+        request.threadId ?? null]),
       now), (v) => bin(field(arr(v, 1), 0), 16))),
     sendEncrypt: (msgId) => call(() => decoded('sendEncrypt', handle.send_encrypt(msgId), (v) => {
       const a = arr(v, 2); return { groupId: bin(field(a, 0), 16), messageBody: bin(field(a, 1)) };
@@ -468,6 +507,9 @@ export function wrapCore(handle: CoreHandle): CorePort {
     sendDiscard: (msgId) => call(() => handle.send_discard(msgId)),
     outbox: (groupId) => call(() => decoded('outbox', handle.outbox(groupId), (v) => arr(v).map(readOutbox))),
     timeline: (groupId, beforeSeq, limit) => call(() => decoded('timeline', handle.timeline(groupId, beforeSeq, limit), (v) => arr(v).map(readTimeline))),
+    threadTimeline: (groupId, rootMsgId, beforeSeq, limit) => call(() => decoded('threadTimeline',
+      handle.thread_timeline(groupId, rootMsgId, beforeSeq, limit), readThreadTimeline)),
+    threads: (groupId) => call(() => decoded('threads', handle.threads(groupId), (v) => arr(v).map(readThread))),
     groupRow: (groupId) => call(() => decoded('groupRow', handle.group_row(groupId), (v) => v === null ? null : readGroup(v))),
     markRead: (groupId, seq, now) => call(() => handle.mark_read(groupId, seq, now)),
     activity: () => call(() => decoded('activity', handle.activity(), (v) => arr(v).map(readActivity))),

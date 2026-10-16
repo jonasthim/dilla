@@ -122,6 +122,17 @@ on the order in which rows reach it.
 - **The role view.** The view is served by the instance and is not authenticated by the group
   (`08` § Residual trust): it decides only which pins and mentions a receiver counts, never which
   messages it shows. A DM has no role view.
+- **The upload class.** In an end-to-end encrypted group the delivery service relays each row with
+  the upload class its uploader declared (`02` § Upload class): 0 for type 0, 1 for types 1 to 6.
+  A receiver that decrypts a row whose MLS sender is the uploading device, and whose class
+  disagrees with its type (class 1 on a type 0, class 0 on a type 1 to 6), drops it before the
+  sender's trust check: it is neither shown nor folded, raises no mention, counts toward
+  no unread, is never a target or a thread root, is never released later, and leaves no
+  placeholder. Unlike a sender mismatch, which stays in the timeline as a message that cannot be
+  read, such a post vanishes for every other reader, the author's other devices included, while
+  the device that sent it, which keeps its own copy and never decrypts its own upload, still shows
+  it. A row with a null class (a legacy upload, or one served by an instance before the class) is
+  never dropped for it.
 - A fold that breaks a rule is ignored, never an error; only § Envelope refuses an envelope.
 
 ## Mentions
@@ -140,6 +151,38 @@ or the sender holds `mention_everyone` there (§ Semantics, Role mentions); with
 role ids count from any sender. The receiver's own user id counts from any sender. This version counts
 `<@here>` as `<@everyone>`. An edit never raises a mention.
 A client shows a mention as the name it stands for, never as the raw token.
+
+## Threads
+
+A thread is a run of type-0 envelopes under one root message (a public thread: every member of the
+group reads it). Threads apply to community channel groups only: a sender sets no `thread_id` in
+any other group (a DM or a group DM), and a receiver ignores one there and shows the envelope in
+the timeline as a message without a thread.
+
+- **Root.** A type-0 envelope's `thread_id` names its root: in an end-to-end encrypted group the
+  root's `msg_id`, on a server-readable channel the root's channel `seq` (§ Envelope). The root is
+  a type-0 envelope that carries no `thread_id` itself. In an encrypted group only the **first**
+  (lowest `seq`) type-0 envelope with that `msg_id` the receiver holds is the root; a later one that
+  repeats the `msg_id` is shown as its own message, never as a root. A root comes **before** its
+  replies: a reply belongs to the root only when the root's `seq` is lower than the reply's, so an
+  envelope that appears later cannot take over replies sent before it. A sender sets `thread_id`
+  only on type 0 and only to a root it holds; an envelope of type 1 to 6 carries a null
+  `thread_id`, and a receiver ignores one it finds there.
+- **Where a reply shows.** A receiver shows a reply whose root it holds, with a lower `seq`, only
+  in that thread, not in the channel. A reply whose root it does not hold, whose root is itself a
+  reply (a nested thread), or whose root comes after it, it shows in the channel, as a message
+  without a thread; such a reply is not listed as a thread either.
+- **Summary.** A receiver shows on a root the number of its replies that are shown (neither
+  deleted nor retracted after a failed identity check) and the time of the latest.
+- **Folds.** Edits, deletes, reactions and pins of a reply work as on any message (§ Semantics); a
+  deleted reply stays in its thread as deleted and no longer counts in the summary. A deleted root
+  keeps its thread: its replies stay there and the root's tombstone carries the summary, and a
+  member may still reply in it.
+- **Finding a reply.** Wherever a client meets a reply outside its thread (a search hit, a pin, a
+  quote in a `reply_to`), it learns the root that holds it, and opens the reply there.
+- **Counts.** Replies count toward unread and mentions (§ Mentions) as any other type-0 message.
+  A thread has no read marker of its own in this version: reading the channel marks its threads'
+  replies read too, and a mention in a thread still counts in the channel's activity until then.
 
 ## Deterministic CBOR
 

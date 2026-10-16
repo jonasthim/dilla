@@ -338,6 +338,9 @@ type groupsAPI struct {
 	// with (mustCreate).
 	wasm *mlswasi.Runtime
 	keys ds.InstanceKeys
+	// gw is the delivery service's gateway, which authenticates over the harness's sessions, so a
+	// test can put a device online and read the frames it receives (listen, messages_test.go).
+	gw *gateway.Gateway
 }
 
 // newGroupsAPI mounts the delivery-service routes on the same mux, repository and sessions the
@@ -362,8 +365,9 @@ func (openChannels) Channel(context.Context, id.ID) (visibility, mode uint8, err
 func (openChannels) MayRegister(context.Context, id.ID, ds.Binding) error { return nil }
 
 // newGroupsAPIWith is newGroupsAPI over the channel source channels builds from the harness's own
-// repository.
-func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels) *groupsAPI {
+// repository, and over policy as the delivery service's post policy when one is given (web3.7
+// SB1); without one the delivery service accepts every upload.
+func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
 	t.Helper()
 	handler, deps := newTestAPI(t)
 	mux, ok := handler.(*server.Mux)
@@ -384,8 +388,12 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels)
 	}
 	t.Cleanup(func() { _ = wasm.Close(context.Background()) })
 
-	gw := gateway.New(gateway.Options{Clock: clk, Store: apiGatewayStore{deps.Repo}, Generation: 1})
+	gw := gateway.New(gateway.Options{Clock: clk, Store: apiListenStore{apiGatewayStore{deps.Repo}}, Generation: 1, Auth: deps.Sessions})
 	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
+	var postPolicy ds.PostPolicy
+	if len(policy) > 0 {
+		postPolicy = policy[0]
+	}
 
 	// The fixture's dilla_binding names the generator's instance, 0x11 sixteen times
 	// (testkit/src/fixtures.rs:98), and Register refuses a binding for any other instance.
@@ -398,7 +406,7 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels)
 	keys.ExternalSenderPriv = fixtureExternalSenderKey()
 	d, err := ds.New(ds.Options{
 		Store: deps.Repo, Wasm: wasm, Gateway: gw, Clock: clk,
-		Policy: ds.DefaultPolicy(), Keys: keys, Channels: channels(deps.Repo),
+		Policy: ds.DefaultPolicy(), Keys: keys, Channels: channels(deps.Repo), PostPolicy: postPolicy,
 	})
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)
@@ -426,7 +434,7 @@ func newGroupsAPIWith(t *testing.T, channels func(store.Repository) ds.Channels)
 	user, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
 		mux: mux, deps: deps, ds: d, groups: groups, groupID: f.groupID, fixture: f, session: token,
-		user: user.ID, clk: clk, wasm: wasm, keys: keys,
+		user: user.ID, clk: clk, wasm: wasm, keys: keys, gw: gw,
 	}
 }
 

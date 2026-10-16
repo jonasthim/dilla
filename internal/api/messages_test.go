@@ -10,12 +10,21 @@ import (
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/fxamacker/cbor/v2"
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/ds"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
+	"github.com/jonasthim/dilla/internal/store"
 )
 
 // Endpoint 7's response is the three-element array [seq, franking_tag, recv_ts] — the epoch is NOT
@@ -104,8 +113,8 @@ func TestTheCatchUpCarriesTheRowShapeAndTheTombstone(t *testing.T) {
 		t.Fatalf("got %d rows, want the tombstone and the surviving message", len(raw))
 	}
 	row0, ok := raw[0].([]any)
-	if !ok || len(row0) != 8 {
-		t.Fatalf("row 0 is %v, want an eight-element array", raw[0])
+	if !ok || len(row0) != 9 {
+		t.Fatalf("row 0 is %v, want a nine-element array", raw[0])
 	}
 	if row0[3] != nil {
 		t.Errorf("the tombstone's blob is %T, want null", row0[3])
@@ -121,6 +130,7 @@ func TestTheCatchUpCarriesTheRowShapeAndTheTombstone(t *testing.T) {
 		FrankingTag    []byte
 		RecvTS         uint64
 		Deleted        uint8
+		Class          *uint64
 	}
 	if err := cborx.Unmarshal(res.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode the rows: %v", err)
@@ -345,4 +355,298 @@ func appendVL(t *testing.T, dst, v []byte) []byte {
 		t.Fatalf("appendVL: %d bytes is past the two-byte form", len(v))
 	}
 	return append(dst, v...)
+}
+
+// ------------------------------------------------------------------ the upload class (web3.7 SB1)
+
+// fakePostPolicy is the delivery service's post policy seam as the route sees it: the classes it
+// was asked about, and one answer for all of them.
+type fakePostPolicy struct {
+	mu      sync.Mutex
+	classes []*uint8
+	err     error
+}
+
+func (p *fakePostPolicy) Check(_ context.Context, _ store.GroupRow, _ id.ID, class *uint8, _ int64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var c *uint8
+	if class != nil {
+		v := *class
+		c = &v
+	}
+	p.classes = append(p.classes, c)
+	return p.err
+}
+
+func (p *fakePostPolicy) answer(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.err = err
+}
+
+func (p *fakePostPolicy) take() []*uint8 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := p.classes
+	p.classes = nil
+	return out
+}
+
+func newClassAPI(t *testing.T) (*groupsAPI, *fakePostPolicy) {
+	t.Helper()
+	policy := &fakePostPolicy{}
+	h := newGroupsAPIWith(t, func(store.Repository) ds.Channels { return openChannels{} }, policy)
+	h.mustCreate(t)
+	return h, policy
+}
+
+// apiListenStore is apiGatewayStore for a device that comes online: ready reads a cursor for each
+// of the device's groups, and a device that never acknowledged one starts at zero.
+type apiListenStore struct{ apiGatewayStore }
+
+func (apiListenStore) GetCursor(_ context.Context, _, _ id.ID) (store.CursorRow, error) {
+	return store.CursorRow{}, nil
+}
+
+// listen puts the device behind token online on the harness's gateway and returns a function that
+// waits for the next op 19 (message.ct) frame and hands back its payload's elements.
+func (h *groupsAPI) listen(t *testing.T, token string) func() []cbor.RawMessage {
+	t.Helper()
+	srv := httptest.NewServer(h.gw.Handler())
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{ //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
+		HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token}},
+		Subprotocols: []string{"dilla.v1"},
+	})
+	if err != nil {
+		t.Fatalf("dial the gateway: %v", err)
+	}
+	t.Cleanup(func() { _ = c.CloseNow() })
+	read := func() (gateway.Op, []cbor.RawMessage) {
+		t.Helper()
+		_, b, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("read a frame: %v", err)
+		}
+		var frame []cbor.RawMessage
+		if err := cborx.Unmarshal(b, &frame); err != nil || len(frame) != 4 {
+			t.Fatalf("a frame of %d elements: %v", len(frame), err)
+		}
+		var op uint64
+		var payload []cbor.RawMessage
+		if err := cborx.Unmarshal(frame[0], &op); err != nil {
+			t.Fatalf("decode the opcode: %v", err)
+		}
+		if err := cborx.Unmarshal(frame[3], &payload); err != nil {
+			t.Fatalf("decode the payload: %v", err)
+		}
+		return gateway.Op(op), payload
+	}
+	if op, _ := read(); op != gateway.OpHello {
+		t.Fatalf("first frame op %d, want hello", op)
+	}
+	identify, err := gateway.Encode(gateway.Frame{Op: gateway.OpIdentify,
+		Payload: cborx.Raw(mustCBOR(t, []any{"", uint64(1), uint64(1), uint64(1), uint64(0)}))}, 1)
+	if err != nil {
+		t.Fatalf("encode identify: %v", err)
+	}
+	if err := c.Write(ctx, websocket.MessageBinary, identify); err != nil {
+		t.Fatalf("write identify: %v", err)
+	}
+	for {
+		if op, _ := read(); op == gateway.OpReady {
+			break
+		}
+	}
+	return func() []cbor.RawMessage {
+		t.Helper()
+		for {
+			if op, payload := read(); op == gateway.OpMessageCT {
+				return payload
+			}
+		}
+	}
+}
+
+func (h *groupsAPI) post(t *testing.T, token string, body []any) *httptest.ResponseRecorder {
+	t.Helper()
+	return h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/message", token, mustCBOR(t, body))
+}
+
+// catchUpRow is the raw elements of the one catch-up row at seq.
+func (h *groupsAPI) catchUpRow(t *testing.T, token string, seq uint64) []cbor.RawMessage {
+	t.Helper()
+	res := h.do(t, http.MethodGet, "/v1/groups/"+h.groupID.String()+"/messages?from=0", token, nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("catch-up: status = %d: %s", res.Code, res.Body.String())
+	}
+	var rows [][]cbor.RawMessage
+	if err := cborx.Unmarshal(res.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode the rows: %v", err)
+	}
+	for _, row := range rows {
+		var got uint64
+		if len(row) > 0 && cborx.Unmarshal(row[0], &got) == nil && got == seq {
+			return row
+		}
+	}
+	t.Fatalf("no catch-up row at seq %d among %d", seq, len(rows))
+	return nil
+}
+
+func uploadSeq(t *testing.T, res *httptest.ResponseRecorder) uint64 {
+	t.Helper()
+	var out []cbor.RawMessage
+	var seq uint64
+	if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil || len(out) != 3 || cborx.Unmarshal(out[0], &seq) != nil {
+		t.Fatalf("the upload response %x: %v", res.Body.Bytes(), err)
+	}
+	return seq
+}
+
+// classElement is the CBOR of the class a row or frame should carry: the uint, or null.
+func classElement(class *uint64) []byte {
+	if class == nil {
+		return []byte{0xf6}
+	}
+	return []byte{byte(*class)}
+}
+
+func TestAnUploadCarriesItsClassToTheRowAndTheFrame(t *testing.T) {
+	h, policy := newClassAPI(t)
+	member := h.memberToken(t)
+	next := h.listen(t, member)
+	for _, class := range []uint64{0, 1} {
+		epoch := h.groupEpoch(t)
+		res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64), class})
+		if res.Code != http.StatusOK {
+			t.Fatalf("class %d: status = %d, want 200: %s", class, res.Code, res.Body.String())
+		}
+		seq := uploadSeq(t, res)
+		if got := policy.take(); len(got) != 1 || got[0] == nil || uint64(*got[0]) != class {
+			t.Fatalf("class %d: the policy was asked about %v", class, got)
+		}
+		row := h.catchUpRow(t, member, seq)
+		if len(row) != 9 || !bytes.Equal(row[8], classElement(&class)) {
+			t.Fatalf("class %d: the catch-up row has %d elements, the 9th %x", class, len(row), row[len(row)-1])
+		}
+		frame := next()
+		if len(frame) != 7 || !bytes.Equal(frame[6], classElement(&class)) {
+			t.Fatalf("class %d: message.ct has %d elements, the 7th %x", class, len(frame), frame[len(frame)-1])
+		}
+	}
+}
+
+// R28: a two-element body is a legacy upload, stored with a null class and asked about with a nil
+// one, so the policy still decides send_messages for it.
+func TestALegacyUploadIsCheckedForSendOnly(t *testing.T) {
+	h, policy := newClassAPI(t)
+	member := h.memberToken(t)
+	next := h.listen(t, member)
+	epoch := h.groupEpoch(t)
+	res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64)})
+	if res.Code != http.StatusOK {
+		t.Fatalf("a legacy upload: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
+	seq := uploadSeq(t, res)
+	if got := policy.take(); len(got) != 1 || got[0] != nil {
+		t.Fatalf("a legacy upload asked the policy about %v, want one nil class", got)
+	}
+	if row := h.catchUpRow(t, member, seq); len(row) != 9 || !bytes.Equal(row[8], []byte{0xf6}) {
+		t.Fatalf("the legacy row has %d elements, the 9th %x; want 9, null", len(row), row[len(row)-1])
+	}
+	if frame := next(); len(frame) != 7 || !bytes.Equal(frame[6], []byte{0xf6}) {
+		t.Fatalf("the legacy message.ct has %d elements, the 7th %x; want 7, null", len(frame), frame[len(frame)-1])
+	}
+
+	policy.answer(server.Errorf(server.CodeForbidden, "missing permission"))
+	res = h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64)})
+	if res.Code != http.StatusForbidden || errorCode(t, res) != "E_FORBIDDEN" {
+		t.Fatalf("a legacy upload the policy refuses: %d %s, want 403 E_FORBIDDEN", res.Code, res.Body.String())
+	}
+	if got := policy.take(); len(got) != 1 || got[0] != nil {
+		t.Fatalf("the refused legacy upload asked the policy about %v, want one nil class", got)
+	}
+	row, err := h.deps.Repo.GetGroup(context.Background(), h.groupID)
+	if err != nil || row.Seq != seq {
+		t.Fatalf("after the refusal the group's seq is %d (%v), want %d: nothing stored", row.Seq, err, seq)
+	}
+}
+
+func TestAnUploadOfAnyOtherShapeIsRefused(t *testing.T) {
+	h, policy := newClassAPI(t)
+	member := h.memberToken(t)
+	epoch := h.groupEpoch(t)
+	pm := apiPrivateMessage(t, epoch, 64)
+	for _, c := range []struct {
+		name   string
+		body   []any
+		detail string
+	}{
+		{"one element", []any{epoch}, ""},
+		{"four elements", []any{epoch, pm, uint64(0), uint64(0)}, ""},
+		{"class 2", []any{epoch, pm, uint64(2)}, "class must be 0 or 1"},
+		{"a text class", []any{epoch, pm, "0"}, ""},
+		// SB1 fix round 1: the wire is uint 0 or 1; a null third element is not a legacy upload.
+		{"a null class", []any{epoch, pm, nil}, ""},
+	} {
+		res := h.post(t, member, c.body)
+		if res.Code != http.StatusBadRequest || errorCode(t, res) != "E_INVALID_REQUEST" {
+			t.Fatalf("%s: %d %s, want 400 E_INVALID_REQUEST", c.name, res.Code, res.Body.String())
+		}
+		if c.detail != "" {
+			var out []any
+			if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil || len(out) < 2 || out[1] != c.detail {
+				t.Fatalf("%s: the error body %v, want detail %q", c.name, out, c.detail)
+			}
+		}
+	}
+	if got := policy.take(); len(got) != 0 {
+		t.Fatalf("a refused shape reached the policy %d times", len(got))
+	}
+	// Control: the well-formed three-element body is accepted.
+	if res := h.post(t, member, []any{epoch, pm, uint64(0)}); res.Code != http.StatusOK {
+		t.Fatalf("control: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
+}
+
+func TestThePolicysRefusalIsTheAnswer(t *testing.T) {
+	h, policy := newClassAPI(t)
+	member := h.memberToken(t)
+	epoch := h.groupEpoch(t)
+	slow := server.RateLimited(5000)
+	slow.Detail = "slowmode: 5 seconds left"
+	for _, c := range []struct {
+		err    error
+		status int
+		code   string
+		retry  *uint64
+	}{
+		{server.Errorf(server.CodeForbidden, "missing permission"), http.StatusForbidden, "E_FORBIDDEN", nil},
+		{slow, http.StatusTooManyRequests, "E_RATE_LIMITED", slow.RetryAfterMS},
+	} {
+		policy.answer(c.err)
+		res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64), uint64(0)})
+		if res.Code != c.status || errorCode(t, res) != c.code {
+			t.Fatalf("the policy answering %v: %d %s, want %d %s", c.err, res.Code, res.Body.String(), c.status, c.code)
+		}
+		var out []cbor.RawMessage
+		if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode the error body: %v", err)
+		}
+		if c.retry != nil {
+			var retry uint64
+			if len(out) < 3 || cborx.Unmarshal(out[2], &retry) != nil || retry != *c.retry {
+				t.Fatalf("retry_after_ms of %x, want %d", res.Body.Bytes(), *c.retry)
+			}
+		}
+	}
+	// Control: the policy relents and the same body is accepted.
+	policy.answer(nil)
+	if res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64), uint64(0)}); res.Code != http.StatusOK {
+		t.Fatalf("control: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
 }

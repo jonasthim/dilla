@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encode } from '../cbor';
 import { sealBlob, sealThumb, BROWSER_ATTACHMENT_CAP } from '../attachments/crypto';
-import { CoreError, type ActivityRow, type ApplyResult, type CorePort, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PurgeRow, type SessionRecord, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ThreadRow, type ActivityRow, type ApplyResult, type CorePort, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PurgeRow, type SessionRecord, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, type GatewayEvent } from '../gateway/gateway';
 import { Op } from '../gateway/frames';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, TimelineState, TrayItem, TrustSummary } from '../state/types';
+import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
+import { HELD_LIVE_MAX } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
@@ -333,7 +334,7 @@ it('clears an old search slice when a newer core search refuses', async () => {
   const w = world();
   await toReady(w);
   await openGeneral(w);
-  w.core.search.mockReturnValueOnce([{ groupId: GROUP, seq: 1n, snippet: 'old', rank: 0n }]);
+  w.core.search.mockReturnValueOnce([{ groupId: GROUP, seq: 1n, snippet: 'old', rank: 0n, threadRoot: null }]);
   w.call(992, { m: 'search', scope: 'all', id: null, query: 'old', cursor: null });
   await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true }));
   expect(w.last<{ hits: unknown[] }>('search')?.hits).toHaveLength(1);
@@ -352,15 +353,15 @@ it('publishes channel destinations for community and DM hits and drops unknown g
   w.sync.deps!.onUnexpectedWelcome(DM_GROUP);
   await vi.waitFor(() => expect(w.last<DmSummary[]>('dms')?.[0]?.id).toBe(toHex(DM_CHANNEL)));
   w.core.search.mockReturnValueOnce([
-    { groupId: GROUP, seq: 1n, snippet: 'community', rank: 0n },
-    { groupId: DM_GROUP, seq: 2n, snippet: 'dm', rank: 0n },
-    { groupId: ORPHAN_GROUP, seq: 3n, snippet: 'orphan', rank: 0n },
+    { groupId: GROUP, seq: 1n, snippet: 'community', rank: 0n, threadRoot: null },
+    { groupId: DM_GROUP, seq: 2n, snippet: 'dm', rank: 0n, threadRoot: null },
+    { groupId: ORPHAN_GROUP, seq: 3n, snippet: 'orphan', rank: 0n, threadRoot: null },
   ]);
   w.call(994, { m: 'search', scope: 'all', id: null, query: 'a', cursor: null });
   await vi.waitFor(() => expect(w.ret(994)).toMatchObject({ ok: true }));
   expect(w.last<{ hits: unknown[] }>('search')?.hits).toEqual([
-    { channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), seq: '1', snippet: 'community', rank: '0' },
-    { channelId: toHex(DM_CHANNEL), communityId: null, seq: '2', snippet: 'dm', rank: '0' },
+    { channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), seq: '1', snippet: 'community', rank: '0', threadRoot: null },
+    { channelId: toHex(DM_CHANNEL), communityId: null, seq: '2', snippet: 'dm', rank: '0', threadRoot: null },
   ]);
   const page = w.last<{ hits: unknown[]; cursor: unknown }>('search');
   expect(JSON.stringify(page)).not.toContain('groupId');
@@ -1859,7 +1860,7 @@ describe('Controller command edge cases', () => {
     w.call(6, { m: 'send', channelId: toHex(CHANNEL), text: 'hello' });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());
     expect(w.ret(6)).toEqual({ t: 'ret', id: 6, ok: true, value: { msgId: '77'.repeat(16) } });
-    expect(w.sync.sendRequest).toHaveBeenCalledWith(GROUP, { type: 0, replyTo: null, body: 'hello', attachments: [] });
+    expect(w.sync.sendRequest).toHaveBeenCalledWith(GROUP, { type: 0, replyTo: null, body: 'hello', attachments: [], threadId: null });
   });
 
   it('(i)+(ii) a reopen while the join is in flight leaves the channel closed when the join fails', async () => {
@@ -2043,7 +2044,7 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('signs in without a second factor: the key\'s form, then the login, register, fetch and enrol back to back, then ready', async () => {
     const w = world({ phase: 0 });
     await toLoginStep(w);
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: null, needsTotp: false }, error: null });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: null }, error: null });
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual([]);
     w.call(3, LOGIN);
     await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
@@ -2066,7 +2067,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     await toKeyStep(w);
     expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } });
-    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', needsTotp: true } });
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web' } });
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(4, { m: 'signInTotp', code: '12345', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
@@ -2109,7 +2110,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.enrol.fetch).not.toHaveBeenCalled();
     expect(w.enrol.reset).not.toHaveBeenCalled();
     expect(w.core.identity().phase).toBe(3);
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: { code: 'E_FORBIDDEN', status: 403 } });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: { code: 'E_FORBIDDEN', status: 403 } });
     // Once a device was removed elsewhere, the next login (with the key) registers the kept enrolment again.
     w.call(5, LOGIN);
     await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 0 } }));
@@ -2142,7 +2143,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: want });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
@@ -2159,7 +2160,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_NO_ASSERTION', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: want });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
   });
 
   it('a boot in phase 3 whose backup is missing publishes signin-key with E_NO_BACKUP', async () => {
@@ -2233,7 +2234,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     const want = { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
     expect(w.enrol.reset).toHaveBeenCalledTimes(1);
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: want });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
     expect(phasesOf(w)).not.toContain('revoked');
   });
 
@@ -2396,7 +2397,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('signin-key'));
     expect(w.enrol.fetch).toHaveBeenCalledWith(USER);
-    expect(w.account()?.signIn).toEqual({ username: null, needsTotp: false, factor: null });
+    expect(w.account()?.signIn).toEqual({ username: null, factor: null });
     w.call(2, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
     expect(w.enrol.complete).toHaveBeenCalledWith(RECOVERY_KEY, FETCHED, '');
@@ -2544,7 +2545,7 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
     expect(w.notices()).toEqual({ nextId: 2, items: [{
       id: 1, channelId: toHex(CHANNEL), communityId: toHex(COMMUNITY), kind: 'message', senderUser: toHex(STRANGER),
-      senderName: '5a5a5a5a', body: 'from a stranger 1', ts: 1_700_000_000,
+      senderName: '5a5a5a5a', body: 'from a stranger 1', ts: 1_700_000_000, threadRoot: null,
     }] });
     const mention: TimelineRow = { ...strangerRow(2), body: `<@${toHex(USER)}> look`, mention: true };
     const own: TimelineRow = { ...strangerRow(3), senderUser: USER, senderDevice: DEVICE, body: 'mine' };
@@ -2578,6 +2579,62 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     // No await between the report and the read: both slices were posted inside the synchronous handler.
     const names = w.posted.slice(from).filter((m): m is SliceMessage => m.t === 'slice').map((m) => m.name);
     expect(names.filter((n) => n === 'badges' || n === 'notices')).toEqual(['badges', 'notices']);
+  });
+
+  it('a live message held for its sender\'s trust badges and notifies once, when the trust refresh releases it (CI1)', async () => {
+    const w = world();
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [textGroup(2)];
+    // The general channel is never opened: only the badges and notices slices can show the message.
+    w.state.rows = [{ ...strangerRow(1), status: 1, reason: 'E_DEVICE_LIST_STALE', senderUser: null, msgId: null, type: null, body: '' }];
+    w.state.activity = [act(GROUP, 0, 0)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([1n]));
+    expect(w.badges()).toEqual({ [ch]: { unread: 0, mentions: 0 } });
+    expect(w.notices()).toEqual({ nextId: 1, items: [] });
+    await settle();   // the ready's own trust refresh has ended
+
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 1, userId: STRANGER, cachedVersion: 0n, reason: 'unknown' }]);
+    w.core.revalidatePending.mockImplementation(() => {
+      w.state.rows = [strangerRow(1)];
+      w.state.activity = [act(GROUP, 1, 0)];
+      w.core.trustGeneration.mockReturnValue(1n);
+      return 1;
+    });
+    w.call(883, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(883)).toMatchObject({ ok: true }));
+    expect(w.core.revalidatePending).toHaveBeenCalledWith(GROUP, 1, 256);
+    expect(w.badges()).toEqual({ [ch]: { unread: 1, mentions: 0 } });
+    expect(w.notices()).toEqual({ nextId: 2, items: [{
+      id: 1, channelId: ch, communityId: toHex(COMMUNITY), kind: 'message', senderUser: toHex(STRANGER),
+      senderName: '5a5a5a5a', body: 'from a stranger 1', ts: 1_700_000_000, threadRoot: null,
+    }] });
+
+    // A later trust change re-reads nothing it already noticed.
+    w.core.trustGeneration.mockReturnValue(2n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.notices()?.items).toHaveLength(1);
+  });
+
+  it(`the worker remembers at most ${HELD_LIVE_MAX} held live rows, dropping the oldest (CI1)`, async () => {
+    const w = world();
+    await toReady(w);
+    w.state.groups = [textGroup(2)];
+    const held = (seq: number): TimelineRow => ({ ...strangerRow(seq), status: 1, reason: 'E_DEVICE_LIST_STALE', senderUser: null, msgId: null, type: null, body: '' });
+    const all = Array.from({ length: HELD_LIVE_MAX + 1 }, (_, i) => i + 1);
+    for (const seq of all) {
+      w.state.rows = all.filter((s) => s <= seq).map(held);
+      w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([BigInt(seq)]));
+    }
+    // Seq 1 is released first: it fell out of the remembered list, so it raises nothing; seq 2 is still remembered.
+    w.state.rows = [strangerRow(1), ...all.slice(1).map(held)];
+    w.core.trustGeneration.mockReturnValue(1n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.notices()?.items).toEqual([]);
+    w.state.rows = [strangerRow(1), strangerRow(2), ...all.slice(2).map(held)];
+    w.core.trustGeneration.mockReturnValue(2n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.notices()?.items.map((n) => n.body)).toEqual(['from a stranger 2']);
   });
 
   it('an unexpected Welcome reloads the DMs, coalesced, and expects the new DM group', async () => {
@@ -3667,7 +3724,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
       error: { code: 'E_CORE_INPUT', detail: '', status: 0, retryAfterMs: null } });
     w.call(5, { m: 'send', channelId: CH_HEX, text: 'answer', replyTo: MSG_HEX });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    expect(w.sync.sendRequest.mock.calls.at(-1)![1]).toEqual({ type: 0, replyTo: MSG, body: 'answer', attachments: [] });
+    expect(w.sync.sendRequest.mock.calls.at(-1)![1]).toEqual({ type: 0, replyTo: MSG, body: 'answer', attachments: [], threadId: null });
   });
 
   it('a recorded purge runs after the outbox changed: the message, then each reference, then done', async () => {
@@ -3784,16 +3841,16 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
-    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 9n, byUser: USER, author: STRANGER, excerpt: 'pin me', targetTs: 1700000005n }];
+    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 9n, byUser: USER, author: STRANGER, excerpt: 'pin me', targetTs: 1700000005n, threadRoot: null }];
     w.call(4, { m: 'loadPins', channelId: CH_HEX });
     await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
-    expect(pinsOf(w)).toEqual([{ msgId: MSG_HEX, seq: '4', senderUser: toHex(STRANGER), excerpt: 'pin me', pinnedBy: toHex(USER), pinnedSeq: '9', ts: 1700000005 }]);
+    expect(pinsOf(w)).toEqual([{ msgId: MSG_HEX, seq: '4', senderUser: toHex(STRANGER), excerpt: 'pin me', pinnedBy: toHex(USER), pinnedSeq: '9', ts: 1700000005, threadRoot: null }]);
     w.state.pins = [];
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
     expect(pinsOf(w)).toEqual([]);
     w.call(5, { m: 'closePins', channelId: CH_HEX });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 10n, byUser: USER, author: null, excerpt: 'again', targetTs: 1700000005n }];
+    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 10n, byUser: USER, author: null, excerpt: 'again', targetTs: 1700000005n, threadRoot: null }];
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
     expect(pinsOf(w)).toEqual([]);
     w.call(6, { m: 'loadPins', channelId: 'e'.repeat(32) });
@@ -4073,6 +4130,18 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     expect(listed).toBeLessThan(retAt(w, 83));
   });
 
+  it('a listed channel carries its slow mode into the channels slice, and a created one starts at 0', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '',
+      position: 0, slowmode: 30, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    await vi.waitFor(() => expect(w.channels()?.find((c) => c.id === toHex(CHANNEL))?.slowmode).toBe(30));
+    w.call(87, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'new' });
+    await vi.waitFor(() => expect(w.ret(87)).toMatchObject({ ok: true }));
+    const created = sliceAt(w, `channels:${toHex(COMMUNITY)}`, (v) => (v as ChannelSummary[]).some((c) => c.name === 'new' && c.slowmode === 0));
+    expect(created).toBeGreaterThan(-1);
+  });
+
   it('the starter channels of a new server go to positions 0 and 1', async () => {
     const w = world();
     await toReady(w);
@@ -4099,7 +4168,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     await vi.waitFor(() => expect(w.ret(88)).toMatchObject({ ok: true }));
     const channelId = toHex(new Uint8Array(16).fill(0x60));
     // The stale answer: the list as it was before the create.
-    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP }]);
+    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
     await vi.waitFor(() => expect(w.ret(87)).toMatchObject({ ok: true }));
     await settle();
     expect(w.channels()?.map((c) => c.id)).toContain(channelId);
@@ -4205,7 +4274,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     w.call(120, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'random' });
     await vi.waitFor(() => expect(w.ret(120)).toMatchObject({ ok: true, value: { channelId: toHex(new Uint8Array(16).fill(0x60)) } }));
     expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'random']);
-    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP },
+    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP },
       w.state.newChannels[0].row]);
     await settle();
     expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'random']);
@@ -4219,7 +4288,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     await settle();
     const before = w.routes.listChannels.mock.calls.length;
     w.state.newChannels.push({ communityId: COMMUNITY, row: { id: new Uint8Array(16).fill(0x66), kind: 0, mode: 0, visibility: 0,
-      parentId: null, name: 'planering', topic: '', position: 1, seq: 0n, textGroupId: null } });
+      parentId: null, name: 'planering', topic: '', position: 1, slowmode: 0, seq: 0n, textGroupId: null } });
     const changed = (community: Uint8Array): GatewayEvent => ({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [community] } });
     w.gateway.emit(changed(COMMUNITY));
     w.gateway.emit(changed(COMMUNITY));
@@ -4287,9 +4356,353 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     await settle();
     const before = w.routes.listChannels.mock.calls.length;
     w.state.newChannels.push({ communityId: COMMUNITY, row: { id: new Uint8Array(16).fill(0x67), kind: 0, mode: 0, visibility: 0,
-      parentId: null, name: 'nytt', topic: '', position: 1, seq: 0n, textGroupId: null } });
+      parentId: null, name: 'nytt', topic: '', position: 1, slowmode: 0, seq: 0n, textGroupId: null } });
     w.sync.deps!.onUnexpectedWelcome(GROUP);
     await vi.waitFor(() => expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'nytt']));
     expect(w.routes.listChannels.mock.calls.slice(before).map((c) => toHex(c[0]))).toEqual([toHex(COMMUNITY)]);
+  });
+});
+
+// CB2: the engine's onSlow and onPosted become a `slow:<channelId>` slice, only for a channel with slow mode on (R6).
+describe('slow mode slices (CB2)', () => {
+  const T0 = 1_700_000_000_000;
+  const slowSlices = (w: World): SliceMessage[] =>
+    w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name.startsWith('slow:'));
+  async function slowWorld(slowmode: number): Promise<{ w: World; clock: { t: number } }> {
+    const clock = { t: T0 };
+    const w = world({ now: () => clock.t });
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '',
+      position: 0, slowmode, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    await vi.waitFor(() => expect(w.channels()?.find((c) => c.id === toHex(CHANNEL))?.slowmode).toBe(slowmode));
+    return { w, clock };
+  }
+
+  it('a 429 on a channel with slow mode publishes the wait; on a channel without it nothing', async () => {
+    const { w } = await slowWorld(10);
+    w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: T0 + 5000, queued: true });
+    const off = await slowWorld(0);
+    off.w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    expect(slowSlices(off.w)).toEqual([]);
+  });
+
+  it('a confirmed own post starts the countdown; a reaction publishes nothing', async () => {
+    const { w, clock } = await slowWorld(10);
+    clock.t = T0 + 123;
+    w.sync.deps!.onPosted(GROUP, 3);
+    expect(slowSlices(w)).toEqual([]);
+    w.sync.deps!.onPosted(GROUP, 0);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: T0 + 123 + 10_000, queued: false });
+  });
+
+  it('the clear publishes until 0; a queued post that then sends ends at its own countdown', async () => {
+    const { w, clock } = await slowWorld(10);
+    w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    clock.t = T0 + 5000;
+    w.sync.deps!.onSlow(GROUP, 0, false);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: 0, queued: false });
+    w.sync.deps!.onPosted(GROUP, 0);
+    expect(slowSlices(w).map((m) => m.value)).toEqual([
+      { until: T0 + 5000, queued: true }, { until: 0, queued: false }, { until: T0 + 5000 + 10_000, queued: false },
+    ]);
+  });
+
+  it('a DM group never publishes', async () => {
+    const { w } = await slowWorld(10);
+    w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+    w.state.groups.push({ ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL });
+    w.sync.deps!.onUnexpectedWelcome(DM_GROUP);
+    await vi.waitFor(() => expect(w.last<DmSummary[]>('dms')?.[0]?.id).toBe(toHex(DM_CHANNEL)));
+    w.sync.deps!.onSlow(DM_GROUP, T0 + 5000, true);
+    w.sync.deps!.onPosted(DM_GROUP, 0);
+    w.sync.deps!.onSlow(DM_GROUP, 0, false);
+    expect(slowSlices(w)).toEqual([]);
+  });
+
+  it('sign-out resets the slow slice', async () => {
+    const { w } = await slowWorld(10);
+    w.sync.deps!.onSlow(GROUP, T0 + 5000, true);
+    w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(2)).toMatchObject({ ok: true }));
+    expect(w.last('communities')).toEqual([]);
+    expect(w.last(`slow:${toHex(CHANNEL)}`)).toEqual({ until: 0, queued: false });
+  });
+
+});
+
+describe('threads (web3.7 TB2)', () => {
+  const CH = toHex(CHANNEL);
+  const ROOT_ID = new Uint8Array(16).fill(0x31);
+  const ROOT_HEX = toHex(ROOT_ID);
+  const rootRow = (): TimelineRow => ({ ...strangerRow(1), thread: { count: 1, lastTs: 1_700_000_005n } });
+  const replyRow = (seq: number): TimelineRow => ({ ...strangerRow(seq), body: `reply ${seq}` });
+  const thread = (w: World) => w.last<ThreadState | null>(`thread:${CH}`);
+
+  async function threadWorld(): Promise<World> {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    w.state.rows = [rootRow()];
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [replyRow(3), replyRow(2)] });   // newest first, as the core reads them
+    return w;
+  }
+
+  it('openThread publishes the root and its replies, newest last, before the ret; closeThread publishes null', async () => {
+    const w = await threadWorld();
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toEqual({ t: 'ret', id: 10, ok: true, value: null }));
+    const at = w.posted.findIndex((m) => m.t === 'slice' && m.name === `thread:${CH}`);
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(w.posted.findIndex((m) => m.t === 'ret' && m.id === 10));
+    const state = thread(w);
+    expect(state).toMatchObject({ channelId: CH, rootMsgId: ROOT_HEX, hasEarlier: false });
+    expect(state?.root).toMatchObject({ msgId: ROOT_HEX, seq: '1', thread: { count: 1, lastTs: 1_700_000_005 } });
+    expect(state?.items.map((i) => i.body)).toEqual(['reply 2', 'reply 3']);
+    w.call(11, { m: 'closeThread', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(11)).toEqual({ t: 'ret', id: 11, ok: true, value: null }));
+    expect(thread(w)).toBeNull();
+  });
+
+  it('a root that is not held publishes root null with the replies', async () => {
+    const w = await threadWorld();
+    w.state.threadRows.set(ROOT_HEX, { root: null, rows: [replyRow(2)] });
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    expect(thread(w)?.root).toBeNull();
+    expect(thread(w)?.items).toHaveLength(1);
+  });
+
+  it('a reply sent with threadId reaches the core with it, leaves the main timeline and shows in the open thread', async () => {
+    const w = await threadWorld();
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [] });
+    w.state.rows = [{ ...rootRow(), thread: null }];
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    expect(thread(w)?.items).toEqual([]);
+    const pending: OutboxRow = { msgId: new Uint8Array(16).fill(0x77), state: 0, error: '', created: 1_700_000_001n, body: 'in thread', type: 0, replyTo: null, attachments: [] };
+    w.sync.sendRequest.mockImplementationOnce(() => { w.state.outbox = [pending]; return pending.msgId; });
+    w.call(11, { m: 'send', channelId: CH, text: 'in thread', threadId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(11)).toEqual({ t: 'ret', id: 11, ok: true, value: { msgId: '77'.repeat(16) } }));
+    expect(w.sync.sendRequest).toHaveBeenCalledWith(GROUP, expect.objectContaining({ type: 0, threadId: ROOT_ID }));
+    expect(w.timeline()?.items.map((i) => i.body)).toEqual(['from a stranger 1']);
+    expect(thread(w)?.items.map((i) => [i.body, i.state])).toEqual([['in thread', 'pending']]);
+    // The core confirms it: the root's count is 1 after the refresh, the reply is in the thread only.
+    w.state.outbox = [];
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [{ ...replyRow(2), body: 'in thread' }] });
+    w.state.rows = [rootRow()];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([2n]));
+    expect(w.timeline()?.items.map((i) => [i.body, i.thread])).toEqual([['from a stranger 1', { count: 1, lastTs: 1_700_000_005 }]]);
+    expect(thread(w)?.items.map((i) => i.body)).toEqual(['in thread']);
+  });
+
+  it('a send without threadId reaches the core with a null one', async () => {
+    const w = await threadWorld();
+    w.call(10, { m: 'send', channelId: CH, text: 'plain' });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    expect(w.sync.sendRequest).toHaveBeenCalledWith(GROUP, expect.objectContaining({ threadId: null }));
+  });
+
+  it("a peer's thread reply refreshes both the timeline and the open thread", async () => {
+    const w = await threadWorld();
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    expect(thread(w)?.items).toHaveLength(2);
+    w.state.rows = [{ ...rootRow(), thread: { count: 3, lastTs: 1_700_000_009n } }];
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [replyRow(4), replyRow(3), replyRow(2)] });
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n]));
+    expect(w.timeline()?.items[0]?.thread).toEqual({ count: 3, lastTs: 1_700_000_009 });
+    expect(thread(w)?.items.map((i) => i.body)).toEqual(['reply 2', 'reply 3', 'reply 4']);
+  });
+
+  it('closeChannel closes its thread', async () => {
+    const w = await threadWorld();
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    w.call(11, { m: 'closeChannel', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
+    expect(thread(w)).toBeNull();
+  });
+
+  it('loadThreads publishes the summaries, with an unheld excerpt empty', async () => {
+    const w = await threadWorld();
+    const rows: ThreadRow[] = [
+      { rootMsgId: ROOT_ID, rootSeq: 1n, count: 2, lastTs: 1_700_000_005n, excerpt: 'from a stranger 1' },
+      { rootMsgId: new Uint8Array(16).fill(0x55), rootSeq: null, count: 1, lastTs: 1_700_000_001n, excerpt: '' },
+    ];
+    w.state.threadList = rows;
+    w.call(10, { m: 'loadThreads', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(10)).toEqual({ t: 'ret', id: 10, ok: true, value: null }));
+    expect(w.last<ThreadSummary[]>(`threads:${CH}`)).toEqual([
+      { rootMsgId: ROOT_HEX, rootSeq: '1', count: 2, lastTs: 1_700_000_005, excerpt: 'from a stranger 1' },
+      { rootMsgId: '55'.repeat(16), rootSeq: null, count: 1, lastTs: 1_700_000_001, excerpt: '' },
+    ]);
+  });
+
+  it('refuses ids that are not 32 lowercase hex, allows threadId with attachments, and refuses an unknown channel', async () => {
+    const w = await threadWorld();
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: 'nope' });
+    w.call(11, { m: 'send', channelId: CH, text: 'x', threadId: 'A'.repeat(32) });
+    w.call(12, { m: 'send', channelId: CH, text: 'x', threadId: 'abc' });
+    w.call(13, { m: 'openThread', channelId: 'e'.repeat(32), rootMsgId: ROOT_HEX });
+    w.call(14, { m: 'loadThreads', channelId: 'e'.repeat(32) });
+    await vi.waitFor(() => expect(w.ret(14)).toBeDefined());
+    for (const id of [10, 11, 12]) expect(w.ret(id)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.ret(13)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.ret(14)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    w.call(15, { m: 'send', channelId: CH, text: 'x', threadId: ROOT_HEX, attachments: [] });
+    await vi.waitFor(() => expect(w.ret(15)).toMatchObject({ ok: true }));
+  });
+
+  it('markRead reaches past the newest channel row to a later thread reply', async () => {
+    const w = await threadWorld();
+    w.state.groups = [{ ...textGroup(2), nextSeq: 6n }];
+    w.call(10, { m: 'markRead', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenCalledWith(GROUP, 5n, NOW_S);
+  });
+
+  it('a pin and a quote carry the thread root', async () => {
+    const w = await threadWorld();
+    w.state.pins = [{ targetSeq: 2n, msgId: new Uint8Array(16).fill(0x32), pinnedSeq: 9n, byUser: USER, author: STRANGER, excerpt: 'x', targetTs: 1_700_000_005n, threadRoot: ROOT_ID }];
+    w.call(10, { m: 'loadPins', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    expect(w.last<PinnedItem[]>(`pins:${CH}`)?.[0]?.threadRoot).toBe(ROOT_HEX);
+    w.state.rows = [{ ...strangerRow(2), reply: { replyTo: ROOT_ID, targetSeq: 2n, targetUser: STRANGER, excerpt: 'q', state: 0, threadRoot: ROOT_ID } }];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([2n]));
+    expect(w.timeline()?.items[0]?.reply?.threadRoot).toBe(ROOT_HEX);
+  });
+
+  // FX-core (final review I1): since TB1 the main timeline leaves out a reply whose root is held, so the notice read finds
+  // such a reply in its thread.
+  const mentionReply = (seq: number): TimelineRow => ({ ...replyRow(seq), body: `<@${toHex(USER)}> look`, mention: true });
+  const listed = (lastTs: bigint): ThreadRow[] => [{ rootMsgId: ROOT_ID, rootSeq: 1n, count: 3, lastTs, excerpt: 'from a stranger 1' }];
+
+  it('a thread reply that mentions me raises a mention notice that names its thread', async () => {
+    const w = await threadWorld();
+    w.state.rows = [{ ...rootRow(), thread: { count: 3, lastTs: 1_700_000_009n } }];
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [mentionReply(4), replyRow(3), replyRow(2)] });
+    w.state.threadList = listed(1_700_000_009n);
+    w.state.activity = [act(GROUP, 1, 1)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n]));
+    expect(w.notices()?.items).toEqual([{
+      id: 1, channelId: CH, communityId: toHex(COMMUNITY), kind: 'mention', senderUser: toHex(STRANGER),
+      senderName: '5a5a5a5a', body: `<@${toHex(USER)}> look`, ts: 1_700_000_000, threadRoot: ROOT_HEX,
+    }]);
+  });
+
+  it('a thread reply and a channel post in one apply both raise a notice; the post names no thread', async () => {
+    const w = await threadWorld();
+    w.state.rows = [strangerRow(5), { ...rootRow(), thread: { count: 3, lastTs: 1_700_000_009n } }];
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [replyRow(4), replyRow(3), replyRow(2)] });
+    w.state.threadList = listed(1_700_000_009n);
+    w.state.activity = [act(GROUP, 2, 0)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n, 5n]));
+    expect(w.notices()?.items.map((n) => [n.body, n.threadRoot])).toEqual([['reply 4', ROOT_HEX], ['from a stranger 5', null]]);
+  });
+
+  async function withThreadsOpen(): Promise<World> {
+    const w = await threadWorld();
+    w.state.threadList = [{ rootMsgId: ROOT_ID, rootSeq: 1n, count: 2, lastTs: 1_700_000_005n, excerpt: 'from a stranger 1' }];
+    w.call(20, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    w.call(21, { m: 'loadThreads', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(21)).toMatchObject({ ok: true }));
+    expect(thread(w)).not.toBeNull();
+    expect(w.last<ThreadSummary[]>(`threads:${CH}`)).toHaveLength(1);
+    return w;
+  }
+
+  it('a pending thread reply never shows in the main timeline, even for the publish the outbox change makes', async () => {
+    const w = await threadWorld();
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [] });
+    w.state.rows = [{ ...rootRow(), thread: null }];
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    const pending: OutboxRow = { msgId: new Uint8Array(16).fill(0x77), state: 0, error: '', created: 1_700_000_001n, body: 'in thread', type: 0, replyTo: null, attachments: [] };
+    // Like the real sendRequest: the outbox row exists and onOutboxChanged runs before it returns.
+    w.sync.sendRequest.mockImplementationOnce(() => { w.state.outbox = [pending]; w.sync.deps!.onOutboxChanged(GROUP); return pending.msgId; });
+    w.call(11, { m: 'send', channelId: CH, text: 'in thread', threadId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
+    const timelines = w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === `timeline:${CH}`);
+    for (const m of timelines) expect((m.value as TimelineState).items.map((i) => i.body)).not.toContain('in thread');
+    const threads = w.posted.filter((m): m is SliceMessage => m.t === 'slice' && m.name === `thread:${CH}`);
+    expect((threads.at(-1)?.value as ThreadState).items.map((i) => i.body)).toEqual(['in thread']);
+  });
+
+  it('a plain send beside a thread reply is not taken for a thread reply', async () => {
+    const w = await threadWorld();
+    const plain: OutboxRow = { msgId: new Uint8Array(16).fill(0x66), state: 0, error: '', created: 1_700_000_001n, body: 'plain', type: 0, replyTo: null, attachments: [] };
+    w.sync.sendRequest.mockImplementationOnce(() => { w.state.outbox = [plain]; w.sync.deps!.onOutboxChanged(GROUP); return plain.msgId; });
+    w.call(11, { m: 'send', channelId: CH, text: 'plain' });
+    await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
+    expect(w.timeline()?.items.map((i) => i.body)).toContain('plain');
+  });
+
+  it('the threads list is read again after a frame (a new root gets its first reply)', async () => {
+    const w = await withThreadsOpen();
+    w.state.threadList = [
+      { rootMsgId: new Uint8Array(16).fill(0x32), rootSeq: 2n, count: 1, lastTs: 1_700_000_009n, excerpt: 'new root' },
+      ...w.state.threadList,
+    ];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n]));
+    expect(w.last<ThreadSummary[]>(`threads:${CH}`)?.map((t) => t.excerpt)).toEqual(['new root', 'from a stranger 1']);
+  });
+
+  it('sign-out clears the thread slices', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(thread(w)).toBeNull();
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+  });
+
+  it('removing the channel closes its thread and clears both slices; reopening does not resurrect it', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'deleteChannel', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(thread(w)).toBeNull();
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([4n]));
+    expect(thread(w)).toBeNull();
+  });
+
+  it('leaving the community closes the threads of its channels', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'leaveCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(thread(w)).toBeNull();
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+  });
+
+  it('closeChannel clears the threads list too', async () => {
+    const w = await withThreadsOpen();
+    w.call(30, { m: 'closeChannel', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(30)).toMatchObject({ ok: true }));
+    expect(w.last(`threads:${CH}`)).toEqual([]);
+  });
+
+  it('openThread and loadThreads refuse a channel that is not open', async () => {
+    const w = world();
+    await toReady(w);
+    w.state.groups = [textGroup(2)];
+    w.call(10, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    w.call(11, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    w.call(12, { m: 'loadThreads', channelId: CH });
+    await vi.waitFor(() => expect(w.ret(12)).toBeDefined());
+    expect(w.ret(11)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+    expect(w.ret(12)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY' } });
+  });
+
+  it('a quote of a thread reply sent from the open thread names the thread', async () => {
+    const w = await threadWorld();
+    w.state.threadRows.set(ROOT_HEX, { root: rootRow(), rows: [replyRow(2)] });
+    const pending: OutboxRow = { msgId: new Uint8Array(16).fill(0x77), state: 0, error: '', created: 1_700_000_001n, body: 'q', type: 0, replyTo: replyRow(2).msgId, attachments: [] };
+    w.sync.sendRequest.mockImplementationOnce(() => { w.state.outbox = [pending]; w.sync.deps!.onOutboxChanged(GROUP); return pending.msgId; });
+    w.call(10, { m: 'openThread', channelId: CH, rootMsgId: ROOT_HEX });
+    await vi.waitFor(() => expect(w.ret(10)).toMatchObject({ ok: true }));
+    w.call(11, { m: 'send', channelId: CH, text: 'q', threadId: ROOT_HEX, replyTo: toHex(replyRow(2).msgId as Uint8Array) });
+    await vi.waitFor(() => expect(w.ret(11)).toMatchObject({ ok: true }));
+    expect(thread(w)?.items.at(-1)?.reply?.threadRoot).toBe(ROOT_HEX);
   });
 });

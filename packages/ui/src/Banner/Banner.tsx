@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './Banner.css';
+import { Icon } from '../Icon/Icon.tsx';
 
 export interface BannerProps {
   tone: 'info' | 'warn' | 'danger';
@@ -9,7 +10,7 @@ export interface BannerProps {
 }
 
 /** Tone is never colour alone: a glyph, hidden from assistive tech, carries it too. */
-const GLYPH = { info: '›', warn: '▲', danger: '✕' } as const;
+const GLYPH = { info: '›', warn: <Icon name="triangle-alert" size={14} />, danger: <Icon name="x" size={14} /> } as const;
 
 /** A one-line notice: a status for info, an alert for warn and danger. */
 export function Banner({ tone, children, action }: BannerProps) {

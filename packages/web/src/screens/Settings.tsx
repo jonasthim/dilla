@@ -1,5 +1,6 @@
-import { SettingsFrame, SettingsNav } from '@dilla/ui';
-import { routeOf, useRoute, type SettingsSection } from '../router.ts';
+import { PhoneHeader, SettingsFrame, SettingsNav } from '@dilla/ui';
+import { goBack, routeOf, useRoute, type SettingsSection } from '../router.ts';
+import { phoneNow, usePhoneLayout } from '../layout.ts';
 import { t, type StringKey } from '../strings/index.ts';
 import { Appearance } from './settings/Appearance.tsx';
 import { Devices } from './settings/Devices.tsx';
@@ -30,7 +31,7 @@ function compareState(record: TrustSummary): 'first-seen' | 'changed' | 'verifie
   return record.unlisted === true ? 'unlisted' : record.verified ? 'verified' : 'first-seen';
 }
 
-const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
+export const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
   { id: 'devices', key: 'settings.nav.devices' },
   { id: 'signin', key: 'factorSettings.nav' },
   { id: 'notifications', key: 'settings.nav.notifications' },
@@ -48,6 +49,7 @@ const NAV: readonly { id: SettingsSection; key: StringKey }[] = [
  */
 export function Settings(): React.JSX.Element {
   const [route, navigate] = useRoute();
+  const phone = usePhoneLayout();
   const client = useCore();
   const records = useSlice('trust') ?? [];
   const diagnostics = useSlice('diagnostics');
@@ -104,12 +106,20 @@ export function Settings(): React.JSX.Element {
       default: break;
     }
   };
-  const close = () => { setComparison(null); navigate(from === null ? { name: 'root' } : routeOf(from), true); };
+  const close = () => {
+    setComparison(null);
+    // The live layout, not the render's: an Escape right after a viewport change must close the way the window is now.
+    if (phoneNow()) goBack({ name: 'you' }, navigate);
+    else navigate(from === null ? { name: 'root' } : routeOf(from), true);
+  };
 
   return (
     <SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
-      nav={<SettingsNav label={t('settings.nav.label')} items={NAV.map(i => ({ id: i.id, label: t(i.key) }))}
+      nav={phone ? null : <SettingsNav label={t('settings.nav.label')} items={NAV.map(i => ({ id: i.id, label: t(i.key) }))}
         activeId={section} onSelect={select} />}>
+      {/* On a phone Settings is a pushed view of the You tab (R40): its own header and back in place of the section nav. */}
+      {phone ? <PhoneHeader title={t(NAV.find(i => i.id === section)?.key ?? 'settings.nav.devices')} backLabel={t('nav.back')}
+        onBack={() => goBack({ name: 'you' }, navigate)} /> : null}
       {section === 'devices' ? <Devices /> : section === 'signin' ? <SignInFactors announce={announce} live={announcement} /> : section === 'notifications' ? <Notifications /> : section === 'appearance' ? <Appearance />
         : section === 'voice' ? <Voice />
         : section === 'privacy' ? <Privacy records={records} onCompare={compare} /> : section === 'keyboard' ? <Keyboard />

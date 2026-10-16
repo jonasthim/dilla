@@ -1,0 +1,40 @@
+// @vitest-environment node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { describe, it, expect } from 'vitest';
+
+const css = readFileSync(fileURLToPath(new URL('./base.css', import.meta.url)), 'utf8');
+
+// The no-zoom rules (Jonas, 2026-10-16; R10, R11): a field below 16px makes iOS zoom the page on focus.
+const NO_ZOOM = `@media (max-width: 47.99rem) {
+  .d-root :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"], [type="reset"]), textarea, select, [contenteditable="true"]) { font-size: 1rem; }
+}`;
+
+describe('base.css phone rules', () => {
+  it('holds the 16px field rule under the phone breakpoint, byte for byte', () => {
+    expect(css).toContain(NO_ZOOM);
+  });
+  it('sets touch-action: manipulation on .d-root', () => {
+    expect(css).toMatch(/\.d-root \{ touch-action: manipulation; \}/);
+  });
+  it('pads the fixed ring banner by the notch', () => {
+    expect(css).toMatch(/\.d-app-shell__ring \{[^}]*padding-top: env\(safe-area-inset-top\)/);
+  });
+  it('pads a call bar by the home indicator when no tab bar follows it, and the composer then drops its own', () => {
+    expect(css).toMatch(/__callbar:not\(:has\(\+ \.d-app-shell__tabbar\)\) \{[^}]*padding-bottom: env\(safe-area-inset-bottom\)/);
+    expect(css).toMatch(/:has\(\.d-app-shell__callbar\) \.d-composer \{ padding-bottom: 0\.5rem; \}/);
+  });
+  it('pads the phone grid, the ring and the aside by the landscape side insets', () => {
+    expect(css).toMatch(/\[data-layout="phone"\] \.d-app-shell__grid \{[^}]*padding-left: env\(safe-area-inset-left\); padding-right: env\(safe-area-inset-right\)/);
+    expect(css).toMatch(/__ring \{[^}]*padding-left: env\(safe-area-inset-left\)/);
+    expect(css).toMatch(/__aside \{[^}]*padding-left: env\(safe-area-inset-left\)/);
+  });
+  it('hides the list pane main with the hidden attribute winning over its flex display', () => {
+    const shellCss = readFileSync(fileURLToPath(new URL('../AppShell/AppShell.css', import.meta.url)), 'utf8');
+    expect(shellCss).toContain('.d-app-shell__main[hidden] { display: none; }');
+  });
+  it('never disables user scaling and no longer caps the sidebar at 35dvh', () => {
+    expect(css).not.toContain('user-scalable');
+    expect(css).not.toContain('35dvh');
+  });
+});

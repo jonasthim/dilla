@@ -327,7 +327,9 @@ type ForkReportRow struct {
 // Expires is NULL when the message is retained under an archival policy.
 // FrankingKeyID names the instance franking key FrankingTag was made under
 // (Plan 2 task 17, P2-D21), so a report still verifies after a rotation; the
-// all-zero id marks a row franked before the column existed.
+// all-zero id marks a row franked before the column existed. Class is the
+// upload class (web3.7 SB1, protocol/02 § Upload class): 0 a post, 1 anything
+// else, nil a legacy two-element upload.
 type AppMessageRow struct {
 	GroupID        id.ID
 	Seq            uint64
@@ -341,6 +343,7 @@ type AppMessageRow struct {
 	Expires        *int64
 	DeletedAt      *int64
 	FrankingKeyID  id.ID
+	Class          *uint8
 }
 
 // CursorRow mirrors `device_cursors`.

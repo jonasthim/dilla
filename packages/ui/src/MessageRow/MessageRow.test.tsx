@@ -8,6 +8,36 @@ const BODY = 'anyone up for a round tonight?';
 const UNREADABLE = 'This message could not be read on this device.';
 
 describe('MessageRow', () => {
+  it('shows a thread chip as a button named by its label, under the body, and calls onOpen', async () => {
+    const onOpen = vi.fn();
+    const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" thread={{ label: '2 replies', onOpen }} />);
+    const chip = screen.getByRole('button', { name: '2 replies' });
+    expect(chip).toHaveClass('d-message-row__thread');
+    expect(chip.querySelector('svg[data-icon="messages-square"]')).not.toBeNull();
+    const body = container.querySelector('.d-message-row__body') as Node;
+    expect(Boolean(body.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    await userEvent.setup().click(chip);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the chip still on pointerdown (no focus shift), so pointerup and click reach it', () => {
+    const onOpen = vi.fn();
+    render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" thread={{ label: '2 replies', onOpen }} />);
+    const chip = screen.getByRole('button', { name: '2 replies' });
+    expect(fireEvent.pointerDown(chip)).toBe(false);
+    fireEvent.pointerUp(chip);
+    fireEvent.click(chip);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+  it('has no thread chip without a thread, and the chip follows the row’s roving tab stop', () => {
+    const { rerender } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" />);
+    expect(screen.queryByRole('button')).toBeNull();
+    rerender(<MessageRow author="ada" time="21:02" body={BODY} state="ok" active thread={{ label: '1 reply', onOpen: () => {} }} />);
+    expect(screen.getByRole('button', { name: '1 reply' }).tabIndex).toBe(0);
+    rerender(<MessageRow author="ada" time="21:02" body={BODY} state="ok" thread={{ label: '1 reply', onOpen: () => {} }} />);
+    expect(screen.getByRole('button', { name: '1 reply' }).tabIndex).toBe(-1);
+  });
+
   it('shows author, time and body and hides the avatar from assistive tech', () => {
     const { container } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" />);
     const row = container.firstElementChild;

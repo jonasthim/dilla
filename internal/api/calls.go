@@ -88,6 +88,13 @@ const (
 	callHoldBackground = 10 * time.Second
 	// maxRepairsPerTick caps the repairs one retry pass, or one grant sync of a call, attempts.
 	maxRepairsPerTick = 32
+	// maxDeferredPerTick caps the deferred leaves one retry pass looks at, after its repairs
+	// (CallEvents.completeDeferredLeaves); the rest wait for the next pass. Each room is listed once
+	// per pass, so a pass makes at most this many SFU calls.
+	maxDeferredPerTick = 8
+	// deferredPassBudget bounds the deferred-leave step of one retry pass, on its own: two SFU calls'
+	// worth, so a slow SFU delays the next pass's repairs by at most this.
+	deferredPassBudget = 2 * sfuCallTimeout
 	// CallRetryInterval is the retry loop's cadence (StartRetries).
 	CallRetryInterval = 5 * time.Second
 	// RoomSweepInterval is how often, at most, the retry loop sweeps the SFU's rooms (SweepRooms).
@@ -259,6 +266,9 @@ type RelayRevoker interface {
 // in-process LiveKit reads the process's wall clock whatever the instance's clock is; a session's
 // leave is bound to its admission by comparing the two stamps, so they must come from one clock.
 // Unset, the instance's clock stands in (an instance whose clock is the wall clock, a test).
+//
+// An SFU on another host stamps joins with that host's clock: keep both hosts on NTP, or a leave binds
+// to no admission and the room sweep removes the leaf instead, after admissionJoinWindow.
 func (h *Calls) WithSFUClock(c clock.Clock) *Calls {
 	h.sfuClk = c
 	return h
@@ -538,7 +548,7 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	}
 	h.startStage("mint")
 	// The token opens the device's join window (the sweep leaves its leaf alone while it connects).
-	h.noteAdmission(r.Context(), row, s.DeviceID)
+	h.noteAdmission(r.Context(), row, s.DeviceID, false)
 	ice, minted, err := h.iceServers(s.DeviceID, begun)
 	if err != nil {
 		server.WriteError(w, err)
@@ -1156,8 +1166,9 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 // opens the device's join window for the sweep (ruling (a)). Recording it only here (M-2 of the
 // integration re-review) means a request the proxy refuses neither holds a join window open nor
 // pushes a session's real admission out of the few remembered. A room that is no live call's
-// records nothing.
-func (h *Calls) Admitted(ctx context.Context, room string, device id.ID) {
+// records nothing. resume is a LiveKit signal resume of the session already in the room: it opens
+// the join window like any admission, but it is no newer session (newerAdmission).
+func (h *Calls) Admitted(ctx context.Context, room string, device id.ID, resume bool) {
 	callHex, _, ok := strings.Cut(room, "-")
 	if !ok {
 		return
@@ -1170,7 +1181,7 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID) {
 	if err != nil || row.Ended != nil || row.LivekitRoom != room {
 		return
 	}
-	h.noteAdmission(ctx, row, device)
+	h.noteAdmission(ctx, row, device, resume)
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,

@@ -40,6 +40,7 @@ frames	identify	frame
 frames	interaction	frame
 frames	invalid_session	frame
 frames	message.ct	frame
+frames	message.ct with a null class	frame
 frames	message.deleted	frame
 frames	message.plain	frame
 frames	mls.commit_needed	frame

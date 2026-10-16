@@ -49,7 +49,7 @@ describe('ColorSwatches', () => {
     expect(checks).toHaveLength(1);
     expect(swatch('blue').contains(checks[0])).toBe(true);
     expect(checks[0]).toHaveAttribute('aria-hidden', 'true');
-    expect(checks[0].textContent).toBe('✓');
+    expect(checks[0].querySelector('[data-icon="check"]')).not.toBeNull();
   });
 
   it('selects none for value 0 and reports 0 when none is chosen', async () => {

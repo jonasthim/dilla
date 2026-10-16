@@ -45,7 +45,7 @@ func TestACatchUpIntoAnEmptiedMessageLogIsPruned(t *testing.T) {
 	h := newDSHarness(t)
 	g := h.group(t)
 	ctx := context.Background()
-	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()))
+	first, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -105,11 +105,11 @@ func TestACatchUpFromTheTopOfTheUint64RangeIsAnEmptyPageNotPruned(t *testing.T) 
 		h := newDSHarness(t)
 		g := h.group(t)
 		ctx := context.Background()
-		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch())); err != nil {
+		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil); err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
 		h.clk.Advance(31 * 24 * time.Hour)
-		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch())); err != nil {
+		if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), nil); err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
 		n, err := h.repo.PruneAppMessages(ctx, g.id, 0,

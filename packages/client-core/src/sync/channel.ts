@@ -100,10 +100,12 @@ function failOutbox(s: SyncInternals, g: Id, code: string): void {
   const hex = toHex(g);
   const echo = s.echoWait.get(hex); if (echo !== undefined) { s.cancelTimer(echo.timer); s.echoWait.delete(hex); }
   const epoch = s.epochWait.get(hex); if (epoch !== undefined) { s.cancelTimer(epoch); s.epochWait.delete(hex); }
+  const slow = s.slowWait.get(hex); if (slow !== undefined) { s.cancelTimer(slow.timer); s.slowWait.delete(hex); }
   let changed = false;
   for (const r of s.deps.core.outbox(g)) {
     if (r.state === 2) continue;
-    s.deps.core.sendFail(r.msgId, code); s.count425.delete(toHex(r.msgId)); s.reframedOnce.delete(`${hex}:${toHex(r.msgId)}`); changed = true;
+    s.deps.core.sendFail(r.msgId, code); s.count425.delete(toHex(r.msgId)); s.slowed.delete(toHex(r.msgId));
+    s.reframedOnce.delete(`${hex}:${toHex(r.msgId)}`); changed = true;
   }
   if (changed) s.deps.onOutboxChanged(g);
 }

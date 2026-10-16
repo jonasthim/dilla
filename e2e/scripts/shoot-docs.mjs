@@ -23,6 +23,8 @@
 //      from #general, the dock; then all three leave;
 //   4c. (web-2c and web-3) the native peer's server "Bridge Watch": Privacy, the comparison, search, diagnostics, the
 //      peer's changed identity in the conversation, in Privacy and as a refused voice join, and a second tab;
+//   4d. (web3.7) shoots the phone shell at 390×844 for getting-started.md's "On your phone": mira's channel, the servers list,
+//      the activity tab and, while she is in "harbour", the call bar (PHONE_SHOTS);
 //   5. removes mira from the server on ada's authority (the owner's DELETE /v1/communities/{id}/members/{user},
 //      through the host's POST /debug/kick, since the web client has no kick yet) and shoots the "You are no longer
 //      in ..." banner (shell-removed). This is the one step not done through a client; the ids it needs are read from the host's database;
@@ -59,9 +61,15 @@ const WAIT = 60_000;
 export const DOC_VIEWPORTS = { desktop: { width: 1280, height: 800 }, phone: { width: 360, height: 740 } };
 const DESKTOP = DOC_VIEWPORTS.desktop;
 const PHONE = DOC_VIEWPORTS.phone;
+// web3.7: the phone shell's images of docs/user/getting-started.md ("On your phone") are shot at 390×844, the size the
+// phone shell was designed and tested at, from the same browser as the desktop ones.
+export const PHONE_APP = { width: 390, height: 844 };
+export const PHONE_SHOTS = ['phone-servers', 'phone-channel', 'phone-activity', 'phone-callbar'];
 export const DOC_SHOTS = ['trust-privacy', 'trust-compare', 'trust-conversation', 'trust-changed', 'search-results', 'settings-diagnostics', 'tabs-handover',
   'voice-stage', 'voice-dock', 'voice-settings', 'voice-blocked', 'call-ring', 'media-player']
-  .flatMap((state) => ['desktop', 'phone'].map((viewport) => ({ name: `${state}-${viewport}`, state: `[data-doc-state="${state}"]`, viewport })));
+  .flatMap((state) => ['desktop', 'phone'].map((viewport) => ({ name: `${state}-${viewport}`, state: `[data-doc-state="${state}"]`, viewport })))
+  // web3.7: a phone has no dock; its call controls are the call bar, shot with the phone set (PHONE_SHOTS).
+  .filter((shot) => shot.name !== 'voice-dock-phone');
 
 /**
  * Waits for the named state to be visible, captures it, and closes `context` (when the caller hands one over) in
@@ -249,8 +257,8 @@ const row = (page, channel, text) => page.getByRole('log', { name: t('shell.log.
 
 /** Fonts loaded, animations ended, no hover and no focus ring left over from the pointer or a filled field. */
 async function settle(page, { keepFocus = false } = {}) {
-  const size = page.viewportSize() ?? DESKTOP;
-  await page.mouse.move(size.width - 1, size.height - 1);
+  // Park the pointer outside the page: a corner inside it would hover the phone's "you" tab or the status bar.
+  await page.mouse.move(-10, -10);
   await page.evaluate(async (keep) => {
     if (!keep && document.activeElement instanceof HTMLElement) document.activeElement.blur();
     await document.fonts.ready;
@@ -460,9 +468,12 @@ async function joinVoice(page, server, name) {
   await connected(page);
 }
 
-/** Leaves through the dock's `leave` and waits until the dock is gone. */
+/**
+ * Leaves through the one `leave` on screen and waits until the dock is gone. While the call's stage is open the dock shows
+ * no controls (web3.7), so the button is the stage's; from another channel it is the dock's.
+ */
 async function leaveVoice(page) {
-  await dock(page).getByRole('button', { name: t('voice.leave'), exact: true }).click();
+  await page.getByRole('button', { name: t('voice.leave'), exact: true }).locator('visible=true').first().click();
   await dock(page).waitFor({ state: 'detached', timeout: WAIT });
 }
 
@@ -732,8 +743,16 @@ async function main(argv) {
     await send(mira, 'general', MIRA_FILES_TEXT);
     await mira.locator(`img[alt="${BRIDGE.name}"][data-thumb="ready"]`).waitFor({ timeout: WAIT });
 
-    await mira.getByRole('button', { name: t('shell.attachment.open', { name: MAP.name }), exact: true }).click();
+    // The log is still settling after the second image loads, and a click that lands mid-scroll opens nothing: press
+    // again, from a still page, until the lightbox shows.
+    const openMap = mira.getByRole('button', { name: t('shell.attachment.open', { name: MAP.name }), exact: true });
     const lightbox = mira.locator('dialog[open]').filter({ has: mira.locator(`img[alt="${MAP.name}"]`) });
+    for (let attempt = 0; attempt < 4 && !(await lightbox.isVisible()); attempt++) {
+      await openMap.scrollIntoViewIfNeeded();
+      await mira.waitForTimeout(1500);
+      await openMap.click();
+      await lightbox.waitFor({ timeout: 4000 }).catch(() => undefined);
+    }
     await lightbox.waitFor({ timeout: WAIT });
     await mira.waitForFunction((alt) => {
       const i = document.querySelector(`dialog[open] img[alt="${alt}"]`);
@@ -859,6 +878,31 @@ async function main(argv) {
     await settle(mira);
     await shoot('shell-dm-badge');
 
+    // web3.7: the phone shell, at 390×844. Mira's page flips to the phone layout live: the channel she is reading is a
+    // pushed view with a back, the lists are behind it, and the tab bar names four tabs. What she received since this
+    // tab opened (the mention, the DM from Ada) is in the activity tab.
+    const phoneTabs = mira.getByRole('navigation', { name: t('nav.tabs.label'), exact: true });
+    const phoneTab = (key) => phoneTabs.getByRole('link', { name: new RegExp(`^${t(key)}`) });
+    const phoneBack = mira.getByRole('button', { name: t('nav.back'), exact: true });
+    await mira.setViewportSize(PHONE_APP);
+    await composer(mira, 'general').waitFor({ state: 'visible', timeout: WAIT });
+    await settle(mira, { keepFocus: false });
+    await shoot('phone-channel');
+    await phoneBack.click();
+    await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
+    await settle(mira);
+    await shoot('phone-servers');
+    await phoneTab('nav.tab.activity').click();
+    await mira.getByRole('heading', { name: t('activity.title'), exact: true }).waitFor({ timeout: WAIT });
+    await mira.getByText(t('activity.dm'), { exact: false }).first().waitFor({ timeout: WAIT });
+    await settle(mira);
+    await shoot('phone-activity');
+    await phoneTab('nav.tab.servers').click();
+    await mira.getByRole('button', { name: 'general', exact: true }).click();
+    await composer(mira, 'general').waitFor({ timeout: WAIT });
+    await mira.setViewportSize(DESKTOP);
+    await settle(mira, { keepFocus: true });
+
     // Each data-doc-state shot (L-DOC-23, L-DOC-24) at both viewports once its state is visible; `before` brings the
     // state into view after the viewport changes (a phone stacks the channel list above the conversation).
     const shootState = async (page, state, owned = null, before = null) => {
@@ -904,7 +948,10 @@ async function main(argv) {
     await player.locator('audio').waitFor({ timeout: WAIT });
     // The play button had the focus, which shows the message's toolbar: blur it so the shot shows the player alone.
     await shootState(mira, 'media-player', null, async () => {
-      await player.scrollIntoViewIfNeeded();
+      // Flipping to the phone layout re-mounts the conversation, so the player can detach mid-scroll: try again.
+      for (let attempt = 0; ; attempt++) {
+        try { await player.scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch (e) { if (attempt >= 5) throw e; await mira.waitForTimeout(1000); }
+      }
       await mira.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
     });
 
@@ -919,6 +966,16 @@ async function main(argv) {
     await composer(mira, 'general').waitFor({ timeout: WAIT });
     // Product walk I4: no scroll helper: at 360 the dock is pinned on screen by itself.
     await shootState(mira, 'voice-dock');
+    // web3.7: on a phone the dock is the call bar above the tab bar of the lists (the servers list, here).
+    await mira.setViewportSize(PHONE_APP);
+    await phoneBack.click();
+    await mira.locator('.d-call-bar').waitFor({ state: 'visible', timeout: WAIT });
+    await settle(mira);
+    await shoot('phone-callbar');
+    await mira.getByRole('button', { name: 'general', exact: true }).click();
+    await composer(mira, 'general').waitFor({ timeout: WAIT });
+    await mira.setViewportSize(DESKTOP);
+    await settle(mira, { keepFocus: true });
     for (const who of [mira, pages.bjorn, pages.ada]) await leaveVoice(who);
     // Back in #general, Ada's and Björn's tabs commit what the instance proposes there (Mira's removal, below).
     for (const who of [pages.bjorn, pages.ada]) {

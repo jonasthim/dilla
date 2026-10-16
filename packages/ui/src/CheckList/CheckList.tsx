@@ -12,6 +12,8 @@ export interface CheckListProps {
   onToggle(id: string, checked: boolean): void;
   /** Marks the first enabled box `data-autofocus`: a Dialog around the list opens on it. */
   initialFocus?: boolean;
+  /** The id of a hint the caller renders for the whole list. */
+  describedBy?: string;
 }
 
 /**
@@ -20,11 +22,11 @@ export interface CheckListProps {
  * Toggle's disabled state is: it ignores clicks and keys but stays focusable, so focus never leaves while the change is
  * in flight. A locked row (`disabled`) is natively disabled.
  */
-export function CheckList({ label, items, busyId, emptyLabel, onToggle, initialFocus }: CheckListProps) {
+export function CheckList({ label, items, busyId, emptyLabel, onToggle, initialFocus, describedBy }: CheckListProps) {
   const uid = useId();
   const first = initialFocus ? items.find(i => !i.disabled)?.id : undefined;
   return (
-    <fieldset className="d-check-list">
+    <fieldset className="d-check-list" aria-describedby={describedBy}>
       <legend className="d-check-list__legend">{label}</legend>
       {items.length === 0 ? (
         <p className="d-check-list__empty">{emptyLabel}</p>

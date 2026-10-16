@@ -156,12 +156,12 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
 | `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
 | `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST`, `E_REMOVE_PENDING` |
-| `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr)]` | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID` |
+| `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr), class(uint)]` (§ Upload class) | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID`, `E_FORBIDDEN`, `E_RATE_LIMITED`, `E_INVALID_REQUEST`, `E_NOT_FOUND` |
 | `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
 | `POST /v1/keypackages` | E or V | `[packages([bstr]), last_resort(bstr\|null)]` | `201 [count]` | `E_COMMIT_INVALID`, `E_TOO_LARGE` |
 | `GET /v1/devices/{device_id}/keypackage` | E | — | `[blob, last_resort(uint), kp_ref(bstr)]` | `E_NOT_FOUND`, `E_RATE_LIMITED` |
-| `GET /v1/groups/{id}/messages?from=&limit=` | E | — | `[[seq, epoch, uploader_device, blob\|null, commitment\|null, franking_tag, recv_ts, deleted(uint)]]` | `E_PRUNED` |
+| `GET /v1/groups/{id}/messages?from=&limit=` | E | — | `[[seq, epoch, uploader_device, blob\|null, commitment\|null, franking_tag, recv_ts, deleted(uint), class(uint\|null)]]` | `E_PRUNED` |
 | `GET /v1/groups/{id}/heal` | E | — | `[epoch, next_seq, generation, need_from_seq]` | `E_NOT_FOUND` |
 | `POST /v1/groups/{id}/heal` | E | `[group_info(bstr), tail([[seq,epoch,kind,sender,blob]]), ratchet_tree(bstr\|null)]` | `[epoch, next_seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` |
 | `GET /v1/welcomes?after=&limit=` | E or V | — | `[[welcome_id, group_id, epoch, commit_seq, blob, ratchet_tree, tree_hash]]` | — |
@@ -277,7 +277,7 @@ does.
 | 16 | `mls.handshake` | ≠ 0 | `[seq(uint), epoch(uint), kind(uint), sender(uint\|null), blob(bstr)]` |
 | 17 | `mls.commit_needed` | 0 | `[epoch(uint), proposal_refs([bstr]), deadline_ms(uint), round(uint)]` |
 | 18 | `mls.epoch_changed` | ≠ 0 | `[epoch(uint), seq(uint)]` |
-| 19 | `message.ct` | ≠ 0 | `[seq(uint), epoch(uint), uploader_device(bstr 16), blob(bstr), franking_tag(bstr 32), recv_ts(uint)]` |
+| 19 | `message.ct` | ≠ 0 | `[seq(uint), epoch(uint), uploader_device(bstr 16), blob(bstr), franking_tag(bstr 32), recv_ts(uint), class(uint\|null)]` |
 | 20 | `mls.welcome` | ≠ 0 | `[welcome_id(uint), epoch(uint), commit_seq(uint), blob(bstr), ratchet_tree(bstr), tree_hash(bstr 32)]` |
 | 21 | `message.deleted` | ≠ 0 | `[seq(uint), deleted_at(uint)]` |
 
@@ -444,6 +444,45 @@ is not a handshake — it has its own wire format, its own frame and its own end
 `sender` is the **leaf index** (uint) of the sending member, or **null** when the sender is the
 instance's external sender. An instance additionally records the sending `device_id` beside the
 handshake, resolved through its own member table; that record is not on the wire.
+
+### Upload class
+
+An application message upload names its **upload class**, the third element of
+`POST /v1/groups/{id}/message`: **0** for a post (envelope type 0) and **1** for anything else
+(types 1–6: an edit, a delete, a reaction or a pin, which receivers fold). The instance cannot
+read the envelope, so the class is what lets it enforce a channel's posting rules on end-to-end
+encrypted messages without throttling the folds. It stores the class with the message and relays
+it as the 9th element of a `GET /v1/groups/{id}/messages` row and the 7th of `message.ct`, `null`
+for a legacy upload. A class other than the uint 0 or 1 (a null third element included), or a body
+of any length but 2 or 3, is `400 E_INVALID_REQUEST`. A client reads a row of eight elements and a
+`message.ct` of six, from an instance before this version, as carrying a null class; a class other
+than 0, 1 or null is a shape error (`E_FRAME_SHAPE` for the frame).
+
+The host's two rules apply to text groups of community channels only; direct messages, group DMs
+and call groups are unchecked. They are decided under the group's lock, after the current-leaf
+check and before the message is stored:
+
+- A class-0 upload needs `send_messages` in the channel (`09` § Permissions), else
+  `403 E_FORBIDDEN`.
+- A class-0 upload within the channel's `slowmode_seconds` of the user's last class-0 upload into
+  any text group of the channel, from any of their devices, is `429 E_RATE_LIMITED` with
+  `retry_after_ms` the time left, unless the user holds `bypass_slowmode`, which exempts slow mode
+  only, never the `send_messages` rule above. The instance keeps the
+  time of that last post as a durable mark per channel and user, raised by every accepted class-0
+  upload and by nothing else, so a deleted message still counts, and so does one retention has
+  since removed.
+
+A class-1 upload is never checked for `send_messages` nor slowed. Whatever the class, an upload
+into the text group of a community channel that has been deleted is `403 E_FORBIDDEN`, and an
+upload into a closed group of any kind (a deleted channel's, or one a mode change or a restore
+replaced) is `404 E_NOT_FOUND`, as for a group that does not exist, before the freeze and the
+current-leaf check.
+
+A two-element body is a legacy upload: in this version it is stored with a null class, checked for
+`send_messages` whatever it carries (the host cannot tell its type), and never slowed; it sets no
+slow-mode mark. The next version refuses it with `400`.
+
+Receivers drop a row whose class disagrees with its decrypted type (`04` § Semantics).
 
 ## Invariants
 

@@ -2,7 +2,7 @@
 
 use super::ClientError;
 use super::error::{E_CORE_INPUT, E_CORE_LIMIT, E_CORE_MLS};
-use crate::cbor::{Decoder, Encoder, decode_strict};
+use crate::cbor::{CborError, Decoder, Encoder, decode_strict};
 use crate::envelope::Attachment;
 use crate::identity::DeviceList;
 use crate::mls::StorageError;
@@ -27,6 +27,9 @@ pub(crate) struct MessageRow {
     pub franking_tag: [u8; 32],
     pub recv_ts: u64,
     pub deleted: bool,
+    /// The upload class the host stored (web3.7): 0 for a post, 1 for every other type, `None`
+    /// for a legacy row (eight elements, or a null ninth).
+    pub class: Option<u64>,
 }
 pub(crate) struct ApplyResult {
     pub state: u8,
@@ -123,11 +126,21 @@ pub(crate) struct SendRequest {
     pub reply_to: Option<[u8; 16]>,
     pub body: String,
     pub attachments: Vec<Attachment>,
+    /// web3.7: the thread root the message joins; absent (a 4-element request) means none.
+    pub thread_id: Option<[u8; 16]>,
 }
 
+/// `[type, reply_to b16|null, body, attachments]`, or since web3.7 the same with a fifth element,
+/// `thread_id b16|null`. Any other length is malformed.
 pub(crate) fn decode_send_request(bytes: &[u8]) -> Result<SendRequest, ClientError> {
     decode_strict(bytes, |d| {
-        d.array(4)?;
+        let len = d.array_len()?;
+        if len != 4 && len != 5 {
+            return Err(CborError::WrongArrayLen {
+                expected: 5,
+                actual: len,
+            });
+        }
         let ty = d.uint()?;
         let reply_to = d.opt_bytes_exact::<16>()?;
         let body = d.text()?.to_owned();
@@ -147,11 +160,17 @@ pub(crate) fn decode_send_request(bytes: &[u8]) -> Result<SendRequest, ClientErr
                 name: d.text()?.to_owned(),
             });
         }
+        let thread_id = if len == 5 {
+            d.opt_bytes_exact::<16>()?
+        } else {
+            None
+        };
         Ok(SendRequest {
             ty,
             reply_to,
             body,
             attachments,
+            thread_id,
         })
     })
     .map_err(|_| ClientError::new(E_CORE_INPUT, "request is malformed"))
@@ -199,6 +218,8 @@ pub(crate) struct ReplyView {
     pub target_user: Option<[u8; 16]>,
     pub excerpt: String,
     pub state: u8,
+    /// Fix round 1 (M3): the thread root of the quoted row when it shows in a thread.
+    pub thread_root: Option<[u8; 16]>,
 }
 pub(crate) struct AttachmentView {
     pub size: u64,
@@ -227,6 +248,8 @@ pub(crate) struct TimelineView {
     pub pinned: bool,
     pub attachments: Vec<AttachmentView>,
     pub mention: bool,
+    /// `(count, last_ts)` of a held thread root with at least one shown reply (web3.7).
+    pub thread: Option<(u64, u64)>,
 }
 pub(crate) struct PinView {
     pub target_seq: u64,
@@ -236,13 +259,66 @@ pub(crate) struct PinView {
     pub author: Option<[u8; 16]>,
     pub excerpt: String,
     pub target_ts: u64,
+    /// Fix round 1 (M3): the thread root of the pinned row when it shows in a thread.
+    pub thread_root: Option<[u8; 16]>,
 }
 
 pub(crate) fn encode_timeline(rows: &[TimelineView]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(rows.len());
     for r in rows {
-        e.array(18)
+        timeline_row(&mut e, r);
+    }
+    e.into_vec()
+}
+
+/// `[root_row|null, [row…]]` (web3.7 R25): the held root, then the replies.
+pub(crate) fn encode_thread_timeline(
+    root: Option<&TimelineView>,
+    rows: &[TimelineView],
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(2);
+    match root {
+        Some(r) => timeline_row(&mut e, r),
+        None => {
+            e.null();
+        }
+    }
+    e.array(rows.len());
+    for r in rows {
+        timeline_row(&mut e, r);
+    }
+    e.into_vec()
+}
+
+pub(crate) struct ThreadView {
+    pub root: [u8; 16],
+    pub root_seq: Option<u64>,
+    pub count: u64,
+    pub last_ts: u64,
+    pub excerpt: String,
+}
+
+/// `[[root_msg_id b16, root_seq uint|null, count uint, last_ts uint, excerpt tstr]]` (web3.7).
+pub(crate) fn encode_threads(rows: &[ThreadView]) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(rows.len());
+    for r in rows {
+        e.array(5)
+            .bytes(&r.root)
+            .opt_uint(r.root_seq)
+            .uint(r.count)
+            .uint(r.last_ts)
+            .text(&r.excerpt);
+    }
+    e.into_vec()
+}
+
+/// One 19-element timeline row (18 before web3.7; the 19th is the thread summary).
+fn timeline_row(e: &mut Encoder, r: &TimelineView) {
+    {
+        e.array(19)
             .uint(r.seq)
             .uint(r.epoch)
             .uint(r.recv_ts)
@@ -257,12 +333,13 @@ pub(crate) fn encode_timeline(rows: &[TimelineView]) -> Vec<u8> {
             .text(&r.body)
             .uint(r.edited_seq);
         if let Some(reply) = &r.reply {
-            e.array(5)
+            e.array(6)
                 .bytes(&reply.reply_to)
                 .opt_uint(reply.target_seq)
                 .opt_bytes(reply.target_user.as_ref().map(|u| u.as_slice()))
                 .text(&reply.excerpt)
-                .uint(u64::from(reply.state));
+                .uint(u64::from(reply.state))
+                .opt_bytes(reply.thread_root.as_ref().map(|t| t.as_slice()));
         } else {
             e.null();
         }
@@ -282,22 +359,30 @@ pub(crate) fn encode_timeline(rows: &[TimelineView]) -> Vec<u8> {
                 .text(&a.name);
         }
         e.uint(u64::from(r.mention));
+        match r.thread {
+            Some((count, last_ts)) => {
+                e.array(2).uint(count).uint(last_ts);
+            }
+            None => {
+                e.null();
+            }
+        }
     }
-    e.into_vec()
 }
 
 pub(crate) fn encode_pins(rows: &[PinView]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(rows.len());
     for r in rows {
-        e.array(7)
+        e.array(8)
             .uint(r.target_seq)
             .bytes(&r.msg_id)
             .uint(r.pinned_seq)
             .bytes(&r.by_user)
             .opt_bytes(r.author.as_ref().map(|u| u.as_slice()))
             .text(&r.excerpt)
-            .uint(r.target_ts);
+            .uint(r.target_ts)
+            .opt_bytes(r.thread_root.as_ref().map(|t| t.as_slice()));
     }
     e.into_vec()
 }
@@ -362,7 +447,15 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
         let n = d.array_len()?;
         let mut rows = reserve(n, bytes.len() - d.position());
         for _ in 0..n {
-            d.array(8)?;
+            // Nine elements since web3.7, the ninth the upload class (uint or null); eight from a
+            // host that predates it. Any other length is a shape error.
+            let len = d.array_len()?;
+            if len != 8 && len != 9 {
+                return Err(CborError::WrongArrayLen {
+                    expected: 9,
+                    actual: len,
+                });
+            }
             rows.push((
                 d.uint()?,
                 d.uint()?,
@@ -372,6 +465,7 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
                 d.bytes_exact::<32>()?,
                 d.uint()?,
                 d.uint()?,
+                if len == 9 { d.opt_uint()? } else { None },
             ));
         }
         Ok(rows)
@@ -379,9 +473,22 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
     .map_err(|e| shape("messages", e))?;
     rows.into_iter()
         .map(
-            |(seq, epoch, uploader_device, blob, commitment, franking_tag, recv_ts, deleted)| {
+            |(
+                seq,
+                epoch,
+                uploader_device,
+                blob,
+                commitment,
+                franking_tag,
+                recv_ts,
+                deleted,
+                class,
+            )| {
                 if deleted > 1 {
                     return Err(shape("messages", format!("deleted {deleted} at seq {seq}")));
+                }
+                if class.is_some_and(|c| c > 1) {
+                    return Err(shape("messages", format!("class {class:?} at seq {seq}")));
                 }
                 Ok(MessageRow {
                     seq,
@@ -392,6 +499,7 @@ pub(crate) fn decode_message_rows(bytes: &[u8]) -> Result<Vec<MessageRow>, Clien
                     franking_tag,
                     recv_ts,
                     deleted: deleted == 1,
+                    class,
                 })
             },
         )
@@ -759,5 +867,57 @@ mod proposal_limit_tests {
                 .code,
             "E_CORE_LIMIT"
         );
+    }
+}
+
+#[cfg(test)]
+mod message_row_tests {
+    use super::*;
+
+    /// One messages row: the eight elements of web3.6, then `class` when `ninth` is `Some`
+    /// (`Some(None)` writes a null ninth).
+    fn rows(ninth: Option<Option<u64>>, tenth: bool) -> Vec<u8> {
+        let mut e = Encoder::new();
+        let len = 8 + usize::from(ninth.is_some()) + usize::from(tenth);
+        e.array(1)
+            .array(len)
+            .uint(5)
+            .uint(2)
+            .bytes(&[8; 16])
+            .bytes(&[1, 2, 3])
+            .null()
+            .bytes(&[10; 32])
+            .uint(1_758_659_700)
+            .uint(0);
+        if let Some(class) = ninth {
+            e.opt_uint(class);
+        }
+        if tenth {
+            e.uint(0);
+        }
+        e.into_vec()
+    }
+
+    #[test]
+    fn a_nine_element_row_carries_its_class() {
+        let row = &decode_message_rows(&rows(Some(Some(0)), false)).expect("nine")[0];
+        assert_eq!((row.seq, row.class), (5, Some(0)));
+        let row = &decode_message_rows(&rows(Some(Some(1)), false)).expect("nine")[0];
+        assert_eq!(row.class, Some(1));
+    }
+
+    #[test]
+    fn an_eight_element_row_or_a_null_class_is_legacy() {
+        let row = &decode_message_rows(&rows(None, false)).expect("eight")[0];
+        assert_eq!((row.seq, row.recv_ts, row.class), (5, 1_758_659_700, None));
+        let row = &decode_message_rows(&rows(Some(None), false)).expect("null ninth")[0];
+        assert_eq!(row.class, None);
+    }
+
+    #[test]
+    fn ten_elements_or_a_class_of_two_is_a_shape_error() {
+        let code = |b: Vec<u8>| decode_message_rows(&b).err().map(|e| e.code);
+        assert_eq!(code(rows(Some(Some(0)), true)), Some(E_CORE_INPUT));
+        assert_eq!(code(rows(Some(Some(2)), false)), Some(E_CORE_INPUT));
     }
 }

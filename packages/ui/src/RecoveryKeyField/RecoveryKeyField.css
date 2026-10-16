@@ -6,5 +6,5 @@
 .d-recovery-key-field__input:disabled { opacity: var(--opacity-muted); cursor: not-allowed; }
 .d-recovery-key-field__hint { margin: 0; font-size: var(--text-sm); color: var(--fg-3); font-variant-numeric: tabular-nums; }
 .d-recovery-key-field__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
-.d-recovery-key-field__error::before { content: "✕ " / ""; }
+.d-recovery-key-field__error::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
 @media (prefers-reduced-motion: reduce) { .d-recovery-key-field__input { transition: none; } }

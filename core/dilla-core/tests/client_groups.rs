@@ -1128,6 +1128,7 @@ fn group_apply_refuses_malformed_rows_and_groups_that_are_not_active() {
         franking_tag: [0; 32],
         recv_ts: NOW,
         deleted: false,
+        class: None,
     };
     assert_eq!(
         code(a.core.group_apply(

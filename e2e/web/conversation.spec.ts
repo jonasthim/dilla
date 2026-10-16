@@ -39,6 +39,8 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
 
   for (const width of [360, 320]) { // 320 CSS px also represents a 1280 px window at 400% zoom.
     await page.setViewportSize({ width, height: 740 });
+    // Below 48rem the shell is the phone shell; it re-mounts the panes once, and a focus given before that is lost.
+    await expect(page.locator('.d-app-shell')).toHaveAttribute('data-layout', 'phone');
     await own.focus();
     await expect(rowToolbar(own)).toBeVisible();
     const narrowActionsFit = await rowToolbar(own).evaluate((bar) => [...bar.querySelectorAll('button')].every((button) => {
@@ -48,6 +50,7 @@ test('edit, reply, react, pin and delete between the browser and the peer', asyn
     expect(narrowActionsFit).toBe(true);
   }
   await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.locator('.d-app-shell')).not.toHaveAttribute('data-layout', 'phone'); // the panes re-mount once; wait for it
 
   // Edit in place from the empty composer.
   await composerBox(page, channel).focus();

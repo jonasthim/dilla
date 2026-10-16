@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, CheckList, CreateChannel, CreateServer, InviteLink, Toggle, type NewChannelKind } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
+import { canCreateAnnouncement } from '@dilla/client-core';
 import { useSlice } from '../core/use-slice.ts';
 import { t } from '../strings/index.ts';
 
@@ -17,7 +18,9 @@ export const INVITE_TTL_S = INVITE_TTL_DAYS * 24 * 3600;
 /** What a new server starts with, in order: #general, then the voice channel general. */
 /** The most roles a private channel can be opened to (the worker refuses more). */
 const PRIVATE_ROLES_MAX = 98;
-const STARTERS: readonly { kind: NewChannelKind; name: string }[] = [{ kind: 'text', name: 'general' }, { kind: 'voice', name: 'general' }];
+/** The kinds a server's starter channels take. */
+type StarterKind = Exclude<NewChannelKind, 'announcement'>;
+const STARTERS: readonly { kind: StarterKind; name: string }[] = [{ kind: 'text', name: 'general' }, { kind: 'voice', name: 'general' }];
 
 const UTF8 = new TextEncoder();
 const CONTROL = /\p{Cc}/u;
@@ -32,10 +35,11 @@ export function nameProblem(raw: string, maxBytes: number): 'empty' | 'long' | '
   return null;
 }
 
-/** How a typed name is stored: a text channel as a lower-case slug (`ship-talk`), a voice channel as typed, trimmed. */
+/** How a typed name is stored: a text or announcement channel as a lower-case slug (`ship-talk`), a voice channel as typed, trimmed. */
 export function channelName(kind: NewChannelKind, raw: string): string {
-  const spaced = raw.trim().replace(/\s+/g, kind === 'text' ? '-' : ' ');
-  return kind === 'text' ? spaced.toLowerCase() : spaced;
+  const slug = kind !== 'voice';
+  const spaced = raw.trim().replace(/\s+/g, slug ? '-' : ' ');
+  return slug ? spaced.toLowerCase() : spaced;
 }
 
 /** The hex id a create answered with under `key`, or null when the answer is not { [key]: <32 hex> }. */
@@ -44,6 +48,9 @@ function idIn(value: unknown, key: 'communityId' | 'channelId'): string | null {
   const id = (value as Record<string, unknown>)[key];
   return typeof id === 'string' && HEX32.test(id) ? id : null;
 }
+
+/** The most roles an announcement channel is opened to (the worker's cap). */
+const ANNOUNCE_ROLES_MAX = 99;
 
 const BAD_RESULT: UiError = { code: 'E_BAD_RESULT', detail: '', status: 0, retryAfterMs: null };
 
@@ -287,13 +294,14 @@ export function CreateChannelFlow(props: {
   open: boolean; community: { id: string; name: string } | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
 }): React.JSX.Element {
   const client = useCore();
-  const [kind, setKind] = useState<NewChannelKind>('text');
+  const [picked, setKind] = useState<NewChannelKind>('text');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [priv, setPriv] = useState(false);
   const [ticked, setTicked] = useState<readonly string[]>([]);
+  const [announceTicked, setAnnounceTicked] = useState<readonly string[]>([]);
   const running = useRef(false);
   const session = useRef(0);
   const communityId = props.community?.id ?? '';
@@ -303,7 +311,7 @@ export function CreateChannelFlow(props: {
   useEffect(() => {
     if (props.open) return;
     session.current += 1;
-    setKind('text'); setName(''); setError(null); setPriv(false); setTicked([]);
+    setKind('text'); setName(''); setError(null); setPriv(false); setTicked([]); setAnnounceTicked([]);
   }, [props.open]);
 
   // Private create needs the manage-roles right; the roles on offer are those below my top (all of them for the owner).
@@ -311,11 +319,22 @@ export function CreateChannelFlow(props: {
   const offered = (roles ?? []).filter(r => r.id !== access?.everyoneId && (access?.owner === true || r.position < (access?.top ?? 0)))
     .sort((a, b) => b.position - a.position);
 
+  // The announcement kind is offered to a person who may create one; the worker checks it again.
+  const canAnnounce = access !== undefined && canCreateAnnouncement(access);
+  // Only roles below the creator's top (all of them for the owner), as for a private channel: the server answers 403 for the rest.
+  const announceRoles = (roles ?? []).filter(r => r.id !== access?.everyoneId && (access?.owner === true || r.position < (access?.top ?? 0)))
+    .sort((a, b) => b.position - a.position);
+  // The kind is missing for a creator who may add channels but not manage roles: say why, in one line.
+  const needsRoles = access !== undefined && !canAnnounce && access.manageChannels && !access.manageRoles;
+
+  // A chosen announcement kind falls back to text when the right to create one is lost before submit.
+  const kind: NewChannelKind = picked === 'announcement' && !canAnnounce ? 'text' : picked;
+
   const fail = (message: string) => { setError(message); setAttempt(a => a + 1); };
 
   const shown = channelName(kind, name);
   const hint = shown === '' ? t('create.channel.hint')
-    : t(kind === 'text' ? 'create.channel.hintText' : 'create.channel.hintVoice', { name: shown });
+    : t(kind !== 'voice' ? 'create.channel.hintText' : 'create.channel.hintVoice', { name: shown });
 
   const submit = () => {
     const community = props.community;
@@ -328,19 +347,21 @@ export function CreateChannelFlow(props: {
     // dillad keeps no uniqueness on channel names: a name this server already lists for the kind is refused here (walk M2).
     const listedKind = kind === 'voice' ? 1 : 0;
     if ((client.get(`channels:${community.id}`) ?? []).some(c => c.kind === listedKind && c.name === shown)) {
-      fail(t(kind === 'text' ? 'create.channel.error.takenText' : 'create.channel.error.takenVoice', { name: shown }));
+      fail(t(kind !== 'voice' ? 'create.channel.error.takenText' : 'create.channel.error.takenVoice', { name: shown }));
       return;
     }
     running.current = true;
     setBusy(true);
     const chosen = kind;
-    const sendPrivate = canPrivate && priv;
+    const sendPrivate = canPrivate && priv && chosen !== 'announcement';
     const roleIds = ticked.filter(id => offered.some(r => r.id === id));
+    const announceIds = announceTicked.filter(id => announceRoles.some(r => r.id === id));
     const at = session.current;
     const mine = () => session.current === at;
     void (async () => {
       try {
-        const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown, ...(sendPrivate ? { private: { roleIds } } : {}) }), 'channelId');
+        const id = idIn(await client.call({ m: 'createChannel', communityId: community.id, kind: chosen, name: shown,
+          ...(sendPrivate ? { private: { roleIds } } : {}), ...(chosen === 'announcement' ? { announce: { roleIds: announceIds } } : {}) }), 'channelId');
         if (id !== null) rememberMade(client, id);
         if (!mine()) return;
         if (id === null) fail(t('create.channel.error.other', { code: BAD_RESULT.code }));
@@ -350,8 +371,9 @@ export function CreateChannelFlow(props: {
         // Only the instance's E_INVALID_REQUEST is about the name; the worker's E_BAD_INPUT here is not (review M7). Nor is it
         // the 98-role cap, which the ticks already prevent: the code cannot tell the cap from "roles not loaded" or "unknown
         // server", and the detail is never read (protocol/02), so it is worded by its code (W2a review 8).
-        const code = errorOf(e).code;
-        fail(code === 'E_FORBIDDEN' ? t('create.channel.error.forbidden')
+        const { code, reason } = errorOf(e);
+        fail(code === 'E_FORBIDDEN' ? t(chosen === 'announcement' ? 'announce.roleTooHigh' : 'create.channel.error.forbidden')
+          : code === 'E_BAD_INPUT' && reason === 'announce.noHeldRole' ? t('announce.noHeldRole')
           : code === 'E_INVALID_REQUEST' ? t('create.channel.error.refused')
             : t('create.channel.error.other', { code }));
       } finally {
@@ -362,13 +384,22 @@ export function CreateChannelFlow(props: {
   };
 
   return (
-    <CreateChannel open={props.open} kind={kind} onKind={k => { setKind(k); setError(null); }} name={name}
+    <CreateChannel open={props.open} kind={kind} kinds={canAnnounce ? ['text', 'voice', 'announcement'] : ['text', 'voice']}
+      onKind={k => { setKind(k); setError(null); }} name={name}
       onName={v => { setName(v); setError(null); }} hint={hint} error={error} busy={busy} attempt={attempt}
       labels={{ title: t('create.channel.title', { server: props.community?.name ?? '' }), kind: t('create.channel.kind'),
-        text: t('create.channel.text'), voice: t('create.channel.voice'), name: t('create.channel.name'), submit: t('create.channel.submit'),
+        text: t('create.channel.text'), voice: t('create.channel.voice'), announcement: t('announce.kind'), name: t('create.channel.name'), submit: t('create.channel.submit'),
         busy: t('create.channel.busy'), close: t('dialog.close') }}
       onSubmit={submit} onClose={() => props.onClose()}>
-      {canPrivate ? <>
+      {kind === 'announcement' ? <>
+        <CheckList label={t('announce.roles')} emptyLabel={t('announce.noRoles')} busyId={null} describedBy="dw-announce-hint"
+          items={announceRoles.map(r => {
+            const checked = announceTicked.includes(r.id);
+            return { id: r.id, label: r.name, color: r.color, checked, disabled: !checked && announceTicked.length >= ANNOUNCE_ROLES_MAX };
+          })}
+          onToggle={(id, on) => setAnnounceTicked(list => (on ? [...list.filter(x => x !== id), id] : list.filter(x => x !== id)))} />
+        <p id="dw-announce-hint" className="d-select__hint">{t('announce.hint')}</p>
+      </> : needsRoles ? <p className="d-select__hint">{t('announce.needsRoles')}</p> : canPrivate ? <>
         <Toggle id="dw-create-private" label={t('chperm.create.private')} showLabel hint={t('chperm.create.privateHint')} checked={priv}
           onChange={on => { setPriv(on); setError(null); }} />
         {priv ? <CheckList label={t('chperm.create.roles')} emptyLabel={t('chperm.create.noRoles')} busyId={null}

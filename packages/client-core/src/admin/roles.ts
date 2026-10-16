@@ -7,7 +7,7 @@ import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import { OVERWRITES_PER_CREATE_MAX, PERM_ALL, ROLE_COLOR_MAX, ROLE_NAME_MAX_BYTES } from '../http/routes';
 import type { NewOverwrite, OverwriteRow, RoleRow, Routes } from '../http/routes';
-import type { OverwriteSummary, RoleSummary, SliceName, SliceTypes } from '../state/types';
+import type { CommunityAccess, OverwriteSummary, RoleSummary, SliceName, SliceTypes } from '../state/types';
 import type { Command } from '../worker/protocol';
 import { PERM } from './perm';
 
@@ -27,7 +27,7 @@ export interface RolesDeps {
   /** The admin controller's access read (permissions, roles, overwrites); never rejects. */
   loadAccess(communityId: string): Promise<void>;
   /** The worker's own refusal (its code reaches the page as E_BAD_INPUT and the like). */
-  refusal(code: string, detail: string): Error;
+  refusal(code: string, detail: string, reason?: string): Error;
 }
 
 type RolesCommand = Extract<Command, { m: 'createRole' | 'updateRole' | 'moveRole' | 'deleteRole' | 'grantRole' | 'revokeRole'
@@ -74,6 +74,8 @@ export const ROLES_VALIDATORS: Record<RolesMethod, ((c: Record<string, unknown>)
 /** Roles a private create can open the channel to: the @everyone entry and, for a member who is neither owner nor
  *  administrator, her own entry take two of the instance's overwrites per create. */
 const PRIVATE_ROLES_MAX = OVERWRITES_PER_CREATE_MAX - 2;
+const ANNOUNCE_ROLES_REASON = `an announcement channel can be opened to at most ${String(PRIVATE_ROLES_MAX)} roles`;
+const ANNOUNCE_HELD_ROLE_REASON = 'tick a role you hold, or you could not post in this channel';
 const PRIVATE_ROLES_REASON = `a private channel can be opened to at most ${String(PRIVATE_ROLES_MAX)} roles`;
 
 /** The `private` field of createChannel: `{ roleIds }` of 32-hex ids, at most one fewer than the instance's cap (the
@@ -83,6 +85,19 @@ export function privateProblem(v: unknown): string | null {
   const { roleIds } = v as { roleIds?: unknown };
   if (!Array.isArray(roleIds) || !roleIds.every((r) => typeof r === 'string' && ID.test(r))) return 'roleIds must be an array of ids';
   return roleIds.length > OVERWRITES_PER_CREATE_MAX - 1 ? PRIVATE_ROLES_REASON : null;
+}
+
+/** Whether the caller may create an announcement channel: the instance asks for manage_channels for the channel and
+ *  manage_roles for the overwrites it carries. */
+export const canCreateAnnouncement = (access: CommunityAccess): boolean => access.manageChannels && access.manageRoles;
+
+/** The `announce` field of createChannel: `{ roleIds }` of 32-hex ids, at most the cap less @everyone's entry (the creator's
+ *  own entry is checked again when it is added); a reason or null. */
+export function announceProblem(v: unknown): string | null {
+  if (typeof v !== 'object' || v === null) return 'roleIds must be an array of ids';
+  const { roleIds } = v as { roleIds?: unknown };
+  if (!Array.isArray(roleIds) || !roleIds.every((r) => typeof r === 'string' && ID.test(r))) return 'roleIds must be an array of ids';
+  return roleIds.length > OVERWRITES_PER_CREATE_MAX - 1 ? ANNOUNCE_ROLES_REASON : null;
 }
 
 const statusOf = (e: unknown): number | null => (e instanceof DillaHttpError ? e.status : null);
@@ -278,6 +293,32 @@ export class RolesController {
     const me = this.deps.me();
     if (me !== null && !owner && !this.administrator(communityId)) out.push({ kind: 1, targetId: me.userId, allow: PERM.viewChannel, deny: 0 });
     if (out.length > OVERWRITES_PER_CREATE_MAX) throw this.deps.refusal('E_BAD_INPUT', PRIVATE_ROLES_REASON);
+    return out;
+  }
+
+  /** The overwrites of an announcement create: @everyone denied sending, each chosen role allowed to send (deduplicated,
+   *  @everyone skipped). A creator who is neither owner nor administrator must tick a role she holds, else the create is
+   *  refused here with no request: she would lose the right to post in the channel she made. */
+  async announcementOverwrites(communityId: string, roleIds: readonly string[]): Promise<NewOverwrite[]> {
+    const { everyoneId, owner, rows, top } = await this.access(communityId);
+    const out: NewOverwrite[] = [{ kind: 0, targetId: fromHex(everyoneId), allow: 0, deny: PERM.sendMessages }];
+    for (const roleId of new Set(roleIds)) {
+      if (roleId !== everyoneId) out.push({ kind: 0, targetId: fromHex(roleId), allow: PERM.sendMessages, deny: 0 });
+    }
+    // The instance accepts no self entry here, and refuses a role entry at or above the creator's own rank, so the creator
+    // keeps her right to post through a ticked role she holds below her top; the owner and an administrator need none.
+    // With her own roles not yet loaded nothing is refused here: the instance answers.
+    const members = this.deps.get(`members:${communityId}`);
+    if (!owner && !this.administrator(communityId) && members !== undefined) {
+      const me = this.deps.me();
+      const mine = me === null ? undefined : toHex(me.userId);
+      const held = new Set(members.find((m) => m.userId === mine)?.roleIds ?? []);
+      const rank = new Map(rows.map((r) => [toHex(r.id), r.position]));
+      if (![...new Set(roleIds)].some((r) => r !== everyoneId && held.has(r) && (rank.get(r) ?? top) < top)) {
+        throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_HELD_ROLE_REASON, 'announce.noHeldRole');
+      }
+    }
+    if (out.length > OVERWRITES_PER_CREATE_MAX) throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_ROLES_REASON);
     return out;
   }
 

@@ -59,3 +59,9 @@ export const WithActions: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, 
 export const WithTabs: Story = { args: { activeId: 'g', rowLabel: ROW_LABEL, channels: BADGED,
   tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
     tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages', count: 2 }]} /> } };
+export const AnnouncementSlow: Story = { args: { activeId: 'g', channels: [
+  { id: 'n', name: 'news', kind: 'announcement', readable: false, unread: 2 },
+  { id: 'g', name: 'general', kind: 'text', readable: false, badge: 'slow mode' },
+  { id: 's', name: 'announcements-and-everything-else', kind: 'announcement', readable: false, badge: 'slow mode' },
+  { id: 'v', name: 'longhouse', kind: 'voice', readable: false },
+] } };

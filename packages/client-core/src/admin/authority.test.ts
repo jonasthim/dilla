@@ -214,7 +214,7 @@ describe('the worker pushes the role view into the core', () => {
     expect(w.last<PinnedItem[]>(`pins:${CH}`)).toEqual([]);
     // What the core folds after the new view: the pin of the member who may still pin.
     // (Slices are posted only when they change: the core's refold changes the pins, the timeline row and the mentions.)
-    const pin: PinRow = { targetSeq: 1n, msgId: id16(0x31), pinnedSeq: 2n, byUser: USER, author: STRANGER, excerpt: 'kept', targetTs: 1n };
+    const pin: PinRow = { targetSeq: 1n, msgId: id16(0x31), pinnedSeq: 2n, byUser: USER, author: STRANGER, excerpt: 'kept', targetTs: 1n, threadRoot: null };
     w.core.authoritySet.mockImplementation(() => {
       w.state.pins = [pin];
       w.state.rows = [{ ...strangerRow(1), pinned: true }];
@@ -365,7 +365,7 @@ describe('the push is made once per change, cheaply (C4 fix round 1)', () => {
     w.routes.listRoles.mockResolvedValue([role(EVERYONE, 0, VIEW), role(MOD, 1, PIN | ALL)]);
     w.routes.listMembers.mockResolvedValue([member(USER, []), member(STRANGER, [MOD])]);
     w.state.newChannels.push({ communityId: COMMUNITY, row: { id: CH2, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'two', topic: '',
-      position: 1, seq: 0n, textGroupId: G2 } });
+      position: 1, slowmode: 0, seq: 0n, textGroupId: G2 } });
     w.state.groups = [textGroup(2), { ...textGroup(2), groupId: G2, targetId: CH2 }];
     await toReady(w);
     await vi.waitFor(() => expect(w.core.authoritySet).toHaveBeenCalledTimes(2));

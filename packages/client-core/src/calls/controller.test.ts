@@ -51,6 +51,9 @@ export interface HarnessOptions {
   extraDms?: number;
   /** v0.1.0-web3.1: no seeded server; the model lists what a test creates through the create commands. */
   created?: boolean;
+  /** web3.7 3a-client: runs before the worker starts (a leftover call group seeded, a boot read held or refused). */
+  before?: (w: { ds: ModelDs; model: ModelCore; server: { hold(label: string): { release: () => void; reached: Promise<void> };
+    refuseAll(label: string, status: number, code: string): void } }) => Promise<void> | void;
 }
 
 export async function harness(opts: HarnessOptions = {}) {
@@ -109,6 +112,8 @@ export async function harness(opts: HarnessOptions = {}) {
   };
   const requests: { route: string; args: unknown[] }[] = [];
   const answers: Answer[] = [];
+  /** Labels every request of which is refused until allowed again (an instance that cannot be reached). */
+  const refusing = new Map<string, DillaHttpError>();
   const holds: Hold[] = [];
   const replies: { label: string; value: unknown }[] = [];
   const names =new Set([...Object.keys(base), ...Object.keys(stubs)]);
@@ -123,6 +128,8 @@ export async function harness(opts: HarnessOptions = {}) {
         requests.push({ route: label, args });
         const h = holds.findIndex((x) => x.label === label);
         if (h >= 0) { const [hold] = holds.splice(h, 1); hold.reached(); await hold.gate; }
+        const always = refusing.get(label);
+        if (always !== undefined) throw always;
         const a = answers.findIndex((x) => x.label === label);
         if (a >= 0) { const [answer] = answers.splice(a, 1); throw answer.error; }
         const r = replies.findIndex((x) => x.label === label);
@@ -153,6 +160,11 @@ export async function harness(opts: HarnessOptions = {}) {
     holdRaw(method: string): { release: () => void; reached: Promise<void> } { return server.hold(`raw:${method}`); },
     routes(): string[] { return requests.map((r) => r.route); },
     reset(): void { requests.length = 0; },
+    /** Every request of `label` is refused with this status and code until allow(label). */
+    refuseAll(label: string, status: number, code: string): void {
+      refusing.set(label, new DillaHttpError({ status, code, detail: '', retryAfterMs: null, extra: [] }));
+    },
+    allow(label: string): void { refusing.delete(label); },
   };
 
   const posted: Posted[] = [];
@@ -216,6 +228,7 @@ export async function harness(opts: HarnessOptions = {}) {
   function slice(name: string): unknown;
   function slice(name: string): unknown { return slices().filter((s) => s.name === name).at(-1)?.value; }
 
+  await opts.before?.({ ds, model, server });
   await call({ m: 'start' });
   for (let i = 0; i < 100 && (slice('account') as { phase?: string } | undefined)?.phase !== 'ready'; i++) await settle();
   fake.emit({ type: 'status', status: 'ready', closeCode: null });
@@ -227,6 +240,11 @@ export async function harness(opts: HarnessOptions = {}) {
     controller, model, ds, clock, server, call, send, ret, slice, voiceSelfSent, sessionState, wall,
     /** The gateway reports a revoked socket (the worker re-establishes its session, or ends in revoked). */
     revokeSocket: (): void => { fake.emit({ type: 'revoked' }); },
+    /** The socket goes down, then is ready again (the browser back online). */
+    reconnect: (): void => {
+      fake.emit({ type: 'status', status: 'waiting', closeCode: null });
+      fake.emit({ type: 'status', status: 'ready', closeCode: null });
+    },
     callGroup, voice: toHex(VOICE), dm: toHex(DM), dms, gateway: { push: (f: Frame): void => { fake.frame(f); } },
     posted: (): Posted[] => [...posted],
     pushes: (t: FromWorker['t']): Posted[] => posted.filter((p) => p.message.t === t),
@@ -2007,6 +2025,129 @@ describe('the rejoin wait and a leave during its reads (task-10 fix review N1, N
     await runFor(w, id, 10_000);
     expect(w.ret(id)).toBeUndefined();
     expect(w.slice('call')).toMatchObject({ phase: 'joining', rejoining: true });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// web3.7 3a-client: the boot sweep leaves a call group a page of this browser left behind, before any join.
+// ---------------------------------------------------------------------------------------------
+
+describe('the boot sweep of leftover call groups (web3.7 3a-client, R32)', () => {
+  type Before = NonNullable<HarnessOptions['before']>;
+  /** A reload mid-call: this device alone in the lounge's live call, its call group still held active in the store. */
+  function leftover(more: Before = () => {}): { group: () => Id; before: Before } {
+    let group: Id = new Uint8Array(16);
+    return {
+      group: () => group,
+      before: async (b) => {
+        group = b.ds.peerCreateCall(ME, VOICE);
+        await b.ds.routesFor(ME.device).startCall(VOICE, '');
+        b.ds.voice(VOICE, ME, 1);
+        b.model.seedGroup(group, 1, COMMUNITY, VOICE);
+        await more(b);
+      },
+    };
+  }
+  const coreCalls = (w: World, m: string, g: Id): number => w.model.calls.filter((c) => c.m === m && c.g === toHex(g)).length;
+  const count = (w: World, route: string): number => w.server.routes().filter((r) => r === route).length;
+
+  it('a rejoin during the boot sweep waits for it, and the sweep never touches the group the join registers', async () => {
+    let held = { release: (): void => {}, reached: Promise.resolve() };
+    const seed = leftover((b) => { held = b.server.hold('GET channel call'); });
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await held.reached;
+    const join = w.send(JOIN(w));
+    await settled(w);
+    expect(w.ret(join)).toBeUndefined();
+    expect(w.server.routes().filter((r) => r !== 'GET members')).toEqual(['GET channel call']);
+    held.release();
+    for (let i = 0; i < 40 && w.ret(join) === undefined; i++) await settled(w);
+    const result = w.ret(join);
+    expect(result).toMatchObject({ ok: true });
+    const joinedGroup = (result as { value: CallJoinResult }).value.groupId;
+    expect(joinedGroup).not.toBe(toHex(seed.group()));
+    const routes = w.server.routes();
+    // The sweep: the read, the conditional end (alone), then the forget only; then the join registers afresh.
+    expect(routes.indexOf('DELETE call')).toBeLessThan(routes.indexOf('POST group'));
+    expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(1);
+    expect(coreCalls(w, 'callLeaveProposal', seed.group())).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', fromHex(joinedGroup))).toBe(0);
+    expect(coreCalls(w, 'callLeaveProposal', fromHex(joinedGroup))).toBe(0);
+    expect(w.slice('call').phase).toBe('in');
+  });
+
+  it('sign-out during the boot sweep stops it', async () => {
+    let held = { release: (): void => {}, reached: Promise.resolve() };
+    const seed = leftover((b) => { held = b.server.hold('GET channel call'); });
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await held.reached;
+    const out = w.send({ m: 'signOutRevoke', recoveryKey: 'QRST'.repeat(13) });
+    await settled(w);
+    held.release();
+    await settled(w);
+    expect(w.ret(out)).toBeDefined();
+    expect(count(w, 'DELETE call')).toBe(0);
+    expect(count(w, 'POST proposal')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(0);
+  });
+
+  it('a handover stops the released tab\'s sweep; the tab that leads then sweeps, once', async () => {
+    let held = { release: (): void => {}, reached: Promise.resolve() };
+    const seed = leftover((b) => { held = b.server.hold('GET channel call'); });
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await held.reached;
+    // "Use this tab" elsewhere: this tab resigns; the harness's lock hands it straight back, so it leads again.
+    await w.call({ m: 'resign', nonce: 'ab'.repeat(16) });
+    for (let i = 0; i < 40 && coreCalls(w, 'callGroupForget', seed.group()) === 0; i++) await settled(w);
+    expect(w.released()).toBe(1);
+    // The released tab's read answers late: that sweep sends nothing more.
+    held.release();
+    await settled(w);
+    expect(count(w, 'GET channel call')).toBe(2);
+    expect(count(w, 'DELETE call')).toBe(1);
+    expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(1);
+  });
+
+  it('a gateway ready before the phase is ready starts no sweep; the end of the ready does (review m1)', async () => {
+    let held = { release: (): void => {}, reached: Promise.resolve() };
+    const seed = leftover((b) => { held = b.server.hold('GET members'); });
+    // The socket reports ready while the ready path still waits for the member list.
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await held.reached;
+    w.reconnect();
+    await settled(w);
+    expect((w.slice('account') as { phase: string }).phase).not.toBe('ready');
+    expect(count(w, 'GET channel call')).toBe(0);
+    held.release();
+    for (let i = 0; i < 40 && coreCalls(w, 'callGroupForget', seed.group()) === 0; i++) await settled(w);
+    expect(count(w, 'GET channel call')).toBe(1);
+    expect(count(w, 'DELETE call')).toBe(1);
+  });
+
+  it('an offline boot forgets nothing and sweeps at the first online; the join is not held meanwhile', async () => {
+    const seed = leftover((b) => { b.server.refuseAll('GET channel call', 0, 'E_NETWORK'); });
+    const w = await harness({ voiceChannel: true, before: seed.before });
+    await settled(w);
+    expect(count(w, 'GET channel call')).toBeGreaterThan(0);
+    expect(count(w, 'DELETE call')).toBe(0);
+    expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(0);
+    // A join meanwhile is not held by the deferred sweep: it reads at once (and is refused, still offline).
+    const reads = count(w, 'GET channel call');
+    const join = w.send(JOIN(w));
+    await settled(w);
+    expect(w.ret(join)).toMatchObject({ ok: false });
+    expect(count(w, 'GET channel call')).toBe(reads + 1);
+    expect(w.slice('call').phase).toBe('failed');
+    // The first online: the sweep runs again and leaves the call.
+    w.server.allow('GET channel call');
+    w.reconnect();
+    await settled(w);
+    expect(count(w, 'DELETE call')).toBe(1);
+    expect(coreCalls(w, 'callGroupForget', seed.group())).toBe(1);
+    // A later reconnect sweeps nothing more.
+    w.reconnect();
+    await settled(w);
+    expect(count(w, 'GET channel call')).toBe(reads + 2);
   });
 });
 

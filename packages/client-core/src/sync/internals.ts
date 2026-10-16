@@ -27,6 +27,14 @@ export interface SyncInternals {
   cancelTimer(id: number): void;
   echoWait: Map<string, { msgHex: string; timer: number }>;
   epochWait: Map<string, number>;
+  /** CB2: group hex → its slow-mode wait (a 429 requeued a row): the timer and its deadline (ms since the epoch); while
+   *  it is armed the group posts nothing. A later 429 only ever moves the deadline later. */
+  slowWait: Map<string, { timer: number; until: number }>;
+  /** CB2: msg hex of rows a 429 requeued; their confirmation clears the wait (onSlow(g, 0, false)). */
+  slowed: Set<string>;
+  /** FX-core: msg hex of the rows this engine queued, in the order it queued them. The core lists the outbox by
+   *  (created second, random msg_id), so rows queued within one second can swap; drainOne takes this order instead. */
+  queued: Set<string>;
   count425: Map<string, number>;
   reframedOnce: Set<string>;
   /** `${group hex}:${msg hex}` of rows a leaf verdict refused at send_encrypt: their one trust refresh is out, or done. */

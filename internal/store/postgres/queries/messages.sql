@@ -1,7 +1,7 @@
 -- name: PutAppMessage :exec
 INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, commitment_c,
-                              franking_tag, size, created, expires, deleted_at, franking_key_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+                              franking_tag, size, created, expires, deleted_at, franking_key_id, class)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 
 -- name: ListAppMessages :many
 SELECT * FROM mls_app_messages WHERE group_id = $1 AND seq >= $2
@@ -9,6 +9,19 @@ ORDER BY seq LIMIT sqlc.arg(max_rows)::bigint;
 
 -- name: GetAppMessage :one
 SELECT * FROM mls_app_messages WHERE group_id = $1 AND seq = $2;
+
+-- name: LastClassZeroUploadAt :one
+-- Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the user's durable mark in the
+-- channel, the time of their last accepted class-0 upload into any of its text groups from any
+-- device. Neither a tombstone nor a retention prune moves it.
+SELECT last_post_at FROM slowmode_marks WHERE channel_id = $1 AND user_id = $2;
+
+-- name: PutSlowmodeMark :exec
+-- Upload's write of the mark, in the upload's own transaction. Monotone: an older time never
+-- replaces a newer one.
+INSERT INTO slowmode_marks (channel_id, user_id, last_post_at) VALUES ($1, $2, $3)
+ON CONFLICT (channel_id, user_id) DO UPDATE
+SET last_post_at = GREATEST(slowmode_marks.last_post_at, excluded.last_post_at);
 
 -- name: TombstoneAppMessage :exec
 UPDATE mls_app_messages SET blob = NULL, deleted_at = $1

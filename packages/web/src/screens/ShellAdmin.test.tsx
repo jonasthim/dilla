@@ -12,7 +12,7 @@ const B = 'b2'.repeat(16);
 const GEN = 'c3'.repeat(16);
 const OTHER = 'ee'.repeat(16);
 const CHANNELS: ChannelSummary[] = [
-  { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, group: 'none' },
+  { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'none' },
 ];
 const MEMBERS: MemberSummary[] = [{ userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [] }];
 const EVERYONE = 'ab'.repeat(16);
@@ -88,7 +88,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
   // Final fix B2: the open-by-default pane belongs to the wide column; narrowing closes it unless the person used the toggle.
   it('starts open when wide; narrowing closes it with nothing inert; the toggle opens it again', async () => {
     const listeners: ((e: { matches: boolean }) => void)[] = [];
-    window.matchMedia = ((query: string) => ({ matches: true, media: query, onchange: null, dispatchEvent: () => false,
+    window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, dispatchEvent: () => false,
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.splice(listeners.indexOf(cb), 1); },
       addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
@@ -105,7 +105,7 @@ describe('Shell, server admin and member list (flow 08)', () => {
 
   it('a pane toggled off and on while wide still closes on narrowing: nothing inert', async () => {
     const listeners: ((e: { matches: boolean }) => void)[] = [];
-    window.matchMedia = ((query: string) => ({ matches: true, media: query, onchange: null, dispatchEvent: () => false,
+    window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, dispatchEvent: () => false,
       addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => { listeners.push(cb); },
       removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined })) as unknown as typeof window.matchMedia;
     const { user } = setup();

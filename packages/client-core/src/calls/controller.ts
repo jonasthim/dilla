@@ -12,6 +12,7 @@ import { CALL_IDLE, type CallJoinResult, type CallKeys, type CallPhase, type Cal
 import type { FromWorker } from '../worker/protocol';
 import { joinCall, JoinRefused, type JoinRoutes } from './join';
 import { Rings } from './ring';
+import { statusOf, sweepStaleCalls } from './sweep';
 import { VoiceBook, type VoiceRoutes } from './voice';
 
 /** L-TS-56 step 5: a fresh leaf secret every hour of a call, and a conflicted rotation tried again a minute later. */
@@ -22,6 +23,8 @@ export const CALL_ROTATE_RETRY_MS = 60_000;
 export const CALL_ROTATE_RETRIES = 5;
 /** L-TS-56 step 1: the list refresh of a call's pending leaves waits at most this long for the whole batch. */
 export const WAIT_LIST_MS = 10_000;
+/** web3.7 3a-client: a join waits at most this long for the boot sweep of leftover call groups (calls/sweep.ts). */
+export const SWEEP_JOIN_WAIT_MS = 5000;
 
 export type CallRoutes = VoiceRoutes & JoinRoutes & Pick<Routes, 'shareCall' | 'unshareCall' | 'postCallStats' | 'postProposal'
   | 'declineCall' | 'postCommit' | 'endCallIfAlone'>;
@@ -84,8 +87,11 @@ interface Live {
 }
 /** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
  *  'reset' (forgotten locally, nothing sent), a drop of its server with 'dropped' (torn down as a leave, then phase
- *  removed); `done` settles once the join has torn down or finished. */
-interface JoinToken { cancelled: 'leave' | 'reset' | 'dropped' | null; done: Promise<void> }
+ *  removed); `done` settles once the join has torn down or finished. web3.7 3a-client: `waiting` while it waits for the
+ *  boot sweep (it holds no group yet), and `wake` ends that wait at once when it is cancelled. */
+/** Review I3: a channel's sweep requests: the signal they carry and those still in flight. */
+interface SweepChannel { abort: AbortController; inflight: Set<Promise<unknown>> }
+interface JoinToken { cancelled: 'leave' | 'reset' | 'dropped' | null; done: Promise<void>; channel: string; waiting: boolean; wake: (() => void) | null }
 
 const IN_A_CALL: readonly CallPhase[] = ['joining', 'in', 'paused', 'leaving'];
 
@@ -101,6 +107,12 @@ export class CallController {
   /** The channel whose blocked phase was seen held by that channel's own send block (its text group): that phase goes idle
    *  once the block clears (integration card), so the page can offer the join again. */
   private blockSeen: string | null = null;
+  /** web3.7 3a-client: this ready's boot sweep (running, or done), null before it and once a re-ready may sweep again. */
+  private sweeping: Promise<void> | null = null;
+  /** The sweep in progress is the one of this generation; a stop (sign-out, the core detached) moves it on. */
+  private sweepGen = 0;
+  /** Review I3: the running sweep's requests by channel hex: their signal and the requests still in flight. */
+  private sweepChannels = new Map<string, SweepChannel>();
 
   constructor(private readonly deps: CallDeps) {
     this.book = new VoiceBook({
@@ -125,6 +137,115 @@ export class CallController {
   /** The three slices' initial values (L-TS-51), published when the worker is ready. */
   /** The member lists changed: the voice slice's names are read again (web-3 task 10, concern 4). */
   membersChanged(): void { this.book.renamed(); }
+
+  // ---- web3.7 3a-client: the boot sweep of leftover call groups ----
+
+  /** Leaves every call group a page of this browser left behind (calls/sweep.ts), once per ready: a second call while one
+   *  runs, or after it ran, starts nothing (the worker drops the memo with the core, reset, and on sign-out, shutdown).
+   *  A sweep that found the instance unreachable (status 0) is deferred: the next call (the first online) sweeps again.
+   *  A join waits for it, at most SWEEP_JOIN_WAIT_MS. A failing sweep never fails a join. */
+  startSweep(): void {
+    if (this.sweeping !== null) return;
+    this.sweepGen += 1;
+    const gen = this.sweepGen;
+    const stopped = (): boolean => this.sweepGen !== gen;
+    let offline = false;
+    const routes = this.deps.routes;
+    const channels = new Map<string, SweepChannel>();
+    this.sweepChannels = channels;
+    /** A request of the sweep, counted in flight under the channel whose signal it carries. */
+    const tracked = <T>(signal: AbortSignal | undefined, request: Promise<T>): Promise<T> => {
+      const entry = [...channels.values()].find((c) => c.abort.signal === signal);
+      if (entry === undefined) return request;
+      entry.inflight.add(request);
+      void request.catch(() => undefined).finally(() => { entry.inflight.delete(request); });
+      return request;
+    };
+    const run = sweepStaleCalls({
+      core: () => this.deps.core(),
+      me: () => this.deps.me(),
+      routes: {
+        getChannelCall: async (channel, signal) => {
+          try { return await tracked(signal, routes.getChannelCall(channel, signal)); }
+          catch (e) { if (statusOf(e) === 0) offline = true; throw e; }
+        },
+        endCallIfAlone: (callId, signal) => tracked(signal, routes.endCallIfAlone(callId, signal)),
+        postProposal: (groupId, body, signal) => tracked(signal, routes.postProposal(groupId, body, signal)),
+      },
+      signal: (channelId) => {
+        const key = toHex(channelId);
+        let entry = channels.get(key);
+        if (entry === undefined) {
+          entry = { abort: new AbortController(), inflight: new Set() };
+          // A stop that came first: every later request of this sweep is cancelled at once.
+          if (stopped()) entry.abort.abort();
+          channels.set(key, entry);
+        }
+        return entry.abort.signal;
+      },
+      serial: async <T>(groupId: Id, job: () => Promise<T>): Promise<T> => {
+        let out: { value: T } | null = null;
+        await this.deps.serial(groupId, async () => { out = { value: await job() }; });
+        if (out === null) throw new CallRefusal('E_INTERNAL', 'the lane ran nothing');
+        return (out as { value: T }).value;
+      },
+      heldGroup: () => this.heldGroup(),
+      stopped,
+    }).catch(() => undefined).then(() => {
+      if (!stopped() && offline) this.sweeping = null;
+    });
+    this.sweeping = run;
+  }
+
+  /** The boot sweep stops where it is and sends nothing more (review I3: its requests in flight are aborted, retries
+   *  included); the next startSweep sweeps again. */
+  private stopSweep(): void {
+    this.sweepGen += 1;
+    this.sweeping = null;
+    for (const entry of this.sweepChannels.values()) entry.abort.abort();
+  }
+
+  /** The group the sweep never touches: the live call's, else the channel's call group of a join past its sweep wait. */
+  private heldGroup(): Id | null {
+    if (this.live !== null) return this.live.groupId;
+    const joining = this.joining;
+    if (joining === null || joining.waiting) return null;
+    try {
+      return this.deps.core()?.groups().find((g) => g.kind === 1 && g.state !== 4 && toHex(g.targetId) === joining.channel)?.groupId ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** web3.7 3a-client: the join's wait for the boot sweep, at most SWEEP_JOIN_WAIT_MS, ended at once by a cancel. Review
+   *  I3: a wait the bound ends holds the channel's group from then on, aborts the sweep's requests for the channel and
+   *  waits for them to settle (at once, once aborted), so the join's own read of the call comes after them. */
+  private async awaitSweep(token: JoinToken): Promise<void> {
+    const sweeping = this.sweeping;
+    if (sweeping === null) return;
+    let timer: number | null = null;
+    let bound = false;
+    await Promise.race([sweeping, new Promise<void>((resolve) => {
+      token.wake = resolve;
+      timer = this.deps.setTimeout(() => { bound = true; resolve(); }, SWEEP_JOIN_WAIT_MS);
+    })]);
+    if (timer !== null) this.deps.clearTimeout(timer);
+    token.wake = null;
+    if (!bound || token.cancelled !== null) return;
+    token.waiting = false;
+    const entry = this.sweepChannels.get(token.channel);
+    if (entry === undefined) return;
+    entry.abort.abort();
+    await Promise.allSettled([...entry.inflight]);
+  }
+
+  /** A join in flight is cancelled (`reset` overrides an earlier reason; the others keep the first), and its wait for
+   *  the boot sweep ends now. */
+  private cancelJoining(token: JoinToken, reason: 'leave' | 'reset' | 'dropped'): void {
+    if (reason === 'reset') token.cancelled = 'reset';
+    else token.cancelled ??= reason;
+    token.wake?.();
+  }
 
   publishInitial(): void {
     this.deps.publish('call', this.state);
@@ -160,9 +281,14 @@ export class CallController {
     this.deps.callEnded(channel);
     const channelId = fromHex(channel);
     let finish = (): void => {};
-    const token: JoinToken = { cancelled: null, done: new Promise<void>((resolve) => { finish = resolve; }) };
+    const token: JoinToken = { cancelled: null, done: new Promise<void>((resolve) => { finish = resolve; }), channel, waiting: true, wake: null };
     this.joining = token;
     try {
+      // web3.7 3a-client: before anything reaches the instance, the boot sweep leaves what a page of this browser left
+      // behind (a rejoin after a reload waits for it), bounded by SWEEP_JOIN_WAIT_MS.
+      await this.awaitSweep(token);
+      token.waiting = false;
+      if (token.cancelled !== null) throw this.cancelled(token, channel);
       return await this.joinOnce(token, core, instance, target, channel, channelId, vdec);
     } finally {
       if (this.joining === token) this.joining = null;
@@ -261,7 +387,7 @@ export class CallController {
     if (live !== null && !live.leaving && gone.has(live.channel)) this.lost(live, true);
     // C4 fix round 2: a join in flight into one stops at its next step; its teardown leaves the group, as a leave's does.
     else if (this.joining !== null && live === null && this.state.channelId !== null && gone.has(this.state.channelId)) {
-      this.joining.cancelled ??= 'dropped';
+      this.cancelJoining(this.joining, 'dropped');
     }
     for (const channel of gone) this.book.forget(channel);
   }
@@ -403,7 +529,7 @@ export class CallController {
     // Review I1: a join in flight is cancelled and this answers once it has torn down (its self-Remove sent).
     const joining = this.joining;
     if (joining !== null && this.live === null) {
-      joining.cancelled ??= 'leave';
+      this.cancelJoining(joining, 'leave');
       await joining.done;
       return null;
     }
@@ -664,13 +790,16 @@ export class CallController {
 
   // ---- step 9: resign and wipe ----
 
-  /** WB client m5: a join in flight stops at its next step (its teardown sends the self-Remove), as a leave stops it. */
+  /** WB client m5: a join in flight stops at its next step (its teardown sends the self-Remove), as a leave stops it.
+   *  web3.7 3a-client: a join waiting for the boot sweep stops at once. */
   cancelJoin(): void {
-    if (this.joining !== null && this.live === null) this.joining.cancelled ??= 'leave';
+    if (this.joining !== null && this.live === null) this.cancelJoining(this.joining, 'leave');
   }
 
-  /** resign: the call is left (its self-Remove posted) and the rings cleared before the store is released. */
+  /** resign: the call is left (its self-Remove posted) and the rings cleared before the store is released. web3.7
+   *  3a-client: a sign-out, a wipe or a resign stops the boot sweep first; it sends nothing more. */
   async shutdown(): Promise<void> {
+    this.stopSweep();
     try { await this.leave(); } catch { /* the instance removes the leaf when the call ends */ }
     this.rings.clear();
     this.setState({ ...CALL_IDLE });
@@ -679,7 +808,9 @@ export class CallController {
   /** Everything this account's calls left in the worker goes with the account (wipe, release); nothing is sent. */
   reset(): void {
     // Review I1: a join in flight is cancelled; its group is forgotten locally and nothing is sent or posted.
-    if (this.joining !== null) this.joining.cancelled = 'reset';
+    if (this.joining !== null) this.cancelJoining(this.joining, 'reset');
+    // web3.7 3a-client: the core is detached; the sweep stops, and the next ready sweeps again (contract 6).
+    this.stopSweep();
     this.stopRotation();
     this.live = null;
     this.state = CALL_IDLE;

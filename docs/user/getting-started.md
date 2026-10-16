@@ -1,11 +1,11 @@
 # Getting started with the dilla web client
 
 This page is for a person who has been sent an invite to a dilla instance, and for the first person on a new
-one. It describes the web client as it is on 2026-10-15 ("web-3.6"): starting a server, inviting people and adding
-channels, signing up, the second factor every account has, using the account in a second browser, devices, channels,
+one. It describes the web client as it is on 2026-10-16 ("web-3.7"): starting a server, inviting people and adding
+channels, roles, slow mode, announcement channels and threads, signing up, the second factor every account has, using the account in a second browser, devices, channels,
 direct messages, badges and notifications, saying more (edits, deletes, reactions, replies, pins, mentions,
-images and files), contacts and safety numbers, search, settings and a second tab, and what the client cannot do
-yet. Every quoted line is the text the screen shows;
+images and files), the app on a phone, contacts and safety numbers, search, settings and a second tab, and what the
+client cannot do yet. Every quoted line is the text the screen shows;
 `{instance}` stands for the instance's address, `{username}` for yours and `{server}` for a server's name.
 
 If you were sent an invite, go to [1. Open the invite](#1-open-the-invite). If you are the first person on a new
@@ -36,10 +36,10 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
    "Start a server" says "You own it: you add its channels and invite people. It starts with a text channel and a
    voice channel, both called general."
 
-   ![The dialog "Start a server" with the name Midgard Crew typed into Server name, "Up to 255 bytes." and the
+   ![The dialog "Start a server" with the name Midgard Crew typed into Server name, "Up to 255 characters (fewer for some letters)." and the
    buttons Close and Create](screenshots/create-server-desktop.png)
 
-4. Type a name under "Server name" ("Up to 255 bytes.") and press **Create** or Enter. While it works the button
+4. Type a name under "Server name" ("Up to 255 characters (fewer for some letters).") and press **Create** or Enter. While it works the button
    says "Creating…"; a second press sends nothing more.
 5. The dialog closes, the server is selected and `#general` opens with the cursor in its message field. The server
    also has a voice channel called general. You are its owner.
@@ -64,7 +64,7 @@ If the server is not created, the name field says why:
 | The dialog shows | What to do |
 |---|---|
 | "Give the server a name." | Type a name; spaces alone are not a name |
-| "That name is too long. A server name is up to 255 bytes." | Shorten it. Letters such as å or ü take two bytes each, and an emoji four or more |
+| "That name is too long. A server name is up to 255 characters (fewer for some letters)." | Shorten it. The limit is counted in bytes: letters such as å or ü take two each, and an emoji four or more |
 | "A name cannot hold control characters such as tabs or line breaks." | Take them out |
 | "That name was refused. Try another." | The instance refused it; choose another |
 | "Could not start the server ({code}). Try again." | Press **Create** again. After E_NETWORK the server may have been made anyway: the dialog reads your server list again, and if the server is there it carries on with it. **Create** with the same name reads the list again before it makes anything, so it never makes a second server |
@@ -107,11 +107,11 @@ browser joined are not shown." Everything sent after that reaches them.
 Only the server's owner can add channels for now. Press **+ channel** ("new channel") under the server's name.
 
 ![The dialog "New channel in Midgard Crew": Kind with text selected and voice, Channel name loot, "Shown as #loot.
-Up to 100 bytes." and the buttons Close and Create](screenshots/create-channel-desktop.png)
+Up to 100 characters (fewer for some letters)." and the buttons Close and Create](screenshots/create-channel-desktop.png)
 
 1. Under "Kind", choose **text** or **voice**. The arrow keys move between them.
 2. Type a name under "Channel name". The line under the field shows how it will look: "Shown as #{name}. Up to 100
-   bytes." for a text channel. A text channel's name is kept in lower case, with spaces turned into hyphens:
+   characters (fewer for some letters)." for a text channel. A text channel's name is kept in lower case, with spaces turned into hyphens:
    "Fika på Fredag" becomes `#fika-på-fredag`. A voice channel keeps the name as you typed it.
 3. Press **Create** or Enter ("Creating…"). A new text channel opens with the cursor in its message field and says
    "nothing here yet."; a new voice channel is listed under "voice".
@@ -124,7 +124,7 @@ another.") and nothing is created.
 
 The others in the server see a new channel within about a second, in any dilla tab they have open; a renamed
 server's new name shows the same way. The dialog says "Give the channel a name.", "That name is too long. A channel name is up
-to 100 bytes.", "A name cannot hold control characters such as tabs or line breaks.", "You cannot add channels to
+to 100 characters (fewer for some letters).", "A name cannot hold control characters such as tabs or line breaks.", "You cannot add channels to
 this server.", "That name was refused. Try another." or "Could not add the channel ({code}). Try again." when the
 channel was not added.
 
@@ -141,20 +141,20 @@ Press **server settings** under the server's name. The dialog "Server settings" 
 non-owner sees only **leave server**; the owner sees **delete server** and **hand over server**. Tab stops once on the
 list and once on the section; Escape closes the dialog and focus goes back to **server settings**.
 
-**Overview** renames the server. Type under "Server name" ("Up to 255 bytes. Everyone in the server, and the host,
+**Overview** renames the server. Type under "Server name" ("Up to 255 characters (fewer for some letters). Everyone in the server, and the host,
 can read it.") and press **Save**: "Saving…", then "Saved." The field says why when it did not work: "Give the server
-a name.", "That name is too long. A server name is up to 255 bytes.", "That name was refused. Try another.", "You
+a name.", "That name is too long. A server name is up to 255 characters (fewer for some letters).", "That name was refused. Try another.", "You
 cannot rename this server." or "Could not save ({code}). Try again." If "Someone else changed the server at the same
 time. Check the name and save again.", look at the name that is there now and save again.
 
 **Channels** lists the channels under their categories ("no category" holds the rest). Each row has **edit**, **move
 up**, **move down** and **delete**; the screen announces "{name} moved." after a move.
 
-- **new category** asks for a "Category name" ("Up to 100 bytes. A category groups channels in the list; it holds no
+- **new category** asks for a "Category name" ("Up to 100 characters (fewer for some letters). A category groups channels in the list; it holds no
   messages.") and **Create**.
 - **edit** opens "Edit #{name}" (or "Edit {name}" for a voice channel, "Edit category {name}" for a category). You
-  can change the "Channel name" ("Up to 100 bytes."), the "Topic" of a text channel ("Shown under the channel name.
-  Up to 1024 bytes. The host can read it.") and its "Category". A category has only a name. The header of an open
+  can change the "Channel name" ("Up to 100 characters (fewer for some letters)."), the "Topic" of a text channel ("Shown under the channel name.
+  Up to 1024 characters (fewer for some letters). The host can read it.") and its "Category". A category has only a name. The header of an open
   text channel has the same **edit channel** for whoever may manage channels; it opens this dialog for that channel.
 - **delete** asks "Delete #{name}?". A text channel "is removed for everyone, with its messages and files. Copies
   someone already saved stay with them. This cannot be undone." A voice channel is removed too and a call in it
@@ -196,7 +196,7 @@ says "Kicking…", then "{name} was kicked."
 **ban** asks "Ban {name} from {server}?": "{name} leaves every channel and call of {server} at once and cannot join
 again until the ban ends or is lifted. Messages they already received stay on their devices." Choose "Ban length"
 (1 hour, 1 day, 7 days, 30 days or until lifted) and, if you like, a "Reason" ("Optional. Shown to moderators in the
-ban list, not to {name}. Up to 512 bytes."). **Ban** says "Banning…", then "{name} was banned." A refused kick or ban
+ban list, not to {name}. Up to 512 characters (fewer for some letters)."). **Ban** says "Banning…", then "{name} was banned." A refused kick or ban
 says so in the dialog: "You cannot kick {name}. Their highest role is at or above yours, or your roles do not allow
 kicking." (and the same for banning), or "{name} is no longer in {server}."
 
@@ -245,7 +245,7 @@ has no buttons. The screen announces "{name} moved." after a move.
 
 **new role** (or **edit** on a row) opens "New role in {server}" (or "Edit {name}"):
 
-- "Role name": up to 100 bytes. Everyone in the server, and the host, can read it.
+- "Role name": up to 100 characters (fewer for some letters). Everyone in the server, and the host, can read it.
 - "Colour": a row of swatches (no colour, red, orange, amber, green, teal, cyan, blue, indigo, purple, pink, brown,
   grey). The colour shows as a dot beside the names of people who hold the role in the member list. The arrow keys
   move between swatches.
@@ -257,7 +257,7 @@ has no buttons. The screen announces "{name} moved." after a move.
   hold is switched off: "You do not hold this permission, so you cannot give or take it."
 
 **Create** or **Save** says "Creating…" or "Saving…", then "{name} created." or "{name} saved." A refusal shows in the
-dialog: "Give the role a name.", "That name is too long. A role name is up to 100 bytes.", "You cannot change this
+dialog: "Give the role a name.", "That name is too long. A role name is up to 100 characters (fewer for some letters).", "You cannot change this
 role. It is at or above your highest role, or it carries a permission you do not hold.", "Someone else moved this
 role at the same time. Check it and save again.", "This server already has 250 roles, the most it can hold." or
 "This role no longer exists."
@@ -268,11 +268,13 @@ cannot be undone." Focus starts on **Cancel**. **Delete** says "Deleting…", th
 ### Permissions that do nothing yet
 
 Some permissions are in the editor so that a later version can use them. In this version these have no effect:
-**manage messages**, **view audit log**, **bypass slow mode**, **mute members**, **move members** and **manage
-nicknames**. **add reactions** has no effect in channels the host cannot read. The rest work, with two caveats:
+**manage messages**, **view audit log**, **mute members**, **move members** and **manage nicknames**. **add
+reactions** has no effect in channels the host cannot read. The rest work, with two caveats:
 
-- **send messages** is checked only by members' apps. They hide the message box, and the sender's app is what stops
-  a message. See [Who checks the rules](#who-checks-the-rules).
+- **send messages** and **bypass slow mode** now work, and the host checks them: it refuses a post from a person
+  without **send messages**, and in a channel with slow mode it makes everyone without **bypass slow mode** wait. See
+  [Slow mode, announcement channels and threads](#slow-mode-announcement-channels-and-threads). Pins and
+  @everyone are still checked only by members' apps ([Who checks the rules](#who-checks-the-rules)).
 - **read message history** opens the files sent in a channel. It never shows someone messages sent before they
   joined the channel.
 
@@ -348,10 +350,13 @@ Who may pin, and who may notify everyone, follows the sender's rights **now**:
 
 ### Who checks the rules
 
-The roles, pins and mentions above are checked by members' apps, not by the host. The host does not see your messages
-and cannot read or change them, but it carries each server's role information. A host that behaves badly could hide
-pins and @everyone, or show different members different views of who holds which role. Nothing in the group checks
-or signs the role view. In this version "who may send" is checked only by members' apps. The
+Who may **send messages**, and slow mode, are checked by the host: it refuses a post from a person without the
+right, and makes everyone else wait in a channel with slow mode. To do this it learns whether something you send is a
+new post or a change to one (an edit, a reaction, a pin); it does not read what the message says. Direct messages are
+not checked. Pins and mentioning everyone are checked only by members' apps, and so is the view of who holds which
+role. The host does not see your messages and cannot read or change them, but it carries each server's role
+information. A host that behaves badly could hide pins and @everyone, or show different members different views of
+who holds which role. Nothing in the group checks or signs the role view. The
 [threat model](../../protocol/08-threat-model.md#residual-trust) describes what the host can still see and do.
 
 ### Notifications for a server
@@ -379,6 +384,57 @@ To give everyone the old behaviour back, the owner opens
 **server settings**, **roles**, **edit** on the "@everyone" row, switches on **pin messages** and **mention @everyone
 and @here** under "Text" and chooses **Save**. To give them to some people only, make a role with them and give it
 from the member list.
+
+## Slow mode, announcement channels and threads
+
+### Slow mode
+
+Slow mode makes each person wait between their messages in one text channel. It is for a busy channel, and it does
+not slow reactions, edits or deletes.
+
+To set it, open **server settings** → **channels** → **edit** on a text channel (or **edit channel** in the channel's
+header). Under the topic, **Slow mode** ("How long each person waits between messages. People who may bypass slow
+mode do not wait.") offers off, 5 seconds, 10 seconds, 30 seconds, 1 minute, 5 minutes, 15 minutes, 1 hour and 6 hours.
+It is off to begin with. You need the right to manage channels. A channel with slow mode shows the badge "slow mode" in
+the channel list.
+
+Who waits: everyone, except the owner, people with **administrator** and people whose role grants **bypass slow
+mode**. They send as often as they like and see no countdown. In a channel with slow mode, after you send, the message
+box says "Slow mode is on. You can send again in {time}." and counts down. If you send again before it reaches zero,
+the message is kept and sent when the wait is over ("Waiting for slow mode, then sending."), so you need not come back
+to it. Direct messages have no slow mode. The wait is the same on every device you use, because the host counts it.
+
+### Announcement channels
+
+An announcement channel is a text channel where only some roles can post. Everyone in the server can read it and react.
+
+In **new channel**, choose **announcement** under "Kind". You are offered it only when you may manage channels and roles.
+"Roles that can post" lists the server's roles ("Only the roles you tick can post. Everyone can read and react."); tick
+the ones that may post. The owner and administrators can always post. If you are not the owner, tick a role you hold
+that is below your highest role, so that you can post too, or the dialog says "Tick a role of yours that is below your
+highest role, so that you can post here too." A server with no roles says "No roles yet. Make one in Server settings,
+under roles." and you can still create the channel; then only the owner and administrators post. Everyone else sees
+the channel with a read-only message box: "Only some people can post in #{name}." Change who can post later in the
+channel's permissions ([Private channels](#private-channels)).
+
+### Threads
+
+A thread keeps the replies to one message together, out of the channel's main conversation.
+
+- To start one, point at a message and choose **reply in thread** in its toolbar. To open a thread that exists, press
+  the chip under its first message: "1 reply" or "{count} replies". Only a message that is not itself a reply can
+  start a thread.
+- On a wide screen the thread opens in the side column, where the member list was; closing it gives the member list
+  back. On a phone it is a full-screen sheet over the channel. Opening a thread puts the cursor in its message box
+  ("reply in thread") in the side column, and on **back** on the phone sheet and in the narrow overlay.
+  A thread with no replies yet says "No replies yet." The first message is at the top; type your reply at the bottom.
+- In a thread you can react to a message, and edit or delete your own. Pin and reply stay in the channel.
+- **close thread**, **back** or Escape closes it, and the cursor returns to the message or chip you opened it from.
+- **threads** in the channel header (on a phone: in the **channel menu**) lists every thread in the channel. A channel
+  with none says "No threads in #{name} yet." If the list cannot be read it says "Threads could not be loaded." A
+  thread whose first message is not available to you says "The message that started this thread cannot be shown here."
+- Replies in a thread do not appear in the channel, but they still count as unread and as mentions. Opening the channel
+  marks its thread replies read; a thread has no unread count of its own.
 
 ## Second factor
 
@@ -631,9 +687,9 @@ From left to right:
   **retry** and **discard**.
 - **The status bar.** `node` is the instance, `link` is the connection (online, connecting or offline) and
   `gen` is the instance's generation number. When the connection drops, a banner says "Connection lost.
-  Reconnecting…".
+  Reconnecting…". A phone has no status bar; see [On your phone](#on-your-phone).
 
-At phone width the channel list sits above the conversation:
+At phone width the app is arranged differently, with a tab bar at the bottom ([On your phone](#on-your-phone)):
 
 ![The same conversation at 360 pixels wide](screenshots/shell-phone.png)
 
@@ -664,6 +720,58 @@ your channels and the messages this browser has received. They are read back fro
 not from the instance, and the newest 100 messages of a channel are shown first; **load earlier** shows more.
 "nothing here yet. Messages sent before this browser joined are not shown." is what an empty channel says:
 a channel's history starts when this browser joined it.
+
+## On your phone
+
+On a screen as narrow as a phone's (under about 770 pixels wide) the app shows one thing at a time, with four tabs
+at the bottom. It works in the phone's browser; there is no separate app.
+
+![The servers tab: your servers in a column at the left, the channels of Midgard Crew beside them, the voice channels below, and the four tabs at the bottom](screenshots/phone-servers.png)
+
+### The four tabs
+
+The tab bar ("sections") has **servers**, **DMs**, **activity** and **you**. A number on a tab counts what is new there
+("{name}, {count} new" for a screen reader).
+
+- **servers** holds your servers in a column at the left and the channels of the one you chose beside it. The **server
+  menu** (the three dots) has the server's actions (invite link, new channel, server settings).
+- **DMs** lists your direct messages.
+- **activity** lists the mentions and direct messages that came in, and "unread elsewhere" for channels with
+  something new. It lists what arrived since you opened dilla in this tab, and says so: "Since this tab opened."
+  Nothing new says "Nothing new. Mentions and direct messages show up here."
+- **you** holds this device's facts, the connection and the number of devices (what the status bar of a wide screen
+  shows), **settings** and **sign out and remove this browser**.
+
+![The activity tab: a direct message from Ada, the unread #loot under "unread elsewhere" and "Since this tab opened."](screenshots/phone-activity.png)
+
+### Opening a channel and going back
+
+Choosing a channel or a direct message opens it over the whole screen. The tab bar goes away so that the message box
+has room. At the top, **back** (the arrow at the left) returns to the list you came from, and the phone's own back
+button or swipe does the same. The **channel menu** at the right holds the channel's other actions, such as pins and
+**threads**. Each tab remembers where you were in it. If you reload the page on a channel, back still takes you to its list.
+
+![A channel: back at the top left, the channel name, the channel menu, the messages and the message box](screenshots/phone-channel.png)
+
+Sheets (the member list, a thread, a pin list) open over the screen too, and the phone's back button closes the sheet
+first. Escape closes them with a keyboard.
+
+### The call bar
+
+While you are in a call, a bar sits above the tab bar on every screen except the call itself. It shows where the
+call is, and three buttons: the wide one **open the call in {where}**, **mute** and **leave**. Each is at least 44
+pixels tall and wide. See [Voice, calls and media files](voice.md#on-a-phone).
+
+![The call bar above the tab bar: the call in harbour, mute and leave](screenshots/phone-callbar.png)
+
+### Typing, zooming and the home screen
+
+- The message box and every other field are large enough that the page does not jump closer when you tap one. You can
+  still pinch to zoom the page whenever you want to read something small.
+- When the connection drops, a banner at the top says "Offline. Reconnecting…", or "Connecting to {node}…" while it
+  comes back.
+- Your browser's "add to home screen" puts a shortcut to your instance on your home screen. It opens dilla in the
+  browser the way a link does; it is not an installed app and does not give notifications, which need an open tab.
 
 ## 5. When something is wrong
 
@@ -718,6 +826,10 @@ is sent, and a key of another account once the instance has answered; either way
 what you typed and "This is not the recovery key of this account. Check every character." (after the
 instance has answered, its button reads **Add this browser** and you do not sign in again). **Create a new
 account instead** goes back to the sign-up.
+
+If you type a backup code here, the step recognises it: "That looks like a backup code. Backup codes go in step 3, in
+place of the app code. This step needs the 52-character recovery key you saved when you created the account."
+A backup code is not the recovery key ([Backup codes are not the recovery key](#backup-codes-are-not-the-recovery-key)).
 
 ### Step 2 of 4: Sign in to {instance}
 
@@ -1096,9 +1208,9 @@ and when the other tab closes it takes over by itself.
 
 ![The hand-over at 360 pixels wide](screenshots/tabs-handover-phone.png)
 
-## 11. Known limits (2026-10-15)
+## 11. Known limits (2026-10-16)
 
-- No native phone or desktop app. A second browser needs the recovery key and the password, and the second factor
+- No native phone or desktop app (on a phone, the web client has [its own layout](#on-your-phone)). A second browser needs the recovery key and the password, and the second factor
   every account has (a code, a passkey or a backup code). The factor guards signing in on a new browser, not message
   content, and a browser that is already set up is not asked again. A new browser does not get messages from before it joined. Devices have
   no names, and the password cannot be changed from the web client.
@@ -1106,16 +1218,20 @@ and when the other tab closes it takes over by itself.
   link for 10 uses and 7 days; choose other limits under server settings → invites ([Run your
   server](#run-your-server)). A ban cannot be changed once made, only lifted, and a kick or ban gives no way to
   tell the person why.
-- Roles and private channels: who may send, pin or mention everyone is checked only by members' apps, and the role
-  view is not verified by the group ([Who checks the rules](#who-checks-the-rules)). People who gain a channel see
-  only messages sent after they join it. Six permissions have no effect yet ([Permissions that do nothing
-  yet](#permissions-that-do-nothing-yet)).
+- Roles and private channels: the host refuses posts from people without **send messages** and enforces slow mode, but
+  pins and mentioning everyone are checked only by members' apps, and the role view is not verified by the group
+  ([Who checks the rules](#who-checks-the-rules)). People who gain a channel see only messages sent after they join
+  it. Five permissions have no effect yet ([Permissions that do nothing yet](#permissions-that-do-nothing-yet)).
+- A page that was loaded before the upgrade to web-3.7 skips slow mode (the host still checks who may post) until it is
+  reloaded. Reload your tabs after the upgrade; web-3.8 closes this.
+- Threads show their first 200 replies, a thread cannot start on a reply, and there is no unread count for a thread on
+  its own.
 - Voice, calls and audio and video files have limits of their own: see [Voice, calls and media
   files](voice.md#known-limits).
-- No threads, link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
+- No link previews, markdown, custom emoji or emoji in the message text; reactions use a fixed set of 32.
   Only the latest version of an edited message is shown. A browser sends and opens files of at most 25 MB, and
   plays only the listed audio and video types. Received link previews are not shown.
-- Roles, pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Six
+- Pins and mentions are checked only by members' apps ([Who checks the rules](#who-checks-the-rules)). Five
   permissions have no effect yet. Only the author can delete a message.
 - No presence. Notifications require an open tab and browser permission.
 - Search opens only from the keyboard (Control/⌘+K, Control+/); a phone or tablet without a keyboard cannot open it yet.
@@ -1150,7 +1266,8 @@ the changed contact in the conversation, search, diagnostics and a second tab ar
 The test peer has no display name of its own (the testkit driver cannot set one), so it shows as its username
 "peer…". For [Voice, calls and media files](voice.md), ada calls mira in their direct message, björn shares an
 audio file, the three join the voice channel "harbour" with Chromium's fake microphone, and the test peer's changed
-identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too. The own-account
+identity refuses mira's join to "watch-voice"; those six states are shot at both sizes too (the dock on the desktop only: a phone has the call bar instead). The images of [On your phone](#on-your-phone) are shot at 390×844, a
+common phone size, from the same session: the servers tab, a channel, the activity tab and the call bar. The own-account
 warnings of section 7 need a device of mira's account that no browser can make, so they are
 quoted, not shown. Every name and
 message is made up, and the accounts are deleted with the test host. Every person sets up an authenticator app at sign-up, with codes computed for the test host's clock, and

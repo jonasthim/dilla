@@ -16,6 +16,13 @@ function setup(over: Partial<Parameters<typeof CheckList>[0]> = {}) {
   return { onToggle, ...utils };
 }
 
+describe('CheckList describedBy', () => {
+  it('points its fieldset at the id it is given', () => {
+    setup({ describedBy: 'hint-1' });
+    expect(screen.getByRole('group', { name: 'roles' })).toHaveAttribute('aria-describedby', 'hint-1');
+  });
+});
+
 describe('CheckList', () => {
   it('is a fieldset named by its legend with one native checkbox per item, in the item state', () => {
     const { container } = setup();

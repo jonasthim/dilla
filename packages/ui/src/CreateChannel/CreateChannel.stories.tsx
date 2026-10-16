@@ -11,6 +11,7 @@ const meta = {
       kind: 'Kind',
       text: 'text',
       voice: 'voice',
+      announcement: 'announcement',
       name: 'Channel name',
       submit: 'Create',
       busy: 'Creating…',
@@ -27,3 +28,4 @@ export const Typed: Story = { args: { name: 'Ship Talk', hint: 'Shown as #ship-t
 export const Voice: Story = { args: { kind: 'voice', name: 'Lounge', hint: 'Shown as Lounge. Up to 100 bytes.' } };
 export const Refused: Story = { args: { name: 'ship-talk', hint: 'Shown as #ship-talk. Up to 100 bytes.', error: 'You cannot add channels to this server.' } };
 export const Busy: Story = { args: { name: 'ship-talk', hint: 'Shown as #ship-talk. Up to 100 bytes.', busy: true } };
+export const Announcement: Story = { args: { kinds: ['text', 'voice', 'announcement'], kind: 'announcement', name: 'Server News', hint: 'Shown as #server-news. Up to 100 bytes.' } };

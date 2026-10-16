@@ -29,7 +29,9 @@ describe('Banner', () => {
       <Banner tone="info">a</Banner><Banner tone="warn">b</Banner><Banner tone="danger">c</Banner>
     </>);
     const glyphs = Array.from(container.querySelectorAll('.d-banner__glyph'));
-    expect(glyphs.map(g => g.textContent)).toEqual(['›', '▲', '✕']);
+    expect(glyphs[0]).toHaveTextContent('›');
+    expect(glyphs[1].querySelector('[data-icon="triangle-alert"]')).not.toBeNull();
+    expect(glyphs[2].querySelector('[data-icon="x"]')).not.toBeNull();
     for (const g of glyphs) expect(g).toHaveAttribute('aria-hidden', 'true');
   });
 

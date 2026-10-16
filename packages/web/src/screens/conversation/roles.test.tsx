@@ -132,7 +132,7 @@ describe('the send hint', () => {
   });
 });
 
-function log(over: { bits?: number | null; items?: ReturnType<typeof peerRow>[]; pinsOpen?: boolean; pins?: PinnedItem[]; editing?: ConversationUi['editing'] } = {}) {
+function log(over: { bits?: number | null; items?: ReturnType<typeof peerRow>[]; pinsOpen?: boolean; pins?: PinnedItem[]; editing?: ConversationUi['editing']; threads?: boolean } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set(`pins:${GEN}`, over.pins ?? []);
@@ -141,7 +141,7 @@ function log(over: { bits?: number | null; items?: ReturnType<typeof peerRow>[];
   const view = render(<div className="d-root"><CoreProvider client={fake}>
     <Conversation channelId={GEN} logKey="k" label="log" timeline={timeline(items)} book={book} encodeWith={[]} broadcast bits={over.bits ?? null} roles={ROLES}
       pinsTitle="Pinned in #general" ui={{ ...INITIAL_UI, pinsOpen: over.pinsOpen ?? false, editing: over.editing ?? null }} dispatch={vi.fn()} loadingEarlier={false}
-      onLoadEarlier={vi.fn()} onError={vi.fn()} />
+      onLoadEarlier={vi.fn()} onError={vi.fn()} {...(over.threads === true ? { onOpenThread: vi.fn() } : {})} />
   </CoreProvider></div>);
   return { fake, view };
 }
@@ -164,6 +164,17 @@ describe('files dropped on the conversation', () => {
     drop();
     await new Promise(r => setTimeout(r, 20));
     expect(fake.callsOf('attachFiles')).toEqual([]);
+  });
+});
+
+describe('reply items by right (walk 11)', () => {
+  it('offers reply and reply in thread with the right to send', () => {
+    log({ bits: SEND, threads: true });
+    expect(actions(P1)).toEqual(['react', 'reply', 'reply in thread']);
+  });
+  it('keeps only the reaction for a reader who cannot send', () => {
+    log({ bits: PERM.viewChannel, threads: true });
+    expect(actions(P1)).toEqual(['react']);
   });
 });
 
@@ -221,7 +232,7 @@ describe('role labels in the log', () => {
 });
 
 describe('unpin in the pins dialog', () => {
-  const pin: PinnedItem = { msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: 1700000000 };
+  const pin: PinnedItem = { msgId: P1, seq: '1', senderUser: PEER, excerpt: 'pin me', pinnedBy: ME.id, pinnedSeq: '9', ts: 1700000000, threadRoot: null };
   const unpin = () => within(screen.getByRole('dialog', { name: 'Pinned in #general' })).queryByRole('button', { name: 'unpin' });
   it('hides unpin without the pin right, and keeps jump', () => {
     log({ bits: SEND, pinsOpen: true, pins: [pin] });

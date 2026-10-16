@@ -1,0 +1,17 @@
+/* A thread: a column in the shell's aside, or (data-phone) a full-screen sheet. min-width 0 so it fits the aside's width. */
+.d-thread-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--surface); }
+.d-thread-pane__head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-width: 0; padding: 0.75rem 0.75rem 0.5rem var(--row-pad-x); border-bottom: 1px solid var(--hairline); flex-shrink: 0; }
+.d-thread-pane__title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: var(--weight-label); letter-spacing: var(--label-tracking); text-transform: uppercase; color: var(--fg-3); }
+.d-thread-pane__scroll { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+/* The root stays in view above its replies, and scrolls by itself when it is long. */
+.d-thread-pane__root { flex: 0 1 auto; max-height: 40%; min-width: 0; overflow-y: auto; border-bottom: 1px solid var(--hairline); }
+.d-thread-pane__replies { flex: 1; min-height: 0; min-width: 0; }
+.d-thread-pane__composer { flex-shrink: 0; min-width: 0; }
+
+/* The sheet: the composer clears the home indicator, and every control on it is a finger's size (44 px). */
+.d-thread-pane[data-phone] .d-thread-pane__composer { padding-bottom: env(safe-area-inset-bottom); }
+.d-thread-pane[data-phone] .d-btn[data-size],
+.d-thread-pane[data-phone] .d-composer__attach,
+.d-thread-pane[data-phone] .d-message-row__thread { min-height: 2.75rem; }
+.d-thread-pane[data-phone] .d-composer__attach { min-width: 2.75rem; }
+.d-thread-pane[data-phone] .d-composer .d-btn[data-size] { min-width: 2.75rem; }

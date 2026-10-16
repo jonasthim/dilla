@@ -2,9 +2,15 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { Button } from './Button.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 describe('Button', () => {
+  it('drops the key hint on a phone layout, which has no keyboard, and keeps the label', () => {
+    render(<PhoneLayoutProvider value><Button keyHint="esc">Close</Button></PhoneLayoutProvider>);
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+    expect(screen.queryByText('esc')).toBeNull();
+  });
   it('renders its label and calls onClick on click and on Enter', async () => {
     const onClick = vi.fn();
     render(<Button onClick={onClick}>Save changes</Button>);

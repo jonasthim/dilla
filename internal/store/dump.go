@@ -98,6 +98,9 @@ var DumpTables = []string{
 	// 014_invite_signups.sql, appended by dilla-web-3.1. Its parents are users and invites; a
 	// restore that dropped it would make the join after a backed-up sign-up spend a second use.
 	"invite_signups",
+	// 016_message_class.sql, appended by dilla web3.7 SB1. Its parents are channels and users; a
+	// restore that dropped it would reset every end-to-end encrypted channel's slow mode.
+	"slowmode_marks",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

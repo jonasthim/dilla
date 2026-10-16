@@ -1,4 +1,4 @@
-import { arr, bin, str, u64 } from '../cbor';
+import { arr, bin, opt, str, u64 } from '../cbor';
 import { decodeBoundedArray } from './bounded';
 import { CoreError, type SearchCursor, type SearchHit, type SearchScope } from '../core-port';
 
@@ -18,12 +18,14 @@ export function decodeSearchHits(bytes: Uint8Array): SearchHit[] {
   try {
     const rows = decodeBoundedArray(bytes, 50);
     return rows.map((value) => {
-      const row = arr(value, 4);
+      // Five elements since web3.7 fix round 1 (the 5th the thread root); four from a core before it.
+      const row = arr(value);
+      if (row.length !== 4 && row.length !== 5) malformed('hit length');
       const snippet = str(row[2]);
       if (Array.from(snippet).length > 160) malformed('snippet limit');
       const rank = u64(row[3]);
       if (rank !== 0n) malformed('rank');
-      return { groupId: bin(row[0], 16), seq: u64(row[1]), snippet, rank };
+      return { groupId: bin(row[0], 16), seq: u64(row[1]), snippet, rank, threadRoot: opt(row[4] ?? null, (x) => bin(x, 16)) };
     });
   } catch (error) { return malformed(error); }
 }

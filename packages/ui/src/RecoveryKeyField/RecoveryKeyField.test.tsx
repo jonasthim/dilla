@@ -82,4 +82,22 @@ describe('RecoveryKeyField', () => {
     );
     await expectNoAxeViolations(container);
   });
+
+  it('adds the caller\'s describedBy ids after the hint and before the error', () => {
+    render(<>
+      <p id="extra">Extra note</p>
+      <RecoveryKeyField id="recovery-key" label="Recovery key" value="" onChange={() => {}} hint="Hint" describedBy="extra" error={WRONG} />
+    </>);
+    expect(screen.getByRole('textbox', { name: 'Recovery key' })).toHaveAttribute('aria-describedby', 'recovery-key-hint extra recovery-key-error');
+  });
+
+  it('reports a blur', async () => {
+    const user = userEvent.setup();
+    const onBlur = vi.fn();
+    render(<RecoveryKeyField id="recovery-key" label="Recovery key" value="" onChange={() => {}} onBlur={onBlur} />);
+    await user.click(screen.getByRole('textbox', { name: 'Recovery key' }));
+    expect(onBlur).not.toHaveBeenCalled();
+    await user.tab();
+    expect(onBlur).toHaveBeenCalledTimes(1);
+  });
 });

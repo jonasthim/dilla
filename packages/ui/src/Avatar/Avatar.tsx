@@ -1,4 +1,5 @@
 import './Avatar.css';
+import { StateDot } from '../StateDot/StateDot.tsx';
 export type Presence = 'online' | 'idle' | 'dnd' | 'offline';
 
 /**
@@ -19,14 +20,15 @@ function deriveHue(name: string): number {
   let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) % AVATAR_HUES.length;
   return AVATAR_HUES[h];
 }
-const GLYPH: Record<Presence, string> = { online: '●', idle: '◐', dnd: '⊘', offline: '○' };
+
+const PRESENCE_TONE = { online: 'ok', idle: 'idle', dnd: 'dnd', offline: 'off' } as const;
 
 export function Avatar({ name, initials, hue, presence, size = 'md' }: AvatarProps) {
   const label = presence ? `${name}, ${presence}` : name;
   return (
     <span className="d-avatar" data-size={size} role="img" aria-label={label} style={{ ['--avatar-hue' as string]: String(hue ?? deriveHue(name)) }}>
       <span className="d-avatar__initials" aria-hidden="true">{initials ?? deriveInitials(name)}</span>
-      {presence ? <span className="d-avatar__presence" data-presence={presence} aria-hidden="true">{GLYPH[presence]}</span> : null}
+      {presence ? <span className="d-avatar__presence" data-presence={presence} aria-hidden="true"><StateDot tone={PRESENCE_TONE[presence]} size="md" /></span> : null}
     </span>
   );
 }

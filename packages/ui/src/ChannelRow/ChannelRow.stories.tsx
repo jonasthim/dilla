@@ -13,3 +13,7 @@ export const PrivateVoice: Story = { args: { name: 'sauna', kind: 'voice', priva
 export const Muted: Story = { args: { name: 'random', kind: 'text', muted: true } };
 export const DirectMessage: Story = { args: { name: 'ada', kind: 'dm', unread: 2 } };
 export const MutedWithMention: Story = { args: { name: 'random', kind: 'text', unread: 7, mentions: 2, muted: true } };
+// web3.7 (flow 11): the announcement kind takes the megaphone in place of #; the badge is a note after the name.
+export const AnnouncementSlow: Story = { args: { name: 'news', kind: 'announcement', badge: 'slow mode' } };
+export const Announcement: Story = { args: { name: 'news', kind: 'announcement', unread: 2 } };
+export const SlowModeText: Story = { args: { name: 'general', kind: 'text', badge: 'slow mode', active: true } };

@@ -91,3 +91,15 @@ export const FailedReaction: Story = {
 };
 export const AttachmentOnly: Story = { args: { author: 'björn', time: '21:06', tag: 'web', body: [], attachments: <ImageCardStory tabbable={false} /> } };
 export const Flash: Story = { args: { author: 'björn', time: '21:03', tag: 'web', body: 'after nine, still on the boat', flash: true } };
+
+// web3.7 (flow 11): a thread's summary chip under the body, and the thread item in the row's toolbar.
+export const ThreadChip: Story = {
+  args: { author: 'ada', time: '21:02', body: 'anyone up for a round tonight?', thread: { label: '3 replies', onOpen: () => {} } },
+};
+export const ThreadChipActive: Story = {
+  args: { author: 'ada', time: '21:02', body: 'anyone up for a round tonight?', active: true, thread: { label: '1 reply', onOpen: () => {} },
+    toolbar: <MessageToolbar label="actions for this message" tabbable items={[
+      { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} },
+      { id: 'thread', label: 'reply in thread', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
+    ]} /> },
+};

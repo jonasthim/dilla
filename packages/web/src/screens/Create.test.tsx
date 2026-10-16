@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary } from '@dilla/client-core';
+import { connectCore } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
@@ -72,7 +73,7 @@ describe('CreateServerFlow', () => {
     expect(nameField('Server name')).toHaveFocus();
     await user.type(nameField('Server name'), 'å'.repeat(128));
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 bytes.');
+    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 characters (fewer for some letters).');
     expect(fake.calls).toEqual([]);
   });
 
@@ -152,7 +153,7 @@ describe('CreateServerFlow', () => {
     await user.click(nameField('Server name'));
     await user.paste(`${edge}y`);
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 bytes.');
+    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A server name is up to 255 characters (fewer for some letters).');
     expect(fake.calls).toEqual([]);
     await user.keyboard('{Backspace}{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalled());
@@ -229,7 +230,7 @@ describe('CreateServerFlow', () => {
   it('a retry after a lost answer reads the list first and never makes a second #general', async () => {
     const listed: ChannelSummary[] = [];
     const row = (id: string, kind: 0 | 1): ChannelSummary =>
-      ({ id, communityId: SERVER, kind, mode: 0, name: 'general', topic: '', parentId: null, position: listed.length, group: 'none' });
+      ({ id, communityId: SERVER, kind, mode: 0, name: 'general', topic: '', parentId: null, position: listed.length, slowmode: 0, announcement: false, group: 'none' });
     const { fake, user, onDone } = setup((m, n) => {
       const c = fake.calls[n - 1];
       if (m === 'createCommunity') return Promise.resolve({ communityId: SERVER });
@@ -555,9 +556,9 @@ describe('CreateChannelFlow', () => {
   it('is titled for the server; shows how the name will look; creates a text channel and hands it over', async () => {
     const { fake, user, onDone } = setup();
     expect(screen.getByRole('dialog', { name: 'New channel in Midgard Crew' })).toBeInTheDocument();
-    expect(nameField('Channel name')).toHaveAccessibleDescription('Up to 100 bytes.');
+    expect(nameField('Channel name')).toHaveAccessibleDescription('Up to 100 characters (fewer for some letters).');
     await user.type(nameField('Channel name'), 'Ship Talk');
-    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as #ship-talk. Up to 100 bytes.');
+    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as #ship-talk. Up to 100 characters (fewer for some letters).');
     await user.keyboard('{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(TEXT, 'text'));
     expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'ship-talk' }]);
@@ -567,7 +568,7 @@ describe('CreateChannelFlow', () => {
     const { fake, user, onDone } = setup(() => Promise.resolve({ channelId: VOICE }));
     await user.click(screen.getByRole('radio', { name: 'voice' }));
     await user.type(nameField('Channel name'), 'The Longhouse');
-    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as The Longhouse. Up to 100 bytes.');
+    expect(nameField('Channel name')).toHaveAccessibleDescription('Shown as The Longhouse. Up to 100 characters (fewer for some letters).');
     await user.keyboard('{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(VOICE, 'voice'));
     expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'voice', name: 'The Longhouse' }]);
@@ -587,7 +588,7 @@ describe('CreateChannelFlow', () => {
     await user.click(nameField('Channel name'));
     await user.paste(`${edge}x`);
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A channel name is up to 100 bytes.');
+    expect(screen.getByRole('alert')).toHaveTextContent('That name is too long. A channel name is up to 100 characters (fewer for some letters).');
     expect(fake.calls).toEqual([]);
     await user.keyboard('{Backspace}{Enter}');
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(VOICE, 'voice'));
@@ -659,8 +660,8 @@ describe('CreateChannelFlow', () => {
     const fake = client();
     fake.handler = () => Promise.resolve({ channelId: VOICE });
     fake.set(`channels:${SERVER}`, [
-      { id: TEXT, communityId: SERVER, kind: 0, mode: 0, name: 'ship-talk', topic: '', parentId: null, position: 0, group: 'active' },
-      { id: VOICE, communityId: SERVER, kind: 1, mode: 0, name: 'general', topic: '', parentId: null, position: 1, group: 'none' },
+      { id: TEXT, communityId: SERVER, kind: 0, mode: 0, name: 'ship-talk', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' },
+      { id: VOICE, communityId: SERVER, kind: 1, mode: 0, name: 'general', topic: '', parentId: null, position: 1, slowmode: 0, announcement: false, group: 'none' },
     ]);
     const onDone = vi.fn();
     const { user } = mount(fake, <CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={onDone} onClose={vi.fn()} />);
@@ -785,6 +786,169 @@ describe('CreateChannelFlow, private create', () => {
   it('has no serious axe violations with the roles listed', async () => {
     const { user, view } = setup();
     await user.click(privateSwitch());
+    await expectNoAxeViolations(view.container);
+  });
+});
+
+describe('CreateChannelFlow, announcement kind (web3.7)', () => {
+  const EVERYONE = 'e0'.repeat(16);
+  const LOW = 'b2'.repeat(16);
+  const LOWER = 'b4'.repeat(16);
+  const HIGH = 'b3'.repeat(16);
+  const role = (id: string, name: string, position: number) => ({ id, name, color: 0, position, hoist: false, mentionable: false, allow: 0, deny: 0, members: 0 });
+  function setup(opts: { manageRoles?: boolean; manageChannels?: boolean } = {}) {
+    const fake = client();
+    fake.set(`permissions:${SERVER}`, { top: 5, owner: false, manageCommunity: false, manageChannels: opts.manageChannels ?? true, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: opts.manageRoles ?? true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true });
+    fake.set(`roles:${SERVER}`, [role(EVERYONE, '@everyone', 0), role(LOWER, 'Newcomers', 1), role(LOW, 'Players', 2), role(HIGH, 'Council', 9)]);
+    fake.handler = () => Promise.resolve({ channelId: TEXT });
+    const onDone = vi.fn();
+    const r = mount(fake, <CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={onDone} onClose={vi.fn()} />);
+    return { fake, onDone, ...r };
+  }
+  const announcement = () => screen.getByRole('radio', { name: 'announcement' });
+
+  it('offers the kind only to a person who may create one (manage channels and manage roles)', () => {
+    setup();
+    expect(announcement()).toBeInTheDocument();
+  });
+  it.each([[{ manageRoles: false }], [{ manageChannels: false }]])('does not offer it with %o', opts => {
+    setup(opts);
+    expect(screen.queryByRole('radio', { name: 'announcement' })).toBeNull();
+    expect(screen.getAllByRole('radio').map(r => (r as HTMLInputElement).labels?.[0]?.textContent ?? r.getAttribute('aria-label'))).toHaveLength(2);
+  });
+  it('lists the roles below the creator’s top (not @everyone) with the hint once the kind is chosen, and sends the ticked ones', async () => {
+    const { fake, user } = setup();
+    expect(screen.queryByRole('group', { name: 'Roles that can post' })).toBeNull();
+    await user.click(announcement());
+    expect(screen.getByRole('group', { name: 'Roles that can post' })).toBeInTheDocument();
+    expect(screen.getByText('Only the roles you tick can post. Everyone can read and react.')).toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Players', 'Newcomers']);
+    await user.click(screen.getByRole('checkbox', { name: 'Players' }));
+    await user.type(nameField('Channel name'), 'News');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'announcement', name: 'news', announce: { roleIds: [LOW] } }]));
+  });
+  it('creates with no role ticked (only the owner and administrators post)', async () => {
+    const { fake, user, onDone } = setup();
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'announcement', name: 'news', announce: { roleIds: [] } }]));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(TEXT, 'announcement'));
+  });
+  it('a text create after a look at the announcement kind sends neither the kind nor the roles', async () => {
+    const { fake, user } = setup();
+    await user.click(announcement());
+    await user.click(screen.getByRole('checkbox', { name: 'Players' }));
+    await user.click(screen.getByRole('radio', { name: 'text' }));
+    await user.type(nameField('Channel name'), 'open');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'open' }]));
+  });
+  it('ties the hint to the role list', async () => {
+    const { user } = setup();
+    await user.click(announcement());
+    expect(screen.getByRole('group', { name: 'Roles that can post' })).toHaveAccessibleDescription('Only the roles you tick can post. Everyone can read and react.');
+  });
+  it('falls back to text when the right to create one is lost while it is chosen', async () => {
+    const { fake, user } = setup();
+    await user.click(announcement());
+    act(() => fake.set(`permissions:${SERVER}`, { top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: false, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true }));
+    expect(screen.queryByRole('radio', { name: 'announcement' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Roles that can post' })).toBeNull();
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls).toEqual([{ m: 'createChannel', communityId: SERVER, kind: 'text', name: 'news' }]));
+  });
+  it('has no private switch beside the announcement roles', async () => {
+    const { user } = setup();
+    expect(screen.getByRole('switch', { name: 'private channel' })).toBeInTheDocument();
+    await user.click(announcement());
+    expect(screen.queryByRole('switch', { name: 'private channel' })).toBeNull();
+  });
+  it('words the creator’s missing held role by its reason, in the name field', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(Object.assign(refusal({ code: 'E_BAD_INPUT' }), { reason: 'announce.noHeldRole' }));
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Tick a role of yours that is below your highest role, so that you can post here too.')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+  it('lists a role above the creator’s top only for the owner (I4)', async () => {
+    const { fake, user } = setup();
+    act(() => fake.set(`permissions:${SERVER}`, { top: 5, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true,
+      createInvite: true, manageRoles: true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true }));
+    await user.click(announcement());
+    expect(screen.getAllByRole('checkbox').map(c => (c as HTMLInputElement).labels?.[0]?.textContent)).toEqual(['Council', 'Players', 'Newcomers']);
+  });
+  it('says the role is too high when the instance refuses an announcement create with 403 (walk 4)', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_FORBIDDEN' }));
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Pick a role below your highest role.')).toBeInTheDocument();
+    expect(screen.queryByText('You cannot add channels to this server.')).toBeNull();
+  });
+  it('keeps the generic refusal for a text create with 403', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_FORBIDDEN' }));
+    await user.type(nameField('Channel name'), 'open');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('You cannot add channels to this server.')).toBeInTheDocument();
+  });
+  it('says why the kind is missing for a person with manage channels but not manage roles (walk 5)', () => {
+    setup({ manageRoles: false });
+    expect(screen.getByText('Announcement channels need the manage roles permission.')).toBeInTheDocument();
+  });
+  it('says nothing about it with the right to create one', () => {
+    setup();
+    expect(screen.queryByText('Announcement channels need the manage roles permission.')).toBeNull();
+  });
+  it('words an E_BAD_INPUT without that reason by its code', async () => {
+    const { fake, user } = setup();
+    fake.handler = () => Promise.reject(refusal({ code: 'E_BAD_INPUT' }));
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Could not add the channel (E_BAD_INPUT). Try again.')).toBeInTheDocument();
+  });
+  it('says there are no roles when the server has only @everyone, and still creates', async () => {
+    const { fake, user } = setup();
+    act(() => fake.set(`roles:${SERVER}`, [role(EVERYONE, '@everyone', 0)]));
+    await user.click(announcement());
+    expect(screen.getByText('No roles yet. Make one in Server settings, under roles.')).toBeInTheDocument();
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(fake.calls[0]).toMatchObject({ kind: 'announcement', announce: { roleIds: [] } }));
+  });
+  it('shows the missing-held-role refusal end to end through the real bridge', async () => {
+    const listeners: ((e: MessageEvent) => void)[] = [];
+    const emit = (data: unknown) => { for (const l of listeners) l({ data } as MessageEvent); };
+    const worker = {
+      addEventListener: (_: string, l: (e: MessageEvent) => void) => { listeners.push(l); },
+      postMessage: (m: { t: string; id: number; command: { m: string } }) => {
+        if (m.command.m === 'createChannel') queueMicrotask(() => emit({ t: 'ret', id: m.id, ok: false, error: { code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null, reason: 'announce.noHeldRole' } }));
+      },
+    } as unknown as Worker;
+    const bridge = connectCore(worker);
+    emit({ t: 'slice', name: 'account', rev: 1, value: account() });
+    emit({ t: 'slice', name: `permissions:${SERVER}`, rev: 1, value: { top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
+      createInvite: false, manageRoles: true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true } });
+    emit({ t: 'slice', name: `roles:${SERVER}`, rev: 1, value: [role(EVERYONE, '@everyone', 0), role(LOW, 'Players', 2)] });
+    const user = userEvent.setup();
+    render(<div className="d-root"><CoreProvider client={bridge}><CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={vi.fn()} onClose={vi.fn()} /></CoreProvider></div>);
+    await user.click(announcement());
+    await user.type(nameField('Channel name'), 'news');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Tick a role of yours that is below your highest role, so that you can post here too.')).toBeInTheDocument();
+  });
+  it('has no serious axe violations with the roles listed', async () => {
+    const { user, view } = setup();
+    await user.click(announcement());
     await expectNoAxeViolations(view.container);
   });
 });

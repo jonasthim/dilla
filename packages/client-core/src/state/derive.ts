@@ -7,7 +7,9 @@ import { toHex } from '../hex';
 import type { AttachmentSummary, ChannelGroupState, PendingAction, ReplyRef, TimelineItem, TimelineState } from './types';
 
 export interface TimelineInput { channelId: string; group: ChannelGroupState; rows: readonly TimelineRow[]; outbox: readonly OutboxRow[];
-  ownUser: Id; ownDevice: Id; limit: number; }
+  ownUser: Id; ownDevice: Id; limit: number;
+  /** The root of the thread these rows belong to (rows of an open thread), so a pending quote can name it. */
+  threadRoot?: Id; }
 
 const STORED_STATE = ['ok', 'cannot-read', 'deleted'] as const;
 const REPLY_STATE = ['ok', 'missing', 'deleted'] as const;
@@ -46,18 +48,21 @@ function replyOf(info: ReplyInfo): ReplyRef {
     msgId: toHex(info.replyTo), state: REPLY_STATE[info.state],
     senderUser: info.targetUser === null ? null : toHex(info.targetUser), excerpt: info.excerpt,
     seq: info.targetSeq === null ? null : info.targetSeq.toString(),
+    threadRoot: info.threadRoot === null ? null : toHex(info.threadRoot),
   };
 }
 
 /** An outbox row's reply, resolved against the stored rows the page holds (the core resolves it only once stored). */
-function outboxReply(replyTo: Id, rows: readonly TimelineRow[]): ReplyRef {
+function outboxReply(replyTo: Id, rows: readonly TimelineRow[], thread: Id | null): ReplyRef {
   const msgId = toHex(replyTo);
+  // The rows of an open thread are its replies and its root; the root shows in the channel, a reply in the thread.
+  const threadRoot = thread === null || msgId === toHex(thread) ? null : toHex(thread);
   const target = rows.find((r) => r.msgId !== null && toHex(r.msgId) === msgId && (r.type === 0 || r.type === null));
-  if (target === undefined || target.status === 1) return { msgId, state: 'missing', senderUser: null, excerpt: '', seq: null };
+  if (target === undefined || target.status === 1) return { msgId, state: 'missing', senderUser: null, excerpt: '', seq: null, threadRoot: null };
   const senderUser = target.senderUser === null ? null : toHex(target.senderUser);
   const seq = target.seq.toString();
-  if (target.status === 2) return { msgId, state: 'deleted', senderUser, excerpt: '', seq };
-  return { msgId, state: 'ok', senderUser, excerpt: excerptOf(target.body), seq };
+  if (target.status === 2) return { msgId, state: 'deleted', senderUser, excerpt: '', seq, threadRoot };
+  return { msgId, state: 'ok', senderUser, excerpt: excerptOf(target.body), seq, threadRoot };
 }
 
 export function buildTimeline(input: TimelineInput): TimelineState {
@@ -92,6 +97,7 @@ export function buildTimeline(input: TimelineInput): TimelineState {
       attachments: row.attachments.map((a) => summary({ index: a.index, size: a.size, mime: a.mime, name: a.name, w: a.w, h: a.h, thumb: a.hasThumb })),
       mention: row.mention,
       actions: [],
+      thread: row.thread === null ? null : { count: row.thread.count, lastTs: Number(row.thread.lastTs) },
     });
   }
   const folds: OutboxRow[] = [];
@@ -115,12 +121,13 @@ export function buildTimeline(input: TimelineInput): TimelineState {
       msgId,
       seq: null,
       edited: false,
-      reply: row.replyTo === null ? null : outboxReply(row.replyTo, input.rows),
+      reply: row.replyTo === null ? null : outboxReply(row.replyTo, input.rows, input.threadRoot ?? null),
       reactions: [],
       pinned: false,
       attachments: row.attachments.map((a, index) => summary({ index, size: a.size, mime: a.mime, name: a.name, w: null, h: null, thumb: false })),
       mention: false,
       actions: [],
+      thread: null,
     });
   }
   const byMsgId = new Map<string, TimelineItem>();

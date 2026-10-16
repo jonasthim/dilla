@@ -115,6 +115,26 @@ describe('the factor-setup phase (web3.6 C2)', () => {
     expect(w.routes.postKeyPackages).not.toHaveBeenCalled();
   });
 
+  it('the forced set-up reads the factors once when it completes (web3.7 3g)', async () => {
+    const w = world({ phase: 2, owed: true });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('factor-setup'));
+    w.routes.getFactors.mockClear();
+    w.state.owed = false;
+    w.call(2, { m: 'factorSetupDone', invite: null });
+    expect(await answered(w, 2)).toMatchObject({ ok: true });
+    expect(w.account()?.phase).toBe('ready');
+    expect(w.routes.getFactors).toHaveBeenCalledTimes(1);
+  });
+
+  it('the account state carries no needsTotp (web3.7 3g)', () => {
+    const w = world();
+    const signIn = w.account()?.signIn;
+    // Compile-time pin: signIn.needsTotp is gone (web3.7 3g); this asserts nothing at runtime.
+    // @ts-expect-error needsTotp was removed from the sign-in state
+    void signIn?.needsTotp;
+  });
+
   it('a reload at factor-setup boots into factor-setup with origin required, before any backup PUT or socket', async () => {
     const w = world({ phase: 2, owed: true });
     w.call(1, { m: 'start' });
@@ -275,7 +295,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     await toLoginStep(w);
     w.call(3, LOGIN);
     expect(await answered(w, 3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 2 } });
-    expect(w.account()).toMatchObject({ phase: 'signin-passkey', signIn: { username: 'web', needsTotp: false, factor: 'passkey' }, error: null });
+    expect(w.account()).toMatchObject({ phase: 'signin-passkey', signIn: { username: 'web', factor: 'passkey' }, error: null });
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(4, { m: 'signInPasskeyBegin' });
     expect(await answered(w, 4)).toEqual({ t: 'ret', id: 4, ok: true, value: { ceremonyId: CEREMONY_HEX, options: '{"publicKey":{}}' } });
@@ -283,7 +303,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     w.call(5, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}', recoveryKey: RECOVERY_KEY });
     expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 1 } });
     expect(w.enrol.passkey).toHaveBeenCalledWith(new Uint8Array(16).fill(0xce), '{"id":"x"}');
-    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { needsTotp: false, factor: 'passkey' } });
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { factor: 'passkey' } });
     w.call(6, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     expect(await answered(w, 6)).toEqual({ t: 'ret', id: 6, ok: true, value: null });
     expect(w.account()?.phase).toBe('ready');
@@ -295,7 +315,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     await toLoginStep(w);
     w.call(3, LOGIN);
     expect(await answered(w, 3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } });
-    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', needsTotp: true, factor: 'totp' } });
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', factor: 'totp' } });
   });
 
   it('a passkey on its own signs in from the login step', async () => {
@@ -341,7 +361,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     await answered(w, 3);
     w.call(4, { m: 'signInBackupCode', code: 'A'.repeat(26), recoveryKey: RECOVERY_KEY });
     expect(await answered(w, 4)).toMatchObject({ ok: false, error: { code: 'E_UNAUTHENTICATED', status: 401 } });
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false, factor: null },
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', factor: null },
       error: { code: 'E_UNAUTHENTICATED' } });
     expect(w.enrol.register).not.toHaveBeenCalled();
   });

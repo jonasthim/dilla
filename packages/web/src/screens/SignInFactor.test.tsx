@@ -45,7 +45,7 @@ function setup(phase: BootPhase, script: Script, over: Partial<AccountState> = {
   const fake = new FakeClient();
   fake.set('account', account({
     phase, user: null, deviceId: null, instance: { ...INSTANCE, passwordSignup: true },
-    signIn: { username: null, needsTotp: false, factor: null }, ...over,
+    signIn: { username: null, factor: null }, ...over,
   }));
   fake.handler = c => script(c, fake);
   webauthn(opts.webauthn ?? true);
@@ -76,15 +76,15 @@ const worker = (opts: { needs?: 0 | 1 | 2; passkeyNeeds?: 0 | 1 } = {}): Script 
   switch (c.m) {
     case 'signInLogin': {
       const needs = opts.needs ?? 1;
-      if (needs === 1) move(fake, { phase: 'signin-totp', signIn: { username: 'ada', needsTotp: true, factor: 'totp' } });
-      else if (needs === 2) move(fake, { phase: 'signin-passkey', signIn: { username: 'ada', needsTotp: false, factor: 'passkey' } });
+      if (needs === 1) move(fake, { phase: 'signin-totp', signIn: { username: 'ada', factor: 'totp' } });
+      else if (needs === 2) move(fake, { phase: 'signin-passkey', signIn: { username: 'ada', factor: 'passkey' } });
       else move(fake, readyMe);
       return Promise.resolve({ needs });
     }
     case 'signInPasskeyBegin': return Promise.resolve({ ceremonyId: CEREMONY, options: OPTIONS });
     case 'signInPasskey': {
       const needs = opts.passkeyNeeds ?? 0;
-      if (needs === 1) move(fake, { phase: 'signin-totp', signIn: { username: null, needsTotp: false, factor: 'passkey' } });
+      if (needs === 1) move(fake, { phase: 'signin-totp', signIn: { username: null, factor: 'passkey' } });
       else move(fake, readyMe);
       return Promise.resolve({ needs });
     }
@@ -163,7 +163,7 @@ describe('the code step (flow 10 state 16)', () => {
   it('a refused backup code returns to the login with the password cleared and the key kept', async () => {
     const script: Script = (c, f) => {
       if (c.m === 'signInBackupCode') {
-        move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: false, factor: null }, error: { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null } });
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null } });
         return Promise.reject(refusal({ code: 'E_UNAUTHENTICATED', status: 401 }));
       }
       return worker()(c, f);
@@ -427,7 +427,7 @@ describe('backup codes, tightened', () => {
   it('E_NO_ASSERTION on a backup code reads like a refused code', async () => {
     const script: Script = (c, f) => {
       if (c.m === 'signInBackupCode') {
-        move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: false, factor: null } });
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null } });
         return Promise.reject(refusal({ code: 'E_NO_ASSERTION', status: 401 }));
       }
       return worker()(c, f);

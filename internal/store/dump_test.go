@@ -196,3 +196,59 @@ func TestDumpPostgresWritesTheContainerFormat(t *testing.T) {
 		t.Fatalf("the seeded user %q is not in the users payload", u.Username)
 	}
 }
+
+// The upload class (web3.7 SB1, migration 00018) survives a dump and a restore: a binary COPY
+// carries no column names, so a class the dump dropped or shifted would land as a wrong value
+// or fail the COPY. One row with class 0 and one with NULL (a legacy upload).
+func TestADumpRoundTripsTheUploadClass(t *testing.T) {
+	dsn := os.Getenv("DILLA_TEST_PG")
+	if dsn == "" {
+		t.Skip("DILLA_TEST_PG is unset: Postgres tests run in CI's service container")
+	}
+	ctx := context.Background()
+	open := func() (*sql.DB, string) {
+		d := freshPostgresDSN(t, dsn)
+		db, err := postgres.Open(d, 8, time.Hour)
+		if err != nil {
+			t.Fatalf("postgres Open: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		p, err := goose.NewProvider(goose.DialectPostgres, db, pgmigrations.FS)
+		if err != nil {
+			t.Fatalf("postgres provider: %v", err)
+		}
+		if _, err := p.Up(ctx); err != nil {
+			t.Fatalf("postgres up: %v", err)
+		}
+		return db, d
+	}
+	srcDB, srcDSN := open()
+	src := postgres.New(srcDB)
+	g := seedGroup(ctx, t, src, 1)
+	zero := uint8(0)
+	for seq, class := range map[uint64]*uint8{1: &zero, 2: nil} {
+		if err := src.PutAppMessage(ctx, store.AppMessageRow{
+			GroupID: g.GroupID, Seq: seq, Epoch: 1, UploaderDevice: g.GroupID, Blob: []byte("ct"),
+			FrankingTag: make([]byte, 32), Size: 2, Created: 10, Class: class,
+		}); err != nil {
+			t.Fatalf("PutAppMessage(%d): %v", seq, err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := store.DumpPostgres(ctx, srcDSN, &buf); err != nil {
+		t.Fatalf("DumpPostgres: %v", err)
+	}
+	dstDB, _ := open()
+	if err := store.LoadPostgres(ctx, dstDB, &buf, nil); err != nil {
+		t.Fatalf("LoadPostgres: %v", err)
+	}
+	dst := postgres.New(dstDB)
+	post, err := dst.GetAppMessage(ctx, g.GroupID, 1)
+	if err != nil || post.Class == nil || *post.Class != 0 {
+		t.Fatalf("restored class-0 row: class %v, %v; want 0", post.Class, err)
+	}
+	legacy, err := dst.GetAppMessage(ctx, g.GroupID, 2)
+	if err != nil || legacy.Class != nil {
+		t.Fatalf("restored legacy row: class %v, %v; want nil", legacy.Class, err)
+	}
+}

@@ -4,7 +4,7 @@ import { Enrol } from '../account/enrol';
 import { Session } from '../account/session';
 import type { Signup } from '../account/signup';
 import { encode, type CborInput } from '../cbor';
-import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
+import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type GroupInfo, type IdentityInfo, type OutboxRow, type OwnDeviceList, type PinRow, type PurgeRow, type SealedObjects, type SendRequest, type SessionRecord, type ThreadRow, type SignedLists, type TimelineRow, type TrustBlock, type TrustRecord } from '../core-port';
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -168,6 +168,7 @@ export function strangerRow(seq: number): TimelineRow {
     seq: BigInt(seq), epoch: 1n, recvTs: 1_700_000_000n, status: 0, reason: '', senderUser: STRANGER,
     senderDevice: new Uint8Array(16).fill(0x5b), senderKind: 0, senderTier: 0, msgId: new Uint8Array(16).fill(0x30 + seq),
     type: 0, body: `from a stranger ${seq}`, editedSeq: 0n, reply: null, reactions: [], pinned: false, attachments: [], mention: false,
+    thread: null,
   };
 }
 
@@ -220,6 +221,9 @@ export function world(opts: {
   const state = {
     phase: opts.phase ?? 2, enrolUser: opts.enrolUser === true ? USER : null as Uint8Array | null, username: 'web',
     groups: [] as GroupInfo[], rows: [] as TimelineRow[], activity: [] as ActivityRow[], settings: {} as Record<string, string>,
+    // web3.7: each thread's held root (null when not held) and replies, newest first, by the root's msg id in hex; the
+    // threads the group lists. A test sets the rows as the core would read them (the thread rule already applied).
+    threadRows: new Map<string, { root: TimelineRow | null; rows: TimelineRow[] }>(), threadList: [] as ThreadRow[],
     ownList: { version: 1n, published: true, entries: [{ deviceId: DEVICE, dskPub: new Uint8Array(32), tier: 1, addedAt: 1n, revokedAt: null }] } as OwnDeviceList,
     resets: 0, joined: (opts.phase ?? 2) === 2,
     dms: [] as { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[] }[],
@@ -243,6 +247,11 @@ export function world(opts: {
     groups: (): GroupInfo[] => state.groups,
     groupRow: (g: Uint8Array): GroupInfo | null => state.groups.find((x) => toHex(x.groupId) === toHex(g)) ?? null,
     timeline: (): TimelineRow[] => state.rows,
+    threadTimeline: vi.fn((_g: Uint8Array, root: Uint8Array, beforeSeq: bigint, limit: number) => {
+      const t = state.threadRows.get(toHex(root)) ?? { root: null, rows: [] };
+      return { root: t.root, rows: t.rows.filter((r) => beforeSeq === 0n || r.seq < beforeSeq).slice(0, limit) };
+    }),
+    threads: vi.fn((_g: Uint8Array): ThreadRow[] => state.threadList),
     outbox: (): OutboxRow[] => state.outbox,
     activity: (): ActivityRow[] => state.activity,
     markRead: vi.fn((_g: Uint8Array, _seq: bigint, _now: bigint): void => { calls.push('core.markRead'); }),
@@ -281,7 +290,7 @@ export function world(opts: {
     sendBlockOwn: vi.fn((_g: Uint8Array): boolean => false),
     keyPackages: vi.fn((_count: number, _last: boolean): Uint8Array => new Uint8Array([1])),
     search: vi.fn((_scope: unknown, _query: string, _cursor: unknown, _limit: number) => [] as {
-      groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint }[]),
+      groupId: Uint8Array; seq: bigint; snippet: string; rank: bigint; threadRoot: Uint8Array | null }[]),
     resume: vi.fn((): Promise<void> => Promise.resolve()),
     attachmentGet: vi.fn((_g: Uint8Array, seq: bigint, index: number): AttachmentDescriptor => {
       const d = state.descriptors.get(`${String(seq)}:${String(index)}`);
@@ -312,7 +321,7 @@ export function world(opts: {
     ]); }),
     listChannels: vi.fn((id: Uint8Array) => { calls.push('listChannels'); return Promise.resolve([
       ...(toHex(id) === toHex(COMMUNITY) ? [{
-        id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP,
+        id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP,
       }] : []),
       ...state.newChannels.filter((c) => toHex(c.communityId) === toHex(id)).map((c) => c.row),
     ]); }),
@@ -325,7 +334,7 @@ export function world(opts: {
       calls.push('createChannel');
       const id = new Uint8Array(16).fill(0x60 + state.newChannels.length);
       state.newChannels.push({ communityId, row: { id, kind: c.kind === 'voice' ? 1 : 0, mode: 0, visibility: 0, parentId: null,
-        name: c.name, topic: '', position: c.position, seq: 0n, textGroupId: null } });
+        name: c.name, topic: '', position: c.position, slowmode: 0, seq: 0n, textGroupId: null } });
       return Promise.resolve({ id, mode: 0, visibility: 0 });
     }),
     createInvite: vi.fn((_communityId: Uint8Array, _invite: { maxUses: number; ttlSeconds: number }) => Promise.resolve({

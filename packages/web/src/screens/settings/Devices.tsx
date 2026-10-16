@@ -7,11 +7,12 @@ import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { messageTime } from '../shell-model.ts';
 import { KeyDialog } from './KeyDialog.tsx';
+import { SignOutAction } from './SignOut.tsx';
 
 const TITLE_ID = 'devices-title';
 
 type Target = { kind: 'revoke'; deviceId: string } | { kind: 'removeUnlisted'; deviceId: string }
-  | { kind: 'signOut' } | { kind: 'forget' } | null;
+  | { kind: 'forget' } | null;
 
 function byId(a: DeviceSummary, b: DeviceSummary): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -131,7 +132,7 @@ export function Devices(): React.JSX.Element {
         <Button size="sm" onClick={refresh}>{t('devices.refresh')}</Button>
       </div>
       <div className="dw-settings-actions dw-settings-actions--below">
-        <Button variant="danger" onClick={() => choose({ kind: 'signOut' })}>{t('devices.signOut')}</Button>
+        <SignOutAction />
         <Button onClick={() => choose({ kind: 'forget' })}>{t('devices.forget')}</Button>
       </div>
 
@@ -142,9 +143,6 @@ export function Devices(): React.JSX.Element {
           await client.call({ m: 'revokeDevice', deviceId: revokeId, recoveryKey: key });
           focusHeading.current = true;
         }} />
-      <KeyDialog open={target?.kind === 'signOut'} id="devices-signout" title={t('devices.signOutTitle')} body={t('devices.signOutBody')}
-        confirmLabel={t('devices.confirmSignOut')} onClose={() => setTarget(null)}
-        onConfirm={key => client.call({ m: 'signOutRevoke', recoveryKey: key })} />
       <Dialog open={unlistedId !== null} title={t('devices.removeUnlistedTitle')} closeLabel={t('dialog.close')} onClose={close}
         footer={plainConfirm('devices.confirmRevoke', () => {
           if (unlistedId !== null) void confirmPlain({ m: 'revokeDevice', deviceId: unlistedId, recoveryKey: null }, true);

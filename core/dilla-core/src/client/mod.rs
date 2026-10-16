@@ -194,7 +194,7 @@ impl ClientCore {
                 if found == 1 || found == 2 {
                     backfill_v3(u).map_err(schema_error)?;
                 }
-                if found <= 4 {
+                if found <= 5 {
                     u.with_conn(trust::seed_own_pin).map_err(schema_error)?;
                 }
                 Ok(found)

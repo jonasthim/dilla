@@ -405,3 +405,23 @@ func TestTheTURNLegIsRedWhenNothingListens(t *testing.T) {
 		t.Fatalf("a closed port = %v (%s)", leg.Status, leg.Detail)
 	}
 }
+
+func TestReportSummarySumsTheChecksUp(t *testing.T) {
+	r := ops.Report{Legs: []ops.Leg{
+		{Name: "a", Status: ops.Green},
+		{Name: "b", Status: ops.Yellow},
+		{Name: "c", Status: ops.Red},
+	}}
+	if got, want := r.Summary(), "FAIL  summary      3 checks: 1 OK, 1 WARN, 1 FAIL\n"; got != want {
+		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+	if got, want := (ops.Report{Legs: r.Legs[:1]}).Summary(), "OK    summary      1 checks: 1 OK, 0 WARN, 0 FAIL\n"; got != want {
+		t.Fatalf("green Summary() = %q, want %q", got, want)
+	}
+	if got, want := (ops.Report{Legs: r.Legs[:2]}).Summary(), "WARN  summary      2 checks: 1 OK, 1 WARN, 0 FAIL\n"; got != want {
+		t.Fatalf("yellow Summary() = %q, want %q", got, want)
+	}
+	if got, want := (ops.Report{}).Summary(), "OK    summary      0 checks: 0 OK, 0 WARN, 0 FAIL\n"; got != want {
+		t.Fatalf("empty Summary() = %q, want %q", got, want)
+	}
+}

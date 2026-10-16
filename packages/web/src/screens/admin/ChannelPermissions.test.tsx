@@ -28,7 +28,7 @@ const MEMBERS: MemberSummary[] = [
 ];
 const ACCESS: CommunityAccess = { top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
   createInvite: false, manageRoles: true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true };
-const CHANNEL: ChannelSummary = { id: CH, communityId: SERVER, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, group: 'active' };
+const CHANNEL: ChannelSummary = { id: CH, communityId: SERVER, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' };
 const ow = (kind: 0 | 1, targetId: string, allow: number, deny: number): OverwriteSummary => ({ kind, targetId, allow, deny });
 
 function setup(entries: OverwriteSummary[] = [], access: Partial<CommunityAccess> = {}, without: string[] = []) {

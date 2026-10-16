@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { describe, it, expect, vi } from 'vitest';
 import { ChannelHeader } from './ChannelHeader.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
@@ -20,7 +21,7 @@ describe('ChannelHeader', () => {
 
   it('shows the readable glyph with its default name, or the name the caller gives', () => {
     const { rerender } = render(<ChannelHeader name="lfg" readable />);
-    expect(screen.getByRole('img', { name: 'Readable by this server' })).toHaveTextContent('◌');
+    expect(screen.getByRole('img', { name: 'Readable by this server' }).querySelector('[data-icon="eye"]')).not.toBeNull();
     rerender(<ChannelHeader name="lfg" readable readableLabel="readable by dilla.thim.dev" />);
     expect(screen.getByRole('img', { name: 'readable by dilla.thim.dev' })).toBeInTheDocument();
   });
@@ -44,6 +45,14 @@ describe('ChannelHeader', () => {
     expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ # general ]');
   });
 
+  it('heads an announcement channel with the megaphone in place of #, named by the name alone', () => {
+    const { container } = render(<ChannelHeader name="news" kind="announcement" />);
+    expect(screen.getByRole('heading', { level: 2, name: 'news' })).toBeInTheDocument();
+    expect(container.querySelector('.d-channel-header__name [data-icon="megaphone"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('#');
+    expect(container.querySelector('.d-channel-header__name')?.textContent).toBe('[ news ]');
+  });
+
   it('has no serious axe violations', async () => {
     const { container } = render(<div className="d-root"><ChannelHeader name="lfg" topic="looking for group" readable /></div>);
     await expectNoAxeViolations(container);
@@ -54,5 +63,46 @@ describe('ChannelHeader', () => {
     const actions = container.querySelector('.d-channel-header__actions')!;
     expect(actions).toContainElement(screen.getByRole('button', { name: 'pinned' }));
     expect(container.querySelector('.d-channel-header__topic')!.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  describe('phone', () => {
+    it('renders a PhoneHeader with the back button, the bracketed channel heading and the menu', async () => {
+      const onBack = vi.fn();
+      const { container } = render(<ChannelHeader name="general" phone={{ backLabel: 'back to channels', onBack, menu: <button type="button">more</button> }} />);
+      expect(container.querySelector('.d-phone-header')).not.toBeNull();
+      expect(container.querySelector('.d-channel-header')).toBeNull();
+      expect(container.querySelector('.d-channel-header__actions')).toBeNull();
+      const heading = screen.getByRole('heading', { level: 2, name: 'general' });
+      expect(heading.textContent).toBe('[ # general ]');
+      expect(screen.getByRole('button', { name: 'more' })).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole('button', { name: 'back to channels' }));
+      expect(onBack).toHaveBeenCalledTimes(1);
+    });
+    it('uses the megaphone for an announcement channel', () => {
+      const { container } = render(<ChannelHeader kind="announcement" name="news" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      expect(screen.getByRole('heading', { level: 2, name: 'news' }).textContent).toBe('[ news ]');
+      expect(container.querySelector('[data-icon="megaphone"]')).not.toBeNull();
+      expect(container.textContent).not.toContain('#');
+    });
+    it('uses the @ bracket for a direct message', () => {
+      render(<ChannelHeader kind="dm" name="ada" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      expect(screen.getByRole('heading', { level: 2, name: 'ada' }).textContent).toBe('[ @ ada ]');
+    });
+    it('keeps the readable cue next to the title on a phone', () => {
+      const { container } = render(<ChannelHeader name="lfg" readable readableLabel="readable by dilla.thim.dev" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      const cue = screen.getByRole('img', { name: 'readable by dilla.thim.dev' });
+      expect(cue.querySelector('[data-icon="eye"]')).not.toBeNull();
+      expect(container.querySelector('.d-phone-header')).toContainElement(cue);
+      expect(screen.getByRole('heading', { level: 2 })).toHaveAccessibleName('lfg');
+    });
+    it('shows no cue on a phone for a channel the server cannot read', () => {
+      render(<ChannelHeader name="lfg" phone={{ backLabel: 'back', onBack: () => {} }} />);
+      expect(screen.queryByRole('img')).toBeNull();
+    });
+    it('without phone the markup is the desktop header', () => {
+      const { container } = render(<ChannelHeader name="general" />);
+      expect(container.querySelector('.d-phone-header')).toBeNull();
+      expect(container.querySelector('header')).toHaveClass('d-channel-header');
+    });
   });
 });

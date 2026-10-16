@@ -422,7 +422,7 @@ describe('App sign-in', () => {
   function signInWorker(fake: FakeClient) {
     const move = (over: Partial<ReturnType<typeof account>>) => fake.set('account', { ...fake.get('account')!, ...over });
     fake.handler = c => {
-      if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, needsTotp: false, factor: null } });
+      if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, factor: null } });
       if (c.m === 'signInLogin' || c.m === 'signInKey') move({ phase: 'ready', user: { id: 'bb'.repeat(16), username: 'ada' }, signIn: null });
       if (c.m === 'signInCancel') move({ phase: 'needs-signup', signIn: null });
       return Promise.resolve(c.m === 'signInLogin' ? { needs: 0 } : null);
@@ -495,7 +495,7 @@ describe('App cleared', () => {
   it('reloads to the eviction message after an evicted sign-in, never through the revoked splash', () => {
     const fake = new FakeClient();
     const reload = vi.fn();
-    fake.set('account', account({ phase: 'enrolling', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false, factor: null } }));
+    fake.set('account', account({ phase: 'enrolling', user: null, deviceId: null, signIn: { username: 'ada', factor: null } }));
     render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
     act(() => fake.set('account', account({
       phase: 'cleared', user: null, deviceId: null, signIn: null, error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null },
@@ -518,7 +518,7 @@ describe('App cleared', () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     const reload = vi.fn();
-    fake.set('account', account({ phase: 'signin-key', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false, factor: null } }));
+    fake.set('account', account({ phase: 'signin-key', user: null, deviceId: null, signIn: { username: 'ada', factor: null } }));
     fake.handler = c => {
       if (c.m !== 'signInKey') return Promise.resolve(null);
       fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: RACE }));
@@ -577,13 +577,43 @@ describe('App settings and notifications', () => {
     fake.set('notices', { nextId: 0, items: [] });
     window.history.replaceState(null, '', `/c/${C}`);
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
-    const n: Notice = { id: 0, channelId: DM, communityId: null, kind: 'dm', senderUser: '28'.repeat(16), senderName: 'bob', body: 'yo', ts: 1_790_000_000 };
+    const n: Notice = { id: 0, channelId: DM, communityId: null, kind: 'dm', senderUser: '28'.repeat(16), senderName: 'bob', body: 'yo', ts: 1_790_000_000, threadRoot: null };
     act(() => fake.set('notices', { nextId: 1, items: [n] }));
     expect(Note.made.map(x => [x.title, x.options.body, x.options.tag])).toEqual([['bob', 'yo', `dilla:${DM}`]]);
     act(() => { Note.made[0].onclick?.(new Event('click')); });
     expect(focus).toHaveBeenCalledTimes(1);
     expect(window.location.pathname).toBe(`/dm/${DM}`);
     expect(Note.made[0].closed).toBe(true);
+    focus.mockRestore();
+  });
+  // FX-core (final review I1): a reply that shows in a thread opens that thread, not only its channel.
+  it('a notification click on a thread reply opens its channel and the thread', async () => {
+    class Note {
+      static permission: NotificationPermission = 'granted';
+      static made: Note[] = [];
+      onclick: ((ev: Event) => unknown) | null = null;
+      constructor(readonly title: string, readonly options: NotificationOptions) { Note.made.push(this); }
+      close(): void {}
+    }
+    vi.stubGlobal('Notification', Note);
+    const focus = vi.spyOn(window, 'focus').mockImplementation(() => {});
+    const GEN = 'c3'.repeat(16);
+    const ROOT = '71'.repeat(16);
+    const fake = new FakeClient();
+    ready(fake);
+    fake.set(`channels:${C}`, [{ id: GEN, communityId: C, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' }]);
+    fake.set(`timeline:${GEN}`, { channelId: GEN, group: 'active', hasEarlier: false, items: [] });
+    fake.set(`timeline:${DM}`, { channelId: DM, group: 'active', hasEarlier: false, items: [] });
+    fake.set('notices', { nextId: 0, items: [] });
+    // In the DM, so the channel is not on screen and the notice notifies.
+    window.history.replaceState(null, '', `/dm/${DM}`);
+    render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
+    const n: Notice = { id: 0, channelId: GEN, communityId: C, kind: 'mention', senderUser: '28'.repeat(16), senderName: 'bob', body: 'look', ts: 1_790_000_000, threadRoot: ROOT };
+    act(() => fake.set('notices', { nextId: 1, items: [n] }));
+    expect(Note.made).toHaveLength(1);
+    act(() => { Note.made[0].onclick?.(new Event('click')); });
+    expect(window.location.pathname).toBe(`/c/${C}/${GEN}`);
+    await vi.waitFor(() => expect(fake.callsOf('openThread')).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]));
     focus.mockRestore();
   });
 });

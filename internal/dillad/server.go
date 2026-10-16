@@ -309,6 +309,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		Policy:   policy,
 		Channels: channels,
 		ACL:      acl,
+		// send_messages and slow mode on end-to-end encrypted posts, by the upload class (web3.7
+		// SB1, protocol/02 § Upload class).
+		PostPolicy: api.PostPolicy{Repo: o.Repo, Resolver: api.NewResolver(o.Repo)},
 		// The device lists are verified in the guest (NV-B8, deviation B32).
 		DeviceLists: deviceLists,
 		// A fork-quarantined device is queued to be cut from every live call; the hook only enqueues,

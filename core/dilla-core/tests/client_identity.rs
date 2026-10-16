@@ -624,16 +624,17 @@ fn client_errors_render_and_convert_as_the_code_table_says() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// app schema v4 (L-SQL-32) and ClientCore::open (L-CORE-05)
+// app schema v5 (L-SQL-32; web3.7 TB1 adds the thread column and index) and ClientCore::open
+// (L-CORE-05)
 
 #[test]
-fn open_creates_app_schema_v4_and_reopens_idempotently() {
+fn open_creates_app_schema_v5_and_reopens_idempotently() {
     let c = conn();
     drop(ClientCore::open(c.clone()).expect("first open"));
     drop(ClientCore::open(c.clone()).expect("second open over the same database"));
     assert_eq!(
         migrate_app(&DillaStorage::new(c.clone())).expect("migrate_app is idempotent on its own"),
-        4
+        5
     );
     let guard = c.lock().expect("lock");
     let names: Vec<String> = guard
@@ -661,6 +662,7 @@ fn open_creates_app_schema_v4_and_reopens_idempotently() {
             "app_messages_by_pin",
             "app_messages_by_reaction",
             "app_messages_by_reply",
+            "app_messages_by_thread",
             "app_messages_legacy_sender",
             "app_messages_live_by_sig",
             "app_meta",
@@ -693,7 +695,7 @@ fn open_creates_app_schema_v4_and_reopens_idempotently() {
             r.get(0)
         })
         .expect("schema row");
-    assert_eq!(schema, [0x04]);
+    assert_eq!(schema, [0x05]);
     let resync: i64 = guard
         .query_row(
             "SELECT count(*) FROM pragma_table_info('app_groups') WHERE name = 'resync'",
@@ -818,7 +820,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         .expect("lock")
         .execute_batch(
             "CREATE TABLE app_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
-             INSERT INTO app_meta (k, v) VALUES ('schema', x'05');",
+             INSERT INTO app_meta (k, v) VALUES ('schema', x'06');",
         )
         .expect("seed");
     let e = match ClientCore::open(Arc::clone(&c)) {
@@ -830,7 +832,7 @@ fn open_refuses_an_app_schema_newer_than_this_build() {
         e,
         ClientError {
             code: "E_STORE_NEWER",
-            detail: "found 5, supported 4".into()
+            detail: "found 6, supported 5".into()
         }
     );
     let app_tables: i64 = c

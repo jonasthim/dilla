@@ -1,4 +1,4 @@
-import { arr, bin, decode, encode, u64 } from '../cbor';
+import { arr, bin, CborError, decode, encode, u64, type CborInput } from '../cbor';
 import { CoreError, type ApplyResult, type CorePort, type ExpectedGroup, type GroupInfo, type Id, type OutboxRow, type SendRequest } from '../core-port';
 import { Op, type Frame } from '../gateway/frames';
 import type { Gateway, GatewayEvent, ReadyInfo } from '../gateway/gateway';
@@ -38,6 +38,11 @@ export interface SyncDeps {
   /** Reads the group's leaves' signed lists again (the controller's trust refresh). drainOne calls it once for a queued row
    *  that send_encrypt refused by a leaf verdict, and retrySend before a verdict-failed row is tried again. */
   refreshGroupTrust(groupId: Id): Promise<void>;
+  /** CB2: a 429 requeued the group's row and the group waits until untilMs (ms since the epoch) before it posts again
+   *  (queued: a post waits for it). untilMs 0 with queued false clears it: the waiting row was confirmed. */
+  onSlow(groupId: Id, untilMs: number, queued: boolean): void;
+  /** CB2: an upload of this device was confirmed; type is the row's envelope type. */
+  onPosted(groupId: Id, type: number): void;
 }
 export const SYNC = {
   handshakePage: 512, messagePage: 256, commitRetryMax: 5, commitJitterMs: 400,
@@ -59,6 +64,9 @@ export class SyncEngine implements SyncInternals {
   readonly queues: SerialQueues;
   readonly echoWait = new Map<string, { msgHex: string; timer: number }>();
   readonly epochWait = new Map<string, number>();
+  readonly slowWait = new Map<string, { timer: number; until: number }>();
+  readonly slowed = new Set<string>();
+  readonly queued = new Set<string>();
   readonly count425 = new Map<string, number>();
   readonly reframedOnce = new Set<string>();
   readonly trustRetried = new Map<string, 'pending' | 'done'>();
@@ -96,7 +104,7 @@ export class SyncEngine implements SyncInternals {
     this.isStopped = true;
     this.unsubscribe?.(); this.unsubscribe = null;
     for (const id of this.timers) this.deps.clearTimeout(id);
-    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.echoWait.clear(); this.reframedOnce.clear(); this.trustRetried.clear();
+    this.timers.clear(); this.volunteer.clear(); this.cursorTimer.clear(); this.epochWait.clear(); this.slowWait.clear(); this.slowed.clear(); this.queued.clear(); this.echoWait.clear(); this.reframedOnce.clear(); this.trustRetried.clear();
     this.queues.clear();
     for (const wake of this.waiters) wake();
     this.waiters.clear();
@@ -191,8 +199,16 @@ export class SyncEngine implements SyncInternals {
         if (p[3] !== null) u64(p[3]);
         bin(p[4]); hs = encode([p]); ms = encode([]);
       } else {
-        const p = arr(f.payload, 6); seq = u64(p[0]); u64(p[1]); bin(p[2], 16); bin(p[3]); bin(p[4], 32); u64(p[5]);
-        hs = encode([]); ms = encode([[p[0]!, p[1]!, p[2]!, p[3]!, null, p[4]!, p[5]!, 0]]);
+        // web3.7: a 7th element is the upload class (0, 1 or null), carried as the row's 9th; six elements (a web3.6
+        // host) keep the 8-element row.
+        const p = arr(f.payload); if (p.length !== 6 && p.length !== 7) throw new CborError('E_CBOR_SHAPE', 'message.ct has 6 or 7 elements');
+        seq = u64(p[0]); u64(p[1]); bin(p[2], 16); bin(p[3]); bin(p[4], 32); u64(p[5]);
+        const row: CborInput[] = [p[0]!, p[1]!, p[2]!, p[3]!, null, p[4]!, p[5]!, 0];
+        if (p.length === 7) {
+          if (p[6] !== null && p[6] !== 0n && p[6] !== 1n) throw new CborError('E_CBOR_SHAPE', 'class is 0, 1 or null');
+          row.push(p[6] ?? null);
+        }
+        hs = encode([]); ms = encode([row]);
       }
     } catch { this.requestCatchUp(g); return; }
     if (seq < r.nextSeq) return;

@@ -445,8 +445,20 @@ func (h *Calls) drainPending(ctx context.Context, d grantDeps, ch store.ChannelR
 // next pass. Each call's hold is bounded by callHoldBackground, and the whole pass by retryPassBudget
 // (CALLS-M2: calls that hold only slots spend no repair budget, and each waits up to callLockWait for
 // its lock). A cut or an eviction queued while the pass runs is served between two calls, not after
-// the pass.
+// the pass. After the repairs, and never on their budget, it completes at most maxDeferredPerTick
+// deferred leaves whose newer session never joined, within deferredPassBudget
+// (CallEvents.completeDeferredLeaves; review S1: a slow SFU must not starve a pending cut).
 func (h *Calls) RetryPending(ctx context.Context) {
+	h.retryRepairs(ctx)
+	if h.events != nil {
+		dctx, cancel := context.WithTimeout(ctx, deferredPassBudget)
+		h.events.completeDeferredLeaves(dctx, maxDeferredPerTick)
+		cancel()
+	}
+}
+
+// retryRepairs is RetryPending's repair pass.
+func (h *Calls) retryRepairs(ctx context.Context) {
 	budget := maxRepairsPerTick
 	pctx, cancel := context.WithTimeout(ctx, retryPassBudget)
 	defer cancel()

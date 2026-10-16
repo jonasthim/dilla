@@ -29,6 +29,33 @@ function setup(over: Over = {}, owner: Owner = {}) {
 const counterText = (text: string) => screen.getByText(text, { selector: '.d-composer__counter' });
 
 describe('Composer', () => {
+  it('renders a notice inside the form after top and before the box, and leaves the textarea enabled', () => {
+    const { textarea } = setup({ top: <p>reply chip</p>, notice: <p>Slow mode is on. You can send again in 5 seconds.</p> });
+    const form = textarea.closest('form');
+    const notice = screen.getByText('Slow mode is on. You can send again in 5 seconds.');
+    expect(form).toContainElement(notice);
+    expect(notice.closest('.d-composer__notice')).not.toBeNull();
+    const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(screen.getByText('reply chip'), notice)).toBe(true);
+    expect(follows(notice, form?.querySelector('.d-composer__box') as Node)).toBe(true);
+    expect(textarea).not.toHaveAttribute('readonly');
+    expect(textarea).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByRole('button', { name: 'send' })).toBeEnabled();
+  });
+
+  it('names the notice in the textarea\'s description, after the reason when there is one', () => {
+    const { textarea } = setup({ notice: <span>Only some people can post in #news.</span> });
+    expect(textarea).toHaveAccessibleDescription('Only some people can post in #news.');
+    const id = textarea.closest('form')?.querySelector('.d-composer__notice')?.id;
+    expect(id).toBeTruthy();
+    expect(textarea.getAttribute('aria-describedby')?.split(' ')).toContain(id);
+  });
+
+  it('renders no notice wrapper without a notice', () => {
+    const { textarea } = setup();
+    expect(textarea.closest('form')?.querySelector('.d-composer__notice')).toBeNull();
+  });
+
   it('is a labelled textarea in a d-composer form with the placeholder', () => {
     const { textarea } = setup();
     expect(textarea.tagName).toBe('TEXTAREA');

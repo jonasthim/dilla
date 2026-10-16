@@ -1,5 +1,6 @@
 import { Pill } from '../Pill/Pill.tsx';
 import { useRovingFocus } from '../internal/roving.ts';
+import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './CommunityRail.css';
 
 export interface CommunityRailProps {
@@ -42,6 +43,8 @@ export function CommunityRail({
 }: CommunityRailProps) {
   const activeIndex = items.findIndex(i => i.id === activeId);
   const roving = useRovingFocus(activeIndex);
+  // On a phone the You tab is the way to settings: the rail has no settings tile there.
+  const phone = usePhoneLayout();
   return (
     <nav className="d-community-rail" aria-label={label}>
       <ul role="list" className="d-community-rail__list" ref={roving.ref} onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
@@ -81,7 +84,7 @@ export function CommunityRail({
             </button>
           </li>
         ) : null}
-        {settingsLabel !== undefined && onSettings !== undefined ? (
+        {!phone && settingsLabel !== undefined && onSettings !== undefined ? (
           <li className="d-community-rail__settings-item">
             <button type="button" className="d-community-rail__settings" aria-label={settingsLabel} onClick={onSettings}>
               <svg className="d-community-rail__cog" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">

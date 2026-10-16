@@ -1,11 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import type { AccountState, BootPhase, Command } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, INSTANCE } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
+import { en } from '../strings/en.ts';
 import { SignIn } from './SignIn.tsx';
 
 const KEY = '7K2MQX9DH4TBR8NWC3VFJ6PZA1GEY5KSM0QTB7XHW2DNF9RCP4ZA';
@@ -24,7 +25,7 @@ function setup(phase: BootPhase, script: Script = idle, over: Partial<AccountSta
   const fake = new FakeClient();
   fake.set('account', account({
     phase, user: null, deviceId: null, instance: { ...INSTANCE, passwordSignup: true },
-    signIn: { username: null, needsTotp: false, factor: null }, ...over,
+    signIn: { username: null, factor: null }, ...over,
   }));
   fake.handler = c => script(c, fake);
   const onFinish = vi.fn();
@@ -41,7 +42,7 @@ const password = () => screen.getByLabelText('Password');
 const worker = (opts: { totp?: boolean } = {}): Script => (c, fake) => {
   switch (c.m) {
     case 'signInLogin':
-      if (opts.totp) move(fake, { phase: 'signin-totp', signIn: { username: c.username, needsTotp: true, factor: 'totp' } });
+      if (opts.totp) move(fake, { phase: 'signin-totp', signIn: { username: c.username, factor: 'totp' } });
       else move(fake, { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null });
       return Promise.resolve({ needs: opts.totp === true ? 1 : 0 });
     case 'signInTotp':
@@ -179,7 +180,7 @@ describe('the ceremony', () => {
   });
 
   it('an empty code shows the required text and sends nothing', async () => {
-    const { fake, user } = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', needsTotp: true, factor: 'totp' } });
+    const { fake, user } = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', factor: 'totp' } });
     await user.click(button('Continue'));
     expect(field('Code')).toHaveAccessibleDescription('Fill in this field.');
     expect(document.activeElement).toBe(field('Code'));
@@ -318,11 +319,11 @@ describe('refusals', () => {
   it.each(TOTP)('%s returns to the login step with the username kept and asks to sign in again', async (_, init) => {
     const { fake, user } = setup('signin-login', (c, f) => {
       if (c.m === 'signInLogin') {
-        move(f, { phase: 'signin-totp', signIn: { username: 'ada', needsTotp: true, factor: 'totp' } });
+        move(f, { phase: 'signin-totp', signIn: { username: 'ada', factor: 'totp' } });
         return Promise.resolve({ needs: 1 });
       }
       if (c.m !== 'signInTotp') return Promise.resolve(null);
-      move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: true, factor: 'totp' } });
+      move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: 'totp' } });
       return Promise.reject(refusal(init));
     });
     await login(user);
@@ -349,7 +350,7 @@ describe('refusals', () => {
     const { user, view } = setup('signin-login', (c, f) => {
       if (c.m !== 'signInLogin') return Promise.resolve(null);
       move(f, { phase: 'enrolling' });
-      move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: false, factor: null } });
+      move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null } });
       return Promise.reject(refusal(init));
     });
     await login(user);
@@ -442,5 +443,122 @@ describe('refusals', () => {
     await user.click(button('Add this browser'));
     expect(screen.getByRole('alert')).toHaveTextContent('Signing in did not work (E_TIER_MISMATCH). Try again.');
     expect(screen.queryByText(/not the recovery key/)).toBeNull();
+  });
+});
+
+describe('the key step recognises a backup code (R44)', () => {
+  const BACKUP = 'abcd-efgh-ijkl-mnop-qrst-uvwxyz';
+  const OUTSIDE = '0189-0189-0189-0189-0189-018901';
+  const LONG = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ23456723456723456723456723';
+  const NOTE = en['signIn.key.isBackupCode'];
+  const key = () => field('Recovery key');
+  const note = () => document.getElementById('signin-key-backup');
+  const typeInto = (text: string) => { act(() => { fireEvent.change(key(), { target: { value: text } }); }); };
+  const wait = (ms: number) => { act(() => { vi.advanceTimersByTime(ms); }); };
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('shows the note after 600 ms of rest, describes the field with it and keeps the submit disabled', async () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    wait(599);
+    expect(note()).toBeNull();
+    wait(1);
+    expect(note()).toHaveTextContent(NOTE);
+    expect(note()).not.toHaveAttribute('role');
+    expect(key().getAttribute('aria-describedby')).toContain('signin-key-backup');
+    expect(button('Add this browser')).toHaveAttribute('aria-disabled', 'true');
+    vi.useRealTimers(); // axe schedules with timers
+    await expectNoAxeViolations(document.body);
+  });
+
+  it('shows the note at once on blur', () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    expect(note()).toBeNull();
+    act(() => { fireEvent.blur(key()); });
+    expect(note()).toHaveTextContent(NOTE);
+  });
+
+  it('restarts the wait on every change', () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    wait(400);
+    typeInto(BACKUP.toUpperCase());
+    wait(400);
+    expect(note()).toBeNull();
+    wait(200);
+    expect(note()).toHaveTextContent(NOTE);
+  });
+
+  it('never shows the note while a 52-character key is typed one character at a time', () => {
+    setup('signin-key');
+    for (let i = 1; i <= LONG.length; i += 1) {
+      typeInto(LONG.slice(0, i));
+      expect(note()).toBeNull();
+      wait(50);
+      expect(note()).toBeNull();
+    }
+    wait(2000);
+    expect(note()).toBeNull();
+  });
+
+  it('hides the note when the entry grows into a 52-character key', () => {
+    setup('signin-key');
+    typeInto(BACKUP);
+    wait(600);
+    expect(note()).not.toBeNull();
+    typeInto(LONG);
+    expect(note()).toBeNull();
+    expect(key().getAttribute('aria-describedby') ?? '').not.toContain('signin-key-backup');
+  });
+
+  it('shows nothing for 26 characters outside the backup alphabet', () => {
+    setup('signin-key');
+    typeInto(OUTSIDE);
+    wait(2000);
+    act(() => { fireEvent.blur(key()); });
+    expect(note()).toBeNull();
+  });
+
+  it('announces the note once, politely, when it turns on and not on every keystroke', () => {
+    setup('signin-key');
+    const region = () => screen.getByTestId('signin-announcer');
+    typeInto(BACKUP);
+    wait(300);
+    typeInto(BACKUP.toUpperCase());
+    wait(300);
+    expect(region()).toBeEmptyDOMElement();
+    wait(600);
+    wait(1); // the announcer speaks a tick after it is asked
+    expect(region()).toHaveTextContent(NOTE);
+    expect(region()).toHaveAttribute('aria-live', 'polite');
+    wait(2000);
+    expect(region().textContent).toBe(NOTE);
+  });
+
+  it('clears its timer when the step unmounts', () => {
+    const { view } = setup('signin-key');
+    const before = vi.getTimerCount();
+    typeInto(BACKUP);
+    expect(vi.getTimerCount()).toBe(before + 1);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(before);
+  });
+
+  it('ignores a change while the step is blocked', () => {
+    setup('enrolling');
+    typeInto(BACKUP);
+    wait(2000);
+    expect(key()).toHaveValue('');
+    expect(note()).toBeNull();
+  });
+
+  it('has no axe violations without the note', async () => {
+    setup('signin-key');
+    typeInto(LONG);
+    vi.useRealTimers();
+    await expectNoAxeViolations(document.body);
   });
 });

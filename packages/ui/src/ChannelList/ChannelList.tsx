@@ -8,7 +8,9 @@ import './ChannelList.css';
 export interface ChannelListProps {
   label: string;
   title: string;
-  channels: readonly { id: string; name: string; kind: 'text' | 'voice' | 'dm'; readable: boolean; unread?: number; mentions?: number; muted?: boolean }[];
+  /** 'server' (default) sets the title in the display serif, which is only for the server name. 'plain' (a list's own heading, such as direct messages) is the mono heading style. */
+  titleKind?: 'server' | 'plain';
+  channels: readonly { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; readable: boolean; unread?: number; mentions?: number; muted?: boolean; badge?: string }[];
   activeId: string | null;
   onSelect(id: string): void;
   emptyLabel: string;
@@ -19,6 +21,8 @@ export interface ChannelListProps {
    *  tabs and outside the rows' roving group (flow 07). */
   actions?: ReactNode;
   actionsLabel?: string;
+  /** A control at the right of the server's name (the phone's server menu), in one row with the heading. */
+  headerAction?: ReactNode;
   /** Shown in place of the rows (and the empty label), inside the tab panel when there are tabs: a server that did
    *  not load, or no server at all, while the tabs stay (WORKER-WEB-02, A11Y-DESIGN-02). */
   content?: ReactNode;
@@ -40,7 +44,7 @@ export interface ChannelListProps {
  * rows inside the panel. With `voice`, a voice channel is a VoiceChannelRow with its people below it, still one
  * stop of the same roving group.
  */
-export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel }: ChannelListProps) {
+export function ChannelList({ label, title, channels, activeId, onSelect, emptyLabel, rowLabel, tabs, footer, content, voice, actions, actionsLabel, headerAction, titleKind = 'server' }: ChannelListProps) {
   const activeIndex = channels.findIndex(c => c.id === activeId);
   const roving = useRovingFocus(activeIndex);
   const body = content !== undefined ? content : channels.length === 0 ? (
@@ -51,7 +55,7 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
         const unread = c.unread ?? 0;
         const mentions = c.mentions ?? 0;
         const muted = c.muted ?? false;
-        const ariaLabel = rowLabel && (unread > 0 || mentions > 0 || muted) ? rowLabel({ name: c.name, unread, mentions, muted }) : undefined;
+        const ariaLabel = rowLabel && (unread > 0 || mentions > 0 || muted) ? rowLabel({ name: c.badge === undefined ? c.name : `${c.name}, ${c.badge}`, unread, mentions, muted }) : undefined;
         if (c.kind === 'voice' && voice !== undefined) {
           const room = Object.hasOwn(voice.rooms, c.id) ? voice.rooms[c.id] : undefined;
           return (
@@ -65,7 +69,7 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
         return (
           <li key={c.id}>
             <ChannelRow name={c.name} kind={c.kind} readable={c.readable} active={c.id === activeId}
-              unread={unread} mentions={mentions} muted={muted} ariaLabel={ariaLabel} onSelect={() => onSelect(c.id)} />
+              unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} onSelect={() => onSelect(c.id)} />
           </li>
         );
       })}
@@ -74,7 +78,9 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
   const foot = footer !== undefined ? <div className="d-channel-list__footer">{footer}</div> : null;
   return (
     <nav className="d-channel-list" aria-label={label}>
-      <h1 className="d-channel-list__title">{title}</h1>
+      {headerAction !== undefined ? (
+        <div className="d-channel-list__head"><h1 className="d-channel-list__title" data-kind={titleKind === 'plain' ? 'plain' : undefined}>{title}</h1>{headerAction}</div>
+      ) : <h1 className="d-channel-list__title" data-kind={titleKind === 'plain' ? 'plain' : undefined}>{title}</h1>}
       {actions !== undefined ? <div className="d-channel-list__actions" role="group" aria-label={actionsLabel}>{actions}</div> : null}
       {tabs !== undefined ? (
         <>

@@ -23,6 +23,7 @@ import {
   type PinRow,
   type PurgeRow,
   type SendRequest,
+  type ThreadRow,
   type TimelineRow,
   type WelcomeOutcome,
   type ActivityRow,
@@ -43,7 +44,7 @@ import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type F
 
 /** The plain message request web-2a sent with a bare body (L-TS-30). */
 export function textRequest(body: string): SendRequest {
-  return { type: 0, replyTo: null, body, attachments: [] };
+  return { type: 0, replyTo: null, body, attachments: [], threadId: null };
 }
 
 export interface Peer {
@@ -137,6 +138,8 @@ export interface WireOptions {
   type?: number;
   replyTo?: Id | null;
   attachments?: AttachmentDescriptor[];
+  /** web3.7: the envelope's thread_id; a non-null one is the stand-in's ninth element. */
+  threadId?: Id | null;
 }
 
 /** The msg id of the parity fixture's peer target (L-CORE-39). */
@@ -146,10 +149,12 @@ export const FOLD_UNHELD: Uint8Array = new Uint8Array(16).fill(0xee);
 
 /** The stand-in wire shared by ModelCore and ModelDs. */
 export const wire = {
-  /** The 8-element stand-in of an envelope: ['app', user, device, msgId, body, type, replyTo, attachments]. */
+  /** The 8-element stand-in of an envelope: ['app', user, device, msgId, body, type, replyTo, attachments], and since
+   *  web3.7 a ninth element, threadId, when the envelope carries one. */
   app: (from: Peer, msgId: Id, body: string, opts: WireOptions = {}): Uint8Array => encode([
     'app', from.user, from.device, msgId, body, opts.type ?? 0, opts.replyTo ?? null,
     (opts.attachments ?? []).map((a) => [a.blobId, a.key, a.nonce, a.size, a.mime, a.w, a.h, a.thumb, a.name]),
+    ...(opts.threadId === undefined || opts.threadId === null ? [] : [opts.threadId]),
   ]),
   commit: (newEpoch: bigint, committer: Id, adds: readonly Id[], removes: readonly Id[]): Uint8Array =>
     encode(['commit', newEpoch, committer, adds, removes]),
@@ -172,8 +177,8 @@ export const wire = {
  */
 export function commitmentOf(blob: Uint8Array): Uint8Array | null {
   try {
-    const v = arr(decode(blob), 8);
-    if (str(at(v, 0)) !== 'app') return null;
+    const v = arr(decode(blob));
+    if ((v.length !== 8 && v.length !== 9) || str(at(v, 0)) !== 'app') return null;
     return commitmentFor(bin(at(v, 3), 16));
   } catch {
     return null;
@@ -304,8 +309,10 @@ interface MGroup {
  * A stored app_messages row (fold rows included): web-1's twelve fields and the v3 columns. `hasEnvelope` stands in
  * for the core's `envelope` column: true for a readable stored row, false once it is NULL (FACTS-SECURITY-03).
  */
-interface MRow extends Omit<TimelineRow, 'editedSeq' | 'reply' | 'reactions' | 'pinned' | 'attachments' | 'mention'> {
+interface MRow extends Omit<TimelineRow, 'editedSeq' | 'reply' | 'reactions' | 'pinned' | 'attachments' | 'mention' | 'thread'> {
   replyTo: Id | null;
+  /** app_messages.thread_id (schema 5): the envelope's thread_id of a type-0 row, null on every other row. */
+  threadId: Id | null;
   editBody: string | null;
   editSeq: bigint;
   mention: boolean;
@@ -332,13 +339,15 @@ interface MOut {
   type: SendRequest['type'];
   replyTo: Id | null;
   attachments: AttachmentDescriptor[];
+  threadId: Id | null;
 }
 
 /** The 8-element stand-in of an envelope, decoded; null for a malformed one (a field of the wrong kind or length). */
 function readApp(blob: Uint8Array): { user: Id; device: Id; msgId: Id; body: string; type: number; replyTo: Id | null;
-  attachments: AttachmentDescriptor[]; } | null {
+  attachments: AttachmentDescriptor[]; threadId: Id | null; } | null {
   try {
-    const v = arr(decode(blob), 8);
+    const v = arr(decode(blob));
+    if (v.length !== 8 && v.length !== 9) return null;
     if (str(at(v, 0)) !== 'app') return null;
     const type = u64(at(v, 5));
     if (type > 6n) return null;
@@ -349,7 +358,8 @@ function readApp(blob: Uint8Array): { user: Id; device: Id; msgId: Id; body: str
         w: dim(at(a, 5)), h: dim(at(a, 6)), thumb: at(a, 7) === null ? null : bin(at(a, 7)), name: str(at(a, 8)) };
     });
     return { user: bin(at(v, 1), 16), device: bin(at(v, 2), 16), msgId: bin(at(v, 3), 16), body: str(at(v, 4)), type: Number(type),
-      replyTo: at(v, 6) === null ? null : bin(at(v, 6), 16), attachments };
+      replyTo: at(v, 6) === null ? null : bin(at(v, 6), 16), attachments,
+      threadId: v.length === 9 && at(v, 8) !== null ? bin(at(v, 8), 16) : null };
   } catch {
     return null;
   }
@@ -820,7 +830,7 @@ export class ModelCore implements CorePort {
     const refused = this.callGate(g, true);
     if (refused !== null) {
       const detail = this.gateDetail(g, refused);
-      // The unit of the join rolls back: no row, no verdict rows and no MLS state of the refused join survive.
+      // The unit of the join rolls back: no row, no verdict rows and no group state of the refused join survive.
       this.dropCallLeaves(eg.groupId);
       if (prev !== undefined) this.gs.set(toHex(eg.groupId), prev); else this.gs.delete(toHex(eg.groupId));
       throw coreError(refused, detail);
@@ -1275,7 +1285,12 @@ export class ModelCore implements CorePort {
     this.log('groupApply', groupId);
     const g = this.must(groupId);
     const hs = arr(decode(handshakes)).map((r) => arr(r, 5));
-    const ms = arr(decode(messages)).map((r) => arr(r, 8));
+    // web3.7: nine elements, the 9th the upload class; eight from a host that predates it (wire.rs decode_message_rows).
+    const ms = arr(decode(messages)).map((r) => {
+      const a = arr(r);
+      if (a.length !== 8 && a.length !== 9) throw coreError('E_CORE_INPUT', `messages row has ${String(a.length)} elements`);
+      return a;
+    });
     this.applyCalls.push({ g: toHex(groupId), through, handshakes: hs.length, messages: ms.length });
     if (g.state !== 2) throw coreError('E_CORE_STATE', `state ${String(g.state)}`);
     const rows = new Map<bigint, { seq: bigint; hs: CborValue[] | null; msg: CborValue[] | null }>();
@@ -1402,18 +1417,23 @@ export class ModelCore implements CorePort {
     // L-CORE-36 in the core's order (messages.rs send_prepare, wire::decode_send_request, Envelope::validate); every
     // refusal writes nothing.
     const { type, replyTo, body, attachments } = request;
+    const threadId = request.threadId ?? null;
     const count = (n: unknown): boolean => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
     const bytes = (b: unknown, length?: number): boolean => b instanceof Uint8Array && (length === undefined || b.length === length);
     const wellFormed = typeof body === 'string' && Array.isArray(attachments) && (replyTo === null || bytes(replyTo, 16)) &&
+      (threadId === null || bytes(threadId, 16)) &&
       attachments.every((a) => bytes(a.blobId, 32) && bytes(a.key, 32) && bytes(a.nonce, 12) && count(a.size) &&
         typeof a.mime === 'string' && typeof a.name === 'string' && (a.w === null || count(a.w)) && (a.h === null || count(a.h)) &&
         (a.thumb === null || bytes(a.thumb)));
     if (!wellFormed) throw coreError('E_CORE_INPUT', 'request is malformed');
     if (!Number.isInteger(type) || type < 0 || type > 6) throw coreError('E_CORE_INPUT', 'type is out of range');
     if (type !== 0 && attachments.length > 0) throw coreError('E_CORE_INPUT', 'only a message carries attachments');
+    if (type !== 0 && threadId !== null) throw coreError('E_CORE_INPUT', 'only a message starts or joins a thread');
     const g = this.must(groupId);
     // L-CORE-52 (messages.rs): sending stays text-only; a call group carries no messages.
     if (g.kind !== 0) throw coreError('E_CORE_INPUT', 'not a text group');
+    // FX-core (messages.rs send_prepare): threads exist only in community channel groups.
+    if (threadId !== null && g.communityId === null) throw coreError('E_CORE_INPUT', 'threads are for channel groups only');
     if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
     // messages.rs send_prepare: a changed-key or failed leaf still in the group blocks queuing (and again at send_encrypt).
     const block = this.sendBlock(groupId);
@@ -1422,6 +1442,15 @@ export class ModelCore implements CorePort {
     if (type === 0) {
       if (body.trim() === '' && attachments.length === 0) throw coreError('E_CORE_INPUT', 'body is empty');
       if (replyTo !== null && target === null) throw coreError('E_CORE_NOT_FOUND', 'target is not held');
+      if (threadId !== null) {
+        // messages.rs thread_root: the first type-0 row with the id decides; without one, another type or nothing.
+        const named = [...g.rows.values()].filter((r) => r.msgId !== null && same(r.msgId, threadId));
+        if (this.threadRoot(g, threadId) === null) {
+          if (named.length === 0) throw coreError('E_CORE_NOT_FOUND', 'target is not held');
+          if (named.some((r) => r.type === 0)) throw coreError('E_CORE_INPUT', 'the thread root is a thread reply');
+          throw coreError('E_CORE_INPUT', 'the thread root is not a message');
+        }
+      }
     } else {
       if (replyTo === null) throw coreError('E_CORE_INPUT', 'reply_to is required');
       if (target === null) throw coreError('E_CORE_NOT_FOUND', 'target is not held');
@@ -1441,7 +1470,7 @@ export class ModelCore implements CorePort {
     this.msgs += 1;
     const msgId = idOf(0x6d, this.msgs);
     this.out.set(toHex(msgId), { msgId, groupId, body, created: now, state: 0, error: '', epoch: null, type, replyTo,
-      attachments: attachments.map((a) => ({ ...a })) });
+      attachments: attachments.map((a) => ({ ...a })), threadId });
     return msgId;
   }
 
@@ -1463,7 +1492,7 @@ export class ModelCore implements CorePort {
     if (block !== null) throw coreError(block, '');
     o.state = 1;
     o.epoch = g.epoch;
-    const framed = wire.app(this.me, o.msgId, o.body, { type: o.type, replyTo: o.replyTo, attachments: o.attachments });
+    const framed = wire.app(this.me, o.msgId, o.body, { type: o.type, replyTo: o.replyTo, attachments: o.attachments, threadId: o.threadId });
     return { groupId: o.groupId, messageBody: encode([g.epoch, framed]) };
   }
 
@@ -1549,7 +1578,7 @@ export class ModelCore implements CorePort {
       const t = this.resolve(g, p.target);
       if (t === null) continue;
       out.push({ targetSeq: t.seq, msgId: p.target, pinnedSeq: p.seq, byUser: p.byUser, author: t.senderUser,
-        excerpt: excerpt(t.editBody ?? t.body), targetTs: t.recvTs });
+        excerpt: excerpt(t.editBody ?? t.body), targetTs: t.recvTs, threadRoot: this.shownThreadRoot(g, t) });
     }
     return out;
   }
@@ -1631,35 +1660,99 @@ export class ModelCore implements CorePort {
     return body.includes(`<@${me}>`) || roles.some((role) => view.mentionable.has(role) && body.includes(`<@${role}>`));
   }
 
-  /** L-CORE-34: displayable rows (type null or 0) with the fold applied. */
+  /** L-CORE-34: displayable rows (type null or 0) with the fold applied; web3.7: a reply whose root is held before it
+   *  shows in its thread only (messages.rs timeline_sql, HELD_ROOT). */
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] {
     const g = this.must(groupId);
     const rows = [...g.rows.values()]
-      .filter((r) => (r.type === null || r.type === 0) && (beforeSeq === 0n || r.seq < beforeSeq)).sort(bySeq);
-    return rows.slice(Math.max(0, rows.length - limit)).map((r): TimelineRow => {
-      const ok = r.status === 0;
-      let reply: TimelineRow['reply'] = null;
-      if (ok && r.replyTo !== null) {
-        const t = this.resolve(g, r.replyTo);
-        reply = t === null
-          ? { replyTo: r.replyTo, targetSeq: null, targetUser: null, excerpt: '', state: 1 }
-          : { replyTo: r.replyTo, targetSeq: t.seq, targetUser: t.senderUser, excerpt: t.status === 0 ? excerpt(t.editBody ?? t.body) : '',
-            state: t.status === 0 ? 0 : 2 };
-      }
-      // Reactions and the pin belong to a target only: a row that repeats a msg id never shows them.
-      const target = ok && r.type === 0 && r.msgId !== null && this.resolve(g, r.msgId)?.seq === r.seq;
-      return {
-        seq: r.seq, epoch: r.epoch, recvTs: r.recvTs, status: r.status, reason: r.reason, senderUser: r.senderUser,
-        senderDevice: r.senderDevice, senderKind: r.senderKind, senderTier: r.senderTier, msgId: r.msgId, type: r.type,
-        body: ok ? r.editBody ?? r.body : '', editedSeq: r.editSeq, reply,
-        reactions: target && r.msgId !== null ? this.chips(g, r.msgId) : [],
-        pinned: target && r.msgId !== null && g.pins.has(toHex(r.msgId)),
-        attachments: ok && r.type === 0
-          ? r.attachments.map((a, index) => ({ index, size: a.size, mime: a.mime, w: a.w, h: a.h, hasThumb: a.thumb !== null, name: a.name }))
-          : [],
-        mention: r.mention,
-      };
-    });
+      .filter((r) => (r.type === null || r.type === 0) && this.shownThreadRoot(g, r) === null &&
+        (beforeSeq === 0n || r.seq < beforeSeq)).sort(bySeq);
+    return rows.slice(Math.max(0, rows.length - limit)).map((r) => this.view(g, r));
+  }
+
+  /** web3.7 (R25): the held root and the thread's type-0 replies after it, newest first (messages.rs thread_timeline). */
+  threadTimeline(groupId: Id, rootMsgId: Id, beforeSeq: bigint, limit: number): { root: TimelineRow | null; rows: TimelineRow[] } {
+    const g = this.must(groupId);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw coreError('E_CORE_INPUT', 'limit out of range');
+    const root = this.threadRoot(g, rootMsgId);
+    const after = root?.seq ?? 0n;
+    const rows = [...g.rows.values()]
+      .filter((r) => r.type === 0 && r.threadId !== null && same(r.threadId, rootMsgId) && r.seq > after &&
+        (beforeSeq === 0n || r.seq < beforeSeq))
+      .sort(bySeq).reverse().slice(0, limit);
+    return { root: root === null ? null : this.view(g, root), rows: rows.map((r) => this.view(g, r)) };
+  }
+
+  /** web3.7: the group's threads under a held first root, at most 50, the latest reply first (messages.rs THREADS_SQL;
+   *  fix round 1, M1; fix round 2: a fold reusing the root's id changes nothing). */
+  threads(groupId: Id): ThreadRow[] {
+    const g = this.must(groupId);
+    const out: (ThreadRow & { id: string })[] = [];
+    for (const root of g.rows.values()) {
+      if (root.msgId === null || this.threadRoot(g, root.msgId) !== root) continue;
+      const msgId = root.msgId;
+      const summary = this.summary(g, root);
+      if (summary === null) continue;
+      out.push({ rootMsgId: msgId, rootSeq: root.seq, count: summary.count, lastTs: summary.lastTs,
+        excerpt: root.status === 0 ? excerpt(root.editBody ?? root.body) : '', id: toHex(msgId) });
+    }
+    return out
+      .sort((a, b) => (a.lastTs === b.lastTs ? a.id.localeCompare(b.id) : a.lastTs > b.lastTs ? -1 : 1))
+      .slice(0, 50)
+      .map((t): ThreadRow => ({ rootMsgId: t.rootMsgId, rootSeq: t.rootSeq, count: t.count, lastTs: t.lastTs, excerpt: t.excerpt }));
+  }
+
+  /** The thread root of `msgId`: the first type-0 row carrying it, when it carries no thread id (fix round 1, I1). */
+  private threadRoot(g: MGroup, msgId: Id): MRow | null {
+    let t: MRow | null = null;
+    for (const r of g.rows.values()) {
+      if (r.type === 0 && r.msgId !== null && same(r.msgId, msgId) && (t === null || r.seq < t.seq)) t = r;
+    }
+    return t !== null && t.threadId === null ? t : null;
+  }
+
+  /** The root of the thread `r` shows in: its thread id when that root is held before it, else null (shown_thread_root). */
+  private shownThreadRoot(g: MGroup, r: MRow): Id | null {
+    if (r.type !== 0 || r.threadId === null) return null;
+    const root = this.threadRoot(g, r.threadId);
+    return root !== null && root.seq < r.seq ? r.threadId : null;
+  }
+
+  /** The 19-element view of one stored row (messages.rs view_of). */
+  private view(g: MGroup, r: MRow): TimelineRow {
+    const ok = r.status === 0;
+    let reply: TimelineRow['reply'] = null;
+    if (ok && r.replyTo !== null) {
+      const t = this.resolve(g, r.replyTo);
+      reply = t === null
+        ? { replyTo: r.replyTo, targetSeq: null, targetUser: null, excerpt: '', state: 1, threadRoot: null }
+        : { replyTo: r.replyTo, targetSeq: t.seq, targetUser: t.senderUser, excerpt: t.status === 0 ? excerpt(t.editBody ?? t.body) : '',
+          state: t.status === 0 ? 0 : 2, threadRoot: this.shownThreadRoot(g, t) };
+    }
+    // Reactions and the pin belong to a target only: a row that repeats a msg id never shows them.
+    const target = ok && r.type === 0 && r.msgId !== null && this.resolve(g, r.msgId)?.seq === r.seq;
+    return {
+      seq: r.seq, epoch: r.epoch, recvTs: r.recvTs, status: r.status, reason: r.reason, senderUser: r.senderUser,
+      senderDevice: r.senderDevice, senderKind: r.senderKind, senderTier: r.senderTier, msgId: r.msgId, type: r.type,
+      body: ok ? r.editBody ?? r.body : '', editedSeq: r.editSeq, reply,
+      reactions: target && r.msgId !== null ? this.chips(g, r.msgId) : [],
+      pinned: target && r.msgId !== null && g.pins.has(toHex(r.msgId)),
+      attachments: ok && r.type === 0
+        ? r.attachments.map((a, index) => ({ index, size: a.size, mime: a.mime, w: a.w, h: a.h, hasThumb: a.thumb !== null, name: a.name }))
+        : [],
+      mention: r.mention,
+      thread: this.summary(g, r),
+    };
+  }
+
+  /** A root's thread summary: the count and latest recvTs of its shown type-0 replies after it; null on any other row. */
+  private summary(g: MGroup, r: MRow): TimelineRow['thread'] {
+    if (r.msgId === null || this.threadRoot(g, r.msgId) !== r) return null;
+    const msgId = r.msgId;
+    const replies = [...g.rows.values()].filter((x) => x.type === 0 && x.status === 0 && x.threadId !== null && same(x.threadId, msgId) &&
+      x.seq > r.seq);
+    if (replies.length === 0) return null;
+    return { count: replies.length, lastTs: replies.reduce((m, x) => (x.recvTs > m ? x.recvTs : m), 0n) };
   }
 
   /**
@@ -1807,7 +1900,8 @@ export class ModelCore implements CorePort {
     const deleted = u64(at(a, 7)) === 1n;
     const bare = (status: 1 | 2, reason: string): MRow => ({
       seq, epoch, recvTs, status, reason, senderUser: null, senderDevice: uploader, senderKind: null, senderTier: null,
-      msgId: null, type: null, body: '', replyTo: null, editBody: null, editSeq: 0n, mention: false, attachments: [], hasEnvelope: false,
+      msgId: null, type: null, body: '', replyTo: null, threadId: null, editBody: null, editSeq: 0n, mention: false, attachments: [],
+      hasEnvelope: false,
     });
     const stored = g.rows.get(seq);
     // A live row at a stored seq is skipped before anything else: not listed, nothing processed.
@@ -1824,7 +1918,7 @@ export class ModelCore implements CorePort {
       if (o !== undefined) {
         const marker: MRow = {
           ...bare(2, ''), senderUser: this.me.user, senderDevice: this.me.device, senderKind: 0, senderTier: 1, msgId: o.msgId, type: o.type,
-          replyTo: o.replyTo,
+          replyTo: o.replyTo, threadId: o.type === 0 ? o.threadId : null,
         };
         g.rows.set(seq, marker);
         this.refoldDeleted(g, marker);
@@ -1890,7 +1984,9 @@ export class ModelCore implements CorePort {
   private insertReadable(g: MGroup, seq: bigint, epoch: bigint, recvTs: bigint, v: Held): void {
     g.rows.set(seq, {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: v.user, senderDevice: v.device, senderKind: 0, senderTier: 0,
-      msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, editBody: null, editSeq: 0n,
+      // FX-core (messages.rs insert_message): a thread id is stored in a community channel group only.
+      msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, threadId: v.type === 0 && g.communityId !== null ? v.threadId : null,
+      editBody: null, editSeq: 0n,
       // L-CORE-35: only a type-0 row of another user, against the roles known now; recomputed later only by authoritySet.
       mention: v.type === 0 && !same(v.user, this.me.user) && this.mentionOf(g, v.body, v.user),
       attachments: v.type === 0 ? v.attachments : [], hasEnvelope: true,
@@ -1901,8 +1997,8 @@ export class ModelCore implements CorePort {
   private ownRow(seq: bigint, epoch: bigint, recvTs: bigint, o: MOut): MRow {
     return {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: this.me.user, senderDevice: this.me.device, senderKind: 0, senderTier: 1,
-      msgId: o.msgId, type: o.type, body: o.body, replyTo: o.replyTo, editBody: null, editSeq: 0n, mention: false,
-      attachments: o.attachments.map((x) => ({ ...x })), hasEnvelope: true,
+      msgId: o.msgId, type: o.type, body: o.body, replyTo: o.replyTo, threadId: o.type === 0 ? o.threadId : null, editBody: null, editSeq: 0n,
+      mention: false, attachments: o.attachments.map((x) => ({ ...x })), hasEnvelope: true,
     };
   }
 
@@ -2090,7 +2186,9 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   // web3.4: the caller's own permissions and the roles list, as the instance resolves them for the model's servers.
   | 'getPermissions' | 'listRoles'
   // wave 2a (flow 09): roles and channel overwrites, ruled by the owner alone in the model.
-  | 'listOverwrites' | 'createRole' | 'patchRole' | 'deleteRole' | 'grantRole' | 'revokeRole' | 'putOverwrite' | 'deleteOverwrite';
+  | 'listOverwrites' | 'createRole' | 'patchRole' | 'deleteRole' | 'grantRole' | 'revokeRole' | 'putOverwrite' | 'deleteOverwrite'
+  // web3.7: the channel patch, so a slow mode set through the client path is served back in the list.
+  | 'patchChannel';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** The @everyone base of a new server (internal/api everyoneRoleAllow): view, send, attach, react, history, connect, speak, video,
  *  screen share and create invite. Every defined permission bit is below 2^30. */
@@ -2229,7 +2327,7 @@ export class ModelDs {
   private readonly removed = new Set<string>();
   private readonly groups = new Map<string, DsGroup>();
   /** A created channel carries its kind, name and position; a seeded one (addChannel) is listed as `channel-<i>`. */
-  private readonly channels = new Map<string, { communityId: Id; channelId: Id; created?: { kind: 0 | 1; name: string; position: number } }>();
+  private readonly channels = new Map<string, { communityId: Id; channelId: Id; created?: { kind: 0 | 1; name: string; position: number }; slowmode?: number; topic?: string }>();
   /** Created servers: community hex → its name, its owner's and its members' user hexes. */
   private readonly communities = new Map<string, { id: Id; name: string; owner: string; members: Set<string> }>();
   private readonly owners = new Map<string, string>();
@@ -2643,6 +2741,13 @@ export class ModelDs {
         .filter((c) => c.members.has(this.owners.get(d) ?? ''))
         .map((c) => ({ id: c.id, name: c.name, owner: this.users.get(c.owner)!, policyVersion: 1n }))),
       createCommunity: (name) => this.call(d, 'createCommunity', null, null, () => this.createCommunity(d, name)),
+      // Slot 6 of the patch body is the slow mode; the owner alone rules it, as every other channel change in the model.
+      patchChannel: (channelId, patch) => this.call(d, 'patchChannel', channelId, null, () => {
+        this.ownerOfChannel(d, channelId);
+        const known = this.channels.get(toHex(channelId))!;
+        if (patch.slowmode !== undefined) known.slowmode = patch.slowmode;
+        if (patch.topic !== undefined) known.topic = patch.topic;
+      }),
       createChannel: (communityId, channel) => this.call(d, 'createChannel', null, null, () => this.createChannel(d, communityId, channel)),
       createInvite: (communityId) => this.call(d, 'createInvite', null, null, () => {
         this.memberOf(d, communityId);
@@ -2758,7 +2863,7 @@ export class ModelDs {
         if (dm !== undefined) {
           if (!dm.users.some((user) => toHex(user) === this.owners.get(d))) throw httpError(404, 'E_NOT_FOUND');
           return { id, kind: dm.users.length === 2 ? 3 : 4, mode: 0, visibility: 0, parentId: null,
-            name: '', topic: '', position: 0, seq: 0n, textGroupId: this.openGroupOf(id)?.id ?? null };
+            name: '', topic: '', position: 0, slowmode: 0, seq: 0n, textGroupId: this.openGroupOf(id)?.id ?? null };
         }
         const channel = this.channels.get(toHex(id));
         if (channel === undefined) throw httpError(404, 'E_NOT_FOUND');
@@ -2901,13 +3006,13 @@ export class ModelDs {
 
   private channelRows(communityId: Uint8Array): {
     id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null; name: string; topic: string;
-    position: number; seq: bigint; textGroupId: Uint8Array | null;
+    position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null;
   }[] {
     return [...this.channels.values()]
       .filter((c) => same(c.communityId, communityId))
       .map((c, i) => ({
         id: c.channelId, kind: c.created?.kind ?? 0, mode: 0, visibility: 0, parentId: null, name: c.created?.name ?? `channel-${String(i)}`,
-        topic: '', position: c.created?.position ?? i, seq: 1n,
+        topic: c.topic ?? '', position: c.created?.position ?? i, slowmode: c.slowmode ?? 0, seq: 1n,
         textGroupId: c.created?.kind === 1 ? null : this.openGroupOf(c.channelId)?.id ?? null,
       }));
   }

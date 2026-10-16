@@ -19,8 +19,8 @@ export interface AccountState {
   error: WorkerError | null;                    // the last signup, sign-in or boot error
   /** Set during signin-*; null otherwise. `factor` is what the code step asks after: 'totp' after a login owing an app code
    *  (needs 1), 'passkey' after a login owing a passkey (needs 2) and after a passkey that did not verify the user (the
-   *  copy says why a code is asked); `needsTotp` is kept equal to `factor === 'totp'`. */
-  signIn: { username: string | null; needsTotp: boolean; factor: 'totp' | 'passkey' | null } | null;
+   *  copy says why a code is asked). */
+  signIn: { username: string | null; factor: 'totp' | 'passkey' | null } | null;
   /** web3.6: set while the phase is factor-setup; null otherwise. */
   factorSetup: { origin: FactorSetupOrigin } | null;
   /** BACKUPS-RECOVERY-04: the instance holds a root object this account did not seal (E_ROOT_MISMATCH at ready), so
@@ -34,6 +34,8 @@ export interface AccountState {
 /** Page-bound errors have a stable code and no detail. `store` is set only on E_STORE_NEWER: the app schema of the
  *  store in this browser and the highest this build supports (C4x, web3.6). */
 export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null;
+  /** A stable key for a local refusal the page maps to copy ('announce.noHeldRole'); never the detail text. */
+  reason?: string;
   store?: { found: number; supported: number }; }
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;
   reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
@@ -43,10 +45,14 @@ export interface CommunitySummary { id: string; name: string; owner: string; }
 /** The answer of createInvite: the instance's invite link, its code and its expiry (unix seconds). */
 export interface InviteCreatedResult { url: string; code: string; expires: number; }
 export type ChannelGroupState = 'none' | 'joining' | 'active' | 'resync' | 'not-member' | 'unsupported';
-export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 | 2; mode: 0 | 1; name: string; topic: string; parentId: string | null; position: number; group: ChannelGroupState; }
+export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 | 2; mode: 0 | 1; name: string; topic: string; parentId: string | null; position: number; slowmode: number;
+  /** A text channel whose @everyone overwrite denies send_messages (derived from the overwrites the page can read; false while
+   *  they are unknown). */
+  announcement: boolean; group: ChannelGroupState; }
 export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[]; }   // roleIds: hex of member-row element 3, in order
 export type TimelineItemState = 'ok' | 'pending' | 'failed' | 'cannot-read' | 'deleted';
-export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; }
+/** `threadRoot` (web3.7): the msg id of the thread root the quoted message shows in, null for a channel message. */
+export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; threadRoot: string | null; }
 export interface ReactionSummary { emoji: string; count: number; mine: boolean; }
 export interface AttachmentSummary { index: number; size: number; mime: string; name: string; w: number | null; h: number | null;
   thumb: boolean; kind: 'image' | 'audio' | 'video' | 'file'; tooLarge: boolean; }   // kind: attachmentKind (L-TS-58)
@@ -70,8 +76,16 @@ export interface TimelineItem {
   attachments: AttachmentSummary[];             // what the envelope names; never a key, a nonce or a blob id
   mention: boolean;                             // the core's flag, set once at apply (L-CORE-35)
   actions: PendingAction[];                     // pending or failed folds of the own outbox aimed at this message
+  thread: { count: number; lastTs: number } | null;   // a held root with shown replies: how many, and the latest (unix seconds)
 }
-export interface PinnedItem { msgId: string; seq: string; senderUser: string | null; excerpt: string; pinnedBy: string; pinnedSeq: string; ts: number; }   // ts: the target's recv_ts, unix seconds
+/** The open thread of a channel (web3.7): its root (null when the root is not held), the replies oldest first (newest last,
+ *  as the timeline orders items) and whether older replies exist. */
+export interface ThreadState { channelId: string; rootMsgId: string; root: TimelineItem | null; items: TimelineItem[]; hasEarlier: boolean }
+/** One thread of a channel (web3.7): its held root's seq and excerpt. */
+export interface ThreadSummary { rootMsgId: string; rootSeq: string | null; count: number; lastTs: number; excerpt: string }
+/** ts: the target's recv_ts, unix seconds. threadRoot (web3.7): the thread the pinned message shows in, null for a channel message. */
+export interface PinnedItem { msgId: string; seq: string; senderUser: string | null; excerpt: string; pinnedBy: string; pinnedSeq: string; ts: number;
+  threadRoot: string | null; }   // ts: the target's recv_ts, unix seconds
 export interface TrayItem { id: string; name: string; size: number; mime: string; image: boolean;
   phase: 'reading' | 'preparing' | 'uploading' | 'ready' | 'failed'; reason: string; }
 export interface TimelineState { channelId: string; group: ChannelGroupState; items: TimelineItem[]; hasEarlier: boolean; }
@@ -97,13 +111,15 @@ export interface TrustSummary { userId: string; name: string; shared: boolean; u
  */
 export interface SendBlock { code: TrustBlock; own: boolean }
 export type SendBlocksState = Record<string, SendBlock>;
-export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string }[];
+export interface SearchState { requestId: number; hits: { channelId: string; communityId: string | null; seq: string; snippet: string; rank: string; threadRoot: string | null }[];
   cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
   devices: number; errors: { code: string; at: number }[] }
 export interface TypingState { userId: string; name: string; expiresAt: number }
 export interface BadgeState { unread: number; mentions: number; }
-export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number; }
+// threadRoot (FX-core): the 32-hex msg id of the thread root the message shows under (a reply whose root is held), else null.
+export interface Notice { id: number; channelId: string; communityId: string | null; kind: 'message' | 'mention' | 'dm'; senderUser: string | null; senderName: string; body: string; ts: number;
+  threadRoot: string | null; }
 export interface NoticesState { nextId: number; items: Notice[]; }      // items ≤ 32, oldest first; ids increase for the worker's life
 // ---- web-3: calls, voice presence and rings (L-TS-51). A call's media key is never in a slice or a command result: it
 // reaches the page only as a `callKeys` push (L-TS-52).
@@ -171,10 +187,14 @@ export interface RemovalNotice { id: number; communityId: string; name: string }
  *  id in lower-case hex; times are unix seconds. */
 export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | null;
   passkeys: { id: string; name: string; created: number; lastUsed: number | null }[]; backupCodesLeft: number; hasPassword: boolean }
+/** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
+ *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
+export interface SlowState { until: number; queued: boolean }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
-  | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors';
+  | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
+  | `slow:${string}` | `thread:${string}` | `threads:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
@@ -183,6 +203,7 @@ export interface SliceTypes { account: AccountState; connection: ConnectionState
   /** channel id (hex) → its overwrites; a channel with none is absent. */
   [k: `overwrites:${string}`]: Record<string, OverwriteSummary[]>; [k: `bans:${string}`]: BanSummary[];
   [k: `invites:${string}`]: InviteSummary[]; removals: RemovalNotice[]; factors: FactorsState;
+  [k: `slow:${string}`]: SlowState; [k: `thread:${string}`]: ThreadState | null; [k: `threads:${string}`]: ThreadSummary[];
   dms: DmSummary[]; devices: DeviceSummary[]; badges: Record<string, BadgeState>; notices: NoticesState; settings: Record<string, string>;
   trust: TrustSummary[]; sendBlocks: SendBlocksState; search: SearchState; diagnostics: DiagnosticsState;
   call: CallState; voice: VoiceState; rings: RingsState }

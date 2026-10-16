@@ -575,9 +575,9 @@ export async function tabTo(page: Page, target: Locator, maxPresses = 40): Promi
 export function escapeRegExp(text: string): string { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 /** A rail item or channel row by the name it shows: its accessible name is the name alone, or the name followed
- *  by ", " and the counts (shell.rail.itemLabel, shell.channels.rowLabel, shell.channels.rowLabelMuted). */
+ *  by the row's badge ("general slow mode", slow.badge) and by ", " and the counts (shell.rail.itemLabel, shell.channels.rowLabel, shell.channels.rowLabelMuted). */
 export function namedRow(scope: Locator, name: string): Locator {
-  return scope.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}(, |$)`) });
+  return scope.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}( ${escapeRegExp(copy('slow.badge'))})?(, |$)`) });
 }
 export function railItem(page: Page, community: string): Locator { return namedRow(railNav(page), community); }
 export function channelRow(page: Page, channel: string): Locator { return namedRow(channelsNav(page), channel); }
@@ -638,6 +638,12 @@ export async function openSettings(page: Page, section: SettingsSection): Promis
 }
 /** Escape closes Settings and returns to the route it was opened from (L-TS-27). */
 export async function closeSettings(page: Page): Promise<void> {
+  // A viewport change reaches the app a tick late: Escape waits until the shell's data-layout agrees with the window.
+  await page.waitForFunction(() => {
+    const shell = document.querySelector('.d-app-shell');
+    const phone = window.matchMedia('(max-width: 47.99rem)').matches;
+    return shell === null || (shell.getAttribute('data-layout') === 'phone') === phone;
+  }, undefined, { timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(settingsDialog(page)).toBeHidden({ timeout: WAIT });
 }

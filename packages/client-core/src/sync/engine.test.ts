@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { decode } from '../cbor';
 import { CoreError } from '../core-port';
 import { toHex } from '../hex';
 import { SYNC, throughOf, type PageInfo } from './engine';
@@ -308,6 +309,33 @@ describe('catch-up on every ready (rule 2)', () => {
 });
 
 describe('live frames (rule 3)', () => {
+  // web3.7 RB1: op 19's 7th element, the upload class, becomes the catch-up row's 9th, so the core applies its
+  // class/type rule to a live frame as to a fetched row. A web3.6 host's six elements keep the 8-element row.
+  // The class-1 case shows its type-0 post only because ModelCore ignores the class: it does not model the mismatch
+  // rule, which the real core applies (client_fold.rs class_mismatch_is_neither_shown_nor_folded). Here only the
+  // re-encoded row is under test.
+  it.each([
+    ['class 1', [1n], 9],
+    ['a null class', [null], 9],
+    ['no class (a web3.6 host)', [], 8],
+  ] as const)('re-encodes an op 19 with %s as the row the core applies', async (_name, tail, length) => {
+    const d = device(ds, clock, ME);
+    const g = await openRegistered(ds, d);
+    const sent: unknown[][] = [];
+    ds.attach(ME.device, (f) => {
+      if (f.op === 19) sent.push(f.payload);
+      d.gateway.frame(f.op === 19 ? { ...f, payload: [...f.payload, ...tail] } : f);
+    });
+    const rows: unknown[] = [];
+    const apply = d.core.groupApply.bind(d.core);
+    d.core.groupApply = (gid, hs, ms, through) => { rows.push(...(decode(ms) as unknown[])); return apply(gid, hs, ms, through); };
+    ds.peerSend(g, PEER, 'live');
+    await settle();
+    expect(d.core.bodies(g)).toEqual(['live']);
+    const p = at(sent, 0);
+    const row = [p[0], p[1], p[2], p[3], null, p[4], p[5], 0n];
+    expect(rows).toEqual([length === 9 ? [...row, tail[0]] : row]);
+  });
   it('applies the next frame with through = seq and drops a frame it already applied', async () => {
     const d = device(ds, clock, ME);
     const g = await openRegistered(ds, d);

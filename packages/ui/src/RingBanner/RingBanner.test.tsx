@@ -10,6 +10,12 @@ const ringLabels: RingBannerProps['labels'] = { region: 'incoming calls', answer
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('RingBanner', () => {
+  it('the ring marker carries the ring state: ok when incoming, off when busy', () => {
+    const { container } = render(<RingBanner rings={[{ callId: 'a', text: 'bob is calling', busy: false }, { callId: 'b', text: 'ada is busy', busy: true }]} labels={ringLabels} onAnswer={() => {}} onDecline={() => {}} />);
+    const dots = Array.from(container.querySelectorAll('.d-ring-banner__glyph .d-state-dot'));
+    expect(dots.map(d => d.getAttribute('data-tone'))).toEqual(['ok', 'off']);
+  });
+
   it('RingBanner announces through an alert and never takes focus', () => {
     const before = document.activeElement;
     render(<RingBanner rings={[{ callId: 'c', text: 'bob is calling', busy: false }]} labels={ringLabels} onAnswer={() => {}} onDecline={() => {}} />);

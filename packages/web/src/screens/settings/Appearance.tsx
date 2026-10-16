@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Segmented, SettingsRow } from '@dilla/ui';
+import { Segmented } from '@dilla/ui';
 import { isThemePref, readTheme, writeTheme, type ThemePref } from '../../prefs.ts';
 import { t, type StringKey } from '../../strings/index.ts';
 import { applyPreference } from '../../theme.ts';
@@ -38,10 +38,14 @@ export function Appearance(): React.JSX.Element {
   return (
     <section className="dw-settings-section" aria-labelledby={TITLE_ID}>
       <h2 id={TITLE_ID} tabIndex={-1}>{t('appearance.title')}</h2>
-      <SettingsRow id="appearance-theme-row" label={t('appearance.theme.label')}>
-        <Segmented id="appearance-theme" label={t('appearance.theme.label')} value={value} onChange={change}
-          options={THEMES.map(o => ({ value: o.value, label: t(o.key) }))} />
-      </SettingsRow>
+      {/* Walk 23: the row's visible label is for the eye only; the radio group carries the name, so a screen reader hears "theme" once. */}
+      <div className="d-settings-row">
+        <div className="d-settings-row__text"><span className="d-settings-row__label" aria-hidden="true">{t('appearance.theme.label')}</span></div>
+        <div className="d-settings-row__control">
+          <Segmented id="appearance-theme" label={t('appearance.theme.label')} value={value} onChange={change}
+            options={THEMES.map(o => ({ value: o.value, label: t(o.key) }))} />
+        </div>
+      </div>
     </section>
   );
 }

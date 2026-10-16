@@ -9,6 +9,7 @@ export const Plain: Story = {};
 export const WithTopic: Story = { args: { topic: 'evening plans, screenshots and the odd argument' } };
 export const Readable: Story = { args: { name: 'lfg', topic: 'looking for group', readable: true } };
 export const DirectMessage: Story = { args: { name: 'ada', kind: 'dm' } };
+export const Announcement: Story = { args: { name: 'news', kind: 'announcement', topic: 'releases and downtime' } };
 // web-2b (L-UI-54): the pins button, `shell.pins.open` of L-COPY-03, quoted.
 export const WithPinsButton: Story = { args: { topic: 'say hi', actions: <Button variant="ghost">pinned</Button> } };
 

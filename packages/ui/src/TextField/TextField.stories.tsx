@@ -16,3 +16,4 @@ export const Hint: Story = { args: { hint: HINT } };
 export const Invalid: Story = { args: { value: 'ada', hint: HINT, error: 'That username is taken. Try another.' } };
 export const Password: Story = { args: { id: 'password', label: 'Password', type: 'password', value: '1234567', hint: 'At least 8 characters.', error: 'Use at least 8 characters.', autoComplete: 'new-password' } };
 export const Disabled: Story = { args: { id: 'invite', label: 'Invite', value: 'k7qm3zrdw0pahv5cj8zem4tbs6', hint: 'A code or a link, as you received it.', disabled: true } };
+export const ReadOnly: Story = { args: { id: 'totp-key', label: 'Key', value: 'JBSWY3DPEHPK3PXP', readOnly: true, spellCheck: false } };

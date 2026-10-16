@@ -228,6 +228,7 @@ type MlsAppMessages struct {
 	Expires        sql.NullInt64
 	DeletedAt      sql.NullInt64
 	FrankingKeyID  id.ID
+	Class          sql.NullInt64
 }
 
 type MlsEpochTrees struct {
@@ -405,6 +406,12 @@ type Sessions struct {
 	Created     int64
 	Expires     int64
 	IdleExpires int64
+}
+
+type SlowmodeMarks struct {
+	ChannelID  id.ID
+	UserID     id.ID
+	LastPostAt int64
 }
 
 type TotpSecrets struct {

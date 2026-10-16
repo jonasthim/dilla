@@ -635,6 +635,25 @@ impl CoreHandle {
         self.with_core(|c| c.timeline(&group_id, before_seq, limit))
             .map(Vec::into_boxed_slice)
     }
+    /// Calls ClientCore::thread_timeline (web3.7); CBOR [root_row|null, [row]], each a 19-element timeline row.
+    pub fn thread_timeline(
+        &self,
+        group_id: &[u8],
+        root_msg_id: &[u8],
+        before_seq: u64,
+        limit: u32,
+    ) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        let root_msg_id = js_fixed_arg::<16>("root_msg_id", root_msg_id)?;
+        self.with_core(|c| c.thread_timeline(&group_id, &root_msg_id, before_seq, limit))
+            .map(Vec::into_boxed_slice)
+    }
+    /// Calls ClientCore::threads (web3.7); CBOR [[root_msg_id, root_seq|null, count, last_ts, excerpt]].
+    pub fn threads(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let group_id = js_fixed_arg::<16>("group_id", group_id)?;
+        self.with_core(|c| c.threads(&group_id))
+            .map(Vec::into_boxed_slice)
+    }
     /// Calls ClientCore::pins; CBOR [[target_seq, msg_id, pinned_seq, by_user, author, excerpt, target_ts]].
     pub fn pins(&self, group_id: &[u8]) -> Result<Box<[u8]>, JsError> {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;

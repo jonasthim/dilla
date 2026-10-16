@@ -68,19 +68,20 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // web-2c task 1 adds typing_set and voice_self frame cases: frames 25 -> 27, total 344 -> 346.
 // web-3 task 1 adds three call_ring (op 53) frame cases: frames 27 -> 30, total 346 -> 349.
 // web-3.1 adds the community_changed (op 54) frame case: frames 30 -> 31, total 349 -> 350.
+// web3.7 RB1 adds the message.ct with a null class frame case: frames 31 -> 32, total 350 -> 351.
 var wantSuiteCases = map[string]int{
 	"envelope":   15,
 	"franking":   4,
 	"sframe":     176,
 	"identity":   8,
-	"frames":     31,
+	"frames":     32,
 	"attachment": 14,
 	"rejects":    102,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 350
+const wantTotalCases = 351
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"credential_identity", "recovery_key", "safety_number", "sas"}

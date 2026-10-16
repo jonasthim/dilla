@@ -20,3 +20,9 @@ export const Own: Story = {};
 export const Others: Story = {
   args: { items: [{ id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} }] },
 };
+export const WithThread: Story = {
+  args: { items: [
+    { id: 'react', label: 'react', onAction: () => {} }, { id: 'reply', label: 'reply', onAction: () => {} },
+    { id: 'thread', label: 'reply in thread', onAction: () => {} }, { id: 'pin', label: 'pin', onAction: () => {} },
+  ] },
+};

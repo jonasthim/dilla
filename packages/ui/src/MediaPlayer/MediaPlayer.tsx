@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './MediaPlayer.css';
+import { Icon } from '../Icon/Icon.tsx';
 
 export interface MediaPlayerProps {
   kind: 'audio' | 'video';
@@ -59,7 +60,7 @@ export function MediaPlayer({ kind, src, name, state, labels, onPlay, onSave, on
   if (state === 'idle') {
     body = (
       <Button variant="default" className="d-media-player__play" tabIndex={tabIndex} onClick={() => { wantFocus.current = true; onPlay(); }}>
-        <span className="d-media-player__glyph" aria-hidden="true">▶</span>{labels.play.replaceAll('{name}', name)}
+        <span className="d-media-player__glyph" aria-hidden="true"><Icon name="play" size={14} /></span>{labels.play.replaceAll('{name}', name)}
       </Button>
     );
   } else if (state === 'loading') {
@@ -83,7 +84,7 @@ export function MediaPlayer({ kind, src, name, state, labels, onPlay, onSave, on
       onFocus={() => { focusInside.current = true; }}
       onBlur={e => { if (!(rootRef.current?.contains(e.relatedTarget) ?? false)) focusInside.current = false; }}>
       <p className="d-media-player__error" role="status">
-        {state === 'error' ? <><span className="d-media-player__error-glyph" aria-hidden="true">✕</span>{labels.error}</> : null}
+        {state === 'error' ? <><span className="d-media-player__error-glyph" aria-hidden="true"><Icon name="x" size={14} /></span>{labels.error}</> : null}
       </p>
       <div className="d-media-player__frame">{body}</div>
     </div>

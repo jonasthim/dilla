@@ -244,6 +244,35 @@ fn small<T: TryFrom<u64>>(v: u64) -> Result<T, CborError> {
     T::try_from(v).map_err(|_| CborError::IntegerOverflow)
 }
 
+/// The upload class element (web3.7 SB1): a uint 0 or 1, or null for a legacy upload.
+fn upload_class(d: &mut Decoder<'_>) -> Result<Option<u8>, CborError> {
+    d.opt_uint()?.map(small).transpose()
+}
+
+/// One row 12 item: `[seq, epoch, uploader_device, blob|null, commitment|null, franking_tag,
+/// recv_ts, deleted, class|null]`. Nine elements since web3.7 SB1; eight from an instance that
+/// predates the class, which reads as `class: None`. Any other length is a shape error.
+fn message_row(d: &mut Decoder<'_>) -> Result<MessageItem, CborError> {
+    let len = d.array_len()?;
+    if len != 8 && len != 9 {
+        return Err(CborError::WrongArrayLen {
+            expected: 9,
+            actual: len,
+        });
+    }
+    Ok(MessageItem {
+        seq: d.uint()?,
+        epoch: d.uint()?,
+        uploader_device: device_id(d)?,
+        blob: bytes_or_null(d)?,
+        commitment: d.opt_bytes_exact::<32>()?.unwrap_or([0u8; 32]),
+        franking_tag: d.bytes_exact::<32>()?,
+        recv_ts: d.uint()?,
+        deleted: d.uint()? == 1,
+        class: if len == 9 { upload_class(d)? } else { None },
+    })
+}
+
 /// `[seq, epoch, kind, sender|null, blob]`, row 4's item and op 16's payload alike.
 fn handshake_item(d: &mut Decoder<'_>) -> Result<HandshakeItem, CborError> {
     d.array(5)?;
@@ -641,7 +670,11 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
                 })
             }
             19 => {
-                expect(6)?;
+                // Seven elements since web3.7 SB1, the 7th the upload class; six from an instance
+                // that predates it.
+                if len != 6 && len != 7 {
+                    expect(7)?;
+                }
                 let item = MessageItem {
                     seq: d.uint()?,
                     epoch: d.uint()?,
@@ -653,6 +686,7 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
                     franking_tag: d.bytes_exact::<32>()?,
                     recv_ts: d.uint()?,
                     deleted: false,
+                    class: if len == 7 { upload_class(d)? } else { None },
                 };
                 Inbound::Frame(Frame::MessageCt {
                     group_id: group_id()?,
@@ -2629,16 +2663,23 @@ impl DeliveryService for HttpDs {
         })
     }
 
-    /// Row 7: `[epoch, private_message]` -> `[seq, franking_tag, recv_ts]`. The instance reads the
-    /// commitment out of the message's own `authenticated_data`.
+    /// Row 7: `[epoch, private_message, class]` -> `[seq, franking_tag, recv_ts]`, or the legacy
+    /// `[epoch, private_message]` for `None` (web3.7 SB1). The instance reads the commitment out of
+    /// the message's own `authenticated_data`.
     fn post_message_from(
         &mut self,
         g: &GroupId,
         epoch: u64,
         pm: Vec<u8>,
+        class: Option<u8>,
     ) -> Result<UploadResult, DsError> {
-        let body = encode(|e| {
-            e.array(2).uint(epoch).bytes(&pm);
+        let body = encode(|e| match class {
+            Some(c) => {
+                e.array(3).uint(epoch).bytes(&pm).uint(u64::from(c));
+            }
+            None => {
+                e.array(2).uint(epoch).bytes(&pm);
+            }
         });
         self.post_decoded(&Self::group_path(g, "/message"), &body, |d| {
             d.array(3)?;
@@ -2651,8 +2692,9 @@ impl DeliveryService for HttpDs {
     }
 
     /// Row 12, paged until a short page:
-    /// `[[seq, epoch, uploader_device, blob|null, commitment|null, franking_tag, recv_ts, deleted]]`.
-    /// A deleted message comes back with an empty blob and `deleted: true`.
+    /// `[[seq, epoch, uploader_device, blob|null, commitment|null, franking_tag, recv_ts, deleted,
+    /// class|null]]` (message_row). A deleted message comes back with an empty blob and
+    /// `deleted: true`.
     fn messages(&mut self, g: &GroupId, from: u64) -> Result<Vec<MessageItem>, DsError> {
         let mut out: Vec<MessageItem> = Vec::new();
         let mut next = from;
@@ -2662,25 +2704,7 @@ impl DeliveryService for HttpDs {
                 let n = array_or_null(d)?;
                 let mut items = Vec::with_capacity(n);
                 for _ in 0..n {
-                    d.array(8)?;
-                    let seq = d.uint()?;
-                    let epoch = d.uint()?;
-                    let uploader_device = device_id(d)?;
-                    let blob = bytes_or_null(d)?;
-                    let commitment = d.opt_bytes_exact::<32>()?.unwrap_or([0u8; 32]);
-                    let franking_tag = d.bytes_exact::<32>()?;
-                    let recv_ts = d.uint()?;
-                    let deleted = d.uint()? == 1;
-                    items.push(MessageItem {
-                        seq,
-                        epoch,
-                        uploader_device,
-                        blob,
-                        commitment,
-                        franking_tag,
-                        recv_ts,
-                        deleted,
-                    });
+                    items.push(message_row(d)?);
                 }
                 Ok(items)
             })?;
@@ -3089,6 +3113,109 @@ mod tests {
         ));
     }
 
+    /// web3.7 SB1: op 19 carries the upload class as its 7th element, a uint or null; a six-element
+    /// op 19 still decodes (class `None`), and five or eight elements are refused.
+    #[test]
+    fn op_19_carries_the_upload_class() {
+        let group = [0x33u8; 16];
+        let frame = |n: u64, class: Option<Option<u64>>, extra: bool| {
+            cbor(|e| {
+                e.array(4).uint(19).uint(1).bytes(&group);
+                let len = 6 + usize::from(class.is_some()) + usize::from(extra);
+                e.array(len)
+                    .uint(n)
+                    .uint(3)
+                    .bytes(&[0xaa; 16])
+                    .bytes(&[4])
+                    .bytes(&[0xbb; 32])
+                    .uint(1_758_659_640);
+                match class {
+                    Some(Some(c)) => {
+                        e.uint(c);
+                    }
+                    Some(None) => {
+                        e.null();
+                    }
+                    None => {}
+                }
+                if extra {
+                    e.uint(0);
+                }
+            })
+        };
+        for (class, want) in [
+            (Some(Some(0)), Some(0)),
+            (Some(Some(1)), Some(1)),
+            (Some(None), None),
+            (None, None),
+        ] {
+            match decode_frame(&frame(5, class, false)).unwrap() {
+                (_, Inbound::Frame(Frame::MessageCt { item, .. })) => {
+                    assert_eq!(item.seq, 5);
+                    assert_eq!(item.class, want, "{class:?}");
+                }
+                _ => panic!("message.ct {class:?}"),
+            }
+        }
+        assert!(
+            decode_frame(&frame(5, Some(Some(0)), true)).is_err(),
+            "eight elements"
+        );
+        let five = cbor(|e| {
+            e.array(4).uint(19).uint(1).bytes(&group);
+            e.array(5)
+                .uint(5)
+                .uint(3)
+                .bytes(&[0xaa; 16])
+                .bytes(&[4])
+                .bytes(&[0xbb; 32]);
+        });
+        assert!(decode_frame(&five).is_err(), "five elements");
+    }
+
+    /// web3.7 SB1: a row 12 item is nine elements, the 9th the upload class; an eight-element row
+    /// still decodes (class `None`), and a ten-element row is a shape error.
+    #[test]
+    fn message_rows_carry_the_upload_class() {
+        let row = |len: usize, class: Option<u64>| {
+            cbor(|e| {
+                e.array(len)
+                    .uint(5)
+                    .uint(2)
+                    .bytes(&[0xaa; 16])
+                    .bytes(&[4])
+                    .null()
+                    .bytes(&[0xbb; 32])
+                    .uint(1_758_659_640)
+                    .uint(0);
+                if len >= 9 {
+                    match class {
+                        Some(c) => {
+                            e.uint(c);
+                        }
+                        None => {
+                            e.null();
+                        }
+                    }
+                }
+                if len >= 10 {
+                    e.uint(0);
+                }
+            })
+        };
+        let decode = |b: &[u8]| decode_strict(b, |d: &mut Decoder<'_>| message_row(d));
+        let nine = decode(&row(9, Some(0))).unwrap();
+        assert_eq!((nine.seq, nine.class, nine.deleted), (5, Some(0), false));
+        assert_eq!(decode(&row(9, Some(1))).unwrap().class, Some(1));
+        assert_eq!(decode(&row(9, None)).unwrap().class, None);
+        let eight = decode(&row(8, None)).unwrap();
+        assert_eq!((eight.seq, eight.class), (5, None));
+        assert!(matches!(
+            decode(&row(10, Some(0))),
+            Err(CborError::WrongArrayLen { actual: 10, .. })
+        ));
+    }
+
     /// Every delivery-service opcode decodes into the frame the stub would have queued, and the
     /// replay `n` comes back beside it.
     #[test]
@@ -3137,6 +3264,7 @@ mod tests {
                 assert_eq!(item.uploader_device, DeviceId::from_bytes([0xaa; 16]));
                 assert_eq!(item.franking_tag, [0xbb; 32]);
                 assert_eq!(item.recv_ts, 1_758_659_640);
+                assert_eq!(item.class, None, "a six-element op 19 predates the class");
             }
             _ => panic!("message.ct"),
         }
@@ -3644,6 +3772,7 @@ mod tests {
                 franking_tag: [0; 32],
                 recv_ts: 0,
                 deleted: false,
+                class: None,
             },
         });
         ds.welcomes().unwrap();

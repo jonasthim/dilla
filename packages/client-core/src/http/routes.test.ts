@@ -211,8 +211,8 @@ const CASES: Case[] = [
       [CHANNEL, 0, 0, 0, CATEGORY, 'general', 'say hi', 1, 30, 5, GROUP],
     ]),
     expected: [
-      { id: CATEGORY, kind: 2, mode: 0, visibility: 0, parentId: null, name: 'text', topic: '', position: 0, seq: 0n, textGroupId: null },
-      { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, seq: 5n, textGroupId: GROUP },
+      { id: CATEGORY, kind: 2, mode: 0, visibility: 0, parentId: null, name: 'text', topic: '', position: 0, slowmode: 0, seq: 0n, textGroupId: null },
+      { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, slowmode: 30, seq: 5n, textGroupId: GROUP },
     ],
   },
   {
@@ -400,13 +400,13 @@ const CASES: Case[] = [
     name: 'getChannel of a DM reads the twelve-element row', call: (r) => r.getChannel(CHANNEL),
     method: 'GET', path: `/v1/channels/${hex(CHANNEL)}`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, null, 3, 0, 0, null, '', '', 0, 0, 4, GROUP]),
-    expected: { id: CHANNEL, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, seq: 4n, textGroupId: GROUP },
+    expected: { id: CHANNEL, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, slowmode: 0, seq: 4n, textGroupId: GROUP },
   },
   {
-    name: 'getChannel skips community_id and slow mode', call: (r) => r.getChannel(CHANNEL),
+    name: 'getChannel skips community_id and reads slow mode', call: (r) => r.getChannel(CHANNEL),
     method: 'GET', path: `/v1/channels/${hex(CHANNEL)}`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, COMMUNITY, 0, 0, 0, CATEGORY, 'general', 'say hi', 1, 30, 5, null]),
-    expected: { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, seq: 5n, textGroupId: null },
+    expected: { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, slowmode: 30, seq: 5n, textGroupId: null },
   },
   {
     name: 'deleteDevice removes an unlisted device row (73)', call: (r) => r.deleteDevice(DEVICE_2),
@@ -828,6 +828,16 @@ describe('Routes: retries and inputs', () => {
     expect(outcome).toMatchObject({ status: 0, code: 'E_NETWORK' });
   });
 
+  it('a 429 on postMessage is not waited out: the send lane requeues it (CB2)', async () => {
+    const { t, routes } = setup();
+    t.replies.push(refusal(429, 'E_RATE_LIMITED', 'slowmode', 5000), bytesReply(200, UPLOADED));
+    const outcome = await routes.postMessage(GROUP, BODY).then(() => 'sent', (e: unknown) => e);
+    expect(outcome).toBeInstanceOf(DillaHttpError);
+    expect(outcome).toMatchObject({ status: 429, code: 'E_RATE_LIMITED', retryAfterMs: 5000 });
+    expect(t.seen).toHaveLength(1);
+    expect(t.sleeps).toEqual([]);
+  });
+
   it('postAccount is sent once after a 500', async () => {
     const { t, routes } = setup();
     t.replies.push(refusal(500, 'E_INTERNAL'), cborReply(200, [USER, DEVICE, 'tok-new', 1]));
@@ -1151,6 +1161,26 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect(t.seen[0].body).toEqual(BODY);
   });
 
+  // web3.7 3a-client review I3: the boot sweep's requests can be cancelled; an abort stops the client's retries.
+  it('getChannelCall, endCallIfAlone and postProposal hand their signal to the client', async () => {
+    const { t, http, routes } = setup();
+    const abort = new AbortController();
+    t.replies.push(cborReply(200, [null, null, []]), noContent(), cborReply(201, [1]));
+    await routes.getChannelCall(CHANNEL, abort.signal);
+    await routes.endCallIfAlone(CALL, abort.signal);
+    await routes.postProposal(GROUP, BODY, abort.signal);
+    expect(http.requests.map((r) => r.signal)).toEqual([abort.signal, abort.signal, abort.signal]);
+  });
+
+  it('an end retrying on 503 stops once its signal aborts: no further attempt is sent', async () => {
+    const { t, routes } = setup();
+    const abort = new AbortController();
+    t.replies.push(() => { abort.abort(); return refusal(503, 'E_UNAVAILABLE', '', 1000); });
+    t.replies.push(noContent());
+    await expect(routes.endCallIfAlone(CALL, abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(t.seen).toHaveLength(1);
+  });
+
   it('declineCall(callId, 1700000030) sends [1700000030] and gives 204; its 404 is surfaced as E_NOT_FOUND', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
@@ -1267,6 +1297,21 @@ describe('Routes: server admin and moderation', () => {
     expect(named.seen.body).toEqual(encode(['lobby', 'a\nb', null, null, null, null, null]));
     const cleared = await one(noContent(), (r) => r.patchChannel(CHANNEL, { topic: '' }));
     expect(cleared.seen.body).toEqual(encode([null, '', null, null, null, null, null]));
+  });
+  it('patchChannel puts a slow-mode step in slot 6 and keeps it null otherwise', async () => {
+    const slow = await one(noContent(), (r) => r.patchChannel(CHANNEL, { slowmode: 10 }));
+    expect(slow.seen.body).toEqual(encode([null, null, null, null, null, null, 10]));
+    const off = await one(noContent(), (r) => r.patchChannel(CHANNEL, { slowmode: 0 }));
+    expect(off.seen.body).toEqual(encode([null, null, null, null, null, null, 0]));
+    const none = await one(noContent(), (r) => r.patchChannel(CHANNEL, {}));
+    expect(none.seen.body).toEqual(encode([null, null, null, null, null, null, null]));
+  });
+  it('patchChannel refuses a slow mode that is not a step, before any request', async () => {
+    const { t, routes } = setup();
+    const error = await routes.patchChannel(CHANNEL, { slowmode: 7 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RangeError);
+    expect((error as Error).message).toBe('E_ROUTE_INPUT: slowmode must be one of 0, 5, 10, 30, 60, 300, 900, 3600, 21600');
+    expect(t.seen).toHaveLength(0);
   });
   it('patchChannel refuses a 1025-byte topic and a NUL before any request, and accepts 1024 bytes', async () => {
     const { t, routes } = setup();

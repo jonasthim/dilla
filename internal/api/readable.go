@@ -259,7 +259,14 @@ func (h *Readable) slowmode(ctx context.Context, tx store.Repository, ch store.C
 	if err != nil {
 		return err
 	}
-	wait := last + int64(ch.SlowmodeSeconds) - now //nolint:gosec // G115: bounded by maxSlowmodeSeconds on write
+	return slowmodeWait(ch.SlowmodeSeconds, last, now)
+}
+
+// slowmodeWait is slow mode's arithmetic, shared by readable channels and the end-to-end encrypted
+// post policy (web3.7 SB1): nil once seconds have passed since last, else 429 E_RATE_LIMITED with
+// the remaining wait in retry_after_ms and the Detail "slowmode: N seconds left".
+func slowmodeWait(seconds uint64, last, now int64) error {
+	wait := last + int64(seconds) - now //nolint:gosec // G115: bounded by maxSlowmodeSeconds on write
 	if wait <= 0 {
 		return nil
 	}

@@ -21,7 +21,7 @@ pub const HANDSHAKE_TAIL: usize = 64;
 
 /// The highest app schema this build reads and migrates to. A store whose `app_meta` schema is
 /// above it was written by a newer client and is refused untouched (`StorageError::StoreNewer`).
-pub const APP_SCHEMA_SUPPORTED: u32 = 4;
+pub const APP_SCHEMA_SUPPORTED: u32 = 5;
 
 pub(crate) const SCHEMA: &str = "schema";
 pub(crate) const SIGNUP: &str = "signup";
@@ -81,6 +81,9 @@ pub(crate) const STATE_PRIOR: &str = "state_prior";
 ///   status-2 row that kept its identity; NULL otherwise.
 /// - `app_messages.edit_body` and `edit_seq`: the latest author's edit applied to a type-0 row;
 ///   NULL and 0 when there is none (L-CORE-33 step 3).
+/// - `app_messages.thread_id` (schema 5, web3.7): the envelope's `thread_id` of a type-0 row
+///   stored from a decrypted envelope (kept by the status-2 row that clears it); NULL on every
+///   other row, and on the rows a schema-4 store held before it migrated (no backfill, R26).
 /// - `app_reactions` and `app_pins`: derived per target by `fold::refold`.
 /// - `app_purges`: the task-3 purge records.
 /// - `app_roles`: this device's own role ids per community, replaced by `own_roles_set`.
@@ -242,6 +245,12 @@ CREATE TABLE IF NOT EXISTS app_trust_audit (
 ) WITHOUT ROWID;
 ";
 
+/// Schema 5 (web3.7 public threads): the thread column, added to a store found at schema 4 or
+/// below (a fresh store reads 3), and its index, read by the thread summary, `thread_timeline` and
+/// `threads`. Rows already stored keep a NULL `thread_id` (R26: no backfill).
+pub(super) const MIGRATE_V4_TO_V5: &str = "ALTER TABLE app_messages ADD COLUMN thread_id BLOB CHECK (thread_id IS NULL OR length(thread_id) = 16);";
+pub(super) const APP_INDEXES_V5: &str = "CREATE INDEX IF NOT EXISTS app_messages_by_thread ON app_messages (group_id, thread_id, type, seq);";
+
 /// web3.5 (W2a) authority, created by every open of a store at schema 4 or below, so a v3 store
 /// and a schema-4 store from before W2a both gain the tables (empty: no group has a known view).
 ///
@@ -368,7 +377,7 @@ pub(crate) fn refuse_newer(c: &rusqlite::Connection) -> Result<(), StorageError>
 }
 
 /// Refuses a newer store untouched (`refuse_newer`), then runs `APP_SCHEMA`, then v1-to-v2,
-/// v2-to-v3 and v3 indexes as needed. Returns the version it found before migrating, at most
+/// v2-to-v3, the v4 repairs and v4-to-v5 as needed. Returns the version it found before migrating, at most
 /// `APP_SCHEMA_SUPPORTED`; the caller's unit runs the appropriate backfills.
 pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError> {
     refuse_newer(c)?;
@@ -383,7 +392,10 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     if found == 1 || found == 2 {
         c.execute_batch(MIGRATE_V2_TO_V3)?;
     }
-    if found <= 4 {
+    // Every supported store runs this block on each open: its steps are idempotent repairs (the
+    // v4 tables, indexes and pair migrations), so a schema-5 store keeps them as a schema-4 store
+    // had them.
+    if found <= 5 {
         c.execute_batch(APP_INDEXES_V3)?;
         c.execute_batch(APP_SCHEMA_V4)?;
         c.execute_batch(APP_AUTHORITY)?;
@@ -402,7 +414,11 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
         if found < 4 || meta_get(c, "search_contract_v4")?.is_none() {
             open_fts5(c)?;
         }
-        meta_put(c, SCHEMA, &[4])?;
+        if found <= 4 && !has_column(c, "app_messages", "thread_id")? {
+            c.execute_batch(MIGRATE_V4_TO_V5)?;
+        }
+        c.execute_batch(APP_INDEXES_V5)?;
+        meta_put(c, SCHEMA, &[5])?;
     }
     Ok(found)
 }
@@ -626,7 +642,7 @@ fn migrate_trust_artifact_pairs(c: &rusqlite::Connection) -> Result<(), StorageE
 }
 
 /// Runs the schema migrations and their backfills in one unit. Returns the value it found: 1 to 3
-/// (migrated now; a fresh store reads 3) or 4 (current). A value above `APP_SCHEMA_SUPPORTED` is
+/// (migrated now; a fresh store reads 3), 4 (migrated to 5 now) or 5 (current). A value above `APP_SCHEMA_SUPPORTED` is
 /// `StorageError::StoreNewer`, and the store is left untouched.
 ///
 /// The backfill runs here as in `ClientCore::open` (pre-flight ruling (a)): a v1 store must never
@@ -642,7 +658,7 @@ pub fn migrate_app(storage: &DillaStorage) -> Result<u64, StorageError> {
             if found == 1 || found == 2 {
                 super::backfill_v3(u)?;
             }
-            if found <= 4 {
+            if found <= 5 {
                 u.with_conn(super::trust::seed_own_pin)?;
             }
             Ok(found)
@@ -694,10 +710,10 @@ mod search_upgrade_tests {
 }
 
 /// C4x (web3.6): a store written by a newer client (a rollback) is refused before anything
-/// touches it; schema 4 and below migrate as before.
+/// touches it; schema 5 and below migrate as before (web3.7 TB1 moved the bound from 4 to 5).
 #[cfg(test)]
 mod newer_store_tests {
-    use super::{APP_SCHEMA_SUPPORTED, migrate_conn};
+    use super::{APP_SCHEMA_SUPPORTED, has_column, migrate_conn};
     use crate::mls::StorageError;
 
     type Snapshot = (
@@ -725,31 +741,100 @@ mod newer_store_tests {
         (objects, meta)
     }
 
-    /// A store as this build leaves it, then moved on as a newer client might: schema 5 and one
+    fn schema_of(db: &rusqlite::Connection) -> Vec<u8> {
+        db.query_row("SELECT v FROM app_meta WHERE k = 'schema'", [], |r| {
+            r.get(0)
+        })
+        .expect("schema")
+    }
+
+    fn has_thread_index(db: &rusqlite::Connection) -> bool {
+        db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'app_messages_by_thread')",
+            [],
+            |r| r.get(0),
+        )
+        .expect("index query")
+    }
+
+    /// A store as this build leaves it, then moved on as a newer client might: schema 6 and one
     /// app table gone (renamed or dropped by its migration), which `APP_SCHEMA` would recreate.
-    fn v5_store() -> rusqlite::Connection {
+    fn v6_store() -> rusqlite::Connection {
         let db = rusqlite::Connection::open_in_memory().expect("db");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        db.execute_batch("UPDATE app_meta SET v = x'05' WHERE k = 'schema'; DROP TABLE app_roles;")
-            .expect("simulate a v5 store");
+        db.execute_batch("UPDATE app_meta SET v = x'06' WHERE k = 'schema'; DROP TABLE app_roles;")
+            .expect("simulate a v6 store");
+        db
+    }
+
+    /// A store as a web3.6 build left it: schema 4, no `thread_id` column and no thread index.
+    fn v4_store() -> rusqlite::Connection {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("fresh");
+        db.execute_batch(
+            "DROP INDEX IF EXISTS app_messages_by_thread;
+             UPDATE app_meta SET v = x'04' WHERE k = 'schema';",
+        )
+        .expect("simulate a v4 store");
+        if has_column(&db, "app_messages", "thread_id").expect("columns") {
+            db.execute_batch("ALTER TABLE app_messages DROP COLUMN thread_id;")
+                .expect("drop the v5 column");
+        }
         db
     }
 
     #[test]
-    fn the_supported_schema_is_4() {
-        assert_eq!(APP_SCHEMA_SUPPORTED, 4);
+    fn the_supported_schema_is_5() {
+        assert_eq!(APP_SCHEMA_SUPPORTED, 5);
     }
 
     #[test]
-    fn a_v5_store_is_refused_with_both_numbers_and_left_unchanged() {
-        let db = v5_store();
+    fn a_v4_store_gains_the_thread_column_and_index_and_reads_5() {
+        let db = v4_store();
+        assert_eq!(migrate_conn(&db).expect("migrates"), 4);
+        assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
+        assert!(has_thread_index(&db), "app_messages_by_thread exists");
+        assert_eq!(schema_of(&db), vec![0x05]);
+        // The column's check: a thread id is exactly 16 bytes or NULL.
+        let insert = |thread: &[u8]| {
+            db.execute(
+                "INSERT INTO app_messages (group_id,seq,epoch,recv_ts,status,sender_device,franking_tag,thread_id) \
+                 VALUES (x'01',?1,0,0,0,x'02',x'03',?2)",
+                rusqlite::params![thread.len() as i64, thread],
+            )
+        };
+        assert!(insert(&[7; 15]).is_err(), "a 15-byte thread id is refused");
+        assert!(insert(&[7; 16]).is_ok(), "a 16-byte thread id is stored");
+    }
+
+    #[test]
+    fn a_fresh_store_ends_at_5_with_the_thread_column() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        assert_eq!(migrate_conn(&db).expect("fresh"), 3);
+        assert_eq!(schema_of(&db), vec![0x05]);
+        assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
+        assert!(has_thread_index(&db));
+    }
+
+    #[test]
+    fn a_v5_store_opens_untouched() {
+        let db = rusqlite::Connection::open_in_memory().expect("db");
+        migrate_conn(&db).expect("fresh");
+        let before = snapshot(&db);
+        assert_eq!(migrate_conn(&db).expect("current"), 5);
+        assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
+    }
+
+    #[test]
+    fn a_v6_store_is_refused_with_both_numbers_and_left_unchanged() {
+        let db = v6_store();
         let before = snapshot(&db);
         let changes = db.total_changes();
         match migrate_conn(&db) {
             Err(StorageError::StoreNewer { found, supported }) => {
-                assert_eq!((found, supported), (5, 4));
+                assert_eq!((found, supported), (6, 5));
             }
-            other => panic!("a v5 store must be refused as StoreNewer, got {other:?}"),
+            other => panic!("a v6 store must be refused as StoreNewer, got {other:?}"),
         }
         assert_eq!(snapshot(&db), before, "no table, index or meta row changed");
         assert_eq!(db.total_changes(), changes, "no row written");
@@ -758,32 +843,34 @@ mod newer_store_tests {
     #[test]
     fn the_refusal_names_both_numbers() {
         let e = StorageError::StoreNewer {
-            found: 5,
-            supported: 4,
+            found: 6,
+            supported: 5,
         };
         assert_eq!(
             e.to_string(),
-            "app schema 5 is newer than this build, which supports up to 4"
+            "app schema 6 is newer than this build, which supports up to 5"
         );
     }
 
     #[test]
-    fn schemas_up_to_4_still_migrate_and_end_at_4() {
-        for found in [3u8, 4] {
-            let db = rusqlite::Connection::open_in_memory().expect("db");
-            migrate_conn(&db).expect("fresh");
-            db.execute(
-                "UPDATE app_meta SET v = ?1 WHERE k = 'schema'",
-                [[found].as_slice()],
-            )
-            .expect("set schema");
+    fn schemas_up_to_5_still_migrate_and_end_at_5() {
+        for found in [3u8, 4, 5] {
+            let db = if found == 5 {
+                let db = rusqlite::Connection::open_in_memory().expect("db");
+                migrate_conn(&db).expect("fresh");
+                db
+            } else {
+                let db = v4_store();
+                db.execute(
+                    "UPDATE app_meta SET v = ?1 WHERE k = 'schema'",
+                    [[found].as_slice()],
+                )
+                .expect("set schema");
+                db
+            };
             assert_eq!(migrate_conn(&db).expect("migrates"), u64::from(found));
-            let schema: Vec<u8> = db
-                .query_row("SELECT v FROM app_meta WHERE k = 'schema'", [], |r| {
-                    r.get(0)
-                })
-                .expect("schema");
-            assert_eq!(schema, vec![0x04]);
+            assert_eq!(schema_of(&db), vec![0x05]);
+            assert!(has_column(&db, "app_messages", "thread_id").expect("columns"));
         }
     }
 
@@ -795,6 +882,6 @@ mod newer_store_tests {
         )
         .expect("meta table");
         assert_eq!(migrate_conn(&db).expect("fresh"), 3);
-        assert_eq!(migrate_conn(&db).expect("current"), 4);
+        assert_eq!(migrate_conn(&db).expect("current"), 5);
     }
 }

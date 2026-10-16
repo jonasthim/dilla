@@ -2,6 +2,7 @@ import { useId, useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { arrowIndex } from '../internal/arrow-select.ts';
 import { hex } from '../internal/hex.ts';
 import './ColorSwatches.css';
+import { Icon } from '../Icon/Icon.tsx';
 
 export interface ColorSwatchesProps {
   label: string;
@@ -49,7 +50,7 @@ export function ColorSwatches({ label, hint, value, options, noneLabel, onChange
             <button key={i} ref={el => { refs.current[i] = el; }} type="button" role="radio" aria-label={o.name} title={o.name}
               className={`d-color-swatches__swatch${none ? ' d-color-swatches__swatch--none' : ''}`} style={style}
               aria-checked={i === checked} tabIndex={i === stop ? 0 : -1} onClick={() => { if (o.value !== value) onChange(o.value); }}>
-              {i === checked ? <span className="d-color-swatches__check" aria-hidden="true">{'✓'}</span> : null}
+              {i === checked ? <span className="d-color-swatches__check" aria-hidden="true"><Icon name="check" size={14} /></span> : null}
             </button>
           );
         })}

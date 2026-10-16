@@ -55,7 +55,10 @@ export function frameVectors() {
     frame('mls.handshake from the instance', 16, 7, GROUP, [4128, 41, 0, null, new Uint8Array([0xbe])]),
     frame('mls.commit_needed', 17, 0, GROUP, [41, [new Uint8Array(32).fill(0x0c)], 2000, 1]),
     frame('mls.epoch_changed', 18, 8, GROUP, [42, 4129]),
-    frame('message.ct', 19, 9, GROUP, [4130, 42, DEVICE, new Uint8Array([1, 2, 3]), TAG, 1758659700]),
+    // web3.7 (R29): the 7th element is the upload class the host stored, 0 for a post and 1 for
+    // any other type, or null for a legacy upload that carried none.
+    frame('message.ct', 19, 9, GROUP, [4130, 42, DEVICE, new Uint8Array([1, 2, 3]), TAG, 1758659700, 0]),
+    frame('message.ct with a null class', 19, 9, GROUP, [4130, 42, DEVICE, new Uint8Array([1, 2, 3]), TAG, 1758659700, null]),
     frame('mls.welcome', 20, 10, GROUP, [7, 42, 4129, new Uint8Array([4, 5]), new Uint8Array([6, 7]), TAG]),
     frame('message.deleted', 21, 11, GROUP, [4130, 1758659800]),
     frame('message.plain', 32, 12, null, [GROUP, 12, USER, new Uint8Array([8]), TAG, 0, 0]),
@@ -109,6 +112,9 @@ export function frameVectors() {
     // op 54 is server-to-client as op 53 is: the instance's code is E_FRAME_TYPE, and a client
     // decoder refuses two elements, not one, as E_FRAME_SHAPE.
     { name: 'community_changed with 2 elements', frame: hex(encode([54, 0, null, [COMMUNITY, 1]])), code: 'E_FRAME_TYPE' },
+    // op 19 is server-to-client as op 53 is: the instance's code is E_FRAME_TYPE at the opcode
+    // check, and a client decoder refuses eight elements, not six or seven, as E_FRAME_SHAPE.
+    { name: 'message.ct with 8 elements', frame: hex(encode([19, 9, GROUP, [4130, 42, DEVICE, new Uint8Array([1, 2, 3]), TAG, 1758659700, 0, 0]])), code: 'E_FRAME_TYPE' },
   ];
 
   return {

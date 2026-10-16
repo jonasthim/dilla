@@ -12,7 +12,8 @@ export type Command =
   // v0.1.0-web3.1, ready only. Names are checked as the instance checks them: 1..255 UTF-8 bytes for a server, 1..100 for a
   // channel, no control character, not blank. createChannel adds a top-level channel the server cannot read.
   | { m: 'createCommunity'; name: string }                                              // → { communityId }; listed before the ret
-  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice'; name: string; private?: { roleIds: string[] } }   // → { channelId }; listed before the ret
+  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice' | 'announcement'; name: string;
+      private?: { roleIds: string[] }; announce?: { roleIds: string[] } }   // → { channelId }; listed before the ret
   | { m: 'createInvite'; communityId: string; maxUses: number; ttlSeconds: number }     // → InviteCreatedResult
   | { m: 'selectCommunity'; communityId: string }
   // Ready only → null: GET /v1/communities again; the communities slice is published before the answer (the page looks for
@@ -21,7 +22,11 @@ export type Command =
   | { m: 'openChannel'; channelId: string }
   | { m: 'closeChannel'; channelId: string }
   | { m: 'loadEarlier'; channelId: string }
-  | { m: 'send'; channelId: string; text: string; replyTo?: string | null; attachments?: readonly string[] }   // → { msgId }
+  // web3.7 public threads. One open thread per channel; it is read again whenever the channel's timeline is.
+  | { m: 'openThread'; channelId: string; rootMsgId: string }    // ready → null; slice thread:<channel>, published before the ret
+  | { m: 'closeThread'; channelId: string }                       // ready → null; thread:<channel> = null
+  | { m: 'loadThreads'; channelId: string }                       // ready → null; slice threads:<channel>
+  | { m: 'send'; channelId: string; text: string; replyTo?: string | null; attachments?: readonly string[]; threadId?: string | null }   // → { msgId }; threadId: a held type-0 root (web3.7)
   | { m: 'retrySend'; msgId: string }
   | { m: 'discardSend'; msgId: string }
   | { m: 'signInBegin' }                                         // needs-signup → signin-login
@@ -90,7 +95,7 @@ export type Command =
   | { m: 'leaveCommunity'; communityId: string }            // same
   | { m: 'transferOwnership'; communityId: string; userId: string }
   | { m: 'createCategory'; communityId: string; name: string }   // → { channelId }
-  | { m: 'updateChannel'; channelId: string; name: string | null; topic: string | null; parent: string }  // parent: 'keep'|'top'|32-hex
+  | { m: 'updateChannel'; channelId: string; name: string | null; topic: string | null; parent: string; slowmode: number | null }  // parent: 'keep'|'top'|32-hex; slowmode: null keeps it, else a SLOW_STEPS value
   | { m: 'moveChannel'; channelId: string; direction: 'up' | 'down' }
   | { m: 'deleteChannel'; channelId: string }
   | { m: 'kickMember'; communityId: string; userId: string }

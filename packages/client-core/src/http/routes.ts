@@ -34,7 +34,7 @@ export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array
 export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
-  name: string; topic: string; position: number; seq: bigint; textGroupId: Uint8Array | null; }
+  name: string; topic: string; position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null; }
 export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; roleIds: Uint8Array[]; }
 export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
@@ -69,6 +69,8 @@ export interface CommunityCreated { id: Uint8Array; roleEveryone: Uint8Array; po
 export interface ChannelCreated { id: Uint8Array; mode: number; visibility: number; }
 export interface InviteCreated { inviteId: Uint8Array; code: string; url: string; expires: bigint; }
 export type NewChannelKind = 'text' | 'voice';
+/** The slow-mode steps in seconds the instance accepts (0 is off; the instance's own ceiling is six hours). */
+export const SLOW_STEPS = [0, 5, 10, 30, 60, 300, 900, 3600, 21600] as const;
 
 // ---- wave 1: server admin and moderation (flow 08) ----
 /** The instance's own bounds (internal/api): the owner's rank, roles per community, bans, invites, a topic and a ban reason. */
@@ -86,7 +88,7 @@ export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array
   username: string; display: string }
 export interface InviteRow { id: Uint8Array; communityId: Uint8Array | null; createdBy: Uint8Array | null; maxUses: number;
   uses: number; created: bigint; expires: bigint; revokedAt: bigint | null }
-export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Array | 'top'; position?: number }
+export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Array | 'top'; position?: number; slowmode?: number }
 
 // ---- wave 2a: roles and private channels (flow 09) ----
 /** The instance's own bounds (internal/api roles.go, channels.go): overwrites per community, a role name, a role colour,
@@ -194,6 +196,10 @@ function between(field: string, v: number, min: number, max: number): number {
   if (!Number.isSafeInteger(v) || v < min || v > max) throw new RangeError(`E_ROUTE_INPUT: ${field} must be ${String(min)}..${String(max)}`);
   return v;
 }
+function slowStep(v: number): number {
+  if (!(SLOW_STEPS as readonly number[]).includes(v)) throw new RangeError('E_ROUTE_INPUT: slowmode must be one of ' + SLOW_STEPS.join(', '));
+  return v;
+}
 /** An invite link as the instance answers it: an absolute http(s) URL (it is shown and copied, never followed here) whose
  *  path is `/i/<code>` for the answered code, with no query or fragment (WB m6): the instance's own landing, nothing else. */
 function inviteUrl(v: CborValue, code: string): string {
@@ -289,7 +295,7 @@ export class Routes {
   constructor(private readonly http: HttpClient) {}
 
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
-    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes'> = {}): Promise<Uint8Array> {
+    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes' | 'signal'> = {}): Promise<Uint8Array> {
     return (await this.http.request({ method, path, bucket, idempotent, ...options })).body;
   }
 
@@ -389,7 +395,7 @@ export class Routes {
     return arr(decode(raw)).map((value) => {
       const a = atLeast(value, 11);
       return { id: bin(a[0], 16), kind: u53(a[1]), mode: u53(a[2]), visibility: u53(a[3]),
-        parentId: opt(a[4], (v) => bin(v, 16)), name: str(a[5]), topic: str(a[6]), position: u53(a[7]),
+        parentId: opt(a[4], (v) => bin(v, 16)), name: str(a[5]), topic: str(a[6]), position: u53(a[7]), slowmode: u53(a[8]),
         seq: u64(a[9]), textGroupId: opt(a[10], (v) => bin(v, 16)) };
     });
   }
@@ -450,7 +456,8 @@ export class Routes {
     const parent = patch.parent === undefined ? null : patch.parent === 'top' ? new Uint8Array(16) : bin(patch.parent, 16);
     const body = encode([patch.name === undefined ? null : checkedName('name', patch.name, CHANNEL_NAME_MAX_BYTES),
       patch.topic === undefined ? null : checkedText('topic', patch.topic, TOPIC_MAX_BYTES), null, null, parent,
-      patch.position === undefined ? null : between('position', patch.position, 0, CHANNEL_POSITION_MAX), null]);
+      patch.position === undefined ? null : between('position', patch.position, 0, CHANNEL_POSITION_MAX),
+      patch.slowmode === undefined ? null : slowStep(patch.slowmode)]);
     await this.body('PATCH', `/v1/channels/${id('channelId', channelId)}`, 'write', true, { body });
   }
   async deleteChannel(channelId: Uint8Array): Promise<void> {
@@ -550,7 +557,9 @@ export class Routes {
     return { seq: u64(a[0]), epoch: u64(a[1]) };
   }
   async postMessage(groupId: Uint8Array, body: Uint8Array): Promise<MessageUploaded> {
-    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false, { body });
+    // CB2: a 429 (slow mode) goes back to the send lane, which requeues the row and arms its own timer; a sleep here
+    // would hold the group's lane (frames and catch-up) for up to RETRY.maxWaitMs.
+    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false, { body, retry429: false });
     return { raw, seq: u64(atLeast(decode(raw), 1)[0]) };
   }
   async postCursor(groupId: Uint8Array, body: Uint8Array): Promise<void> {
@@ -640,7 +649,7 @@ export class Routes {
   async getChannel(channelId: Uint8Array): Promise<ChannelRow> {
     const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}`, 'read', true)), 12);
     return { id: bin(a[0], 16), kind: u53(a[2]), mode: u53(a[3]), visibility: u53(a[4]),
-      parentId: opt(a[5], (v) => bin(v, 16)), name: str(a[6]), topic: str(a[7]), position: u53(a[8]),
+      parentId: opt(a[5], (v) => bin(v, 16)), name: str(a[6]), topic: str(a[7]), position: u53(a[8]), slowmode: u53(a[9]),
       seq: u64(a[10]), textGroupId: opt(a[11], (v) => bin(v, 16)) };
   }
   async deleteDevice(deviceId: Uint8Array): Promise<void> {
@@ -681,9 +690,9 @@ export class Routes {
   // ---- web-3 calls (L-HTTP-100..104, L-TS-55) ----
 
   /** L-HTTP-100: the channel's call group (the live call's, else the newest open one, else null), its live call and who
-   *  is in it. */
-  async getChannelCall(channelId: Uint8Array): Promise<ChannelCall> {
-    const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}/call`, 'read', true)), 3);
+   *  is in it. `signal` (web3.7 3a-client: the boot sweep's) aborts it and its retries. */
+  async getChannelCall(channelId: Uint8Array, signal?: AbortSignal): Promise<ChannelCall> {
+    const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}/call`, 'read', true, { signal })), 3);
     return { groupId: opt(a[0], (v) => bin(v, 16)), callId: opt(a[1], (v) => bin(v, 16)), participants: participants(a[2]) };
   }
   /** L-HTTP-101: the live calls of the community's voice channels the caller may view. */
@@ -716,9 +725,9 @@ export class Routes {
    *  call group's only current leaf, decided under the group lock; true once it has ended (204, also when it already
    *  had), false when another device holds a leaf (409 E_CALL_NOT_ALONE: the call goes on). The client never sends the
    *  unconditional form (web-3 task 10 fix, f10app I1). */
-  async endCallIfAlone(callId: Uint8Array): Promise<boolean> {
+  async endCallIfAlone(callId: Uint8Array, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.body('DELETE', callPath(callId, '?if_alone=1'), 'write', true, { ok: [204] });
+      await this.body('DELETE', callPath(callId, '?if_alone=1'), 'write', true, { ok: [204], signal });
       return true;
     } catch (e) {
       if (e instanceof DillaHttpError && e.status === 409 && e.code === 'E_CALL_NOT_ALONE') return false;
@@ -733,8 +742,8 @@ export class Routes {
     await this.body('POST', callPath(callId, '/stats'), 'write', false, { body: encode(report), ok: [204], retry429: false });
   }
   /** L-HTTP-103: a core-built [epoch, proposal] body, unchanged. */
-  async postProposal(groupId: Uint8Array, body: Uint8Array): Promise<{ seq: bigint }> {
-    const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/proposal`, 'commit', false, { body })), 1);
+  async postProposal(groupId: Uint8Array, body: Uint8Array, signal?: AbortSignal): Promise<{ seq: bigint }> {
+    const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/proposal`, 'commit', false, { body, signal })), 1);
     return { seq: u64(a[0]) };
   }
   /** L-HTTP-104: the body echoes the ring's expires_ts, so a late decline never stops a later ring of the same DM. */

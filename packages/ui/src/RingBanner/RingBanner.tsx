@@ -1,6 +1,7 @@
 import { useId, useLayoutEffect, useRef } from 'react';
 import { Button } from '../Button/Button.tsx';
 import './RingBanner.css';
+import { StateDot } from '../StateDot/StateDot.tsx';
 
 export interface RingBannerProps {
   /** `text` is the filled `call.ring.incoming` or, while this device is in voice, `call.ring.busy`. */
@@ -25,7 +26,7 @@ function Ring({ ring, labels, onAnswer, onDecline }: { ring: RingBannerProps['ri
   }, []);
   return (
     <li ref={ref} className="d-ring-banner__ring" data-ring={ring.busy ? 'busy' : 'incoming'}>
-      <span className="d-ring-banner__glyph" aria-hidden="true">◉</span>
+      <span className="d-ring-banner__glyph" aria-hidden="true"><StateDot tone={ring.busy ? 'off' : 'ok'} size="md" /></span>
       <p id={textId} role="alert" className="d-ring-banner__text">{ring.text}</p>
       <span className="d-ring-banner__actions">
         <Button variant="accent" className="d-ring-banner__answer" aria-describedby={textId} onClick={() => onAnswer(ring.callId)}>{labels.answer}</Button>

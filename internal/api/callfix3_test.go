@@ -16,21 +16,14 @@ import (
 	"github.com/jonasthim/dilla/internal/id"
 )
 
-// proxyAdmitter is the /rtc proxy's second step: the admission it records once every check passed.
-type proxyAdmitter interface {
-	Admitted(ctx context.Context, room string, dev id.ID)
-}
-
-// admitThroughProxy is what the /rtc proxy does for a join it lets through: the gate's checks
+// admitThroughProxy is what the /rtc proxy does for a fresh join it lets through: the gate's checks
 // (AdmitRoom), then, once the proxy's own token and client checks passed too, the admission.
 func admitThroughProxy(t *testing.T, calls *api.Calls, room string, dev id.ID) {
 	t.Helper()
 	if _, code, err := admitted(t, calls, room, dev); code != "" || err != nil {
 		t.Fatalf("admission = %q %v", code, err)
 	}
-	if a, ok := any(calls).(proxyAdmitter); ok {
-		a.Admitted(t.Context(), room, dev)
-	}
+	calls.Admitted(t.Context(), room, dev, false)
 }
 
 // sendLeft is a participant_left of dev's session sid that LiveKit reports joined at joinedAt.

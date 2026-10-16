@@ -123,7 +123,7 @@ var opSpecs = map[Op]opSpec{
 	OpMLSHandshake:    {elements: 5, grouped: true, replayable: true},
 	OpMLSCommitNeeded: {elements: 4, grouped: true},
 	OpMLSEpochChanged: {elements: 2, grouped: true, replayable: true},
-	OpMessageCT:       {elements: 6, grouped: true, replayable: true},
+	OpMessageCT:       {elements: 7, grouped: true, replayable: true},
 	OpMLSWelcome:      {elements: 6, grouped: true, replayable: true},
 	OpMessageDeleted:  {elements: 2, grouped: true, replayable: true},
 

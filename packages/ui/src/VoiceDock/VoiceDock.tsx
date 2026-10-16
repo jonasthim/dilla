@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 import { VOICE_ICONS, VOICE_SHORTCUTS, VoiceToolbar, voiceWhy, type ToolbarControl, type VoiceWhyLabels } from '../CallControls/CallControls.tsx';
 import './VoiceDock.css';
+import { Icon } from '../Icon/Icon.tsx';
+import { StateDot } from '../StateDot/StateDot.tsx';
 
 export interface VoiceDockProps {
   phase: 'connecting' | 'connected' | 'reconnecting' | 'paused';
@@ -42,6 +44,8 @@ export interface VoiceDockProps {
     /** The reasons an inert camera or share gives in its tooltip and description (`voice.why.*`); none without it. */
     why?: VoiceWhyLabels;
   };
+  /** False renders where, the meter and the status region, and no toolbar (the phone's call bar holds the controls). Default true. */
+  controls?: boolean;
   /** Optional: the input meter (an `AudioMeter`), shown under the status line. */
   meter?: ReactNode;
   onMute(): void;
@@ -53,7 +57,10 @@ export interface VoiceDockProps {
   onLeave(): void;
 }
 
-const PHASE_GLYPH = { connecting: '◌', connected: '●', reconnecting: '◌', paused: '‖' } as const;
+const PHASE_GLYPH = {
+  connecting: <StateDot tone="pending" />, connected: <StateDot tone="ok" />,
+  reconnecting: <StateDot tone="pending" />, paused: <Icon name="pause" size={14} />,
+} as const;
 
 /**
  * The voice dock above the user panel while this device is in voice: where it is (a glyph plus the words), the
@@ -63,7 +70,7 @@ const PHASE_GLYPH = { connecting: '◌', connected: '●', reconnecting: '◌', 
  */
 export function VoiceDock({
   phase, where, muted, deafened, camera = false, sharing = false, canCamera = true, canShare = true, busy = false, paused, shortcuts,
-  announcement, labels, meter, onMute, onDeafen, onCamera, onShare, onLeave,
+  announcement, labels, controls: showControls = true, meter, onMute, onDeafen, onCamera, onShare, onLeave,
 }: VoiceDockProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? (phase === 'paused' || !canCamera), canCamera, canShare });
   const text = {
@@ -90,7 +97,7 @@ export function VoiceDock({
         <span className="d-voice-dock__text">{text}</span>
       </p>
       {meter !== undefined ? <div className="d-voice-dock__meter">{meter}</div> : null}
-      <VoiceToolbar label={labels.region} controls={controls} className="d-voice-dock__controls" />
+      {showControls ? <VoiceToolbar label={labels.region} controls={controls} className="d-voice-dock__controls" /> : null}
       <p className="d-sr-only" role="status">{announcement}</p>
     </div>
   );

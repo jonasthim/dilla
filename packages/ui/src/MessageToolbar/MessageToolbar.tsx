@@ -7,7 +7,7 @@ export interface MessageToolbarProps {
   label: string;
   tabbable: boolean;
   items: readonly {
-    id: 'react' | 'reply' | 'edit' | 'pin' | 'delete'; label: string; danger?: boolean;
+    id: 'react' | 'reply' | 'thread' | 'edit' | 'pin' | 'delete'; label: string; danger?: boolean;
     onAction(e: MouseEvent | KeyboardEvent): void;
   }[];
 }

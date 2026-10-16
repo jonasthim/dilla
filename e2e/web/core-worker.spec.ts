@@ -102,6 +102,7 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       expect(await slice<ChannelSummary[]>(page, `channels:${s.community_id}`)).toEqual([{
         id: s.channel_id, communityId: s.community_id, kind: 0, mode: 0, name: 'general', topic: '',
         parentId: null, position: 0, group: expect.stringMatching(/^(none|joining|active)$/) as unknown as string,
+        slowmode: 0, announcement: false,
       }]);
       const members = (await slice<MemberSummary[]>(page, `members:${s.community_id}`))!;
       expect(members).toHaveLength(2);
@@ -227,14 +228,20 @@ test('a second browser joins the account by password and recovery key, badges an
       await expect.poll(async () => (await slice<TimelineState>(page, `timeline:${s.channel_id}`))?.group, { timeout: WAIT }).toBe('active');
     });
 
-    const { page: b } = await secondBrowser();
+    const { context: bContext, page: b } = await secondBrowser();
     b.on('pageerror', (e) => pageErrors.push(e.message));
+    // CI1: B reads the peer's device list 3 s late, so the peer's message below arrives before B trusts its sender and
+    // is held, then released by the trust refresh: the badge and notice checks cover that path on every run.
+    await bContext.route(new RegExp(`/v1/users/${s.user_id}/device-list`), async (route) => {
+      await new Promise((resolve) => { setTimeout(resolve, 3_000); });
+      await route.continue();
+    });
 
     await test.step('browser B signs in with the password and the recovery key; a wrong key is refused first', async () => {
       await openHarness(b);
       await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
       await ok(b, { m: 'signInBegin' });
-      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-login', signIn: { username: null, needsTotp: false } });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-login', signIn: { username: null } });
       // The key travels with the login (coordinator ruling on REGISTRATION-DEVICES-02's concern 3): a well-formed key
       // of another account registers, then the root refuses it, and the registered enrolment waits at signin-key.
       const wrong = [...recoveryKey];
@@ -242,7 +249,7 @@ test('a second browser joins the account by password and recovery key, badges an
       wrong[0] = (first[0] === 'A' ? 'B' : 'A') + first.slice(1);
       // web3.6: the password is followed by the code, and the root refuses the key once the code is in.
       await ok(b, { m: 'signInLogin', username, password, recoveryKey: wrong.join(' ') });
-      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-totp', signIn: { username, needsTotp: true } });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-totp', signIn: { username } });
       expect(await call(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor), recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username } });
       await ok(b, { m: 'signInKey', recoveryKey: recoveryKey.join('-').toLowerCase() });
@@ -418,7 +425,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
       peerSeq = held.seq!;
       const answer = ((await ok(b, { m: 'send', channelId: ch, text: 'answer', replyTo: peerMsg })) as { msgId: string }).msgId;
       await expect.poll(async () => (await itemOf(page, answer))?.reply ?? null, { timeout: WAIT })
-        .toEqual({ msgId: peerMsg, state: 'ok', senderUser: s.user_id, excerpt: 'peer says hi', seq: peerSeq });
+        .toEqual({ msgId: peerMsg, state: 'ok', senderUser: s.user_id, excerpt: 'peer says hi', seq: peerSeq, threadRoot: null });
       expect(await peerSees((r) => r.msg_id === answer, 'the reply')).toMatchObject({ type: 0, reply_to: peerMsg, body: 'answer' });
     });
 
@@ -429,7 +436,7 @@ test('two devices of one account fold edits, reactions, replies, pins and delete
       await ok(page, { m: 'loadPins', channelId: ch });
       await expect.poll(async () => await slice<PinnedItem[]>(page, `pins:${ch}`), { timeout: WAIT }).toEqual([{
         msgId: peerMsg, seq: peerSeq, senderUser: s.user_id, excerpt: 'peer says hi', pinnedBy: userId,
-        pinnedSeq: expect.stringMatching(/^[1-9][0-9]*$/) as unknown as string, ts: peerTs,
+        pinnedSeq: expect.stringMatching(/^[1-9][0-9]*$/) as unknown as string, ts: peerTs, threadRoot: null,
       }]);
       await expect.poll(async () => (await itemOf(b, peerMsg))?.pinned ?? null, { timeout: WAIT }).toBe(true);
       await ok(page, { m: 'closePins', channelId: ch });

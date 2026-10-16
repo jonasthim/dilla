@@ -2,6 +2,7 @@ import { useId, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref 
 import { Avatar } from '../Avatar/Avatar.tsx';
 import { Tag } from '../Tag/Tag.tsx';
 import { Button } from '../Button/Button.tsx';
+import { Icon } from '../Icon/Icon.tsx';
 import { RoleDot } from '../internal/RoleDot.tsx';
 import './MessageRow.css';
 
@@ -27,6 +28,8 @@ export interface MessageRowProps {
   };
   attachments?: ReactNode;
   reactions?: ReactNode;
+  /** A public thread's summary under the body: a chip button named by `label` ("2 replies") that opens it. */
+  thread?: { label: string; onOpen(): void };
   toolbar?: ReactNode;
   editor?: ReactNode;
   pendingAction?: { label: string; tone: 'pending' | 'failed'; actions?: readonly { label: string; onAction(): void }[] };
@@ -90,7 +93,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  */
 export function MessageRow({
   author, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
-  reactions, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId,
+  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId,
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
@@ -129,6 +132,12 @@ export function MessageRow({
         {editor !== undefined ? editor : showBody ? <p className="d-message-row__body">{bodyChildren(body)}</p> : null}
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
+        {thread !== undefined ? (
+          <button type="button" className="d-message-row__thread" tabIndex={tabIndex}
+            onPointerDown={e => e.preventDefault()} onClick={() => thread.onOpen()}>
+            <Icon name="messages-square" size={14} />{thread.label}
+          </button>
+        ) : null}
         {pendingAction !== undefined ? (
           <p className="d-message-row__pending" data-tone={pendingAction.tone}>
             <span className="d-message-row__pending-label">{pendingAction.label}</span>

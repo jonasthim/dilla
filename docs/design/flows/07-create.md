@@ -59,7 +59,7 @@ The two action tiles end the server list. Each is a dashed square with a caption
 │ both called general.                                │   │ It can be used 10 times and expires in 7 days.       │
 │ SERVER NAME                                         │   │ Anyone who has it can join Midgard Crew.             │
 │ [Midgard Crew                                    ]  │   │ › Invite link copied.                                │
-│ Up to 255 bytes.                                    │   │                                                      │
+│ Up to 255 characters (fewer for some letters).                                    │   │                                                      │
 │                              [Close esc] [Create]   │   │                                       [Close esc]    │
 └─────────────────────────────────────────────────────┘   └──────────────────────────────────────────────────────┘
 ```
@@ -113,9 +113,9 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 *Start a server:*
 - `create.server.title='Start a server'`
 - `create.server.body='You own it: you add its channels and invite people. It starts with a text channel and a voice channel, both called general.'`
-- `create.server.name='Server name'`, `create.server.hint='Up to 255 bytes.'`
+- `create.server.name='Server name'`, `create.server.hint='Up to 255 characters (fewer for some letters).'`
 - `create.server.submit='Create'`, `create.server.busy='Creating…'`, `create.server.retry='Try again'`
-- `create.server.error.empty='Give the server a name.'`, `create.server.error.long='That name is too long. A server name is up to 255 bytes.'`
+- `create.server.error.empty='Give the server a name.'`, `create.server.error.long='That name is too long. A server name is up to 255 characters (fewer for some letters).'`
 - `create.server.error.refused='That name was refused. Try another.'`, `create.server.error.other='Could not start the server ({code}). Try again.'`
 - `create.server.error.ambiguous='More than one new server of yours is named {name}. Open the one you meant from the server list.'`
 - `create.server.partial='{name} is ready, but its channels were not added ({code}). Try again, or close this and add them from the channel list.'`
@@ -125,10 +125,10 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 
 *New channel:*
 - `create.channel.title='New channel in {server}'`, `create.channel.kind='Kind'`, `create.channel.text='text'`, `create.channel.voice='voice'`
-- `create.channel.name='Channel name'`, `create.channel.hint='Up to 100 bytes.'`
-- `create.channel.hintText='Shown as #{name}. Up to 100 bytes.'`, `create.channel.hintVoice='Shown as {name}. Up to 100 bytes.'`
+- `create.channel.name='Channel name'`, `create.channel.hint='Up to 100 characters (fewer for some letters).'`
+- `create.channel.hintText='Shown as #{name}. Up to 100 characters (fewer for some letters).'`, `create.channel.hintVoice='Shown as {name}. Up to 100 characters (fewer for some letters).'`
 - `create.channel.submit='Create'`, `create.channel.busy='Creating…'`
-- `create.channel.error.empty='Give the channel a name.'`, `create.channel.error.long='That name is too long. A channel name is up to 100 bytes.'`
+- `create.channel.error.empty='Give the channel a name.'`, `create.channel.error.long='That name is too long. A channel name is up to 100 characters (fewer for some letters).'`
 - `create.channel.error.forbidden='You cannot add channels to this server.'`, `create.channel.error.refused='That name was refused. Try another.'`
 - `create.channel.error.other='Could not add the channel ({code}). Try again.'`
 - `create.channel.error.takenText='There is already a text channel called #{name}. Try another.'`

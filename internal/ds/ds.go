@@ -211,6 +211,10 @@ type Options struct {
 	// default; the composition root injects api.ResolverACL, the permission resolver over roles
 	// and channel overwrites (Plan 2 task 3, NV-B6 closed).
 	ACL ACL
+	// PostPolicy decides an end-to-end encrypted upload by its upload class (web3.7 SB1,
+	// protocol/02 § Upload class): send_messages and slow mode. nil accepts every upload; the
+	// composition root injects api.PostPolicy.
+	PostPolicy PostPolicy
 	// DeviceLists decodes and verifies a user's signed device list for invariant 4's DSK clause.
 	// nil means NewDeviceLists(Store, Wasm), which verifies the stored list in the guest (NV-B8,
 	// resolved by task 27a's ABI v3 export device_list_entries).
@@ -229,6 +233,15 @@ type Options struct {
 	// and outside any group lock, on the fork-report request's goroutine, so it must return at once:
 	// the composition root's hook only queues the cut (api.Calls.CutDevice); nil means nobody is told.
 	OnQuarantine func(ctx context.Context, device id.ID)
+}
+
+// PostPolicy is the host's rule for one application message upload, by its upload class (web3.7
+// SB1, protocol/02 § Upload class). Upload calls it under the group lock, after the current-leaf
+// check and before the store transaction, and returns its error unchanged.
+type PostPolicy interface {
+	// Check decides an upload of class (0 a post, 1 anything else, nil a legacy two-element upload) by userID
+	// into g, under the group lock. A nil class is checked for send_messages and never slowed (R28).
+	Check(ctx context.Context, g store.GroupRow, userID id.ID, class *uint8, now int64) error
 }
 
 type DS struct {
@@ -402,8 +415,12 @@ func (d *DS) lock(groupID id.ID) func() {
 
 func (d *DS) now() int64 { return d.opts.Clock.Now().Unix() }
 
-// groupKindCall is GroupRow.Kind for a call group (protocol/01 § Group kinds).
-const groupKindCall uint8 = 1
+// groupKindText and groupKindCall are GroupRow.Kind for a text and a call group (protocol/01
+// § Group kinds).
+const (
+	groupKindText uint8 = 0
+	groupKindCall uint8 = 1
+)
 
 // CallEvictor receives the devices a member-set writer removed from a call group.
 type CallEvictor func(ctx context.Context, groupID id.ID, removed []id.ID)

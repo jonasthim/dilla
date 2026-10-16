@@ -652,7 +652,8 @@ fn a_reply_shows_its_target_held_missing_or_deleted() {
             target_seq: Some(2),
             target_user: Some(PEER_USER),
             excerpt: "first line second third".into(),
-            state: 0
+            state: 0,
+            thread_root: None
         })
     );
     assert_eq!(
@@ -662,7 +663,8 @@ fn a_reply_shows_its_target_held_missing_or_deleted() {
             target_seq: None,
             target_user: None,
             excerpt: String::new(),
-            state: 1
+            state: 1,
+            thread_root: None
         })
     );
     assert_eq!(
@@ -672,7 +674,8 @@ fn a_reply_shows_its_target_held_missing_or_deleted() {
             target_seq: Some(5),
             target_user: Some(PEER_USER),
             excerpt: String::new(),
-            state: 2
+            state: 2,
+            thread_root: None
         })
     );
     assert_eq!(
@@ -1005,6 +1008,7 @@ fn pins_list_newest_first_and_name_who_pinned() {
         author: Some(PEER_USER),
         excerpt: "second pinned".into(),
         target_ts: row_at(&me, 4).recv_ts,
+        thread_root: None,
     };
     assert_eq!(
         pins(&me),
@@ -1017,7 +1021,8 @@ fn pins_list_newest_first_and_name_who_pinned() {
                 by_user: READER_USER,
                 author: Some(PEER_USER),
                 excerpt: "first pinned".into(),
-                target_ts: a_ts
+                target_ts: a_ts,
+                thread_root: None,
             },
         ]
     );
@@ -1037,7 +1042,8 @@ fn pins_list_newest_first_and_name_who_pinned() {
                 by_user: READER_USER,
                 author: Some(PEER_USER),
                 excerpt: "first pinned".into(),
-                target_ts: a_ts
+                target_ts: a_ts,
+                thread_root: None,
             },
             pin_b,
         ]
@@ -2623,5 +2629,231 @@ fn a_changed_view_touches_only_the_affected_targets_and_rows() {
         (row_at(&me, 7).mention, row_at(&me, 8).mention),
         (0, 0),
         "the reader's row rescanned; the peer's not"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// web3.7 RB1 (R5, R46): the host relays the upload class it stored with every row. A class that
+// disagrees with the decrypted type (a post sent as class 1, a fold sent as class 0) is neither
+// shown nor folded; a legacy row without a class is accepted.
+
+/// The class the relay serves for the row at `seq` (`None` serves the legacy eight elements).
+fn serve_class(relay: &mut Relay, seq: u64, class: Option<u64>) {
+    relay
+        .messages
+        .iter_mut()
+        .find(|m| m.seq == seq)
+        .expect("a stored row")
+        .class = class;
+}
+
+/// (status, reason, type, msg_id is NULL, reply_to is NULL, mention) of the stored row at `seq`.
+fn stored(me: &Core, seq: u64) -> (i64, String, Option<i64>, bool, bool, i64) {
+    me.probe
+        .lock()
+        .expect("lock")
+        .query_row(
+            &format!(
+                "SELECT status, reason, type, msg_id IS NULL, reply_to IS NULL, mention \
+                 FROM app_messages WHERE seq = {seq}"
+            ),
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .expect("a stored row")
+}
+
+/// (unread, mentions, last_seq) of GROUP's activity.
+fn unread(me: &Core) -> (u64, u64, u64) {
+    let a = activity(&me.core)
+        .into_iter()
+        .find(|a| a.group_id == GROUP)
+        .expect("the group's activity");
+    (a.unread, a.mentions, a.last_seq)
+}
+
+/// A post at seq 2 and a reaction to it at seq 3, served with the given classes; me syncs.
+fn post_and_react(post_class: Option<u64>, react_class: Option<u64>) -> Core {
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x71, Message, None, "the target"),
+        2
+    );
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa1, ReactionAdd, Some(TARGET), "👍"),
+        3
+    );
+    serve_class(&mut relay, 2, post_class);
+    serve_class(&mut relay, 3, react_class);
+    me.sync(&relay);
+    me
+}
+
+#[test]
+fn class_mismatch_is_neither_shown_nor_folded() {
+    let (_i, mut relay, mut me, mut peer) = fold_start();
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x71, Message, None, "the target"),
+        2
+    );
+    // A reply that mentions me, sent as a fold: without the rule it would show, count as an
+    // unread mention and keep its reply_to.
+    let mention = format!("hey <@{}> sent as a fold", "a1".repeat(16));
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x72, Message, Some(TARGET), &mention),
+        3
+    );
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa1, ReactionAdd, Some(TARGET), "👍"),
+        4
+    );
+    assert_eq!(post(&mut peer, &mut relay, 0xa2, Pin, Some(TARGET), ""), 5);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0xa3, Edit, Some(TARGET), "edited"),
+        6
+    );
+    serve_class(&mut relay, 2, Some(0));
+    serve_class(&mut relay, 3, Some(1));
+    for fold in 4..=6 {
+        serve_class(&mut relay, fold, Some(0));
+    }
+    me.sync(&relay);
+    let dropped = (1, "E_CLASS_MISMATCH".to_owned(), Some(255), true, true, 0);
+    assert_eq!(
+        stored(&me, 3),
+        dropped,
+        "a mentioning reply sent as class 1"
+    );
+    assert_eq!(stored(&me, 4), dropped, "a reaction sent as class 0");
+    assert_eq!(stored(&me, 5), dropped, "a pin sent as class 0");
+    assert_eq!(stored(&me, 6), dropped, "an edit sent as class 0");
+    assert_eq!(seqs(&me), vec![2], "no lying row is shown");
+    let target = row_at(&me, 2);
+    assert_eq!(
+        (target.body.as_str(), target.edited_seq, target.pinned),
+        ("the target", 0, 0),
+        "neither the edit nor the pin is folded"
+    );
+    assert!(chips(&me, 2).is_empty(), "the reaction is not folded");
+    assert!(pins(&me).is_empty(), "the pin is not listed");
+    assert_eq!(unread(&me), (1, 0, 2), "activity counts the target only");
+}
+
+#[test]
+fn a_legacy_row_without_a_class_is_kept() {
+    let me = post_and_react(None, None);
+    assert_eq!(seqs(&me), vec![2]);
+    assert_eq!(chips(&me, 2), vec![chip("👍", 1, 0)]);
+    assert_eq!((stored(&me, 2).0, stored(&me, 2).2), (0, Some(0)));
+    assert_eq!((stored(&me, 3).0, stored(&me, 3).2), (0, Some(3)));
+    assert_eq!(unread(&me), (1, 0, 2));
+}
+
+/// prepare → encrypt → POST → confirm; answers the upload body's (element count, class).
+fn upload_class(me: &mut Core, relay: &mut Relay, request: &[u8], now: u64) -> (usize, u64) {
+    let msg_id = me.prepare_request(&GROUP, request, now);
+    let (_, body) = me.encrypt(&msg_id);
+    let shape = dilla_core::cbor::decode_strict(&body, |d| {
+        let n = d.array_len()?;
+        d.uint()?;
+        d.bytes()?;
+        Ok((n, d.uint()?))
+    })
+    .expect("[epoch, private_message, class]");
+    let answer = relay.post_message(me.device, &body).expect("upload");
+    me.core
+        .send_confirm(&msg_id, &answer)
+        .expect("send_confirm");
+    shape
+}
+
+#[test]
+fn an_upload_carries_its_class() {
+    let (_i, mut relay, mut me, _peer) = fold_start();
+    let post = request(0, None, "mine", &[]);
+    assert_eq!(
+        upload_class(&mut me, &mut relay, &post, NOW + 1),
+        (3, 0),
+        "a post"
+    );
+    let target = me
+        .timeline(&GROUP)
+        .first()
+        .and_then(|r| r.msg_id)
+        .expect("the post");
+    for (ty, body, now) in [(1, "edited", NOW + 2), (3, "👍", NOW + 3), (5, "", NOW + 4)] {
+        let fold = request(ty, Some(&target), body, &[]);
+        assert_eq!(
+            upload_class(&mut me, &mut relay, &fold, now),
+            (3, 1),
+            "type {ty}"
+        );
+    }
+}
+
+#[test]
+fn a_matching_class_is_kept() {
+    let me = post_and_react(Some(0), Some(1));
+    assert_eq!(seqs(&me), vec![2]);
+    assert_eq!(chips(&me, 2), vec![chip("👍", 1, 0)]);
+    assert_eq!((stored(&me, 2).0, stored(&me, 2).2), (0, Some(0)));
+    assert_eq!((stored(&me, 3).0, stored(&me, 3).2), (0, Some(3)));
+    assert_eq!(unread(&me), (1, 0, 2));
+}
+
+/// The class is checked before the sender's trust: a lying row from a sender whose device list is
+/// not loaded yet is never parked as pending history, so a later release cannot show it. The
+/// honest row from the same sender, parked the same way, is released (the control).
+#[test]
+fn a_lying_row_from_an_unlisted_sender_is_never_released() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut me = ready_core(0xa1, "alice");
+    me.create_and_register(&mut relay, &instance);
+    let mut peer = RawPeer::new(0xe5, 0xe6);
+    assert_eq!(peer.join_external(&mut relay), 1);
+    me.sync(&relay);
+    assert_eq!(
+        post(&mut peer, &mut relay, 0x71, Message, None, "honest"),
+        2
+    );
+    assert_eq!(post(&mut peer, &mut relay, 0x72, Message, None, "lying"), 3);
+    serve_class(&mut relay, 2, Some(0));
+    serve_class(&mut relay, 3, Some(1));
+    me.sync(&relay);
+    assert!(seqs(&me).iter().all(|s| *s != 3), "the lie is not shown");
+    assert_eq!(
+        count(&me, "SELECT count(*) FROM app_pending_history"),
+        1,
+        "only the honest row is parked"
+    );
+    ingest_list_body(
+        &mut me,
+        &relay,
+        peer.user,
+        peer.device,
+        &peer.device_list_body(),
+    );
+    me.core
+        .revalidate_pending(&GROUP, relay.leaf_of(peer.device), 256)
+        .expect("revalidate_pending");
+    assert_eq!(
+        seqs(&me),
+        vec![2],
+        "the honest row is released, the lie is not"
+    );
+    assert_eq!(stored(&me, 2).0, 0);
+    assert_eq!(
+        stored(&me, 3),
+        (1, "E_CLASS_MISMATCH".to_owned(), Some(255), true, true, 0)
     );
 }

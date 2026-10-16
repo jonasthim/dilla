@@ -44,20 +44,29 @@ seconds while the instance finishes your earlier leave; a screen reader hears "R
 
 You can keep talking while you read: open any text channel and the dock stays above your user panel, with the input
 level and the same five buttons as under the tiles, **mute**, **deafen**, **camera**, **share screen** and **leave**, so
-you can turn your camera or a share on and off from any channel. The buttons are icons in one row, with **leave** set
+you can turn your camera or a share on and off from any channel. While the call's own screen (the stage) is open the
+dock shows no buttons, because the stage has the same ones: there is always one set of call controls on screen, never two. The buttons are icons in one row, with **leave** set
 apart at the end after a thin line. Point at one, or reach it with Tab and the arrow keys, and its name shows above it,
 with its shortcut for **mute** and **deafen**; Escape hides the name again.
 
 ![Mira in #general while she stays in harbour: the dock "in harbour" with its meter and the icon buttons mute,
 deafen, camera, share screen and leave](screenshots/voice-dock-desktop.png)
 
-At phone width the tiles take the full width, one above the other, the call's buttons sit under them, every control
-is at least 44 by 44 pixels, and the dock stays pinned at the bottom of the channel list, above the conversation, so
-its five buttons are on screen, in one row, while you read a text channel.
+At phone width the tiles take the full width, one above the other, the call's buttons sit under them, and every
+control is at least 44 by 44 pixels. The dock is replaced by [the call bar](#on-a-phone).
 
 ![The voice channel at 360 pixels wide](screenshots/voice-stage-phone.png)
 
-![The dock at 360 pixels wide](screenshots/voice-dock-phone.png)
+### On a phone
+
+On a phone, while you are in a call, a call bar sits above the tab bar. It shows where the call is, and has three
+buttons, each at least 44 by 44 pixels: **open the call in {where}** (the wide one, which opens the call's screen),
+**mute** and **leave**. It stays on the servers, DMs, activity and you tabs and over a channel you are reading. It goes
+away on the call's own screen, which has all the call's controls, and when you leave. The other buttons of the dock
+(**deafen**, **camera** and **share screen**) are on the call's screen. The call bar's dot shows connecting,
+reconnecting or paused as the dock does.
+
+![The call bar on a phone](screenshots/phone-callbar.png)
 
 An open voice channel's call setup that nobody has used for 10 minutes is renewed by the instance the next time
 someone joins. You do not have to do anything.

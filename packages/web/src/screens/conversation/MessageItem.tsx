@@ -34,7 +34,11 @@ export interface MessageItemProps { item: TimelineItem; channelId: string; book:
   editing: string | null; editMeasure(v: string): number; rowRef(el: HTMLElement | null): void;
   onJumpPointerDown(e: PointerEvent<HTMLButtonElement>): void;
   onEvent(item: TimelineItem, ev: RowEvent): void; onEditChange(v: string): void; onEditSave(v: string): void; onEditCancel(): void;
-  onOpenImage(index: number, opener: HTMLElement): void; onError(e: unknown): void }
+  onOpenImage(index: number, opener: HTMLElement): void; onError(e: unknown): void;
+  /** Opens this message's thread (web3.7): the toolbar item and the summary chip. Absent where no thread can be opened (the thread pane's own rows). */
+  onOpenThread?: (msgId: string) => void;
+  /** True: a row of the thread pane. Its toolbar takes react, and edit and delete on own messages; reply, pin and thread stay in the channel. */
+  inThread?: boolean }
 
 export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const { item } = p;
@@ -68,12 +72,16 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
       { label: t('shell.message.discard'), onAction: () => { emit({ kind: 'discard', msgId: action.msgId }); document.querySelector<HTMLElement>(`[data-msg-id="${item.msgId}"]`)?.focus(); } },
     ],
   } : undefined;
+  // Walk 11: reply and reply in thread lead to the composer, so a reader who cannot send there is not offered them.
+  const canSend = p.bits == null || (p.bits & PERM.sendMessages) !== 0;
+  const openThread = item.state === 'ok' && item.msgId !== null && item.seq !== null ? p.onOpenThread : undefined;
   const toolbar = item.state === 'ok' && item.msgId !== null && item.seq !== null ? <MessageToolbar
     label={t('shell.message.toolbar')} tabbable={p.active} items={[
       { id: 'react', label: t('shell.message.react'), onAction: e => emit({ kind: 'react', anchor: e.currentTarget as HTMLElement }) },
-      { id: 'reply', label: t('shell.message.reply'), onAction: () => emit({ kind: 'reply' }) },
+      ...(p.inThread === true || !canSend ? [] : [{ id: 'reply' as const, label: t('shell.message.reply'), onAction: () => emit({ kind: 'reply' }) }]),
+      ...(openThread !== undefined && canSend ? [{ id: 'thread' as const, label: t('thread.open'), onAction: () => openThread(item.msgId!) }] : []),
       ...(ownAuthor ? [{ id: 'edit' as const, label: t('shell.message.edit'), onAction: () => emit({ kind: 'edit' as const }) }] : []),
-      ...(p.bits == null || (p.bits & PERM.pinMessages) !== 0 ? [{ id: 'pin' as const, label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) }] : []),
+      ...(p.inThread !== true && (p.bits == null || (p.bits & PERM.pinMessages) !== 0) ? [{ id: 'pin' as const, label: t(item.pinned ? 'shell.message.unpin' : 'shell.message.pin'), onAction: () => emit({ kind: 'pin', on: !item.pinned }) }] : []),
       ...(ownAuthor ? [{ id: 'delete' as const, label: t('shell.message.delete'), danger: true, onAction: () => emit({ kind: 'delete' as const }) }] : []),
     ]} /> : undefined;
   const reply = item.reply;
@@ -97,6 +105,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     active={p.active} flash={p.flash} mention={item.mention} editedLabel={item.edited ? t('shell.message.edited') : undefined}
     pinnedLabel={item.pinned ? t('shell.message.pinned') : undefined} seq={item.seq} msgId={item.msgId}
     reply={replyProps} toolbar={toolbar} pendingAction={pendingAction}
+    thread={openThread !== undefined && item.thread !== null ? { label: item.thread.count === 1 ? t('thread.summary.one') : t('thread.summary.other', { count: item.thread.count }),
+      onOpen: () => openThread(item.msgId!) } : undefined}
     editor={p.editing !== null ? <MessageEditor label={t('shell.edit.label')} value={p.editing} onChange={v => p.onEditChange(v)}
       onSave={v => p.onEditSave(v)} onCancel={() => p.onEditCancel()} hint={t('shell.edit.hint')} saveLabel={t('shell.edit.save')}
       cancelLabel={t('shell.edit.cancel')} maxLength={4000} measure={v => p.editMeasure(v)}

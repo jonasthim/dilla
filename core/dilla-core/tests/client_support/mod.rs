@@ -282,6 +282,8 @@ pub struct Reply {
     pub target_user: Option<[u8; 16]>,
     pub excerpt: String,
     pub state: u64,
+    /// The thread root of the quoted row when it shows in a thread (web3.7 fix round 1, M3).
+    pub thread_root: Option<[u8; 16]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -295,7 +297,7 @@ pub struct AttachmentSummary {
     pub name: String,
 }
 
-/// The 18-element row of L-CORE-34 (web-2b task 2).
+/// The row of L-CORE-34 (web-2b task 2), 19 elements since web3.7: the 19th is the thread summary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineRow {
     pub seq: u64,
@@ -316,6 +318,8 @@ pub struct TimelineRow {
     pub pinned: u64,
     pub attachments: Vec<AttachmentSummary>,
     pub mention: u64,
+    /// `[count, last_ts]` of a held thread root with at least one reply (web3.7 TB1), else None.
+    pub thread: Option<(u64, u64)>,
 }
 
 pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
@@ -323,7 +327,20 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
         let n = d.array_len()?;
         let mut rows = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(18)?;
+            rows.push(decode_timeline_row(d)?);
+        }
+        Ok(rows)
+    })
+    .expect("timeline shape")
+}
+
+/// One 19-element timeline row.
+pub fn decode_timeline_row(
+    d: &mut dilla_core::cbor::Decoder<'_>,
+) -> Result<TimelineRow, dilla_core::cbor::CborError> {
+    {
+        {
+            d.array(19)?;
             let seq = d.uint()?;
             let epoch = d.uint()?;
             let recv_ts = d.uint()?;
@@ -340,18 +357,20 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
             let reply = if d.try_null()? {
                 None
             } else {
-                d.array(5)?;
+                d.array(6)?;
                 let reply_to = d.bytes_exact::<16>()?;
                 let target_seq = d.opt_uint()?;
                 let target_user = d.opt_bytes_exact::<16>()?;
                 let excerpt = d.text()?.to_owned();
                 let state = d.uint()?;
+                let thread_root = d.opt_bytes_exact::<16>()?;
                 Some(Reply {
                     reply_to,
                     target_seq,
                     target_user,
                     excerpt,
                     state,
+                    thread_root,
                 })
             };
             let k = d.array_len()?;
@@ -386,7 +405,13 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
                 });
             }
             let mention = d.uint()?;
-            rows.push(TimelineRow {
+            let thread = if d.try_null()? {
+                None
+            } else {
+                d.array(2)?;
+                Some((d.uint()?, d.uint()?))
+            };
+            Ok(TimelineRow {
                 seq,
                 epoch,
                 recv_ts,
@@ -405,11 +430,58 @@ pub fn decode_timeline(bytes: &[u8]) -> Vec<TimelineRow> {
                 pinned,
                 attachments,
                 mention,
+                thread,
+            })
+        }
+    }
+}
+
+/// thread_timeline's `[root_row|null, [row…]]` (web3.7 TB1).
+pub fn decode_thread_timeline(bytes: &[u8]) -> (Option<TimelineRow>, Vec<TimelineRow>) {
+    decode_strict(bytes, |d| {
+        d.array(2)?;
+        let root = if d.try_null()? {
+            None
+        } else {
+            Some(decode_timeline_row(d)?)
+        };
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            rows.push(decode_timeline_row(d)?);
+        }
+        Ok((root, rows))
+    })
+    .expect("thread timeline shape")
+}
+
+/// One `threads` row: [root_msg_id, root_seq|null, count, last_ts, excerpt] (web3.7 TB1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadRow {
+    pub root: [u8; 16],
+    pub root_seq: Option<u64>,
+    pub count: u64,
+    pub last_ts: u64,
+    pub excerpt: String,
+}
+
+pub fn decode_threads(bytes: &[u8]) -> Vec<ThreadRow> {
+    decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            d.array(5)?;
+            rows.push(ThreadRow {
+                root: d.bytes_exact::<16>()?,
+                root_seq: d.opt_uint()?,
+                count: d.uint()?,
+                last_ts: d.uint()?,
+                excerpt: d.text()?.to_owned(),
             });
         }
         Ok(rows)
     })
-    .expect("timeline shape")
+    .expect("threads shape")
 }
 
 /// These are the test decoders of L-CORE-35; task 3 reads them unchanged.
@@ -422,6 +494,8 @@ pub struct PinRow {
     pub author: Option<[u8; 16]>,
     pub excerpt: String,
     pub target_ts: u64,
+    /// The thread root of the pinned row when it shows in a thread (web3.7 fix round 1, M3).
+    pub thread_root: Option<[u8; 16]>,
 }
 
 pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
@@ -429,7 +503,7 @@ pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
         let n = d.array_len()?;
         let mut rows = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(7)?;
+            d.array(8)?;
             let target_seq = d.uint()?;
             let msg_id = d.bytes_exact::<16>()?;
             let pinned_seq = d.uint()?;
@@ -437,6 +511,7 @@ pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
             let author = d.opt_bytes_exact::<16>()?;
             let excerpt = d.text()?.to_owned();
             let target_ts = d.uint()?;
+            let thread_root = d.opt_bytes_exact::<16>()?;
             rows.push(PinRow {
                 target_seq,
                 msg_id,
@@ -445,6 +520,7 @@ pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
                 author,
                 excerpt,
                 target_ts,
+                thread_root,
             });
         }
         Ok(rows)
@@ -530,6 +606,23 @@ pub fn request(
             .opt_bytes(a.thumb.as_deref())
             .text(&a.name);
     }
+    e.into_vec()
+}
+
+/// The web3.7 request: the L-CORE-36 request with a fifth element, `thread_id` (b16 or null).
+pub fn thread_request(
+    ty: u64,
+    reply_to: Option<&[u8; 16]>,
+    body: &str,
+    thread_id: Option<&[u8; 16]>,
+) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.array(5)
+        .uint(ty)
+        .opt_bytes(reply_to.map(|r| r.as_slice()))
+        .text(body)
+        .array(0)
+        .opt_bytes(thread_id.map(|t| t.as_slice()));
     e.into_vec()
 }
 
@@ -1269,6 +1362,9 @@ pub struct MsgRow {
     pub franking_tag: [u8; 32],
     pub recv_ts: u64,
     pub deleted: bool,
+    /// The upload class the host stored (web3.7): `Some` serves the row with nine elements, `None`
+    /// with the legacy eight.
+    pub class: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1322,7 +1418,7 @@ pub fn encode_messages(rows: &[&MsgRow]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(rows.len());
     for m in rows {
-        e.array(8)
+        e.array(if m.class.is_some() { 9 } else { 8 })
             .uint(m.seq)
             .uint(m.epoch)
             .bytes(&m.uploader)
@@ -1331,6 +1427,9 @@ pub fn encode_messages(rows: &[&MsgRow]) -> Vec<u8> {
             .bytes(&m.franking_tag)
             .uint(m.recv_ts)
             .uint(u64::from(m.deleted));
+        if let Some(class) = m.class {
+            e.uint(class);
+        }
     }
     e.into_vec()
 }
@@ -1563,21 +1662,41 @@ impl Relay {
         Ok(pair(seq, epoch))
     }
 
-    /// POST /v1/groups/{id}/message: [epoch, private_message] → [seq, franking_tag, recv_ts].
+    /// POST /v1/groups/{id}/message: [epoch, private_message, class] → [seq, franking_tag,
+    /// recv_ts]. A legacy two-element body stores no class (web3.7).
     pub fn post_message(
         &mut self,
         uploader: [u8; 16],
         body: &[u8],
     ) -> Result<Vec<u8>, &'static str> {
-        let (epoch, blob) = decode_strict(body, |d| {
-            d.array(2)?;
-            Ok((d.uint()?, d.bytes()?.to_vec()))
+        let (epoch, blob, class) = decode_strict(body, |d| {
+            let len = d.array_len()?;
+            let (epoch, blob) = (d.uint()?, d.bytes()?.to_vec());
+            let class = match len {
+                2 => None,
+                3 => Some(d.uint()?),
+                _ => {
+                    return Err(dilla_core::cbor::CborError::WrongArrayLen {
+                        expected: 3,
+                        actual: len,
+                    });
+                }
+            };
+            Ok((epoch, blob, class))
         })
         .map_err(|_| "E_INVALID_REQUEST")?;
-        if epoch != self.epoch() {
-            return Err("E_COMMIT_INVALID");
+        if epoch != self.epoch() || class.is_some_and(|c| c > 1) {
+            return Err(if epoch != self.epoch() {
+                "E_COMMIT_INVALID"
+            } else {
+                "E_INVALID_REQUEST"
+            });
         }
-        Ok(self.push_message(uploader, epoch, Some(blob), false))
+        let answer = self.push_message(uploader, epoch, Some(blob), false);
+        if let Some(row) = self.messages.last_mut() {
+            row.class = class;
+        }
+        Ok(answer)
     }
 
     /// Appends a message row as the delivery service stores it; answers the 200 body.
@@ -1601,6 +1720,7 @@ impl Relay {
             franking_tag,
             recv_ts,
             deleted,
+            class: None,
         });
         let mut e = Encoder::new();
         e.array(3).uint(seq).bytes(&franking_tag).uint(recv_ts);

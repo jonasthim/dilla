@@ -8,9 +8,9 @@ use super::groups::{
     STATE_ACTIVE, STATE_GONE, STATE_NEEDS_RESYNC, checked, group_row, set_mls, set_pending,
 };
 use super::messages::{
-    REASON_OWN_UNKNOWN, REASON_PRUNED, REASON_SENDER_MISMATCH, STATUS_CANNOT_DECRYPT,
-    STATUS_DELETED, STATUS_OK, StoredMessage, broadcast_ok, insert_message, mentionable_of,
-    mentions_me_gated, own_roles_of, refold_insert,
+    REASON_CLASS_MISMATCH, REASON_OWN_UNKNOWN, REASON_PRUNED, REASON_SENDER_MISMATCH,
+    STATUS_CANNOT_DECRYPT, STATUS_DELETED, STATUS_OK, StoredMessage, TYPE_CLASS_MISMATCH,
+    broadcast_ok, insert_message, mentionable_of, mentions_me_gated, own_roles_of, refold_insert,
 };
 use super::{ClientCore, ClientError, Own, wire};
 use crate::cbor::Encoder;
@@ -24,6 +24,11 @@ use std::collections::BTreeMap;
 enum Row {
     Handshake(wire::HandshakeRow),
     Message(wire::MessageRow),
+}
+/// web3.7 (R5): a class the host stored that disagrees with the decrypted type: class 0 is a
+/// post (type 0), class 1 every other type. A legacy row (no class) never disagrees.
+fn class_lies(class: Option<u64>, ty: crate::envelope::EnvelopeType) -> bool {
+    class.is_some_and(|c| c != if ty.as_u8() == 0 { 0 } else { 1 })
 }
 fn absent() -> ClientError {
     ClientError::new(E_CORE_NOT_FOUND, "")
@@ -50,6 +55,7 @@ fn empty_message<'a>(
         msg_id: None,
         ty: None,
         reply_to: None,
+        thread_id: None,
         body: "",
         envelope: None,
         franking_tag: &row.franking_tag,
@@ -80,6 +86,7 @@ fn own_message<'a>(
         msg_id: Some(env.msg_id.as_bytes()),
         ty: Some(env.kind.as_u8()),
         reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
+        thread_id: env.thread_id.as_ref().map(MsgId::as_bytes),
         body: &env.body,
         envelope: Some(bytes),
         franking_tag: &row.franking_tag,
@@ -220,6 +227,7 @@ fn apply_message(
                 msg_id: Some(env.msg_id.as_bytes()),
                 ty: Some(env.kind.as_u8()),
                 reply_to: env.reply_to.as_ref().map(MsgId::as_bytes),
+                thread_id: env.thread_id.as_ref().map(MsgId::as_bytes),
                 ..empty_message(id, row, STATUS_DELETED, "")
             };
             insert_message(c, &marker)?;
@@ -371,7 +379,8 @@ impl ClientCore {
                                 sender_sig_key: Some(member.signature_key.as_slice()),
                                 sender_kind: Some(sender.kind.as_u8()), sender_tier: Some(sender.tier.as_u8()),
                                 msg_id: Some(envelope.msg_id.as_bytes()), ty: Some(envelope.kind.as_u8()),
-                                reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes), body: &envelope.body,
+                                reply_to: envelope.reply_to.as_ref().map(MsgId::as_bytes),
+                                thread_id: envelope.thread_id.as_ref().map(MsgId::as_bytes), body: &envelope.body,
                                 envelope: Some(envelope_bytes), franking_tag: franking,
                                 mention: envelope.kind.as_u8() == 0 && sender.user_id.as_bytes() != &own.user_id
                                     && mentions_me_gated(&envelope.body, &own.user_id, &roles, &mentionable, broadcast),
@@ -805,6 +814,14 @@ impl ClientCore {
                                         .map_err(Into::into)
                                 });
                                 let (status, reason, application, pending_application) = match processed {
+                                    // Neither shown nor folded, as a sender mismatch; checked before the
+                                    // sender's trust, so a lying row never waits as pending history.
+                                    Ok(DillaProcessed::Application(r))
+                                        if r.sender.device_id.as_bytes() == &m.uploader_device
+                                            && class_lies(m.class, r.envelope.kind) =>
+                                    {
+                                        (STATUS_CANNOT_DECRYPT, REASON_CLASS_MISMATCH, None, None)
+                                    }
                                     Ok(DillaProcessed::Application(r))
                                         if r.sender.device_id.as_bytes() == &m.uploader_device =>
                                     {
@@ -860,6 +877,7 @@ impl ClientCore {
                                             msg_id: Some(r.envelope.msg_id.as_bytes()),
                                             ty: Some(r.envelope.kind.as_u8()),
                                             reply_to: r.envelope.reply_to.as_ref().map(MsgId::as_bytes),
+                                            thread_id: r.envelope.thread_id.as_ref().map(MsgId::as_bytes),
                                             body: &r.envelope.body,
                                             envelope: bytes.as_deref(),
                                             franking_tag: &m.franking_tag,
@@ -870,7 +888,11 @@ impl ClientCore {
                                         insert_message(c, &msg)?;
                                         refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;
                                     } else {
-                                        insert_message(c, &empty_message(id, m, status, reason))?;
+                                        let mut empty = empty_message(id, m, status, reason);
+                                        if reason == REASON_CLASS_MISMATCH {
+                                            empty.ty = Some(TYPE_CLASS_MISMATCH as u8);
+                                        }
+                                        insert_message(c, &empty)?;
                                         if let Some(r) = pending_application.as_ref() {
                                             c.execute("INSERT INTO app_pending_history(group_id,user_id,device_id,seq,ciphertext,envelope,sender_leaf,sender_credential) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                                                 params![id.as_slice(),r.sender.user_id.as_bytes(),r.sender.device_id.as_bytes(),m.seq as i64,m.blob.as_deref().unwrap_or_default(),

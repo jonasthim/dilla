@@ -24,7 +24,7 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
-  type Instance, type Limits, type MemberRow, type NewChannelKind,
+  type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
@@ -33,7 +33,7 @@ import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
-  type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type TimelineItem, type TrayItem,
+  type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type ThreadState, type TimelineItem, type TrayItem,
   type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
@@ -43,7 +43,8 @@ import { isTestHook, isToWorker, type Command, type FromWorker } from './protoco
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
-import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
+import { PERM } from '../admin/perm';
+import { ROLES_VALIDATORS, RolesController, announceProblem, privateProblem } from '../admin/roles';
 import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
 import { authorityFor } from '../admin/authority';
 
@@ -97,7 +98,7 @@ export const REAL_PARTS: ControllerParts = {
 
 /** A refusal of the controller's own (E_BAD_INPUT, E_NOT_READY, E_INVITE_NOT_COMMUNITY, E_SETTING_KEY). */
 class Refusal extends Error {
-  constructor(readonly code: string, readonly detail: string) {
+  constructor(readonly code: string, readonly detail: string, readonly reason?: string) {
     super(detail === '' ? code : `${code}: ${detail}`);
     this.name = 'Refusal';
   }
@@ -136,8 +137,11 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
   if (!ALLOWED_CODES.has(code)) code = 'E_INTERNAL';
   const status = e instanceof DillaHttpError && Number.isInteger(e.status) && e.status >= 100 && e.status <= 599 ? e.status : 0;
   const retry = e instanceof DillaHttpError ? e.retryAfterMs : null;
-  return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null };
+  return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null,
+    ...(e instanceof Refusal && e.reason !== undefined && REFUSAL_REASONS.has(e.reason) ? { reason: e.reason } : {}) };
 }
+/** The stable reasons a local refusal may carry to the page. */
+const REFUSAL_REASONS = new Set(['announce.noHeldRole']);
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
   const store = error.code === 'E_STORE_NEWER' && error.store !== undefined
@@ -147,7 +151,7 @@ function sanitizePageError(error: WorkerError): WorkerError {
     status: Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? error.status : 0,
     retryAfterMs: typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
       && error.retryAfterMs >= 0 && error.retryAfterMs <= 86_400_000 ? error.retryAfterMs : null,
-    ...(store === null ? {} : { store }) };
+    ...(store === null ? {} : { store }), ...(error.reason !== undefined && REFUSAL_REASONS.has(error.reason) ? { reason: error.reason } : {}) };
 }
 
 /** An account code thrown as Error(code) by the account modules (enrol.ts, signup.ts, session.ts). */
@@ -186,6 +190,9 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'openChannel',
   'closeChannel',
   'loadEarlier',
+  'openThread',
+  'closeThread',
+  'loadThreads',
   'send',
   'retrySend',
   'discardSend',
@@ -273,12 +280,12 @@ const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance
   passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
 });
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
-  ({ username, needsTotp: factor === 'totp', factor });
+  ({ username, factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
 const UTF8 = new TextEncoder();
-const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId')[]>> = {
+const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 'callId' | 'msgId' | 'deviceId' | 'userId' | 'inviteId' | 'roleId' | 'targetId' | 'rootMsgId')[]>> = {
   selectCommunity: ['communityId'],
   createChannel: ['communityId'],
   createRole: ['communityId'],
@@ -293,6 +300,9 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   openChannel: ['channelId'],
   closeChannel: ['channelId'],
   loadEarlier: ['channelId'],
+  openThread: ['channelId', 'rootMsgId'],
+  closeThread: ['channelId'],
+  loadThreads: ['channelId'],
   send: ['channelId'],
   retrySend: ['msgId'],
   discardSend: ['msgId'],
@@ -381,6 +391,9 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'pin',
     'loadPins',
     'closePins',
+    'openThread',
+    'closeThread',
+    'loadThreads',
     'attachFiles',
     'discardAttachment',
     'openAttachment',
@@ -463,10 +476,19 @@ function invalid(command: Record<string, unknown>): string | null {
     if (problem !== null) return `name ${problem}`;
   }
   if (m === 'createChannel') {
-    if (command.kind !== 'text' && command.kind !== 'voice') return 'kind is not text or voice';
+    if (command.kind !== 'text' && command.kind !== 'voice' && command.kind !== 'announcement') return 'kind is not text, voice or announcement';
     const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, CHANNEL_NAME_MAX_BYTES);
     if (problem !== null) return `name ${problem}`;
-    if (command.private !== undefined) { const p = privateProblem(command.private); if (p !== null) return p; }
+    if (command.private !== undefined) {
+      if (command.kind === 'announcement') return 'an announcement channel is not private';
+      const p = privateProblem(command.private);
+      if (p !== null) return p;
+    }
+    if (command.announce !== undefined) {
+      if (command.kind !== 'announcement') return 'announce is only for an announcement channel';
+      const p = announceProblem(command.announce);
+      if (p !== null) return p;
+    }
   }
   if (m === 'createInvite') {
     const { maxUses, ttlSeconds } = command;
@@ -478,8 +500,9 @@ function invalid(command: Record<string, unknown>): string | null {
     }
   }
   if (m === 'send') {
-    const { replyTo, attachments } = command;
+    const { replyTo, attachments, threadId } = command;
     if (replyTo !== undefined && replyTo !== null && (typeof replyTo !== 'string' || !ID.test(replyTo))) return 'replyTo is not 32 lowercase hex';
+    if (threadId !== undefined && threadId !== null && (typeof threadId !== 'string' || !ID.test(threadId))) return 'threadId is not 32 lowercase hex';
     if (attachments !== undefined && !(Array.isArray(attachments) && attachments.length <= MAX_ATTACHMENTS
       && attachments.every((t) => typeof t === 'string' && t.length >= 1 && t.length <= TRAY_ID_MAX))) {
       return `attachments is not a list of at most ${String(MAX_ATTACHMENTS)} tray ids`;
@@ -581,6 +604,12 @@ export const COMMUNITY_RELOAD_DEBOUNCE_MS = 250;
 /** web3.4 C4: the removals slice keeps this many notices, the newest (the page dismisses them locally). */
 export const REMOVALS_MAX = 8;
 
+/** CI1: the reasons a row waits for its sender's trust (core revalidate_pending's set), and the most such live rows
+ *  the worker remembers for their notice. */
+const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
+export const HELD_LIVE_MAX = 64;
+const heldForTrust = (row: TimelineRow): boolean => row.status === 1 && HELD_REASONS.has(row.reason);
+
 export class Controller {
   private readonly parts: ControllerParts;
   /** The id of the last removal notice (web3.4 C4). */
@@ -629,6 +658,8 @@ export class Controller {
   /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
   private readonly communityReloads = new Map<string, number>();
   private readonly channels = new Map<string, KnownChannel>();
+  /** CB2: the `until` last published on each channel's `slow:` slice (ms since the epoch, 0 = cleared), by channel hex. */
+  private readonly slowUntil = new Map<string, number>();
   private readonly dms = new Map<string, KnownDm>();
   private dmsLoading: Promise<void> | null = null;
   private dmsAgain = false;
@@ -637,6 +668,8 @@ export class Controller {
   /** Pre-flight ruling (a): rows the server received before this second (the session's first ready, then every
    *  gateway ready) were caught up, not delivered live; they badge but raise no notice. null before ready. */
   private noticeFloor: bigint | null = null;
+  /** CI1: live rows the core held for their sender's trust, oldest first, at most HELD_LIVE_MAX (noticeReleased). */
+  private heldLive: { groupId: Id; seq: bigint }[] = [];
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
   /** This browser's clock (ms) when that ticket's answer arrived: the instance clock advances from ticketTime by what
@@ -658,6 +691,16 @@ export class Controller {
   private readonly trays = new Map<string, Tray>();
   /** Channels whose pins view is open: touchGroup keeps their pins slice fresh until closePins or closeChannel. */
   private readonly pinsOpen = new Set<string>();
+  /** web3.7: channel hex → the root msg id hex of its one open thread; refreshTimeline reads it again. */
+  private readonly threadOpen = new Map<string, string>();
+  /** web3.7: channels whose threads list was loaded; refreshTimeline keeps their threads slice fresh until closeChannel. */
+  private readonly threadsOpen = new Set<string>();
+  /** web3.7: this worker's own pending thread replies (msg id hex → the root and the group they went to). The outbox row
+   *  does not name its thread, so this keeps the reply out of the main timeline and in the open thread until it is stored. */
+  private readonly threadSends = new Map<string, { root: string; group: string }>();
+  /** web3.7: set only around the synchronous sendRequest of a thread reply. sendRequest tells the page the outbox changed
+   *  before it returns the msg id, so the new row is attributed to its thread from here until threadSends holds it. */
+  private threadIntent: { root: string; group: string; known: ReadonlySet<string> } | null = null;
   /** community hex → the own role hexes last applied to the core, used only to skip a redundant ownRolesSet. */
   private readonly roles = new Map<string, string[]>();
   /** web3.5 C4: group hex → the role view last handed to the core (authoritySet) in this attach, and its server. An
@@ -790,7 +833,7 @@ export class Controller {
       channelsOf: (communityId) => [...this.channels].filter(([, k]) => k.communityId === communityId).map(([id, k]) => ({ id, row: k.row })),
       communityOf: (channelId) => this.channels.get(channelId)?.communityId ?? null,
       setChannel: (communityId, row) => { this.channels.set(toHex(row.id), { communityId, row }); },
-      removeChannel: (channelId) => { this.channels.delete(channelId); this.open.delete(channelId); },
+      removeChannel: (channelId) => { this.channels.delete(channelId); this.dropOpen(channelId); },
       publishChannels: (communityId) => { this.publishChannels(communityId); this.updateExpected(); this.publishBadges(); },
       structureChanged: (communityId) => { this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1); },
       reloadCommunity: (communityId) => this.loadCommunity(communityId),
@@ -802,6 +845,9 @@ export class Controller {
       track: (job) => { void this.barrier.track(job).catch(() => undefined); },
       accessRead: (communityId, roles, bits, overwrites) => {
         this.rolesCtl.accessRead(communityId, roles, bits, overwrites);
+        // The announcement flag follows the overwrites; the list is published again only when a flag changed.
+        const shown = this.slices.get(`channels:${communityId}`) ?? [];
+        if (shown.some((c) => c.announcement !== this.isAnnouncement(communityId, c.id))) this.publishChannels(communityId);
         this.accessRead.add(communityId);
         this.pushAuthority(communityId);
       },
@@ -818,7 +864,7 @@ export class Controller {
       communityOf: (channelId) => this.channels.get(channelId)?.communityId ?? null,
       reloadMembers: (communityId) => this.reloadMembers(communityId),
       loadAccess: (communityId) => this.admin.loadAccess(communityId),
-      refusal: (code, detail) => new Refusal(code, detail),
+      refusal: (code, detail, reason) => new Refusal(code, detail, reason),
     });
   }
 
@@ -916,7 +962,7 @@ export class Controller {
       case 'joinCommunity': return this.joinCommunity(command.invite);
       case 'selectCommunity': return this.selectCommunity(command.communityId);
       case 'createCommunity': return this.createCommunity(command.name);
-      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private);
+      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'openChannel': return this.openChannel(command.channelId);
@@ -959,6 +1005,9 @@ export class Controller {
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
       case 'react': return this.react(command.channelId, command.msgId, command.emoji, command.on);
       case 'pin': return this.pin(command.channelId, command.msgId, command.on);
+      case 'openThread': return this.openThread(command.channelId, command.rootMsgId);
+      case 'closeThread': return this.closeThread(command.channelId);
+      case 'loadThreads': return this.loadThreads(command.channelId);
       case 'loadPins': return this.loadPins(command.channelId);
       case 'closePins': return this.closePins(command.channelId);
       case 'attachFiles': return this.attachFiles(command.channelId, command.files);
@@ -982,7 +1031,7 @@ export class Controller {
       case 'leaveCommunity': return this.admin.leaveCommunity(command.communityId);
       case 'transferOwnership': return this.admin.transferOwnership(command.communityId, command.userId);
       case 'createCategory': return this.admin.createCategory(command.communityId, command.name);
-      case 'updateChannel': return this.admin.updateChannel(command.channelId, command.name, command.topic, command.parent);
+      case 'updateChannel': return this.admin.updateChannel(command.channelId, command.name, command.topic, command.parent, command.slowmode);
       case 'moveChannel': return this.admin.moveChannel(command.channelId, command.direction);
       case 'deleteChannel': return this.admin.deleteChannel(command.channelId);
       case 'kickMember': return this.admin.kickMember(command.communityId, command.userId);
@@ -1168,8 +1217,8 @@ export class Controller {
   /** Requirement 11, in order; after every await a revocation that happened meanwhile ends it silently. web3.6: past (d),
    *  an account that owes a second factor stops at factor-setup (`origin` says why) with no backup PUT, no KeyPackage and
    *  no socket: the instance refuses them all until a factor is added (protocol/09 scope F). */
-  private async enterReady(origin: FactorSetupOrigin): Promise<void> {
-    try { await this.enterReadyOnce(origin); }
+  private async enterReady(origin: FactorSetupOrigin, known?: Factors): Promise<void> {
+    try { await this.enterReadyOnce(origin, known); }
     catch (e) {
       // Final review M5: a reset (or a CLI sweep) landing after the gate read answers E_FACTOR_REQUIRED while the phase is
       // not yet ready, which the global hook ignores. The account owes a factor: stop the gateway and engine the steps
@@ -1181,7 +1230,7 @@ export class Controller {
     }
   }
 
-  private async enterReadyOnce(origin: FactorSetupOrigin): Promise<void> {
+  private async enterReadyOnce(origin: FactorSetupOrigin, known?: Factors): Promise<void> {
     const core = this.requireCore();
     const session = this.session;
     if (session === null) throw new CoreError('E_CORE_STATE', 'no session');
@@ -1209,7 +1258,8 @@ export class Controller {
       deviceId = identity.deviceId;
       this.me = { userId, deviceId };
       // The factor gate (web3.6), after (d) and before (e): ensureBackups' PUT is not an F route.
-      const factors = await this.routes.getFactors();
+      // `known` is the read factorSetupDone just made: one read per set-up, a re-ready (contract 6) still reads.
+      const factors = known ?? await this.routes.getFactors();
       if (this.revoked()) return;
       this.slices.set('factors', factorsState(factors));
       if (factors.owed) { await this.enterFactorSetup(origin, userId, deviceId); return; }
@@ -1300,6 +1350,9 @@ export class Controller {
     // the trust slice now that every member and DM slice has landed.
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust()).catch(() => undefined);
+    // web3.7 3a-client: the call groups a page of this browser left behind are left now, before any join is served (a
+    // join waits for it, bounded); it needs no gateway. Not tracked by the barrier: a resign stops it instead.
+    this.calls.startSweep();
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -1331,6 +1384,8 @@ export class Controller {
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),
+      onSlow: (g, untilMs, queued) => { this.safely(() => { this.onSlow(g, untilMs, queued); }); },
+      onPosted: (g, type) => { this.safely(() => { this.onPosted(g, type); }); },
     });
     this.sync = sync;
     sync.start();
@@ -1377,7 +1432,13 @@ export class Controller {
     if (e.type === 'status') {
       let status: ConnectionState['status'];
       switch (e.status) {
-        case 'ready': this.wasDown = false; status = 'online'; break;
+        case 'ready':
+          this.wasDown = false;
+          status = 'online';
+          // web3.7 3a-client: a boot sweep that found the instance unreachable runs at the first online; once it has
+          // run this ready, this starts nothing (startSweep is memoised per ready).
+          if (this.phase === 'ready') this.safely(() => { this.calls.startSweep(); });
+          break;
         case 'waiting': this.wasDown = true; status = 'offline'; break;
         case 'connecting': status = this.wasDown ? 'offline' : 'connecting'; break;
         case 'idle': status = 'offline'; break;
@@ -1520,7 +1581,7 @@ export class Controller {
     if (factors.owed) throw new Refusal('E_FACTOR_REQUIRED', '');
     const origin = this.accountState.factorSetup?.origin ?? 'required';
     try {
-      await this.enterReady(origin);
+      await this.enterReady(origin, factors);
     } catch (e) {
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
       throw e;
@@ -1952,7 +2013,7 @@ export class Controller {
     for (const [channelId, known] of this.channels) {
       if (known.communityId !== communityId) continue;
       this.channels.delete(channelId);
-      this.open.delete(channelId);
+      this.dropOpen(channelId);
       dropped.push(channelId);
     }
     this.slices.set(`channels:${communityId}`, []);
@@ -2037,23 +2098,27 @@ export class Controller {
   /** POST /v1/communities/{id}/channels at the position after the server's last channel. The channel is published as
    *  created before the answer, then the server's lists are read again; a text channel's group is registered by the
    *  first device that opens it (sync/channel.ts), a voice channel's call group at its first call. */
-  private async createChannel(communityId: string, kind: NewChannelKind, channelName: string, priv?: { roleIds: string[] }): Promise<{ channelId: string }> {
+  private async createChannel(communityId: string, kind: NewChannelKind | 'announcement', channelName: string, priv?: { roleIds: string[] },
+    announce?: { roleIds: string[] }): Promise<{ channelId: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     let position = 0;
     for (const known of this.channels.values()) {
       if (known.communityId === communityId) position = Math.max(position, known.row.position + 1);
     }
     // A private channel is private from birth: the overwrites go in the create (wave 2a).
-    const overwrites = priv === undefined ? undefined : await this.rolesCtl.privateOverwrites(communityId, priv.roleIds);
-    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position })
-      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position, overwrites }));
+    // An announcement channel is a text channel whose @everyone may not send, read-only from birth in the same way.
+    const routeKind: NewChannelKind = kind === 'announcement' ? 'text' : kind;
+    const overwrites = kind === 'announcement' ? await this.rolesCtl.announcementOverwrites(communityId, announce?.roleIds ?? [])
+      : priv === undefined ? undefined : await this.rolesCtl.privateOverwrites(communityId, priv.roleIds);
+    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position })
+      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, overwrites }));
     // A list read that began before this create answers without the channel: loadCommunity reads again (structureRev).
     this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1);
     const channelId = toHex(created.id);
     if (this.storeCleared || !this.listed(communityId)) return { channelId };
     this.channels.set(channelId, { communityId, row: {
       id: created.id, kind: kind === 'voice' ? 1 : 0, mode: created.mode, visibility: created.visibility, parentId: null,
-      name: channelName, topic: '', position, seq: 0n, textGroupId: null,
+      name: channelName, topic: '', position, slowmode: 0, seq: 0n, textGroupId: null,
     } });
     this.publishChannels(communityId);
     // Not awaited (WB I1): the answer does not wait on a list read that may hang; the row is already published.
@@ -2238,6 +2303,15 @@ export class Controller {
     this.pushAuthority(known.communityId, groups, hex);
   }
 
+  /** ChannelSummary.announcement: a text channel whose @everyone overwrite denies send_messages, as far as the overwrites
+   *  the page has read tell (false while they are unknown). */
+  private isAnnouncement(communityId: string, channelId: string): boolean {
+    const everyoneId = this.slices.get(`permissions:${communityId}`)?.everyoneId ?? '';
+    if (everyoneId === '' || this.channels.get(channelId)?.row.kind !== 0) return false;
+    return (this.slices.get(`overwrites:${communityId}`)?.[channelId] ?? [])
+      .some((o) => o.kind === 0 && o.targetId === everyoneId && (o.deny & PERM.sendMessages) !== 0);
+  }
+
   private publishChannels(communityId: string): void {
     const groups = this.core?.groups() ?? [];
     const list: ChannelSummary[] = [];
@@ -2247,6 +2321,8 @@ export class Controller {
       list.push({
         id: channelId, communityId, kind: row.kind as ChannelSummary['kind'], mode: row.mode as ChannelSummary['mode'],
         name: row.name, topic: row.topic, parentId: row.parentId === null ? null : toHex(row.parentId), position: row.position,
+        slowmode: row.slowmode,
+        announcement: this.isAnnouncement(communityId, channelId),
         group: channelGroupState(row, groups, this.membership(channelId)),
       });
     }
@@ -2310,7 +2386,7 @@ export class Controller {
     }
     for (const id of this.dms.keys()) {
       if (next.has(id)) continue;
-      this.open.delete(id);
+      this.dropOpen(id);
       if (this.slices.get(`timeline:${id}`) !== undefined) {
         this.slices.set(`timeline:${id}`, { channelId: id, group: 'none', items: [], hasEarlier: false });
       }
@@ -2396,16 +2472,88 @@ export class Controller {
     const dm = this.dms.has(channelId);
     const communityId = dm ? null : this.channels.get(channelId)?.communityId ?? null;
     const drafts: NoticeDraft[] = [];
-    const rows = core.timeline(groupId, 0n, Math.min(result.newSeqs.length, NOTICE_READ_MAX));
-    for (const row of rows) {
+    for (const { row, threadRoot } of this.freshRows(core, groupId, fresh, floor)) {
+      if (fresh.has(row.seq.toString()) && heldForTrust(row) && row.recvTs >= floor) { this.holdLive(groupId, row.seq); continue; }
       if (!this.noticeable(row, fresh, ownUser, floor)) continue;
       const senderName = this.nameOf(toHex(row.senderUser as Id));
       // FACTS-SECURITY-07: the core's flag, set once at apply on the row's original body; never the shown body, which may
       // hold another member's edit folded in the same apply (ruling 4, ruling 34).
-      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: after > before && row.mention, senderName }));
+      drafts.push(noticeOf({ row, channelId, communityId, dm, mention: after > before && row.mention, senderName, threadRoot }));
     }
     this.noticesState = appendNotices(this.noticesState, drafts);
     this.slices.set('notices', this.noticesState);
+  }
+
+  /** CI1: remembers a live row the core holds for its sender's trust, at most HELD_LIVE_MAX, the oldest dropped first. */
+  private holdLive(groupId: Id, seq: bigint): void {
+    const hex = toHex(groupId);
+    if (this.heldLive.some((h) => h.seq === seq && toHex(h.groupId) === hex)) return;
+    this.heldLive.push({ groupId, seq });
+    if (this.heldLive.length > HELD_LIVE_MAX) this.heldLive.splice(0, this.heldLive.length - HELD_LIVE_MAX);
+  }
+
+  /** CI1 (controller ruling on ruling (a)): a row that arrived live, was held for its sender's trust and is now readable
+   *  raises the notice it would have raised on arrival. A row still held stays remembered; any other is forgotten. */
+  private noticeReleased(): void {
+    const core = this.core;
+    const me = this.me;
+    const floor = this.noticeFloor;
+    if (this.heldLive.length === 0) return;
+    if (core === null || me === null || floor === null) { this.heldLive = []; return; }
+    const channelOf = this.channelMap(core.groups());
+    const ownUser = toHex(me.userId);
+    const drafts: NoticeDraft[] = [];
+    const kept: { groupId: Id; seq: bigint }[] = [];
+    for (const held of this.heldLive) {
+      const channelId = channelOf.get(toHex(held.groupId));
+      if (channelId === undefined) continue;
+      const found = this.rowAt(core, held.groupId, held.seq);
+      if (found === null) continue;
+      if (heldForTrust(found.row)) { kept.push(held); continue; }
+      const seqs = new Set([held.seq.toString()]);
+      if (!this.noticeable(found.row, seqs, ownUser, floor)) continue;
+      const dm = this.dms.has(channelId);
+      const communityId = dm ? null : this.channels.get(channelId)?.communityId ?? null;
+      const senderName = this.nameOf(toHex(found.row.senderUser as Id));
+      drafts.push(noticeOf({ row: found.row, channelId, communityId, dm, mention: found.row.mention, senderName, threadRoot: found.threadRoot }));
+    }
+    this.heldLive = kept;
+    if (drafts.length === 0) return;
+    this.noticesState = appendNotices(this.noticesState, drafts);
+    this.slices.set('notices', this.noticesState);
+  }
+
+  /** The row at `seq`, from the main timeline or else from one of the latest NOTICE_READ_MAX threads, or null. */
+  private rowAt(core: CorePort, groupId: Id, seq: bigint): { row: TimelineRow; threadRoot: string | null } | null {
+    const main = core.timeline(groupId, seq + 1n, 1).find((row) => row.seq === seq);
+    if (main !== undefined) return { row: main, threadRoot: null };
+    for (const t of core.threads(groupId).slice(0, NOTICE_READ_MAX)) {
+      const reply = core.threadTimeline(groupId, t.rootMsgId, seq + 1n, 1).rows.find((row) => row.seq === seq);
+      if (reply !== undefined) return { row: reply, threadRoot: toHex(t.rootMsgId) };
+    }
+    return null;
+  }
+
+  /** The apply's new rows, oldest first, at most NOTICE_READ_MAX, each with the thread root it shows under (hex, or null).
+   *  FX-core (final review I1): since TB1 the main timeline leaves out a reply whose root is held, so a new seq it does not
+   *  hold is looked for in the threads, which the core lists latest reply first: a new reply's thread is at the top.
+   *  Only threads with a reply since the notice floor are read, at most NOTICE_READ_MAX of them, and never more rows than
+   *  the main read left to find, so at most NOTICE_READ_MAX rows in all. */
+  private freshRows(core: CorePort, groupId: Id, fresh: ReadonlySet<string>, floor: bigint): { row: TimelineRow; threadRoot: string | null }[] {
+    const limit = Math.min(fresh.size, NOTICE_READ_MAX);
+    const found = core.timeline(groupId, 0n, limit).filter((row) => fresh.has(row.seq.toString()))
+      .map((row) => ({ row, threadRoot: null as string | null }));
+    const missing = (): number => limit - found.length;
+    if (missing() > 0) {
+      for (const t of core.threads(groupId).slice(0, NOTICE_READ_MAX)) {
+        if (missing() <= 0 || t.lastTs < floor) break;
+        const threadRoot = toHex(t.rootMsgId);
+        for (const row of core.threadTimeline(groupId, t.rootMsgId, 0n, missing()).rows) {
+          if (fresh.has(row.seq.toString())) found.push({ row, threadRoot });
+        }
+      }
+    }
+    return found.sort((a, b) => (a.row.seq < b.row.seq ? -1 : a.row.seq > b.row.seq ? 1 : 0));
   }
 
   /** A new, readable message from another user (on any device: head ruling 29), received live. */
@@ -2424,7 +2572,10 @@ export class Controller {
     const rows = core.timeline(g, 0n, 1);
     if (rows.length === 0) return Promise.resolve(null);
     const newest = rows.reduce((max, r) => (r.seq > max ? r.seq : max), rows[0]?.seq ?? 0n);
-    core.markRead(g, newest, this.nowS());
+    // web3.7: there is no read state per thread, so reading the channel marks its thread replies read too; they are not in
+    // the main timeline, so the marker goes to the group's head (the core clamps it there as well).
+    const head = row.nextSeq - 1n;
+    core.markRead(g, head > newest ? head : newest, this.nowS());
     this.publishBadges();
     return Promise.resolve(null);
   }
@@ -2688,12 +2839,18 @@ export class Controller {
     this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
-    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.ticketTime = null;
+    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
+    // CB2 fix round 1: the next account in this tab must not see this one's wait.
+    for (const channelId of this.slowUntil.keys()) this.slices.set(`slow:${channelId}`, { until: 0, queued: false });
+    this.slowUntil.clear();
     this.notMember.clear(); this.resyncing.clear(); this.lookedUp.clear(); this.lastActivity = new Map();
     this.memberReadEnded.clear(); this.voiceLookups.clear();
     this.dropTrays(); this.pinsOpen.clear(); this.roles.clear(); this.purgeAgain = false;
+    for (const channelId of this.threadOpen.keys()) this.slices.set(`thread:${channelId}`, null);
+    for (const channelId of this.threadsOpen) this.slices.set(`threads:${channelId}`, []);
+    this.threadOpen.clear(); this.threadsOpen.clear(); this.threadSends.clear();
     // web3.5 C4: the next attach sends every role view again, once its own reads have landed.
     this.authority.clear(); this.authorityStates.clear(); this.membersRead.clear(); this.accessRead.clear();
     this.typingOn.clear(); this.incomingTyping.clear(); this.deviceCount = 0;
@@ -2811,8 +2968,16 @@ export class Controller {
     this.incomingTyping.delete(channelId);
     if (wasOpen) this.slices.set(`typing:${channelId}`, []);
     this.pinsOpen.delete(channelId);
-    this.open.delete(channelId);
+    this.dropOpen(channelId);
     return Promise.resolve(null);
+  }
+
+  /** A channel stops being open (closed, removed, its community dropped, its DM gone): its thread and threads list go
+   *  with it, so nothing of a channel that is not open stays on display or is resurrected by a later open. */
+  private dropOpen(channelId: string): void {
+    this.open.delete(channelId);
+    if (this.threadOpen.delete(channelId) || this.slices.get(`thread:${channelId}`) !== undefined) this.slices.set(`thread:${channelId}`, null);
+    if (this.threadsOpen.delete(channelId) || this.slices.get(`threads:${channelId}`) !== undefined) this.slices.set(`threads:${channelId}`, []);
   }
 
   private loadEarlier(channelId: string): Promise<null> {
@@ -2850,14 +3015,98 @@ export class Controller {
     }
     const limit = this.open.get(channelId)?.limit ?? TIMELINE_PAGE;
     const groupId = this.timelineGroup(channelId, groups, hint);
+    const outbox = groupId === null ? [] : this.settleThreadSends(groupId, core.outbox(groupId));
     const timeline = buildTimeline({
       channelId, group, rows: groupId === null ? [] : core.timeline(groupId, 0n, limit),
-      outbox: groupId === null ? [] : core.outbox(groupId), ownUser: me.userId, ownDevice: me.deviceId, limit,
+      outbox: outbox.filter((row) => groupId === null || this.threadOf(groupId, row) === null), ownUser: me.userId, ownDevice: me.deviceId, limit,
     });
     this.slices.set(`timeline:${channelId}`, timeline);
     // A DM has no community member list to look senders up in.
     if (target.communityId !== null) this.lookUpMembers(target.communityId, timeline.items);
+    this.refreshThread(channelId, groupId, group, outbox);
+    if (this.threadsOpen.has(channelId)) this.publishThreads(channelId);
     return true;
+  }
+
+  /** The root hex of the thread an own outbox row of the group is a reply in (null: a channel row or a fold). */
+  private threadOf(groupId: Id, row: OutboxRow): string | null {
+    if (row.type !== 0) return null;
+    const msgId = toHex(row.msgId);
+    const sent = this.threadSends.get(msgId);
+    if (sent !== undefined) return sent.root;
+    const intent = this.threadIntent;
+    return intent !== null && intent.group === toHex(groupId) && !intent.known.has(msgId) ? intent.root : null;
+  }
+
+  /** Forgets the thread sends of the group that the outbox no longer holds (stored, or discarded); answers the outbox. */
+  private settleThreadSends(groupId: Id, outbox: OutboxRow[]): OutboxRow[] {
+    if (this.threadSends.size === 0) return outbox;
+    const group = toHex(groupId);
+    const held = new Set(outbox.map((row) => toHex(row.msgId)));
+    for (const [msgId, sent] of this.threadSends) if (sent.group === group && !held.has(msgId)) this.threadSends.delete(msgId);
+    return outbox;
+  }
+
+  /** Replies read per open thread: the core's cap. There is no paging command (the brief names three), so `hasEarlier` is
+   *  true at exactly this many replies, though the thread may hold no more. */
+  private static readonly THREAD_PAGE = 200;
+
+  /** The open thread of the channel, read again from the core (nothing when none is open). */
+  private refreshThread(channelId: string, groupId: Id | null, group: ChannelGroupState, outbox: readonly OutboxRow[]): void {
+    const root = this.threadOpen.get(channelId);
+    const core = this.core;
+    const me = this.me;
+    if (root === undefined || core === null || me === null) return;
+    const empty: ThreadState = { channelId, rootMsgId: root, root: null, items: [], hasEarlier: false };
+    if (groupId === null) { this.slices.set(`thread:${channelId}`, empty); return; }
+    const read = core.threadTimeline(groupId, fromHex(root), 0n, Controller.THREAD_PAGE);
+    const replies = [...read.rows].reverse();   // the core answers newest first; the page reads oldest first, newest last
+    const timeline = buildTimeline({
+      channelId, group, rows: read.root === null ? replies : [read.root, ...replies],
+      outbox: outbox.filter((row) => row.type !== 0 || this.threadOf(groupId, row) === root),
+      ownUser: me.userId, ownDevice: me.deviceId, limit: Controller.THREAD_PAGE, threadRoot: fromHex(root),
+    });
+    const items = read.root === null ? timeline.items : timeline.items.slice(1);
+    this.slices.set(`thread:${channelId}`, {
+      channelId, rootMsgId: root, root: read.root === null ? null : timeline.items[0] ?? null, items, hasEarlier: read.rows.length >= Controller.THREAD_PAGE,
+    });
+    const communityId = this.target(channelId)?.communityId ?? null;
+    if (communityId !== null) this.lookUpMembers(communityId, timeline.items);
+  }
+
+  private openThread(channelId: string, rootMsgId: string): Promise<null> {
+    if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    if (!this.open.has(channelId)) throw new Refusal('E_NOT_READY', 'the channel is not open');
+    this.threadOpen.set(channelId, rootMsgId);
+    const core = this.requireCore();
+    const groups = core.groups();
+    const groupId = this.timelineGroup(channelId, groups);
+    this.refreshThread(channelId, groupId, this.groupState(channelId, groups), groupId === null ? [] : core.outbox(groupId));
+    return Promise.resolve(null);
+  }
+
+  private closeThread(channelId: string): Promise<null> {
+    this.threadOpen.delete(channelId);
+    this.slices.set(`thread:${channelId}`, null);
+    return Promise.resolve(null);
+  }
+
+  private loadThreads(channelId: string): Promise<null> {
+    if (this.target(channelId) === undefined) throw new Refusal('E_BAD_INPUT', 'unknown channel');
+    if (!this.open.has(channelId)) throw new Refusal('E_NOT_READY', 'the channel is not open');
+    this.threadsOpen.add(channelId);
+    this.publishThreads(channelId);
+    return Promise.resolve(null);
+  }
+
+  private publishThreads(channelId: string): void {
+    const core = this.core;
+    if (core === null) return;
+    const g = this.timelineGroup(channelId, core.groups());
+    this.slices.set(`threads:${channelId}`, g === null ? [] : core.threads(g).map((t) => ({
+      rootMsgId: toHex(t.rootMsgId), rootSeq: t.rootSeq === null ? null : t.rootSeq.toString(), count: t.count,
+      lastTs: Number(t.lastTs), excerpt: t.excerpt,
+    })));
   }
 
   /** A sender who is not in the loaded member list re-runs listMembers once per unknown user (L-TS-09). */
@@ -3025,7 +3274,11 @@ export class Controller {
       let group: ChannelGroupState = 'none';
       try { group = this.groupState(channelId); } catch { /* none */ }
       this.slices.set(`timeline:${channelId}`, { channelId, group, items: [], hasEarlier: false });
+      if (this.threadOpen.has(channelId)) this.slices.set(`thread:${channelId}`, null);
     }
+    // CI1: a row the write released counts as unread whether or not its channel is open, and raises its notice.
+    this.publishBadges();
+    this.noticeReleased();
     this.publishTrust();
   }
 
@@ -3253,7 +3506,8 @@ export class Controller {
       const rows = hits.slice(0, 50).flatMap((h) => {
         const destination = destinations.get(toHex(h.groupId));
         return destination === undefined ? [] : [{ ...destination, seq: h.seq.toString(),
-          snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString() }];
+          snippet: Array.from(h.snippet).slice(0, 160).join(''), rank: h.rank.toString(),
+          threadRoot: h.threadRoot === null ? null : toHex(h.threadRoot) }];
       });
       const last = hits.at(-1);
       if (last !== undefined) this.searchCursor = { token: String(requestId), scope: command,
@@ -3421,6 +3675,7 @@ export class Controller {
     }
     const request: SendRequest = {
       type: 0, replyTo: c.replyTo === undefined || c.replyTo === null ? null : fromHex(c.replyTo), body: c.text, attachments: descriptors,
+      threadId: c.threadId === undefined || c.threadId === null ? null : fromHex(c.threadId),
     };
     let msgId: Id;
     // The core enforces the 4000-byte limit (E_ENVELOPE_LIMIT); the controller does not measure the text.
@@ -3432,6 +3687,8 @@ export class Controller {
       for (const d of descriptors) void this.barrier.track(this.routes.deleteBlob(channel, d.blobId).catch(() => undefined));
       throw e;
     }
+    if (c.threadId !== undefined && c.threadId !== null) this.threadSends.set(toHex(msgId), { root: c.threadId, group: toHex(groupId) });
+    // The thread is read again now that the msg id is recorded.
     this.refreshTimeline(c.channelId);
     return { msgId: toHex(msgId) };
   }
@@ -3443,12 +3700,23 @@ export class Controller {
    * key (E_UMK_CHANGED) is not retried.
    */
   private async sendWithTrustRetry(groupId: Id, request: SendRequest): Promise<Id> {
-    try { return this.requireSync().sendRequest(groupId, request); }
+    try { return this.sendIntoThread(groupId, request); }
     catch (e) {
       if (!(e instanceof CoreError) || !LEAF_VERDICTS.has(e.code)) throw e;
       await this.refreshGroupTrust(groupId);
-      return this.requireSync().sendRequest(groupId, request);
+      return this.sendIntoThread(groupId, request);
     }
+  }
+
+  /** The synchronous core send. A thread reply names its thread first, so the publishes the outbox change makes inside
+   *  the call already keep it out of the channel and show it in the thread. */
+  private sendIntoThread(groupId: Id, request: SendRequest): Id {
+    const sync = this.requireSync();
+    if (request.threadId === null) return sync.sendRequest(groupId, request);
+    const core = this.requireCore();
+    this.threadIntent = { root: toHex(request.threadId), group: toHex(groupId), known: new Set(core.outbox(groupId).map((r) => toHex(r.msgId))) };
+    try { return sync.sendRequest(groupId, request); }
+    finally { this.threadIntent = null; }
   }
 
   /** Forgets which leaves of the group were already fetched and waits for a trust refresh that reads them again. */
@@ -3486,7 +3754,7 @@ export class Controller {
       this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     }
     const groupId = this.activeGroup(channelId);
-    await this.sendWithTrustRetry(groupId, { type, replyTo: fromHex(msgId), body, attachments: [] });
+    await this.sendWithTrustRetry(groupId, { type, replyTo: fromHex(msgId), body, attachments: [], threadId: null });
     this.refreshTimeline(channelId);
     return null;
   }
@@ -3502,6 +3770,42 @@ export class Controller {
   }
 
   private pin(channelId: string, msgId: string, on: boolean): Promise<null> { return this.fold(channelId, msgId, on ? 5 : 6, ''); }
+
+  /** CB2: the community channel whose text group g is (the channels table's textGroupId, else the group's target when that
+   *  is a listed channel); a DM group has none. */
+  private slowChannel(g: Id): { channelId: string; slowmode: number } | null {
+    const hex = toHex(g);
+    for (const [channelId, { row }] of this.channels) {
+      if (row.textGroupId !== null && toHex(row.textGroupId) === hex) return { channelId, slowmode: row.slowmode };
+    }
+    const target = this.core?.groupRow(g)?.targetId;
+    const known = target === undefined ? undefined : this.channels.get(toHex(target));
+    return target === undefined || known === undefined ? null : { channelId: toHex(target), slowmode: known.row.slowmode };
+  }
+
+  /** CB2 (R6): the engine requeued a post after a 429 (queued) or confirmed it after the wait (untilMs 0, queued false).
+   *  A wait is published only for a channel with slow mode on; a clear only where a wait was published. The countdown
+   *  is published whether or not the person holds bypass_slowmode: the page hides it for them (WEB-B). */
+  private onSlow(g: Id, untilMs: number, queued: boolean): void {
+    const channel = this.slowChannel(g);
+    if (channel === null) return;
+    if (untilMs === 0 && !queued) { if (!this.slowUntil.has(channel.channelId)) return; }
+    else if (channel.slowmode <= 0) return;
+    this.publishSlow(channel.channelId, untilMs, queued);
+  }
+
+  /** CB2: a confirmed own post (type 0) starts the channel's countdown of slowmode seconds; a fold never does. */
+  private onPosted(g: Id, type: number): void {
+    if (type !== 0) return;
+    const channel = this.slowChannel(g);
+    if (channel === null || channel.slowmode <= 0) return;
+    this.publishSlow(channel.channelId, this.deps.now() + channel.slowmode * 1000, false);
+  }
+
+  private publishSlow(channelId: string, until: number, queued: boolean): void {
+    this.slowUntil.set(channelId, until);
+    this.slices.set(`slow:${channelId}`, { until, queued });
+  }
 
   /** A text group targets its channel or DM (web-2a). */
   private channelOfGroup(g: Id): Id {
@@ -3595,6 +3899,7 @@ export class Controller {
     const items: PinnedItem[] = g === null ? [] : core.pins(g).map((p) => ({
       msgId: toHex(p.msgId), seq: p.targetSeq.toString(), senderUser: p.author === null ? null : toHex(p.author), excerpt: p.excerpt,
       pinnedBy: toHex(p.byUser), pinnedSeq: p.pinnedSeq.toString(), ts: Number(p.targetTs),
+      threadRoot: p.threadRoot === null ? null : toHex(p.threadRoot),
     }));
     this.slices.set(`pins:${channelId}`, items);
   }

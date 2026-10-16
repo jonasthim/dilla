@@ -54,7 +54,9 @@ export function focusLog(): void { document.querySelector<HTMLElement>('[role="l
 
 export interface ConversationProps { channelId: string; logKey: string; label: string; timeline: TimelineState | undefined;
   book: NameBook; encodeWith: readonly MentionMember[]; broadcast: boolean; bits?: number | null; roles?: readonly RoleSummary[]; pinsTitle: string; ui: ConversationUi;
-  dispatch(a: ConversationAction): void; loadingEarlier: boolean; onLoadEarlier(): void; onError(e: unknown): void }
+  dispatch(a: ConversationAction): void; loadingEarlier: boolean; onLoadEarlier(): void; onError(e: unknown): void;
+  /** Opens a message's thread (web3.7); without it a row offers no thread item and no chip. */
+  onOpenThread?: (msgId: string) => void }
 
 export function Conversation(props: ConversationProps): React.JSX.Element {
   const client = useCore();
@@ -222,7 +224,8 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
           if (value !== start && item.msgId) command({ m: 'editMessage', channelId: p.channelId, msgId: item.msgId, text: encodeMentions(value, p.encodeWith, p.broadcast, roleMentionsFor(item.body)) });
         }}
         onEditCancel={() => { p.dispatch({ type: 'editDone' }); rowEls.current.get(item.key)?.focus(); }}
-        onOpenImage={(index, opener) => openImage(item, index, opener)} onError={e => p.onError(e)} />)}
+        onOpenImage={(index, opener) => openImage(item, index, opener)} onError={e => p.onError(e)}
+        {...(p.onOpenThread !== undefined ? { onOpenThread: p.onOpenThread } : {})} />)}
     </MessageLog>
     <div className="dw-overlay">{emojiFor !== null && gridPos !== null ? <div ref={gridRef} style={gridPos}
       onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) closeEmoji(false); }}>

@@ -25,13 +25,15 @@ const phoneOverlaps = (page: Page) => page.evaluate(() => {
   const hit = (a: DOMRect | null, b: DOMRect | null) => a !== null && b !== null && a.width > 0 && b.width > 0
     && a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
   const out: string[] = [];
-  const dock = box(document.querySelector('.d-voice-dock'));
-  if (dock === null || dock.top < 0 || dock.bottom > innerHeight + 1) out.push('dock off screen');
-  const sidebar = box(document.querySelector('.d-app-shell__sidebar'));
-  if (dock !== null && sidebar !== null && dock.bottom > sidebar.bottom + 1) out.push('dock cut by the sidebar');
-  if (hit(dock, box(document.querySelector('.d-channel-header')))) out.push('header over dock');
-  const bar = box(document.querySelector('.d-call-stage__controls'));
-  for (const tile of document.querySelectorAll('.d-call-tile')) if (hit(bar, tile.getBoundingClientRect())) out.push('toolbar over a tile');
+  // The phone shell has no dock: the stage holds the controls while it is on screen, and the call bar stands in when it is not.
+  if (document.querySelector('.d-voice-dock') !== null) out.push('a dock on a phone');
+  const callBar = box(document.querySelector('.d-call-bar'));
+  const stageBar = box(document.querySelector('.d-call-stage__controls'));
+  if (callBar === null && (stageBar === null || stageBar.top < 0 || stageBar.bottom > innerHeight + 1)) out.push('no controls on screen');
+  if (callBar !== null && (callBar.top < 0 || callBar.bottom > innerHeight + 1)) out.push('call bar off screen');
+  if (hit(callBar, box(document.querySelector('.d-tab-bar')))) out.push('call bar over the tab bar');
+  if (hit(callBar, box(document.querySelector('.d-channel-header, .d-phone-header')))) out.push('header over call bar');
+  for (const tile of document.querySelectorAll('.d-call-tile')) if (hit(stageBar, tile.getBoundingClientRect())) out.push('toolbar over a tile');
   return out;
 });
 
@@ -71,9 +73,12 @@ test('answer: bob rings (banner, sound, one notification while hidden), answers,
     await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     // Alice's stage: from "ringing bob" to the live call (no outgoing line once bob is in it).
     await expect(outgoing(alice.page)).toHaveCount(0, { timeout: WAIT });
-    // Product walk I5: the DM call at 360 px stacks without overlap: the dock is on screen and clear of the header, and
-    // the stage's toolbar sits under the tiles, never over one.
+    // Product walk I5: the DM call at 360 px stacks without overlap: the stage's toolbar sits under the tiles, never over
+    // one; off the stage, the phone's call bar is on screen and clear of the tab bar and the header.
     await bob.page.setViewportSize({ width: 360, height: 740 });
+    await expect.poll(() => phoneOverlaps(bob.page), POLL).toEqual([]);
+    await bob.page.getByRole('button', { name: copy('nav.back'), exact: true }).click();
+    await expect(bob.page.locator('.d-call-bar')).toBeVisible({ timeout: WAIT });
     await expect.poll(() => phoneOverlaps(bob.page), POLL).toEqual([]);
   } finally {
     await peerBrowser.close(bob);

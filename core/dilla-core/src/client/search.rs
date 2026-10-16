@@ -173,14 +173,21 @@ impl ClientCore {
             stmt.query_map(params_from_iter(args.iter()),|r|Ok((r.get::<_,[u8;16]>(0)?,r.get::<_,i64>(1)? as u64,r.get::<_,String>(2)?)))?.collect::<Result<_,_>>().map_err(Into::into)
         })?;
         let mut e = Encoder::new();
-        let safe:Vec<_>=rows.into_iter().filter(|(group,seq,_)|self.read(|c| {
-            let visible:Option<i64>=c.query_row("SELECT 1 FROM app_messages m JOIN app_search_rows r ON r.group_id=m.group_id AND r.seq=m.seq AND r.user_id=m.sender_user AND r.device_id=m.sender_device WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.type=0",params![group.as_slice(),*seq as i64],|r|r.get(0)).optional()?;
-            Ok(visible.is_some())
-        }).unwrap_or(false)).collect();
+        // Each visible hit with its thread root when it shows in a thread (fix round 1, M3).
+        let safe:Vec<_>=rows.into_iter().filter_map(|(group,seq,body)|self.read(|c| {
+            let visible:Option<i64>=c.query_row("SELECT 1 FROM app_messages m JOIN app_search_rows r ON r.group_id=m.group_id AND r.seq=m.seq AND r.user_id=m.sender_user AND r.device_id=m.sender_device WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.type=0",params![group.as_slice(),seq as i64],|r|r.get(0)).optional()?;
+            if visible.is_none() { return Ok(None); }
+            Ok(Some((group, seq, body, super::messages::shown_thread_root(c, &group, seq)?)))
+        }).unwrap_or(None)).collect();
         e.array(safe.len());
-        for (group, seq, body) in safe {
+        for (group, seq, body, thread_root) in safe {
             let snippet: String = body.chars().take(160).collect();
-            e.array(4).bytes(&group).uint(seq).text(&snippet).uint(0);
+            e.array(5)
+                .bytes(&group)
+                .uint(seq)
+                .text(&snippet)
+                .uint(0)
+                .opt_bytes(thread_root.as_ref().map(|t| t.as_slice()));
         }
         Ok(e.into_vec())
     }

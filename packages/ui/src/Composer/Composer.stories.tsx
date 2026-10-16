@@ -74,3 +74,12 @@ export const WithMentionList: Story = {
     ]} /> },
 };
 export const WithAttach: Story = { args: { ...ATTACH } };
+
+// web3.7 (flow 11): the notice sits above the box and never blocks it. The slow-mode line counts down (the caller redraws it);
+// an announcement channel tells people who may not post why, while reactions stay open.
+export const SlowModeNotice: Story = {
+  args: { value: 'one more thing', notice: <span>Slow mode is on. You can send again in 8 seconds.</span> },
+};
+export const AnnouncementReadOnly: Story = {
+  args: { notice: <span>Only some people can post in #news.</span>, label: 'message #news', placeholder: 'message #news' },
+};

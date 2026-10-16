@@ -5,6 +5,7 @@ import { useCore } from './core/context.tsx';
 import { errorOf, type UiError } from './core/errors.ts';
 import { useSlice } from './core/use-slice.ts';
 import { notificationCtor, startNotifier } from './notify.ts';
+import { requestThread } from './thread-request.ts';
 import { joinErrorState, useRoute, type Route } from './router.ts';
 import { Boot } from './screens/Boot.tsx';
 import { ForcedFactor } from './screens/factor/ForcedFactor.tsx';
@@ -158,7 +159,8 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const shown = useRef<Route>(route);
   useEffect(() => { shown.current = route; }, [route]);
   // Desktop notifications (Q30, L-TS-25): the page follows the worker's notices once per client. A click opens the
-  // notice's channel or DM; one that leaves Settings that way must not then pull focus back to the rail.
+  // notice's channel or DM, and the thread of a reply that shows in one; one that leaves Settings that way must not then
+  // pull focus back to the rail.
   const leftByNotice = useRef(false);
   useEffect(() => startNotifier({
     client,
@@ -169,6 +171,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
     open: n => {
       leftByNotice.current = shown.current.name === 'settings';
       navigate(n.communityId === null ? { name: 'dm', channelId: n.channelId } : { name: 'channel', communityId: n.communityId, channelId: n.channelId });
+      if (n.threadRoot !== null && n.communityId !== null) requestThread(n.channelId, n.threadRoot);
     },
   }), [client, navigate]);
   // When Settings closes (Escape, its close button, the browser's back), focus returns to the rail's settings button

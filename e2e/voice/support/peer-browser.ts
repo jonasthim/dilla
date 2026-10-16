@@ -6,7 +6,7 @@
 //   switch that reports the page as hidden (a ring notifies only while the tab is hidden, flow 06);
 // - the project's media permissions (Chromium) and fake devices (both engines, from the config).
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
-import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Page, type Worker } from '@playwright/test';
+import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Locator, type Page, type Worker } from '@playwright/test';
 import { copy, recordNotifications } from '../../web/support/app';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
@@ -291,15 +291,26 @@ export interface PeerBrowsers {
   readonly guard: Guard;
 }
 
-/** Leaves voice through the dock's leave (a person's leave), and waits until the page's media worker has ended. */
+/** The control that leaves the call from where this page shows one: the stage's toolbar while the call's stage is on
+ *  screen (the dock then holds no controls), else the dock's own, else the phone's call bar. */
+export function leaveControl(page: Page): Locator {
+  const leave = copy('voice.leave');
+  const stageLeave = page.locator('.dw-voice-stage').getByRole('button', { name: leave, exact: true });
+  const dockLeave = page.locator('.dw-voice-dock').getByRole('button', { name: leave, exact: true });
+  const barLeave = page.locator('.d-call-bar').getByRole('button', { name: leave, exact: true });
+  return stageLeave.or(dockLeave).or(barLeave);
+}
+
+/** Leaves voice through the app's own leave (a person's leave), and waits until the page's media worker has ended. */
 export async function leaveIfInCall(page: Page): Promise<void> {
   if (page.isClosed()) return;
-  const dock = page.locator('.dw-voice-dock');
-  if (await dock.count() > 0) {
+  // The call's strip: the dock on a wide window, the call bar on a phone (neither while the call is over).
+  const strip = page.locator('.dw-voice-dock, .d-call-bar');
+  if (await strip.count() > 0) {
     // A leave acts on an attached session: wait out `connecting` first.
-    await expect(dock.locator('.d-voice-dock')).not.toHaveAttribute('data-phase', 'connecting', { timeout: WAIT });
-    await dock.getByRole('button', { name: copy('voice.leave'), exact: true }).click();
-    await expect(dock).toHaveCount(0, { timeout: WAIT });
+    await expect(strip.locator('xpath=descendant-or-self::*[@data-phase]').first()).not.toHaveAttribute('data-phase', 'connecting', { timeout: WAIT });
+    await leaveControl(page).click();
+    await expect(strip).toHaveCount(0, { timeout: WAIT });
   }
   await expect.poll(() => mediaWorkers(page).length, { timeout: WAIT, message: 'the media worker ends after the leave' }).toBe(0);
 }

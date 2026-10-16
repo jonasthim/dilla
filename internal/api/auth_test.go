@@ -1744,3 +1744,268 @@ func TestWrongCodesAfterTheRightPasswordAccumulate(t *testing.T) {
 		t.Fatalf("the control (%d wrong codes) = %d, want 200", free-1, got)
 	}
 }
+
+// --- web3.7 3f: the web3.6 security cards ---
+
+// countingHasher is testHasher that counts its Hash calls and fails the next one while failNext is
+// set (once: the flag is cleared by the failure).
+type countingHasher struct {
+	testHasher
+	hashed   *atomic.Int64
+	failNext *atomic.Bool
+}
+
+func (h countingHasher) Hash(ctx context.Context, pw string) (string, error) {
+	h.hashed.Add(1)
+	if h.failNext.CompareAndSwap(true, false) {
+		return "", server.Errorf(server.CodeInternal, "the hasher failed")
+	}
+	return h.testHasher.Hash(ctx, pw)
+}
+
+func newHasherAPI(t *testing.T) (http.Handler, api.Deps, countingHasher) {
+	t.Helper()
+	hasher := countingHasher{hashed: &atomic.Int64{}, failNext: &atomic.Bool{}}
+	h, deps := newTestAPIFull(t, nil, func(d *api.Deps) { d.Hasher = hasher })
+	return h, deps, hasher
+}
+
+func firstPassword(t *testing.T, h http.Handler, token string, body []any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, err := cborx.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return postCBORAuth(h, "/v1/auth/password", b, token)
+}
+
+// R33: a first password whose hash fails leaves its step-up token unspent, so the retry with the
+// same token sets the password.
+func TestAFailedHashDoesNotSpendTheStepUp(t *testing.T) {
+	h, deps, hasher := newHasherAPI(t)
+	u, _, token := seedAPISession(t, deps)
+	_, codes := enrolTOTP(t, h, deps, token)
+	stepup := stepUp(t, h, token, stepUpBackup, codes[0])
+
+	hasher.failNext.Store(true)
+	if res := firstPassword(t, h, token, []any{nil, "a brand new password", stepup}); res.Code < 500 {
+		t.Fatalf("a failed hash = %d (%x), want 5xx", res.Code, res.Body.Bytes())
+	}
+	if res := firstPassword(t, h, token, []any{nil, "a brand new password", stepup}); res.Code != http.StatusNoContent {
+		t.Fatalf("the retry with the same token = %d (%x), want 204: the failed hash spent it", res.Code, res.Body.Bytes())
+	}
+	if status, _ := login(t, h, u.Username, "a brand new password"); status != http.StatusOK {
+		t.Fatalf("the password the retry set does not log in: %d", status)
+	}
+	// Spent by the success: the same token is refused afterwards.
+	if res := newCodes(h, token, stepup); res.Code != http.StatusForbidden || errorCode(t, res) != "E_STEP_UP" {
+		t.Fatalf("the token after the set = %d, want 403 E_STEP_UP (spent)", res.Code)
+	}
+}
+
+// R33: a missing or bad step-up token is refused before any Argon2 work; the control with a valid
+// token costs exactly one hash.
+func TestABadStepUpCostsNoHash(t *testing.T) {
+	h, deps, hasher := newHasherAPI(t)
+	_, _, token := seedAPISession(t, deps)
+	_, codes := enrolTOTP(t, h, deps, token)
+
+	for _, c := range []struct {
+		name string
+		body []any
+	}{
+		{"no step-up element", []any{nil, "a brand new password"}},
+		{"a null step-up", []any{nil, "a brand new password", nil}},
+		{"an unknown step-up", []any{nil, "a brand new password", "not-a-token"}},
+	} {
+		res := firstPassword(t, h, token, c.body)
+		if res.Code != http.StatusForbidden || errorCode(t, res) != "E_STEP_UP" {
+			t.Fatalf("%s: status = %d (%x), want 403 E_STEP_UP", c.name, res.Code, res.Body.Bytes())
+		}
+		if got := hasher.hashed.Load(); got != 0 {
+			t.Fatalf("%s: the refusal cost %d hashes, want 0", c.name, got)
+		}
+	}
+	stepup := stepUp(t, h, token, stepUpBackup, codes[0])
+	if res := firstPassword(t, h, token, []any{nil, "a brand new password", stepup}); res.Code != http.StatusNoContent {
+		t.Fatalf("the control with a valid token = %d (%x), want 204", res.Code, res.Body.Bytes())
+	}
+	if got := hasher.hashed.Load(); got != 1 {
+		t.Fatalf("the control cost %d hashes, want 1", got)
+	}
+}
+
+// Valid is Spend's lookup without the spend.
+func TestValidDoesNotSpend(t *testing.T) {
+	s := api.NewStepUps(clock.NewFake(time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)), api.StepUpTTL)
+	uid, sess := id.New(), []byte("the session's token hash")
+	tok, _ := s.Issue(uid, sess)
+	for i := range 2 {
+		if got, ok := s.Valid(tok, sess); !ok || got != uid {
+			t.Fatalf("Valid #%d = %s, %v; want %s, true", i+1, got, ok, uid)
+		}
+	}
+	if got, ok := s.Spend(tok, sess); !ok || got != uid {
+		t.Fatalf("Spend after two Valids = %s, %v; want %s, true", got, ok, uid)
+	}
+	if _, ok := s.Valid(tok, sess); ok {
+		t.Fatal("Valid after the Spend = true; want false")
+	}
+}
+
+// failOnceTOTPRepo fails the next GetTOTP while armed (once: the flag is cleared by the failure).
+type failOnceTOTPRepo struct {
+	store.Repository
+	armed *atomic.Bool
+}
+
+func (r failOnceTOTPRepo) GetTOTP(ctx context.Context, u id.ID) (store.TOTPRow, error) {
+	if r.armed.CompareAndSwap(true, false) {
+		return store.TOTPRow{}, errors.New("the store is down")
+	}
+	return r.Repository.GetTOTP(ctx, u)
+}
+
+// verifyWrong posts one wrong code behind a fresh needs-1 assertion.
+func verifyWrong(t *testing.T, h http.Handler, u store.UserRow, pw, wrong string) int {
+	t.Helper()
+	assertion, _ := needsOf(t, h, u.Username, pw)
+	body, _ := cborx.Marshal([]any{assertion, wrong})
+	return postCBOR(h, "/v1/auth/totp/verify", body).Code
+}
+
+// A store failure during a verify is not a guess: it refunds its own attempt, so the lockout comes
+// after exactly as many wrong codes as on an account where nothing failed.
+func TestAStoreErrorDuringAVerifyRefundsTheAttempt(t *testing.T) {
+	armed := &atomic.Bool{}
+	h, deps := newTestAPIFull(t, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 1000
+		c.Limits.Rate.LoginFailedBurst = 1000
+	}, func(d *api.Deps) { d.Repo = failOnceTOTPRepo{Repository: d.Repo, armed: armed} })
+	free := deps.Config.Auth.Lockout.FreeAttempts
+	// firstLock answers the number of the wrong code that is refused 429.
+	firstLock := func(storeFails bool) int {
+		u, _, token := seedAPISession(t, deps)
+		pw := seedPassword(t, deps, u, "correct horse battery staple")
+		secret, _ := enrolTOTP(t, h, deps, token)
+		wrong := wrongTOTP(t, secret, deps.Clock.Now())
+		if storeFails {
+			assertion, _ := needsOf(t, h, u.Username, pw)
+			code, _ := totp.GenerateCode(secret, deps.Clock.Now())
+			body, _ := cborx.Marshal([]any{assertion, code})
+			armed.Store(true)
+			if res := postCBOR(h, "/v1/auth/totp/verify", body); res.Code < 500 {
+				t.Fatalf("a verify whose store read fails = %d, want 5xx", res.Code)
+			}
+		}
+		for i := 1; i <= free+2; i++ {
+			switch got := verifyWrong(t, h, u, pw, wrong); got {
+			case http.StatusTooManyRequests:
+				return i
+			case http.StatusUnauthorized:
+			default:
+				t.Fatalf("wrong code %d = %d, want 401 or 429", i, got)
+			}
+		}
+		t.Fatalf("%d wrong codes never locked the account", free+2)
+		return 0
+	}
+	control, failed := firstLock(false), firstLock(true)
+	if control != free+1 {
+		t.Fatalf("the control locked at wrong code %d, want %d", control, free+1)
+	}
+	if failed != control {
+		t.Fatalf("after a store failure the lockout came at wrong code %d, want %d (the failure was counted)", failed, control)
+	}
+}
+
+// A complete second-factor login clears the account ledger: four wrong codes, the right code, then
+// four more wrong codes do not lock the account.
+func TestASuccessClearsTheAccountLedger(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 1000
+		c.Limits.Rate.LoginFailedBurst = 1000
+	})
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	secret, _ := enrolTOTP(t, h, deps, token)
+	wrong := wrongTOTP(t, secret, deps.Clock.Now())
+	for i := 1; i <= 4; i++ {
+		if got := verifyWrong(t, h, u, pw, wrong); got != http.StatusUnauthorized {
+			t.Fatalf("wrong code %d = %d, want 401", i, got)
+		}
+	}
+	assertion, _ := needsOf(t, h, u.Username, pw)
+	code, _ := totp.GenerateCode(secret, deps.Clock.Now())
+	body, _ := cborx.Marshal([]any{assertion, code})
+	if res := postCBOR(h, "/v1/auth/totp/verify", body); res.Code != http.StatusOK {
+		t.Fatalf("the right code = %d, want 200", res.Code)
+	}
+	for i := 1; i <= 4; i++ {
+		if got := verifyWrong(t, h, u, pw, wrong); got != http.StatusUnauthorized {
+			t.Fatalf("wrong code %d after the success = %d, want 401 (the success cleared the ledger)", i, got)
+		}
+	}
+	if locked := deps.Throttle.LockedFor(u.ID); locked != 0 {
+		t.Fatalf("the account is locked for %s, want not locked", locked)
+	}
+}
+
+// R20: one step-up token spent by sixteen goroutines at once is spent exactly once.
+func TestOneStepUpTokenIsSpentOnce(t *testing.T) {
+	s := api.NewStepUps(clock.NewFake(time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)), api.StepUpTTL)
+	uid, sess := id.New(), []byte("the session's token hash")
+	tok, _ := s.Issue(uid, sess)
+	const n = 16
+	var spent atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, ok := s.Spend(tok, sess); ok {
+				spent.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := spent.Load(); got != 1 {
+		t.Fatalf("%d of %d concurrent spends of one token succeeded, want exactly 1", got, n)
+	}
+}
+
+// R20: two concurrent POST /v1/auth/recovery/verify with the same backup code sign in once.
+func TestOneBackupCodeSignsInOnce(t *testing.T) {
+	h, deps := newTestAPIWithConfig(t, func(c *config.Config) {
+		c.Limits.Rate.LoginBurst = 1000
+		c.Limits.Rate.LoginFailedBurst = 1000
+	})
+	u, _, token := seedAPISession(t, deps)
+	pw := seedPassword(t, deps, u, "correct horse battery staple")
+	_, codes := enrolTOTP(t, h, deps, token)
+	first, _ := needsOf(t, h, u.Username, pw)
+	second, _ := needsOf(t, h, u.Username, pw)
+
+	var ok atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, a := range []string{first, second} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, _ := cborx.Marshal([]any{a, codes[0]})
+			<-start
+			if postCBOR(h, "/v1/auth/recovery/verify", body).Code == http.StatusOK {
+				ok.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := ok.Load(); got != 1 {
+		t.Fatalf("%d of 2 concurrent verifies with one backup code answered 200, want exactly 1", got)
+	}
+}

@@ -16,7 +16,7 @@ export const Op = {
 
 const SPECS: ReadonlyMap<number, { elements: number; grouped: boolean }> = new Map([
   [0, 9], [1, 5], [2, 4], [3, 9], [4, 3], [5, 2], [6, 2], [7, 1], [8, 2],
-  [9, 3], [10, 1], [11, 1], [12, 1], [16, 5], [17, 4], [18, 2], [19, 6],
+  [9, 3], [10, 1], [11, 1], [12, 1], [16, 5], [17, 4], [18, 2], [19, 7],
   [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1],
 ].map(([op, elements]) => [op, { elements, grouped: op === 12 || (op >= 16 && op <= 21) }]));
 
@@ -39,7 +39,10 @@ export function decodeFrame(bytes: Uint8Array): Frame {
     || (groupId !== null && (!(groupId instanceof Uint8Array) || groupId.length !== 16))
     || !Array.isArray(payload)) shape();
   const spec = SPECS.get(Number(op));
-  if (spec !== undefined && (payload.length !== spec.elements || spec.grouped !== (groupId !== null))) shape();
+  // op 19 message.ct (web3.7): seven elements, the 7th the upload class (0, 1 or null); six from a web3.6 host that
+  // predates the class (web3.7 only). Checked before the generic arity rule.
+  if (op === 19n && !(payload.length === 6 || (payload.length === 7 && classOrNull(payload[6])))) shape();
+  if (spec !== undefined && ((op !== 19n && payload.length !== spec.elements) || spec.grouped !== (groupId !== null))) shape();
   if (op === 49n && (!isId(payload[0]) || !isId(payload[1]) || !isId(payload[2]) || !bit(payload[3]) || !uint(payload[4]))) shape();
   // op 50 voice_state: its flags are the five bits of 02 § voice_state (0..31); op 52's own flags stay 0..3.
   if (op === 50n && (!isId(payload[0]) || !isId(payload[1]) || !isId(payload[2]) || !voiceFlags(payload[3]))) shape();
@@ -55,6 +58,7 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 const isId = (value: CborValue | undefined): boolean => value instanceof Uint8Array && value.length === 16;
 const uint = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n;
 const bit = (value: CborValue | undefined): boolean => value === 0n || value === 1n;
+const classOrNull = (value: CborValue | undefined): boolean => value === null || bit(value);
 const ringState = (value: CborValue | undefined): boolean => value === 0n || value === 1n || value === 2n;
 const flags = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n && value <= 3n;
 const voiceFlags = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n && value <= 31n;

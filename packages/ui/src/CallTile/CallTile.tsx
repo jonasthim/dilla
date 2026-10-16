@@ -1,5 +1,7 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import './CallTile.css';
+import { Icon } from '../Icon/Icon.tsx';
+import { StateDot } from '../StateDot/StateDot.tsx';
 
 /** How far a participant's stream got (L-UI-60); shared with the page call session's tiles (L-WEB-50). */
 export type VoiceTileState = 'connecting' | 'not-heard' | 'ok' | 'unverified';
@@ -38,7 +40,7 @@ export interface CallTileProps {
 }
 
 /** One state word with its glyph: the glyph is decorative, the word carries the state (never colour alone). */
-export interface VoiceStateWord { key: string; glyph: string; text: string }
+export interface VoiceStateWord { key: string; glyph: ReactNode; text: string }
 
 /**
  * The words of a participant's state, in reading order: the stream state when it is not ok, then speaking, muted,
@@ -46,14 +48,14 @@ export interface VoiceStateWord { key: string; glyph: string; text: string }
  */
 export function voiceStateWords(view: VoiceParticipantView, labels: VoiceStateLabels): VoiceStateWord[] {
   const out: VoiceStateWord[] = [];
-  if (view.state === 'connecting') out.push({ key: 'connecting', glyph: '◌', text: labels.connecting });
+  if (view.state === 'connecting') out.push({ key: 'connecting', glyph: <StateDot tone="pending" />, text: labels.connecting });
   if (view.state === 'not-heard') out.push({ key: 'not-heard', glyph: '?', text: labels.notHeard });
   if (view.state === 'unverified') out.push({ key: 'unverified', glyph: '!', text: labels.unverified });
-  if (view.speaking) out.push({ key: 'speaking', glyph: '●', text: labels.speaking });
+  if (view.speaking) out.push({ key: 'speaking', glyph: <StateDot tone="ok" />, text: labels.speaking });
   if (view.muted) out.push({ key: 'muted', glyph: '⊘', text: labels.muted });
   if (view.deafened) out.push({ key: 'deafened', glyph: '⊗', text: labels.deafened });
-  if (view.video) out.push({ key: 'video', glyph: '▣', text: labels.video });
-  if (view.screen) out.push({ key: 'screen', glyph: '▭', text: labels.screen });
+  if (view.video) out.push({ key: 'video', glyph: <Icon name="video" size={14} />, text: labels.video });
+  if (view.screen) out.push({ key: 'screen', glyph: <Icon name="monitor-up" size={14} />, text: labels.screen });
   return out;
 }
 

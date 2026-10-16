@@ -26,6 +26,22 @@ describe('VoiceDock', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Microphone muted.');
   });
 
+  it.each([['connecting', 'span.d-state-dot[data-tone="pending"]'], ['reconnecting', 'span.d-state-dot[data-tone="pending"]'],
+    ['connected', 'span.d-state-dot[data-tone="ok"]'], ['paused', 'svg[data-icon="pause"]']] as const)('the %s phase marker is drawn, not a font glyph', (phase, sel) => {
+    const { container } = render(<VoiceDock {...dock} phase={phase} />);
+    expect(container.querySelector(`.d-voice-dock__glyph ${sel}`)).not.toBeNull();
+    expect(container.querySelector('.d-voice-dock__glyph')?.textContent).toBe('');
+  });
+
+  it('with controls={false} there is no toolbar, but where, the meter and the status region stay', () => {
+    render(<VoiceDock {...dock} controls={false} meter={<div data-testid="meter" />} announcement="Joined harbour." />);
+    expect(screen.queryByRole('toolbar')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText('in harbour')).toBeInTheDocument();
+    expect(screen.getByTestId('meter')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Joined harbour.');
+  });
+
   it('arrows wrap, Home and End go to the ends, and Tab returns to the last-focused control', async () => {
     render(<><VoiceDock {...dock} /><button type="button">after</button></>);
     const bar = screen.getByRole('toolbar', { name: 'voice controls' });

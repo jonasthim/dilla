@@ -142,6 +142,15 @@ describe('authenticator app', () => {
     expect(codeField()).toHaveAttribute('inputmode', 'numeric');
     expect(screen.queryByText(en['factor.totp.loading'])).toBeNull();
   });
+  it('selects the whole setup key when its field takes focus', async () => {
+    const { user } = setup();
+    await toTotp(user);
+    const key = screen.getByRole<HTMLInputElement>('textbox', { name: en['factor.totp.key'] });
+    key.focus();
+    expect(key).toHaveFocus();
+    expect(key.selectionStart).toBe(0);
+    expect(key.selectionEnd).toBe(SECRET.length);
+  });
   it('copies the setup key and announces it', async () => {
     const { user, announce } = setup();
     const writeText = vi.fn(() => Promise.resolve());

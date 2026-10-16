@@ -30,6 +30,10 @@ export interface Device {
   readonly refreshes: string[];
   /** What beforeSend and refreshGroupTrust answer after recording; a test replaces them. Both resolve by default. */
   readonly hooks: { beforeSend: SyncDeps['beforeSend']; refreshGroupTrust: SyncDeps['refreshGroupTrust'] };
+  /** Every onSlow report (CB2): the group hex, untilMs and queued. */
+  readonly slow: { group: string; until: number; queued: boolean }[];
+  /** Every onPosted report (CB2): the group hex and the confirmed row's type. */
+  readonly posted: { group: string; type: number }[];
 }
 
 /** An engine for me, started, with its gateway attached to ds's fan-out. random() always answers `random`. */
@@ -44,6 +48,8 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
   const beforeSends: string[] = [];
   const discarded: Device['discarded'] = [];
   const refreshes: string[] = [];
+  const slow: Device['slow'] = [];
+  const posted: Device['posted'] = [];
   const hooks: Device['hooks'] = { beforeSend: () => Promise.resolve(), refreshGroupTrust: () => Promise.resolve() };
   ds.attach(me.device, (f) => {
     gateway.frame(f);
@@ -69,9 +75,11 @@ export function device(ds: ModelDs, clock: ManualClock, me: Peer, random = 0.5):
     onDiscarded: (groupId: Id, row: OutboxRow) => {
       discarded.push({ group: toHex(groupId), msgId: toHex(row.msgId), blobIds: row.attachments.map((a) => toHex(a.blobId)) });
     },
+    onSlow: (groupId: Id, until: number, queued: boolean) => { slow.push({ group: toHex(groupId), until, queued }); },
+    onPosted: (groupId: Id, type: number) => { posted.push({ group: toHex(groupId), type }); },
   });
   engine.start();
-  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, refreshes, hooks };
+  return { me, core, gateway, engine, changes, outboxChanges, membership, joinAll, unexpected, beforeSends, discarded, refreshes, hooks, slow, posted };
 }
 
 export function readyInfo(me: Peer, groups: ReadyInfo['groups'] = []): ReadyInfo {

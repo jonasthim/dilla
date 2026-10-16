@@ -50,4 +50,12 @@ func TestTheProxyRecordsAnAdmissionOnlyForAJoinItLetsThrough(t *testing.T) {
 	if got := noted.list(); len(got) != 1 || got[0] != dev {
 		t.Fatalf("admissions = %v, want the one join let through", got)
 	}
+	// A signal resume of that session is admitted too, reported as a resume (web3.7: the call routes
+	// never take it for a newer session).
+	if code := get("reconnect=1&" + tok + clientProto); code != http.StatusTeapot {
+		t.Fatalf("an admissible resume = %d, want the SFU's answer", code)
+	}
+	if got := noted.resumeFlags(); len(got) != 2 || got[0] || !got[1] {
+		t.Fatalf("resume flags = %v, want [false true]: the fresh join, then the resume", got)
+	}
 }

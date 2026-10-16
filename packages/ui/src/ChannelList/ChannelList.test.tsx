@@ -28,6 +28,35 @@ function props(over: Partial<ChannelListProps> = {}): ChannelListProps {
 }
 
 describe('ChannelList', () => {
+  it('marks a title that is not the server name as plain, so it is set in mono rather than the display serif', () => {
+    const { rerender } = render(<ChannelList {...props()} />);
+    expect(screen.getByRole('heading', { level: 1 })).not.toHaveAttribute('data-kind');
+    rerender(<ChannelList {...props({ title: 'direct messages', titleKind: 'plain' })} />);
+    expect(screen.getByRole('heading', { level: 1, name: 'direct messages' })).toHaveAttribute('data-kind', 'plain');
+  });
+  it('keeps a badge in the row name when the row is unread, mentioned or muted', () => {
+    render(<ChannelList {...props({ rowLabel, channels: [
+      { id: 'n', name: 'news', kind: 'announcement', readable: false, badge: 'slow mode', unread: 3 },
+      { id: 'g', name: 'general', kind: 'text', readable: false, badge: 'slow mode', muted: true, mentions: 1 },
+      { id: 'q', name: 'quiet', kind: 'text', readable: false, badge: 'slow mode' },
+    ] })} />);
+    expect(screen.getByRole('button', { name: 'news, slow mode, unread 3, mentions 0' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'general, slow mode, muted, mentions 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'quiet slow mode' })).toBeInTheDocument();
+  });
+
+  it('passes an announcement kind and a badge through to the row (R36)', () => {
+    render(<ChannelList {...props({ channels: [
+      { id: 'n', name: 'news', kind: 'announcement', readable: false, badge: 'slow mode' },
+      { id: 'g', name: 'general', kind: 'text', readable: false },
+    ] })} />);
+    const row = screen.getByRole('button', { name: 'news slow mode' });
+    expect(row).toHaveAttribute('data-kind', 'announcement');
+    expect(row.querySelector('svg[data-icon="megaphone"]')).not.toBeNull();
+    expect(screen.getByText('slow mode')).toHaveClass('d-chrow__badge');
+    expect(screen.getByRole('button', { name: 'general' }).querySelector('.d-chrow__badge')).toBeNull();
+  });
+
   // Controller ruling (e), task 21 pre-flight: the ChannelList title is the shell's <h1>.
   it('is a navigation landmark with the server name as its heading and one row per channel in order', () => {
     render(<ChannelList {...props()} />);
@@ -35,7 +64,7 @@ describe('ChannelList', () => {
     expect(nav).toHaveClass('d-channel-list');
     expect(within(nav).getByRole('heading', { level: 1, name: 'Midgard Crew' })).toBeInTheDocument();
     const rows = within(nav).getAllByRole('button');
-    expect(rows.map(r => r.textContent?.replace(/[#♪◌]/g, '').trim())).toEqual(['general', 'lfg', 'loot', 'longhouse']);
+    expect(rows.map(r => r.textContent?.replace(/[#♪]/g, '').trim())).toEqual(['general', 'lfg', 'loot', 'longhouse']);
     expect(screen.getByRole('button', { name: 'loot' })).toHaveAttribute('aria-current', 'page');
     expect(within(screen.getByRole('button', { name: /^lfg/ })).getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
@@ -171,6 +200,18 @@ describe('ChannelList', () => {
     expect(within(toolbar).getByRole('button', { name: 'new channel' })).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(onNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts a headerAction in one row with the heading, after it', () => {
+    render(<ChannelList {...props({ headerAction: <button type="button">server menu</button> })} />);
+    const head = screen.getByRole('heading', { level: 1 }).parentElement as HTMLElement;
+    expect(head).toHaveClass('d-channel-list__head');
+    expect(head.lastElementChild).toBe(screen.getByRole('button', { name: 'server menu' }));
+  });
+
+  it('without a headerAction the heading has no wrapper', () => {
+    render(<ChannelList {...props()} />);
+    expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveClass('d-channel-list');
   });
 
   it('draws no action group without actions', () => {

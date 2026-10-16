@@ -10,6 +10,16 @@ import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
 afterEach(() => { vi.unstubAllGlobals(); });
 
 const main = () => within(screen.getByRole('main'));
+// The dock holds its controls only while the stage is not on screen (web3.7): these step off the stage and back on it.
+const go = (path: string) => { window.history.pushState(null, '', path); window.dispatchEvent(new PopStateEvent('popstate')); };
+async function offStage() {
+  go(`/c/${A}/${TEXT}`);
+  await screen.findByRole('toolbar', { name: 'voice controls' });
+}
+async function onStage() {
+  go(`/c/${A}/${GENV}`);
+  await main().findByRole('toolbar', { name: 'voice channel controls' });
+}
 const UMK = { code: 'E_UMK_CHANGED', detail: '', status: 0, retryAfterMs: null };
 
 /** Joins voice 'general' from its voice view; the worker then reports the call in. */
@@ -126,7 +136,7 @@ describe('voice in the shell', () => {
     expect(opts).toMatchObject({ mode: 'ptt', noise: 'off', input: '', output: '' });
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
-    expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
+    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
     expect(screen.getByText('in general')).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
@@ -289,10 +299,10 @@ describe('review round 1', () => {
     expect(app.session.setMode).toHaveBeenCalledWith('ptt');
     await waitFor(() => expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' })));
     expect(app.log.indexOf('mode:ptt')).toBeGreaterThanOrEqual(0);
-    expect(screen.getByRole('toolbar', { name: 'voice controls' }).parentElement).toHaveTextContent(t('settings.voice.ptt'));
+    expect(document.querySelector('.d-voice-dock')).toHaveTextContent(t('settings.voice.ptt'));
     app.client.publish('settings', { 'voice.pttKey': 'F13' });
     expect(app.session.setMode).toHaveBeenLastCalledWith('vad');
-    expect(screen.getByRole('toolbar', { name: 'voice controls' }).parentElement).toHaveTextContent(t('settings.voice.vad'));
+    expect(document.querySelector('.d-voice-dock')).toHaveTextContent(t('settings.voice.vad'));
   });
 
   it('I2: a push-to-talk key is never bound while the session is not in push to talk', async () => {
@@ -594,6 +604,8 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
   }
 });
 
+// web3.7: the dock holds the controls only while the stage is off screen, and the stage holds them while it is on, so each
+// test reads one, steps across (offStage, onStage), and reads the other. The call stays up across the step.
 describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', () => {
   const dock = () => within(screen.getByRole('toolbar', { name: 'voice controls' }));
   const stage = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
@@ -606,24 +618,29 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
   it('the dock holds mute, deafen, camera, share screen and leave, and its camera and share are the stage’s toggles', async () => {
     withCapture();
     const app = await inVoice();
+    await offStage();
     expect(dock().getAllByRole('button').map(b => b.getAttribute('aria-label')))
       .toEqual([t('voice.mute'), t('voice.deafen'), t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
     await app.user.click(dock().getByRole('button', { name: t('voice.cameraOn') }));
     await waitFor(() => expect(app.session.state.camera).toBe(true));
-    // One state: the stage's camera shows pressed too, and pressing it there turns the camera off again.
-    await waitFor(() => expect(stage().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true'));
     expect(dock().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true');
+    // One state: the stage's camera shows pressed too, and pressing it there turns the camera off again.
+    await onStage();
+    await waitFor(() => expect(stage().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true'));
     await app.user.click(stage().getByRole('button', { name: t('voice.cameraOn') }));
     await waitFor(() => expect(app.session.state.camera).toBe(false));
+    await offStage();
     await app.user.click(dock().getByRole('button', { name: t('voice.shareOn') }));
     await waitFor(() => expect(app.session.state.sharing).toBe(true));
+    await onStage();
     await waitFor(() => expect(stage().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-pressed', 'true'));
   });
 
   it('without screen capture, share is aria-disabled in the dock as on the stage', async () => {
     await inVoice();
-    expect(dock().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
     expect(stage().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
+    await offStage();
+    expect(dock().getByRole('button', { name: t('voice.shareOn') })).toHaveAttribute('aria-disabled', 'true');
     expect(dock().getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-disabled');
   });
 
@@ -632,9 +649,10 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     const app = await inVoice({ trust: [bobChanged()], withSettings: true });
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await screen.findByText('paused in general');
+    for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(stage().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+    await offStage();
     for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
       expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
-      expect(stage().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
       await app.user.click(dock().getByRole('button', { name }));
     }
     expect(app.session.state.camera).toBe(false);
@@ -648,7 +666,7 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     const release = app.holdStart();
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
-    await screen.findByRole('toolbar', { name: 'voice controls' });
+    await offStage();
     for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
     for (const name of [t('voice.mute'), t('voice.deafen'), t('voice.leave')]) expect(dock().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
     release();
@@ -660,28 +678,35 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
 
   it('the dock’s and the stage’s mute and deafen are described by their shortcut, as this platform writes it', async () => {
     await inVoice();
+    expect(stage().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
+    await offStage();
     expect(dock().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
     expect(dock().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
-    expect(stage().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
   });
 
   // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*), in the dock and on the stage; the name stays.
   it('a disabled camera or share says why: not available, paused, connecting', async () => {
     const app = await inVoice();
     // No getDisplayMedia here: share says so, and camera, live, says nothing.
-    for (const bar of [dock(), stage()]) {
+    const noShare = (bar: ReturnType<typeof dock>) => {
       const share = bar.getByRole('button', { name: t('voice.shareOn') });
       expect(share).toHaveAccessibleName(t('voice.shareOn'));
       expect(share).toHaveAccessibleDescription(t('voice.why.noShare'));
       expect(bar.getByRole('button', { name: t('voice.cameraOn') })).not.toHaveAttribute('aria-describedby');
-    }
-    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
-    await screen.findByText('paused in general');
-    for (const bar of [dock(), stage()]) {
+    };
+    const paused = (bar: ReturnType<typeof dock>) => {
       for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
         expect(bar.getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.paused'));
       }
-    }
+    };
+    noShare(stage());
+    await offStage();
+    noShare(dock());
+    app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
+    await screen.findByText('paused in general');
+    paused(dock());
+    await onStage();
+    paused(stage());
   });
 
   it('while joining, the dock’s camera and share say connecting', async () => {
@@ -690,7 +715,7 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     const release = app.holdStart();
     await app.user.click(await main().findByRole('button', { name: 'join voice' }));
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
-    await screen.findByRole('toolbar', { name: 'voice controls' });
+    await offStage();
     for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) {
       expect(dock().getByRole('button', { name })).toHaveAccessibleDescription(t('voice.why.joining'));
     }
@@ -717,5 +742,19 @@ describe('voiceShortcutText', () => {
     expect(isApplePlatform({ platform: '' })).toBe(false);
     // Review round 1 (#7): Chromium reports an empty UA-CH platform when it does not know; navigator.platform decides then.
     expect(isApplePlatform({ userAgentData: { platform: '' }, platform: 'MacIntel' })).toBe(true);
+  });
+});
+
+describe('web3.7: one set of call controls', () => {
+  it('the dock has no toolbar while the stage is shown, and the toolbar as before off the stage', async () => {
+    const app = await inVoice();
+    const dockToolbar = () => document.querySelector('.dw-voice-dock .d-voice-dock__controls');
+    expect(document.querySelector('.dw-voice-dock')).not.toBeNull();
+    expect(dockToolbar()).toBeNull();
+    window.history.pushState(null, '', `/c/${A}/${TEXT}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
+    expect(dockToolbar()).not.toBeNull();
+    void app;
   });
 });

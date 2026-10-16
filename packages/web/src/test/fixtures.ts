@@ -12,5 +12,5 @@ export function account(over: Partial<AccountState> = {}): AccountState {
 /** A readable message from nobody in particular, nothing folded onto it (L-TS-36); tests override what they need. */
 export function timelineItem(over: Partial<TimelineItem> = {}): TimelineItem {
   return { key: 's1', state: 'ok', reason: '', senderUser: null, senderDevice: 'dd'.repeat(16), own: false, web: false, bot: false, ts: 0,
-    body: '', msgId: null, seq: null, edited: false, reply: null, reactions: [], pinned: false, attachments: [], mention: false, actions: [], ...over };
+    body: '', msgId: null, seq: null, edited: false, reply: null, reactions: [], pinned: false, attachments: [], mention: false, actions: [], thread: null, ...over };
 }

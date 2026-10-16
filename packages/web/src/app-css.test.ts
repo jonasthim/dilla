@@ -13,7 +13,7 @@ const rule = (block: string, selector: string) => new RegExp(`(^|\\n)\\s*${selec
 describe('the phone layout of voice (360 px)', () => {
   it('I4: the dock is pinned to the bottom of the sidebar column, so it stays on screen while a text channel is read', () => {
     expect(phone).not.toBe('');
-    expect(rule(phone, '.dw-sidebar > .dw-voice-dock')).toMatch(/position:\s*sticky;\s*bottom:\s*0/);
+    expect(rule(phone, '.d-app-shell:not([data-layout="phone"]) .dw-sidebar > .dw-voice-dock')).toMatch(/position:\s*sticky;\s*bottom:\s*0/);
   });
 
   it('I5: no stage toolbar floats over the tiles: the controls are in normal flow', () => {

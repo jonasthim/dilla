@@ -2,7 +2,7 @@
 import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
-  type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest,
+  type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest, type ThreadRow,
   type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch } from '../core-port';
 import { toHex } from '../hex';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
@@ -399,6 +399,10 @@ export class FakeCore implements CorePort {
   sendDiscard(msgId: Id): void { return this.notModelled('sendDiscard', msgId); }
   outbox(groupId: Id): OutboxRow[] { return this.notModelled('outbox', groupId); }
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] { return this.notModelled('timeline', groupId, beforeSeq, limit); }
+  threadTimeline(groupId: Id, rootMsgId: Id, beforeSeq: bigint, limit: number): { root: TimelineRow | null; rows: TimelineRow[] } {
+    return this.notModelled('threadTimeline', groupId, rootMsgId, beforeSeq, limit);
+  }
+  threads(groupId: Id): ThreadRow[] { return this.notModelled('threads', groupId); }
   groupRow(groupId: Id): GroupInfo | null { return this.notModelled('groupRow', groupId); }
   markRead(groupId: Id, seq: bigint, now: bigint): void { return this.notModelled('markRead', groupId, seq, now); }
   activity(): ActivityRow[] { return this.notModelled('activity'); }

@@ -235,8 +235,9 @@ func expectMessageCT(t *testing.T, c *websocket.Conn, phase string, seq uint64, 
 			continue
 		}
 		payload, _ := frame[3].([]any)
-		if len(payload) != 6 {
-			t.Fatalf("%s: message.ct payload has %d elements, want 6", phase, len(payload))
+		// Seven since web3.7 SB1: the 7th is the upload class (protocol/02 § Upload class).
+		if len(payload) != 7 {
+			t.Fatalf("%s: message.ct payload has %d elements, want 7", phase, len(payload))
 		}
 		if got, _ := payload[0].(uint64); got != seq {
 			t.Fatalf("%s: message.ct seq %d, want %d", phase, got, seq)

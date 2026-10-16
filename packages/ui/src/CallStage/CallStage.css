@@ -8,8 +8,8 @@
 .d-call-stage__code { display: grid; justify-items: end; margin-left: auto; font-size: var(--text-sm); color: var(--fg-2); }
 .d-call-stage__summary { display: inline-flex; align-items: center; min-height: 2.5rem; min-width: 2.5rem; padding: 0 0.5rem; cursor: pointer; list-style: none; border-radius: var(--r-md); }
 .d-call-stage__summary::-webkit-details-marker { display: none; }
-.d-call-stage__summary::before { content: "▸" / ""; margin-right: 0.375rem; }
-.d-call-stage__code[open] .d-call-stage__summary::before { content: "▾" / ""; }
+.d-call-stage__summary::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.375rem; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-chevron-right) center / contain no-repeat; }
+.d-call-stage__code[open] .d-call-stage__summary::before { mask: var(--d-mask-chevron-down) center / contain no-repeat; }
 .d-call-stage__summary:hover { color: var(--fg); }
 .d-call-stage__code-body { justify-self: stretch; max-width: 26rem; margin-top: 0.375rem; padding: 0.5rem 0.75rem; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
 .d-call-stage__digits { margin: 0; font-size: var(--text-md); letter-spacing: 0.08em; color: var(--fg); font-variant-numeric: tabular-nums; }

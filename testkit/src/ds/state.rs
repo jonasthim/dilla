@@ -307,6 +307,9 @@ pub struct MessageItem {
     pub recv_ts: u64,
     /// Row 12's element 7: the delivery service tombstoned this message. Op 19 and the stub never set it.
     pub deleted: bool,
+    /// The upload class (web3.7 SB1): row 12's 9th element and op 19's 7th; `None` for a legacy
+    /// upload, and for a row or frame from an instance that predates the class.
+    pub class: Option<u8>,
 }
 #[derive(Clone, Debug)]
 pub enum Frame {
@@ -800,6 +803,7 @@ impl DsStub {
             DeviceId::from_bytes([0u8; 16]),
             private_message,
             None,
+            None,
         )
     }
 
@@ -811,6 +815,7 @@ impl DsStub {
         uploader_device: DeviceId,
         private_message: Vec<u8>,
         commitment: Option<[u8; 32]>,
+        class: Option<u8>,
     ) -> Result<MessageAccepted, DsError> {
         let commitment = commitment.ok_or(DsError::CommitmentInvalid)?;
         let k_frank = self.cfg.k_frank;
@@ -845,6 +850,7 @@ impl DsStub {
             franking_tag: tag,
             recv_ts,
             deleted: false,
+            class,
         };
         g.messages.push(item.clone());
         self.fanout(
@@ -1135,10 +1141,12 @@ impl DeliveryService for DsStub {
         g: &GroupId,
         epoch: u64,
         pm: Vec<u8>,
+        class: Option<u8>,
     ) -> Result<UploadResult, DsError> {
         let device = self.current_device()?;
         let commitment = commitment_of(&pm)?;
-        let accepted = DsStub::post_message_from(self, g, epoch, device, pm, Some(commitment))?;
+        let accepted =
+            DsStub::post_message_from(self, g, epoch, device, pm, Some(commitment), class)?;
         Ok(UploadResult {
             seq: accepted.seq,
             franking_tag: accepted.franking_tag.to_vec(),

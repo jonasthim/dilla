@@ -48,6 +48,9 @@ type dsHarness struct {
 	// acl is invariant 4's eligibility source: ds.DenyUnlessMember, plus the users a test names
 	// eligible for an external join (join_test.go).
 	acl *fakeACL
+	// postPolicy is the upload class seam (web3.7 SB1): it records every question Upload asks
+	// and accepts unless a test sets its answer (message_test.go).
+	postPolicy *recordingPostPolicy
 	// auth is the gateway's token resolver. The gateway holds an `Authenticator` interface, not
 	// *auth.Sessions (deviation B9), so the delivery service's tests satisfy that seam directly
 	// rather than standing a whole account stack up to put one device online.
@@ -138,16 +141,18 @@ func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness 
 
 	h.channels = &fakeChannels{modes: map[id.ID][2]uint8{}}
 	h.acl = &fakeACL{deny: ds.DenyUnlessMember{Store: repo}, eligible: map[id.ID]bool{}}
+	h.postPolicy = &recordingPostPolicy{}
 
 	d, err := ds.New(ds.Options{
-		Store:    repo,
-		Wasm:     wasm,
-		Gateway:  h.gw,
-		Clock:    clk,
-		Keys:     testInstanceKeys(t),
-		Policy:   ds.DefaultPolicy(),
-		Channels: h.channels,
-		ACL:      h.acl,
+		Store:      repo,
+		Wasm:       wasm,
+		Gateway:    h.gw,
+		Clock:      clk,
+		Keys:       testInstanceKeys(t),
+		Policy:     ds.DefaultPolicy(),
+		Channels:   h.channels,
+		ACL:        h.acl,
+		PostPolicy: h.postPolicy,
 	})
 	if err != nil {
 		t.Fatalf("ds.New: %v", err)

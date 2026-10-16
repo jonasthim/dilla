@@ -15,6 +15,13 @@ func (h *Calls) SetStartHookForTest(f func(stage string)) { h.startHook = f }
 // the voice session not yet ended).
 func (h *Calls) SetEndHookForTest(f func(stage string)) { h.endHook = f }
 
+// DeferredLeavesForTest is how many leaves the call events hold back for a newer session.
+func (c *CallEvents) DeferredLeavesForTest() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.deferred)
+}
+
 // ProcessQueueForTest runs one pass of the retry loop's work queue on the caller's goroutine.
 func (h *Calls) ProcessQueueForTest(ctx context.Context) { h.processQueue(ctx) }
 
@@ -69,6 +76,13 @@ func (h *Calls) SharersOf(call id.ID) []id.ID {
 	}
 	slices.SortFunc(out, func(a, b id.ID) int { return slices.Compare(a[:], b[:]) })
 	return out
+}
+
+// AdmittedAsForTest is the leaf and added epoch of the membership dev was admitted to room with for
+// the session LiveKit reports joined at joinedAt (zero: the latest), and whether there is one.
+func (h *Calls) AdmittedAsForTest(room string, dev id.ID, joinedAt time.Time) (leaf uint32, added uint64, ok bool) {
+	m, ok := h.admittedAs(room, dev, joinedAt)
+	return m.leaf, m.added, ok
 }
 
 // SetMemberPageForTest lowers the notifier's member page size to n and returns the restore.

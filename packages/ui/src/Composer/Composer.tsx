@@ -26,6 +26,12 @@ export interface ComposerProps {
   onAttach?(): void;
   /** Rendered above the box: the reply chip, the tray, the mention list. */
   top?: ReactNode;
+  /**
+   * Text above the box, after `top`: the slow-mode countdown, the announcement channel's read-only line. It never blocks:
+   * the textarea and send stay enabled (the host decides). Whether it is spoken is the caller's: give it `role="status"`
+   * content for a line that should be, and plain text for one that should not repeat (a countdown).
+   */
+  notice?: ReactNode;
   /** The used part of the budget; UTF-8 bytes when absent. */
   measure?(v: string): number;
   /**
@@ -66,17 +72,19 @@ function labelParts(label: string): { lead: string; target: string | null } {
  */
 export function Composer({
   label, placeholder, maxLength, value, onChange, disabled, disabledReason, onSend, sendLabel, counterLabel,
-  attachLabel, onAttach, top, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
+  attachLabel, onAttach, top, notice, measure, combobox, onCaret, onArrowUpEmpty, onPasteFiles, textareaRef, canSendEmpty,
 }: ComposerProps) {
   const inputId = useId();
   const reasonId = useId();
   const counterId = useId();
+  const noticeId = useId();
   const used = measure ? measure(value) : ENCODER.encode(value).length;
   const remaining = maxLength - used;
   const overBudget = remaining < 0;
   const showCounter = remaining <= Math.floor(maxLength / 10);
   const showReason = disabled === true && !!disabledReason;
-  const described = [showReason ? reasonId : null, showCounter ? counterId : null].filter((x): x is string => x !== null);
+  const showNotice = notice !== undefined && notice !== null && notice !== false;
+  const described = [showReason ? reasonId : null, showNotice ? noticeId : null, showCounter ? counterId : null].filter((x): x is string => x !== null);
   const describedBy = described.length > 0 ? described.join(' ') : undefined;
   const { lead, target } = labelParts(label);
   // Over the budget (and not blocked) send stays focusable, so the counter is heard as its reason.
@@ -157,6 +165,7 @@ export function Composer({
   return (
     <form className="d-composer" data-disabled={disabled ? 'true' : undefined} noValidate onSubmit={onSubmit}>
       {top !== undefined ? <div className="d-composer__top">{top}</div> : null}
+      {showNotice ? <div id={noticeId} className="d-composer__notice">{notice}</div> : null}
       <label className="d-composer__label d-label" htmlFor={inputId}>
         {lead}{target === null ? null : <span className="d-composer__target">{target}</span>}
       </label>
