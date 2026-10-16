@@ -133,7 +133,8 @@ export function MessageRow({
         {attachments !== undefined ? <div className="d-message-row__attachments">{attachments}</div> : null}
         {reactions !== undefined ? <div className="d-message-row__reactions">{reactions}</div> : null}
         {thread !== undefined ? (
-          <button type="button" className="d-message-row__thread" tabIndex={tabIndex} onClick={() => thread.onOpen()}>
+          <button type="button" className="d-message-row__thread" tabIndex={tabIndex}
+            onPointerDown={e => e.preventDefault()} onClick={() => thread.onOpen()}>
             <Icon name="messages-square" size={14} />{thread.label}
           </button>
         ) : null}

@@ -161,6 +161,26 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
     });
 
+    // 3b. A thread is a sheet: opened from the toolbar, closed by the system back, then reopened by a real click on the chip.
+    await test.step('a thread sheet opens from the chip on a real click', async () => {
+      const row = messageRow(page, 'general', 'hej');
+      await row.focus();
+      await row.getByRole('button', { name: copy('thread.open'), exact: true }).click();
+      const reply = page.getByRole('textbox', { name: copy('thread.composer'), exact: true });
+      await expect(reply).toBeVisible({ timeout: WAIT });
+      await reply.fill('svar');
+      await reply.press('Enter');
+      await expect(page.getByRole('complementary', { name: copy('thread.title') }).getByText('svar')).toBeVisible({ timeout: WAIT });
+      const box = await reply.boundingBox();
+      expect(box!.y + box!.height, 'the thread composer sits at the bottom of the sheet').toBeGreaterThan(844 - 120);
+      await page.goBack();
+      await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
+      await row.getByRole('button', { name: copy('thread.summary.one'), exact: true }).click();
+      await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeVisible({ timeout: WAIT });
+      await page.goBack();
+      await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
+    });
+
     // 4. Back: the list, with #general's row focused.
     await test.step('back to the list', async () => {
       await back(page).click();

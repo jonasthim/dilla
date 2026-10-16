@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
-  ActionMenu, AppShell, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, LinkBanner, PhoneHeader,
+  ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, LinkBanner, PhoneHeader,
   SidebarTabs, StatusBar, StatusChunk, TabBar, UnsupportedVoice,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
@@ -1282,7 +1282,9 @@ export function Shell(): React.JSX.Element {
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} />
           : sideNow?.view === 'list' && channel !== null
-            ? <ThreadList channelId={channel.id} channelName={channel.name} onOpen={openThread} />
+            ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
+              <ThreadList channelId={channel.id} channelName={channel.name} onOpen={openThread} heading={false} />
+            </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
               announce={announce} /> : undefined}
@@ -1290,7 +1292,7 @@ export function Shell(): React.JSX.Element {
           : community === null ? undefined : t('members.region', { server: community.name })}
         asideOpen={asideShown}
         onAsideClose={sideNow !== null ? closeSide : phone ? memberSheet.close : () => setMembersOpen(false)}
-        asideCloseLabel={sideNow?.view === 'thread' ? undefined : sideNow?.view === 'list' ? t(phone ? 'nav.back' : 'dialog.close') : t('members.close')}
+        asideCloseLabel={sideNow !== null ? undefined : t('members.close')}
         asideReturnRef={sideNow !== null ? sideReturn : membersToggle}
       >
         {main}

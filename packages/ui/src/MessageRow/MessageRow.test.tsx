@@ -20,6 +20,15 @@ describe('MessageRow', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the chip still on pointerdown (no focus shift), so pointerup and click reach it', () => {
+    const onOpen = vi.fn();
+    render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" thread={{ label: '2 replies', onOpen }} />);
+    const chip = screen.getByRole('button', { name: '2 replies' });
+    expect(fireEvent.pointerDown(chip)).toBe(false);
+    fireEvent.pointerUp(chip);
+    fireEvent.click(chip);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
   it('has no thread chip without a thread, and the chip follows the row’s roving tab stop', () => {
     const { rerender } = render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" />);
     expect(screen.queryByRole('button')).toBeNull();

@@ -193,7 +193,7 @@ describe('the thread list', () => {
 });
 
 describe('threads on a phone (a sheet)', () => {
-  it('opens full screen as a history entry, closes on the system back, keeps the tab bar hidden and returns focus to the chip', async () => {
+  it('opens full screen as a history entry, closes on the system back, keeps the tab bar hidden and returns focus to the root row', async () => {
     const { fake, user } = setup({ phone: true });
     await user.click(await screen.findByRole('button', { name: '2 replies' }));
     const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
@@ -204,7 +204,8 @@ describe('threads on a phone (a sheet)', () => {
     act(() => { window.history.back(); });
     await waitFor(() => expect(threadPane()).toBeNull());
     expect(fake.callsOf('closeThread')).toHaveLength(1);
-    await waitFor(() => expect(screen.getByRole('button', { name: '2 replies' })).toHaveFocus());
+    // A pointer click leaves focus where it was (the chip keeps still), so focus comes back to the root's row.
+    await waitFor(() => expect(document.querySelector(`.d-message-row[data-msg-id="${ROOT}"]`)).toHaveFocus());
   });
 
   it('closes on Escape and by its own back control, popping its entry', async () => {

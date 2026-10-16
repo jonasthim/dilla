@@ -4,7 +4,9 @@ import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 
-export function ThreadList(p: { channelId: string; channelName: string; onOpen(rootMsgId: string): void }): React.JSX.Element {
+export function ThreadList(p: { channelId: string; channelName: string; onOpen(rootMsgId: string): void;
+  /** False: the caller's pane already carries the heading. */
+  heading?: boolean }): React.JSX.Element {
   const client = useCore();
   const rows = useSlice(`threads:${p.channelId}`);
   const [failed, setFailed] = useState(false);
@@ -15,7 +17,7 @@ export function ThreadList(p: { channelId: string; channelName: string; onOpen(r
   const newest = [...(rows ?? [])].sort((a, b) => b.lastTs - a.lastTs);
   return (
     <section className="dw-thread-list">
-      <h2 className="dw-thread-list__title">{t('thread.list')}</h2>
+      {p.heading === false ? null : <h2 className="dw-thread-list__title">{t('thread.list')}</h2>}
       {failed ? <p role="alert" className="dw-thread-list__empty">{t('thread.loadFailed')}</p> : null}
       {!failed && rows !== undefined && rows.length === 0 ? <p className="dw-thread-list__empty">{t('thread.empty', { name: p.channelName })}</p> : null}
       {newest.length > 0 ? (
