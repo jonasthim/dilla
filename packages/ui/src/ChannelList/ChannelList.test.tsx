@@ -28,6 +28,18 @@ function props(over: Partial<ChannelListProps> = {}): ChannelListProps {
 }
 
 describe('ChannelList', () => {
+  it('passes an announcement kind and a badge through to the row (R36)', () => {
+    render(<ChannelList {...props({ channels: [
+      { id: 'n', name: 'news', kind: 'announcement', readable: false, badge: 'slow mode' },
+      { id: 'g', name: 'general', kind: 'text', readable: false },
+    ] })} />);
+    const row = screen.getByRole('button', { name: 'news slow mode' });
+    expect(row).toHaveAttribute('data-kind', 'announcement');
+    expect(row.querySelector('svg[data-icon="megaphone"]')).not.toBeNull();
+    expect(screen.getByText('slow mode')).toHaveClass('d-chrow__badge');
+    expect(screen.getByRole('button', { name: 'general' }).querySelector('.d-chrow__badge')).toBeNull();
+  });
+
   // Controller ruling (e), task 21 pre-flight: the ChannelList title is the shell's <h1>.
   it('is a navigation landmark with the server name as its heading and one row per channel in order', () => {
     render(<ChannelList {...props()} />);

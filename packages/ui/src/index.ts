@@ -151,6 +151,8 @@ export { FactorRow } from './FactorRow/FactorRow.tsx';
 export type { FactorRowProps } from './FactorRow/FactorRow.tsx';
 export { TabBar } from './TabBar/TabBar.tsx';
 export type { TabBarProps, TabBarItem } from './TabBar/TabBar.tsx';
+export { ThreadPane } from './ThreadPane/ThreadPane.tsx';
+export type { ThreadPaneProps } from './ThreadPane/ThreadPane.tsx';
 export { PhoneHeader } from './PhoneHeader/PhoneHeader.tsx';
 export type { PhoneHeaderProps } from './PhoneHeader/PhoneHeader.tsx';
 export { CallBar } from './CallBar/CallBar.tsx';

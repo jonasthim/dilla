@@ -18,6 +18,7 @@ import { TabBar, type TabBarItem } from '../TabBar/TabBar.tsx';
 import { CallBar } from '../CallBar/CallBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { RingBanner } from '../RingBanner/RingBanner.tsx';
+import { ThreadPane } from '../ThreadPane/ThreadPane.tsx';
 
 // A 390 × 844 phone (an iPhone 14). Switch the theme in the toolbar (mesh, light, high-contrast). The decorator's 16px
 // padding is taken back so the shell fills the frame exactly.
@@ -246,6 +247,29 @@ export const MembersSheet: Story = {
     <Phone>
       <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer}
         aside={members} asideLabel="members" asideOpen onAsideClose={noop} asideCloseLabel="back">{log}</AppShell>
+    </Phone>
+  ),
+};
+
+// web3.7 (flow 11): a thread on a phone is a full-screen sheet through the aside drawer. The sheet carries its own PhoneHeader,
+// so the shell is given no close label (it would draw a second header).
+const threadRoot = <MessageRow author="ada" time="21:02" body="anyone up for a round tonight? the second boss hits hard, so bring the tank gear" state="ok" thread={{ label: '3 replies', onOpen: noop }} />;
+const threadReplies = (
+  <MessageLog label="replies" emptyLabel="No replies yet.">
+    <MessageRow author="björn" time="21:03" body="after nine, still on the boat" state="ok" tag="web" />
+    <MessageRow author="mira" time="21:04" body="count me in" state="ok" own />
+    <MessageRow author="ada" time="21:06" body="bring the tank gear, then" state="ok" />
+  </MessageLog>
+);
+const threadComposer = (
+  <Composer label="reply in thread" placeholder="reply in thread" maxLength={4000} value="" onChange={noop} onSend={noop} sendLabel="send" counterLabel={n => `${n} left`} />
+);
+export const ThreadSheet: Story = {
+  render: () => (
+    <Phone>
+      <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer}
+        aside={<ThreadPane title="Thread" closeLabel="close thread" onClose={noop} root={threadRoot} composer={threadComposer} phone>{threadReplies}</ThreadPane>}
+        asideLabel="thread" asideOpen onAsideClose={noop}>{log}</AppShell>
     </Phone>
   ),
 };

@@ -24,3 +24,5 @@
 .d-composer__attach:hover { color: var(--fg); background: var(--surface-hi); }
 .d-composer__attach:disabled { color: var(--fg-3); background: transparent; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .d-composer__attach { transition: none; } }
+/* web3.7: the slow-mode countdown and the announcement channel's read-only line, above the box and after `top`. Text, never a block. */
+.d-composer__notice { margin: 0; font-size: var(--text-sm); color: var(--fg-2); overflow-wrap: anywhere; }

@@ -8,7 +8,7 @@ import './ChannelList.css';
 export interface ChannelListProps {
   label: string;
   title: string;
-  channels: readonly { id: string; name: string; kind: 'text' | 'voice' | 'dm'; readable: boolean; unread?: number; mentions?: number; muted?: boolean }[];
+  channels: readonly { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; readable: boolean; unread?: number; mentions?: number; muted?: boolean; badge?: string }[];
   activeId: string | null;
   onSelect(id: string): void;
   emptyLabel: string;
@@ -67,7 +67,7 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
         return (
           <li key={c.id}>
             <ChannelRow name={c.name} kind={c.kind} readable={c.readable} active={c.id === activeId}
-              unread={unread} mentions={mentions} muted={muted} ariaLabel={ariaLabel} onSelect={() => onSelect(c.id)} />
+              unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} onSelect={() => onSelect(c.id)} />
           </li>
         );
       })}

@@ -16,6 +16,25 @@ function items(spy = vi.fn()): MessageToolbarProps['items'] {
 const buttons = () => screen.getAllByRole('button');
 
 describe('MessageToolbar', () => {
+  it('has a thread item as a toolbar button in arrow-key order', () => {
+    const spy = vi.fn();
+    const withThread: MessageToolbarProps['items'] = [
+      { id: 'react', label: 'react', onAction: () => spy('react') },
+      { id: 'reply', label: 'reply', onAction: () => spy('reply') },
+      { id: 'thread', label: 'reply in thread', onAction: () => spy('thread') },
+      { id: 'pin', label: 'pin', onAction: () => spy('pin') },
+    ];
+    render(<MessageToolbar label="actions for this message" tabbable items={withThread} />);
+    const b = buttons();
+    expect(b.map(x => x.getAttribute('data-action'))).toEqual(['react', 'reply', 'thread', 'pin']);
+    b[1].focus();
+    fireEvent.keyDown(b[1], { key: 'ArrowRight' });
+    expect(b[2]).toHaveFocus();
+    expect(b[2]).toHaveAccessibleName('reply in thread');
+    fireEvent.click(b[2]);
+    expect(spy).toHaveBeenCalledWith('thread');
+  });
+
   it('is a toolbar named by its label, of buttons with visible labels in order', () => {
     const { container } = render(<MessageToolbar label="actions for this message" tabbable items={items()} />);
     const bar = screen.getByRole('toolbar', { name: 'actions for this message' });
