@@ -205,8 +205,9 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
         if (old !== undefined) s.cancelTimer(old.timer);
         s.slowWait.set(hex, { timer: s.armTimer(wait, () => { s.slowWait.delete(hex); s.requestDrain(g); }), until });
       }
-      // Only a post's wait is the person's: a fold's 429 is waited out silently.
-      if (row.type === 0) s.deps.onSlow(g, until, true);
+      // Only a post's wait is the person's: a fold's 429 is waited out silently. The countdown is the deadline the
+      // group actually waits for, so it never ends before the post can go.
+      if (row.type === 0) s.deps.onSlow(g, Math.max(until, old?.until ?? 0), true);
       s.requestDrain(g);
       return;
     }

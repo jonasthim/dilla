@@ -743,4 +743,42 @@ describe('slow mode in the send lane (CB2)', () => {
     expect(sent()).toEqual(['earlier', 'edit']);
   });
 
+
+  // Fix round 2.
+  // Unreachable through the engine today: drainOne never uploads a post while a wait is armed, and one upload per group
+  // is in flight. The armed wait is planted during P's upload to pin the rule that the countdown is the later deadline.
+  it('a post refused 429 under a later armed deadline publishes that deadline', async () => {
+    const t0 = clock.now();
+    const hex = toHex(g);
+    ds.inject('postMessage', { before: () => {
+      d.engine.slowWait.set(hex, { timer: d.engine.armTimer(9000, () => { d.engine.slowWait.delete(hex); d.engine.requestDrain(g); }), until: t0 + 9000 });
+      throw slowed(1000);
+    } });
+    d.engine.send(g, 'P');
+    await settle();
+    expect(d.slow).toEqual([{ group: hex, until: t0 + 9000, queued: true }]);
+    await clock.advance(1000);
+    expect(sent()).toEqual([]);
+    await clock.advance(8000);
+    expect(sent()).toEqual(['P']);
+  });
+
+  it('a refused resync fails the waiting rows and ends the wait: a retried post goes at once', async () => {
+    const earlier = d.engine.send(g, 'earlier');
+    await settle();
+    ds.inject('postMessage', { fail: slowed(5000) });
+    const p = d.engine.send(g, 'P');
+    await settle();
+    ds.inject('postMessage', { fail: httpError(403, 'E_LEAF_NOT_CURRENT') });
+    ds.inject('getGroupInfo', { fail: httpError(404, 'E_NOT_FOUND') });
+    d.engine.sendRequest(g, reaction(earlier));
+    await settle();
+    expect(d.core.outbox(g).map((x) => [x.type, x.state])).toEqual([[0, 2], [3, 2]]);
+    expect(d.engine.slowWait.size).toBe(0);
+    expect(d.engine.slowed.size).toBe(0);
+    d.engine.retry(p);
+    await settle();
+    expect(sent()).toEqual(['earlier', 'P']);
+  });
+
 });
