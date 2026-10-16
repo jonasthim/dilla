@@ -48,7 +48,9 @@ test('Privacy, Keyboard and Diagnostics work at phone width with surviving focus
     const dialog = settingsDialog(page);
     await expect(dialog).toBeVisible({ timeout: WAIT });
     await expect(page).toHaveURL(new RegExp(`/settings/${section}$`), { timeout: WAIT });
-    await expect(dialog.getByRole('heading', { level: 2 }).last()).toBeVisible(); // the phone header's title, then the section's
+    // The phone header's title, then the section's own heading.
+    await expect(dialog.locator('.d-phone-header__title')).toBeVisible();
+    await expect(dialog.getByRole('heading', { level: 2 })).toHaveCount(2);
     await expectAccessible(page, `${section} at 360px`);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     await back.click();

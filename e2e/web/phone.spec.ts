@@ -18,6 +18,8 @@ const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch:
 
 let host: StartedHost | null = null;
 let instance = '';
+let listPath = '';
+let channelPath = '';
 
 test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
 test.use({ baseURL: `http://127.0.0.1:${String(HOST.port)}`, ...PHONE });
@@ -45,14 +47,20 @@ async function phoneContext(browser: Browser): Promise<BrowserContext> {
 
 /** Every visible input, textarea and select is at least 16 px, so no browser zooms on focus. A checkbox, a radio and a button
  *  take no typing, so no browser zooms to them and their own 13.33 px default is left alone. */
-async function expectFieldSizes(page: Page, state: string): Promise<void> {
-  const small = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('input, textarea, select')]
+async function expectFieldSizes(page: Page, state: string, expected = 1): Promise<number> {
+  const { checked, small } = await page.evaluate(() => {
+    const fields = [...document.querySelectorAll<HTMLElement>('input, textarea, select')]
     .filter((el) => !(el instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'submit', 'reset', 'hidden', 'file', 'range', 'color'].includes(el.type)))
     .filter((el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden')
-    .map((el) => ({ what: `${el.tagName.toLowerCase()}${el instanceof HTMLInputElement ? `[${el.type}]` : ''} ${el.id}`, px: parseFloat(getComputedStyle(el).fontSize) }))
-    .filter((f) => f.px < 16));
+    .map((el) => ({ what: `${el.tagName.toLowerCase()}${el instanceof HTMLInputElement ? `[${el.type}]` : ''} ${el.id}`, px: parseFloat(getComputedStyle(el).fontSize) }));
+    return { checked: fields.length, small: fields.filter((f) => f.px < 16) };
+  });
   expect(small, `fields under 16px in "${state}"`).toEqual([]);
+  expect(checked, `"${state}" has text fields to measure`).toBeGreaterThanOrEqual(expected);
+  return checked;
 }
+// A smoke check: Chromium's emulation never auto-zooms, so this cannot fail there. The 16px computed sizes are the proof, and
+// the real-iPhone walk covers the zoom itself.
 const scale = (page: Page) => page.evaluate(() => window.visualViewport?.scale ?? 1);
 async function expectUnzoomedOnFocus(page: Page, field: Locator, state: string): Promise<void> {
   await field.focus();
@@ -94,7 +102,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectFieldSizes(page, 'connect');
       await nextButton(page).click();
       await expectHeading(page, COPY.identityTitle);
-      await expectFieldSizes(page, 'identity');
+      await expectFieldSizes(page, 'identity', 3);
       await expectUnzoomedOnFocus(page, page.getByLabel(copy(COPY.usernameLabel), { exact: true }), 'the username');
       await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(ada.username);
       await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(ada.display);
@@ -103,13 +111,13 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await nextButton(page).click();
       await expectHeading(page, COPY.keysTitle);
       ada.recoveryKey = await readRecoveryKey(page);
-      await expectFieldSizes(page, 'recovery key');
+      await expectFieldSizes(page, 'recovery key', 0);
       await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
       await nextButton(page).click();
       await expectHeading(page, COPY.deviceTitle);
-      await expectFieldSizes(page, 'browser');
+      await expectFieldSizes(page, 'browser', 0);
       await submitButton(page).click();
-      await completeFactorStep(page, ada, async (state) => { await expectFieldSizes(page, `factor ${state}`); });
+      await completeFactorStep(page, ada, async (state) => { await expectFieldSizes(page, `factor ${state}`, state === 'totp' ? 1 : 0); });
       await expectHeading(page, COPY.doneTitle);
       await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
       await expectShell(page);
@@ -122,16 +130,16 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).press('Enter');
       await expect(dialog).toBeHidden({ timeout: WAIT });
-      // A new server opens its #general; back from it is the server's list.
-      if (await tabBar(page).count() === 0 || !(await tabBar(page).isVisible())) {
-        await expect(back(page)).toBeVisible({ timeout: WAIT });
-        await back(page).click();
-      }
+      // A new server opens its #general as a view (no tab bar); back from it is the server's list.
+      await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
+      await expect(tabBar(page)).toBeHidden();
+      await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(tabBar(page).getByRole('link')).toHaveCount(4);
       await expect(tab(page, 'nav.tab.servers')).toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true })).toHaveCount(0);
       await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+      listPath = new URL(page.url()).pathname;
     });
 
     // 3. Tap #general: a pushed view, focus on the title, no tab bar, a composer that does not zoom.
@@ -140,6 +148,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(back(page)).toBeVisible({ timeout: WAIT });
       await expect(viewTitle(page)).toBeFocused();
       await expect(tabBar(page)).toBeHidden();
+      channelPath = new URL(page.url()).pathname;
       await expectComposerReady(page, 'general');
       const composer = composerBox(page, 'general');
       expect(await composer.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
@@ -165,6 +174,13 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
       const menu = page.getByRole('button', { name: copy('nav.server.menu'), exact: true });
       await expectTapTargets(menu, 'the server menu trigger');
+      // The owner's menu: new channel, invite, server settings (and "leave" only for a member).
+      await menu.click();
+      await expect(page.getByRole('menuitem')).toHaveText([copy('create.channel.open'), copy('invite.open'), copy('admin.open')]);
+      await expectTapTargets(page.getByRole('menuitem'), 'the server menu items');
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menuitem')).toHaveCount(0);
+      await expect(menu).toBeFocused();
     });
 
     // The channel menu's sheet: closed by the system back and by its own back, focus returns to the menu trigger.
@@ -226,12 +242,14 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     // 6. The link banner follows the network.
     await test.step('offline shows the link banner, online removes it', async () => {
       await tab(page, 'nav.tab.servers').tap();
+      const logged = guard.consoleErrors.length;
       await context.setOffline(true);
       await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeVisible({ timeout: WAIT });
       await context.setOffline(false);
       await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeHidden({ timeout: WAIT });
-      // The browser logs the requests it refused while the network was off; that is this step's doing, not a fault.
-      for (let i = guard.consoleErrors.length - 1; i >= 0; i--) if (guard.consoleErrors[i].includes('ERR_INTERNET_DISCONNECTED')) guard.consoleErrors.splice(i, 1);
+      // The browser logs the requests it refused while the network was off; that is this step's doing, not a fault. Only the
+      // entries this step added are cleared, and only that line.
+      for (let i = guard.consoleErrors.length - 1; i >= logged; i--) if (guard.consoleErrors[i].includes('ERR_INTERNET_DISCONNECTED')) guard.consoleErrors.splice(i, 1);
     });
 
     // A deep link or a first load moves no focus.
@@ -242,6 +260,21 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(back(page)).toBeVisible({ timeout: WAIT });
       await expectComposerReady(page, 'general');
       expect(await noFocusMoved(page), 'nothing focused after a reload').toBe(true);
+    });
+
+    // A cold deep link to a channel (a fresh page, no in-app history): back is the server's list, never off site, with that
+    // channel's row focused.
+    await test.step('a cold deep link, then back, lands on the list with the channel row focused', async () => {
+      expect(channelPath).toMatch(/^\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/);
+      // Not a second tab (the app lives in one tab per profile): a fresh load of the same page, behind its earlier history.
+      await page.goto(channelPath);
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
+      await expectComposerReady(page, 'general');
+      await back(page).click();
+      await expect(page).toHaveURL(new RegExp(`${listPath}$`), { timeout: WAIT });
+      expect(page.url().startsWith(`http://127.0.0.1:${String(HOST.port)}/`)).toBe(true);
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      await expect(channelRow(page, 'general')).toBeFocused();
     });
   } finally {
     await guard.collectWorkers();
