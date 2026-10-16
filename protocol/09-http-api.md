@@ -262,6 +262,9 @@ full contract.
   (§ Rate limits), which its failures spend.
 - **Limits:** an account holds at most 1024 passkeys for this `rp_id`, and
   `auth.totp.recovery_codes` is 1–16 (the client's decode bounds).
+- **TOTP codes.** A code is accepted at the lowest unused counter within the skew window
+  (`auth.totp.skew` time steps either side of now, default 1), and a counter at or below the last
+  accepted one is refused, so each code signs in, confirms or steps up once.
 - **A guess is counted before its secret is checked,** in one step with the lockout check, at
   every step-up route (`/stepup`, `stepup/passkey/finish`, the old password of
   `POST /v1/auth/password`) and at `/totp/verify` and `/recovery/verify`: concurrent guesses
@@ -645,7 +648,8 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   `edited`, under the current franking key, and the key id is recorded with it. A tag over the
   replaced bytes could never verify.
 - **Slow mode.** Inside `slowmode_seconds` of the caller's previous message in the channel, a post
-  is `429 E_RATE_LIMITED` with `retry_after_ms` the time left; `bypass_slowmode` is exempt. A
+  is `429 E_RATE_LIMITED` with `retry_after_ms` the time left; `bypass_slowmode` exempts the caller
+  from slow mode only, never from `send_messages`. A
   deleted message still counts, so deleting and reposting does not reset the wait. Slow mode and
   `send_messages` apply to end-to-end encrypted posts too, through the upload class (`02` § Upload
   class); there they apply to posts (type 0) only, and an edit, delete, reaction or pin is neither
@@ -1190,7 +1194,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   out of the room: the instance announces the device out (`voice_state` flags 0) and drops its self
   flags, and leaves its leaf to the room sweep's two-sighting rule (below). The background loop
   looks at no more than 8 held-back leaves a pass, within 4 seconds, after its repairs and never on
-  their budget, so a revocation is never held up by them. A leave of a session the device has
+  their budget, so a revocation is never held up by them. A known limitation: a leave that names no
+  join time still announces the device out (flags 0) when the device is already recorded under a
+  later session and the SFU lists it out of the room. A
+  leave of a session the device has
   already replaced by rejoining, and a leave the SFU reports after the call has ended, change
   nothing. A device that stays out of the call's room while it holds a leaf of the call group — its
   leave report lost, or disconnected by the instance and the report of that lost — loses the leaf

@@ -132,6 +132,10 @@ Stated plainly in the product's documentation and onboarding:
   timestamps and sizes, attachment sizes, franking tags, and in a call each participant's audio
   level and speaking activity (the RTP audio-level header extension is outside SFrame, and a silent
   microphone's zero-byte DTX frames mark its silent intervals) and every frame's size and timing.
+  From web3.7 the instance also learns, for every end-to-end encrypted upload, whether it is a post
+  or a fold (an edit, a delete, a reaction or a pin): its upload class (`02` § Upload class). That
+  is the accepted cost of host-enforced send rights and slow mode; otherwise ciphertexts are padded
+  to 256 bytes, so a short post and a reaction look alike.
 - History before a member joined is not shared with them at this version.
 - A user who loses every device and the recovery key loses their history.
 - A `browser`-tier session trusts the code the instance serves.

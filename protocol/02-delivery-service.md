@@ -466,7 +466,8 @@ check and before the message is stored:
   `403 E_FORBIDDEN`.
 - A class-0 upload within the channel's `slowmode_seconds` of the user's last class-0 upload into
   any text group of the channel, from any of their devices, is `429 E_RATE_LIMITED` with
-  `retry_after_ms` the time left, unless the user holds `bypass_slowmode`. The instance keeps the
+  `retry_after_ms` the time left, unless the user holds `bypass_slowmode`, which exempts slow mode
+  only, never the `send_messages` rule above. The instance keeps the
   time of that last post as a durable mark per channel and user, raised by every accepted class-0
   upload and by nothing else, so a deleted message still counts, and so does one retention has
   since removed.
