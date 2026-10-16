@@ -12,5 +12,6 @@
 @media (forced-colors: active) {
   .d-state-dot { border: 1.5px solid CanvasText; }
   .d-state-dot[data-tone="ok"], .d-state-dot[data-tone="warn"], .d-state-dot[data-tone="danger"], .d-state-dot[data-tone="dnd"] { background: CanvasText; }
+  .d-state-dot[data-tone="idle"] { background: linear-gradient(90deg, CanvasText 50%, transparent 50%); }
   .d-state-dot[data-tone="dnd"]::after { background: Canvas; }
 }

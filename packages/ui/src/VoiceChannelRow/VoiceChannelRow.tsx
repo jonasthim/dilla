@@ -36,7 +36,7 @@ export function VoiceChannelRow({ name, current, joined, participants, readable,
       <button type="button" className="d-voice-row" aria-label={labels.open.replaceAll('{name}', name)}
         aria-describedby={n > 0 ? countId : undefined} aria-current={current ? 'page' : undefined}
         data-joined={joined ? 'true' : undefined} data-live={n > 0 ? 'true' : undefined} onClick={() => onOpen()}>
-        <span className="d-voice-row__glyph" aria-hidden="true">{n > 0 ? <StateDot tone="ok" /> : <StateDot tone="off" />}</span>
+        <span className="d-voice-row__glyph" aria-hidden="true"><StateDot tone={n > 0 || joined ? 'ok' : 'off'} /></span>
         <span className="d-voice-row__name">{name}</span>
         {readable === true ? <Tag kind="readable" /> : null}
         {n > 0 ? (

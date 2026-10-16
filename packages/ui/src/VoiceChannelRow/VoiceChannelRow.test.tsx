@@ -49,6 +49,8 @@ describe('VoiceChannelRow', () => {
     expect(container.querySelector('.d-voice-row__glyph .d-state-dot')).toHaveAttribute('data-tone', 'off');
     rerender(<VoiceChannelRow {...base} participants={[person('bo', {})]} />);
     expect(container.querySelector('.d-voice-row__glyph .d-state-dot')).toHaveAttribute('data-tone', 'ok');
+    rerender(<VoiceChannelRow {...base} participants={[]} joined />);
+    expect(container.querySelector('.d-voice-row__glyph .d-state-dot')).toHaveAttribute('data-tone', 'ok');
   });
 
   it('with nobody in voice shows no count and no sub-rows; current and joined are marked', () => {

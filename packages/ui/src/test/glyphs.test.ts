@@ -20,6 +20,27 @@ function walk(dir: string, out: string[]): string[] {
 }
 
 const isFallback = (cp: number) => (cp >= 0x25a0 && cp <= 0x25ff) || cp === 0x2713 || cp === 0x2715 || cp === 0x2016;
+// The literal glyph, an HTML entity (&#x25CF; or &#9679;) or a JS/CSS escape (●, \u{25CF}; CSS \25CF).
+const ESCAPE = /&#x([0-9a-f]+);|&#(\d+);|\\u([0-9a-f]{4})|\\u\{([0-9a-f]+)\}|\\([0-9a-f]{4,6})(?![0-9a-f])/gi;
+
+/** Every guarded code point in `text`, as `line:char U+XXXX`, whether written literally, as an entity or as an escape. */
+function findFallbackGlyphs(text: string): string[] {
+  const hits: string[] = [];
+  const u = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
+  text.split('\n').forEach((line, li) => {
+    let ch = 0;
+    for (const c of line) {
+      ch += 1;
+      const cp = c.codePointAt(0) ?? 0;
+      if (isFallback(cp)) hits.push(`${li + 1}:${ch} ${u(cp)}`);
+    }
+    for (const m of line.matchAll(ESCAPE)) {
+      const cp = m[1] ? parseInt(m[1], 16) : m[2] ? parseInt(m[2], 10) : parseInt(m[3] ?? m[4] ?? m[5], 16);
+      if (isFallback(cp)) hits.push(`${li + 1}:${(m.index ?? 0) + 1} ${u(cp)}`);
+    }
+  });
+  return hits;
+}
 
 describe('font-fallback glyphs', () => {
   it('no source file under ui or web uses a glyph that falls back to a system font', () => {
@@ -27,15 +48,21 @@ describe('font-fallback glyphs', () => {
     for (const file of ROOTS.flatMap(r => walk(r, []))) {
       const rel = path.relative(REPO, file);
       if (rel === SELF) continue;
-      fs.readFileSync(file, 'utf8').split('\n').forEach((line, li) => {
-        let ch = 0;
-        for (const c of line) {
-          ch += 1;
-          const cp = c.codePointAt(0) ?? 0;
-          if (isFallback(cp)) hits.push(`${rel}:${li + 1}:${ch} U+${cp.toString(16).toUpperCase().padStart(4, '0')}`);
-        }
-      });
+      for (const h of findFallbackGlyphs(fs.readFileSync(file, 'utf8'))) hits.push(`${rel}:${h}`);
     }
     expect(hits).toEqual([]);
+  });
+
+  it('catches a literal glyph, an HTML entity and a code escape alike', () => {
+    expect(findFallbackGlyphs("const a = '●';")).toEqual(['1:12 U+25CF']);
+    expect(findFallbackGlyphs('<b>&#x25CF;</b>')).toEqual(['1:4 U+25CF']);
+    expect(findFallbackGlyphs('<b>&#9679;</b>')).toEqual(['1:4 U+25CF']);
+    expect(findFallbackGlyphs("const a = '\\u25CF';")).toEqual(['1:12 U+25CF']);
+    expect(findFallbackGlyphs("const a = '\\u{2715}';")).toEqual(['1:12 U+2715']);
+    expect(findFallbackGlyphs('a::before { content: "\\25B8"; }')).toEqual(['1:23 U+25B8']);
+  });
+
+  it('leaves characters outside the guarded set alone', () => {
+    expect(findFallbackGlyphs("const a = '›♪'; // &#x203A; \\u203A &#9834; \\266A")).toEqual([]);
   });
 });
