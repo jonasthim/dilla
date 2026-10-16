@@ -19,8 +19,8 @@ export interface AccountState {
   error: WorkerError | null;                    // the last signup, sign-in or boot error
   /** Set during signin-*; null otherwise. `factor` is what the code step asks after: 'totp' after a login owing an app code
    *  (needs 1), 'passkey' after a login owing a passkey (needs 2) and after a passkey that did not verify the user (the
-   *  copy says why a code is asked); `needsTotp` is kept equal to `factor === 'totp'`. */
-  signIn: { username: string | null; needsTotp: boolean; factor: 'totp' | 'passkey' | null } | null;
+   *  copy says why a code is asked). */
+  signIn: { username: string | null; factor: 'totp' | 'passkey' | null } | null;
   /** web3.6: set while the phase is factor-setup; null otherwise. */
   factorSetup: { origin: FactorSetupOrigin } | null;
   /** BACKUPS-RECOVERY-04: the instance holds a root object this account did not seal (E_ROOT_MISMATCH at ready), so

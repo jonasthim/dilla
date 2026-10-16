@@ -24,7 +24,7 @@ import { HttpClient } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import {
   CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, INVITE_TTL_MAX_S, INVITE_USES_MAX, Routes, nameProblem, type ChannelRow,
-  type Instance, type Limits, type MemberRow, type NewChannelKind,
+  type Factors, type Instance, type Limits, type MemberRow, type NewChannelKind,
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
@@ -273,7 +273,7 @@ const instanceStateOf = (instance: Instance): NonNullable<AccountState['instance
   passwordSignup: instance.authMethods.includes(0), totp: instance.authMethods.includes(1), passkeys: instance.authMethods.includes(2),
 });
 const signInOf = (username: string | null, factor: 'totp' | 'passkey' | null): NonNullable<AccountState['signIn']> =>
-  ({ username, needsTotp: factor === 'totp', factor });
+  ({ username, factor });
 const SEQ = /^[1-9][0-9]{0,19}$/;
 const TRAY_ID_MAX = 64;
 const EMOJI_MAX_BYTES = 32;
@@ -1168,8 +1168,8 @@ export class Controller {
   /** Requirement 11, in order; after every await a revocation that happened meanwhile ends it silently. web3.6: past (d),
    *  an account that owes a second factor stops at factor-setup (`origin` says why) with no backup PUT, no KeyPackage and
    *  no socket: the instance refuses them all until a factor is added (protocol/09 scope F). */
-  private async enterReady(origin: FactorSetupOrigin): Promise<void> {
-    try { await this.enterReadyOnce(origin); }
+  private async enterReady(origin: FactorSetupOrigin, known?: Factors): Promise<void> {
+    try { await this.enterReadyOnce(origin, known); }
     catch (e) {
       // Final review M5: a reset (or a CLI sweep) landing after the gate read answers E_FACTOR_REQUIRED while the phase is
       // not yet ready, which the global hook ignores. The account owes a factor: stop the gateway and engine the steps
@@ -1181,7 +1181,7 @@ export class Controller {
     }
   }
 
-  private async enterReadyOnce(origin: FactorSetupOrigin): Promise<void> {
+  private async enterReadyOnce(origin: FactorSetupOrigin, known?: Factors): Promise<void> {
     const core = this.requireCore();
     const session = this.session;
     if (session === null) throw new CoreError('E_CORE_STATE', 'no session');
@@ -1209,7 +1209,8 @@ export class Controller {
       deviceId = identity.deviceId;
       this.me = { userId, deviceId };
       // The factor gate (web3.6), after (d) and before (e): ensureBackups' PUT is not an F route.
-      const factors = await this.routes.getFactors();
+      // `known` is the read factorSetupDone just made: one read per set-up, a re-ready (contract 6) still reads.
+      const factors = known ?? await this.routes.getFactors();
       if (this.revoked()) return;
       this.slices.set('factors', factorsState(factors));
       if (factors.owed) { await this.enterFactorSetup(origin, userId, deviceId); return; }
@@ -1520,7 +1521,7 @@ export class Controller {
     if (factors.owed) throw new Refusal('E_FACTOR_REQUIRED', '');
     const origin = this.accountState.factorSetup?.origin ?? 'required';
     try {
-      await this.enterReady(origin);
+      await this.enterReady(origin, factors);
     } catch (e) {
       if (!this.revoked()) this.setAccount({ phase: 'error', error: errorOf(e) });
       throw e;

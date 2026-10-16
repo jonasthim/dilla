@@ -234,7 +234,7 @@ test('a second browser joins the account by password and recovery key, badges an
       await openHarness(b);
       await expect.poll(() => phaseOf(b), { timeout: WAIT }).toBe('needs-signup');
       await ok(b, { m: 'signInBegin' });
-      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-login', signIn: { username: null, needsTotp: false } });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-login', signIn: { username: null } });
       // The key travels with the login (coordinator ruling on REGISTRATION-DEVICES-02's concern 3): a well-formed key
       // of another account registers, then the root refuses it, and the registered enrolment waits at signin-key.
       const wrong = [...recoveryKey];
@@ -242,7 +242,7 @@ test('a second browser joins the account by password and recovery key, badges an
       wrong[0] = (first[0] === 'A' ? 'B' : 'A') + first.slice(1);
       // web3.6: the password is followed by the code, and the root refuses the key once the code is in.
       await ok(b, { m: 'signInLogin', username, password, recoveryKey: wrong.join(' ') });
-      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-totp', signIn: { username, needsTotp: true } });
+      expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-totp', signIn: { username } });
       expect(await call(b, { m: 'signInTotp', code: await nextCode(CONTROL, factor), recoveryKey: wrong.join(' ') })).toMatchObject({ ok: false, code: 'E_RECOVERY_KEY' });
       expect(await slice<AccountState>(b, 'account')).toMatchObject({ phase: 'signin-key', signIn: { username } });
       await ok(b, { m: 'signInKey', recoveryKey: recoveryKey.join('-').toLowerCase() });

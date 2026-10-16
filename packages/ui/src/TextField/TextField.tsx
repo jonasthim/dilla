@@ -10,6 +10,8 @@ export interface TextFieldProps {
   error?: string;
   required?: boolean;
   disabled?: boolean;
+  /** The value shows and selects but is not edited (a secret to copy); `onChange` is then never called. */
+  readOnly?: boolean;
   autoComplete?: string;
   inputMode?: 'text' | 'numeric';
   maxLength?: number;
@@ -24,7 +26,7 @@ export interface TextFieldProps {
  * announced as an alert. Paste, copy and cut are never intercepted (WCAG 3.3.8).
  */
 export function TextField({
-  id, label, value, onChange, type, hint, error, required, disabled, autoComplete, inputMode, maxLength, spellCheck, initialFocus,
+  id, label, value, onChange, type, hint, error, required, disabled, readOnly, autoComplete, inputMode, maxLength, spellCheck, initialFocus,
 }: TextFieldProps) {
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
@@ -35,7 +37,7 @@ export function TextField({
       <label className="d-text-field__label" htmlFor={id}>{label}</label>
       <input id={id} className="d-text-field__input" type={type ?? 'text'} value={value}
         onChange={e => onChange(e.currentTarget.value)} aria-describedby={describedBy}
-        aria-invalid={error ? true : undefined} required={required} disabled={disabled}
+        aria-invalid={error ? true : undefined} required={required} disabled={disabled} readOnly={readOnly}
         autoComplete={autoComplete} inputMode={inputMode} maxLength={maxLength} spellCheck={spellCheck}
         data-autofocus={initialFocus ? '' : undefined} />
       {hint ? <p id={hintId} className="d-text-field__hint">{hint}</p> : null}

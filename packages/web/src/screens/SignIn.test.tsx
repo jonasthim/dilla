@@ -25,7 +25,7 @@ function setup(phase: BootPhase, script: Script = idle, over: Partial<AccountSta
   const fake = new FakeClient();
   fake.set('account', account({
     phase, user: null, deviceId: null, instance: { ...INSTANCE, passwordSignup: true },
-    signIn: { username: null, needsTotp: false, factor: null }, ...over,
+    signIn: { username: null, factor: null }, ...over,
   }));
   fake.handler = c => script(c, fake);
   const onFinish = vi.fn();
@@ -42,7 +42,7 @@ const password = () => screen.getByLabelText('Password');
 const worker = (opts: { totp?: boolean } = {}): Script => (c, fake) => {
   switch (c.m) {
     case 'signInLogin':
-      if (opts.totp) move(fake, { phase: 'signin-totp', signIn: { username: c.username, needsTotp: true, factor: 'totp' } });
+      if (opts.totp) move(fake, { phase: 'signin-totp', signIn: { username: c.username, factor: 'totp' } });
       else move(fake, { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null });
       return Promise.resolve({ needs: opts.totp === true ? 1 : 0 });
     case 'signInTotp':
@@ -180,7 +180,7 @@ describe('the ceremony', () => {
   });
 
   it('an empty code shows the required text and sends nothing', async () => {
-    const { fake, user } = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', needsTotp: true, factor: 'totp' } });
+    const { fake, user } = setup('signin-totp', worker({ totp: true }), { signIn: { username: 'ada', factor: 'totp' } });
     await user.click(button('Continue'));
     expect(field('Code')).toHaveAccessibleDescription('Fill in this field.');
     expect(document.activeElement).toBe(field('Code'));
@@ -319,11 +319,11 @@ describe('refusals', () => {
   it.each(TOTP)('%s returns to the login step with the username kept and asks to sign in again', async (_, init) => {
     const { fake, user } = setup('signin-login', (c, f) => {
       if (c.m === 'signInLogin') {
-        move(f, { phase: 'signin-totp', signIn: { username: 'ada', needsTotp: true, factor: 'totp' } });
+        move(f, { phase: 'signin-totp', signIn: { username: 'ada', factor: 'totp' } });
         return Promise.resolve({ needs: 1 });
       }
       if (c.m !== 'signInTotp') return Promise.resolve(null);
-      move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: true, factor: 'totp' } });
+      move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: 'totp' } });
       return Promise.reject(refusal(init));
     });
     await login(user);
@@ -350,7 +350,7 @@ describe('refusals', () => {
     const { user, view } = setup('signin-login', (c, f) => {
       if (c.m !== 'signInLogin') return Promise.resolve(null);
       move(f, { phase: 'enrolling' });
-      move(f, { phase: 'signin-login', signIn: { username: 'ada', needsTotp: false, factor: null } });
+      move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null } });
       return Promise.reject(refusal(init));
     });
     await login(user);

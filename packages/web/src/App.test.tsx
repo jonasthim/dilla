@@ -422,7 +422,7 @@ describe('App sign-in', () => {
   function signInWorker(fake: FakeClient) {
     const move = (over: Partial<ReturnType<typeof account>>) => fake.set('account', { ...fake.get('account')!, ...over });
     fake.handler = c => {
-      if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, needsTotp: false, factor: null } });
+      if (c.m === 'signInBegin') move({ phase: 'signin-login', signIn: { username: null, factor: null } });
       if (c.m === 'signInLogin' || c.m === 'signInKey') move({ phase: 'ready', user: { id: 'bb'.repeat(16), username: 'ada' }, signIn: null });
       if (c.m === 'signInCancel') move({ phase: 'needs-signup', signIn: null });
       return Promise.resolve(c.m === 'signInLogin' ? { needs: 0 } : null);
@@ -495,7 +495,7 @@ describe('App cleared', () => {
   it('reloads to the eviction message after an evicted sign-in, never through the revoked splash', () => {
     const fake = new FakeClient();
     const reload = vi.fn();
-    fake.set('account', account({ phase: 'enrolling', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false, factor: null } }));
+    fake.set('account', account({ phase: 'enrolling', user: null, deviceId: null, signIn: { username: 'ada', factor: null } }));
     render(<CoreProvider client={fake}><App fatal={null} reload={reload} /></CoreProvider>);
     act(() => fake.set('account', account({
       phase: 'cleared', user: null, deviceId: null, signIn: null, error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null },
@@ -518,7 +518,7 @@ describe('App cleared', () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     const reload = vi.fn();
-    fake.set('account', account({ phase: 'signin-key', user: null, deviceId: null, signIn: { username: 'ada', needsTotp: false, factor: null } }));
+    fake.set('account', account({ phase: 'signin-key', user: null, deviceId: null, signIn: { username: 'ada', factor: null } }));
     fake.handler = c => {
       if (c.m !== 'signInKey') return Promise.resolve(null);
       fake.set('account', account({ phase: 'cleared', user: null, deviceId: null, signIn: null, error: RACE }));

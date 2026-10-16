@@ -2043,7 +2043,7 @@ describe('Controller sign-in (L-TS-23)', () => {
   it('signs in without a second factor: the key\'s form, then the login, register, fetch and enrol back to back, then ready', async () => {
     const w = world({ phase: 0 });
     await toLoginStep(w);
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: null, needsTotp: false }, error: null });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: null }, error: null });
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual([]);
     w.call(3, LOGIN);
     await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
@@ -2066,7 +2066,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     await toKeyStep(w);
     expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } });
-    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web', needsTotp: true } });
+    expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { username: 'web' } });
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(4, { m: 'signInTotp', code: '12345', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
@@ -2109,7 +2109,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     expect(w.enrol.fetch).not.toHaveBeenCalled();
     expect(w.enrol.reset).not.toHaveBeenCalled();
     expect(w.core.identity().phase).toBe(3);
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: { code: 'E_FORBIDDEN', status: 403 } });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: { code: 'E_FORBIDDEN', status: 403 } });
     // Once a device was removed elsewhere, the next login (with the key) registers the kept enrolment again.
     w.call(5, LOGIN);
     await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 0 } }));
@@ -2142,7 +2142,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: want });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
     expect(w.enrol.register).not.toHaveBeenCalled();
     w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
@@ -2159,7 +2159,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_NO_ASSERTION', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: want });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
   });
 
   it('a boot in phase 3 whose backup is missing publishes signin-key with E_NO_BACKUP', async () => {
@@ -2233,7 +2233,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     const want = { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
     expect(w.enrol.reset).toHaveBeenCalledTimes(1);
-    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web', needsTotp: false }, error: want });
+    expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
     expect(phasesOf(w)).not.toContain('revoked');
   });
 
@@ -2396,7 +2396,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(1, { m: 'start' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('signin-key'));
     expect(w.enrol.fetch).toHaveBeenCalledWith(USER);
-    expect(w.account()?.signIn).toEqual({ username: null, needsTotp: false, factor: null });
+    expect(w.account()?.signIn).toEqual({ username: null, factor: null });
     w.call(2, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
     expect(w.enrol.complete).toHaveBeenCalledWith(RECOVERY_KEY, FETCHED, '');

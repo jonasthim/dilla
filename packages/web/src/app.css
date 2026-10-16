@@ -153,7 +153,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-factor-key__text { flex: 1 1 14rem; min-width: 0; display: flex; flex-direction: column; gap: var(--row-gap); }
 .dw-factor-key__field { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--row-gap); }
 .dw-factor-key__field > .d-text-field { flex: 1 1 10rem; min-width: 0; }
-.dw-factor-key__input { font-family: var(--font-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+.dw-factor-key__field .d-text-field__input { font-family: var(--font-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
 .dw-factor-ack { display: flex; align-items: center; gap: var(--row-gap); min-height: 24px; }
 .dw-factor-ack > input { width: 24px; height: 24px; flex: none; }
 @media (max-width: 30rem) { .dw-factor-key .d-qr { width: 160px; height: 160px; } }

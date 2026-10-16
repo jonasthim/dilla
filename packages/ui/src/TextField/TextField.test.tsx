@@ -73,6 +73,13 @@ describe('TextField', () => {
     expect(fireEvent.paste(screen.getByRole('textbox', { name: 'Invite' }))).toBe(true);
   });
 
+  it('sets the input read-only with readOnly, and only then', () => {
+    const { rerender } = render(<TextField id="key" label="Key" value="JBSW" onChange={() => {}} readOnly />);
+    expect(screen.getByRole('textbox', { name: 'Key' })).toHaveAttribute('readonly');
+    rerender(<TextField id="key" label="Key" value="JBSW" onChange={() => {}} />);
+    expect(screen.getByRole('textbox', { name: 'Key' })).not.toHaveAttribute('readonly');
+  });
+
   it('disables the input', () => {
     render(<TextField id="invite" label="Invite" value="k7qm" onChange={() => {}} disabled />);
     expect(screen.getByRole('textbox', { name: 'Invite' })).toBeDisabled();
