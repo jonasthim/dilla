@@ -68,6 +68,8 @@ type CallEvents struct {
 	// and the SFU does not list the device (completeDeferredLeaves), and ends when the newer session
 	// joins or the call ends.
 	deferred map[announceKey]deferredLeave
+	// deferCursor is the last deferral a completion pass took; the next pass goes on after it.
+	deferCursor announceKey
 
 	// amu guards the voice_state announcer's queue (voicestate.go): the latest flags per (call,
 	// device), whether its goroutine runs, and whether it is delivering a batch.
@@ -802,24 +804,45 @@ func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 // Remove. A device the SFU lists, a room it cannot list, or an admission still inside its window
 // waits for the next pass; a newer session's participant_joined, its leave, an eviction or the
 // call's end drops the deferral first. One pass looks at most at limit deferrals and lists each room
-// once (review S1); RetryPending runs it after its repairs, on its own budget.
+// once (review S1); RetryPending runs it after its repairs, on its own budget. Passes take the
+// deferrals in (call, device) order from where the last pass stopped (deferCursor), so with more
+// than limit pending each is visited in turn.
 func (c *CallEvents) completeDeferredLeaves(ctx context.Context, limit int) {
 	c.mu.Lock()
-	pending := make(map[announceKey]deferredLeave, min(len(c.deferred), limit))
-	for k, dl := range c.deferred {
-		if len(pending) >= limit {
-			break
-		}
-		pending[k] = dl
+	keys := make([]announceKey, 0, len(c.deferred))
+	for k := range c.deferred {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, compareAnnounceKeys)
+	start, _ := slices.BinarySearchFunc(keys, c.deferCursor, compareAnnounceKeys)
+	if start < len(keys) && keys[start] == c.deferCursor {
+		start++
+	}
+	type deferral struct {
+		k  announceKey
+		dl deferredLeave
+	}
+	pending := make([]deferral, 0, min(len(keys), limit))
+	for i := 0; i < len(keys) && len(pending) < limit; i++ {
+		k := keys[(start+i)%len(keys)]
+		pending = append(pending, deferral{k: k, dl: c.deferred[k]})
+		c.deferCursor = k
 	}
 	c.mu.Unlock()
 	listed := map[string]roomListing{}
-	for k, dl := range pending {
+	for _, p := range pending {
 		if ctx.Err() != nil {
 			return
 		}
-		c.completeDeferred(ctx, k, dl, listed)
+		c.completeDeferred(ctx, p.k, p.dl, listed)
 	}
+}
+
+func compareAnnounceKeys(a, b announceKey) int {
+	if n := bytes.Compare(a.call[:], b.call[:]); n != 0 {
+		return n
+	}
+	return bytes.Compare(a.dev[:], b.dev[:])
 }
 
 // roomListing is one SFU listing of a room within a pass: its participants, or the error.
