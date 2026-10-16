@@ -43,6 +43,14 @@ describe('Composer', () => {
     expect(screen.getByRole('button', { name: 'send' })).toBeEnabled();
   });
 
+  it('names the notice in the textarea\'s description, after the reason when there is one', () => {
+    const { textarea } = setup({ notice: <span>Only some people can post in #news.</span> });
+    expect(textarea).toHaveAccessibleDescription('Only some people can post in #news.');
+    const id = textarea.closest('form')?.querySelector('.d-composer__notice')?.id;
+    expect(id).toBeTruthy();
+    expect(textarea.getAttribute('aria-describedby')?.split(' ')).toContain(id);
+  });
+
   it('renders no notice wrapper without a notice', () => {
     const { textarea } = setup();
     expect(textarea.closest('form')?.querySelector('.d-composer__notice')).toBeNull();

@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
+import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { ThreadPane, type ThreadPaneProps } from './ThreadPane.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
@@ -50,6 +51,44 @@ describe('ThreadPane', () => {
     render(<ThreadPane {...p} />);
     screen.getByRole('textbox', { name: 'reply in thread' }).focus();
     await userEvent.setup().keyboard('{Escape}');
+    expect(p.onClose).not.toHaveBeenCalled();
+  });
+
+  it('with a missing root shows the note in the root place and keeps the replies and the composer', () => {
+    render(<ThreadPane {...props({ root: <p>The message that started this thread cannot be shown here.</p> })} />);
+    const note = screen.getByText('The message that started this thread cannot be shown here.');
+    expect(note.closest('.d-thread-pane__root')).not.toBeNull();
+    expect(screen.getByText('a reply')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'reply in thread' })).toBeInTheDocument();
+  });
+
+  it('closes on Escape from the close button', async () => {
+    const p = props();
+    render(<ThreadPane {...p} />);
+    screen.getByRole('button', { name: 'close thread' }).focus();
+    await userEvent.setup().keyboard('{Escape}');
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a row: Escape from inside the row returns focus to it, and the next Escape on the row closes the thread', async () => {
+    const p = props({ root: <MessageRow author="ada" time="21:02" body="hello" state="ok" active thread={{ label: '1 reply', onOpen: () => {} }} /> });
+    render(<ThreadPane {...p} />);
+    const user = userEvent.setup();
+    const chip = screen.getByRole('button', { name: '1 reply' });
+    chip.focus();
+    await user.keyboard('{Escape}');
+    expect(p.onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('article')).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(p.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores an Escape that ends an IME composition', () => {
+    const p = props();
+    render(<ThreadPane {...p} />);
+    const box = screen.getByRole('textbox', { name: 'reply in thread' });
+    fireEvent.keyDown(box, { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(box, { key: 'Escape', keyCode: 229 });
     expect(p.onClose).not.toHaveBeenCalled();
   });
 

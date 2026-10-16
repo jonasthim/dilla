@@ -17,7 +17,9 @@ export const INVITE_TTL_S = INVITE_TTL_DAYS * 24 * 3600;
 /** What a new server starts with, in order: #general, then the voice channel general. */
 /** The most roles a private channel can be opened to (the worker refuses more). */
 const PRIVATE_ROLES_MAX = 98;
-const STARTERS: readonly { kind: NewChannelKind; name: string }[] = [{ kind: 'text', name: 'general' }, { kind: 'voice', name: 'general' }];
+/** The kinds this flow creates today; WEB-B adds the announcement. */
+type MadeKind = Exclude<NewChannelKind, 'announcement'>;
+const STARTERS: readonly { kind: MadeKind; name: string }[] = [{ kind: 'text', name: 'general' }, { kind: 'voice', name: 'general' }];
 
 const UTF8 = new TextEncoder();
 const CONTROL = /\p{Cc}/u;
@@ -33,7 +35,7 @@ export function nameProblem(raw: string, maxBytes: number): 'empty' | 'long' | '
 }
 
 /** How a typed name is stored: a text channel as a lower-case slug (`ship-talk`), a voice channel as typed, trimmed. */
-export function channelName(kind: NewChannelKind, raw: string): string {
+export function channelName(kind: MadeKind, raw: string): string {
   const spaced = raw.trim().replace(/\s+/g, kind === 'text' ? '-' : ' ');
   return kind === 'text' ? spaced.toLowerCase() : spaced;
 }
@@ -287,7 +289,7 @@ export function CreateChannelFlow(props: {
   open: boolean; community: { id: string; name: string } | null; onClose(): void; onDone(channelId: string, kind: NewChannelKind): void;
 }): React.JSX.Element {
   const client = useCore();
-  const [kind, setKind] = useState<NewChannelKind>('text');
+  const [kind, setKind] = useState<MadeKind>('text');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -362,10 +364,10 @@ export function CreateChannelFlow(props: {
   };
 
   return (
-    <CreateChannel open={props.open} kind={kind} onKind={k => { setKind(k); setError(null); }} name={name}
+    <CreateChannel open={props.open} kind={kind} onKind={k => { if (k === 'announcement') return; setKind(k); setError(null); }} name={name}
       onName={v => { setName(v); setError(null); }} hint={hint} error={error} busy={busy} attempt={attempt}
       labels={{ title: t('create.channel.title', { server: props.community?.name ?? '' }), kind: t('create.channel.kind'),
-        text: t('create.channel.text'), voice: t('create.channel.voice'), name: t('create.channel.name'), submit: t('create.channel.submit'),
+        text: t('create.channel.text'), voice: t('create.channel.voice'), announcement: t('announce.kind'), name: t('create.channel.name'), submit: t('create.channel.submit'),
         busy: t('create.channel.busy'), close: t('dialog.close') }}
       onSubmit={submit} onClose={() => props.onClose()}>
       {canPrivate ? <>

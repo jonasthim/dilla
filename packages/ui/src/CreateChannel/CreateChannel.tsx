@@ -10,6 +10,8 @@ export type NewChannelKind = 'text' | 'voice' | 'announcement';
 export interface CreateChannelProps {
   open: boolean;
   kind: NewChannelKind;
+  /** The kinds offered, in order (default text and voice). The caller lists `announcement` only for a person who may create one. */
+  kinds?: readonly NewChannelKind[];
   onKind(kind: NewChannelKind): void;
   name: string;
   onName(name: string): void;
@@ -20,8 +22,7 @@ export interface CreateChannelProps {
   /** Counts the refusals and failures the caller has shown. A new count with the same text is a new alert, so it is
    *  announced again and puts focus back where it belongs (review M3). */
   attempt?: number;
-  /** `announcement` adds the third kind; without it the group shows text and voice only. */
-  labels: { title: string; kind: string; text: string; voice: string; announcement?: string; name: string; submit: string; busy: string; close: string };
+  labels: { title: string; kind: string; text: string; voice: string; announcement: string; name: string; submit: string; busy: string; close: string };
   onSubmit(): void;
   onClose(): void;
   /** Extra fields, rendered inside the form after the name field. */
@@ -33,7 +34,7 @@ export interface CreateChannelProps {
  * form submitted by Enter or the footer's accent button. Focus starts in the name field; the kind group is one Shift+Tab
  * away. A refusal is the field's error.
  */
-export function CreateChannel({ open, kind, onKind, name, onName, hint, error, busy, attempt = 0, labels, onSubmit, onClose, children }: CreateChannelProps) {
+export function CreateChannel({ open, kind, kinds = ['text', 'voice'], onKind, name, onName, hint, error, busy, attempt = 0, labels, onSubmit, onClose, children }: CreateChannelProps) {
   const base = useId();
   const fieldId = `${base}-name`;
   const formId = `${base}-form`;
@@ -57,8 +58,7 @@ export function CreateChannel({ open, kind, onKind, name, onName, hint, error, b
           {/* The group carries the same text as its own (visually hidden) label. */}
           <span className="d-create-channel__label" aria-hidden="true">{labels.kind}</span>
           <Segmented id={`${base}-kind`} label={labels.kind} value={kind} onChange={v => onKind(v === 'voice' || v === 'announcement' ? v : 'text')}
-            options={[{ value: 'text', label: labels.text }, { value: 'voice', label: labels.voice },
-              ...(labels.announcement === undefined ? [] : [{ value: 'announcement', label: labels.announcement }])]} />
+            options={kinds.map(k => ({ value: k, label: labels[k] }))} />
         </div>
         <TextField key={attempt} id={fieldId} label={labels.name} value={name} onChange={onName} hint={hint} error={error ?? undefined}
           required autoComplete="off" spellCheck={false} />

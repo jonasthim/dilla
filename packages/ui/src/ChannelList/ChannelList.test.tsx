@@ -28,6 +28,17 @@ function props(over: Partial<ChannelListProps> = {}): ChannelListProps {
 }
 
 describe('ChannelList', () => {
+  it('keeps a badge in the row name when the row is unread, mentioned or muted', () => {
+    render(<ChannelList {...props({ rowLabel, channels: [
+      { id: 'n', name: 'news', kind: 'announcement', readable: false, badge: 'slow mode', unread: 3 },
+      { id: 'g', name: 'general', kind: 'text', readable: false, badge: 'slow mode', muted: true, mentions: 1 },
+      { id: 'q', name: 'quiet', kind: 'text', readable: false, badge: 'slow mode' },
+    ] })} />);
+    expect(screen.getByRole('button', { name: 'news, slow mode, unread 3, mentions 0' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'general, slow mode, muted, mentions 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'quiet slow mode' })).toBeInTheDocument();
+  });
+
   it('passes an announcement kind and a badge through to the row (R36)', () => {
     render(<ChannelList {...props({ channels: [
       { id: 'n', name: 'news', kind: 'announcement', readable: false, badge: 'slow mode' },

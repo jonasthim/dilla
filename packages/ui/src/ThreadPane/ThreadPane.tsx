@@ -22,7 +22,9 @@ export interface ThreadPaneProps {
  * A public thread beside the channel: a heading with a close control, the root message, the replies, and the thread's
  * composer at the bottom. In the shell's aside it is a column that fits the aside's width. With `phone` it is a
  * full-screen sheet: a PhoneHeader whose back control closes it, the composer clearing the home indicator, and every
- * control 44 px. It is not a landmark of its own: the aside around it is named by the caller.
+ * control 44 px. It is not a landmark of its own: the AppShell's <aside>, named by the caller's `asideLabel`, is the landmark
+ * around it. Mount it in the aside WITHOUT `asideCloseLabel`, on a phone and in the narrow-desktop overlay alike: it carries
+ * its own header and close control, and the shell would otherwise draw a second header above it.
  *
  * Escape anywhere inside closes the thread and nothing more: the key is stopped here, so the drawer around it (which
  * closes on Escape too) never sees it, and a key that something inside already handled (an open mention list, a row
@@ -30,7 +32,7 @@ export interface ThreadPaneProps {
  */
 export function ThreadPane({ title, closeLabel, onClose, root, children, composer, phone }: ThreadPaneProps) {
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing || e.keyCode === 229) return;
     e.preventDefault();
     e.stopPropagation();
     onClose();

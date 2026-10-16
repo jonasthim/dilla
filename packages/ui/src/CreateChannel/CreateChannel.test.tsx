@@ -17,7 +17,7 @@ afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('CreateChannel', () => {
   it('is a dialog with a kind radio group (text, voice, announcement) and a name field, where focus starts', () => {
-    render(<CreateChannel {...props()} />);
+    render(<CreateChannel {...props({ kinds: ['text', 'voice', 'announcement'] })} />);
     const dialog = screen.getByRole('dialog', { name: labels.title });
     const group = within(dialog).getByRole('radiogroup', { name: labels.kind });
     expect(within(group).getAllByRole('radio').map(r => [r.textContent, r.getAttribute('aria-checked')])).toEqual([
@@ -42,21 +42,23 @@ describe('CreateChannel', () => {
 
   it('selecting announcement reports it, and the arrows reach it from voice', async () => {
     const user = userEvent.setup();
-    const p = props();
+    const p = props({ kinds: ['text', 'voice', 'announcement'] });
     render(<CreateChannel {...p} />);
     await user.click(screen.getByRole('radio', { name: labels.announcement }));
     expect(p.onKind).toHaveBeenLastCalledWith('announcement');
-    const q = props({ kind: 'voice' });
+    const q = props({ kind: 'voice', kinds: ['text', 'voice', 'announcement'] });
     render(<CreateChannel {...q} />);
     await user.click(screen.getAllByRole('radio', { name: labels.voice })[1]);
     await user.keyboard('{ArrowRight}');
     expect(q.onKind).toHaveBeenLastCalledWith('announcement');
   });
 
-  it('shows two kinds when the caller gives no announcement label', () => {
-    const { announcement: _drop, ...two } = labels;
-    render(<CreateChannel {...props({ labels: two })} />);
+  it('shows text and voice only by default, and the kinds the caller lists otherwise', () => {
+    const { unmount } = render(<CreateChannel {...props()} />);
     expect(screen.getAllByRole('radio').map(r => r.textContent)).toEqual([labels.text, labels.voice]);
+    unmount();
+    render(<CreateChannel {...props({ kinds: ['text', 'announcement'] })} />);
+    expect(screen.getAllByRole('radio').map(r => r.textContent)).toEqual([labels.text, labels.announcement]);
   });
 
   it('shows a refusal as the field’s alert; while busy the submit says so and submits nothing', async () => {
@@ -101,7 +103,7 @@ describe('CreateChannel', () => {
 
   it.each(['mesh', 'light', 'high-contrast'])('has no serious axe violations in %s, text and voice', async theme => {
     document.documentElement.dataset.theme = theme;
-    for (const over of [{}, { kind: 'announcement' as const }, { kind: 'voice' as const, error: 'Give the channel a name.' }]) {
+    for (const over of [{}, { kind: 'announcement' as const, kinds: ['text', 'voice', 'announcement'] as const }, { kind: 'voice' as const, error: 'Give the channel a name.' }]) {
       const { container, unmount } = render(<div className="d-root"><CreateChannel {...props(over)} /></div>);
       await expectNoAxeViolations(container);
       unmount();

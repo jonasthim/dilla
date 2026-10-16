@@ -53,7 +53,7 @@ export function ChannelList({ label, title, channels, activeId, onSelect, emptyL
         const unread = c.unread ?? 0;
         const mentions = c.mentions ?? 0;
         const muted = c.muted ?? false;
-        const ariaLabel = rowLabel && (unread > 0 || mentions > 0 || muted) ? rowLabel({ name: c.name, unread, mentions, muted }) : undefined;
+        const ariaLabel = rowLabel && (unread > 0 || mentions > 0 || muted) ? rowLabel({ name: c.badge === undefined ? c.name : `${c.name}, ${c.badge}`, unread, mentions, muted }) : undefined;
         if (c.kind === 'voice' && voice !== undefined) {
           const room = Object.hasOwn(voice.rooms, c.id) ? voice.rooms[c.id] : undefined;
           return (
