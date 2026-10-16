@@ -30,6 +30,12 @@ export const RK_GROUP = /^[0-9A-HJKMNP-TV-Z]{4}$/;
 export const HEX32 = /^[0-9a-f]{32}$/;
 /** The console line Chromium and WebKit print for a response the client answers or retries by design (E2E-CI-01). */
 export const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server responded with a status of (401|404|409|410|429|503) \(/;
+/**
+ * The line Firefox prints when it cancels a font download because the page went away mid-load (a tab taken
+ * over or a context closed): status 2152398850 is 0x804B0002, NS_BINDING_ABORTED. A font the host fails to
+ * serve prints another status and still fails the test.
+ */
+export const ABORTED_FONT_LINE = /^\[JavaScript Error: "downloadable font: download failed \(.*\): status=2152398850 source: /;
 
 // The copy keys the e2e drives: L-COPY-01 (onboarding) and the keys tasks 22 and 24 add to en.ts. The
 // values always come from the app's own strings, so a reworded text never breaks the suite.
@@ -329,7 +335,8 @@ function newGuard(projectName: string): Guard {
         // paced 429 and 503; any other status, or a line of another shape, still fails the test (E2E-CI-01).
         // Firefox printed nothing for them and keeps the full guard.
         const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
-        if (m.type() === 'error' && !resourceLine) {
+        const abortedFont = projectName.startsWith('firefox') && ABORTED_FONT_LINE.test(m.text());
+        if (m.type() === 'error' && !resourceLine && !abortedFont) {
           consoleErrors.push(m.text());
         }
       });
