@@ -1342,6 +1342,9 @@ export class Controller {
     // the trust slice now that every member and DM slice has landed.
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust()).catch(() => undefined);
+    // web3.7 3a-client: the call groups a page of this browser left behind are left now, before any join is served (a
+    // join waits for it, bounded); it needs no gateway. Not tracked by the barrier: a resign stops it instead.
+    this.calls.startSweep();
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -1421,7 +1424,13 @@ export class Controller {
     if (e.type === 'status') {
       let status: ConnectionState['status'];
       switch (e.status) {
-        case 'ready': this.wasDown = false; status = 'online'; break;
+        case 'ready':
+          this.wasDown = false;
+          status = 'online';
+          // web3.7 3a-client: a boot sweep that found the instance unreachable runs at the first online; once it has
+          // run this ready, this starts nothing (startSweep is memoised per ready).
+          if (this.phase === 'ready') this.safely(() => { this.calls.startSweep(); });
+          break;
         case 'waiting': this.wasDown = true; status = 'offline'; break;
         case 'connecting': status = this.wasDown ? 'offline' : 'connecting'; break;
         case 'idle': status = 'offline'; break;
