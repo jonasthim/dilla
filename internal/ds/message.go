@@ -27,8 +27,8 @@ type UploadResult struct {
 	RecvTS      uint64
 }
 
-// Upload is invariant 8. The order is fixed: size, then the freeze, then the current-leaf check,
-// then the post policy, then the commitment, then the tag.
+// Upload is invariant 8. The order is fixed: size, then a closed group, then the freeze, then the
+// current-leaf check, then the post policy, then the commitment, then the tag.
 //
 // class is the upload class (web3.7 SB1, protocol/02 § Upload class): 0 a post, 1 anything else,
 // nil a legacy two-element upload. It is stored on the row and relayed as message.ct's 7th
@@ -47,6 +47,11 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 	}
 	if err != nil {
 		return UploadResult{}, err
+	}
+	// A closed group (a deleted channel's, or one a restore replaced) takes no message: 404, as
+	// for a group that does not exist (SB1 fix round 1, protocol/02 § Upload class).
+	if row.ClosedAt != nil {
+		return UploadResult{}, errNotFound("group")
 	}
 	if err := d.requireNoFreeze(ctx, groupID, row.Epoch); err != nil {
 		return UploadResult{}, err
@@ -118,6 +123,14 @@ func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64,
 			Class:         class,
 		}); err != nil {
 			return err
+		}
+		// Slow mode's durable mark (SB1 fix round 1): an accepted post into a community text group
+		// raises the user's mark in the channel, in this transaction. Retention prunes the row
+		// above; it never touches the mark, so a pruned post still holds the wait.
+		if class != nil && *class == 0 && row.Kind == groupKindText && row.CommunityID != nil {
+			if err := tx.PutSlowmodeMark(ctx, row.TargetID, s.UserID, int64(recvTS)); err != nil { //nolint:gosec // G115: a unix second, far below 2^63
+				return err
+			}
 		}
 		out = UploadResult{Seq: seq, Epoch: row.Epoch, FrankingTag: tag, RecvTS: recvTS}
 		return nil

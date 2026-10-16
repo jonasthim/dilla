@@ -538,3 +538,39 @@ func TestUploadAsksThePostPolicyAndItsRefusalIsTheAnswer(t *testing.T) {
 		t.Fatalf("the first message.ct after the refusal = %x, want seq %d with class 0 as its 7th element", f.payload, next.Seq)
 	}
 }
+
+// SB1 fix round 1 (review): a closed group takes no upload, whatever its class. ds.Close closes a
+// deleted channel's group and one a restore replaced; before the fix an upload into it was still
+// sequenced and fanned out. 404 E_NOT_FOUND, as for a group that does not exist, and the policy is
+// never asked. Control: the same upload before the close is accepted.
+func TestAnUploadIntoAClosedGroupIsRefused(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	zero := uint8(0)
+	if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), &zero); err != nil {
+		t.Fatalf("control: an upload into the open group: %v", err)
+	}
+	if err := h.ds.Close(ctx, g.id); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	h.postPolicy.take()
+	before, err := h.repo.GetGroup(ctx, g.id)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	for _, class := range []*uint8{&zero, nil} {
+		_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), class)
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_NOT_FOUND" || dsErr.Status != 404 {
+			t.Fatalf("an upload (class %v) into a closed group = %v, want 404 E_NOT_FOUND", class, err)
+		}
+	}
+	after, err := h.repo.GetGroup(ctx, g.id)
+	if err != nil || after.Seq != before.Seq {
+		t.Fatalf("a refused upload into a closed group moved its seq from %d to %d (%v)", before.Seq, after.Seq, err)
+	}
+	if calls := h.postPolicy.take(); len(calls) != 0 {
+		t.Fatalf("the post policy was asked %d times about a closed group", len(calls))
+	}
+}

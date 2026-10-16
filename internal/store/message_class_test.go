@@ -11,78 +11,41 @@ import (
 
 func classPtr(v uint8) *uint8 { return &v }
 
-// LastClassZeroUploadAt is slow mode's read for end-to-end encrypted posts (web3.7 SB1): the newest
-// class-0 upload by any device of the user into any text group of the channel. Folds (class 1),
-// legacy rows (NULL), other users and call groups never count; a tombstoned post still does, or
-// delete-and-repost would bypass slow mode.
-func TestLastClassZeroUploadAt(t *testing.T) {
+// LastClassZeroUploadAt reads slow mode's durable mark for end-to-end encrypted posts (web3.7 SB1,
+// fix round 1): PutSlowmodeMark raises it, never lowers it, per (channel, user). No app message row
+// is involved, so neither a tombstone nor a retention prune of the post moves it.
+func TestTheSlowModeMark(t *testing.T) {
 	for engine, repo := range engines(t) {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
-			channel := id.New()
-			mkGroup := func(kind uint8, target id.ID) id.ID {
-				g := store.GroupRow{
-					GroupID: id.New(), Binding: []byte{0x80}, Kind: kind, TargetID: target, Ciphersuite: 1,
-					ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1,
-					Created: 1,
-				}
-				if err := repo.CreateGroup(ctx, g); err != nil {
-					t.Fatalf("CreateGroup: %v", err)
-				}
-				return g.GroupID
-			}
-			text := mkGroup(0, channel)
-			text2 := mkGroup(0, channel)
-			call := mkGroup(1, channel)
+			channel, other := seedChannel(ctx, t, repo), seedChannel(ctx, t, repo)
 			user := seedUser(ctx, t, repo).ID
-			other := seedUser(ctx, t, repo).ID
-			phone := seedDevice(ctx, t, repo, user)
-			laptop := seedDevice(ctx, t, repo, user)
-			stranger := seedDevice(ctx, t, repo, other)
-
-			seqs := map[id.ID]uint64{}
-			put := func(g, device id.ID, created int64, class *uint8) uint64 {
+			stranger := seedUser(ctx, t, repo).ID
+			want := func(label string, ch, u id.ID, at int64) {
 				t.Helper()
-				seqs[g]++
-				if err := repo.PutAppMessage(ctx, store.AppMessageRow{
-					GroupID: g, Seq: seqs[g], Epoch: 1, UploaderDevice: device, Blob: []byte("ct"),
-					FrankingTag: make([]byte, 32), Size: 2, Created: created, Class: class,
-				}); err != nil {
-					t.Fatalf("PutAppMessage: %v", err)
-				}
-				return seqs[g]
-			}
-			want := func(label string, at int64) {
-				t.Helper()
-				got, err := repo.LastClassZeroUploadAt(ctx, channel, user)
+				got, err := repo.LastClassZeroUploadAt(ctx, ch, u)
 				if err != nil || got != at {
 					t.Fatalf("%s: LastClassZeroUploadAt = %d, %v; want %d", label, got, err, at)
 				}
 			}
-
 			if _, err := repo.LastClassZeroUploadAt(ctx, channel, user); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("no upload yet: err = %v, want ErrNotFound", err)
+				t.Fatalf("no mark yet: err = %v, want ErrNotFound", err)
 			}
-			put(text, phone, 100, classPtr(0))
-			last := put(text2, laptop, 140, classPtr(0))
-			want("posts by two devices into two text groups", 140)
-			put(text, phone, 200, classPtr(1))
-			want("a class-1 row is ignored", 140)
-			put(text, phone, 210, nil)
-			want("a NULL-class row is ignored", 140)
-			put(text, stranger, 220, classPtr(0))
-			want("another user's post is ignored", 140)
-			put(call, phone, 230, classPtr(0))
-			want("a call group with the same target is ignored", 140)
-			if err := repo.TombstoneAppMessage(ctx, text2, last, 300); err != nil {
-				t.Fatalf("TombstoneAppMessage: %v", err)
+			put := func(ch, u id.ID, at int64) {
+				t.Helper()
+				if err := repo.PutSlowmodeMark(ctx, ch, u, at); err != nil {
+					t.Fatalf("PutSlowmodeMark: %v", err)
+				}
 			}
-			want("a tombstoned post still counts", 140)
-
-			if _, err := repo.LastClassZeroUploadAt(ctx, channel, other); err != nil {
-				t.Fatalf("the other user's own post: %v", err)
-			}
-			if _, err := repo.LastClassZeroUploadAt(ctx, id.New(), user); !errors.Is(err, store.ErrNotFound) {
+			put(channel, user, 100)
+			want("the first mark", channel, user, 100)
+			put(channel, user, 140)
+			want("a later post raises it", channel, user, 140)
+			put(channel, user, 120)
+			want("an older time never lowers it", channel, user, 140)
+			put(channel, stranger, 500)
+			want("another user's mark is their own", channel, user, 140)
+			if _, err := repo.LastClassZeroUploadAt(ctx, other, user); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("another channel: err = %v, want ErrNotFound", err)
 			}
 		})

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"net/http"
 	"strconv"
 
@@ -129,6 +130,11 @@ func (h *Messages) decodeUpload(w http.ResponseWriter, r *http.Request) (uploadR
 	}
 	if len(raw) == 2 {
 		return body, nil, nil
+	}
+	// A null decodes into a uint64 without error, so it is refused by its bytes first: the wire
+	// is uint 0 or 1, and a legacy upload is the two-element body (SB1 fix round 1).
+	if bytes.Equal(raw[2], []byte{0xf6}) {
+		return body, nil, server.Errorf(server.CodeInvalidRequest, "class must be 0 or 1")
 	}
 	var c uint64
 	if err := cborx.Unmarshal(raw[2], &c); err != nil {

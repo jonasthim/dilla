@@ -590,6 +590,8 @@ func TestAnUploadOfAnyOtherShapeIsRefused(t *testing.T) {
 		{"four elements", []any{epoch, pm, uint64(0), uint64(0)}, ""},
 		{"class 2", []any{epoch, pm, uint64(2)}, "class must be 0 or 1"},
 		{"a text class", []any{epoch, pm, "0"}, ""},
+		// SB1 fix round 1: the wire is uint 0 or 1; a null third element is not a legacy upload.
+		{"a null class", []any{epoch, pm, nil}, ""},
 	} {
 		res := h.post(t, member, c.body)
 		if res.Code != http.StatusBadRequest || errorCode(t, res) != "E_INVALID_REQUEST" {

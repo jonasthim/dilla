@@ -408,6 +408,12 @@ type Sessions struct {
 	IdleExpires int64
 }
 
+type SlowmodeMarks struct {
+	ChannelID  id.ID
+	UserID     id.ID
+	LastPostAt int64
+}
+
 type TotpSecrets struct {
 	UserID      id.ID
 	Secret      []byte

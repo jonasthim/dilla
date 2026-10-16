@@ -156,7 +156,7 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
 | `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
 | `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST`, `E_REMOVE_PENDING` |
-| `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr), class(uint)]` (§ Upload class) | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID`, `E_FORBIDDEN`, `E_RATE_LIMITED`, `E_INVALID_REQUEST` |
+| `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr), class(uint)]` (§ Upload class) | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID`, `E_FORBIDDEN`, `E_RATE_LIMITED`, `E_INVALID_REQUEST`, `E_NOT_FOUND` |
 | `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
 | `POST /v1/keypackages` | E or V | `[packages([bstr]), last_resort(bstr\|null)]` | `201 [count]` | `E_COMMIT_INVALID`, `E_TOO_LARGE` |
@@ -464,10 +464,13 @@ stored:
   `403 E_FORBIDDEN`.
 - A class-0 upload within the channel's `slowmode_seconds` of the user's last class-0 upload into
   any text group of the channel, from any of their devices, is `429 E_RATE_LIMITED` with
-  `retry_after_ms` the time left, unless the user holds `bypass_slowmode`. A deleted message still
-  counts.
+  `retry_after_ms` the time left, unless the user holds `bypass_slowmode`. The instance keeps the
+  time of that last post as a durable mark beside the channel, so a deleted message still counts,
+  and so does one retention has since removed.
 
-A class-1 upload is never checked or slowed.
+A class-1 upload is never checked or slowed. An upload of any class into the text group of a
+channel that has been deleted is `403 E_FORBIDDEN`, and an upload into a closed group (a deleted
+channel's, or one a restore replaced) is `404 E_NOT_FOUND`, as for a group that does not exist.
 
 A two-element body is a legacy upload: in this version it is stored with a null class, checked for
 `send_messages` whatever it carries (the host cannot tell its type), and never slowed; the next

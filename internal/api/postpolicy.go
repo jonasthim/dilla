@@ -25,14 +25,18 @@ type PostPolicy struct {
 // calls it under the group lock, before the store transaction, and returns its error unchanged.
 //
 // A nil class is a legacy two-element upload (web3.7 only, R28): the host cannot tell its type, so
-// it is checked for send_messages whatever it carries, and never slowed.
+// it is checked for send_messages whatever it carries, and never slowed. A group whose channel is
+// gone is refused for every class (fail closed). The wait is read from the user's durable mark,
+// which Upload raises on every accepted class-0 post, so a pruned post still holds it.
 func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, class *uint8, now int64) error {
 	if g.Kind != GroupText || g.CommunityID == nil {
 		return nil
 	}
 	ch, err := p.Repo.GetChannel(ctx, g.TargetID)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil // the delivery service decides about a deleted channel's group
+		// Fail closed (SB1 fix round 1): a deleted channel's group that is still open takes no
+		// upload of any class. The delivery service also refuses a closed group outright.
+		return server.Errorf(server.CodeForbidden, "missing permission")
 	}
 	if err != nil {
 		return err

@@ -65,25 +65,22 @@ func (q *Queries) GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCur
 }
 
 const lastClassZeroUploadAt = `-- name: LastClassZeroUploadAt :one
-SELECT m.created FROM mls_app_messages m
-JOIN mls_groups g ON g.group_id = m.group_id
-JOIN devices d ON d.id = m.uploader_device
-WHERE g.target_id = ? AND g.kind = 0 AND m.class = 0 AND d.user_id = ?
-ORDER BY m.created DESC LIMIT 1
+SELECT last_post_at FROM slowmode_marks WHERE channel_id = ? AND user_id = ?
 `
 
 type LastClassZeroUploadAtParams struct {
-	TargetID id.ID
-	UserID   id.ID
+	ChannelID id.ID
+	UserID    id.ID
 }
 
-// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the newest class-0 upload by any
-// device of the user into any text group of the channel. A tombstoned message still counts.
+// Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the user's durable mark in the
+// channel, the time of their last accepted class-0 upload into any of its text groups from any
+// device. Neither a tombstone nor a retention prune moves it.
 func (q *Queries) LastClassZeroUploadAt(ctx context.Context, arg LastClassZeroUploadAtParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, lastClassZeroUploadAt, arg.TargetID, arg.UserID)
-	var created int64
-	err := row.Scan(&created)
-	return created, err
+	row := q.db.QueryRowContext(ctx, lastClassZeroUploadAt, arg.ChannelID, arg.UserID)
+	var last_post_at int64
+	err := row.Scan(&last_post_at)
+	return last_post_at, err
 }
 
 const listAppMessages = `-- name: ListAppMessages :many
@@ -298,6 +295,25 @@ func (q *Queries) PutCursor(ctx context.Context, arg PutCursorParams) error {
 		arg.LastEpoch,
 		arg.Updated,
 	)
+	return err
+}
+
+const putSlowmodeMark = `-- name: PutSlowmodeMark :exec
+INSERT INTO slowmode_marks (channel_id, user_id, last_post_at) VALUES (?, ?, ?)
+ON CONFLICT (channel_id, user_id) DO UPDATE
+SET last_post_at = max(slowmode_marks.last_post_at, excluded.last_post_at)
+`
+
+type PutSlowmodeMarkParams struct {
+	ChannelID  id.ID
+	UserID     id.ID
+	LastPostAt int64
+}
+
+// Upload's write of the mark, in the upload's own transaction. Monotone: an older time never
+// replaces a newer one.
+func (q *Queries) PutSlowmodeMark(ctx context.Context, arg PutSlowmodeMarkParams) error {
+	_, err := q.db.ExecContext(ctx, putSlowmodeMark, arg.ChannelID, arg.UserID, arg.LastPostAt)
 	return err
 }
 

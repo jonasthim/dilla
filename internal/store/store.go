@@ -544,10 +544,15 @@ type Readable interface {
 	// deleted ones included (a delete must not reset the gate), or ErrNotFound.
 	LastReadableMessageAt(ctx context.Context, channelID, userID id.ID) (int64, error)
 	// LastClassZeroUploadAt is slow mode's read for end-to-end encrypted posts
-	// (web3.7 SB1): the created time of the newest class-0 upload by any device
-	// of userID into any text group (kind 0) whose target is channelID,
-	// tombstoned ones included, or ErrNotFound.
+	// (web3.7 SB1): userID's durable mark in channelID, the time of their last
+	// accepted class-0 upload into any of its text groups from any device, or
+	// ErrNotFound. Neither a tombstone nor a retention prune moves it (fix
+	// round 1): the mark lives in slowmode_marks, not in mls_app_messages.
 	LastClassZeroUploadAt(ctx context.Context, channelID, userID id.ID) (int64, error)
+	// PutSlowmodeMark raises userID's mark in channelID to at, never lowering
+	// it. The delivery service calls it in an accepted class-0 upload's own
+	// transaction (web3.7 SB1 fix round 1).
+	PutSlowmodeMark(ctx context.Context, channelID, userID id.ID, at int64) error
 	// ListReadableAudience is who a readable channel's message.plain frames
 	// reach, added by Plan 2 task 8 (P2-D14's fan-out): the channel's
 	// materialised channel_members that are still members of its community,

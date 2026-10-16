@@ -415,8 +415,12 @@ func (d *DS) lock(groupID id.ID) func() {
 
 func (d *DS) now() int64 { return d.opts.Clock.Now().Unix() }
 
-// groupKindCall is GroupRow.Kind for a call group (protocol/01 § Group kinds).
-const groupKindCall uint8 = 1
+// groupKindText and groupKindCall are GroupRow.Kind for a text and a call group (protocol/01
+// § Group kinds).
+const (
+	groupKindText uint8 = 0
+	groupKindCall uint8 = 1
+)
 
 // CallEvictor receives the devices a member-set writer removed from a call group.
 type CallEvictor func(ctx context.Context, groupID id.ID, removed []id.ID)

@@ -17,6 +17,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/jonasthim/dilla/internal/api"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/dillad/dilladtest"
@@ -365,5 +366,61 @@ func TestConcurrentPostsInSlowModeAdmitOne(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// SB1 fix round 1: only an accepted post (class 0) sets the mark. A fold (class 1) and a legacy
+// upload are never slowed, and neither starts the wait for the post after them.
+func TestOnlyAPostSetsTheSlowModeMark(t *testing.T) {
+	clk := clock.NewFake(time.Unix(time.Now().Unix(), 0))
+	f := newPostFixture(t, "sqlite", clk, api.PermViewChannel|api.PermSendMessages, 3600)
+	for _, c := range []struct {
+		name string
+		body []any
+		want int
+	}{
+		{"a fold", postBody(classPtr(1)), http.StatusOK},
+		{"a legacy upload", postBody(nil), http.StatusOK},
+		{"the first post", postBody(classPtr(0)), http.StatusOK},
+		{"the second post", postBody(classPtr(0)), http.StatusTooManyRequests},
+	} {
+		if rec := f.upload(c.body); rec.Code != c.want {
+			t.Fatalf("%s = %d %s, want %d", c.name, rec.Code, rec.Body.String(), c.want)
+		}
+	}
+}
+
+// SB1 fix round 1 (review finding 1): slow mode keeps its mark when retention prunes the post. The
+// sweep deletes a message every eligible cursor has passed, so a mark read from mls_app_messages
+// would reset within a minute in a caught-up channel; the durable mark holds the wait. Control:
+// once the window has passed, the next post is accepted.
+func TestAPrunedPostStillHoldsSlowMode(t *testing.T) {
+	for _, engine := range postEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			clk := clock.NewFake(time.Unix(time.Now().Unix(), 0))
+			f := newPostFixture(t, engine, clk, api.PermViewChannel|api.PermSendMessages, 3600)
+			rec := f.upload(postBody(classPtr(0)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("the first post = %d %s", rec.Code, rec.Body.String())
+			}
+			var out []any
+			if err := cborx.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out) != 3 {
+				t.Fatalf("the upload response: %v", err)
+			}
+			seq, _ := out[0].(uint64)
+			n, err := f.srv.Repo().PruneAppMessages(t.Context(), f.group, seq, 0, clk.Now().Unix())
+			if err != nil || n != 1 {
+				t.Fatalf("PruneAppMessages = %d, %v; want the post pruned", n, err)
+			}
+			clk.Advance(60 * time.Second)
+			if rec := f.upload(postBody(classPtr(0))); rec.Code != http.StatusTooManyRequests || errorCode(rec) != "E_RATE_LIMITED" {
+				t.Fatalf("a post 60 s into a 3600 s slow mode after the prune = %d %s, want 429 E_RATE_LIMITED",
+					rec.Code, rec.Body.String())
+			}
+			clk.Advance(3600 * time.Second)
+			if rec := f.upload(postBody(classPtr(0))); rec.Code != http.StatusOK {
+				t.Fatalf("control: a post after the window = %d %s, want 200", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

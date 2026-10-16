@@ -11,13 +11,17 @@ ORDER BY seq LIMIT sqlc.arg(max_rows)::bigint;
 SELECT * FROM mls_app_messages WHERE group_id = $1 AND seq = $2;
 
 -- name: LastClassZeroUploadAt :one
--- Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the newest class-0 upload by any
--- device of the user into any text group of the channel. A tombstoned message still counts.
-SELECT m.created FROM mls_app_messages m
-JOIN mls_groups g ON g.group_id = m.group_id
-JOIN devices d ON d.id = m.uploader_device
-WHERE g.target_id = $1 AND g.kind = 0 AND m.class = 0 AND d.user_id = $2
-ORDER BY m.created DESC LIMIT 1;
+-- Slow mode's read for end-to-end encrypted posts (web3.7 SB1): the user's durable mark in the
+-- channel, the time of their last accepted class-0 upload into any of its text groups from any
+-- device. Neither a tombstone nor a retention prune moves it.
+SELECT last_post_at FROM slowmode_marks WHERE channel_id = $1 AND user_id = $2;
+
+-- name: PutSlowmodeMark :exec
+-- Upload's write of the mark, in the upload's own transaction. Monotone: an older time never
+-- replaces a newer one.
+INSERT INTO slowmode_marks (channel_id, user_id, last_post_at) VALUES ($1, $2, $3)
+ON CONFLICT (channel_id, user_id) DO UPDATE
+SET last_post_at = GREATEST(slowmode_marks.last_post_at, excluded.last_post_at);
 
 -- name: TombstoneAppMessage :exec
 UPDATE mls_app_messages SET blob = NULL, deleted_at = $1

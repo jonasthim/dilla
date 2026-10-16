@@ -216,7 +216,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// gate's read and the message.plain fan-out audience (P2-D14).
 			"LastReadableMessageAt", "ListReadableAudience",
 			// dilla web3.7 SB1: slow mode's read for end-to-end encrypted posts.
-			"LastClassZeroUploadAt",
+			"LastClassZeroUploadAt", "PutSlowmodeMark",
 		}},
 		{"Blobs", reflect.TypeOf((*store.Blobs)(nil)).Elem(), []string{
 			"CountBlobRefs", "DeleteBlob", "DeleteBlobRef", "GetBlob", "GetBlobTombstone",

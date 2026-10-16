@@ -2713,11 +2713,17 @@ func (r *Repo) LastReadableMessageAt(ctx context.Context, channelID, userID id.I
 }
 
 func (r *Repo) LastClassZeroUploadAt(ctx context.Context, channelID, userID id.ID) (int64, error) {
-	at, err := r.r.LastClassZeroUploadAt(ctx, sqlitedb.LastClassZeroUploadAtParams{TargetID: channelID, UserID: userID})
+	at, err := r.r.LastClassZeroUploadAt(ctx, sqlitedb.LastClassZeroUploadAtParams{ChannelID: channelID, UserID: userID})
 	if err != nil {
 		return 0, wrap(err)
 	}
 	return at, nil
+}
+
+func (r *Repo) PutSlowmodeMark(ctx context.Context, channelID, userID id.ID, at int64) error {
+	return wrap(r.w.PutSlowmodeMark(ctx, sqlitedb.PutSlowmodeMarkParams{
+		ChannelID: channelID, UserID: userID, LastPostAt: at,
+	}))
 }
 
 func (r *Repo) ListReadableAudience(ctx context.Context, channelID id.ID) ([]id.ID, error) {

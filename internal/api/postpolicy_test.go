@@ -157,15 +157,22 @@ func (f *policyFixture) grant(bits api.Bits) {
 	}
 }
 
-// post stores one app message in g from device at created, as the delivery service would.
+// post stores one app message in g from device at created, as the delivery service would: the row,
+// and for a class-0 upload into a community text group the user's slow-mode mark (fix round 1).
 func (f *policyFixture) post(g store.GroupRow, device id.ID, created int64, class *uint8) {
 	f.t.Helper()
+	ctx := context.Background()
 	f.seq++
-	if err := f.repo.PutAppMessage(context.Background(), store.AppMessageRow{
+	if err := f.repo.PutAppMessage(ctx, store.AppMessageRow{
 		GroupID: g.GroupID, Seq: f.seq, Epoch: 1, UploaderDevice: device, Blob: []byte("ct"),
 		FrankingTag: make([]byte, 32), Size: 2, Created: created, Class: class,
 	}); err != nil {
 		f.t.Fatalf("PutAppMessage: %v", err)
+	}
+	if class != nil && *class == 0 && g.Kind == api.GroupText && g.CommunityID != nil {
+		if err := f.repo.PutSlowmodeMark(ctx, g.TargetID, f.user, created); err != nil {
+			f.t.Fatalf("PutSlowmodeMark: %v", err)
+		}
 	}
 }
 
@@ -337,6 +344,47 @@ func TestALegacyUploadIsNotSlowed(t *testing.T) {
 			if n := rec.reads.Load(); n != 1 {
 				t.Fatalf("a class-0 upload read LastClassZeroUploadAt %d times, want 1", n)
 			}
+		})
+	}
+}
+
+// SB1 fix round 1 (review): the policy fails closed. A deleted channel's group that is still open
+// (the window before its close, or a close that failed) takes no upload of any class: 403
+// E_FORBIDDEN, never an allow. Control: before the delete, the same member with send is accepted.
+func TestADeletedChannelsGroupIsRefused(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			f := newPolicyFixture(t, repo, viewSend, 0)
+			wantPolicyNil(t, "control: class 0 before the delete", f.check(f.group, classOf(0), policyT0))
+			if err := repo.DeleteChannel(context.Background(), f.channel.ID, policyT0); err != nil {
+				t.Fatalf("DeleteChannel: %v", err)
+			}
+			for _, c := range []struct {
+				name  string
+				class *uint8
+			}{{"class 0", classOf(0)}, {"class 1", classOf(1)}, {"a legacy upload", nil}} {
+				wantPolicyRefusal(t, c.name+" into a deleted channel's group", f.check(f.group, c.class, policyT0),
+					http.StatusForbidden, server.CodeForbidden)
+			}
+		})
+	}
+}
+
+// SB1 fix round 1 (review finding 1): the wait is read from the durable mark, so a post retention
+// pruned still holds it. Control: at the end of the window the post is accepted.
+func TestAPrunedPostKeepsItsSlowModeMark(t *testing.T) {
+	for engine, repo := range policyEngines(t) {
+		t.Run(engine, func(t *testing.T) {
+			f := newPolicyFixture(t, repo, viewSend, 3600)
+			f.post(f.group, f.phone, policyT0, classOf(0))
+			n, err := repo.PruneAppMessages(context.Background(), f.group.GroupID, f.seq, 0, policyT0+60)
+			if err != nil || n != 1 {
+				t.Fatalf("PruneAppMessages = %d, %v; want the post pruned", n, err)
+			}
+			if err := f.check(f.group, classOf(0), policyT0+60); err == nil {
+				t.Fatal("after the prune a post 60 s into a 3600 s slow mode is admitted")
+			}
+			wantPolicyNil(t, "control: at the end of the window", f.check(f.group, classOf(0), policyT0+3600))
 		})
 	}
 }
