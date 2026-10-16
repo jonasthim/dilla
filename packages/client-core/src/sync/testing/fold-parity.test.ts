@@ -119,7 +119,7 @@ describe('the fold seq bound (lead-fold-spoofing)', () => {
     const rows = core.timeline(G, 0n, 200);
     const repeat = rows.find((x) => x.seq === 9n);
     expect([repeat?.status, repeat?.body, repeat?.reactions, repeat?.pinned]).toEqual([0, 'a repeat of X', [], false]);
-    expect(rows.find((x) => x.seq === 5n)?.reply).toEqual({ replyTo: X, targetSeq: null, targetUser: null, excerpt: '', state: 1 });
+    expect(rows.find((x) => x.seq === 5n)?.reply).toEqual({ replyTo: X, targetSeq: null, targetUser: null, excerpt: '', state: 1, threadRoot: null });
     expect(core.pins(G)).toEqual([]);
   });
 });

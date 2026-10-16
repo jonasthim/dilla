@@ -424,6 +424,7 @@ mod tests {
             );
             assert!(p.contains(want), "{name} is not bounded by {want}: {p}");
         }
+        let timeline = super::super::messages::timeline_sql();
         for (name, sql, search, forbidden) in [
             (
                 "RESOLVE_SQL",
@@ -433,7 +434,7 @@ mod tests {
             ),
             (
                 "TIMELINE_SQL",
-                super::super::messages::TIMELINE_SQL,
+                timeline.as_str(),
                 "SEARCH e USING INDEX app_messages_by_msg (group_id=? AND msg_id=?",
                 "SEARCH e USING PRIMARY KEY (group_id=?)",
             ),
@@ -464,7 +465,8 @@ mod tests {
 
     /// web3.7 TB1: the thread summary and the held-root exclusion of the main timeline, the thread
     /// reads and `threads` are index searches: the summary probes `app_messages_by_thread` by
-    /// (group, thread, type), the exclusion probes `app_messages_by_msg` by (group, msg id).
+    /// (group, thread, type) after the root's seq (fix round 1, I1), the exclusion and the
+    /// first-root checks probe `app_messages_by_msg` by (group, msg id).
     #[test]
     fn the_timeline_plan_uses_the_thread_index() {
         let c = rusqlite::Connection::open_in_memory().expect("open");
@@ -473,26 +475,32 @@ mod tests {
         c.execute_batch(super::super::schema::APP_INDEXES_V3)
             .expect("indexes");
         v5(&c);
-        let summary =
-            "SEARCH s USING INDEX app_messages_by_thread (group_id=? AND thread_id=? AND type=?)";
-        let p = plan(&c, super::super::messages::TIMELINE_SQL);
+        let summary = "SEARCH s USING INDEX app_messages_by_thread (group_id=? AND thread_id=? AND type=? AND seq>?";
+        let (timeline, thread, root) = (
+            super::super::messages::timeline_sql(),
+            super::super::messages::thread_sql(),
+            super::super::messages::thread_root_sql(),
+        );
+        let p = plan(&c, &timeline);
         assert!(
             p.contains(summary),
             "the summary does not search app_messages_by_thread: {p}"
         );
         assert!(
-            p.contains("SEARCH t USING INDEX app_messages_by_msg (group_id=? AND msg_id=?)"),
+            p.contains(
+                "SEARCH t USING INDEX app_messages_by_msg (group_id=? AND msg_id=? AND seq<?)"
+            ),
             "the held-root exclusion does not search by message id: {p}"
         );
         for (name, sql, main) in [
             (
                 "THREAD_SQL",
-                super::super::messages::THREAD_SQL,
-                "SEARCH m USING INDEX app_messages_by_thread (group_id=? AND thread_id=? AND type=?",
+                thread.as_str(),
+                "SEARCH m USING INDEX app_messages_by_thread (group_id=? AND thread_id=? AND type=? AND seq>?",
             ),
             (
                 "THREAD_ROOT_SQL",
-                super::super::messages::THREAD_ROOT_SQL,
+                root.as_str(),
                 "SEARCH m USING INDEX app_messages_by_msg (group_id=? AND msg_id=?)",
             ),
             (
@@ -510,7 +518,7 @@ mod tests {
             );
         }
         assert!(
-            plan(&c, super::super::messages::THREAD_SQL).contains(summary),
+            plan(&c, &thread).contains(summary),
             "THREAD_SQL's summary does not search app_messages_by_thread"
         );
     }

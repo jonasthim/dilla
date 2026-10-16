@@ -1624,7 +1624,8 @@ fn a_v2_store_opens_as_v4_with_its_folds_applied() {
             target_seq: Some(3),
             target_user: Some([0xa1; 16]),
             excerpt: "alice says hi".into(),
-            state: 0
+            state: 0,
+            thread_root: None
         })
     );
     let x1_ts = by(4).recv_ts;
@@ -1638,6 +1639,7 @@ fn a_v2_store_opens_as_v4_with_its_folds_applied() {
             author: Some([0xe5; 16]),
             excerpt: "peer target, edited".into(),
             target_ts: x1_ts,
+            thread_root: None,
         }]
     );
     let other: Vec<String> =

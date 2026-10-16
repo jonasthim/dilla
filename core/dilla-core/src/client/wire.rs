@@ -218,6 +218,8 @@ pub(crate) struct ReplyView {
     pub target_user: Option<[u8; 16]>,
     pub excerpt: String,
     pub state: u8,
+    /// Fix round 1 (M3): the thread root of the quoted row when it shows in a thread.
+    pub thread_root: Option<[u8; 16]>,
 }
 pub(crate) struct AttachmentView {
     pub size: u64,
@@ -257,6 +259,8 @@ pub(crate) struct PinView {
     pub author: Option<[u8; 16]>,
     pub excerpt: String,
     pub target_ts: u64,
+    /// Fix round 1 (M3): the thread root of the pinned row when it shows in a thread.
+    pub thread_root: Option<[u8; 16]>,
 }
 
 pub(crate) fn encode_timeline(rows: &[TimelineView]) -> Vec<u8> {
@@ -329,12 +333,13 @@ fn timeline_row(e: &mut Encoder, r: &TimelineView) {
             .text(&r.body)
             .uint(r.edited_seq);
         if let Some(reply) = &r.reply {
-            e.array(5)
+            e.array(6)
                 .bytes(&reply.reply_to)
                 .opt_uint(reply.target_seq)
                 .opt_bytes(reply.target_user.as_ref().map(|u| u.as_slice()))
                 .text(&reply.excerpt)
-                .uint(u64::from(reply.state));
+                .uint(u64::from(reply.state))
+                .opt_bytes(reply.thread_root.as_ref().map(|t| t.as_slice()));
         } else {
             e.null();
         }
@@ -369,14 +374,15 @@ pub(crate) fn encode_pins(rows: &[PinView]) -> Vec<u8> {
     let mut e = Encoder::new();
     e.array(rows.len());
     for r in rows {
-        e.array(7)
+        e.array(8)
             .uint(r.target_seq)
             .bytes(&r.msg_id)
             .uint(r.pinned_seq)
             .bytes(&r.by_user)
             .opt_bytes(r.author.as_ref().map(|u| u.as_slice()))
             .text(&r.excerpt)
-            .uint(r.target_ts);
+            .uint(r.target_ts)
+            .opt_bytes(r.thread_root.as_ref().map(|t| t.as_slice()));
     }
     e.into_vec()
 }

@@ -282,6 +282,8 @@ pub struct Reply {
     pub target_user: Option<[u8; 16]>,
     pub excerpt: String,
     pub state: u64,
+    /// The thread root of the quoted row when it shows in a thread (web3.7 fix round 1, M3).
+    pub thread_root: Option<[u8; 16]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,18 +357,20 @@ pub fn decode_timeline_row(
             let reply = if d.try_null()? {
                 None
             } else {
-                d.array(5)?;
+                d.array(6)?;
                 let reply_to = d.bytes_exact::<16>()?;
                 let target_seq = d.opt_uint()?;
                 let target_user = d.opt_bytes_exact::<16>()?;
                 let excerpt = d.text()?.to_owned();
                 let state = d.uint()?;
+                let thread_root = d.opt_bytes_exact::<16>()?;
                 Some(Reply {
                     reply_to,
                     target_seq,
                     target_user,
                     excerpt,
                     state,
+                    thread_root,
                 })
             };
             let k = d.array_len()?;
@@ -490,6 +494,8 @@ pub struct PinRow {
     pub author: Option<[u8; 16]>,
     pub excerpt: String,
     pub target_ts: u64,
+    /// The thread root of the pinned row when it shows in a thread (web3.7 fix round 1, M3).
+    pub thread_root: Option<[u8; 16]>,
 }
 
 pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
@@ -497,7 +503,7 @@ pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
         let n = d.array_len()?;
         let mut rows = Vec::with_capacity(n);
         for _ in 0..n {
-            d.array(7)?;
+            d.array(8)?;
             let target_seq = d.uint()?;
             let msg_id = d.bytes_exact::<16>()?;
             let pinned_seq = d.uint()?;
@@ -505,6 +511,7 @@ pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
             let author = d.opt_bytes_exact::<16>()?;
             let excerpt = d.text()?.to_owned();
             let target_ts = d.uint()?;
+            let thread_root = d.opt_bytes_exact::<16>()?;
             rows.push(PinRow {
                 target_seq,
                 msg_id,
@@ -513,6 +520,7 @@ pub fn decode_pins(bytes: &[u8]) -> Vec<PinRow> {
                 author,
                 excerpt,
                 target_ts,
+                thread_root,
             });
         }
         Ok(rows)

@@ -26,58 +26,95 @@ pub(crate) const REASON_SENDER_MISMATCH: &str = "E_SENDER_MISMATCH";
 pub(crate) const REASON_CLASS_MISMATCH: &str = "E_CLASS_MISMATCH";
 pub(crate) const TYPE_CLASS_MISMATCH: i64 = 255;
 
-/// The select list every timeline read shares, through the `FROM` keyword: the stored columns,
-/// whether the row is a fold target (not a repeat), its `thread_id`, and its thread summary (the
-/// count and latest `recv_ts` of the shown type-0 replies naming it, read on a type-0 row without
-/// a `thread_id` only, through `app_messages_by_thread`).
-macro_rules! timeline_select {
-    () => {
-        "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
+/// The select list every timeline read shares, through the `FROM` keyword (one constant; each
+/// read appends its own clause at run time): the stored columns, whether the row is a fold target
+/// (not a repeat), its `thread_id`, and its thread summary. The summary is read on a thread root
+/// only (the first type-0 row with its msg id, carrying no `thread_id`): the count and latest
+/// `recv_ts` of the shown type-0 replies naming it that come after it, through
+/// `app_messages_by_thread`.
+pub(super) const TIMELINE_SELECT: &str = "SELECT m.seq,m.epoch,m.recv_ts,m.status,m.reason,m.sender_user,m.sender_device, \
      m.sender_kind,m.sender_tier,m.msg_id,m.type,m.body,m.edit_body,m.edit_seq,m.reply_to,m.envelope,m.mention, \
      NOT EXISTS (SELECT 1 FROM app_messages e INDEXED BY app_messages_by_msg WHERE e.group_id=m.group_id AND e.msg_id=m.msg_id \
      AND e.type=0 AND e.status IN (0,2) AND e.seq<m.seq) \
      AND NOT EXISTS (SELECT 1 FROM app_messages r INDEXED BY app_messages_by_pin WHERE r.group_id=m.group_id \
      AND r.reply_to=m.msg_id AND r.type IN (0,1,2,3,4,5,6) AND r.seq<m.seq), \
      m.thread_id, \
-     CASE WHEN m.type=0 AND m.thread_id IS NULL THEN (SELECT COUNT(*) FROM app_messages s INDEXED BY app_messages_by_thread \
-     WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.status=0) ELSE 0 END, \
+     CASE WHEN m.type=0 AND m.thread_id IS NULL AND NOT EXISTS (SELECT 1 FROM app_messages f INDEXED BY app_messages_by_msg \
+     WHERE f.group_id=m.group_id AND f.msg_id=m.msg_id AND f.type=0 AND f.seq<m.seq) THEN \
+     (SELECT COUNT(*) FROM app_messages s INDEXED BY app_messages_by_thread \
+     WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.seq>m.seq AND s.status=0) ELSE 0 END, \
      CASE WHEN m.type=0 AND m.thread_id IS NULL THEN (SELECT MAX(s.recv_ts) FROM app_messages s INDEXED BY app_messages_by_thread \
-     WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.status=0) END \
-     FROM app_messages m "
-    };
+     WHERE s.group_id=m.group_id AND s.thread_id=m.msg_id AND s.type=0 AND s.seq>m.seq AND s.status=0) END \
+     FROM app_messages m ";
+
+/// `m.thread_id` names a held root before `m`: the first type-0 row with that msg id (in the
+/// group, by seq) carries no `thread_id` and has a lower seq than `m` (fix round 1, I1).
+pub(super) const HELD_ROOT: &str = "EXISTS (SELECT 1 FROM app_messages t INDEXED BY app_messages_by_msg \
+     WHERE t.group_id=m.group_id AND t.msg_id=m.thread_id AND t.type=0 AND t.thread_id IS NULL AND t.seq<m.seq \
+     AND NOT EXISTS (SELECT 1 FROM app_messages f INDEXED BY app_messages_by_msg WHERE f.group_id=t.group_id \
+     AND f.msg_id=t.msg_id AND f.type=0 AND f.seq<t.seq))";
+
+/// The main timeline: displayable rows, except a reply whose root is held before it, which shows
+/// in its thread only (protocol/04 § Threads).
+pub(super) fn timeline_sql() -> String {
+    format!(
+        "{TIMELINE_SELECT}WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
+         AND (m.thread_id IS NULL OR NOT {HELD_ROOT}) AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3"
+    )
 }
 
-/// The main timeline: displayable rows, except a reply whose thread root is held (a type-0 row
-/// without a `thread_id`), which shows in its thread only (protocol/04 § Threads).
-pub(super) const TIMELINE_SQL: &str = concat!(
-    timeline_select!(),
-    "WHERE m.group_id=?1 AND (m.type IS NULL OR m.type=0) \
-     AND (m.thread_id IS NULL OR NOT EXISTS (SELECT 1 FROM app_messages t INDEXED BY app_messages_by_msg WHERE t.group_id=m.group_id AND t.msg_id=m.thread_id AND t.type=0 AND t.thread_id IS NULL)) \
-     AND (?2=0 OR m.seq<?2) ORDER BY m.seq DESC LIMIT ?3"
-);
+/// A thread's replies (web3.7): the type-0 rows naming `?2` after its root's seq `?3` (0 when the
+/// root is not held), newest first.
+pub(super) fn thread_sql() -> String {
+    format!(
+        "{TIMELINE_SELECT}INDEXED BY app_messages_by_thread WHERE m.group_id=?1 AND m.thread_id=?2 AND m.type=0 \
+         AND m.seq>?3 AND (?4=0 OR m.seq<?4) ORDER BY m.seq DESC LIMIT ?5"
+    )
+}
 
-/// A thread's replies (web3.7): the type-0 rows naming `?2`, newest first.
-pub(super) const THREAD_SQL: &str = concat!(
-    timeline_select!(),
-    "INDEXED BY app_messages_by_thread WHERE m.group_id=?1 AND m.thread_id=?2 AND m.type=0 \
-     AND (?3=0 OR m.seq<?3) ORDER BY m.seq DESC LIMIT ?4"
-);
+/// A thread's held root (web3.7): the first type-0 row with msg id `?2`, when it carries no
+/// `thread_id`.
+pub(super) fn thread_root_sql() -> String {
+    format!(
+        "{TIMELINE_SELECT}INDEXED BY app_messages_by_msg WHERE m.group_id=?1 AND m.msg_id=?2 AND m.type=0 \
+         AND m.thread_id IS NULL AND NOT EXISTS (SELECT 1 FROM app_messages f INDEXED BY app_messages_by_msg \
+         WHERE f.group_id=m.group_id AND f.msg_id=m.msg_id AND f.type=0 AND f.seq<m.seq)"
+    )
+}
 
-/// A thread's held root (web3.7): the earliest type-0 row with msg id `?2` and no `thread_id`.
-pub(super) const THREAD_ROOT_SQL: &str = concat!(
-    timeline_select!(),
-    "INDEXED BY app_messages_by_msg WHERE m.group_id=?1 AND m.msg_id=?2 AND m.type=0 AND m.thread_id IS NULL \
-     ORDER BY m.seq LIMIT 1"
-);
-
-/// The group's threads (web3.7): each `thread_id` with a shown type-0 reply, its reply count and
-/// latest `recv_ts`, unless the id names a reply and no root (a nested thread, shown in the
-/// channel); at most 50, the latest reply first.
-pub(super) const THREADS_SQL: &str = "SELECT x.thread_id, COUNT(*), MAX(x.recv_ts) FROM app_messages x \
-     INDEXED BY app_messages_by_thread WHERE x.group_id=?1 AND x.thread_id IS NOT NULL AND x.type=0 AND x.status=0 \
-     AND (EXISTS (SELECT 1 FROM app_messages t INDEXED BY app_messages_by_msg WHERE t.group_id=x.group_id AND t.msg_id=x.thread_id AND t.type=0 AND t.thread_id IS NULL) \
-     OR NOT EXISTS (SELECT 1 FROM app_messages n INDEXED BY app_messages_by_msg WHERE n.group_id=x.group_id AND n.msg_id=x.thread_id AND n.type=0)) \
+/// The group's threads (web3.7): each held root (the first type-0 row with its msg id, carrying no
+/// `thread_id`, its id carried by no row of another type) with a shown type-0 reply after it: the
+/// root's seq, status and shown body, the reply count and the latest reply's `recv_ts`; at most
+/// 50, the latest reply first.
+pub(super) const THREADS_SQL: &str = "SELECT x.thread_id, t.seq, t.status, COALESCE(t.edit_body, t.body), COUNT(*), MAX(x.recv_ts) \
+     FROM app_messages x INDEXED BY app_messages_by_thread \
+     JOIN app_messages t INDEXED BY app_messages_by_msg ON t.group_id=x.group_id AND t.msg_id=x.thread_id AND t.type=0 \
+     AND t.thread_id IS NULL AND t.seq<x.seq \
+     WHERE x.group_id=?1 AND x.thread_id IS NOT NULL AND x.type=0 AND x.status=0 \
+     AND NOT EXISTS (SELECT 1 FROM app_messages f INDEXED BY app_messages_by_msg WHERE f.group_id=t.group_id \
+     AND f.msg_id=t.msg_id AND f.type=0 AND f.seq<t.seq) \
+     AND NOT EXISTS (SELECT 1 FROM app_messages n INDEXED BY app_messages_by_msg WHERE n.group_id=t.group_id \
+     AND n.msg_id=t.msg_id AND n.type<>0) \
      GROUP BY x.thread_id ORDER BY MAX(x.recv_ts) DESC, x.thread_id LIMIT 50";
+
+/// The thread root of the type-0 row at `?2` when it shows in a thread (its root held before it),
+/// for the search hit, pin and reply views (fix round 1, M3).
+pub(super) fn shown_thread_root(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    seq: u64,
+) -> Result<Option<[u8; 16]>, StorageError> {
+    c.query_row(
+        &format!(
+            "SELECT m.thread_id FROM app_messages m WHERE m.group_id=?1 AND m.seq=?2 AND m.type=0 \
+             AND m.thread_id IS NOT NULL AND {HELD_ROOT}"
+        ),
+        params![group_id.as_slice(), seq as i64],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
 
 pub(super) struct StoredMessage<'a> {
     pub group_id: &'a [u8; 16],
@@ -420,6 +457,10 @@ fn view_of(
                     state: target
                         .as_ref()
                         .map_or(1, |t| if t.status == STATUS_OK { 0 } else { 2 }),
+                    thread_root: match &target {
+                        Some(t) => shown_thread_root(c, id, t.seq)?,
+                        None => None,
+                    },
                 })
             })
             .transpose()?
@@ -677,12 +718,13 @@ fn thread_root(
     group_id: &[u8; 16],
     msg_id: &[u8; 16],
 ) -> Result<ThreadRoot, StorageError> {
-    // The best row first: a root, then any type-0 row, then any other.
+    // The first type-0 row with the msg id decides (fix round 1, I1: only it can be the root);
+    // without one, any other row makes the id a fold's.
     let best: Option<(Option<i64>, bool)> = c
         .query_row(
             "SELECT type, thread_id IS NULL FROM app_messages INDEXED BY app_messages_by_msg \
              WHERE group_id = ?1 AND msg_id = ?2 \
-             ORDER BY (type = 0 AND thread_id IS NULL) DESC, type = 0 DESC, seq LIMIT 1",
+             ORDER BY type = 0 DESC, seq LIMIT 1",
             params![group_id.as_slice(), msg_id.as_slice()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -1234,7 +1276,7 @@ impl ClientCore {
         let rows = self.read_one(|c| {
             let mut views = timeline_views(
                 c,
-                TIMELINE_SQL,
+                &timeline_sql(),
                 params![id.as_slice(), before, i64::from(limit)],
                 id,
                 &own.user_id,
@@ -1262,16 +1304,24 @@ impl ClientCore {
         let (head, rows) = self.read_one(|c| {
             let head = timeline_views(
                 c,
-                THREAD_ROOT_SQL,
+                &thread_root_sql(),
                 params![id.as_slice(), root.as_slice()],
                 id,
                 &own.user_id,
             )?
             .pop();
+            // Only the replies after the root are in its thread (fix round 1, I1).
+            let after = head.as_ref().map_or(0, |h| h.seq as i64);
             let rows = timeline_views(
                 c,
-                THREAD_SQL,
-                params![id.as_slice(), root.as_slice(), before, i64::from(limit)],
+                &thread_sql(),
+                params![
+                    id.as_slice(),
+                    root.as_slice(),
+                    after,
+                    before,
+                    i64::from(limit)
+                ],
                 id,
                 &own.user_id,
             )?;
@@ -1280,40 +1330,43 @@ impl ClientCore {
         Ok(wire::encode_thread_timeline(head.as_ref(), &rows))
     }
 
-    /// web3.7: the group's threads, `[[root_msg_id, root_seq|null, count, last_ts, excerpt]]`, at
-    /// most 50, the latest reply first. A thread is a `thread_id` with at least one shown reply
-    /// whose root is held (a type-0 row without a `thread_id`) or not held at all; an id naming a
-    /// reply (a nested thread, shown in the channel) is none. `root_seq` and `excerpt` (the root's
-    /// shown body, `fold::excerpt`) come from the held root; null and `''` when it is not held.
+    /// web3.7: the group's threads, `[[root_msg_id, root_seq, count, last_ts, excerpt]]`, at most
+    /// 50, the latest reply first (`THREADS_SQL`). Fix round 1 (M1): a thread is listed under its
+    /// held root only, so `root_seq` is always set; `excerpt` is `fold::excerpt` of the root's shown
+    /// body, `''` for a deleted root.
     pub fn threads(&self, id: &[u8; 16]) -> Result<Vec<u8>, ClientError> {
         self.own()?;
         self.read(|c| group_row(c, id))?.ok_or_else(not_found)?;
         let rows = self.read_one(|c| {
             let mut q = c.prepare(THREADS_SQL)?;
-            let threads: Vec<([u8; 16], i64, i64)> = q
-                .query_map([id.as_slice()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            let threads: Vec<([u8; 16], i64, i64, String, i64, i64)> = q
+                .query_map([id.as_slice()], |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                })?
                 .collect::<Result<_, _>>()?;
-            let mut views = Vec::with_capacity(threads.len());
-            for (root, count, last_ts) in threads {
-                let held: Option<(i64, i64, String)> = c
-                    .query_row(
-                        "SELECT seq, status, COALESCE(edit_body, body) FROM app_messages INDEXED BY app_messages_by_msg \
-                         WHERE group_id = ?1 AND msg_id = ?2 AND type = 0 AND thread_id IS NULL ORDER BY seq LIMIT 1",
-                        params![id.as_slice(), root.as_slice()],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .optional()?;
-                views.push(wire::ThreadView {
-                    root,
-                    root_seq: held.as_ref().map(|h| h.0 as u64),
-                    count: count as u64,
-                    last_ts: last_ts as u64,
-                    excerpt: held
-                        .filter(|h| h.1 == STATUS_OK)
-                        .map_or_else(String::new, |h| fold::excerpt(&h.2)),
-                });
-            }
-            Ok(views)
+            Ok(threads
+                .into_iter()
+                .map(
+                    |(root, seq, status, body, count, last_ts)| wire::ThreadView {
+                        root,
+                        root_seq: Some(seq as u64),
+                        count: count as u64,
+                        last_ts: last_ts as u64,
+                        excerpt: if status == STATUS_OK {
+                            fold::excerpt(&body)
+                        } else {
+                            String::new()
+                        },
+                    },
+                )
+                .collect::<Vec<_>>())
         })?;
         Ok(wire::encode_threads(&rows))
     }
@@ -1347,6 +1400,7 @@ impl ClientCore {
                             author: t.sender_user,
                             excerpt: fold::excerpt(&t.shown_body),
                             target_ts: ts as u64,
+                            thread_root: shown_thread_root(c, id, t.seq)?,
                         });
                     }
                 }

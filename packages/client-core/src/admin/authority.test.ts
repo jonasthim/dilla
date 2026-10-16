@@ -214,7 +214,7 @@ describe('the worker pushes the role view into the core', () => {
     expect(w.last<PinnedItem[]>(`pins:${CH}`)).toEqual([]);
     // What the core folds after the new view: the pin of the member who may still pin.
     // (Slices are posted only when they change: the core's refold changes the pins, the timeline row and the mentions.)
-    const pin: PinRow = { targetSeq: 1n, msgId: id16(0x31), pinnedSeq: 2n, byUser: USER, author: STRANGER, excerpt: 'kept', targetTs: 1n };
+    const pin: PinRow = { targetSeq: 1n, msgId: id16(0x31), pinnedSeq: 2n, byUser: USER, author: STRANGER, excerpt: 'kept', targetTs: 1n, threadRoot: null };
     w.core.authoritySet.mockImplementation(() => {
       w.state.pins = [pin];
       w.state.rows = [{ ...strangerRow(1), pinned: true }];

@@ -1441,9 +1441,9 @@ export class ModelCore implements CorePort {
       if (body.trim() === '' && attachments.length === 0) throw coreError('E_CORE_INPUT', 'body is empty');
       if (replyTo !== null && target === null) throw coreError('E_CORE_NOT_FOUND', 'target is not held');
       if (threadId !== null) {
-        // messages.rs thread_root: a root, else a reply, else another type, else not held.
+        // messages.rs thread_root: the first type-0 row with the id decides; without one, another type or nothing.
         const named = [...g.rows.values()].filter((r) => r.msgId !== null && same(r.msgId, threadId));
-        if (!named.some((r) => r.type === 0 && r.threadId === null)) {
+        if (this.threadRoot(g, threadId) === null) {
           if (named.length === 0) throw coreError('E_CORE_NOT_FOUND', 'target is not held');
           if (named.some((r) => r.type === 0)) throw coreError('E_CORE_INPUT', 'the thread root is a thread reply');
           throw coreError('E_CORE_INPUT', 'the thread root is not a message');
@@ -1576,7 +1576,7 @@ export class ModelCore implements CorePort {
       const t = this.resolve(g, p.target);
       if (t === null) continue;
       out.push({ targetSeq: t.seq, msgId: p.target, pinnedSeq: p.seq, byUser: p.byUser, author: t.senderUser,
-        excerpt: excerpt(t.editBody ?? t.body), targetTs: t.recvTs });
+        excerpt: excerpt(t.editBody ?? t.body), targetTs: t.recvTs, threadRoot: this.shownThreadRoot(g, t) });
     }
     return out;
   }
@@ -1658,57 +1658,63 @@ export class ModelCore implements CorePort {
     return body.includes(`<@${me}>`) || roles.some((role) => view.mentionable.has(role) && body.includes(`<@${role}>`));
   }
 
-  /** L-CORE-34: displayable rows (type null or 0) with the fold applied; web3.7: a reply whose thread root is held (a
-   *  type-0 row without a thread id) shows in its thread only (messages.rs TIMELINE_SQL). */
+  /** L-CORE-34: displayable rows (type null or 0) with the fold applied; web3.7: a reply whose root is held before it
+   *  shows in its thread only (messages.rs timeline_sql, HELD_ROOT). */
   timeline(groupId: Id, beforeSeq: bigint, limit: number): TimelineRow[] {
     const g = this.must(groupId);
     const rows = [...g.rows.values()]
-      .filter((r) => (r.type === null || r.type === 0) && (r.threadId === null || this.threadRoot(g, r.threadId) === null) &&
+      .filter((r) => (r.type === null || r.type === 0) && this.shownThreadRoot(g, r) === null &&
         (beforeSeq === 0n || r.seq < beforeSeq)).sort(bySeq);
     return rows.slice(Math.max(0, rows.length - limit)).map((r) => this.view(g, r));
   }
 
-  /** web3.7 (R25): the held root and the thread's type-0 replies, newest first (messages.rs thread_timeline). */
+  /** web3.7 (R25): the held root and the thread's type-0 replies after it, newest first (messages.rs thread_timeline). */
   threadTimeline(groupId: Id, rootMsgId: Id, beforeSeq: bigint, limit: number): { root: TimelineRow | null; rows: TimelineRow[] } {
     const g = this.must(groupId);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw coreError('E_CORE_INPUT', 'limit out of range');
     const root = this.threadRoot(g, rootMsgId);
+    const after = root?.seq ?? 0n;
     const rows = [...g.rows.values()]
-      .filter((r) => r.type === 0 && r.threadId !== null && same(r.threadId, rootMsgId) && (beforeSeq === 0n || r.seq < beforeSeq))
+      .filter((r) => r.type === 0 && r.threadId !== null && same(r.threadId, rootMsgId) && r.seq > after &&
+        (beforeSeq === 0n || r.seq < beforeSeq))
       .sort(bySeq).reverse().slice(0, limit);
     return { root: root === null ? null : this.view(g, root), rows: rows.map((r) => this.view(g, r)) };
   }
 
-  /** web3.7: the group's threads, at most 50, the latest reply first (messages.rs THREADS_SQL). */
+  /** web3.7: the group's threads under a held root whose id no other type carries, at most 50, the latest reply first
+   *  (messages.rs THREADS_SQL; fix round 1, M1). */
   threads(groupId: Id): ThreadRow[] {
     const g = this.must(groupId);
-    const by = new Map<string, { id: Id; count: number; lastTs: bigint }>();
-    for (const r of g.rows.values()) {
-      if (r.type !== 0 || r.status !== 0 || r.threadId === null) continue;
-      const t = by.get(toHex(r.threadId)) ?? { id: r.threadId, count: 0, lastTs: 0n };
-      t.count += 1;
-      if (r.recvTs > t.lastTs) t.lastTs = r.recvTs;
-      by.set(toHex(r.threadId), t);
+    const out: (ThreadRow & { id: string })[] = [];
+    for (const root of g.rows.values()) {
+      if (root.msgId === null || this.threadRoot(g, root.msgId) !== root) continue;
+      const msgId = root.msgId;
+      if ([...g.rows.values()].some((r) => r.type !== null && r.type !== 0 && r.msgId !== null && same(r.msgId, msgId))) continue;
+      const summary = this.summary(g, root);
+      if (summary === null) continue;
+      out.push({ rootMsgId: msgId, rootSeq: root.seq, count: summary.count, lastTs: summary.lastTs,
+        excerpt: root.status === 0 ? excerpt(root.editBody ?? root.body) : '', id: toHex(msgId) });
     }
-    return [...by.values()]
-      .filter((t) => this.threadRoot(g, t.id) !== null ||
-        ![...g.rows.values()].some((r) => r.type === 0 && r.msgId !== null && same(r.msgId, t.id)))
-      .sort((a, b) => (a.lastTs === b.lastTs ? toHex(a.id).localeCompare(toHex(b.id)) : a.lastTs > b.lastTs ? -1 : 1))
+    return out
+      .sort((a, b) => (a.lastTs === b.lastTs ? a.id.localeCompare(b.id) : a.lastTs > b.lastTs ? -1 : 1))
       .slice(0, 50)
-      .map((t) => {
-        const root = this.threadRoot(g, t.id);
-        return { rootMsgId: t.id, rootSeq: root?.seq ?? null, count: t.count, lastTs: t.lastTs,
-          excerpt: root !== null && root.status === 0 ? excerpt(root.editBody ?? root.body) : '' };
-      });
+      .map((t): ThreadRow => ({ rootMsgId: t.rootMsgId, rootSeq: t.rootSeq, count: t.count, lastTs: t.lastTs, excerpt: t.excerpt }));
   }
 
-  /** The held thread root of `msgId`: the earliest type-0 row carrying it without a thread id, else null. */
+  /** The thread root of `msgId`: the first type-0 row carrying it, when it carries no thread id (fix round 1, I1). */
   private threadRoot(g: MGroup, msgId: Id): MRow | null {
     let t: MRow | null = null;
     for (const r of g.rows.values()) {
-      if (r.type === 0 && r.threadId === null && r.msgId !== null && same(r.msgId, msgId) && (t === null || r.seq < t.seq)) t = r;
+      if (r.type === 0 && r.msgId !== null && same(r.msgId, msgId) && (t === null || r.seq < t.seq)) t = r;
     }
-    return t;
+    return t !== null && t.threadId === null ? t : null;
+  }
+
+  /** The root of the thread `r` shows in: its thread id when that root is held before it, else null (shown_thread_root). */
+  private shownThreadRoot(g: MGroup, r: MRow): Id | null {
+    if (r.type !== 0 || r.threadId === null) return null;
+    const root = this.threadRoot(g, r.threadId);
+    return root !== null && root.seq < r.seq ? r.threadId : null;
   }
 
   /** The 19-element view of one stored row (messages.rs view_of). */
@@ -1718,9 +1724,9 @@ export class ModelCore implements CorePort {
     if (ok && r.replyTo !== null) {
       const t = this.resolve(g, r.replyTo);
       reply = t === null
-        ? { replyTo: r.replyTo, targetSeq: null, targetUser: null, excerpt: '', state: 1 }
+        ? { replyTo: r.replyTo, targetSeq: null, targetUser: null, excerpt: '', state: 1, threadRoot: null }
         : { replyTo: r.replyTo, targetSeq: t.seq, targetUser: t.senderUser, excerpt: t.status === 0 ? excerpt(t.editBody ?? t.body) : '',
-          state: t.status === 0 ? 0 : 2 };
+          state: t.status === 0 ? 0 : 2, threadRoot: this.shownThreadRoot(g, t) };
     }
     // Reactions and the pin belong to a target only: a row that repeats a msg id never shows them.
     const target = ok && r.type === 0 && r.msgId !== null && this.resolve(g, r.msgId)?.seq === r.seq;
@@ -1738,11 +1744,12 @@ export class ModelCore implements CorePort {
     };
   }
 
-  /** A root's thread summary: its shown type-0 replies' count and latest recvTs; null without one. */
+  /** A root's thread summary: the count and latest recvTs of its shown type-0 replies after it; null on any other row. */
   private summary(g: MGroup, r: MRow): TimelineRow['thread'] {
-    if (r.type !== 0 || r.threadId !== null || r.msgId === null) return null;
+    if (r.msgId === null || this.threadRoot(g, r.msgId) !== r) return null;
     const msgId = r.msgId;
-    const replies = [...g.rows.values()].filter((x) => x.type === 0 && x.status === 0 && x.threadId !== null && same(x.threadId, msgId));
+    const replies = [...g.rows.values()].filter((x) => x.type === 0 && x.status === 0 && x.threadId !== null && same(x.threadId, msgId) &&
+      x.seq > r.seq);
     if (replies.length === 0) return null;
     return { count: replies.length, lastTs: replies.reduce((m, x) => (x.recvTs > m ? x.recvTs : m), 0n) };
   }

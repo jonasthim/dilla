@@ -778,14 +778,14 @@ describe('ModelCore keeps public threads as the core does (web3.7)', () => {
     const core = fresh();
     apply(core, threadApp(1n, R, 'root a', null), threadApp(2n, R2, 'root b', null), threadApp(3n, reply(1), 'a1', R),
       threadApp(4n, reply(2), 'a2', R), threadApp(5n, reply(3), 'b1', R2), threadApp(6n, reply(4), 'orphan', FOLD_UNHELD),
-      threadApp(7n, reply(5), 'nested', reply(1)));
+      threadApp(7n, reply(5), 'nested', reply(1)), threadApp(8n, fold(8n), '👍', null, { type: 3, replyTo: R }));
     const t = core.threadTimeline(G, R, 0n, 50);
     expect([t.root?.seq, t.rows.map((x) => x.seq)]).toEqual([1n, [4n, 3n]]);
     expect(core.threadTimeline(G, R, 4n, 1).rows.map((x) => x.seq)).toEqual([3n]);
     expect(core.threadTimeline(G, FOLD_UNHELD, 0n, 50).root).toBeNull();
     expect(() => core.threadTimeline(G, R, 0n, 0)).toThrow('E_CORE_INPUT');
+    // Fix round 1 (M1): an unheld root is no thread.
     expect(core.threads(G)).toEqual([
-      { rootMsgId: FOLD_UNHELD, rootSeq: null, count: 1, lastTs: 1_700_000_006n, excerpt: '' },
       { rootMsgId: R2, rootSeq: 2n, count: 1, lastTs: 1_700_000_005n, excerpt: 'root b' },
       { rootMsgId: R, rootSeq: 1n, count: 2, lastTs: 1_700_000_004n, excerpt: 'root a' },
     ]);
@@ -805,6 +805,18 @@ describe('ModelCore keeps public threads as the core does (web3.7)', () => {
     const id = own(core, 4n, thread(R));
     expect(core.threadTimeline(G, R, 0n, 50).rows.map((x) => [x.seq, x.msgId])).toEqual([[4n, id], [2n, reply(1)]]);
     expect(core.timeline(G, 0n, 200).map((x) => x.seq)).toEqual([1n]);
+  });
+
+  it('gives a thread to the first root before it, never to a later row with its id (fix round 1, I1)', () => {
+    const core = fresh();
+    apply(core, threadApp(1n, reply(1), 'early', R), threadApp(2n, R, 'root', null), threadApp(3n, reply(2), 'r1', R),
+      threadApp(4n, R, 'repeat', null), threadApp(5n, reply(3), 'r2', R), threadApp(6n, reply(4), 'self', reply(4)));
+    expect(core.timeline(G, 0n, 200).map((x) => [x.seq, x.thread?.count ?? null])).toEqual([[1n, null], [2n, 2], [4n, null], [6n, null]]);
+    expect(core.threadTimeline(G, R, 0n, 50).rows.map((x) => x.seq)).toEqual([5n, 3n]);
+    // M3: a pin and a quote of a thread reply name its root.
+    apply(core, threadApp(7n, fold(7n), '', null, { type: 5, replyTo: reply(2) }), threadApp(8n, reply(5), 'quote', null, { replyTo: reply(2) }));
+    expect(core.pins(G).map((p) => [p.targetSeq, p.threadRoot])).toEqual([[3n, R]]);
+    expect(shown(core, 8n).reply?.threadRoot).toEqual(R);
   });
 
   it('counts a thread reply toward unread and mentions', () => {
@@ -887,9 +899,9 @@ describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CO
     apply(core, app(1n, PEER, T, 'line one\nline two'), app(2n, THIRD, fold(2n), 'a reply', { replyTo: T }),
       app(3n, THIRD, fold(3n), 'to nothing here', { replyTo: FOLD_UNHELD }), app(4n, PEER, T2, 'second'),
       app(5n, THIRD, fold(5n), 'to the second', { replyTo: T2 }), app(6n, PEER, fold(6n), '', { type: 2, replyTo: T2 }));
-    expect(shown(core, 2n).reply).toEqual({ replyTo: T, targetSeq: 1n, targetUser: PEER.user, excerpt: 'line one line two', state: 0 });
-    expect(shown(core, 3n).reply).toEqual({ replyTo: FOLD_UNHELD, targetSeq: null, targetUser: null, excerpt: '', state: 1 });
-    expect(shown(core, 5n).reply).toEqual({ replyTo: T2, targetSeq: 4n, targetUser: PEER.user, excerpt: '', state: 2 });
+    expect(shown(core, 2n).reply).toEqual({ replyTo: T, targetSeq: 1n, targetUser: PEER.user, excerpt: 'line one line two', state: 0, threadRoot: null });
+    expect(shown(core, 3n).reply).toEqual({ replyTo: FOLD_UNHELD, targetSeq: null, targetUser: null, excerpt: '', state: 1, threadRoot: null });
+    expect(shown(core, 5n).reply).toEqual({ replyTo: T2, targetSeq: 4n, targetUser: PEER.user, excerpt: '', state: 2, threadRoot: null });
     expect(shown(core, 1n).reply).toBeNull();
   });
 
@@ -906,8 +918,8 @@ describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CO
     apply(core, app(1n, PEER, T, 'first'), app(2n, THIRD, T2, 'second'), app(3n, THIRD, fold(3n), '', { type: 5, replyTo: T }),
       app(4n, PEER, fold(4n), '', { type: 5, replyTo: T2 }));
     expect(core.pins(G)).toEqual([
-      { targetSeq: 2n, msgId: T2, pinnedSeq: 4n, byUser: PEER.user, author: THIRD.user, excerpt: 'second', targetTs: shown(core, 2n).recvTs },
-      { targetSeq: 1n, msgId: T, pinnedSeq: 3n, byUser: THIRD.user, author: PEER.user, excerpt: 'first', targetTs: shown(core, 1n).recvTs },
+      { targetSeq: 2n, msgId: T2, pinnedSeq: 4n, byUser: PEER.user, author: THIRD.user, excerpt: 'second', targetTs: shown(core, 2n).recvTs, threadRoot: null },
+      { targetSeq: 1n, msgId: T, pinnedSeq: 3n, byUser: THIRD.user, author: PEER.user, excerpt: 'first', targetTs: shown(core, 1n).recvTs, threadRoot: null },
     ]);
     expect([shown(core, 1n).pinned, shown(core, 2n).pinned]).toEqual([true, true]);
     apply(core, app(5n, PEER, fold(5n), '', { type: 6, replyTo: T }));

@@ -58,7 +58,7 @@ it('adapts the ABI-8 trust and search exports', () => {
   s.port.trustVerify(USER, key);
   expect(s.port.safetyNumberFor(USER, key)).toBe(Array.from({ length: 12 }, () => '12345').join(' '));
   expect(s.port.sendBlockCode(G)).toBe('E_UMK_CHANGED');
-  expect(s.port.search({ kind: 'all', id: null }, 'boat', null, 50)).toEqual([{ groupId: G, seq: 7n, snippet: 'boat', rank: 0n }]);
+  expect(s.port.search({ kind: 'all', id: null }, 'boat', null, 50)).toEqual([{ groupId: G, seq: 7n, snippet: 'boat', rank: 0n, threadRoot: null }]);
   expect(s.calls.map((c) => c.method)).toEqual([
     'pending_leaves', 'device_list_ingest', 'trust_state', 'trust_verify', 'safety_number_for', 'send_block_code', 'search',
   ]);
@@ -242,7 +242,7 @@ describe('wrapCore decoding', () => {
       { seq: 5n, epoch: 7n, recvTs: 1_700_000_000n, status: 0, reason: '', senderUser: USER, senderDevice: DEV, senderKind: 0, senderTier: 1, msgId: MSG, type: 0, body: 'hi', ...plain },
       { seq: 6n, epoch: 7n, recvTs: 1_700_000_001n, status: 1, reason: 'E_PRUNED', senderUser: null, senderDevice: DEV, senderKind: null, senderTier: null, msgId: null, type: null, body: '', ...plain },
       { seq: 9n, epoch: 7n, recvTs: 1_700_000_004n, status: 0, reason: '', senderUser: USER, senderDevice: DEV, senderKind: 0, senderTier: 1, msgId: MSG2, type: 0, body: 'edited',
-        editedSeq: 8n, reply: { replyTo: MSG, targetSeq: 5n, targetUser: USER, excerpt: 'hi', state: 0 },
+        editedSeq: 8n, reply: { replyTo: MSG, targetSeq: 5n, targetUser: USER, excerpt: 'hi', state: 0, threadRoot: null },
         reactions: [{ emoji: '👍', count: 2, mine: true }, { emoji: '🎉', count: 1, mine: false }], pinned: true,
         attachments: [{ index: 0, size: 1234, mime: 'image/png', w: 640, h: 480, hasThumb: true, name: 'map.png' },
           { index: 1, size: 70000, mime: 'application/pdf', w: null, h: null, hasThumb: false, name: '' }],
@@ -295,7 +295,11 @@ describe('wrapCore decoding', () => {
     expect(decodeOne(row(14, [['👍', 1]]))).toBe('E_CORE_DECODE');
     expect(decodeOne(row(16, [[0, 1, 'x', null, null, 2, '']]))).toBe('E_CORE_DECODE');
     expect(stub({ timeline: () => encode([row(13, [MSG, null, null, '', 1])]) }).port.timeline(G, 0n, 100)[0]?.reply)
-      .toEqual({ replyTo: MSG, targetSeq: null, targetUser: null, excerpt: '', state: 1 });
+      .toEqual({ replyTo: MSG, targetSeq: null, targetUser: null, excerpt: '', state: 1, threadRoot: null });
+    // web3.7 fix round 1 (M3): a sixth element names the quoted row's thread root; seven is malformed.
+    expect(stub({ timeline: () => encode([row(13, [MSG, 5, USER, 'x', 0, MSG2])]) }).port.timeline(G, 0n, 100)[0]?.reply?.threadRoot)
+      .toEqual(MSG2);
+    expect(decodeOne(row(13, [MSG, 5, USER, 'x', 0, MSG2, null]))).toBe('E_CORE_DECODE');
   });
 
   it('returns request bodies and cursor bodies unchanged, and null for a CBOR null cursor', () => {
@@ -520,13 +524,13 @@ describe('wrapCore web-2b', () => {
 
   it('reads pins, an attachment descriptor and purges', () => {
     const s = stub({
-      pins: () => encode([[5, MSG, 9, USER, null, 'the excerpt', 1700000005], [3, G, 7, DEV, USER, '', 1700000003]]),
+      pins: () => encode([[5, MSG, 9, USER, null, 'the excerpt', 1700000005], [3, G, 7, DEV, USER, '', 1700000003, MSG2]]),
       attachment_get: () => encode([BLOB, KEY, NONCE, 1234, 'image/png', 640, 480, THUMB, 'map.png']),
       purges: () => encode([[G, 12, CHAN, [BLOB, KEY]]]),
     });
     expect(s.port.pins(G)).toEqual([
-      { targetSeq: 5n, msgId: MSG, pinnedSeq: 9n, byUser: USER, author: null, excerpt: 'the excerpt', targetTs: 1700000005n },
-      { targetSeq: 3n, msgId: G, pinnedSeq: 7n, byUser: DEV, author: USER, excerpt: '', targetTs: 1700000003n },
+      { targetSeq: 5n, msgId: MSG, pinnedSeq: 9n, byUser: USER, author: null, excerpt: 'the excerpt', targetTs: 1700000005n, threadRoot: null },
+      { targetSeq: 3n, msgId: G, pinnedSeq: 7n, byUser: DEV, author: USER, excerpt: '', targetTs: 1700000003n, threadRoot: MSG2 },
     ]);
     expect(s.port.attachmentGet(G, 12n, 1)).toEqual(descriptor);
     expect(s.calls[1]).toEqual({ method: 'attachment_get', args: [G, 12n, 1] });
@@ -582,6 +586,7 @@ describe('wrapCore web-2b', () => {
     expect(caught(() => stub({ outbox: () => encode([[MSG, 0, '', 1, 'hi']]) }).port.outbox(G)).code).toBe('E_CORE_DECODE');
     expect(caught(() => stub({ outbox: () => encode([[MSG, 0, '', 1, 'hi', 7, null, []]]) }).port.outbox(G)).code).toBe('E_CORE_DECODE');
     expect(caught(() => stub({ pins: () => encode([[5, MSG, 9, USER, null, 'x']]) }).port.pins(G)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => stub({ pins: () => encode([[5, MSG, 9, USER, null, 'x', 1, null, null]]) }).port.pins(G)).code).toBe('E_CORE_DECODE');
     expect(caught(() => stub({ attachment_get: () => encode([BLOB, KEY, new Uint8Array(11), 1, 'x', null, null, null, '']) })
       .port.attachmentGet(G, 1n, 0)).code).toBe('E_CORE_DECODE');
     expect(caught(() => stub({ purges: () => encode([[G, 1, CHAN, [new Uint8Array(31)]]]) }).port.purges()).code).toBe('E_CORE_DECODE');

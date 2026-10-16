@@ -114,7 +114,7 @@ describe('buildTimeline', () => {
   it('maps the folded view: the edit, the reply, reactions, the pin, attachments and the mention flag', () => {
     const [item] = timeline([row(2, {
       body: 'edited text', editedSeq: 9n, pinned: true, mention: true,
-      reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: 'body 1', state: 0 },
+      reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: 'body 1', state: 0, threadRoot: null },
       reactions: [{ emoji: '👍', count: 2, mine: true }, { emoji: '🦀', count: 1, mine: false }],
       attachments: [
         { index: 0, size: 1234, mime: 'image/png', w: 640, h: 480, hasThumb: true, name: 'map.png' },
@@ -136,8 +136,8 @@ describe('buildTimeline', () => {
 
   it('names the reply state of a target that is not held and of one that was deleted', () => {
     const items = timeline([
-      row(3, { reply: { replyTo: id(0x7e), targetSeq: null, targetUser: null, excerpt: '', state: 1 } }),
-      row(4, { reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: '', state: 2 } }),
+      row(3, { reply: { replyTo: id(0x7e), targetSeq: null, targetUser: null, excerpt: '', state: 1, threadRoot: null } }),
+      row(4, { reply: { replyTo: id(0x31), targetSeq: 1n, targetUser: id(PEER_USER), excerpt: '', state: 2, threadRoot: null } }),
     ]).items;
     expect(items.map((i) => i.reply)).toEqual([
       { msgId: hex(0x7e), state: 'missing', senderUser: null, excerpt: '', seq: null },

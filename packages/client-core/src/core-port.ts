@@ -58,7 +58,8 @@ export interface AttachmentDescriptor { blobId: Uint8Array; key: Uint8Array; non
 export interface SendRequest { type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null; body: string; attachments: AttachmentDescriptor[]; threadId?: Id | null; }
 export interface OutboxRow { msgId: Id; state: 0 | 1 | 2; error: string; created: bigint; body: string; type: 0 | 1 | 2 | 3 | 4 | 5 | 6; replyTo: Id | null;
   attachments: { blobId: Uint8Array; size: number; mime: string; name: string }[]; }
-export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; }
+/** `threadRoot` (web3.7 fix round 1, M3): the root of the thread the pinned row shows in, null for a channel row. */
+export interface PinRow { targetSeq: bigint; msgId: Id; pinnedSeq: bigint; byUser: Id; author: Id | null; excerpt: string; targetTs: bigint; threadRoot: Id | null; }
 export interface PurgeRow { groupId: Id; seq: bigint; channelId: Id; blobIds: Uint8Array[]; }
 export interface PendingLeaf { groupId: Id; leafIndex: number; userId: Id; cachedVersion: bigint; reason: string; }
 /** The stored verdict that blocks a user's leaf (and with it sending in its group); E_UMK_CHANGED wins (ABI 8).
@@ -80,8 +81,10 @@ export function trustBlock(code: string): TrustBlock {
 export interface TrustRecord { userId: Id; umk: Uint8Array; firstSeen: bigint; verified: boolean; changedUmk: Uint8Array | null; blocked: TrustBlock | null; }
 export interface SearchScope { kind: 'channel' | 'community' | 'all'; id: Id | null; }
 export interface SearchCursor { rank: bigint; groupId: Id; seq: bigint; }
-export interface SearchHit { groupId: Id; seq: bigint; snippet: string; rank: bigint; }
-export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; }
+/** `threadRoot` (web3.7 fix round 1, M3): the root of the thread the hit shows in, null for a channel row. */
+export interface SearchHit { groupId: Id; seq: bigint; snippet: string; rank: bigint; threadRoot: Id | null; }
+/** `threadRoot` (web3.7 fix round 1, M3): the root of the thread the quoted row shows in, null for a channel row. */
+export interface ReplyInfo { replyTo: Id; targetSeq: bigint | null; targetUser: Id | null; excerpt: string; state: 0 | 1 | 2; threadRoot: Id | null; }
 export interface ReactionInfo { emoji: string; count: number; mine: boolean; }
 export interface AttachmentInfo { index: number; size: number; mime: string; w: number | null; h: number | null; hasThumb: boolean; name: string; }
 /** `thread` (web3.7) is the summary of a held thread root with at least one shown reply: the reply count and the latest
@@ -369,10 +372,13 @@ function readOutbox(v: CborValue): OutboxRow {
     attachments: arr(field(a, 7)).map((x) => { const b = arr(x, 4); return { blobId: bin(field(b, 0), 32), size: u53(field(b, 1)),
       mime: str(field(b, 2)), name: str(field(b, 3)) }; }) };
 }
+/** A pin row: 8 elements since web3.7 fix round 1 (the 8th the thread root); 7 from a core before it. */
 function readPin(v: CborValue): PinRow {
-  const a = arr(v, 7);
+  const a = arr(v);
+  if (a.length !== 7 && a.length !== 8) throw new CborError('E_CBOR_SHAPE', `pin row of ${String(a.length)} elements`);
   return { targetSeq: u64(field(a, 0)), msgId: bin(field(a, 1), 16), pinnedSeq: u64(field(a, 2)), byUser: bin(field(a, 3), 16),
-    author: opt(field(a, 4), (x) => bin(x, 16)), excerpt: str(field(a, 5)), targetTs: u64(field(a, 6)) };
+    author: opt(field(a, 4), (x) => bin(x, 16)), excerpt: str(field(a, 5)), targetTs: u64(field(a, 6)),
+    threadRoot: opt(field(a, 7), (x) => bin(x, 16)) };
 }
 function readDescriptor(v: CborValue): AttachmentDescriptor {
   const a = arr(v, 9);
@@ -409,10 +415,12 @@ function readThread(v: CborValue): ThreadRow {
   return { rootMsgId: bin(field(a, 0), 16), rootSeq: opt(field(a, 1), u64), count: u53(field(a, 2)), lastTs: u64(field(a, 3)),
     excerpt: str(field(a, 4)) };
 }
+/** A reply reference: 6 elements since web3.7 fix round 1 (the 6th the thread root); 5 from a core before it. */
 function readReply(v: CborValue): ReplyInfo {
-  const a = arr(v, 5);
+  const a = arr(v);
+  if (a.length !== 5 && a.length !== 6) throw new CborError('E_CBOR_SHAPE', `reply of ${String(a.length)} elements`);
   return { replyTo: bin(field(a, 0), 16), targetSeq: opt(field(a, 1), u64), targetUser: opt(field(a, 2), (x) => bin(x, 16)),
-    excerpt: str(field(a, 3)), state: oneOf(field(a, 4), [0, 1, 2]) };
+    excerpt: str(field(a, 3)), state: oneOf(field(a, 4), [0, 1, 2]), threadRoot: opt(field(a, 5), (x) => bin(x, 16)) };
 }
 function readReaction(v: CborValue): ReactionInfo {
   const a = arr(v, 3);

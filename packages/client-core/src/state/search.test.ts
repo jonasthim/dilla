@@ -3,7 +3,10 @@ import { encode } from '../cbor';
 import { decodeSearchHits, validateSearch } from './search';
 const gid = new Uint8Array(16).fill(7);
 it('rejects unbounded hits and snippets', () => {
-  expect(decodeSearchHits(encode([[gid, 2, 'boat', 0]]))).toMatchObject([{ seq: 2n, snippet: 'boat', rank: 0n }]);
+  expect(decodeSearchHits(encode([[gid, 2, 'boat', 0]]))).toMatchObject([{ seq: 2n, snippet: 'boat', rank: 0n, threadRoot: null }]);
+  // web3.7 fix round 1 (M3): a fifth element names the hit's thread root; six is malformed.
+  expect(decodeSearchHits(encode([[gid, 2, 'boat', 0, gid]]))[0]?.threadRoot).toEqual(gid);
+  expect(() => decodeSearchHits(encode([[gid, 2, 'boat', 0, gid, null]]))).toThrow();
   expect(() => decodeSearchHits(encode(Array.from({ length: 51 }, () => [gid, 2, 'boat', 0])))).toThrow();
   expect(() => decodeSearchHits(encode([[gid, 2, 'a'.repeat(161), 0]]))).toThrow();
   expect(() => decodeSearchHits(Uint8Array.of(0x98, 51))).toThrow('limit');

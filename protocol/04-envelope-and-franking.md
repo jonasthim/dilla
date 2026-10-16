@@ -146,17 +146,30 @@ A client shows a mention as the name it stands for, never as the raw token.
 A thread is a run of type-0 envelopes under one root message (a public thread: every member of the
 group reads it).
 
-- **Root.** A type-0 envelope's `thread_id` names the `msg_id` of a type-0 root that carries no
-  `thread_id` itself. A sender sets it only on type 0 and only to a root it holds; an envelope of
-  type 1 to 6 carries a null `thread_id`, and a receiver ignores one it finds there.
-- **Where a reply shows.** A receiver shows a reply whose root it holds only in that thread, not in
-  the channel. A reply whose root it does not hold, or whose root is itself a reply (a nested
-  thread), it shows in the channel, as a message without a thread.
-- **Summary.** A receiver shows on a root the number of its replies that are not deleted and the
-  time of the latest.
+- **Root.** A type-0 envelope's `thread_id` names its root: in an end-to-end encrypted group the
+  root's `msg_id`, on a server-readable channel the root's channel `seq` (§ Envelope). The root is
+  a type-0 envelope that carries no `thread_id` itself. In an encrypted group only the **first**
+  (lowest `seq`) type-0 envelope with that `msg_id` the receiver holds is the root; a later one that
+  repeats the `msg_id` is shown as its own message, never as a root. A root comes **before** its
+  replies: a reply belongs to the root only when the root's `seq` is lower than the reply's, so an
+  envelope that appears later cannot take over replies sent before it. A sender sets `thread_id`
+  only on type 0 and only to a root it holds; an envelope of type 1 to 6 carries a null
+  `thread_id`, and a receiver ignores one it finds there.
+- **Where a reply shows.** A receiver shows a reply whose root it holds, with a lower `seq`, only
+  in that thread, not in the channel. A reply whose root it does not hold, whose root is itself a
+  reply (a nested thread), or whose root comes after it, it shows in the channel, as a message
+  without a thread; such a reply is not listed as a thread either.
+- **Summary.** A receiver shows on a root the number of its replies that are shown (neither
+  deleted nor retracted after a failed identity check) and the time of the latest.
 - **Folds.** Edits, deletes, reactions and pins of a reply work as on any message (§ Semantics); a
-  deleted reply stays in its thread as deleted and no longer counts in the summary.
+  deleted reply stays in its thread as deleted and no longer counts in the summary. A deleted root
+  keeps its thread: its replies stay there and the root's tombstone carries the summary, and a
+  member may still reply in it.
+- **Finding a reply.** Wherever a client meets a reply outside its thread (a search hit, a pin, a
+  quote in a `reply_to`), it learns the root that holds it, and opens the reply there.
 - **Counts.** Replies count toward unread and mentions (§ Mentions) as any other type-0 message.
+  A thread has no read marker of its own in this version: reading the channel marks its threads'
+  replies read too, and a mention in a thread still counts in the channel's activity until then.
 
 ## Deterministic CBOR
 

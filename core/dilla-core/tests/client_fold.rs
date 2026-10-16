@@ -652,7 +652,8 @@ fn a_reply_shows_its_target_held_missing_or_deleted() {
             target_seq: Some(2),
             target_user: Some(PEER_USER),
             excerpt: "first line second third".into(),
-            state: 0
+            state: 0,
+            thread_root: None
         })
     );
     assert_eq!(
@@ -662,7 +663,8 @@ fn a_reply_shows_its_target_held_missing_or_deleted() {
             target_seq: None,
             target_user: None,
             excerpt: String::new(),
-            state: 1
+            state: 1,
+            thread_root: None
         })
     );
     assert_eq!(
@@ -672,7 +674,8 @@ fn a_reply_shows_its_target_held_missing_or_deleted() {
             target_seq: Some(5),
             target_user: Some(PEER_USER),
             excerpt: String::new(),
-            state: 2
+            state: 2,
+            thread_root: None
         })
     );
     assert_eq!(
@@ -1005,6 +1008,7 @@ fn pins_list_newest_first_and_name_who_pinned() {
         author: Some(PEER_USER),
         excerpt: "second pinned".into(),
         target_ts: row_at(&me, 4).recv_ts,
+        thread_root: None,
     };
     assert_eq!(
         pins(&me),
@@ -1017,7 +1021,8 @@ fn pins_list_newest_first_and_name_who_pinned() {
                 by_user: READER_USER,
                 author: Some(PEER_USER),
                 excerpt: "first pinned".into(),
-                target_ts: a_ts
+                target_ts: a_ts,
+                thread_root: None,
             },
         ]
     );
@@ -1037,7 +1042,8 @@ fn pins_list_newest_first_and_name_who_pinned() {
                 by_user: READER_USER,
                 author: Some(PEER_USER),
                 excerpt: "first pinned".into(),
-                target_ts: a_ts
+                target_ts: a_ts,
+                thread_root: None,
             },
             pin_b,
         ]

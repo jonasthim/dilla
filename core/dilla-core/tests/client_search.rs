@@ -8,13 +8,15 @@ fn hits(bytes: &[u8]) -> Vec<([u8; 16], u64, String, u64)> {
         let n = d.array_len()?;
         let mut out = Vec::new();
         for _ in 0..n {
-            d.array(4)?;
+            // Five elements since web3.7 fix round 1 (M3): the fifth is the hit's thread root.
+            d.array(5)?;
             out.push((
                 d.bytes_exact::<16>()?,
                 d.uint()?,
                 d.text()?.to_owned(),
                 d.uint()?,
             ));
+            d.opt_bytes_exact::<16>()?;
         }
         Ok(out)
     })

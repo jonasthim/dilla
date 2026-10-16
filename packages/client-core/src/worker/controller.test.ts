@@ -3784,7 +3784,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
-    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 9n, byUser: USER, author: STRANGER, excerpt: 'pin me', targetTs: 1700000005n }];
+    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 9n, byUser: USER, author: STRANGER, excerpt: 'pin me', targetTs: 1700000005n, threadRoot: null }];
     w.call(4, { m: 'loadPins', channelId: CH_HEX });
     await vi.waitFor(() => expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null }));
     expect(pinsOf(w)).toEqual([{ msgId: MSG_HEX, seq: '4', senderUser: toHex(STRANGER), excerpt: 'pin me', pinnedBy: toHex(USER), pinnedSeq: '9', ts: 1700000005 }]);
@@ -3793,7 +3793,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(pinsOf(w)).toEqual([]);
     w.call(5, { m: 'closePins', channelId: CH_HEX });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
-    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 10n, byUser: USER, author: null, excerpt: 'again', targetTs: 1700000005n }];
+    w.state.pins = [{ targetSeq: 4n, msgId: MSG, pinnedSeq: 10n, byUser: USER, author: null, excerpt: 'again', targetTs: 1700000005n, threadRoot: null }];
     w.sync.deps!.onGroupChanged(GROUP, applied(2));
     expect(pinsOf(w)).toEqual([]);
     w.call(6, { m: 'loadPins', channelId: 'e'.repeat(32) });

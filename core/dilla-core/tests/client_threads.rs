@@ -10,7 +10,7 @@ mod client_support;
 
 use client_support::*;
 use dilla_core::envelope::Envelope;
-use dilla_core::envelope::EnvelopeType::{self, Delete, Message, ReactionAdd};
+use dilla_core::envelope::EnvelopeType::{self, Delete, Message, Pin, ReactionAdd};
 use dilla_core::ids::MsgId;
 
 const ROOT: [u8; 16] = [0x71; 16];
@@ -501,16 +501,8 @@ fn an_unheld_root_has_a_null_root_row() {
     let (head, rows) = thread_of(&me, &UNHELD, 0, 50);
     assert!(head.is_none());
     assert_eq!(rows.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![reply]);
-    assert_eq!(
-        threads_of(&me),
-        vec![ThreadRow {
-            root: UNHELD,
-            root_seq: None,
-            count: 1,
-            last_ts: rows[0].recv_ts,
-            excerpt: String::new()
-        }]
-    );
+    // Fix round 1 (M1): a reply whose root is not held is no thread; it shows in the channel.
+    assert_eq!(threads_of(&me), vec![]);
 }
 
 #[test]
@@ -594,13 +586,14 @@ fn threads_lists_the_groups_threads_by_their_last_reply() {
 fn threads_returns_at_most_50() {
     let (_i, mut relay, mut me, mut peer) = start();
     for i in 0..51u8 {
+        post_in(&mut peer, &mut relay, i, Message, None, None, "root");
         post_in(
             &mut peer,
             &mut relay,
-            i,
+            0x80 + i,
             Message,
             None,
-            Some([0xc0; 16].map(|b| b ^ i)),
+            Some([i; 16]),
             "r",
         );
     }
@@ -642,4 +635,369 @@ fn a_thread_reply_counts_toward_unread_and_mentions() {
         1,
         "the reply is in its thread, not the channel"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fix round 1 (I1, M1, M2, M3): a thread belongs to the first root before it.
+
+fn hits(bytes: &[u8]) -> Vec<(u64, Option<[u8; 16]>)> {
+    dilla_core::cbor::decode_strict(bytes, |d| {
+        let n = d.array_len()?;
+        let mut out = Vec::new();
+        for _ in 0..n {
+            d.array(5)?;
+            d.bytes_exact::<16>()?;
+            let seq = d.uint()?;
+            d.text()?;
+            d.uint()?;
+            out.push((seq, d.opt_bytes_exact::<16>()?));
+        }
+        Ok(out)
+    })
+    .expect("search hits")
+}
+
+/// X6: Mallory repeats the msg id of Bob's root after its replies; her row neither takes the
+/// thread nor shows its summary.
+#[test]
+fn a_later_row_with_the_root_id_neither_takes_the_thread_nor_its_summary() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let root = post_in(
+        &mut peer,
+        &mut relay,
+        0x71,
+        Message,
+        None,
+        None,
+        "bob's root",
+    );
+    let r1 = post_in(&mut peer, &mut relay, 0x72, Message, None, Some(ROOT), "r1");
+    let r2 = post_in(&mut peer, &mut relay, 0x73, Message, None, Some(ROOT), "r2");
+    let repeat = post_in(
+        &mut peer,
+        &mut relay,
+        0x71,
+        Message,
+        None,
+        None,
+        "mallory reuses the id",
+    );
+    // A reply after the repeat still joins the first root.
+    let r3 = post_in(&mut peer, &mut relay, 0x74, Message, None, Some(ROOT), "r3");
+    me.sync(&relay);
+    assert_eq!(seqs(&me), vec![root, repeat]);
+    assert_eq!(me.row_at(&GROUP, root).thread.map(|t| t.0), Some(3));
+    assert_eq!(
+        me.row_at(&GROUP, repeat).thread,
+        None,
+        "the repeat borrows no summary"
+    );
+    let (head, rows) = thread_of(&me, &ROOT, 0, 50);
+    assert_eq!(head.map(|h| h.seq), Some(root));
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![r3, r2, r1]
+    );
+    assert_eq!(
+        threads_of(&me)
+            .iter()
+            .map(|t| (t.root_seq, t.count))
+            .collect::<Vec<_>>(),
+        vec![(Some(root), 3)]
+    );
+}
+
+/// X2: a reply whose root this device does not hold stays in the channel when a later row
+/// takes that msg id.
+#[test]
+fn a_later_root_does_not_capture_an_earlier_reply() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let reply = post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        Some(UNHELD),
+        "orphan",
+    );
+    let forged = post_in(
+        &mut peer,
+        &mut relay,
+        0xee,
+        Message,
+        None,
+        None,
+        "forged root",
+    );
+    me.sync(&relay);
+    assert_eq!(seqs(&me), vec![reply, forged]);
+    assert_eq!(me.row_at(&GROUP, forged).thread, None);
+    let (_, rows) = thread_of(&me, &UNHELD, 0, 50);
+    assert!(rows.is_empty(), "the forged root heads no earlier reply");
+    assert_eq!(threads_of(&me), vec![]);
+}
+
+/// X3: repeating a reply's msg id as a root does not capture the nested reply under it.
+#[test]
+fn a_repeat_of_a_reply_id_does_not_capture_a_nested_reply() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "root");
+    post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        Some(ROOT),
+        "reply",
+    );
+    let nested = post_in(
+        &mut peer,
+        &mut relay,
+        0x75,
+        Message,
+        None,
+        Some([0x72; 16]),
+        "nested",
+    );
+    let repeat = post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        None,
+        "the reply's id as a root",
+    );
+    let later = post_in(
+        &mut peer,
+        &mut relay,
+        0x76,
+        Message,
+        None,
+        Some([0x72; 16]),
+        "later",
+    );
+    me.sync(&relay);
+    assert_eq!(
+        seqs(&me),
+        vec![root, nested, repeat, later],
+        "the first row with 0x72 is a reply: no root"
+    );
+    assert_eq!(me.row_at(&GROUP, repeat).thread, None);
+    assert!(thread_of(&me, &[0x72; 16], 0, 50).0.is_none());
+}
+
+/// X5: a reply before its root (by seq) and a reply naming its own msg id stay in the channel.
+#[test]
+fn a_reply_before_its_root_stays_in_the_channel() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let selfie = post_in(
+        &mut peer,
+        &mut relay,
+        0x90,
+        Message,
+        None,
+        Some([0x90; 16]),
+        "self",
+    );
+    let early = post_in(
+        &mut peer,
+        &mut relay,
+        0x91,
+        Message,
+        None,
+        Some([0x92; 16]),
+        "early",
+    );
+    let root = post_in(
+        &mut peer,
+        &mut relay,
+        0x92,
+        Message,
+        None,
+        None,
+        "late root",
+    );
+    me.sync(&relay);
+    assert_eq!(seqs(&me), vec![selfie, early, root]);
+    assert_eq!(me.row_at(&GROUP, root).thread, None);
+    let (head, rows) = thread_of(&me, &[0x92; 16], 0, 50);
+    assert_eq!((head.map(|h| h.seq), rows.len()), (Some(root), 0));
+}
+
+/// M1: `threads` lists a thread only under a held root, never under an id a fold carries.
+#[test]
+fn threads_lists_only_held_roots() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "root");
+    post_in(
+        &mut peer,
+        &mut relay,
+        0x80,
+        ReactionAdd,
+        Some(ROOT),
+        None,
+        "👍",
+    );
+    let on_fold = post_in(
+        &mut peer,
+        &mut relay,
+        0x81,
+        Message,
+        None,
+        Some([0x80; 16]),
+        "on a reaction id",
+    );
+    let orphan = post_in(
+        &mut peer,
+        &mut relay,
+        0x82,
+        Message,
+        None,
+        Some(UNHELD),
+        "orphan",
+    );
+    post_in(
+        &mut peer,
+        &mut relay,
+        0x83,
+        Message,
+        None,
+        Some(ROOT),
+        "real",
+    );
+    // A root whose msg id a fold row also carries is not listed (M1 ruling: any other type).
+    let shared = post_in(
+        &mut peer,
+        &mut relay,
+        0x77,
+        Message,
+        None,
+        None,
+        "shared id",
+    );
+    post_in(
+        &mut peer,
+        &mut relay,
+        0x77,
+        ReactionAdd,
+        Some(ROOT),
+        None,
+        "🎉",
+    );
+    post_in(
+        &mut peer,
+        &mut relay,
+        0x84,
+        Message,
+        None,
+        Some([0x77; 16]),
+        "under shared",
+    );
+    me.sync(&relay);
+    assert_eq!(seqs(&me), vec![root, on_fold, orphan, shared]);
+    assert_eq!(
+        threads_of(&me).iter().map(|t| t.root).collect::<Vec<_>>(),
+        vec![ROOT]
+    );
+}
+
+/// M2: a deleted root keeps its replies in the thread and its tombstone carries the summary;
+/// a member may still join it.
+#[test]
+fn a_deleted_root_keeps_its_summary() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "root");
+    let reply = post_in(&mut peer, &mut relay, 0x72, Message, None, Some(ROOT), "r");
+    post_in(&mut peer, &mut relay, 0x73, Delete, Some(ROOT), None, "");
+    me.sync(&relay);
+    let row = me.row_at(&GROUP, root);
+    assert_eq!(row.status, 2);
+    let reply_ts = thread_of(&me, &ROOT, 0, 50).1[0].recv_ts;
+    assert_eq!(row.thread, Some((1, reply_ts)));
+    assert_eq!(seqs(&me), vec![root]);
+    assert_eq!(
+        thread_of(&me, &ROOT, 0, 50)
+            .1
+            .iter()
+            .map(|r| r.seq)
+            .collect::<Vec<_>>(),
+        vec![reply]
+    );
+    assert_eq!(
+        threads_of(&me),
+        vec![ThreadRow {
+            root: ROOT,
+            root_seq: Some(root),
+            count: 1,
+            last_ts: reply_ts,
+            excerpt: String::new()
+        }]
+    );
+    me.prepare_request(&GROUP, &thread_request(0, None, "late", Some(&ROOT)), NOW);
+}
+
+/// M3: search hits, pins and reply quotes name the thread root of a row shown in a thread, and
+/// none for a channel row.
+#[test]
+fn a_thread_reply_is_reachable_from_search_pins_and_quotes() {
+    let (_i, mut relay, mut me, mut peer) = start();
+    let root = post_in(
+        &mut peer,
+        &mut relay,
+        0x71,
+        Message,
+        None,
+        None,
+        "root lantern",
+    );
+    let reply = post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        Some(ROOT),
+        "reply lantern",
+    );
+    post_in(&mut peer, &mut relay, 0x73, Pin, Some([0x72; 16]), None, "");
+    post_in(&mut peer, &mut relay, 0x74, Pin, Some(ROOT), None, "");
+    let quote = post_in(
+        &mut peer,
+        &mut relay,
+        0x75,
+        Message,
+        Some([0x72; 16]),
+        None,
+        "quoting the reply",
+    );
+    let plain = post_in(
+        &mut peer,
+        &mut relay,
+        0x76,
+        Message,
+        Some(ROOT),
+        None,
+        "quoting the root",
+    );
+    me.sync(&relay);
+    let pins = decode_pins(&me.core.pins(&GROUP).expect("pins"));
+    let pin_of = |seq: u64| {
+        pins.iter()
+            .find(|p| p.target_seq == seq)
+            .expect("pin")
+            .thread_root
+    };
+    assert_eq!((pin_of(reply), pin_of(root)), (Some(ROOT), None));
+    let quoted = |seq: u64| me.row_at(&GROUP, seq).reply.expect("quote").thread_root;
+    assert_eq!((quoted(quote), quoted(plain)), (Some(ROOT), None));
+    let mut found = hits(
+        &me.core
+            .search(0, Some(&CHANNEL), "lantern", None, 50)
+            .expect("search"),
+    );
+    found.sort();
+    assert_eq!(found, vec![(root, None), (reply, Some(ROOT))]);
 }
