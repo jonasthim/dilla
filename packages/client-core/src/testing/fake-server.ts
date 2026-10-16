@@ -812,11 +812,14 @@ export class FakeServer {
         return this.issueStepUp(username, session);
       }
       case 'POST /v1/auth/password': {
-        // [old|null, new] (E). The old password is this route's step-up: guesses go on the step-up ledgers, never on
-        // the login ledger. A first password (no old one) needs a fresh session in dillad; the fake does not model that.
+        // [old|null, new, stepup?] (E). The old password is this route's step-up: guesses go on the step-up ledgers,
+        // never on the login ledger, and a stepup element is then ignored. A first password (no old one) needs a fresh
+        // session in dillad, which the fake does not model, and on an account holding a factor a step-up token, spent.
         const old = body[0] ?? null;
         const next = body[1];
-        if (body.length !== 2 || (old !== null && typeof old !== 'string') || typeof next !== 'string') return refuse(400, 'E_INVALID_REQUEST');
+        const stepup = body[2] ?? null;
+        if ((body.length !== 2 && body.length !== 3) || (old !== null && typeof old !== 'string') || typeof next !== 'string'
+          || (stepup !== null && typeof stepup !== 'string')) return refuse(400, 'E_INVALID_REQUEST');
         if (next === '') return refuse(400, 'E_INVALID_REQUEST', 'the new password is empty');
         const stored = this.passwords.get(username);
         if (stored !== undefined) {
@@ -826,6 +829,8 @@ export class FakeServer {
             return this.stepUpFail(username) ? refuse(429, 'E_RATE_LIMITED', '', 60_000) : refuse(403, 'E_FORBIDDEN', 'the old password is wrong');
           }
           this.stepUpPass(username);
+        } else if (held && !this.spendStepUp(stepup, username, session)) {
+          return refuse(403, 'E_STEP_UP');
         }
         this.passwords.set(username, { password: next, totp: stored?.totp ?? null });
         this.loginFailures.delete(username);

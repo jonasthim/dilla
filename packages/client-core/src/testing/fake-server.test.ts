@@ -1236,3 +1236,48 @@ describe('FakeServer caps guesses as dillad does', () => {
     expect((await bea.routes.passkeyRegisterFinish(theirs.ceremonyId, '{}', 'Phone')).backupCodes).toHaveLength(10);
   });
 });
+
+// web3.7 3f: POST /v1/auth/password is [old|null, new, stepup?] as dillad decodes it, and a first password on an
+// account holding a factor spends a step-up token.
+describe('FakeServer sets a first password behind a step-up as dillad does', () => {
+  const BACKUP = 'B'.repeat(26);
+  /** An enrolled session for an account without a password (a passkey sign-up). */
+  async function noPassword(server: FakeServer): Promise<{ c: ReturnType<typeof client>; session: string | null }> {
+    const user = server.register('cy', DEV_A);
+    const c = client(server);
+    const a = await c.routes.postSession(DEV_A, establishBody(DEV_A, null));
+    c.use(a.token);
+    await c.routes.putDeviceList(user, listBody(user, 1n, [{ deviceId: DEV_A, revokedAt: null }]));
+    return { c, session: a.token };
+  }
+  const setFirst = (server: FakeServer, session: string | null, body: CborValue[]) =>
+    raw(server, 'POST', '/v1/auth/password', session, encode(body));
+
+  it('a first password on an account holding a factor needs a valid step-up (403 E_STEP_UP); with one it is set and the token spent', async () => {
+    const server = new FakeServer();
+    const { c, session } = await noPassword(server);
+    server.addPasskey('cy', 'Laptop');
+    server.factorsOf('cy').codes = [BACKUP];
+    for (const body of [[null, 'new pw'], [null, 'new pw', null], [null, 'new pw', 'su-not-a-token']] as CborValue[][]) {
+      expect(await setFirst(server, session, body)).toMatchObject({ status: 403, body: ['E_STEP_UP', '', null] });
+    }
+    expect(await refusalOf(c.routes.passwordLogin('cy', 'new pw'))).toMatchObject({ status: 401 });
+    const token = (await c.routes.stepUp(2, BACKUP)).token;
+    expect((await setFirst(server, session, [null, 'new pw', token])).status).toBe(204);
+    expect((await c.routes.passwordLogin('cy', 'new pw')).needs).toBe(2);
+    // Spent: the same token does not stand in for a step-up again.
+    expect(await refusalOf(c.routes.regenerateBackupCodes(token))).toMatchObject({ status: 403, code: 'E_STEP_UP' });
+  });
+
+  it('the two-element body is still served, and a third element is ignored when a password exists', async () => {
+    const server = new FakeServer();
+    const { c, session } = await noPassword(server);
+    // An account holding no factor: [null, new] sets the first password, no step-up asked.
+    expect((await setFirst(server, session, [null, 'first pw'])).status).toBe(204);
+    expect((await setFirst(server, session, ['first pw', 'second pw', null])).status).toBe(204);
+    expect((await setFirst(server, session, ['second pw', 'third pw', 'su-not-a-token'])).status).toBe(204);
+    expect((await c.routes.passwordLogin('cy', 'third pw')).needs).toBe(0);
+    // Four elements are not a body dillad decodes.
+    expect((await setFirst(server, session, ['third pw', 'fourth pw', null, null])).status).toBe(400);
+  });
+});

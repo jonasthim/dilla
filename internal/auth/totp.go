@@ -47,14 +47,21 @@ func GenerateTOTP(issuer, account string, p TOTPParams) (string, string, error) 
 	return key.Secret(), key.URL(), nil
 }
 
-// ValidateTOTP checks code and returns the counter it validated at, which is
-// what the store's replay guard compares against last_counter. The library is
-// stateless and will happily accept the same code three times inside the skew
-// window, so the counter is not optional.
+// validateAt is the per-counter check; an in-package test substitutes it.
+var validateAt = totp.ValidateCustom
+
+// ValidateTOTP checks code and returns the lowest counter inside the skew
+// window that is greater than after (the account's last_counter) and at which
+// code validates; the store's replay guard compares it against last_counter
+// again. The library is stateless and will happily accept the same code three
+// times inside the skew window, so the counter is not optional. Counters at or
+// below after are skipped rather than answered: one six-digit code can validate
+// at two counters of a window, and answering the lower, spent one would refuse a
+// code that is still good at the higher one.
 //
 // ValidateCustom, not Validate: Validate returns a bare bool, so a malformed
 // base32 secret would look like a wrong code.
-func ValidateTOTP(code, secret string, p TOTPParams, now time.Time) (int64, bool) {
+func ValidateTOTP(code, secret string, p TOTPParams, now time.Time, after int64) (int64, bool) {
 	opts := totp.ValidateOpts{Period: p.Period, Skew: p.Skew, Digits: p.digits(), Algorithm: p.algorithm()}
 	period := int64(p.Period) //nolint:gosec // G115: a TOTP period in seconds and a skew in steps, both validated small
 	if period == 0 {
@@ -62,13 +69,17 @@ func ValidateTOTP(code, secret string, p TOTPParams, now time.Time) (int64, bool
 	}
 	for offset := -int64(p.Skew); offset <= int64(p.Skew); offset++ { //nolint:gosec // G115: a TOTP period in seconds and a skew in steps, both validated small
 		at := now.Add(time.Duration(offset*period) * time.Second)
+		counter := at.Unix() / period
+		if counter <= after {
+			continue
+		}
 		exact := totp.ValidateOpts{Period: p.Period, Skew: 0, Digits: opts.Digits, Algorithm: opts.Algorithm}
-		ok, err := totp.ValidateCustom(code, secret, at, exact)
+		ok, err := validateAt(code, secret, at, exact)
 		if err != nil {
 			return 0, false
 		}
 		if ok {
-			return at.Unix() / period, true
+			return counter, true
 		}
 	}
 	return 0, false
