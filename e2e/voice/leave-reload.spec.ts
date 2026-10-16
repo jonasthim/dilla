@@ -2,7 +2,7 @@
 // call group; a person's leave hands focus back to the voice row (flow 06 § Focus rules). Every step waits for the call
 // slice, the voice snapshot or the DOM, never for a duration.
 import type { Page } from '@playwright/test';
-import { expect, test } from './support/peer-browser';
+import { expect, leaveControl, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
   POLL, VoicePeer, WAIT, callSlice, connected, copy, dock, expectShellReady, heard, joinVoice, onboard, openVoice, self,
@@ -58,19 +58,19 @@ test('a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and lea
       await expect(tile(alice.page, 'bob')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
     });
 
-    await test.step('leave from the dock returns focus to the voice row', async () => {
-      await dock(alice.page).getByRole('button', { name: copy('voice.leave'), exact: true }).click();
+    await test.step('leave from the call returns focus to the voice row', async () => {
+      await leaveControl(alice.page).click();
       await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
       await expect(voiceRow(alice.page, peer.voiceName)).toBeFocused({ timeout: WAIT });
       await expect(tile(bob.page, 'alice')).toHaveCount(0, { timeout: WAIT });
     });
 
     await test.step('alone in voice: a leave and an immediate rejoin connect at once (task 10, concern 2)', async () => {
-      await dock(bob.page).getByRole('button', { name: copy('voice.leave'), exact: true }).click();
+      await leaveControl(bob.page).click();
       await expect(dock(bob.page)).toHaveCount(0, { timeout: WAIT });
       await joinVoice(alice.page, peer.communityName, peer.voiceName);
       await expect.poll(() => snapshotDevices(alice.page, call), { timeout: WAIT }).toEqual([a.device]);
-      await dock(alice.page).getByRole('button', { name: copy('voice.leave'), exact: true }).click();
+      await leaveControl(alice.page).click();
       await expect(dock(alice.page)).toHaveCount(0, { timeout: WAIT });
       // Nobody can commit the Remove of the only leaf; the leave ended the call, so the rejoin registers a fresh group
       // at once: the room's departure timeout (90 s in this suite) plays no part.

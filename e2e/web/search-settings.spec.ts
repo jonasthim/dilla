@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { advanceClock, composerBox, copy, expectAccessible, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, signUp, WAIT } from './support/app';
+import { advanceClock, composerBox, copy, expectAccessible, instanceInvite, joinCommunity, openChannel, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
 import { test } from './support/second';
 
 test('native edit is searched by prefix and deleted text disappears after a positive result', async ({ page, peer, instanceName }) => {
@@ -38,12 +38,21 @@ test('Privacy, Keyboard and Diagnostics work at phone width with surviving focus
   await openChannel(page, peer.communityName, peer.channelName);
   await peer.waitForDevices(2, setup.channel_id);
   await page.setViewportSize({ width: 360, height: 740 });
+  // The phone shell has no rail settings tile and no section list: Settings opens from a row of the You tab and closes with the header's back.
+  const tabs = page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
+  const back = page.getByRole('button', { name: copy('nav.back'), exact: true });
   for (const section of ['privacy', 'keyboard', 'diagnostics'] as const) {
-    const dialog = await openSettings(page, section);
-    await expect(dialog.getByRole('heading', { level: 2 })).toBeVisible();
+    if (!(await tabs.isVisible())) await back.click();
+    await tabs.getByRole('link', { name: copy('nav.tab.you'), exact: true }).click();
+    await page.locator(`[data-settings-section="${section}"]`).click();
+    const dialog = settingsDialog(page);
+    await expect(dialog).toBeVisible({ timeout: WAIT });
+    await expect(page).toHaveURL(new RegExp(`/settings/${section}$`), { timeout: WAIT });
+    await expect(dialog.getByRole('heading', { level: 2 }).last()).toBeVisible(); // the phone header's title, then the section's
     await expectAccessible(page, `${section} at 360px`);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-    await dialog.getByRole('button', { name: copy('settings.close') }).click();
+    await back.click();
+    await expect(dialog).toBeHidden({ timeout: WAIT });
     expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
   }
 });

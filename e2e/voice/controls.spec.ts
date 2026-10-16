@@ -38,7 +38,7 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       await alice.page.keyboard.press('Control+Shift+M');
       await expect(word('muted')).toBeVisible({ timeout: WAIT });
       // WB a11y I4: the toggle keeps its label; aria-pressed says it is on.
-      await expect(alice.page.getByRole('toolbar', { name: copy('voice.dock.region'), exact: true })
+      await expect(alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true })
         .getByRole('button', { name: copy('voice.mute'), exact: true })).toHaveAttribute('aria-pressed', 'true');
       await alice.page.keyboard.press('Control+Shift+M');
       await expect(word('muted')).toHaveCount(0, { timeout: WAIT });
@@ -84,14 +84,19 @@ test('Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; 
       expect(after, deltas).toBeLessThanOrEqual(WINDOW / 10);
     });
 
-    await test.step('product walk M7 and I4: the dock names the key, and at 360 px it stays on screen over a text channel', async () => {
-      const dock = alice.page.locator('.d-voice-dock');
+    await test.step('product walk M7 and I4: the dock names the key, and at 360 px the call bar stays on screen over a text channel', async () => {
       await expect(alice.page.locator('.dw-voice-dock__mode')).toHaveText(copy('voice.dock.ptt', { key: 'Insert' }));
       await alice.page.setViewportSize({ width: 360, height: 740 });
+      // The phone shell holds the call in a bar and shows no dock: step off the stage, onto the text channel.
+      await alice.page.getByRole('button', { name: copy('nav.back'), exact: true }).click();
       await openText(alice.page, peer.communityName, peer.textName);
-      await expect(dock).toBeInViewport({ ratio: 1 });
-      const [d, side] = await Promise.all([dock.boundingBox(), alice.page.locator('.d-app-shell__sidebar').boundingBox()]);
-      expect(d !== null && side !== null && d.y + d.height <= side.y + side.height + 1, 'the dock is not cut by the sidebar').toBe(true);
+      const bar = alice.page.locator('.d-call-bar');
+      await expect(alice.page.locator('.d-voice-dock')).toHaveCount(0);
+      await expect(bar).toBeInViewport({ ratio: 1 });
+      const [b, composer] = await Promise.all([bar.boundingBox(),
+        alice.page.getByRole('textbox', { name: copy('shell.composer.label', { channel: peer.textName }), exact: true }).boundingBox()]);
+      expect(b !== null && composer !== null && (b.y >= composer.y + composer.height - 1 || b.y + b.height <= composer.y + 1),
+        'the call bar does not cover the composer').toBe(true);
     });
   } finally {
     await peerBrowser.close(bob);

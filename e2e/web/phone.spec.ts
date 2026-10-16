@@ -1,0 +1,275 @@
+// web3.7 W-Phone-4: the phone shell at 390 x 844 (flow 12), from an empty host and through the UI only: the sign-up steps
+// keep the page unzoomed (field sizes of 16 px and up, a visual viewport that stays at scale 1), a server starts in the
+// tab bar's servers list, a channel is a pushed view with a back, the other tabs name themselves, the link banner follows
+// the network, every tap target is 44 x 44 CSS px, and focus lands where flow 12 says. Chromium and WebKit only: Firefox has
+// no mobile emulation (R23).
+import { expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import {
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
+  expectHeading, expectShell, nextButton, newAccount, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
+  messageRow, type Account,
+} from './support/app';
+import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { arr, decode } from '../../packages/client-core/src/cbor/index';
+
+const HOST: HostConfig = { port: 8505, control: 8506, webRoot: 'packages/web/dist' };
+const SERVER = 'Midgard Crew';
+const PHONE = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 } as const;
+
+let host: StartedHost | null = null;
+let instance = '';
+
+test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
+test.use({ baseURL: `http://127.0.0.1:${String(HOST.port)}`, ...PHONE });
+test.skip(({ browserName }) => browserName === 'firefox', 'no mobile emulation');
+
+test.beforeAll(async () => {
+  host = await startTestHost(HOST);
+  const res = await fetch(`${host.url}/v1/instance`, { headers: { accept: 'application/cbor' } });
+  expect(res.status, 'GET /v1/instance').toBe(200);
+  const name = arr(decode(new Uint8Array(await res.arrayBuffer())))[5];
+  if (typeof name !== 'string' || name === '') throw new Error('GET /v1/instance: element 5 is not the instance name');
+  instance = name;
+});
+test.afterAll(async () => { await host?.stop(); });
+
+function started(): StartedHost {
+  if (host === null) throw new Error('the empty test host did not start');
+  return host;
+}
+
+/** A phone context of its own: the suite's persistent context carries no touch or mobile emulation. */
+async function phoneContext(browser: Browser): Promise<BrowserContext> {
+  return browser.newContext({ ...PHONE, baseURL: `http://127.0.0.1:${String(HOST.port)}` });
+}
+
+/** Every visible input, textarea and select is at least 16 px, so no browser zooms on focus. A checkbox, a radio and a button
+ *  take no typing, so no browser zooms to them and their own 13.33 px default is left alone. */
+async function expectFieldSizes(page: Page, state: string): Promise<void> {
+  const small = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('input, textarea, select')]
+    .filter((el) => !(el instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'submit', 'reset', 'hidden', 'file', 'range', 'color'].includes(el.type)))
+    .filter((el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden')
+    .map((el) => ({ what: `${el.tagName.toLowerCase()}${el instanceof HTMLInputElement ? `[${el.type}]` : ''} ${el.id}`, px: parseFloat(getComputedStyle(el).fontSize) }))
+    .filter((f) => f.px < 16));
+  expect(small, `fields under 16px in "${state}"`).toEqual([]);
+}
+const scale = (page: Page) => page.evaluate(() => window.visualViewport?.scale ?? 1);
+async function expectUnzoomedOnFocus(page: Page, field: Locator, state: string): Promise<void> {
+  await field.focus();
+  await expect(field).toBeFocused();
+  expect(await scale(page), `visualViewport.scale after focusing ${state}`).toBe(1);
+}
+const noFocusMoved = (page: Page) => page.evaluate(() => document.activeElement === document.body || document.activeElement === null);
+const tabBar = (page: Page) => page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true });
+const tab = (page: Page, key: string) => tabBar(page).getByRole('link', { name: copy(key), exact: true });
+const back = (page: Page) => page.getByRole('button', { name: copy('nav.back'), exact: true });
+const viewTitle = (page: Page) => page.locator('.d-app-shell__main .d-phone-header__title');
+const listHeading = (page: Page, key: string) => page.getByRole('heading', { name: copy(key), exact: true });
+
+async function expectTapTargets(controls: Locator, state: string): Promise<void> {
+  const count = await controls.count();
+  expect(count, `${state} has controls to measure`).toBeGreaterThan(0);
+  const small: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const control = controls.nth(i);
+    if (!(await control.isVisible())) continue;
+    const box = await control.boundingBox();
+    if (box === null) continue;
+    if (box.width < 44 || box.height < 44) small.push(`${(await control.getAttribute('aria-label')) ?? (await control.innerText()).trim()} ${box.width}x${box.height}`);
+  }
+  expect(small, `${state}: controls under 44x44 CSS px`).toEqual([]);
+}
+
+test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs, the link, tap targets and focus', async ({ browser, guard }) => {
+  const h = started();
+  const context = await phoneContext(browser);
+  await guard.attach(context);
+  const page = await context.newPage();
+  const ada: Account = newAccount('Ada', h.control);
+  try {
+    // 1. The sign-up steps: no field under 16 px, and the focused fields leave the page at scale 1.
+    await test.step('sign up with the bootstrap invite', async () => {
+      await page.goto(`/welcome?invite=${encodeURIComponent(h.invite.split(',')[0])}`);
+      await expectHeading(page, COPY.connectTitle, { instance });
+      await expectFieldSizes(page, 'connect');
+      await nextButton(page).click();
+      await expectHeading(page, COPY.identityTitle);
+      await expectFieldSizes(page, 'identity');
+      await expectUnzoomedOnFocus(page, page.getByLabel(copy(COPY.usernameLabel), { exact: true }), 'the username');
+      await page.getByLabel(copy(COPY.usernameLabel), { exact: true }).fill(ada.username);
+      await page.getByLabel(copy(COPY.displayLabel), { exact: true }).fill(ada.display);
+      await expectUnzoomedOnFocus(page, page.getByLabel(copy(COPY.passwordLabel), { exact: true }), 'the password');
+      await page.getByLabel(copy(COPY.passwordLabel), { exact: true }).fill(ada.password);
+      await nextButton(page).click();
+      await expectHeading(page, COPY.keysTitle);
+      ada.recoveryKey = await readRecoveryKey(page);
+      await expectFieldSizes(page, 'recovery key');
+      await page.getByRole('checkbox', { name: copy(COPY.keysAcknowledge), exact: true }).check();
+      await nextButton(page).click();
+      await expectHeading(page, COPY.deviceTitle);
+      await expectFieldSizes(page, 'browser');
+      await submitButton(page).click();
+      await completeFactorStep(page, ada, async (state) => { await expectFieldSizes(page, `factor ${state}`); });
+      await expectHeading(page, COPY.doneTitle);
+      await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
+      await expectShell(page);
+    });
+
+    // 2. A server from the servers tab; the tab bar names four places and the status bar is gone.
+    await test.step('start the server', async () => {
+      await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+      await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
+      await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).press('Enter');
+      await expect(dialog).toBeHidden({ timeout: WAIT });
+      // A new server opens its #general; back from it is the server's list.
+      if (await tabBar(page).count() === 0 || !(await tabBar(page).isVisible())) {
+        await expect(back(page)).toBeVisible({ timeout: WAIT });
+        await back(page).click();
+      }
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      await expect(tabBar(page).getByRole('link')).toHaveCount(4);
+      await expect(tab(page, 'nav.tab.servers')).toHaveAttribute('aria-current', 'page');
+      await expect(page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true })).toHaveCount(0);
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+    });
+
+    // 3. Tap #general: a pushed view, focus on the title, no tab bar, a composer that does not zoom.
+    await test.step('open #general', async () => {
+      await channelRow(page, 'general').tap();
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
+      await expect(viewTitle(page)).toBeFocused();
+      await expect(tabBar(page)).toBeHidden();
+      await expectComposerReady(page, 'general');
+      const composer = composerBox(page, 'general');
+      expect(await composer.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
+      await composer.tap();
+      await expect(composer).toBeFocused();
+      expect(await scale(page), 'visualViewport.scale after tapping into the composer').toBe(1);
+      await sendText(page, 'general', 'hej');
+      await expect(messageRow(page, 'general', 'hej')).toBeVisible();
+      await expectAccessible(page, 'the channel view');
+      await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
+    });
+
+    // 4. Back: the list, with #general's row focused.
+    await test.step('back to the list', async () => {
+      await back(page).click();
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      await expect(channelRow(page, 'general')).toBeFocused();
+      await expect(tab(page, 'nav.tab.servers')).toHaveAttribute('aria-current', 'page');
+    });
+
+    await test.step('the list is accessible and its tap targets are 44 px', async () => {
+      await expectAccessible(page, 'the servers list');
+      await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
+      const menu = page.getByRole('button', { name: copy('nav.server.menu'), exact: true });
+      await expectTapTargets(menu, 'the server menu trigger');
+    });
+
+    // The channel menu's sheet: closed by the system back and by its own back, focus returns to the menu trigger.
+    await test.step('the members sheet returns focus to the channel menu', async () => {
+      await channelRow(page, 'general').tap();
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
+      const menu = page.getByRole('button', { name: copy('nav.channel.menu'), exact: true });
+      await menu.click();
+      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
+      const close = page.getByRole('button', { name: copy('members.close'), exact: true });
+      await expect(close).toBeVisible({ timeout: WAIT });
+      await page.goBack();
+      await expect(close).toBeHidden({ timeout: WAIT });
+      await expect(menu).toBeFocused();
+      await menu.click();
+      await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
+      await expect(close).toBeVisible({ timeout: WAIT });
+      await close.click();
+      await expect(close).toBeHidden({ timeout: WAIT });
+      await expect(menu).toBeFocused();
+      await back(page).click();
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+    });
+
+    // 5. The other tabs name themselves, and a tap on a tab puts focus on its heading.
+    await test.step('the DMs, Activity and You tabs', async () => {
+      await tab(page, 'nav.tab.dms').tap();
+      await expect(tab(page, 'nav.tab.dms')).toHaveAttribute('aria-current', 'page');
+      await expect(listHeading(page, 'shell.dms.label')).toBeFocused();
+
+      await tab(page, 'nav.tab.activity').tap();
+      await expect(tab(page, 'nav.tab.activity')).toHaveAttribute('aria-current', 'page');
+      await expect(listHeading(page, 'activity.title')).toBeFocused();
+      await expect(page.getByText(copy('activity.empty'), { exact: true }).or(page.getByText(copy('activity.since'), { exact: true }))).toBeVisible();
+      await expectAccessible(page, 'Activity');
+
+      await tab(page, 'nav.tab.you').tap();
+      await expect(tab(page, 'nav.tab.you')).toHaveAttribute('aria-current', 'page');
+      await expect(page.getByRole('heading', { level: 1, name: copy('you.title'), exact: true })).toBeFocused();
+      await expect(page.getByRole('heading', { name: copy('you.status'), exact: true })).toBeVisible();
+      for (const fact of ['shell.status.node', 'shell.status.link', 'shell.status.gen', 'shell.status.devices']) {
+        await expect(page.locator('.dw-you__facts dt').filter({ hasText: copy(fact) })).toBeVisible();
+      }
+      await expect(page.getByRole('button', { name: copy('devices.signOut'), exact: true })).toBeVisible();
+      await expectAccessible(page, 'You');
+    });
+
+    // Settings from You, and back to the section's row.
+    await test.step('back from Settings lands on the section row', async () => {
+      const row = page.locator('[data-settings-section="privacy"]');
+      await row.tap();
+      await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
+      await expect(back(page)).toBeVisible();
+      await back(page).click();
+      await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
+      await expect(row).toBeFocused();
+    });
+
+    // 6. The link banner follows the network.
+    await test.step('offline shows the link banner, online removes it', async () => {
+      await tab(page, 'nav.tab.servers').tap();
+      await context.setOffline(true);
+      await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeVisible({ timeout: WAIT });
+      await context.setOffline(false);
+      await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeHidden({ timeout: WAIT });
+      // The browser logs the requests it refused while the network was off; that is this step's doing, not a fault.
+      for (let i = guard.consoleErrors.length - 1; i >= 0; i--) if (guard.consoleErrors[i].includes('ERR_INTERNET_DISCONNECTED')) guard.consoleErrors.splice(i, 1);
+    });
+
+    // A deep link or a first load moves no focus.
+    await test.step('a reload on a channel moves no focus', async () => {
+      await channelRow(page, 'general').tap();
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
+      await page.reload();
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
+      await expectComposerReady(page, 'general');
+      expect(await noFocusMoved(page), 'nothing focused after a reload').toBe(true);
+    });
+  } finally {
+    await guard.collectWorkers();
+    await context.close();
+  }
+});
+
+test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ browser, guard }) => {
+  started();
+  const context = await phoneContext(browser);
+  await guard.attach(context);
+  const page = await context.newPage();
+  const key = Array.from({ length: 13 }, () => 'ABCD').join(' ');
+  try {
+    await page.goto('/welcome');
+    await expectHeading(page, COPY.connectTitle, { instance });
+    await page.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
+    await expectHeading(page, SIGNIN.keyTitle);
+    await expectFieldSizes(page, 'sign-in key');
+    await expectUnzoomedOnFocus(page, keyField(page), 'the recovery key');
+    await keyField(page).fill(key);
+    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+    await expectHeading(page, SIGNIN.loginTitle, { instance });
+    await expectFieldSizes(page, 'sign-in login');
+    await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.username), { exact: true }), 'the username');
+    await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.password), { exact: true }), 'the password');
+  } finally {
+    await guard.collectWorkers();
+    await context.close();
+  }
+});
