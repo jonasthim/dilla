@@ -1,5 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { PhoneHeader } from '../PhoneHeader/PhoneHeader.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import './AppShell.css';
 
 export interface AppShellProps {
@@ -151,6 +153,7 @@ export function AppShell({
       </main>
     );
     return (
+      <PhoneLayoutProvider value>
       <div ref={rootRef} className="d-app-shell" data-layout="phone" data-pane={phonePane} data-rail={listPane && rail === null ? 'none' : undefined}>
         <a className="d-app-shell__skip" href={`#${listPane ? sidebarId : mainId}`} onClick={onSkip}>{skipLabel}</a>
         <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
@@ -165,9 +168,7 @@ export function AppShell({
           {overlay ? <div className="d-app-shell__backdrop" aria-hidden="true" onClick={() => onAsideClose?.()} /> : null}
           {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside">
             {overlay && asideCloseLabel !== undefined ? (
-              <div className="d-app-shell__aside-head">
-                <Button variant="ghost" size="sm" onClick={() => onAsideClose?.()}>{asideCloseLabel}</Button>
-              </div>
+              <PhoneHeader title={asideLabel} backLabel={asideCloseLabel} onBack={() => onAsideClose?.()} />
             ) : null}
             {aside}
           </aside> : null}
@@ -175,6 +176,7 @@ export function AppShell({
           {listPane && tabBar !== undefined && tabBar !== null && tabBar !== false ? <div className="d-app-shell__tabbar" inert={inert}>{tabBar}</div> : null}
         </div>
       </div>
+      </PhoneLayoutProvider>
     );
   }
   return (

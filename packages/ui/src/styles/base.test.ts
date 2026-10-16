@@ -17,6 +17,9 @@ describe('base.css phone rules', () => {
   it('sets touch-action: manipulation on .d-root', () => {
     expect(css).toMatch(/\.d-root \{ touch-action: manipulation; \}/);
   });
+  it('pads the fixed ring banner by the notch', () => {
+    expect(css).toMatch(/\.d-app-shell__ring \{[^}]*padding-top: env\(safe-area-inset-top\)/);
+  });
   it('never disables user scaling and no longer caps the sidebar at 35dvh', () => {
     expect(css).not.toContain('user-scalable');
     expect(css).not.toContain('35dvh');

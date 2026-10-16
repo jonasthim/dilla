@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import { AppShell } from './AppShell.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 import { ChannelList } from '../ChannelList/ChannelList.tsx';
@@ -10,7 +10,10 @@ import { Composer } from '../Composer/Composer.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
 import { Button } from '../Button/Button.tsx';
 import { Icon } from '../Icon/Icon.tsx';
+import { Avatar } from '../Avatar/Avatar.tsx';
 import { Pill } from '../Pill/Pill.tsx';
+import { ActionMenu } from '../ActionMenu/ActionMenu.tsx';
+import { StateDot } from '../StateDot/StateDot.tsx';
 import { TabBar, type TabBarItem } from '../TabBar/TabBar.tsx';
 import { CallBar } from '../CallBar/CallBar.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
@@ -44,8 +47,16 @@ const rail = (
     items={[{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 2, mentions: 2 }]} />
 );
 
+function ServerMenu() {
+  const [open, setOpen] = useState(false);
+  return (
+    <ActionMenu label="server menu" icon="ellipsis-vertical" open={open} onOpenChange={setOpen} onSelect={noop}
+      items={[{ id: 'invite', label: 'invite people' }, { id: 'channel', label: 'new channel' }, { id: 'settings', label: 'server settings' }, { id: 'leave', label: 'leave server', danger: true }]} />
+  );
+}
+
 const serverChannels = (
-  <ChannelList label="channels" title="Midgard Crew" activeId="g" onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
+  <ChannelList label="channels" title="Midgard Crew" headerAction={<ServerMenu />} activeId="g" onSelect={noop} emptyLabel="No channels yet." rowLabel={rowLabel}
     channels={[
       { id: 'g', name: 'general', kind: 'text', readable: false }, { id: 'l', name: 'lfg', kind: 'text', readable: true, unread: 3 },
       { id: 't', name: 'loot', kind: 'text', readable: false, unread: 12, mentions: 2 }, { id: 'r', name: 'random', kind: 'text', readable: false, unread: 7, muted: true },
@@ -99,21 +110,48 @@ const activity = (
   </section>
 );
 
+const card: CSSProperties = { margin: '0 var(--row-pad-x) 1rem', background: 'var(--surface-2)', border: '1px solid var(--hairline-2)', borderRadius: 'var(--r-md)' };
+const cardHead: CSSProperties = { margin: 0, padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--hairline-2)' };
+const status = (k: string, v: ReactNode) => (
+  <li key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', minHeight: '2.25rem', padding: '0 0.75rem', fontSize: 'var(--text-sm)' }}>
+    <span className="d-label">{k}</span><span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>{v}</span>
+  </li>
+);
 const you = (
   <section style={pane} aria-label="you">
     <h1 style={heading}>you</h1>
-    <ul style={list}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem var(--row-pad-x) 1rem' }}>
+      <Avatar name="mira" size="md" />
+      <div style={{ display: 'grid', gap: '0.125rem', minWidth: 0 }}>
+        <strong style={{ fontWeight: 'var(--weight-display)', fontSize: 'var(--text-md)' }}>mira</strong>
+        <span style={rowMeta}>dilla.thim.dev</span>
+      </div>
+    </div>
+    <section style={card} aria-labelledby="you-status">
+      <h2 id="you-status" className="d-label" style={cardHead}>this device</h2>
+      <ul style={list}>
+        {status('node', 'dilla.thim.dev')}
+        {status('link', <><StateDot tone="ok" /><span>online</span></>)}
+        {status('gen', '3')}
+        {status('devices', '3')}
+      </ul>
+    </section>
+    <h2 className="d-label" style={{ margin: 0, padding: '0.25rem var(--row-pad-x) 0.5rem' }}>settings</h2>
+    <ul style={{ ...list, borderTop: '1px solid var(--hairline)' }}>
       {[
-        { id: 'p', icon: 'user', label: 'profile', meta: 'mira@dilla.thim.dev' },
-        { id: 'd', icon: 'server', label: 'devices', meta: '3 devices' },
-        { id: 'n', icon: 'megaphone', label: 'notifications', meta: 'mentions only' },
-        { id: 'v', icon: 'volume-2', label: 'voice', meta: 'default microphone' },
-        { id: 'k', icon: 'hash', label: 'keyboard', meta: '' },
+        { id: 'd', icon: 'server', label: 'devices' },
+        { id: 's', icon: 'user', label: 'sign-in' },
+        { id: 'n', icon: 'megaphone', label: 'notifications' },
+        { id: 'a', icon: 'eye', label: 'appearance' },
+        { id: 'v', icon: 'volume-2', label: 'voice' },
+        { id: 'p', icon: 'check', label: 'privacy' },
+        { id: 'k', icon: 'hash', label: 'keyboard' },
+        { id: 'g', icon: 'activity', label: 'diagnostics' },
       ].map(r => (
         <li key={r.id}>
           <button type="button" style={row}>
             <Icon name={r.icon as 'user'} size={20} />
-            <span style={rowText}><span>{r.label}</span>{r.meta === '' ? null : <span style={rowMeta}>{r.meta}</span>}</span>
+            <span style={rowText}><span>{r.label}</span></span>
             <Icon name="chevron-right" size={18} />
           </button>
         </li>
@@ -186,7 +224,7 @@ export const MembersSheet: Story = {
   render: () => (
     <Phone>
       <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer}
-        aside={members} asideLabel="members" asideOpen onAsideClose={noop} asideCloseLabel="close members">{log}</AppShell>
+        aside={members} asideLabel="members" asideOpen onAsideClose={noop} asideCloseLabel="back">{log}</AppShell>
     </Phone>
   ),
 };

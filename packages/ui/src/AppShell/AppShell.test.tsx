@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { ComposedShell } from './AppShell.fixture.tsx';
 import { AppShell } from './AppShell.tsx';
+import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 describe('AppShell', () => {
@@ -365,6 +366,36 @@ describe('phone layout', () => {
     const { container } = render(<ComposedShell shell={phone({ phonePane: 'view', aside: <button type="button">pane</button>, asideLabel: 'members', asideOpen: true, onAsideClose: vi.fn() })} />);
     expect(screen.getByRole('complementary', { name: 'members' })).toBeInTheDocument();
     expect(container.querySelector('.d-app-shell__backdrop')).not.toBeNull();
+  });
+
+  it('the phone drops the rail settings tile; the desktop keeps it', () => {
+    const railWith = <CommunityRail label="servers" activeId="a" onSelect={() => {}} joinLabel="join" onJoin={() => {}} settingsLabel="settings" onSettings={() => {}} items={[{ id: 'a', name: 'Alpha' }]} />;
+    const shell = (layout: 'phone' | 'desktop') => (
+      <AppShell layout={layout} skipLabel="skip" rail={railWith} sidebar={<p>s</p>} header={<h2>x</h2>} composer={null} statusBar={null}><p>c</p></AppShell>
+    );
+    const phoneView = render(shell('phone'));
+    expect(screen.getByRole('button', { name: 'join' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'settings' })).toBeNull();
+    phoneView.unmount();
+    render(shell('desktop'));
+    expect(screen.getByRole('button', { name: 'settings' })).toBeInTheDocument();
+  });
+
+  it('the members sheet on a phone has a phone header: back first, the aside label as its title, and back closes it', async () => {
+    const user = userEvent.setup();
+    const onAsideClose = vi.fn();
+    render(<ComposedShell shell={phone({ phonePane: 'view', aside: <button type="button">pane</button>, asideLabel: 'members', asideOpen: true, onAsideClose, asideCloseLabel: 'back' })} />);
+    const side = screen.getByRole('complementary', { name: 'members' });
+    expect(side.querySelector('.d-phone-header')).not.toBeNull();
+    expect(within(side).getByRole('heading', { level: 2, name: 'members' })).toBeInTheDocument();
+    const back = within(side).getByRole('button', { name: 'back' });
+    expect(back.querySelector('[data-icon="chevron-left"]')).not.toBeNull();
+    expect(within(side).getAllByRole('button')[0]).toBe(back);
+    expect(back).toHaveFocus();
+    await user.click(back);
+    expect(onAsideClose).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onAsideClose).toHaveBeenCalledTimes(2);
   });
 
   it('desktop unchanged: no layout prop renders the same markup as layout="desktop", with no phone attributes', () => {

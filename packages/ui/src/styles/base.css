@@ -45,7 +45,7 @@
   .d-app-shell .d-channel-header__actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
   /* web-3 (flow 06): the ring is fixed to the top of the shell (its containing block: the shell is a size container) and
      the grid moves down by its height, so the ring never covers the stage controls. */
-  .d-app-shell .d-app-shell__ring { position: fixed; top: 0; left: 0; right: 0; z-index: 20; }
+  .d-app-shell .d-app-shell__ring { position: fixed; top: 0; left: 0; right: 0; z-index: 20; padding-top: env(safe-area-inset-top); }
   .d-app-shell:has(.d-app-shell__ring) .d-app-shell__grid { padding-top: var(--d-ring-h, 0px); box-sizing: border-box; }
 }
 /* web3.7: the phone shell (flow 12) shows one pane at a time. --d-shell-h is the story's and the host's fixed height;
@@ -57,8 +57,12 @@
 .d-app-shell[data-layout="phone"] .d-app-shell__sidebar { max-height: none; overflow-y: auto; border-bottom: 0; }
 .d-app-shell__callbar { grid-area: callbar; min-width: 0; }
 .d-app-shell__tabbar { grid-area: tabbar; min-width: 0; }
-.d-app-shell[data-layout="phone"] .d-app-shell__aside { width: 100%; border-left: 0; padding-top: env(safe-area-inset-top); }
-.d-app-shell[data-layout="phone"] .d-app-shell__aside-head .d-btn[data-size] { height: 2.75rem; min-width: 2.75rem; padding: 0 0.875rem; justify-content: center; }
+.d-app-shell[data-layout="phone"] .d-app-shell__aside { width: 100%; border-left: 0; }
+/* A ring above the pane's header already cleared the notch (it pads by the safe area and the grid moves down by it). */
+.d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__main .d-phone-header { padding-top: 0; }
+/* The server menu and its items: 44px on a phone. */
+.d-app-shell[data-layout="phone"] .d-action-menu__trigger { min-width: 2.75rem; min-height: 2.75rem; color: var(--fg-2); }
+.d-app-shell[data-layout="phone"] .d-action-menu__item { min-height: 2.75rem; }
 /* A finger, not a pointer: the sidebar's rows and the rail's tiles are 44px tall on a phone. */
 .d-app-shell[data-layout="phone"] .d-chrow { min-height: 2.75rem; }
 .d-app-shell[data-layout="phone"] .d-community-rail__item { width: 2.75rem; height: 2.75rem; }

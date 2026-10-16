@@ -173,6 +173,18 @@ describe('ChannelList', () => {
     expect(onNew).toHaveBeenCalledTimes(1);
   });
 
+  it('puts a headerAction in one row with the heading, after it', () => {
+    render(<ChannelList {...props({ headerAction: <button type="button">server menu</button> })} />);
+    const head = screen.getByRole('heading', { level: 1 }).parentElement as HTMLElement;
+    expect(head).toHaveClass('d-channel-list__head');
+    expect(head.lastElementChild).toBe(screen.getByRole('button', { name: 'server menu' }));
+  });
+
+  it('without a headerAction the heading has no wrapper', () => {
+    render(<ChannelList {...props()} />);
+    expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveClass('d-channel-list');
+  });
+
   it('draws no action group without actions', () => {
     render(<ChannelList {...props({ tabs })} />);
     expect(screen.queryByRole('group')).toBeNull();

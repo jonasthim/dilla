@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { Icon, type IconName } from '../Icon/Icon.tsx';
 import './ActionMenu.css';
 
 export interface ActionMenuItem { id: string; label: string; danger?: boolean }
@@ -17,6 +18,8 @@ export interface ActionMenuProps {
    * even when the row was re-mounted meanwhile.
    */
   focusKey?: string;
+  /** A monoline icon on the trigger in place of the "⋯" glyph. */
+  icon?: IconName;
 }
 
 /**
@@ -24,7 +27,7 @@ export interface ActionMenuProps {
  * on the last. Arrows wrap, Home and End jump. Escape closes and refocuses the trigger, Tab closes and moves on, and a
  * pointerdown outside closes. `open` is the caller's, so a row can also open the menu from a context menu (`at`).
  */
-export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey }: ActionMenuProps) {
+export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey, icon }: ActionMenuProps) {
   const base = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -125,7 +128,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
       <button ref={triggerRef} type="button" className="d-action-menu__trigger" aria-label={label} aria-haspopup="menu" data-focus-key={focusKey}
         aria-expanded={open} aria-controls={open ? `${base}-menu` : undefined}
         onClick={() => onOpenChange(!open)} onKeyDown={onTriggerKey}>
-        <span aria-hidden="true">⋯</span>
+        {icon !== undefined ? <Icon name={icon} size={22} /> : <span aria-hidden="true">⋯</span>}
       </button>
       {open ? (
         <div ref={menuRef} id={`${base}-menu`} role="menu" aria-label={label} className="d-action-menu__popup" style={style} data-placement={at ? undefined : placement}
