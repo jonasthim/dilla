@@ -34,7 +34,7 @@ export function Activity(props: { onOpen(target: { communityId: string | null; c
     ...channels.map(c => ({ id: c.id, communityId: c.communityId, name: `#${c.name}`, place: communityName(c.communityId) })),
     ...(dms ?? []).map(d => ({ id: d.id, communityId: null as string | null, name: d.name, place: null as string | null })),
   ].map(row => ({ ...row, badge: rowBadge(badges, settings, row.id, row.communityId ?? undefined) }))
-    .filter(row => row.badge.unread > 0 && !named.has(row.id));
+    .filter(row => (row.badge.unread > 0 || row.badge.mentions > 0) && !named.has(row.id));
 
   if (listed.length === 0 && elsewhere.length === 0) {
     return (
@@ -80,6 +80,7 @@ export function Activity(props: { onOpen(target: { communityId: string | null; c
                     <span className="dw-phone-row__line">{row.name}</span>
                     {row.place === null ? null : <span className="dw-phone-row__meta">{row.place}</span>}
                   </span>
+                  <Pill kind="mention" count={row.badge.mentions} />
                   <Pill kind="unread" count={row.badge.unread} />
                   <Icon name={CHEVRON} size={18} />
                 </button>

@@ -203,6 +203,61 @@ describe('the phone shell: tabs', () => {
   });
 });
 
+describe('the phone shell: history', () => {
+  it('replaces the entry on every tab tap, so the history never grows', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await screen.findByRole('navigation', { name: t('shell.channels.label') });
+    const before = window.history.length;
+    await user.click(tab('DMs'));
+    await user.click(tab('activity'));
+    await user.click(tab('you'));
+    await user.click(tab('servers'));
+    expect(window.history.length).toBe(before);
+    expect(window.history.state).toBeNull();
+  });
+
+  it('goes back to the list from a view a tab restored', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await user.click(await screen.findByRole('button', { name: 'lobby' }));
+    goto('/activity', { phoneBack: true });
+    await screen.findByText(t('activity.empty'));
+    await user.click(tab('servers'));
+    expect(here()).toBe(`/c/${A}/${TEXT}`);
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    await user.click(screen.getByRole('button', { name: t('nav.back') }));
+    expect(back).not.toHaveBeenCalled();
+    expect(here()).toBe(`/c/${A}`);
+  });
+
+  it('puts focus on the row that opened the view when back returns to the list', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await user.click(await screen.findByRole('button', { name: 'lobby' }));
+    await screen.findByRole('log');
+    goto(`/c/${A}`, { phoneBack: true });
+    await screen.findByRole('button', { name: 'lobby' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'lobby' })).toHaveFocus());
+  });
+
+  it('closes Settings with Escape the way the header back does, with no duplicate entry', async () => {
+    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
+    const { user } = phone({ path: '/settings/devices', withSettings: true });
+    await waitFor(() => expect(document.querySelector('.d-phone-header')).not.toBeNull());
+    const before = window.history.length;
+    await user.keyboard('{Escape}');
+    expect(here()).toBe('/you');
+    expect(window.history.length).toBe(before);
+  });
+
+  it('shows no link banner for a version refusal, only the newer-client banner', async () => {
+    const { client } = phone({ path: `/c/${A}` });
+    await screen.findByRole('navigation', { name: t('shell.channels.label') });
+    act(() => client.set('connection', { status: 'offline', generation: '1', reason: 'version' }));
+    expect(screen.getByText(t('shell.banner.clientTooOld'))).toBeInTheDocument();
+    expect(document.querySelector('.d-link-banner')).toBeNull();
+    expect(screen.queryByText(t('nav.link.offline'))).toBeNull();
+  });
+});
+
 describe('the phone shell: the call bar', () => {
   /** Joins voice 'general' from its stage, as the shell does; the call bar follows the person off the stage. */
   async function joined() {

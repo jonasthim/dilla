@@ -69,20 +69,23 @@ export function usePhoneSheet(name: 'members' | 'thread', open: boolean, onClose
   onCloseRef.current = onClose;
   const pushed = useRef(false);
   useEffect(() => {
+    // An entry that names this sheet while it is closed is stale (a reload, a forward, a restored tab): it is stripped,
+    // so a later close never pops the view itself.
+    const strip = () => {
+      if (sheetOf(window.history.state) !== name) return;
+      const rest = { ...(window.history.state as Record<string, unknown>) };
+      delete rest[SHEET];
+      window.history.replaceState(Object.keys(rest).length === 0 ? null : rest, '', location.href);
+    };
     if (!open) {
-      // Closed by other means than the back: the entry stays but no longer names a sheet.
-      if (pushed.current && sheetOf(window.history.state) === name) {
-        const rest = { ...(window.history.state as Record<string, unknown>) };
-        delete rest[SHEET];
-        window.history.replaceState(Object.keys(rest).length === 0 ? null : rest, '', location.href);
-      }
       pushed.current = false;
-      return;
+      strip();
+      window.addEventListener('popstate', strip);
+      return () => window.removeEventListener('popstate', strip);
     }
-    if (sheetOf(window.history.state) !== name) {
-      const current = typeof window.history.state === 'object' && window.history.state !== null ? window.history.state as Record<string, unknown> : {};
-      window.history.pushState({ ...current, [SHEET]: name }, '', location.href);
-    }
+    strip();
+    const current = typeof window.history.state === 'object' && window.history.state !== null ? window.history.state as Record<string, unknown> : {};
+    window.history.pushState({ ...current, [SHEET]: name }, '', location.href);
     pushed.current = true;
     const onPop = () => {
       if (sheetOf(window.history.state) === name) return;
@@ -93,7 +96,7 @@ export function usePhoneSheet(name: 'members' | 'thread', open: boolean, onClose
     return () => window.removeEventListener('popstate', onPop);
   }, [open, name]);
   const close = useCallback(() => {
-    if (sheetOf(window.history.state) === name) window.history.back();
+    if (pushed.current && sheetOf(window.history.state) === name) window.history.back();
     else onCloseRef.current();
   }, [name]);
   return { close };

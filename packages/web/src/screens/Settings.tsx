@@ -106,7 +106,11 @@ export function Settings(): React.JSX.Element {
       default: break;
     }
   };
-  const close = () => { setComparison(null); navigate(from === null ? { name: 'root' } : routeOf(from), true); };
+  const close = () => {
+    setComparison(null);
+    if (phone) goBack({ name: 'you' }, navigate);
+    else navigate(from === null ? { name: 'root' } : routeOf(from), true);
+  };
 
   return (
     <SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}

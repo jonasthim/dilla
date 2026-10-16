@@ -109,6 +109,29 @@ describe('usePhoneSheet', () => {
     back.mockRestore();
   });
 
+  it('strips a stale sheet entry (a reload, a forward) so closing never pops the view', () => {
+    window.history.replaceState({ phoneBack: true, phoneSheet: 'members' }, '', '/c/x');
+    const onClose = vi.fn();
+    const { result, rerender } = renderHook(({ open }) => usePhoneSheet('members', open, onClose), { initialProps: { open: false } });
+    expect(window.history.state).toEqual({ phoneBack: true });
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    rerender({ open: true });
+    expect(window.history.state).toEqual({ phoneBack: true, phoneSheet: 'members' });
+    act(() => result.current.close());
+    expect(back).toHaveBeenCalledTimes(1);
+    back.mockRestore();
+    // A forward onto a sheet entry while closed is stripped too, and its close is not a back.
+    rerender({ open: false });
+    window.history.replaceState({ phoneSheet: 'members' }, '', '/c/x');
+    act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
+    expect(window.history.state).toBeNull();
+    const again = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    act(() => result.current.close());
+    expect(again).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+    again.mockRestore();
+  });
+
   it('calls onClose at once when the sheet has no entry', () => {
     window.history.replaceState(null, '', '/c/x');
     const onClose = vi.fn();

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, Notice } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
@@ -88,6 +88,15 @@ describe('Activity', () => {
     setup({ notices: [notice(1, { kind: 'mention', body: `<@${ME.id}> bring the tank gear` })] });
     expect(screen.getByRole('button', { name: /mentioned you/ })).toHaveTextContent('@ada bring the tank gear');
     expect(screen.queryByText(/<@/)).toBeNull();
+  });
+
+  it('lists a muted channel that only has a mention, which the tab count includes', () => {
+    const { fake } = setup({ badges: { [GEN]: { unread: 3, mentions: 1 } } });
+    act(() => fake.set('settings', { [`mute.channel.${GEN}`]: '1' }));
+    const row = screen.getByRole('button', { name: /general/ });
+    expect(row).toHaveTextContent('1 mention');
+    expect(row).not.toHaveTextContent('unread');
+    expect(screen.queryByText(t('activity.empty'))).toBeNull();
   });
 
   it('has no axe violations with rows', async () => {

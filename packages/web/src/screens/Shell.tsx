@@ -1086,7 +1086,7 @@ export function Shell(): React.JSX.Element {
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
   const tabBar = !phone ? undefined : (
-    <TabBar label={t('nav.tabs.label')} onSelect={id => navigate(tabTarget(id as PhoneTab))} items={[
+    <TabBar label={t('nav.tabs.label')} onSelect={id => navigate(tabTarget(id as PhoneTab), true)} items={[
       tabItem('servers', 'server'), tabItem('dms', 'message-square', dmCounts.unread), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
     ]} />
   );
@@ -1111,6 +1111,9 @@ export function Shell(): React.JSX.Element {
   // the list's heading, when a pane or a tab comes back. Never on the first render.
   const paneKey = `${phonePane}:${phoneTab}`;
   const lastPane = useRef<string | null>(null);
+  // The name of the conversation the view showed, so back lands on its row.
+  const openedName = useRef<string | null>(null);
+  if (phone && phonePane === 'view' && (channel?.name ?? dm?.name) !== undefined) openedName.current = channel?.name ?? dm?.name ?? null;
   useLayoutEffect(() => {
     const before = lastPane.current;
     lastPane.current = paneKey;
@@ -1120,7 +1123,11 @@ export function Shell(): React.JSX.Element {
       if (focusLost() && title !== null) { title.tabIndex = -1; title.focus(); }
       return;
     }
-    const row = openSettings.current === null ? null : document.querySelector<HTMLElement>(`[data-settings-section="${openSettings.current}"]`);
+    const opened = openedName.current;
+    const row = openSettings.current !== null ? document.querySelector<HTMLElement>(`[data-settings-section="${openSettings.current}"]`)
+      : opened === null ? null : Array.from(document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list button'))
+        .find(b => b.textContent?.includes(opened)) ?? null;
+    openedName.current = null;
     openSettings.current = null;
     const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-empty-state h2');
     if (target === null) return;
@@ -1161,8 +1168,8 @@ export function Shell(): React.JSX.Element {
           </StatusBar>
         }
         banner={phone ? <>
-          <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
-            connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />
+          {offline && connection.reason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
+            connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
         </> : banner}
         aside={asideShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
