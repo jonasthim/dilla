@@ -101,9 +101,9 @@ export const OWN_DEV = 'cc'.repeat(16);
 export const CALL_ID = 'f0'.repeat(16);
 
 export const CHANNELS: ChannelSummary[] = [
-  { id: TEXT, communityId: A, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, group: 'active' },
-  { id: GENV, communityId: A, kind: 1, mode: 0, name: 'general', topic: '', parentId: null, position: 1, group: 'unsupported' },
-  { id: MUSIC, communityId: A, kind: 1, mode: 0, name: 'music', topic: '', parentId: null, position: 2, group: 'unsupported' },
+  { id: TEXT, communityId: A, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, slowmode: 0, group: 'active' },
+  { id: GENV, communityId: A, kind: 1, mode: 0, name: 'general', topic: '', parentId: null, position: 1, slowmode: 0, group: 'unsupported' },
+  { id: MUSIC, communityId: A, kind: 1, mode: 0, name: 'music', topic: '', parentId: null, position: 2, slowmode: 0, group: 'unsupported' },
 ];
 export const MEMBERS: MemberSummary[] = [
   { userId: ME.id, username: 'ada', display: '', kind: 0, roleIds: [] },

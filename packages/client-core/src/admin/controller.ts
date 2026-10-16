@@ -4,7 +4,7 @@
 import type { Id } from '../core-port';
 import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { BAN_REASON_MAX_BYTES, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, TOPIC_MAX_BYTES, nameProblem } from '../http/routes';
+import { BAN_REASON_MAX_BYTES, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, SLOW_STEPS, TOPIC_MAX_BYTES, nameProblem } from '../http/routes';
 import type { ChannelRow, OverwriteRow, RoleRow, Routes } from '../http/routes';
 import type { BanSummary, CommunitySummary, InviteSummary, SliceName, SliceTypes } from '../state/types';
 import type { Command } from '../worker/protocol';
@@ -79,7 +79,8 @@ export const ADMIN_VALIDATORS: Record<AdminMethod, ((c: Record<string, unknown>)
     if (c.name !== null) { const p = nameOf(c.name, CHANNEL_NAME_MAX_BYTES); if (p !== null) return p; }
     if (c.topic !== null && (typeof c.topic !== 'string' || UTF8.encode(c.topic).length > TOPIC_MAX_BYTES)) return 'topic is too long';
     if (c.parent !== 'keep' && c.parent !== 'top' && !(typeof c.parent === 'string' && ID.test(c.parent))) return 'parent is not keep, top or 32 lowercase hex';
-    if (c.name === null && c.topic === null && c.parent === 'keep') return 'nothing to change';
+    if (c.slowmode !== null && !(typeof c.slowmode === 'number' && (SLOW_STEPS as readonly number[]).includes(c.slowmode))) return 'slowmode is not a slow-mode step';
+    if (c.name === null && c.topic === null && c.parent === 'keep' && c.slowmode === null) return 'nothing to change';
     return null;
   },
   moveChannel: (c) => (c.direction === 'up' || c.direction === 'down' ? null : 'direction is not up or down'),
@@ -220,22 +221,24 @@ export class AdminController {
     const created = await this.guarded(communityId, () => this.deps.routes.createCategory(fromHex(communityId), { name, position }));
     this.deps.structureChanged(communityId);
     this.deps.setChannel(communityId, { id: created.id, kind: 2, mode: created.mode, visibility: created.visibility, parentId: null,
-      name, topic: '', position, seq: 0n, textGroupId: null });
+      name, topic: '', position, slowmode: 0, seq: 0n, textGroupId: null });
     this.deps.publishChannels(communityId);
     this.reload(communityId);
     return { channelId: toHex(created.id) };
   }
 
-  async updateChannel(channelId: string, name: string | null, topic: string | null, parent: string): Promise<null> {
+  async updateChannel(channelId: string, name: string | null, topic: string | null, parent: string, slowmode: number | null): Promise<null> {
     const { communityId, row } = this.known(channelId);
-    const patch: { name?: string; topic?: string; parent?: Uint8Array | 'top' } = {};
+    const patch: { name?: string; topic?: string; parent?: Uint8Array | 'top'; slowmode?: number } = {};
     if (name !== null) patch.name = name;
     if (topic !== null) patch.topic = topic;
+    patch.slowmode = slowmode ?? undefined;
+    if (patch.slowmode === undefined) delete patch.slowmode;
     if (parent === 'top') patch.parent = 'top';
     else if (parent !== 'keep') patch.parent = fromHex(parent);
     await this.guarded(communityId, () => this.deps.routes.patchChannel(row.id, patch));
     this.deps.structureChanged(communityId);
-    this.deps.setChannel(communityId, { ...row, name: patch.name ?? row.name, topic: patch.topic ?? row.topic,
+    this.deps.setChannel(communityId, { ...row, name: patch.name ?? row.name, topic: patch.topic ?? row.topic, slowmode: patch.slowmode ?? row.slowmode,
       parentId: patch.parent === undefined ? row.parentId : patch.parent === 'top' ? null : patch.parent });
     this.deps.publishChannels(communityId);
     this.reload(communityId);

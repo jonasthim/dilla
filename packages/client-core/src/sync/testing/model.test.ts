@@ -569,6 +569,20 @@ describe('ModelDs web-2a: DMs, leafless reads and the device-list gate', () => {
   const DM = idOf(0xd3, 1);
   const NEW = idOf(0xd0, 9);
 
+  it('serves a patched slow mode back in the channel list and in getChannel (element 8)', async () => {
+    const ds = new ModelDs();
+    ds.own(ME.user, ME.device);
+    const routes = ds.routesFor(ME.device);
+    const community = await routes.createCommunity('friends');
+    const channel = await routes.createChannel(community.id, { kind: 'text', name: 'news', position: 0 });
+    expect((await routes.listChannels(community.id)).map((c) => c.slowmode)).toEqual([0]);
+    await routes.patchChannel(channel.id, { slowmode: 30 });
+    expect((await routes.listChannels(community.id)).map((c) => c.slowmode)).toEqual([30]);
+    expect((await routes.getChannel(channel.id)).slowmode).toBe(30);
+    await routes.patchChannel(channel.id, { name: 'renamed' });
+    expect((await routes.getChannel(channel.id)).slowmode).toBe(30);
+  });
+
   it('sends a Welcome to the registrant’s other device when that device has KeyPackages', async () => {
     const ds = new ModelDs();
     ds.addDm(DM, [ME, PEER]);
@@ -588,7 +602,7 @@ describe('ModelDs web-2a: DMs, leafless reads and the device-list gate', () => {
     ds.addDm(DM, [ME, PEER]);
     const meCore = new ModelCore(ME);
     const routes = ds.routesFor(ME.device);
-    expect(await routes.getChannel(DM)).toEqual({ id: DM, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, seq: 0n, textGroupId: null });
+    expect(await routes.getChannel(DM)).toEqual({ id: DM, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, slowmode: 0, seq: 0n, textGroupId: null });
     await routes.postGroup(meCore.groupCreate(G, null, DM));
     meCore.groupRegistered(G, 1n);
     expect((await routes.getChannel(DM)).textGroupId).toEqual(G);

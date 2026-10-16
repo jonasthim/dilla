@@ -24,7 +24,7 @@ const STRANGER = '4a'.repeat(16);
 const NOW = Math.floor(Date.now() / 1000);
 
 function ch(id: string, name: string, over: Partial<ChannelSummary> = {}): ChannelSummary {
-  return { id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, group: 'none', ...over };
+  return { id, communityId: A, kind: 0, mode: 0, name, topic: '', parentId: null, position: 0, slowmode: 0, group: 'none', ...over };
 }
 const CHANNELS: ChannelSummary[] = [
   ch(VOICE, 'lounge', { kind: 1, position: 0, group: 'unsupported' }),

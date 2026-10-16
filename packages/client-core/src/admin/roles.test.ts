@@ -264,6 +264,60 @@ describe('roles: overwrites and private channels', () => {
   });
 });
 
+describe('roles: announcement channels', () => {
+  const create = (extra: Record<string, unknown>) => ({ m: 'createChannel', communityId: CID, kind: 'announcement', name: 'news', ...extra });
+  it('a non-owner create denies @everyone send, allows each ticked role once and herself', async () => {
+    const m = await ready({ owner: false, top: 5, bits: 0xffn | BigInt(PERM.manageChannels) });
+    expect(await run(m, create({ announce: { roleIds: [HEX.a, HEX.b, HEX.everyone, HEX.a] } }))).toMatchObject({ ok: true });
+    expect(m.routes.createChannel).toHaveBeenCalledTimes(1);
+    expect(m.routes.createChannel.mock.calls[0]?.[1].kind).toBe('text');
+    expect(m.routes.createChannel.mock.calls[0]?.[1].overwrites).toEqual([
+      { kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages },
+      { kind: 0, targetId: A, allow: PERM.sendMessages, deny: 0 },
+      { kind: 0, targetId: B, allow: PERM.sendMessages, deny: 0 },
+      { kind: 1, targetId: USER, allow: PERM.sendMessages, deny: 0 },
+    ]);
+  });
+  it('the owner has no self entry', async () => {
+    const o = await ready();
+    await run(o, create({ announce: { roleIds: [HEX.a] } }));
+    expect(o.routes.createChannel.mock.calls[0]?.[1].overwrites).toEqual([
+      { kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages },
+      { kind: 0, targetId: A, allow: PERM.sendMessages, deny: 0 },
+    ]);
+  });
+  it('an announcement without announce is still read-only for @everyone', async () => {
+    const o = await ready();
+    await run(o, create({}));
+    expect(o.routes.createChannel.mock.calls[0]?.[1].overwrites).toEqual([{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }]);
+  });
+  it('more roles than one create can carry is refused without a request', async () => {
+    const m = await ready({ owner: false, top: 5, bits: 0xffn });
+    const many = Array.from({ length: 99 }, (_, i) => toHex(id16(0x80 + i)));
+    expect(await run(m, create({ announce: { roleIds: many } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(m.routes.createChannel).not.toHaveBeenCalled();
+    const o = await ready();
+    expect(await run(o, create({ announce: { roleIds: many } }))).toMatchObject({ ok: true });
+  });
+  it('refuses announce on a text channel, private on an announcement, and announce roleIds that are not ids', async () => {
+    const w = await ready();
+    expect(await run(w, { m: 'createChannel', communityId: CID, kind: 'text', name: 'x', announce: { roleIds: [] } })).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(await run(w, create({ private: { roleIds: [] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(await run(w, create({ announce: { roleIds: ['nope'] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(w.routes.createChannel).not.toHaveBeenCalled();
+  });
+  it('a 403 on an announcement create reads the access again; a good create lists the channel and reads access', async () => {
+    const w = await ready();
+    const perms = w.routes.getPermissions.mock.calls.length;
+    w.routes.createChannel.mockRejectedValueOnce(refusal(403, 'E_FORBIDDEN'));
+    expect(await run(w, create({ announce: { roleIds: [] } }))).toMatchObject({ ok: false });
+    expect(w.routes.getPermissions.mock.calls.length).toBe(perms + 1);
+    expect(await run(w, create({ announce: { roleIds: [] } }))).toMatchObject({ ok: true });
+    expect(w.routes.getPermissions.mock.calls.length).toBeGreaterThan(perms + 1);
+    expect(w.last<{ name: string; kind: number }[]>(`channels:${CID}`)?.some((c) => c.name === 'news' && c.kind === 0)).toBe(true);
+  });
+});
+
 describe('roles: fix round 1', () => {
   const many = (n: number): string[] => Array.from({ length: n }, (_, i) => toHex(id16(0x80 + i)));
   it('a private create with 99 roles by a non-owner (a self entry makes 101) is refused without a request; the owner may use 99', async () => {

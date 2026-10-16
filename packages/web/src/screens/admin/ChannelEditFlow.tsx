@@ -55,7 +55,7 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
     const topic = kind === 'text' && current.topic !== channel.topic ? current.topic : null;
     const parent = kind === 'category' || current.parent === initial.parent ? 'keep' : current.parent;
     if (name === null && topic === null && parent === 'keep') { close(); return; }
-    void action.run(() => client.call({ m: 'updateChannel', channelId: channel.id, name, topic, parent }), e =>
+    void action.run(() => client.call({ m: 'updateChannel', channelId: channel.id, name, topic, parent, slowmode: null }), e =>
       forbidden(e) ? t('admin.channel.error.forbidden')
         : statusIs(e, 404) ? t('admin.channel.error.gone')
           : refused(e) ? t('admin.channel.error.refused')

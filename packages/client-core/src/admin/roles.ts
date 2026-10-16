@@ -74,6 +74,7 @@ export const ROLES_VALIDATORS: Record<RolesMethod, ((c: Record<string, unknown>)
 /** Roles a private create can open the channel to: the @everyone entry and, for a member who is neither owner nor
  *  administrator, her own entry take two of the instance's overwrites per create. */
 const PRIVATE_ROLES_MAX = OVERWRITES_PER_CREATE_MAX - 2;
+const ANNOUNCE_ROLES_REASON = `an announcement channel can be opened to at most ${String(PRIVATE_ROLES_MAX)} roles`;
 const PRIVATE_ROLES_REASON = `a private channel can be opened to at most ${String(PRIVATE_ROLES_MAX)} roles`;
 
 /** The `private` field of createChannel: `{ roleIds }` of 32-hex ids, at most one fewer than the instance's cap (the
@@ -83,6 +84,15 @@ export function privateProblem(v: unknown): string | null {
   const { roleIds } = v as { roleIds?: unknown };
   if (!Array.isArray(roleIds) || !roleIds.every((r) => typeof r === 'string' && ID.test(r))) return 'roleIds must be an array of ids';
   return roleIds.length > OVERWRITES_PER_CREATE_MAX - 1 ? PRIVATE_ROLES_REASON : null;
+}
+
+/** The `announce` field of createChannel: `{ roleIds }` of 32-hex ids, at most the cap less @everyone's entry (the creator's
+ *  own entry is checked again when it is added); a reason or null. */
+export function announceProblem(v: unknown): string | null {
+  if (typeof v !== 'object' || v === null) return 'roleIds must be an array of ids';
+  const { roleIds } = v as { roleIds?: unknown };
+  if (!Array.isArray(roleIds) || !roleIds.every((r) => typeof r === 'string' && ID.test(r))) return 'roleIds must be an array of ids';
+  return roleIds.length > OVERWRITES_PER_CREATE_MAX - 1 ? ANNOUNCE_ROLES_REASON : null;
 }
 
 const statusOf = (e: unknown): number | null => (e instanceof DillaHttpError ? e.status : null);
@@ -278,6 +288,20 @@ export class RolesController {
     const me = this.deps.me();
     if (me !== null && !owner && !this.administrator(communityId)) out.push({ kind: 1, targetId: me.userId, allow: PERM.viewChannel, deny: 0 });
     if (out.length > OVERWRITES_PER_CREATE_MAX) throw this.deps.refusal('E_BAD_INPUT', PRIVATE_ROLES_REASON);
+    return out;
+  }
+
+  /** The overwrites of an announcement create: @everyone denied sending, each chosen role allowed to send (deduplicated,
+   *  @everyone skipped), and the creator herself when she holds neither ownership nor administrator. */
+  async announcementOverwrites(communityId: string, roleIds: readonly string[]): Promise<NewOverwrite[]> {
+    const { everyoneId, owner } = await this.access(communityId);
+    const out: NewOverwrite[] = [{ kind: 0, targetId: fromHex(everyoneId), allow: 0, deny: PERM.sendMessages }];
+    for (const roleId of new Set(roleIds)) {
+      if (roleId !== everyoneId) out.push({ kind: 0, targetId: fromHex(roleId), allow: PERM.sendMessages, deny: 0 });
+    }
+    const me = this.deps.me();
+    if (me !== null && !owner && !this.administrator(communityId)) out.push({ kind: 1, targetId: me.userId, allow: PERM.sendMessages, deny: 0 });
+    if (out.length > OVERWRITES_PER_CREATE_MAX) throw this.deps.refusal('E_BAD_INPUT', ANNOUNCE_ROLES_REASON);
     return out;
   }
 

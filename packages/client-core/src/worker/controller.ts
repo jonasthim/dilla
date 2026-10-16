@@ -43,7 +43,7 @@ import { isTestHook, isToWorker, type Command, type FromWorker } from './protoco
 import { CommandBarrier, SearchGate } from './barrier';
 import { CallController, WAIT_LIST_MS } from '../calls/controller';
 import { ADMIN_VALIDATORS, AdminController } from '../admin/controller';
-import { ROLES_VALIDATORS, RolesController, privateProblem } from '../admin/roles';
+import { ROLES_VALIDATORS, RolesController, announceProblem, privateProblem } from '../admin/roles';
 import { BACKUP_CODE, FACTOR_VALIDATORS, FactorsController, NO_FACTORS, factorsState, normaliseBackupCode } from '../account/factors';
 import { authorityFor } from '../admin/authority';
 
@@ -463,10 +463,19 @@ function invalid(command: Record<string, unknown>): string | null {
     if (problem !== null) return `name ${problem}`;
   }
   if (m === 'createChannel') {
-    if (command.kind !== 'text' && command.kind !== 'voice') return 'kind is not text or voice';
+    if (command.kind !== 'text' && command.kind !== 'voice' && command.kind !== 'announcement') return 'kind is not text, voice or announcement';
     const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, CHANNEL_NAME_MAX_BYTES);
     if (problem !== null) return `name ${problem}`;
-    if (command.private !== undefined) { const p = privateProblem(command.private); if (p !== null) return p; }
+    if (command.private !== undefined) {
+      if (command.kind === 'announcement') return 'an announcement channel is not private';
+      const p = privateProblem(command.private);
+      if (p !== null) return p;
+    }
+    if (command.announce !== undefined) {
+      if (command.kind !== 'announcement') return 'announce is only for an announcement channel';
+      const p = announceProblem(command.announce);
+      if (p !== null) return p;
+    }
   }
   if (m === 'createInvite') {
     const { maxUses, ttlSeconds } = command;
@@ -916,7 +925,7 @@ export class Controller {
       case 'joinCommunity': return this.joinCommunity(command.invite);
       case 'selectCommunity': return this.selectCommunity(command.communityId);
       case 'createCommunity': return this.createCommunity(command.name);
-      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private);
+      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'openChannel': return this.openChannel(command.channelId);
@@ -982,7 +991,7 @@ export class Controller {
       case 'leaveCommunity': return this.admin.leaveCommunity(command.communityId);
       case 'transferOwnership': return this.admin.transferOwnership(command.communityId, command.userId);
       case 'createCategory': return this.admin.createCategory(command.communityId, command.name);
-      case 'updateChannel': return this.admin.updateChannel(command.channelId, command.name, command.topic, command.parent);
+      case 'updateChannel': return this.admin.updateChannel(command.channelId, command.name, command.topic, command.parent, command.slowmode);
       case 'moveChannel': return this.admin.moveChannel(command.channelId, command.direction);
       case 'deleteChannel': return this.admin.deleteChannel(command.channelId);
       case 'kickMember': return this.admin.kickMember(command.communityId, command.userId);
@@ -2038,23 +2047,27 @@ export class Controller {
   /** POST /v1/communities/{id}/channels at the position after the server's last channel. The channel is published as
    *  created before the answer, then the server's lists are read again; a text channel's group is registered by the
    *  first device that opens it (sync/channel.ts), a voice channel's call group at its first call. */
-  private async createChannel(communityId: string, kind: NewChannelKind, channelName: string, priv?: { roleIds: string[] }): Promise<{ channelId: string }> {
+  private async createChannel(communityId: string, kind: NewChannelKind | 'announcement', channelName: string, priv?: { roleIds: string[] },
+    announce?: { roleIds: string[] }): Promise<{ channelId: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     let position = 0;
     for (const known of this.channels.values()) {
       if (known.communityId === communityId) position = Math.max(position, known.row.position + 1);
     }
     // A private channel is private from birth: the overwrites go in the create (wave 2a).
-    const overwrites = priv === undefined ? undefined : await this.rolesCtl.privateOverwrites(communityId, priv.roleIds);
-    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position })
-      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind, name: channelName, position, overwrites }));
+    // An announcement channel is a text channel whose @everyone may not send, read-only from birth in the same way.
+    const routeKind: NewChannelKind = kind === 'announcement' ? 'text' : kind;
+    const overwrites = kind === 'announcement' ? await this.rolesCtl.announcementOverwrites(communityId, announce?.roleIds ?? [])
+      : priv === undefined ? undefined : await this.rolesCtl.privateOverwrites(communityId, priv.roleIds);
+    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position })
+      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, overwrites }));
     // A list read that began before this create answers without the channel: loadCommunity reads again (structureRev).
     this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1);
     const channelId = toHex(created.id);
     if (this.storeCleared || !this.listed(communityId)) return { channelId };
     this.channels.set(channelId, { communityId, row: {
       id: created.id, kind: kind === 'voice' ? 1 : 0, mode: created.mode, visibility: created.visibility, parentId: null,
-      name: channelName, topic: '', position, seq: 0n, textGroupId: null,
+      name: channelName, topic: '', position, slowmode: 0, seq: 0n, textGroupId: null,
     } });
     this.publishChannels(communityId);
     // Not awaited (WB I1): the answer does not wait on a list read that may hang; the row is already published.
@@ -2248,7 +2261,7 @@ export class Controller {
       list.push({
         id: channelId, communityId, kind: row.kind as ChannelSummary['kind'], mode: row.mode as ChannelSummary['mode'],
         name: row.name, topic: row.topic, parentId: row.parentId === null ? null : toHex(row.parentId), position: row.position,
-        group: channelGroupState(row, groups, this.membership(channelId)),
+        slowmode: row.slowmode, group: channelGroupState(row, groups, this.membership(channelId)),
       });
     }
     this.slices.set(`channels:${communityId}`, list);

@@ -211,8 +211,8 @@ const CASES: Case[] = [
       [CHANNEL, 0, 0, 0, CATEGORY, 'general', 'say hi', 1, 30, 5, GROUP],
     ]),
     expected: [
-      { id: CATEGORY, kind: 2, mode: 0, visibility: 0, parentId: null, name: 'text', topic: '', position: 0, seq: 0n, textGroupId: null },
-      { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, seq: 5n, textGroupId: GROUP },
+      { id: CATEGORY, kind: 2, mode: 0, visibility: 0, parentId: null, name: 'text', topic: '', position: 0, slowmode: 0, seq: 0n, textGroupId: null },
+      { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, slowmode: 30, seq: 5n, textGroupId: GROUP },
     ],
   },
   {
@@ -400,13 +400,13 @@ const CASES: Case[] = [
     name: 'getChannel of a DM reads the twelve-element row', call: (r) => r.getChannel(CHANNEL),
     method: 'GET', path: `/v1/channels/${hex(CHANNEL)}`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, null, 3, 0, 0, null, '', '', 0, 0, 4, GROUP]),
-    expected: { id: CHANNEL, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, seq: 4n, textGroupId: GROUP },
+    expected: { id: CHANNEL, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, slowmode: 0, seq: 4n, textGroupId: GROUP },
   },
   {
-    name: 'getChannel skips community_id and slow mode', call: (r) => r.getChannel(CHANNEL),
+    name: 'getChannel skips community_id and reads slow mode', call: (r) => r.getChannel(CHANNEL),
     method: 'GET', path: `/v1/channels/${hex(CHANNEL)}`, bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [CHANNEL, COMMUNITY, 0, 0, 0, CATEGORY, 'general', 'say hi', 1, 30, 5, null]),
-    expected: { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, seq: 5n, textGroupId: null },
+    expected: { id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: CATEGORY, name: 'general', topic: 'say hi', position: 1, slowmode: 30, seq: 5n, textGroupId: null },
   },
   {
     name: 'deleteDevice removes an unlisted device row (73)', call: (r) => r.deleteDevice(DEVICE_2),
@@ -1267,6 +1267,21 @@ describe('Routes: server admin and moderation', () => {
     expect(named.seen.body).toEqual(encode(['lobby', 'a\nb', null, null, null, null, null]));
     const cleared = await one(noContent(), (r) => r.patchChannel(CHANNEL, { topic: '' }));
     expect(cleared.seen.body).toEqual(encode([null, '', null, null, null, null, null]));
+  });
+  it('patchChannel puts a slow-mode step in slot 6 and keeps it null otherwise', async () => {
+    const slow = await one(noContent(), (r) => r.patchChannel(CHANNEL, { slowmode: 10 }));
+    expect(slow.seen.body).toEqual(encode([null, null, null, null, null, null, 10]));
+    const off = await one(noContent(), (r) => r.patchChannel(CHANNEL, { slowmode: 0 }));
+    expect(off.seen.body).toEqual(encode([null, null, null, null, null, null, 0]));
+    const none = await one(noContent(), (r) => r.patchChannel(CHANNEL, {}));
+    expect(none.seen.body).toEqual(encode([null, null, null, null, null, null, null]));
+  });
+  it('patchChannel refuses a slow mode that is not a step, before any request', async () => {
+    const { t, routes } = setup();
+    const error = await routes.patchChannel(CHANNEL, { slowmode: 7 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RangeError);
+    expect((error as Error).message).toBe('E_ROUTE_INPUT: slowmode must be one of 0, 5, 10, 30, 60, 300, 900, 3600, 21600');
+    expect(t.seen).toHaveLength(0);
   });
   it('patchChannel refuses a 1025-byte topic and a NUL before any request, and accepts 1024 bytes', async () => {
     const { t, routes } = setup();

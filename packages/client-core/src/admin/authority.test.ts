@@ -365,7 +365,7 @@ describe('the push is made once per change, cheaply (C4 fix round 1)', () => {
     w.routes.listRoles.mockResolvedValue([role(EVERYONE, 0, VIEW), role(MOD, 1, PIN | ALL)]);
     w.routes.listMembers.mockResolvedValue([member(USER, []), member(STRANGER, [MOD])]);
     w.state.newChannels.push({ communityId: COMMUNITY, row: { id: CH2, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'two', topic: '',
-      position: 1, seq: 0n, textGroupId: G2 } });
+      position: 1, slowmode: 0, seq: 0n, textGroupId: G2 } });
     w.state.groups = [textGroup(2), { ...textGroup(2), groupId: G2, targetId: CH2 }];
     await toReady(w);
     await vi.waitFor(() => expect(w.core.authoritySet).toHaveBeenCalledTimes(2));

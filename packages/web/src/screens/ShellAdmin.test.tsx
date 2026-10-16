@@ -12,7 +12,7 @@ const B = 'b2'.repeat(16);
 const GEN = 'c3'.repeat(16);
 const OTHER = 'ee'.repeat(16);
 const CHANNELS: ChannelSummary[] = [
-  { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, group: 'none' },
+  { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, slowmode: 0, group: 'none' },
 ];
 const MEMBERS: MemberSummary[] = [{ userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [] }];
 const EVERYONE = 'ab'.repeat(16);

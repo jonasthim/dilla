@@ -19,7 +19,7 @@ const GENERAL = 'c5'.repeat(16);
 const RANDOM = 'c6'.repeat(16);
 
 const row = (id: string, kind: 0 | 1 | 2, name: string, parentId: string | null, position: number, topic = ''): ChannelSummary =>
-  ({ id, communityId: SERVER, kind, mode: 0, name, topic, parentId, position, group: 'active' });
+  ({ id, communityId: SERVER, kind, mode: 0, name, topic, parentId, position, slowmode: 0, group: 'active' });
 const CHANNELS: ChannelSummary[] = [
   row(RANDOM, 0, 'random', null, 0),
   row(TALK, 2, 'Talk', null, 0),
@@ -109,7 +109,7 @@ describe('the channel edit dialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Edit #lobby' });
     await user.selectOptions(within(dialog).getByRole('combobox', { name: en['admin.channel.category'] }), en['admin.channels.noCategory']);
     await user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
-    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: LOBBY, name: null, topic: null, parent: 'top' }]));
+    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: LOBBY, name: null, topic: null, parent: 'top', slowmode: null }]));
   });
   it('sends keep for an unchanged category, the slug of a new name and a new topic', async () => {
     const { fake, user } = setup();
@@ -122,7 +122,7 @@ describe('the channel edit dialog', () => {
     await user.clear(topic);
     await user.type(topic, 'new topic');
     await user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
-    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: LOBBY, name: 'ship-talk', topic: 'new topic', parent: 'keep' }]));
+    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: LOBBY, name: 'ship-talk', topic: 'new topic', parent: 'keep', slowmode: null }]));
   });
   it('moves a channel into another category by its id', async () => {
     const { fake, user } = setup();
@@ -142,7 +142,7 @@ describe('the channel edit dialog', () => {
     await user.clear(name);
     await user.type(name, 'Chat');
     await user.click(within(dialog).getByRole('button', { name: en['admin.channel.save'] }));
-    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: TALK, name: 'Chat', topic: null, parent: 'keep' }]));
+    await waitFor(() => expect(fake.callsOf('updateChannel')).toEqual([{ m: 'updateChannel', channelId: TALK, name: 'Chat', topic: null, parent: 'keep', slowmode: null }]));
   });
   it('titles a voice channel without the hash', async () => {
     const { user } = setup();

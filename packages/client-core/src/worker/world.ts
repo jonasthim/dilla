@@ -321,7 +321,7 @@ export function world(opts: {
     ]); }),
     listChannels: vi.fn((id: Uint8Array) => { calls.push('listChannels'); return Promise.resolve([
       ...(toHex(id) === toHex(COMMUNITY) ? [{
-        id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP,
+        id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP,
       }] : []),
       ...state.newChannels.filter((c) => toHex(c.communityId) === toHex(id)).map((c) => c.row),
     ]); }),
@@ -334,7 +334,7 @@ export function world(opts: {
       calls.push('createChannel');
       const id = new Uint8Array(16).fill(0x60 + state.newChannels.length);
       state.newChannels.push({ communityId, row: { id, kind: c.kind === 'voice' ? 1 : 0, mode: 0, visibility: 0, parentId: null,
-        name: c.name, topic: '', position: c.position, seq: 0n, textGroupId: null } });
+        name: c.name, topic: '', position: c.position, slowmode: 0, seq: 0n, textGroupId: null } });
       return Promise.resolve({ id, mode: 0, visibility: 0 });
     }),
     createInvite: vi.fn((_communityId: Uint8Array, _invite: { maxUses: number; ttlSeconds: number }) => Promise.resolve({

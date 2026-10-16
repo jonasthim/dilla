@@ -23,7 +23,7 @@ export const O1 = '0a'.repeat(16);
 export const O2 = '0d'.repeat(16);
 export const NOW = Math.floor(Date.now() / 1000);
 
-export const CHANNEL: ChannelSummary = { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, group: 'active' };
+export const CHANNEL: ChannelSummary = { id: GEN, communityId: A, kind: 0, mode: 0, name: 'general', topic: '', parentId: null, position: 0, slowmode: 0, group: 'active' };
 // roleIds on MemberSummary (L-TS-36, published by task 7; ruled: web-e2e 6).
 export const MEMBERS: MemberSummary[] = [
   { userId: ME.id, username: 'ada', display: 'Ada L', kind: 0, roleIds: [ROLE] },

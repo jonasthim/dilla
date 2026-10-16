@@ -43,7 +43,7 @@ export interface CommunitySummary { id: string; name: string; owner: string; }
 /** The answer of createInvite: the instance's invite link, its code and its expiry (unix seconds). */
 export interface InviteCreatedResult { url: string; code: string; expires: number; }
 export type ChannelGroupState = 'none' | 'joining' | 'active' | 'resync' | 'not-member' | 'unsupported';
-export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 | 2; mode: 0 | 1; name: string; topic: string; parentId: string | null; position: number; group: ChannelGroupState; }
+export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 | 2; mode: 0 | 1; name: string; topic: string; parentId: string | null; position: number; slowmode: number; group: ChannelGroupState; }
 export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[]; }   // roleIds: hex of member-row element 3, in order
 export type TimelineItemState = 'ok' | 'pending' | 'failed' | 'cannot-read' | 'deleted';
 export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; }

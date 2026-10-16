@@ -4073,6 +4073,18 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     expect(listed).toBeLessThan(retAt(w, 83));
   });
 
+  it('a listed channel carries its slow mode into the channels slice, and a created one starts at 0', async () => {
+    const w = world();
+    w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '',
+      position: 0, slowmode: 30, seq: 1n, textGroupId: GROUP }]);
+    await toReady(w);
+    await vi.waitFor(() => expect(w.channels()?.find((c) => c.id === toHex(CHANNEL))?.slowmode).toBe(30));
+    w.call(87, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'new' });
+    await vi.waitFor(() => expect(w.ret(87)).toMatchObject({ ok: true }));
+    const created = sliceAt(w, `channels:${toHex(COMMUNITY)}`, (v) => (v as ChannelSummary[]).some((c) => c.name === 'new' && c.slowmode === 0));
+    expect(created).toBeGreaterThan(-1);
+  });
+
   it('the starter channels of a new server go to positions 0 and 1', async () => {
     const w = world();
     await toReady(w);
@@ -4099,7 +4111,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     await vi.waitFor(() => expect(w.ret(88)).toMatchObject({ ok: true }));
     const channelId = toHex(new Uint8Array(16).fill(0x60));
     // The stale answer: the list as it was before the create.
-    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP }]);
+    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
     await vi.waitFor(() => expect(w.ret(87)).toMatchObject({ ok: true }));
     await settle();
     expect(w.channels()?.map((c) => c.id)).toContain(channelId);
@@ -4205,7 +4217,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     w.call(120, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'random' });
     await vi.waitFor(() => expect(w.ret(120)).toMatchObject({ ok: true, value: { channelId: toHex(new Uint8Array(16).fill(0x60)) } }));
     expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'random']);
-    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, seq: 1n, textGroupId: GROUP },
+    held.resolve([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '', position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP },
       w.state.newChannels[0].row]);
     await settle();
     expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'random']);
@@ -4219,7 +4231,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     await settle();
     const before = w.routes.listChannels.mock.calls.length;
     w.state.newChannels.push({ communityId: COMMUNITY, row: { id: new Uint8Array(16).fill(0x66), kind: 0, mode: 0, visibility: 0,
-      parentId: null, name: 'planering', topic: '', position: 1, seq: 0n, textGroupId: null } });
+      parentId: null, name: 'planering', topic: '', position: 1, slowmode: 0, seq: 0n, textGroupId: null } });
     const changed = (community: Uint8Array): GatewayEvent => ({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [community] } });
     w.gateway.emit(changed(COMMUNITY));
     w.gateway.emit(changed(COMMUNITY));
@@ -4287,7 +4299,7 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     await settle();
     const before = w.routes.listChannels.mock.calls.length;
     w.state.newChannels.push({ communityId: COMMUNITY, row: { id: new Uint8Array(16).fill(0x67), kind: 0, mode: 0, visibility: 0,
-      parentId: null, name: 'nytt', topic: '', position: 1, seq: 0n, textGroupId: null } });
+      parentId: null, name: 'nytt', topic: '', position: 1, slowmode: 0, seq: 0n, textGroupId: null } });
     w.sync.deps!.onUnexpectedWelcome(GROUP);
     await vi.waitFor(() => expect(w.channels()?.map((c) => c.name)).toEqual(['general', 'nytt']));
     expect(w.routes.listChannels.mock.calls.slice(before).map((c) => toHex(c[0]))).toEqual([toHex(COMMUNITY)]);

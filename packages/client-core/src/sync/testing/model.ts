@@ -2182,7 +2182,9 @@ export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGrou
   // web3.4: the caller's own permissions and the roles list, as the instance resolves them for the model's servers.
   | 'getPermissions' | 'listRoles'
   // wave 2a (flow 09): roles and channel overwrites, ruled by the owner alone in the model.
-  | 'listOverwrites' | 'createRole' | 'patchRole' | 'deleteRole' | 'grantRole' | 'revokeRole' | 'putOverwrite' | 'deleteOverwrite';
+  | 'listOverwrites' | 'createRole' | 'patchRole' | 'deleteRole' | 'grantRole' | 'revokeRole' | 'putOverwrite' | 'deleteOverwrite'
+  // web3.7: the channel patch, so a slow mode set through the client path is served back in the list.
+  | 'patchChannel';
 export type ModelRoutes = Pick<Routes, RouteName>;
 /** The @everyone base of a new server (internal/api everyoneRoleAllow): view, send, attach, react, history, connect, speak, video,
  *  screen share and create invite. Every defined permission bit is below 2^30. */
@@ -2321,7 +2323,7 @@ export class ModelDs {
   private readonly removed = new Set<string>();
   private readonly groups = new Map<string, DsGroup>();
   /** A created channel carries its kind, name and position; a seeded one (addChannel) is listed as `channel-<i>`. */
-  private readonly channels = new Map<string, { communityId: Id; channelId: Id; created?: { kind: 0 | 1; name: string; position: number } }>();
+  private readonly channels = new Map<string, { communityId: Id; channelId: Id; created?: { kind: 0 | 1; name: string; position: number }; slowmode?: number; topic?: string }>();
   /** Created servers: community hex → its name, its owner's and its members' user hexes. */
   private readonly communities = new Map<string, { id: Id; name: string; owner: string; members: Set<string> }>();
   private readonly owners = new Map<string, string>();
@@ -2735,6 +2737,13 @@ export class ModelDs {
         .filter((c) => c.members.has(this.owners.get(d) ?? ''))
         .map((c) => ({ id: c.id, name: c.name, owner: this.users.get(c.owner)!, policyVersion: 1n }))),
       createCommunity: (name) => this.call(d, 'createCommunity', null, null, () => this.createCommunity(d, name)),
+      // Slot 6 of the patch body is the slow mode; the owner alone rules it, as every other channel change in the model.
+      patchChannel: (channelId, patch) => this.call(d, 'patchChannel', channelId, null, () => {
+        this.ownerOfChannel(d, channelId);
+        const known = this.channels.get(toHex(channelId))!;
+        if (patch.slowmode !== undefined) known.slowmode = patch.slowmode;
+        if (patch.topic !== undefined) known.topic = patch.topic;
+      }),
       createChannel: (communityId, channel) => this.call(d, 'createChannel', null, null, () => this.createChannel(d, communityId, channel)),
       createInvite: (communityId) => this.call(d, 'createInvite', null, null, () => {
         this.memberOf(d, communityId);
@@ -2850,7 +2859,7 @@ export class ModelDs {
         if (dm !== undefined) {
           if (!dm.users.some((user) => toHex(user) === this.owners.get(d))) throw httpError(404, 'E_NOT_FOUND');
           return { id, kind: dm.users.length === 2 ? 3 : 4, mode: 0, visibility: 0, parentId: null,
-            name: '', topic: '', position: 0, seq: 0n, textGroupId: this.openGroupOf(id)?.id ?? null };
+            name: '', topic: '', position: 0, slowmode: 0, seq: 0n, textGroupId: this.openGroupOf(id)?.id ?? null };
         }
         const channel = this.channels.get(toHex(id));
         if (channel === undefined) throw httpError(404, 'E_NOT_FOUND');
@@ -2993,13 +3002,13 @@ export class ModelDs {
 
   private channelRows(communityId: Uint8Array): {
     id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null; name: string; topic: string;
-    position: number; seq: bigint; textGroupId: Uint8Array | null;
+    position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null;
   }[] {
     return [...this.channels.values()]
       .filter((c) => same(c.communityId, communityId))
       .map((c, i) => ({
         id: c.channelId, kind: c.created?.kind ?? 0, mode: 0, visibility: 0, parentId: null, name: c.created?.name ?? `channel-${String(i)}`,
-        topic: '', position: c.created?.position ?? i, seq: 1n,
+        topic: c.topic ?? '', position: c.created?.position ?? i, slowmode: c.slowmode ?? 0, seq: 1n,
         textGroupId: c.created?.kind === 1 ? null : this.openGroupOf(c.channelId)?.id ?? null,
       }));
   }

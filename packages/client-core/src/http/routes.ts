@@ -34,7 +34,7 @@ export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array
 export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
-  name: string; topic: string; position: number; seq: bigint; textGroupId: Uint8Array | null; }
+  name: string; topic: string; position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null; }
 export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; roleIds: Uint8Array[]; }
 export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
@@ -69,6 +69,8 @@ export interface CommunityCreated { id: Uint8Array; roleEveryone: Uint8Array; po
 export interface ChannelCreated { id: Uint8Array; mode: number; visibility: number; }
 export interface InviteCreated { inviteId: Uint8Array; code: string; url: string; expires: bigint; }
 export type NewChannelKind = 'text' | 'voice';
+/** The slow-mode steps in seconds the instance accepts (0 is off; the instance's own ceiling is six hours). */
+export const SLOW_STEPS = [0, 5, 10, 30, 60, 300, 900, 3600, 21600] as const;
 
 // ---- wave 1: server admin and moderation (flow 08) ----
 /** The instance's own bounds (internal/api): the owner's rank, roles per community, bans, invites, a topic and a ban reason. */
@@ -86,7 +88,7 @@ export interface BanRow { userId: Uint8Array; reason: string; byUser: Uint8Array
   username: string; display: string }
 export interface InviteRow { id: Uint8Array; communityId: Uint8Array | null; createdBy: Uint8Array | null; maxUses: number;
   uses: number; created: bigint; expires: bigint; revokedAt: bigint | null }
-export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Array | 'top'; position?: number }
+export interface ChannelPatch { name?: string; topic?: string; parent?: Uint8Array | 'top'; position?: number; slowmode?: number }
 
 // ---- wave 2a: roles and private channels (flow 09) ----
 /** The instance's own bounds (internal/api roles.go, channels.go): overwrites per community, a role name, a role colour,
@@ -192,6 +194,10 @@ function checkedName(field: string, v: string, maxBytes: number): string {
 }
 function between(field: string, v: number, min: number, max: number): number {
   if (!Number.isSafeInteger(v) || v < min || v > max) throw new RangeError(`E_ROUTE_INPUT: ${field} must be ${String(min)}..${String(max)}`);
+  return v;
+}
+function slowStep(v: number): number {
+  if (!(SLOW_STEPS as readonly number[]).includes(v)) throw new RangeError('E_ROUTE_INPUT: slowmode must be one of ' + SLOW_STEPS.join(', '));
   return v;
 }
 /** An invite link as the instance answers it: an absolute http(s) URL (it is shown and copied, never followed here) whose
@@ -389,7 +395,7 @@ export class Routes {
     return arr(decode(raw)).map((value) => {
       const a = atLeast(value, 11);
       return { id: bin(a[0], 16), kind: u53(a[1]), mode: u53(a[2]), visibility: u53(a[3]),
-        parentId: opt(a[4], (v) => bin(v, 16)), name: str(a[5]), topic: str(a[6]), position: u53(a[7]),
+        parentId: opt(a[4], (v) => bin(v, 16)), name: str(a[5]), topic: str(a[6]), position: u53(a[7]), slowmode: u53(a[8]),
         seq: u64(a[9]), textGroupId: opt(a[10], (v) => bin(v, 16)) };
     });
   }
@@ -450,7 +456,8 @@ export class Routes {
     const parent = patch.parent === undefined ? null : patch.parent === 'top' ? new Uint8Array(16) : bin(patch.parent, 16);
     const body = encode([patch.name === undefined ? null : checkedName('name', patch.name, CHANNEL_NAME_MAX_BYTES),
       patch.topic === undefined ? null : checkedText('topic', patch.topic, TOPIC_MAX_BYTES), null, null, parent,
-      patch.position === undefined ? null : between('position', patch.position, 0, CHANNEL_POSITION_MAX), null]);
+      patch.position === undefined ? null : between('position', patch.position, 0, CHANNEL_POSITION_MAX),
+      patch.slowmode === undefined ? null : slowStep(patch.slowmode)]);
     await this.body('PATCH', `/v1/channels/${id('channelId', channelId)}`, 'write', true, { body });
   }
   async deleteChannel(channelId: Uint8Array): Promise<void> {
@@ -640,7 +647,7 @@ export class Routes {
   async getChannel(channelId: Uint8Array): Promise<ChannelRow> {
     const a = atLeast(decode(await this.body('GET', `/v1/channels/${id('channelId', channelId)}`, 'read', true)), 12);
     return { id: bin(a[0], 16), kind: u53(a[2]), mode: u53(a[3]), visibility: u53(a[4]),
-      parentId: opt(a[5], (v) => bin(v, 16)), name: str(a[6]), topic: str(a[7]), position: u53(a[8]),
+      parentId: opt(a[5], (v) => bin(v, 16)), name: str(a[6]), topic: str(a[7]), position: u53(a[8]), slowmode: u53(a[9]),
       seq: u64(a[10]), textGroupId: opt(a[11], (v) => bin(v, 16)) };
   }
   async deleteDevice(deviceId: Uint8Array): Promise<void> {
