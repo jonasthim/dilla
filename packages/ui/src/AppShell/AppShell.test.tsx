@@ -43,6 +43,29 @@ describe('AppShell', () => {
     expect(screen.getByRole('button', { name: /connection/ })).toHaveFocus();
   });
 
+  // web3.8 (U3, R23): the bottom-left area (the voice dock over the user panel), after the sidebar and before main.
+  it('desktop renders bottom in .d-app-shell__panel, after the sidebar and before main in DOM order', async () => {
+    const user = userEvent.setup();
+    const { container, rerender } = render(<ComposedShell />);
+    expect(container.querySelector('.d-app-shell__panel')).toBeNull();
+    rerender(<ComposedShell shell={{ bottom: <button type="button">panel control</button> }} />);
+    const panel = container.querySelector('.d-app-shell__panel')!;
+    expect(panel).toContainElement(screen.getByRole('button', { name: 'panel control' }));
+    const sidebar = container.querySelector('.d-app-shell__sidebar')!;
+    const main = screen.getByRole('main');
+    expect(sidebar.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    screen.getByRole('button', { name: 'general' }).focus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'panel control' })).toHaveFocus();
+    await user.tab();
+    expect(main.contains(document.activeElement)).toBe(true);
+    for (const empty of [null, false, undefined]) {
+      rerender(<ComposedShell shell={{ bottom: empty }} />);
+      expect(container.querySelector('.d-app-shell__panel')).toBeNull();
+    }
+  });
+
   it('moves focus to main from the skip link without changing the URL', async () => {
     const user = userEvent.setup();
     render(<ComposedShell />);

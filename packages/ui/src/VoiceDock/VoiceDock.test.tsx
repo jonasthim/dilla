@@ -108,6 +108,16 @@ describe('VoiceDock', () => {
     expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['mute', 'deafen', 'leave']);
   });
 
+  // web3.8 (R3): the user panel owns mute and deafen; a dock given no handler for them draws neither.
+  it('without onMute and onDeafen there is no mute and no deafen, and camera, share and leave stay', () => {
+    const { onMute: _m, onDeafen: _d, ...bare } = five;
+    render(<VoiceDock {...bare} />);
+    const bar = screen.getByRole('toolbar', { name: 'voice controls' });
+    expect(within(bar).queryByRole('button', { name: 'mute' })).toBeNull();
+    expect(within(bar).queryByRole('button', { name: 'deafen' })).toBeNull();
+    expect(within(bar).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual(['camera', 'share screen', 'leave']);
+  });
+
   it('camera and share are pressed toggles whose glyph follows the state', () => {
     const icon = (name: string) => screen.getByRole('button', { name }).querySelector('svg')?.getAttribute('data-icon');
     const { rerender } = render(<VoiceDock {...five} />);

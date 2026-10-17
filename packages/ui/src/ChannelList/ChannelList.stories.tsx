@@ -2,6 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChannelList } from './ChannelList.tsx';
 import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
 import { Button } from '../Button/Button.tsx';
+import { Icon } from '../Icon/Icon.tsx';
+import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
+import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
 
 const meta = {
   title: 'Shell/ChannelList', component: ChannelList,
@@ -65,3 +68,43 @@ export const AnnouncementSlow: Story = { args: { activeId: 'g', channels: [
   { id: 's', name: 'announcements-and-everything-else', kind: 'announcement', readable: false, badge: 'slow mode' },
   { id: 'v', name: 'longhouse', kind: 'voice', readable: false },
 ] } };
+
+// web3.8 (U3): one list, the voice channels in place with their people under them, a "+" in the list's header row, and
+// the join button on hover or focus. The strings are the shell's, quoted.
+const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoiceParticipantView => ({
+  deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
+  video: false, screen: false, web: true, bot: false, ...more,
+});
+const VOICE = {
+  labels: {
+    open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
+    state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
+      connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot' },
+  },
+  rooms: {
+    v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true, video: true }), person('cy', { state: 'unverified' })] },
+    v2: { joined: true, participants: [person('you', { deafened: true })] },
+  },
+  onJoin: () => {},
+};
+const ONE_LIST = [
+  { id: 'g', name: 'general', kind: 'text', readable: false, unread: 3 },
+  { id: 'v1', name: 'longhouse', kind: 'voice', readable: false },
+  { id: 'n', name: 'news', kind: 'announcement', readable: false },
+  { id: 'v2', name: 'workshop', kind: 'voice', readable: false },
+  { id: 'l', name: 'lfg', kind: 'text', readable: true },
+] as const;
+const ONE_LIST_ARGS = {
+  activeId: 'g', rowLabel: ROW_LABEL, channels: ONE_LIST, voice: VOICE,
+  tabs: <SidebarTabs label="sidebar" activeId="channels" onSelect={() => {}}
+    tabs={[{ id: 'channels', label: 'channels' }, { id: 'dms', label: 'direct messages' }]} />,
+  listAction: <Button variant="ghost" size="sm" aria-label="new channel"><Icon name="plus" size={16} /></Button>,
+};
+const oneListPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  expectGlyphLine(canvasElement, 'OneList');
+  const people = canvasElement.querySelectorAll('.d-voice-row__person');
+  if (people.length !== 4) throw new Error(`OneList: ${String(people.length)} nested people, not 4`);
+};
+export const OneList: Story = { args: ONE_LIST_ARGS, globals: { theme: 'mesh' }, play: oneListPlay };
+export const OneListLight: Story = { args: ONE_LIST_ARGS, globals: { theme: 'light' }, play: oneListPlay };
+export const OneListHighContrast: Story = { args: ONE_LIST_ARGS, globals: { theme: 'high-contrast' }, play: oneListPlay };

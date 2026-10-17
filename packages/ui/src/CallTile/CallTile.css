@@ -18,13 +18,13 @@
 .d-call-tile__video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: var(--bg); border-radius: var(--r-md); }
 .d-call-tile__inset { position: absolute; right: 0.375rem; bottom: 0.375rem; width: 28%; min-width: 4.5rem; aspect-ratio: 16 / 9; object-fit: cover; background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-md); }
 .d-call-tile [data-mirror="true"] { transform: scaleX(-1); }
-.d-call-tile__name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: var(--weight-label); color: var(--fg); }
-.d-call-tile__states { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem 0.625rem; min-height: 1.25rem; font-size: var(--text-sm); color: var(--fg-2); }
-.d-call-tile__state { white-space: nowrap; }
-.d-call-tile__glyph { margin-right: 0.25rem; }
-.d-call-tile__state[data-state="speaking"] { color: var(--accent); }
+.d-call-tile__caption { display: flex; align-items: center; flex-wrap: nowrap; justify-content: center; gap: 0.375rem; max-width: 100%; min-width: 0; min-height: 1.25rem; font-size: var(--text-sm); color: var(--fg-2); }
+.d-call-tile__name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: var(--weight-label); color: var(--fg); }
+/* The states sit in the caption's own row: the wrapper draws no box. */
+.d-call-tile__states { display: contents; }
+.d-call-tile__state { flex: none; display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
 .d-call-tile__state[data-state="unverified"] { color: var(--warn); }
-.d-call-tile__tag { padding: 0 0.25rem; font-size: var(--text-xs); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); text-transform: lowercase; }
+.d-call-tile__tag { flex: none; padding: 0 0.25rem; font-size: var(--text-xs); color: var(--fg-2); border: 1px solid var(--edge); border-radius: var(--r-md); text-transform: lowercase; }
 .d-call-tile__volume { display: grid; gap: 0.125rem; width: 100%; max-width: 14rem; font-size: var(--text-xs); color: var(--fg-2); }
 .d-call-tile__volume { box-sizing: border-box; min-width: 0; }
 .d-call-tile__volume-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -2,6 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ComposedShell, fixtureStatusBar } from './AppShell.fixture.tsx';
 import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
+import { UserPanel } from '../UserPanel/UserPanel.tsx';
+import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 
 const meta: Meta = { title: 'Shell/AppShell' };
 export default meta;
@@ -47,4 +49,48 @@ export const Splitters: Story = {
       <ComposedShell shell={{ ...withAside, paneWidths: { sidebar: 288, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} />
     </div>
   ),
+};
+
+// web3.8 (U3, R23): the bottom-left area spans under the rail and the sidebar: the voice dock over the user panel.
+const userPanel = (
+  <UserPanel name="Ada Lovelace" username="ada" muted={false} deafened={false} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
+    labels={{ region: 'your account', mute: 'mute', deafen: 'deafen', settings: 'settings' }}
+    onMute={() => {}} onDeafen={() => {}} onSettings={() => {}} onOpenSelf={() => {}} />
+);
+const dock = (
+  <VoiceDock phase="connected" where="longhouse" muted={false} deafened={false} announcement="" onCamera={() => {}} onShare={() => {}} onLeave={() => {}}
+    labels={{ region: 'voice controls', connecting: 'connecting', connected: 'in {where}', reconnecting: 'reconnecting', paused: 'paused in {where}',
+      mute: 'mute', deafen: 'deafen', leave: 'leave', camera: 'camera', share: 'share screen' }} />
+);
+const bottomPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  const panel = canvasElement.querySelector<HTMLElement>('.d-app-shell__panel');
+  const rail = canvasElement.querySelector<HTMLElement>('.d-app-shell__rail');
+  const main = canvasElement.querySelector<HTMLElement>('.d-app-shell__main');
+  if (panel === null || rail === null || main === null) throw new Error('the shell has no panel, rail or main');
+  const [p, r, m] = [panel, rail, main].map(e => e.getBoundingClientRect());
+  if (p.left > r.left + 1 || p.top < r.bottom - 1) throw new Error('the panel does not sit under the rail');
+  if (p.right > m.left + 1) throw new Error('the panel overlaps main');
+};
+export const BottomPanel: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
+  globals: { theme: 'mesh' }, play: bottomPlay,
+};
+export const BottomPanelLight: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
+  globals: { theme: 'light' }, play: bottomPlay,
+};
+export const BottomPanelHighContrast: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: <>{dock}{userPanel}</> }} /></div>,
+  globals: { theme: 'high-contrast' }, play: bottomPlay,
+};
+/** The user panel alone, with the optional status bar still passed: the status row stays below the panel (C-22). */
+export const BottomPanelWithStatus: Story = {
+  render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ bottom: userPanel, statusBar: fixtureStatusBar, aside: members, asideLabel: 'members', asideOpen: true, onAsideClose: () => {}, asideCloseLabel: 'close members' }} /></div>,
+  play: ({ canvasElement }) => {
+    bottomPlay({ canvasElement });
+    const status = canvasElement.querySelector<HTMLElement>('.d-app-shell__status');
+    const panel = canvasElement.querySelector<HTMLElement>('.d-app-shell__panel');
+    if (status === null || panel === null) throw new Error('no status bar or panel');
+    if (status.getBoundingClientRect().top < panel.getBoundingClientRect().bottom - 1) throw new Error('the status bar is not below the panel');
+  },
 };

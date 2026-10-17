@@ -17,6 +17,12 @@ export interface AppShellProps {
    * has no status row. A phone never has one: the banner says when the link is down.
    */
   statusBar?: ReactNode;
+  /**
+   * web3.8 (R23): desktop only, ignored on a phone. The bottom-left area, under the rail and the sidebar (the voice dock
+   * over the user panel). Absent (undefined, null or false) the shell renders no wrapper and the row is empty. In DOM
+   * order it follows the sidebar and its splitter and precedes main: rail, sidebar, splitter, bottom, main.
+   */
+  bottom?: ReactNode;
   banner?: ReactNode;
   /**
    * The incoming-ring banner (web-3, flow 06): the first thing in main, so its answer and decline are main's first
@@ -130,7 +136,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
  * keyboard map: skip link → banner → rail → sidebar → main → status bar.
  */
 export function AppShell({
-  skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
+  skipLabel, rail, sidebar, header, children, composer, statusBar, bottom, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
   layout, phonePane = 'list', tabBar, callBar, covered, page, paneWidths, onPaneResize, resizeLabels,
 }: AppShellProps) {
   const mainId = useId();
@@ -140,6 +146,7 @@ export function AppShell({
   const asideRef = useRef<HTMLElement>(null);
   const hasRing = ring !== undefined && ring !== null && ring !== false;
   const hasStatus = statusBar !== undefined && statusBar !== null && statusBar !== false;
+  const hasBottom = bottom !== undefined && bottom !== null && bottom !== false;
   const showAside = asideOpen === true && aside !== undefined && aside !== null && aside !== false;
 
   // Narrower than 64rem (root font size) of shell width: the aside is the overlay drawer. jsdom has no layout: width 0 reads as narrow.
@@ -385,6 +392,7 @@ export function AppShell({
         {hasBanner ? <div className="d-app-shell__banner" inert={overlay || undefined}>{banner}</div> : null}
         <div ref={railRef} className="d-app-shell__rail" inert={overlay || undefined}>{rail}</div>
         <div id={resizable ? splitSidebarId : undefined} className="d-app-shell__sidebar" inert={overlay || undefined}>{sidebar}{resizable ? splitter('sidebar', splitSidebarId) : null}</div>
+        {hasBottom ? <div className="d-app-shell__panel" inert={overlay || undefined}>{bottom}</div> : null}
         <main id={mainId} ref={mainRef} tabIndex={-1} className="d-app-shell__main" inert={overlay || undefined}>
           {hasRing ? <div ref={ringRef} className="d-app-shell__ring">{ring}</div> : null}
           {header}

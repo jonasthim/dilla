@@ -48,8 +48,9 @@ export interface VoiceDockProps {
   controls?: boolean;
   /** Optional: the input meter (an `AudioMeter`), shown under the status line. */
   meter?: ReactNode;
-  onMute(): void;
-  onDeafen(): void;
+  /** Mute and deafen show only with their handler: on a desktop the user panel owns them (web3.8, R3), so the dock gets neither. */
+  onMute?(): void;
+  onDeafen?(): void;
   /** Toggles the camera, as the stage's control does. Without it (or `labels.camera`) the dock shows no camera control. */
   onCamera?(): void;
   /** Toggles screen sharing, as the stage's control does. Without it (or `labels.share`) the dock shows no share control. */
@@ -64,7 +65,7 @@ const PHASE_GLYPH = {
 
 /**
  * The voice dock above the user panel while this device is in voice: where it is (a glyph plus the words), the
- * optional meter, then mute, deafen, camera, share screen and leave as one toolbar of icon buttons with roving focus
+ * optional meter, then mute and deafen (only with their handlers), camera, share screen and leave as one toolbar of icon buttons with roving focus
  * (`voice.dock.region`), the stage's controls under the stage's rules. Its one `role="status"` region announces join,
  * leave, mute, deafen and the end of a pause (flow 06).
  */
@@ -79,10 +80,13 @@ export function VoiceDock({
     reconnecting: labels.reconnecting,
     paused: labels.paused.replaceAll('{where}', where),
   }[phase];
-  const controls: ToolbarControl[] = [
-    { id: 'mute', label: labels.mute, on: muted, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute, onAction: onMute },
-    { id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen },
-  ];
+  const controls: ToolbarControl[] = [];
+  if (onMute !== undefined) {
+    controls.push({ id: 'mute', label: labels.mute, on: muted, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute, onAction: onMute });
+  }
+  if (onDeafen !== undefined) {
+    controls.push({ id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen });
+  }
   if (onCamera !== undefined && labels.camera !== undefined) {
     controls.push({ id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera, onAction: onCamera });
   }

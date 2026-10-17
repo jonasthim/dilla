@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
 import { CallTile, type CallTileProps, type VoiceParticipantView } from './CallTile.tsx';
@@ -42,20 +42,45 @@ describe('CallTile', () => {
     expect(container.querySelector('audio')).toBeNull();
   });
 
-  it('speaking is shown by text as well as the outline', () => {
+  it('speaking is shown by a named dot as well as the outline', () => {
     const { container } = render(<CallTile view={{ ...view, speaking: true }} {...rest} />);
-    expect(screen.getByText('speaking')).toBeInTheDocument();
+    const dot = screen.getByRole('img', { name: 'speaking' });
+    expect(dot).toHaveAttribute('title', 'speaking');
+    expect(dot.querySelector('.d-state-dot')).toHaveAttribute('data-tone', 'ok');
+    expect(dot).toHaveAttribute('data-state', 'speaking');
     expect(container.firstElementChild).toHaveAttribute('data-speaking', 'true');
   });
 
-  it('shows each state as a word, and the state hook', () => {
+  it('shows each glyph-only state as a named image, the stream states as glyph plus word, and the state hook', () => {
     const { container, rerender } = render(<CallTile view={{ ...view, muted: true, deafened: true, video: true, screen: true }} {...rest} />);
-    for (const word of ['muted', 'deafened', 'camera on', 'sharing screen', 'web']) expect(screen.getByText(word)).toBeInTheDocument();
+    for (const word of ['muted', 'deafened', 'camera on', 'sharing screen']) {
+      const img = screen.getByRole('img', { name: word });
+      expect(img).toHaveAttribute('title', word);
+      expect(img).toHaveClass('d-call-tile__state');
+      expect(img.textContent).toBe('');
+    }
+    expect([...container.querySelectorAll('svg')].map(i => i.getAttribute('data-icon'))).toEqual(['mic-off', 'headphone-off', 'video', 'monitor-up']);
+    expect(screen.getByText('web')).toBeInTheDocument();
     rerender(<CallTile view={{ ...view, state: 'not-heard' }} {...rest} />);
     expect(screen.getByText('not heard yet')).toBeInTheDocument();
     expect(container.firstElementChild).toHaveAttribute('data-voice-state', 'not-heard');
     rerender(<CallTile view={{ ...view, state: 'connecting' }} {...rest} />);
     expect(screen.getByText('connecting')).toBeInTheDocument();
+  });
+
+  it('the caption wraps the name and the states in one row: name, icons, then the stream-state words', () => {
+    const { container } = render(<CallTile view={{ ...view, muted: true, video: true, state: 'unverified' }} {...rest} />);
+    const caption = container.querySelector('.d-call-tile__caption')!;
+    expect(caption.querySelector(':scope > .d-call-tile__name')).toHaveTextContent('ada');
+    const states = [...caption.querySelectorAll<HTMLElement>('.d-call-tile__state')].map(s => s.dataset.state);
+    expect(states).toEqual(['muted', 'video', 'unverified']);
+    expect(caption.querySelectorAll('svg[data-icon]')).toHaveLength(2);
+    expect(within(caption as HTMLElement).getByText('unverified stream')).toBeInTheDocument();
+  });
+
+  it('the old font glyphs are gone', () => {
+    const { container } = render(<CallTile view={{ ...view, muted: true, deafened: true }} {...rest} />);
+    expect(container.textContent).not.toMatch(/[⊘⊗]/);
   });
 
   it('a native range sets the volume of another person, and the own tile has none', () => {

@@ -108,6 +108,8 @@ export { VoiceChannelRow } from './VoiceChannelRow/VoiceChannelRow.tsx';
 export type { VoiceChannelRowProps } from './VoiceChannelRow/VoiceChannelRow.tsx';
 export { ActiveVoice } from './ActiveVoice/ActiveVoice.tsx';
 export type { ActiveVoiceProps } from './ActiveVoice/ActiveVoice.tsx';
+export { UserPanel } from './UserPanel/UserPanel.tsx';
+export type { UserPanelProps } from './UserPanel/UserPanel.tsx';
 export { VoiceDock } from './VoiceDock/VoiceDock.tsx';
 export type { VoiceDockProps } from './VoiceDock/VoiceDock.tsx';
 export { CallControls, VOICE_ICONS, VOICE_SHORTCUTS, voiceWhy } from './CallControls/CallControls.tsx';

@@ -39,24 +39,41 @@ export interface CallTileProps {
   onVolume(volume: number): void;
 }
 
-/** One state word with its glyph: the glyph is decorative, the word carries the state (never colour alone). */
-export interface VoiceStateWord { key: string; glyph: ReactNode; text: string }
+/**
+ * One participant state. A glyph-only state (muted, deafened, camera, screen, speaking: R29) has no visible word: its
+ * `text` is the accessible name and the tooltip. A stream state keeps its glyph and its word (trust and diagnosis).
+ */
+export interface VoiceStateWord { key: string; glyph: ReactNode; text: string; glyphOnly: boolean }
 
 /**
- * The words of a participant's state, in reading order: the stream state when it is not ok, then speaking, muted,
- * deafened, camera and screen. `web` and `bot` are tags, not states, and are left to the caller.
+ * The states of a participant, in reading order: muted, deafened, camera, screen, speaking (glyph-only), then the
+ * stream state when it is not ok (glyph plus word). `web` and `bot` are tags, not states, and are left to the caller.
  */
 export function voiceStateWords(view: VoiceParticipantView, labels: VoiceStateLabels): VoiceStateWord[] {
   const out: VoiceStateWord[] = [];
-  if (view.state === 'connecting') out.push({ key: 'connecting', glyph: <StateDot tone="pending" />, text: labels.connecting });
-  if (view.state === 'not-heard') out.push({ key: 'not-heard', glyph: '?', text: labels.notHeard });
-  if (view.state === 'unverified') out.push({ key: 'unverified', glyph: '!', text: labels.unverified });
-  if (view.speaking) out.push({ key: 'speaking', glyph: <StateDot tone="ok" />, text: labels.speaking });
-  if (view.muted) out.push({ key: 'muted', glyph: '⊘', text: labels.muted });
-  if (view.deafened) out.push({ key: 'deafened', glyph: '⊗', text: labels.deafened });
-  if (view.video) out.push({ key: 'video', glyph: <Icon name="video" size={14} />, text: labels.video });
-  if (view.screen) out.push({ key: 'screen', glyph: <Icon name="monitor-up" size={14} />, text: labels.screen });
+  if (view.muted) out.push({ key: 'muted', glyph: <Icon name="mic-off" size={14} />, text: labels.muted, glyphOnly: true });
+  if (view.deafened) out.push({ key: 'deafened', glyph: <Icon name="headphone-off" size={14} />, text: labels.deafened, glyphOnly: true });
+  if (view.video) out.push({ key: 'video', glyph: <Icon name="video" size={14} />, text: labels.video, glyphOnly: true });
+  if (view.screen) out.push({ key: 'screen', glyph: <Icon name="monitor-up" size={14} />, text: labels.screen, glyphOnly: true });
+  if (view.speaking) out.push({ key: 'speaking', glyph: <StateDot tone="ok" />, text: labels.speaking, glyphOnly: true });
+  if (view.state === 'connecting') out.push({ key: 'connecting', glyph: <StateDot tone="pending" />, text: labels.connecting, glyphOnly: false });
+  if (view.state === 'not-heard') out.push({ key: 'not-heard', glyph: '?', text: labels.notHeard, glyphOnly: false });
+  if (view.state === 'unverified') out.push({ key: 'unverified', glyph: '!', text: labels.unverified, glyphOnly: false });
   return out;
+}
+
+/**
+ * The states as inline spans, for a row or a caption (`prefix` is `d-voice-row` or `d-call-tile`). A glyph-only state
+ * is a `role="img"` named and titled by its word, with no text node; a stream state is a decorative glyph and its word.
+ */
+export function VoiceStates({ words, prefix }: { words: readonly VoiceStateWord[]; prefix: string }): ReactNode {
+  return words.map(w => w.glyphOnly ? (
+    <span key={w.key} className={`${prefix}__state`} data-state={w.key} role="img" aria-label={w.text} title={w.text}>{w.glyph}</span>
+  ) : (
+    <span key={w.key} className={`${prefix}__state`} data-state={w.key}>
+      <span className={`${prefix}__glyph-state`} aria-hidden="true">{w.glyph}</span>{w.text}
+    </span>
+  ));
 }
 
 /** A live call video: muted (the call's sound is played through WebAudio, never by an element), inline. */
@@ -91,15 +108,13 @@ export function CallTile({ view, own, volume, media, inset = null, mirror = null
           {showInset ? <StreamVideo stream={inset} className="d-call-tile__inset" mirror={mirror === 'inset'} /> : null}
         </div>
       ) : null}
-      <span className="d-call-tile__name">{view.name}</span>
-      <span className="d-call-tile__states">
-        {words.map(w => (
-          <span key={w.key} className="d-call-tile__state" data-state={w.key}>
-            <span className="d-call-tile__glyph" aria-hidden="true">{w.glyph}</span>{w.text}
-          </span>
-        ))}
-        {view.web ? <span className="d-call-tile__tag">{labels.state.web}</span> : null}
-        {view.bot ? <span className="d-call-tile__tag">{labels.state.bot}</span> : null}
+      <span className="d-call-tile__caption">
+        <span className="d-call-tile__name">{view.name}</span>
+        <span className="d-call-tile__states">
+          <VoiceStates words={words} prefix="d-call-tile" />
+          {view.web ? <span className="d-call-tile__tag">{labels.state.web}</span> : null}
+          {view.bot ? <span className="d-call-tile__tag">{labels.state.bot}</span> : null}
+        </span>
       </span>
       {own ? null : (
         <label className="d-call-tile__volume">

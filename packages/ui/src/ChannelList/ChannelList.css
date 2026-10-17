@@ -15,3 +15,14 @@
 .d-channel-list__empty { margin: 0; padding: 1rem var(--row-pad-x); font-size: var(--text-sm); color: var(--fg-3); }
 .d-channel-list__panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .d-channel-list__footer { flex-shrink: 0; padding: 0.5rem var(--row-pad-x) 0.75rem; border-top: 1px solid var(--hairline); }
+/* web3.8: the list's own header row holds one right-aligned action (the "+" for a new channel), above the rows. */
+.d-channel-list__list-head { display: flex; justify-content: flex-end; align-items: center; flex: none; padding: 0.25rem 0.5rem 0; }
+/* A voice row with its join button: the button has its own cell in the row's line, shown while the row is hovered or
+   focused (always on a device without hover); the people span the full width below. */
+.d-channel-list__voice { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 0.25rem; }
+.d-channel-list__voice > .d-voice-row { grid-column: 1; grid-row: 1; min-width: 0; }
+.d-channel-list__voice > .d-voice-row__people { grid-column: 1 / -1; }
+.d-channel-list__join { grid-column: 2; grid-row: 1; align-self: center; min-height: 24px; position: relative; z-index: 1; opacity: 0; transition: opacity var(--duration-fast); }
+.d-channel-list__voice:hover > .d-channel-list__join, .d-channel-list__voice:focus-within > .d-channel-list__join { opacity: 1; }
+@media (hover: none) { .d-channel-list__join { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .d-channel-list__join { transition: none; } }

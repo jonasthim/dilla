@@ -37,8 +37,8 @@ describe('base.css phone rules', () => {
     expect(css).toMatch(/__ring \{[^}]*padding-left: env\(safe-area-inset-left\)/);
     expect(css).toMatch(/__aside \{[^}]*padding-left: env\(safe-area-inset-left\)/);
   });
-  it('a desktop aside grid without a status bar has no status row', () => {
-    expect(css).toMatch(/__grid--aside:not\(:has\(> \.d-app-shell__status\)\) \{ grid-template-areas: "banner banner banner banner" "rail sidebar main aside"; \}/);
+  it('a desktop aside grid has the panel area and no status row until a status bar is given', () => {
+    expect(css).toMatch(/__grid--aside \{[^}]*grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "panel panel main aside"; \}/);
   });
   it('hides the list pane main with the hidden attribute winning over its flex display', () => {
     const shellCss = readFileSync(fileURLToPath(new URL('../AppShell/AppShell.css', import.meta.url)), 'utf8');

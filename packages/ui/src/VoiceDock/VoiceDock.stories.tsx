@@ -127,3 +127,13 @@ export const PhonePausedNoMeter: Story = {
     }
   },
 };
+/** web3.8 (R3): the user panel owns mute and deafen, so a dock given no handler for them draws camera, share and leave only. */
+export const WithoutMuteAndDeafen: Story = {
+  args: { onMute: undefined, onDeafen: undefined, meter: <AudioMeter level={6} label="input level" /> },
+  play: ({ canvasElement }) => {
+    expectVoiceTargets(canvasElement, 'VoiceDock');
+    expectOneRow(canvasElement, 'VoiceDock');
+    const names = Array.from(canvasElement.querySelectorAll('[role="toolbar"] button')).map(b => b.getAttribute('aria-label'));
+    if (names.join() !== 'camera,share screen,leave') throw new Error(`VoiceDock: the controls are ${names.join()}, not camera, share screen, leave`);
+  },
+};

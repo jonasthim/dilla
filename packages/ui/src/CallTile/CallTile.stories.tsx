@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallTile, type CallTileProps } from './CallTile.tsx';
 import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
+import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
 
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const LABELS: CallTileProps['labels'] = {
@@ -54,7 +55,7 @@ const meta = {
   args: { view: VIEW, own: false, volume: 100, media: null, labels: LABELS, onVolume: () => {} },
   decorators: [Story => <div style={{ width: 280 }}><Story /></div>],
   // The volume range is a voice control: 40 px high, 44 px on a phone (flow 06).
-  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallTile'); },
+  play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallTile'); expectGlyphLine(canvasElement, 'CallTile'); },
 } satisfies Meta<typeof CallTile>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -81,4 +82,9 @@ export const LouderVolume: Story = { args: { volume: 150 } };
 export const Phone360: Story = {
   args: { volume: 100, labels: { ...LABELS, volume: 'volume for ada-lovelace' } },
   render: args => <div style={{ width: 'calc(100vw - 32px)', boxSizing: 'border-box' }}><CallTile {...args} /></div>,
+};
+
+/** Every glyph and a long name in the 280 px tile: the name truncates, the glyphs stay on its line (R29). */
+export const EveryGlyph: Story = {
+  args: { view: { ...VIEW, name: 'augusta-ada-king-noel-countess-of-lovelace', muted: true, deafened: true, video: true, screen: true, speaking: true, state: 'unverified' } },
 };

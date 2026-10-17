@@ -33,7 +33,7 @@ describe('ActiveVoice', () => {
     const rows = within(section).getAllByRole('button');
     expect(rows.map(r => r.getAttribute('aria-label'))).toEqual(['voice harbour', 'voice workshop']);
     expect(rows.filter(r => r.tabIndex === 0)).toHaveLength(1);
-    expect(within(section).getByText('sharing screen')).toBeInTheDocument();
+    expect(within(section).getByRole('img', { name: 'sharing screen' })).toBeInTheDocument();
     await userEvent.keyboard('{Tab}{ArrowDown}{Enter}');
     expect(onOpen).toHaveBeenCalledWith('v2');
   });
