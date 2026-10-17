@@ -11,7 +11,7 @@ import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, goBack, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
-import { rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
+import { phoneNow, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow, InviteFlow } from './Create.tsx';
@@ -700,7 +700,7 @@ export function Shell(): React.JSX.Element {
     if (targetId !== pending.id) return;
     const box = document.querySelector<HTMLTextAreaElement>('.d-composer textarea');
     if (box === null || createFlowOpen) return;
-    box.focus();
+    if (!phoneNow()) box.focus();
     pendingFocus.current = null;
   });
 
@@ -1309,7 +1309,7 @@ export function Shell(): React.JSX.Element {
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
       <AppShell
         skipLabel={t('shell.skip')}
-        layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar}
+        layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} covered={phone && (overlay || adminFor !== null)}
         rail={phone && phoneTab !== 'servers' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
           joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}

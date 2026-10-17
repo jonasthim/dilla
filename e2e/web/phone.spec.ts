@@ -150,10 +150,11 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).press('Enter');
       await expect(dialog).toBeHidden({ timeout: WAIT });
-      // A new server opens its #general as a view with the composer focused, which is typing, so the tab bar steps aside;
-      // back from it is the server's list.
+      // A new server opens its #general as a view (the tab bar stays, and nothing focuses the composer: script focus does not
+      // open a phone's keyboard); back from it is the server's list.
       await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
-      await expect(tabBar(page)).toBeHidden();
+      await expect(tabBar(page)).toBeVisible();
+      await expect(page.locator('.d-composer textarea')).not.toBeFocused();
       await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(tabBar(page).getByRole('link')).toHaveCount(4);

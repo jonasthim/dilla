@@ -1,4 +1,5 @@
 // Page-side attachment cards, downloads, lightbox and upload tray.
+import { phoneNow } from '../../layout.ts';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BROWSER_ATTACHMENT_CAP, safeName, type AttachmentSummary, type CoreClient, type TimelineItem, type TrayItem } from '@dilla/client-core';
 import { AttachmentCard, AttachmentTray, Lightbox } from '@dilla/ui';
@@ -159,7 +160,7 @@ export function TrayList(p: { channelId: string; items: readonly TrayItem[]; onE
   useLayoutEffect(() => {
     if (pendingFocus.current === null) return;
     const buttons = document.querySelectorAll<HTMLButtonElement>('.d-attachment-tray__remove');
-    (buttons[pendingFocus.current] ?? document.querySelector<HTMLTextAreaElement>('.d-composer textarea'))?.focus();
+    (buttons[pendingFocus.current] ?? (phoneNow() ? null : document.querySelector<HTMLTextAreaElement>('.d-composer textarea')))?.focus();
     pendingFocus.current = null;
   }, [p.items]);
   if (p.items.length === 0) return null;

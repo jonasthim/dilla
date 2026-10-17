@@ -891,7 +891,7 @@ async function main(argv) {
     await settle(mira, { keepFocus: false });
     await shoot('phone-channel');
     // web3.7.1 (opt in with --ui-out): the tab bar on a channel, hidden while typing, under Settings and under the members
-    // sheet, in the Mesh theme and in the light one. Mira ends where she began: reading #general, nothing focused.
+    // sheet, in the Mesh, light and high-contrast themes. Mira ends where she began: reading #general, nothing focused.
     if (o.uiOut !== undefined) {
       mkdirSync(o.uiOut, { recursive: true });
       const ui = async (name, theme) => {
@@ -900,7 +900,13 @@ async function main(argv) {
         await mira.screenshot({ path: path.join(o.uiOut, `${name}.${theme}.png`) });
       };
       const channelMenu = mira.getByRole('button', { name: t('nav.channel.menu'), exact: true });
-      for (const theme of ['mesh', 'light']) {
+      for (const theme of ['mesh', 'light', 'high-contrast']) {
+        // Right after opening: the tab bar shows, nothing is focused and there is no keyboard.
+        await phoneBack.click();
+        await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
+        await mira.getByRole('button', { name: 'general', exact: true }).click();
+        await composer(mira, 'general').waitFor({ timeout: WAIT });
+        await ui('phone-channel-opened', theme);
         await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
         await ui('phone-channel-tabbar', theme);
         await composer(mira, 'general').focus();

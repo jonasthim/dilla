@@ -106,6 +106,15 @@ describe('the phone shell: pushed views', () => {
     expect(back).toHaveBeenCalledTimes(1);
   });
 
+  it('opening a channel focuses no field: the composer is not active and the tab bar is shown', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await user.click(await screen.findByRole('button', { name: 'lobby' }));
+    const box = await screen.findByRole('textbox', { name: 'message #lobby' });
+    expect(box).not.toHaveFocus();
+    expect(tabs()).toBeVisible();
+    expect(document.querySelector('.d-app-shell')).not.toHaveAttribute('data-typing');
+  });
+
   it('replaces a deep-linked channel with its server on back', async () => {
     const { user } = phone({ path: `/c/${A}/${TEXT}` });
     const before = window.history.length;
@@ -393,6 +402,15 @@ describe('the phone shell: settings', () => {
     await user.click(tab('servers'));
     expect(here()).toBe(`/c/${A}`);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: t('settings.title') })).toBeNull());
+  });
+
+  it('makes the shell behind a phone Settings inert, except the tab bar', async () => {
+    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
+    phone({ path: '/settings/devices', withSettings: true });
+    await waitFor(() => expect(document.querySelector('.d-phone-header')).not.toBeNull());
+    expect(document.querySelector('main')).toHaveAttribute('inert');
+    expect(tabs()!.closest('.d-app-shell__tabbar')).not.toHaveAttribute('inert');
+    expect(tabs()!.closest('[inert]')).toBeNull();
   });
 
   it('replaces a deep-linked settings route with You on back', async () => {

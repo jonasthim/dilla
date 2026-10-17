@@ -9,6 +9,8 @@ import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME } from '../test/fixtures.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 import { Shell } from './Shell.tsx';
+import { PHONE_QUERY } from '../layout.ts';
+import { t } from '../strings/index.ts';
 
 const A = 'a1'.repeat(16);
 const NEW = '5b'.repeat(16);
@@ -95,6 +97,25 @@ describe('a fresh instance (flow 07)', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(within(rail()).getByRole('button', { name: 'Midgard Crew' })).toHaveAttribute('aria-current', 'page');
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'message #general' })).toHaveFocus());
+  });
+
+  it('on a phone a new server opens #general with nothing focused in the composer and the tab bar shown', async () => {
+    window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { user } = setup('/');
+      await user.click(within(rail()).getByRole('button', { name: 'new server' }));
+      await user.type(screen.getByRole('textbox', { name: 'Server name' }), 'Midgard Crew{Enter}');
+      await waitFor(() => expect(path()).toBe(`/c/${NEW}/${GEN}`));
+      const box = await screen.findByRole('textbox', { name: 'message #general' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(box).not.toHaveFocus();
+      expect(document.activeElement?.closest('.d-composer')).toBeNull();
+      expect(screen.getByRole('navigation', { name: t('nav.tabs.label') })).toBeVisible();
+    } finally {
+      Reflect.deleteProperty(window, 'matchMedia');
+    }
   });
 
   // Review Focus 2 in the shell: the server stays selected and usable behind the notice, and after the dialog closes.

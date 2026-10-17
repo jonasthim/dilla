@@ -1,4 +1,5 @@
 // The open conversation: folded rows, navigation, reactions, pins and overlays.
+import { phoneNow } from '../../layout.ts';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
 import { Banner, Button, Dialog, DropOverlay, EmojiGrid, MessageLog } from '@dilla/ui';
@@ -49,7 +50,8 @@ export function useConversationUi(targetId: string | null): [ConversationUi, (a:
   }
   return [ui, dispatch];
 }
-export function focusComposer(): void { document.querySelector<HTMLTextAreaElement>('.d-composer textarea')?.focus(); }
+// Not on a phone (web3.7.1): script focus does not open the keyboard there, so the composer is only ever focused by a tap.
+export function focusComposer(): void { if (phoneNow()) return; document.querySelector<HTMLTextAreaElement>('.d-composer textarea')?.focus(); }
 export function focusLog(): void { document.querySelector<HTMLElement>('[role="log"]')?.focus(); }
 
 export interface ConversationProps { channelId: string; logKey: string; label: string; timeline: TimelineState | undefined;

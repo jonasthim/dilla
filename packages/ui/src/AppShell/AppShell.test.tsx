@@ -459,6 +459,26 @@ describe('phone layout', () => {
     expect(wrapper).not.toHaveAttribute('hidden');
   });
 
+  it('typing: a field outside the shell (a dialog, a settings page) hides the tab bar too', () => {
+    const { container } = render(<><ComposedShell shell={phone({ phonePane: 'view' })} /><textarea aria-label="elsewhere" /></>);
+    const shell = container.firstElementChild as HTMLElement;
+    act(() => { screen.getByRole('textbox', { name: 'elsewhere' }).focus(); });
+    expect(shell).toHaveAttribute('data-typing', 'true');
+    expect(screen.queryByRole('navigation', { name: 'main' })).toBeNull();
+    act(() => { screen.getByRole('textbox', { name: 'elsewhere' }).blur(); });
+    expect(shell).not.toHaveAttribute('data-typing');
+  });
+
+  it('covered: main, rail, sidebar, aside and call bar are inert; the tab bar and the ring are not', () => {
+    const ring = <section aria-label="incoming calls"><button type="button">answer</button></section>;
+    const { container } = render(<ComposedShell ring={ring} shell={phone({ phonePane: 'view', covered: true, aside: <p>pane</p>, asideLabel: 'members', asideOpen: true })} />);
+    expect(screen.getByRole('main')).toHaveAttribute('inert');
+    expect(screen.getByTestId('call-bar').closest('.d-app-shell__callbar')).toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__aside')).toHaveAttribute('inert');
+    expect(screen.getByTestId('tab-bar').closest('.d-app-shell__tabbar')).not.toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__ring')).not.toHaveAttribute('inert');
+  });
+
   it('typing: a checkbox does not count', () => {
     const { container } = render(<ComposedShell shell={phone({ phonePane: 'view', tabBar: <input type="checkbox" aria-label="pick" /> })} />);
     act(() => { screen.getByRole('checkbox', { name: 'pick' }).focus(); });

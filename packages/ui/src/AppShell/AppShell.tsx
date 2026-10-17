@@ -44,6 +44,8 @@ export interface AppShellProps {
   tabBar?: ReactNode;
   /** The phone's call strip; rendered on both panes of a phone. */
   callBar?: ReactNode;
+  /** web3.7.1: a page above the shell on a phone (Settings): main, rail, sidebar, aside and call bar are inert; the tab bar stays live. */
+  covered?: boolean;
 }
 
 /** The shell width from which the aside is a column (base.css holds the same 64rem in its container query). */
@@ -61,7 +63,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
  */
 export function AppShell({
   skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
-  layout, phonePane = 'list', tabBar, callBar,
+  layout, phonePane = 'list', tabBar, callBar, covered,
 }: AppShellProps) {
   const mainId = useId();
   const mainRef = useRef<HTMLElement>(null);
@@ -136,16 +138,16 @@ export function AppShell({
   }, [hasRing]);
   const phone = layout === 'phone';
   const hasTabBar = phone && tabBar !== undefined && tabBar !== null && tabBar !== false;
-  // Typing: an editable element in the shell has focus, which is when a phone opens its keyboard. The tab bar steps aside.
+  // Typing: an editable element anywhere in the document has focus (a dialog and a settings page included), which is when a phone opens its keyboard. The tab bar steps aside.
   const [typing, setTyping] = useState(false);
   useEffect(() => {
     const root = rootRef.current;
     if (!phone || root === null) { setTyping(false); return; }
     const onIn = (e: FocusEvent) => setTyping(editable(e.target));
     const onOut = (e: FocusEvent) => setTyping(editable(e.relatedTarget));
-    root.addEventListener('focusin', onIn);
-    root.addEventListener('focusout', onOut);
-    return () => { root.removeEventListener('focusin', onIn); root.removeEventListener('focusout', onOut); setTyping(false); };
+    document.addEventListener('focusin', onIn);
+    document.addEventListener('focusout', onOut);
+    return () => { document.removeEventListener('focusin', onIn); document.removeEventListener('focusout', onOut); setTyping(false); };
   }, [phone]);
   // --d-tabbar-h is the tab bar's height (0px while hidden or absent). It is also set on <html>, where a settings page outside the shell reads it.
   const tabBarRef = useRef<HTMLDivElement>(null);
@@ -173,7 +175,7 @@ export function AppShell({
     // One pane at a time. DOM order is the focus order: skip link, banner, (list: rail, sidebar, hidden main | view: main),
     // the aside and its backdrop, the call bar, the tab bar (on both panes; the sheet ends above it and it stays live). There is no status bar: the banner says when the link is down.
     const sidebarId = `${mainId}-list`;
-    const inert = overlay || undefined;
+    const inert = overlay || covered === true || undefined;
     const mainEl = (
       <main id={mainId} ref={mainRef} tabIndex={-1} className="d-app-shell__main" hidden={listPane || undefined} inert={inert}>
         {header}
@@ -198,7 +200,7 @@ export function AppShell({
           ) : null}
           {mainEl}
           {overlay ? <div className="d-app-shell__backdrop" aria-hidden="true" onClick={() => onAsideClose?.()} /> : null}
-          {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside">
+          {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside" inert={covered === true || undefined}>
             {overlay && asideCloseLabel !== undefined ? (
               <PhoneHeader title={asideLabel} backLabel={asideCloseLabel} onBack={() => onAsideClose?.()} />
             ) : null}
@@ -225,7 +227,7 @@ export function AppShell({
           {composer}
         </main>
         {overlay ? <div className="d-app-shell__backdrop" aria-hidden="true" onClick={() => onAsideClose?.()} /> : null}
-        {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside">
+        {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside" inert={covered === true || undefined}>
           {overlay && asideCloseLabel !== undefined ? (
             <div className="d-app-shell__aside-head">
               <Button variant="ghost" size="sm" onClick={() => onAsideClose?.()}>{asideCloseLabel}</Button>
