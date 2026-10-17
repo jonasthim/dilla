@@ -79,7 +79,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: clippy
-      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
+      - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked --features vectors
       - run: cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg

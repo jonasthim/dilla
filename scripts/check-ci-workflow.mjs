@@ -138,7 +138,7 @@ const REQUIRED_STEPS = {
     'if-no-files-found: error',
   ],
   'rust-wasm-node': [
-    'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
+    'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked --features vectors',
     // Ruling 40/task 26: lint wasm-only modules and typecheck the browser wrapper.
     'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings',
     'components: clippy',
