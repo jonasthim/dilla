@@ -53,6 +53,8 @@ export interface VoiceSettingsProps {
   noise: 'automatic' | 'lightweight' | 'off';
   /** The input meter's level, 0..12. */
   level: number;
+  /** Replaces the meter when capture is owned by a call or microphone test. */
+  levelUnavailable?: string;
   labels: {
     input: string; output: string; systemDefault: string; outputUnsupported: string;
     mode: string; vad: string; ptt: string; pttKey: string; pttNone: string; pttSet: string; pttPrompt: string; pttRefused: string;
@@ -89,7 +91,7 @@ function DeviceSelect({ id, value, devices, systemDefault, label, onChange }: {
  * a key that types text or operates the page is refused with a reason; Tab still leaves, which cancels; Escape cancels.
  */
 export function VoiceSettings({
-  inputs, outputs, input, output, canSelectOutput, mode, pttKey, capturing, noise, level, labels,
+  inputs, outputs, input, output, canSelectOutput, mode, pttKey, capturing, noise, level, levelUnavailable, labels,
   onInput, onOutput, onMode, onCaptureKey, onNoise,
 }: VoiceSettingsProps) {
   const id = useId();
@@ -152,7 +154,7 @@ export function VoiceSettings({
           onChange={v => onNoise(v === 'automatic' ? 'automatic' : v === 'off' ? 'off' : 'lightweight')} />
       </SettingsRow>
       <SettingsRow id={`${id}-level`} label={labels.level}>
-        <AudioMeter level={level} label={labels.level} />
+        {levelUnavailable === undefined ? <AudioMeter level={level} label={labels.level} /> : <span>{levelUnavailable}</span>}
       </SettingsRow>
     </div>
   );

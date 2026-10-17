@@ -134,6 +134,7 @@ export function Voice(): React.JSX.Element {
       <VoiceSettings inputs={inputs} outputs={outputs} input={settings[SETTINGS.voiceInput] ?? ''} output={settings[SETTINGS.voiceOutput] ?? ''}
         canSelectOutput={canSelectOutput} mode={settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad'} pttKey={pttKey}
         capturing={capturing} noise={noise} level={level}
+        levelUnavailable={inCall || testOpen ? t('settings.voice.levelUnavailable') : undefined}
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),

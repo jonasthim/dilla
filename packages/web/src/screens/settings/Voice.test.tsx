@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
-import { FakeClient } from '../../test/fake-client.ts';
+import { callState, FakeClient } from '../../test/fake-client.ts';
 import { account } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { Voice } from './Voice.tsx';
@@ -96,9 +96,13 @@ describe('Settings → Voice', () => {
     });
     const stream = { getTracks: () => [{ stop: stopped }] } as unknown as MediaStream;
     const mic = { deviceId: 'mic-1', kind: 'audioinput', label: 'Desk mic', groupId: 'g' } as MediaDeviceInfo;
-    const { view, getUserMedia } = setup({ 'voice.input': 'mic-1' }, { permission: 'granted', devices: [mic], getUserMedia: () => Promise.resolve(stream) });
+    const { fake, view, getUserMedia } = setup({ 'voice.input': 'mic-1' }, { permission: 'granted', devices: [mic], getUserMedia: () => Promise.resolve(stream) });
     await waitFor(() => expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '12'), { timeout: 2000 });
     expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'mic-1' } } });
+    act(() => fake.publish('call', callState({ phase: 'in' })));
+    expect(screen.queryByRole('meter', { name: 'input level' })).toBeNull();
+    expect(screen.getByText('The input meter is paused during calls and microphone tests.')).toBeVisible();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
     view.unmount();
     expect(stopped).toHaveBeenCalled();
     expect(closed).toBe(true);
