@@ -1263,7 +1263,7 @@ describe('the product walk fixes', () => {
     it('m6: a remote meter that appears mid-call arms the sampler, and the last detach idles it', async () => {
       const f = fakes();
       const m = withMeters(f);
-      f.deps.createLevelMeter = (ctx, track) => (track === ownTrack(f) ? null : m.create(ctx, track));
+      f.deps.createLevelMeter = (ctx, track) => ((track as unknown) === ownTrack(f) ? null : m.create(ctx, track));
       const call = await start(f);
       const idle = f.timers.size;
       const { p, track, pub } = heard(f);
