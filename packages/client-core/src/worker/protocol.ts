@@ -30,14 +30,17 @@ export type Command =
   | { m: 'retrySend'; msgId: string }
   | { m: 'discardSend'; msgId: string }
   | { m: 'signInBegin' }                                         // needs-signup → signin-login
-  // The key is entered first and travels with the command that registers (coordinator ruling on concern 3): the login
-  // is sent only once the key is held, and its assertion is spent seconds later.
-  | { m: 'signInLogin'; username: string; password: string; recoveryKey: string }   // → { needs }: 1 signin-totp, 2 signin-passkey, 0 ready
-  | { m: 'signInTotp'; code: string; recoveryKey: string }      // signin-totp → ready
+  // web3.8 (R6): the password and the factor first, the recovery key last. The login and the factor never register: the
+  // worker holds the settled assertion, and signInKey registers it after the key's form check, back to back with the
+  // fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). The optional recoveryKey on signInLogin, signInTotp
+  // and signInPasskey is accepted and ignored until SIGNIN-W stops sending it (pre-flight C-3).
+  | { m: 'signInLogin'; username: string; password: string; recoveryKey?: string }   // → { needs }: 1 signin-totp, 2 signin-passkey, 0 signin-key
+  | { m: 'signInTotp'; code: string; recoveryKey?: string }                           // signin-totp → signin-key
   // web3.6 (flow 10). The ceremony runs in the page (navigator.credentials); the worker holds no WebAuthn state.
   | { m: 'signInPasskeyBegin' }                                  // signin-login|totp|passkey → { ceremonyId (32 hex), options (JSON) }
-  | { m: 'signInPasskey'; ceremonyId: string; response: string; recoveryKey: string }  // → { needs }: 1 signin-totp, 0 ready
-  | { m: 'signInBackupCode'; code: string; recoveryKey: string } // signin-totp|passkey → ready; a refusal: signin-login
+  | { m: 'signInPasskey'; ceremonyId: string; response: string; recoveryKey?: string } // → { needs }: 1 signin-totp, 0 signin-key
+  // A backup code is held in the page and sent only with the key, so an assertion that expired meanwhile spends none.
+  | { m: 'signInBackupCode'; code: string; recoveryKey: string }      // signin-totp|passkey → ready; a refusal: signin-login
   | { m: 'factorSetupDone'; invite: string | null }              // factor-setup → ready → { communityId, joinError }
   // web3.6 (flow 10): factor management. The secret, the uri, the codes and the tokens travel only in these returns: the
   // worker keeps none of them, and the factors slice holds none. Every state-changing one publishes `factors` before it resolves.
@@ -51,7 +54,7 @@ export type Command =
   | { m: 'stepUpPasskeyFinish'; ceremonyId: string; response: string }               // ready → { token }
   | { m: 'removeFactor'; stepup: string; kind: 'totp' | 'passkey'; credId: string | null } // ready → null
   | { m: 'regenerateBackupCodes'; stepup: string }               // ready → { backupCodes }
-  | { m: 'signInKey'; recoveryKey: string }                      // signin-key (a registered enrolment) → ready
+  | { m: 'signInKey'; recoveryKey: string }                      // signin-key → ready; registers when nothing is registered yet
   | { m: 'signInCancel' }                                        // signin-* → needs-signup
   | { m: 'refreshDevices' }                                      // ready: GET /v1/devices + own list → slice devices
   | { m: 'revokeDevice'; deviceId: string; recoveryKey: string | null } // ready: another device; the key is required for a listed device, ignored (null) for an unlisted live row

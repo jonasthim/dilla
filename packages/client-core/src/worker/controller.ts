@@ -106,8 +106,12 @@ class Refusal extends Error {
 
 const ACCOUNT_CODES = new Set([
   'E_KEK_EXISTS', 'E_KEK_UNWRAP', 'E_SESSION_SCOPE', 'E_NO_BACKUP', 'E_LIST_RACE', 'E_DEVICE_UNLISTED', 'E_NO_ASSERTION',
-  'E_SIGNIN_EVICTED',
+  'E_SIGNIN_EVICTED', 'E_SIGNIN_EXPIRED',
 ]);
+
+/** dillad's AssertionTTL is 5 minutes; a 401 to a backup code this long after the assertion was minted is its expiry
+ *  (the minting is earlier on the instance's clock than the answer here, by the round trip). */
+const ASSERTION_EXPIRED_MS = 300_000;
 
 const ALLOWED_CODES = new Set(`E_ATTACHMENT_COUNT E_ATTACHMENT_FAILED E_ATTACHMENT_INPUT E_ATTACHMENT_MISSING E_ATTACHMENT_TOO_LARGE
 E_BAD_INPUT E_BINDING E_BLOB_HASH E_BLOB_OPEN E_BODY_TOO_LARGE E_CAPACITY E_CBOR_DEPTH E_CBOR_NONCANONICAL
@@ -119,7 +123,7 @@ E_FRAME_CBOR E_FRAME_SHAPE E_GONE E_GROUP_EXISTS E_HTTP E_INTERNAL E_INVALID_REQ
 E_INVITE_NOT_COMMUNITY E_KEK_DB E_KEK_EXISTS E_KEK_UNWRAP E_LEAF_NOT_CURRENT E_LIST_RACE E_NETWORK
 E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN E_PRUNED E_RATE_LIMITED
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
-E_SETTING_KEY E_SIGNIN_EVICTED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
+E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
 E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
@@ -552,8 +556,8 @@ function invalid(command: Record<string, unknown>): string | null {
     }
   }
   if (m === 'factorSetupDone' && command.invite !== null && typeof command.invite !== 'string') return 'invite is not a string or null';
-  if ((m === 'signInKey' || m === 'signInLogin' || m === 'signInTotp' || m === 'signInPasskey' || m === 'signInBackupCode'
-    || m === 'signOutRevoke') && blank(command.recoveryKey)) {
+  // web3.8 (pre-flight C-3): signInLogin, signInTotp and signInPasskey take an optional key and ignore it until SIGNIN-W.
+  if ((m === 'signInKey' || m === 'signInBackupCode' || m === 'signOutRevoke') && blank(command.recoveryKey)) {
     return 'the recovery key is empty';
   }
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
@@ -641,6 +645,8 @@ export class Controller {
   private enrol: Enrol | null = null;
   private fetched: EnrolFetched | null = null;
   private signInRunning = false;
+  /** When the held sign-in assertion was minted (deps.now), to tell its expiry from a refused backup code. */
+  private assertionAt: number | null = null;
   /** web3.6: the community a signup that stopped at factor-setup was to join (null: none), joined by factorSetupDone. */
   private pendingJoin: { communityId: Id | null; invite: string } | null = null;
   /** A signup this worker completed has sent no KeyPackages yet (a V route, refused while owed): enterReady sends them
@@ -972,12 +978,12 @@ export class Controller {
       case 'retrySend': return this.retrySend(command.msgId);
       case 'discardSend': return this.discardSend(command.msgId);
       case 'signInBegin': return this.signInBegin();
-      case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password, command.recoveryKey));
-      case 'signInTotp': return this.step(() => this.signInTotp(command.code, command.recoveryKey));
+      case 'signInLogin': return this.step(() => this.signInLogin(command.username, command.password));
+      case 'signInTotp': return this.step(() => this.signInTotp(command.code));
       case 'signInKey': return this.step(() => this.signInKey(command.recoveryKey));
       case 'signInCancel': return this.signInCancel();
       case 'signInPasskeyBegin': return this.signInPasskeyBegin();
-      case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response, command.recoveryKey));
+      case 'signInPasskey': return this.step(() => this.signInPasskey(command.ceremonyId, command.response));
       case 'signInBackupCode': return this.step(() => this.signInBackupCode(command.code, command.recoveryKey));
       case 'factorSetupDone': {
         if (this.factorSetupRunning) return Promise.reject(new Refusal('E_NOT_READY', 'factorSetupDone is running'));
@@ -1761,15 +1767,12 @@ export class Controller {
     }
   }
 
-  /** The password is passed to Enrol.login and held in no field (L-TS-21). The page held the recovery key from the
-   *  first step and sends it here: its form is checked before the login is sent (a mistyped key costs no login), and
-   *  with no second factor owed the enrolment runs at once, so the assertion is spent seconds after it was minted
-   *  (REGISTRATION-DEVICES-02, coordinator ruling on its concern 3). With a second factor the worker keeps no key:
-   *  the page sends it again with the code. */
-  private async signInLogin(rawUsername: string, password: string, recoveryKey: string): Promise<{ needs: 0 | 1 | 2 }> {
+  /** The password is passed to Enrol.login and held in no field (L-TS-21). web3.8 (R6): the login never registers.
+   *  With no second factor owed, Enrol holds the settled assertion and the key step follows; signInKey registers it
+   *  after the key's form check, back to back with the fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). */
+  private async signInLogin(rawUsername: string, password: string): Promise<{ needs: 0 | 1 | 2 }> {
     const enrol = this.requireEnrol();
     const username = rawUsername.trim();
-    this.checkKey(recoveryKey, 'signin-login');
     let needs: 0 | 1 | 2;
     try {
       ({ needs } = await enrol.login(username, password));
@@ -1777,6 +1780,7 @@ export class Controller {
       this.setAccount({ phase: 'signin-login', error: errorOf(e) });
       throw e;
     }
+    this.assertionAt = this.deps.now();
     // web3.6: needs 1 asks for the app's code, needs 2 (passkeys and no app) for a passkey; either takes a backup code.
     if (needs === 1) {
       this.setAccount({ phase: 'signin-totp', signIn: signInOf(username, 'totp'), error: null });
@@ -1786,8 +1790,7 @@ export class Controller {
       this.setAccount({ phase: 'signin-passkey', signIn: signInOf(username, 'passkey'), error: null });
       return { needs };
     }
-    this.setAccount({ signIn: signInOf(username, null), error: null });
-    await this.enrolWithKey(recoveryKey);
+    this.setAccount({ phase: 'signin-key', signIn: signInOf(username, null), error: null });
     return { needs };
   }
 
@@ -1804,11 +1807,11 @@ export class Controller {
 
   /** web3.6: a passkey that verified the person signs in on its own (needs 0); one that did not (needs 1) goes on to the
    *  code step with `factor 'passkey'` for its copy. The passkey names the account, so the typed username is not kept. A
-   *  refused passkey stays at its step with the error, and an assertion held from a login stays usable. */
-  private async signInPasskey(ceremonyId: string, response: string, recoveryKey: string): Promise<{ needs: 0 | 1 }> {
+   *  refused passkey stays at its step with the error, and an assertion held from a login stays usable. web3.8 (R6):
+   *  needs 0 holds the settled assertion for the key step and never registers. */
+  private async signInPasskey(ceremonyId: string, response: string): Promise<{ needs: 0 | 1 }> {
     const enrol = this.requireEnrol();
     const back = this.phase;
-    this.checkKey(recoveryKey, back);
     let needs: 0 | 1;
     try {
       ({ needs } = await enrol.passkey(fromHex(ceremonyId), response));
@@ -1816,24 +1819,29 @@ export class Controller {
       this.setAccount({ phase: back, error: errorOf(e) });
       throw e;
     }
+    this.assertionAt = this.deps.now();
     if (needs === 1) {
       this.setAccount({ phase: 'signin-totp', signIn: signInOf(null, 'passkey'), error: null });
       return { needs };
     }
-    this.setAccount({ signIn: signInOf(null, null), error: null });
-    await this.enrolWithKey(recoveryKey);
+    this.setAccount({ phase: 'signin-key', signIn: signInOf(null, null), error: null });
     return { needs };
   }
 
   /** web3.6: a backup code in place of the app's code or a passkey. A refused code spends the assertion: the person logs
-   *  in again, the username kept (as signInTotp). */
+   *  in again, the username kept (as signInTotp). web3.8 (R6): the page holds the code and sends it only with the key,
+   *  so it is never spent early. dillad checks the assertion before the code, so a 401 once the held assertion is past
+   *  its 5 minutes spent no code: it is the expiry (E_SIGNIN_EXPIRED, pre-flight C-16). A 401 inside them is the
+   *  refused code, which dillad answers the same way. */
   private async signInBackupCode(code: string, recoveryKey: string): Promise<null> {
     const enrol = this.requireEnrol();
     const username = this.accountState.signIn?.username ?? null;
     this.checkKey(recoveryKey, this.phase);
+    const heldAt = this.assertionAt;
     try {
       await enrol.backupCode(backupCode(code));
     } catch (e) {
+      if (isStatus(e, 401) && heldAt !== null && this.deps.now() - heldAt >= ASSERTION_EXPIRED_MS) throw this.expired();
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
@@ -1841,29 +1849,31 @@ export class Controller {
     return null;
   }
 
-  /** A refused code spends the assertion (head ruling 39): the person logs in again, the username kept. */
-  private async signInTotp(code: string, recoveryKey: string): Promise<null> {
+  /** A refused code spends the assertion (head ruling 39): the person logs in again, the username kept. web3.8 (R6):
+   *  an accepted code holds the fresh settled assertion for the key step and never registers. */
+  private async signInTotp(code: string): Promise<null> {
     const enrol = this.requireEnrol();
     const username = this.accountState.signIn?.username ?? null;
-    this.checkKey(recoveryKey, 'signin-totp');
     try {
       await enrol.totp(code);
     } catch (e) {
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
-    await this.enrolWithKey(recoveryKey);
+    this.assertionAt = this.deps.now();
+    this.setAccount({ phase: 'signin-key', signIn: signInOf(username, null), error: null });
     return null;
   }
 
   /** Requirement 7 as REGISTRATION-DEVICES-02 amends it: the registration runs inside signInKey, after the key's
    *  form passed. A refused registration keeps the phase-3 enrol record (its device id is reused) and returns to
-   *  the login step. */
+   *  the login step. web3.8 (pre-flight C-15): its 401 is the held assertion that ran out during key entry. */
   private async register(): Promise<Id> {
     const enrol = this.requireEnrol();
     try {
       return (await enrol.register(this.requireInstance().instanceId)).userId;
     } catch (e) {
+      if (isStatus(e, 401)) throw this.expired();
       const username = this.accountState.signIn?.username ?? null;
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
@@ -1893,6 +1903,15 @@ export class Controller {
     this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null),
       error: { code: 'E_SIGNIN_EVICTED', detail: '', status: 0, retryAfterMs: null } });
     return new Error('E_SIGNIN_EVICTED');
+  }
+
+  /** web3.8 (R6, pre-flight C-15/C-16): the held assertion ran out before it was spent, and nothing was spent with it.
+   *  Back to step 1 with the reason; a kept enrol record (its device id) is reused by the next registration. */
+  private expired(): Error {
+    const username = this.accountState.signIn?.username ?? null;
+    this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null),
+      error: { code: 'E_SIGNIN_EXPIRED', detail: '', status: 0, retryAfterMs: null } });
+    return new Error('E_SIGNIN_EXPIRED');
   }
 
   /** Requirement 8 as REGISTRATION-DEVICES-02 amends it, for an enrolment already registered (a wrong key, a reload

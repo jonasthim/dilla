@@ -11,7 +11,9 @@ import { COMMUNITY, DEVICE, INSTANCE_DOC, INSTANCE_ID, LOCK, PASSWORD, RECOVERY_
 afterEach(() => { vi.useRealTimers(); });
 
 const CEREMONY_HEX = 'ce'.repeat(16);
-const LOGIN = { m: 'signInLogin', username: ' web ', password: PASSWORD, recoveryKey: RECOVERY_KEY } as const;
+const LOGIN = { m: 'signInLogin', username: ' web ', password: PASSWORD } as const;
+// web3.8 (R6): the key comes last and registers.
+const KEY = { m: 'signInKey', recoveryKey: RECOVERY_KEY } as const;
 
 async function toKeys(w: World): Promise<void> {
   w.call(1, { m: 'start' });
@@ -300,12 +302,16 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     w.call(4, { m: 'signInPasskeyBegin' });
     expect(await answered(w, 4)).toEqual({ t: 'ret', id: 4, ok: true, value: { ceremonyId: CEREMONY_HEX, options: '{"publicKey":{}}' } });
     w.enrol.passkey.mockImplementationOnce(() => Promise.resolve({ needs: 1 }));
-    w.call(5, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}', recoveryKey: RECOVERY_KEY });
+    w.call(5, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}' });
     expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: { needs: 1 } });
     expect(w.enrol.passkey).toHaveBeenCalledWith(new Uint8Array(16).fill(0xce), '{"id":"x"}');
     expect(w.account()).toMatchObject({ phase: 'signin-totp', signIn: { factor: 'passkey' } });
-    w.call(6, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(6, { m: 'signInTotp', code: '123456' });
     expect(await answered(w, 6)).toEqual({ t: 'ret', id: 6, ok: true, value: null });
+    expect(w.account()?.phase).toBe('signin-key');
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    w.call(7, KEY);
+    expect(await answered(w, 7)).toEqual({ t: 'ret', id: 7, ok: true, value: null });
     expect(w.account()?.phase).toBe('ready');
   });
 
@@ -323,9 +329,12 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     await toLoginStep(w);
     w.call(3, { m: 'signInPasskeyBegin' });
     await answered(w, 3);
-    w.call(4, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}', recoveryKey: RECOVERY_KEY });
+    w.call(4, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '{"id":"x"}' });
     expect(await answered(w, 4)).toEqual({ t: 'ret', id: 4, ok: true, value: { needs: 0 } });
     expect(w.enrol.login).not.toHaveBeenCalled();
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(5, KEY);
+    expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: null });
     expect(w.calls.filter((c) => c.startsWith('enrol.'))).toEqual(['enrol.passkey', 'enrol.register', 'enrol.fetch', 'enrol.complete']);
     expect(w.account()?.phase).toBe('ready');
   });
@@ -379,15 +388,14 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
       { m: 'signInPasskey', ceremonyId: 'CE'.repeat(16), response: 'r', recoveryKey: RECOVERY_KEY },
       { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '', recoveryKey: RECOVERY_KEY },
       { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_537), recoveryKey: RECOVERY_KEY },
-      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r', recoveryKey: ' ' },
       { m: 'factorSetupDone', invite: 7 },
     ];
     bad.forEach((command, i) => w.call(10 + i, command));
     for (let i = 0; i < bad.length; i++) expect(await answered(w, 10 + i)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
     expect(w.enrol.backupCode).not.toHaveBeenCalled();
     expect(w.enrol.passkey).not.toHaveBeenCalled();
-    // Control: 64 KiB of response is accepted.
-    w.call(30, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_536), recoveryKey: RECOVERY_KEY });
+    // Control: 64 KiB of response is accepted, and (pre-flight C-3) a blank key with it is ignored, not refused.
+    w.call(30, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_536), recoveryKey: ' ' });
     expect(await answered(w, 30)).toMatchObject({ ok: true });
   });
 
@@ -445,6 +453,9 @@ describe('C2 review: an owed account on a new browser, the double submit, the ho
     await toLoginStep(w);
     w.call(3, LOGIN);
     expect(await answered(w, 3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } });
+    expect(w.account()?.phase).toBe('signin-key');
+    w.call(5, KEY);
+    expect(await answered(w, 5)).toEqual({ t: 'ret', id: 5, ok: true, value: null });
     expect(w.account()).toMatchObject({ phase: 'factor-setup', factorSetup: { origin: 'signin' }, error: null, user: { id: toHex(USER) } });
     expect(w.gateway.starts).toBe(0);
     expect(w.account.ensureBackups).not.toHaveBeenCalled();

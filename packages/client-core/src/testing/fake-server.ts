@@ -11,6 +11,8 @@ import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from './fake-li
 export const NOW_S = 1_800_000_000;
 export const SESSION_S = 604_800;
 export const IDLE_S = 43_200;
+/** dillad's AssertionTTL (internal/api/auth.go): an assertion spent after it is refused 401, as an unknown one is. */
+export const ASSERTION_TTL_S = 300;
 /** The nonce of the first challenge; challenge k (1-based) answers nonceAt(k), so every challenge is fresh. */
 export const NONCE = new Uint8Array(32).fill(0x6e);
 export function nonceAt(k: number): Uint8Array {
@@ -95,7 +97,7 @@ export class FakeServer {
   readonly passwords = new Map<string, { password: string; totp: string | null }>();
   /** Every assertion issued, including ones subsequently spent. */
   readonly assertions: string[] = [];
-  private readonly activeAssertions = new Map<string, { user: string; needs: 0 | 1 | 2 }>();
+  private readonly activeAssertions = new Map<string, { user: string; needs: 0 | 1 | 2; expires: number }>();
   /** When true, an account created through POST /v1/accounts is owed a second factor, as dillad does. */
   factorRequired = false;
   private readonly factorStates = new Map<string, FakeFactorState>();
@@ -423,8 +425,7 @@ export class FakeServer {
       const body = arr(decode(r.body), 2);
       const value = str(body[0] ?? null);
       const code = str(body[1] ?? null);
-      const assertion = this.activeAssertions.get(value);
-      this.activeAssertions.delete(value);
+      const assertion = this.spendAssertion(value);
       if (assertion === undefined || assertion.needs !== 1) return refuse(401, 'E_UNAUTHENTICATED');
       // dillad: a locked account is refused before its code is looked at; the assertion is already spent.
       if (this.loginLocked(assertion.user)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
@@ -436,8 +437,7 @@ export class FakeServer {
       const body = arr(decode(r.body), 2);
       const value = str(body[0] ?? null);
       const code = str(body[1] ?? null);
-      const assertion = this.activeAssertions.get(value);
-      this.activeAssertions.delete(value);
+      const assertion = this.spendAssertion(value);
       if (assertion === undefined || assertion.needs === 0) return refuse(401, 'E_UNAUTHENTICATED');
       if (this.loginLocked(assertion.user)) return refuse(429, 'E_RATE_LIMITED', '', 30_000);
       const state = this.factorsOf(assertion.user);
@@ -648,8 +648,14 @@ export class FakeServer {
   private assertion(user: string, needs: 0 | 1 | 2): string {
     const value = `asrt-${++this.assertionN}`;
     this.assertions.push(value);
-    this.activeAssertions.set(value, { user, needs });
+    this.activeAssertions.set(value, { user, needs, expires: this.nowS + ASSERTION_TTL_S });
     return value;
+  }
+  /** auth.Assertions.SpendNeeds: single use, and undefined once past its expiry (dillad: now after expires). */
+  private spendAssertion(value: string): { user: string; needs: 0 | 1 | 2 } | undefined {
+    const held = this.activeAssertions.get(value);
+    this.activeAssertions.delete(value);
+    return held === undefined || this.nowS > held.expires ? undefined : held;
   }
   private ceremonyBytes(id: string): Uint8Array {
     const out = new Uint8Array(16);
@@ -896,8 +902,7 @@ export class FakeServer {
         if (!(registration[1] instanceof Uint8Array) || registration[1].length !== 32)
           return refuse(400, 'E_INVALID_REQUEST');
       }
-      const assertion = this.activeAssertions.get(login);
-      this.activeAssertions.delete(login);
+      const assertion = this.spendAssertion(login);
       if (assertion === undefined || assertion.needs !== 0) return refuse(401, 'E_UNAUTHENTICATED');
       const account = [...this.accounts].find(([, value]) => value.username === assertion.user);
       if (account === undefined) return refuse(401, 'E_UNAUTHENTICATED');
