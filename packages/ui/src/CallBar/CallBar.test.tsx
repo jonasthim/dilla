@@ -24,6 +24,19 @@ describe('CallBar', () => {
     expect(screen.getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'mute' }).querySelector('[data-icon="mic-off"]')).not.toBeNull();
   });
+  it('draws a pressed mute as off: the danger glyph and edge on surface-2, no accent fill', async () => {
+    render(<CallBar {...props({ muted: true })} />);
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveAttribute('aria-pressed', 'true');
+    // The test config reads no CSS (css: false) and the package has no Node types: read it as SettingsFrame.test does.
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    const css = fs.readFileSync(`${cwd}/src/CallBar/CallBar.css`, 'utf8');
+    const rule = /\.d-call-bar \.d-call-bar__mute\[aria-pressed="true"\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toContain('color: var(--danger)');
+    expect(rule).toContain('border-color: var(--danger)');
+    expect(rule).toContain('background: var(--surface-2)');
+    expect(rule).toContain('box-shadow: inset 0 -2px 0 0 currentColor');
+  });
   it('calls the three callbacks', async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn(); const onMute = vi.fn(); const onLeave = vi.fn();
