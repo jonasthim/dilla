@@ -202,8 +202,9 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 
 /* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
 @media (max-width: 47.99rem) {
-  /* The shell is fixed on a phone, so the page never scrolls; the log and the lists scroll themselves. */
-  html, body { overflow: hidden; }
+  /* The shell is fixed on a phone, so under it the page never scrolls; the log and the lists scroll themselves. Sign-up and
+     sign-in have no shell and keep their page scroll above the keyboard. */
+  html:has(.d-app-shell[data-layout="phone"]), body:has(.d-app-shell[data-layout="phone"]) { overflow: hidden; }
   .d-settings-frame:has(.d-phone-header) { max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__panel { display: block; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__side, .d-settings-frame:has(.d-phone-header) .d-settings-frame__bar { display: none; }

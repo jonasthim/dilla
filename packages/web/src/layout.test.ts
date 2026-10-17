@@ -34,10 +34,10 @@ describe('the phone shell follows the visual viewport (web3.7.2)', () => {
     expect(rule(app, '.dw-search {')).toContain('var(--d-vvtop, 0px)');
     expect(rule(app, '.dw-other-tab--overlay')).toContain('var(--d-vvtop, 0px)');
   });
-  it('stops the page itself scrolling on a phone only', () => {
+  it('stops the page itself scrolling on a phone, and only while the phone shell is mounted', () => {
     const phone = app.slice(app.indexOf('@media (max-width: 47.99rem)'));
-    expect(phone).toMatch(/html, body \{[^}]*overflow: hidden/);
-    expect(rule(app, 'html, body {')).not.toContain('overflow')
+    expect(phone).toMatch(/html:has\(\.d-app-shell\[data-layout="phone"\]\), body:has\(\.d-app-shell\[data-layout="phone"\]\) \{[^}]*overflow: hidden/);
+    expect(app).not.toMatch(/(^|\n)\s*html, body \{[^}]*overflow/);
   });
 });
 

@@ -445,6 +445,15 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
     await expectFieldSizes(page, 'sign-in login');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.username), { exact: true }), 'the username');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.password), { exact: true }), 'the password');
+    // web3.7.2: no shell here, so the page lock is off and a short window (the keyboard up) still scrolls the form.
+    await page.setViewportSize({ width: 390, height: 300 });
+    const scrolled = await page.evaluate(() => {
+      const el = document.scrollingElement!;
+      el.scrollTo(0, 40);
+      return { tall: el.scrollHeight > el.clientHeight, y: el.scrollTop };
+    });
+    expect(scrolled, 'the sign-in page scrolls with a short window').toEqual({ tall: true, y: expect.any(Number) });
+    expect(scrolled.y).toBeGreaterThan(0);
   } finally {
     await guard.collectWorkers();
     await context.close();
