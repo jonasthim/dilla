@@ -58,6 +58,7 @@ func usage(w io.Writer) {
 
 // dispatch runs one verb. args excludes argv[0]. A nil return is exit 0.
 func dispatch(args []string, stdout, stderr io.Writer) error {
+	restrictUmask() // R17: first thing, so no file any verb creates depends on the caller's umask
 	if len(args) == 0 {
 		usage(stdout)
 		return exit.Usage

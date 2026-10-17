@@ -668,7 +668,9 @@ fi
 INIT_IP="$PUBLIC_IP"
 [ -n "$INIT_IP" ] || INIT_IP="127.0.0.1"
 log "initialising the instance"
-INIT_OUT="$("$BIN_DIR/dillad" init --data-dir="$DATA_DIR" --domain="$DOMAIN" --public-ip="$INIT_IP" --agree-tos)" ||
+# init writes the config straight to $CONF, so its directory exists first.
+install -d -m 0755 "$CONF_DIR"
+INIT_OUT="$("$BIN_DIR/dillad" init --config="$CONF" --data-dir="$DATA_DIR" --domain="$DOMAIN" --public-ip="$INIT_IP" --agree-tos)" ||
 	die "dillad init failed"
 LINK="$(printf '%s\n' "$INIT_OUT" | sed -n 's|^bootstrap invite.*: \(https://[^ ]*\)$|\1|p' | head -n 1)"
 # Everything init printed except the link itself, which has one destination.
@@ -690,8 +692,8 @@ toml_set() {
 		}
 		{ print }
 		END { if (!found) exit 3 }
-	' "$DATA_DIR/dilla.toml" >"$WORK/dilla.toml" || die "dilla.toml has no $2 in [$1]; this dillad's init writes a layout this install.sh does not know (use the install.sh of the same release)"
-	cat "$WORK/dilla.toml" >"$DATA_DIR/dilla.toml"
+	' "$CONF" >"$WORK/dilla.toml" || die "dilla.toml has no $2 in [$1]; this dillad's init writes a layout this install.sh does not know (use the install.sh of the same release)"
+	cat "$WORK/dilla.toml" >"$CONF"
 }
 
 toml_set livekit udp_port "$UDP_PORT"
@@ -716,11 +718,9 @@ if [ "$MODE" = behind-proxy ]; then
 	fi
 fi
 
-log "moving dilla.toml to $CONF"
-install -d -m 0755 "$CONF_DIR"
-install -m 0640 "$DATA_DIR/dilla.toml" "$CONF"
+log "setting the owners and modes of $CONF and $DATA_DIR"
 chown root:dillad "$CONF"
-rm -f "$DATA_DIR/dilla.toml"
+chmod 0640 "$CONF"
 chown -R dillad:dillad "$DATA_DIR"
 chmod 0700 "$DATA_DIR"
 

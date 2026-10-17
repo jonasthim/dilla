@@ -142,7 +142,7 @@ func TestAdminIsDispatchedNotReserved(t *testing.T) {
 
 func TestInitBootstrapsAndRefusesASecondRun(t *testing.T) {
 	dir := t.TempDir()
-	out, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7")
+	out, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7")
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestInitBootstrapsAndRefusesASecondRun(t *testing.T) {
 	if !strings.Contains(statusOut, want) {
 		t.Fatalf("migrate status = %q, want it to report %q", statusOut, want)
 	}
-	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err == nil {
+	if _, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err == nil {
 		t.Fatal("a second init overwrote an initialised data directory")
 	}
 }
@@ -190,7 +190,7 @@ func TestInitBootstrapsAndRefusesASecondRun(t *testing.T) {
 // `turn.shared_secret_file: is required` and every later verb exits 78.
 func TestInitWritesAConfigThatLoadsBack(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
+	if _, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	c, err := config.Load(filepath.Join(dir, "dilla.toml"))
@@ -214,7 +214,7 @@ func TestInitWritesAConfigThatLoadsBack(t *testing.T) {
 // init must not accept the CA's subscriber agreement on the operator's behalf.
 func TestInitRefusesWithoutAgreeTOS(t *testing.T) {
 	dir := t.TempDir()
-	_, errBuf, err := run(t, "init", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7")
+	_, errBuf, err := run(t, "init", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7")
 	var code exit.Code
 	if !errors.As(err, &code) || code != exit.Usage {
 		t.Fatalf("init without --agree-tos gave %v, want exit.Usage (2)", err)
@@ -231,7 +231,7 @@ func TestInitRefusesWithoutAgreeTOS(t *testing.T) {
 // keys fixes, and a second init must not rotate it (it must refuse outright).
 func TestInitWritesAParseableKeyHistory(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
+	if _, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	db, err := openSQLiteForTest(filepath.Join(dir, "dilla.db"))
@@ -286,7 +286,7 @@ func TestMigrateStatusReachesItsConfigFlag(t *testing.T) {
 
 func TestInitInsertsExactlyOneInvite(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
+	if _, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	db, err := openSQLiteForTest(filepath.Join(dir, "dilla.db"))
@@ -305,7 +305,7 @@ func TestInitInsertsExactlyOneInvite(t *testing.T) {
 
 func TestDoctorExitsUnavailableOnAPragmaMismatch(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
+	if _, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir, "--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	cfgPath := filepath.Join(dir, "dilla.toml")

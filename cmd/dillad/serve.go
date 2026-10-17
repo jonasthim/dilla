@@ -55,6 +55,11 @@ func openRepository(c *config.Config) (store.Repository, *sql.DB, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("open database: %w: %w", err, exit.Unavailable)
 		}
+		// Also repairs an install whose -wal and -shm were made before OpenWrite pre-created the file.
+		if err := sqlite.SecureFiles(c.DB.Path); err != nil {
+			_ = write.Close()
+			return nil, nil, fmt.Errorf("open database: %w: %w", err, exit.Unavailable)
+		}
 		read, err := sqlite.OpenRead(c.DB.Path)
 		if err != nil {
 			_ = write.Close()

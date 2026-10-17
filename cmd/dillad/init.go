@@ -40,12 +40,16 @@ func writeSecret(dir, name string, n int) (string, error) {
 	return path, nil
 }
 
-// runInit creates the data directory, writes dilla.toml at 0600, generates the
-// instance keys and the TURN and LiveKit secret files, CREATES AND MIGRATES the
-// database (R35), inserts one bootstrap admin invite and prints its link exactly
-// once. It refuses to touch a data directory that already holds a dilla.toml.
+// runInit creates the data directory (0700), writes the config to --config at
+// 0600, generates the instance keys and the TURN and LiveKit secret files,
+// CREATES AND MIGRATES the database (R35), inserts one bootstrap admin invite and
+// prints its link exactly once. It refuses an existing --config unless
+// --overwrite-config is given, and a data directory that already holds an
+// instance (dilla.db, or a dilla.toml left by an older init) whatever the flag.
 func runInit(args []string, stdout, stderr io.Writer) error {
-	fs, _ := newFlagSet("init", stderr)
+	fs, cfgFlag := newFlagSet("init", stderr)
+	fs.Lookup("config").Usage = "where init writes dilla.toml (default /etc/dilla/dilla.toml); an existing file is refused unless --overwrite-config"
+	overwrite := fs.Bool("overwrite-config", false, "replace an existing file at --config")
 	dataDir := fs.String("data-dir", "/var/lib/dilla", "state root")
 	domain := fs.String("domain", "", "public DNS name (required)")
 	publicIP := fs.String("public-ip", "", "public IP literal (required)")
@@ -61,12 +65,26 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "dillad init: --agree-tos is required: tls.agreed records the operator's acceptance of the ACME CA's subscriber agreement, and dillad has no standing to accept it for them")
 		return exit.Usage
 	}
-	cfgPath := filepath.Join(*dataDir, "dilla.toml")
-	if _, err := os.Stat(cfgPath); err == nil {
-		return fmt.Errorf("init: %s already exists; refusing to overwrite an initialised instance: %w", cfgPath, exit.CantCreate)
+	cfgPath := *cfgFlag
+	if _, err := os.Stat(cfgPath); err == nil && !*overwrite {
+		return fmt.Errorf("init: %s already exists; pass --overwrite-config to replace it: %w", cfgPath, exit.CantCreate)
+	}
+	// An initialised data directory holds dilla.db, or a dilla.toml an older init left there.
+	// The flag replaces a config file, never an instance.
+	for _, name := range []string{"dilla.db", "dilla.toml"} {
+		if _, err := os.Stat(filepath.Join(*dataDir, name)); err == nil {
+			return fmt.Errorf("init: %s already holds an instance (%s); refusing to initialise it again: %w", *dataDir, name, exit.CantCreate)
+		}
+	}
+	if err := mkdirAllMode(filepath.Dir(cfgPath), 0o755); err != nil {
+		return fmt.Errorf("init: create %s: %w: %w", filepath.Dir(cfgPath), err, exit.CantCreate)
 	}
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		return fmt.Errorf("init: create %s: %w: %w", *dataDir, err, exit.CantCreate)
+	}
+	// Even a directory that already existed: the umask no longer decides this.
+	if err := os.Chmod(*dataDir, 0o700); err != nil { //nolint:gosec // G302: a directory needs its execute bit; 0700 is owner-only
+		return fmt.Errorf("init: chmod %s: %w: %w", *dataDir, err, exit.CantCreate)
 	}
 
 	c := config.Default()
@@ -115,6 +133,11 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	read, err := sqlite.OpenRead(c.DB.Path)
 	if err != nil {
 		_ = write.Close()
+		return fmt.Errorf("init: %w: %w", err, exit.CantCreate)
+	}
+	if err := sqlite.SecureFiles(c.DB.Path); err != nil {
+		_ = write.Close()
+		_ = read.Close()
 		return fmt.Errorf("init: %w: %w", err, exit.CantCreate)
 	}
 	repo := sqlite.New(write, read)
@@ -167,17 +190,68 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	}
 
 	sum := sha256.Sum256(hash)
-	c.Registration.AdminInvite = hex.EncodeToString(sum[:4])                 // the reference, never the code (NV12)
-	f, err := os.OpenFile(cfgPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: cfgPath is the operator's own --config path; O_EXCL refuses to overwrite
-	if err != nil {
-		return fmt.Errorf("init: write %s: %w: %w", cfgPath, err, exit.CantCreate)
-	}
-	defer func() { _ = f.Close() }()
-	if err := c.WriteConfig(f); err != nil {
-		return fmt.Errorf("init: %w: %w", err, exit.IOErr)
+	c.Registration.AdminInvite = hex.EncodeToString(sum[:4]) // the reference, never the code (NV12)
+	if err := writeConfigFile(c, cfgPath, *overwrite); err != nil {
+		return err
 	}
 	fmt.Fprintf(stdout, "dillad init: wrote %s\n", cfgPath)
 	fmt.Fprintf(stdout, "bootstrap invite (valid 24 hours, one use): https://%s/i/%s\n", *domain, code)
 	fmt.Fprintln(stdout, "this link is printed once and is not stored anywhere; the database holds only its SHA-256")
+	return nil
+}
+
+// mkdirAllMode creates dir and every missing ancestor, and sets each one it created to mode with
+// an explicit chmod: the process umask is 0077, so MkdirAll's mode alone would leave them 0700.
+// A directory that already exists is left as it is.
+func mkdirAllMode(dir string, mode os.FileMode) error {
+	var missing []string
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); err == nil {
+			break
+		}
+		missing = append(missing, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	if err := os.MkdirAll(dir, mode); err != nil {
+		return err
+	}
+	for _, d := range missing {
+		if err := os.Chmod(d, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeConfigFile writes c to path at 0600. Without overwrite it is O_EXCL, so a file that
+// appeared since the check is refused. With overwrite it writes path.new and renames it over
+// path, so a failed write never leaves a half-written config where a good one was.
+func writeConfigFile(c *config.Config, path string, overwrite bool) error {
+	target := path
+	if overwrite {
+		target = path + ".new"
+		_ = os.Remove(target) // a stale one from an interrupted run is not ours to inherit
+	}
+	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: the operator's own --config path; O_EXCL refuses to overwrite
+	if err != nil {
+		return fmt.Errorf("init: write %s: %w: %w", target, err, exit.CantCreate)
+	}
+	if err := c.WriteConfig(f); err != nil {
+		_ = f.Close()
+		_ = os.Remove(target)
+		return fmt.Errorf("init: %w: %w", err, exit.IOErr)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(target)
+		return fmt.Errorf("init: write %s: %w: %w", target, err, exit.IOErr)
+	}
+	if overwrite {
+		if err := os.Rename(target, path); err != nil {
+			_ = os.Remove(target)
+			return fmt.Errorf("init: replace %s: %w: %w", path, err, exit.CantCreate)
+		}
+	}
 	return nil
 }

@@ -59,7 +59,7 @@ func servePlain(c *config.Config, listen string) {
 func bootstrapServeConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if _, _, err := run(t, "init", "--agree-tos", "--data-dir="+dir,
+	if _, _, err := run(t, "init", "--agree-tos", "--config="+filepath.Join(dir, "dilla.toml"), "--data-dir="+dir,
 		"--domain=chat.example", "--public-ip=203.0.113.7"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
