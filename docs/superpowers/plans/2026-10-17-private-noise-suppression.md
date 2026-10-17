@@ -21,3 +21,9 @@ The user requires the feature to be complete in this branch, beyond an isolated 
 5. Review the completed software, fix important findings, update findings/docs and commit. No release/merge/deploy is requested in this follow-up.
 
 External perceptual and physical-device qualification cannot be manufactured. A working evaluation build is a distinct deliverable from a qualified release; retain both statuses explicitly.
+
+## Latency follow-up
+
+The user explicitly requested a latency fix. Keep this branch and its release gates. Diagnose complete track-to-track delay, fix queue/clock behavior, add reproducible calibrated measurement in actual encrypted calls, review privacy/lifecycle changes and verify regression coverage. Record the measured hard-limit result separately from the 60 ms target and physical-device qualification. No push, merge or release is implied.
+
+Latency follow-up outcome: final Chromium idle/loaded timing runs measured 57.725–75.825 ms, and three 20-second encrypted calls measured 65.625–67.575 ms. The 60 ms target is not consistently met. The final 30-minute call fell back near minute 26, so sustained-runtime qualification failed; a final short stress check also failed on underruns. Keep enhancement experimental and preserve the existing production default. Full evidence and preserved failures are in `experiments/noise/results/FINDINGS.md`.

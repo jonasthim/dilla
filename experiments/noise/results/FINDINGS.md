@@ -1,44 +1,59 @@
 # Qualification findings — 2026-10-17
 
-**The feature is integrated into the branch; DeepFilterNet3 remains unqualified for release. No Krisp parity is claimed.** Explicit evaluation builds run the same DeepFilter processor in calls, the local microphone test and the browser harness. Ordinary builds retain the existing Lightweight default and exclude all enhanced assets. A qualified build profile is implemented, but it requires bound, passing measurements and a separate exact-license/lifecycle review.
+**The feature is integrated into the branch. Latency improved, but DeepFilterNet3 remains unqualified for release. No Krisp parity is claimed.** Evaluation builds run the shared processor in calls, microphone preview and the browser harness. Ordinary builds keep Lightweight and exclude enhanced assets. Qualified builds require bound runtime/listening evidence and a separate exact-license review.
+
+## Latency follow-up
+
+The final implementation identity is `1ef805e9f8b00d71c3663aea14f3565921f96552ab5603d06cd839a1794ee61f`. The pinned model assets did not change.
+
+| Measurement | Result | Interpretation |
+|---|---|---|
+| [Baseline, six idle/loaded Chromium runs](chromium-track-latency-before.json) | 81.000–85.225 ms | All six exceeded 80 ms. |
+| [Final, six idle/loaded Chromium runs](chromium-track-latency.json) | 57.725–75.825 ms | All six passed 80 ms, with zero drops/underruns and sustained inference headroom. |
+| [Baseline encrypted call](chromium-call-latency-before.json) | 74.875 ms | Not every baseline call failed. |
+| [Final encrypted-call repeats](chromium-call-latency-repeats.json) | 65.625 / 67.025 / 67.575 ms; all three passed with zero drops/underruns | Each result retains settings, windows, counters and build identity. |
+| [Final 30-minute encrypted call](chromium-call-latency-30min.json) | Initial enhancement: 64.775 ms; fallback near 26 minutes | **Failed sustained enhanced-runtime qualification.** |
+
+The 60 ms target is not consistently met. These are Linux Chromium measurements on a shared Ryzen 7 7800X3D desktop, not physical-device qualification or every-sample worst-case guarantees. The harness observes raw and outgoing tracks directly, adds no observer AudioContext and subtracts no bypass estimate. It checks a known 40 ms delay before six fresh-browser trials. Each estimate is the worst of three correlated speech windows aligned to median chunk-delivery clocks. Unmeasurable speech windows fail the check. Capture remains 48 kHz mono with AEC/AGC enabled and browser suppression disabled.
+
+The long call ran for 1,800.032 seconds with two encrypted peers and 6 ms of main-thread work every 16 ms. DeepFilter processed 157,595 frames before repeated capture losses triggered the visible RNNoise fallback. Its final counters were 290 underrun quanta across 591,139 buffers (about 0.049%), 103 drops, and a conservative p99 inference upper bound of 3.5 ms. Three consecutive unhealthy intervals caused the downgrade even though the cumulative underrun fraction was below 0.1%. Fresh authenticated audio still reached the receiver afterward. End-of-call windows observe fallback routing and **cannot establish enhanced-path latency**; the complete enhanced delay verdict is null. A call lasting 30 minutes does not prove 30 minutes of enhanced processing.
+
+Failures are retained: a [short call with insufficient correlation](chromium-call-latency-short-unmeasured.json) had an unmeasurable middle speech window; another [short call stalled](chromium-integrated-call-short-stall.json), with eight underrun quanta and two drops. The regression harness's zero-drop assertion is stricter than the planned duration-based underrun threshold. No threshold was relaxed to turn these runs into passes.
+
+The alternate AudioWorklet input path also remains unqualified. Its [encrypted-call comparison](chromium-call-latency-worklet-comparison.json) had two measured passes (76.5 and 72.8 ms), one insufficient-correlation failure, and no drops. Its [standalone comparison](chromium-track-latency-worklet-comparison.json) failed three trials with underruns and fallback. Direct capture remains selected where the actual browser probe supports it.
+
+Earlier raw/output tap reports reached 112.625, 92.625 and finally [101.375 ms](chromium-deepfilter-speech-vad.json). Those measurements added an observer AudioContext and are not the same boundary as the direct-track before/after comparison above. The [older 30-minute call](chromium-integrated-call-30min-pre-review.json) fell back after roughly five minutes on a pre-review implementation; it does not qualify this implementation either.
 
 ## Implemented behavior
 
-- Automatic tries the enabled DeepFilter engine, then RNNoise, then browser processing. Lightweight and Off never load model assets. Settings report the effective engine, evaluation state, or fallback reason. Legacy On only maps to Automatic in a qualified build; explicit Off persists.
-- Dedicated Worker inference, 48 kHz mono AudioWorklet transport, a four-buffer transferable pool, scheduling headroom and stale-epoch rejection. No SharedArrayBuffer, cross-origin isolation or third-party model loader.
-- DeepFilter's state reset was measured at about 304 ms when it rebuilt inference plans. The pinned upstream patch now resets recurrent/session state, FFT overlap and normalization in place; the regression compares five resets against fresh-model output and requires <10 ms on this host.
-- Raw-input RNNoise VAD runs separately. The measured 30 ms model delay provides a 20 ms onset allowance without a second output delay. Mute/PTT zero owned PCM buffers and explicitly reset Worker history. Device replacement cannot cancel a requested fallback permanently. Failed fallback is visible and may retry.
-- Local microphone recording is capped at ten seconds in memory, stops capture before playback, discards on close, and is disabled during calls. Existing encryption and screen-share processing remain outside the microphone enhancement graph.
+- Automatic tries enabled DeepFilter, RNNoise, then browser suppression, with visible effective status and fallback reasons. Legacy On migrates only in qualified builds; explicit Off persists. Off preserves echo cancellation. Screen-share audio and encryption remain outside enhancement.
+- Inference runs in a dedicated Worker. Supported browsers transfer the microphone readable stream to it; six pooled PCM buffers travel directly between Worker and AudioWorklet. Other browsers use four-buffer AudioWorklet capture. No SharedArrayBuffer or new isolation headers are required.
+- Output uses the audio-device clock. Fixed playout timelines discard late samples instead of accumulating delay after stalls. Direct output starts with three frames plus two render quanta; legacy transport includes the 480/128 capture-quantum remainder. Synthetic priming finishes before live capture and clears all model/detector history afterward.
+- Mute/PTT close output independently, replace capture privacy epochs and reject stale output. Every epoch owns a fresh track clone. Cancellation acknowledgement and a 200 ms stop bound prevent retained capture if a Worker hangs. Capture gaps and clock rebases clear delayed model history; stale loss notices cannot trigger fallback in a new epoch.
+- Raw-input RNNoise VAD remains separate from enhancement. DeepFilter's measured 30 ms signal delay provides the 20 ms onset allowance. Reset clears recurrent/session state, FFT overlap and normalization in place, without rebuilding inference plans. Actual WASM tests compare reset and primed output against a fresh model.
+- Microphone preview records at most ten seconds in memory, stops capture before playback, discards when closed, and is disabled during calls. Assets are pinned, verified and served from the application's origin, with no model CDN, licensing call, audio upload or telemetry.
 
-## Measurements
+## Corpus and quality
 
-The [FLEURS corpus manifest](fleurs-corpus.json) contains 30 English and 30 Swedish attributed CC-BY-4.0 speech clips. [Offline comparisons](offline-fleurs.json) contain **240 actual inference outputs**, with input/model/output hashes and hardware/settings. Average per-clip mean processing times on the Ryzen 7 7800X3D were approximately RNNoise 0.417 ms, DeepFilter 1.132 ms, GTCRN 0.640 ms and native Hush 0.199 ms per frame. These are offline inference measurements, not browser latency or quality scores.
+The [FLEURS manifest](fleurs-corpus.json) contains 30 English and 30 Swedish attributed CC-BY-4.0 clips. [Offline comparisons](offline-fleurs.json) record 240 actual RNNoise, DeepFilter, GTCRN and native Hush outputs with hashes and settings. Offline inference timings are not browser latency or listening scores.
 
-The corpus is a reproducible starting set, not complete qualification: its speech is originally 16 kHz, fan/keyboard noise is synthetic, TV is a speech mix, dog recordings are missing, and onset transcripts still need annotation. It has no matched Krisp references or human listening scores.
+This starter corpus is incomplete: speech originates at 16 kHz, fan/keyboard noises are synthetic, TV is a speech mix, dogs are missing and onset transcripts need annotation. No matched lawful Krisp outputs or five-listener blind study exist. Equally loud competing speakers remain a separately reported limitation.
 
-The initial Chromium pacing failure was traced to a missing `PULSE_SERVER` environment setting, despite a running PipeWire service. The runner now discovers the existing per-user socket. With proper pacing, Chromium and Firefox run the real graph with output, muted silence and no third-party requests. The previous Firefox-timeout finding is superseded by [the successful Firefox smoke](firefox-deepfilter.json).
-
-The speech raw-to-processed tap measurement originally reported **112.625 ms**. Reusing model lookahead for onset allowance reduced it to **92.625 ms**, with waveform correlation 0.927 in that run. The final reviewed implementation measured **101.375 ms** with correlation **0.925** while other checks were running on the host. The comparable RNNoise/VAD path measured **71.25 ms**. These taps include browser MediaStream buffering, queues, enhancement and VAD; they exclude network and physical playback-device delay. The enhanced path exceeds the **80 ms hard release limit**. Current reruns retain their exact values and implementation fingerprints in [the speech report](chromium-deepfilter-speech-vad.json); no paper latency is substituted.
-
-The final integrated Chromium test passed the actual microphone preview, enhanced engine/evaluation status, and encrypted-call PTT. It observed **0 idle, 24 held and 0 released remote frames**, no third-party requests, 2 underruns across 4,587 transport buffers, and no dropped frames. Its 10.126-second load phase is a smoke check, not duration qualification; see [the final call report](chromium-integrated-call.json).
-
-The [30-minute loaded call](chromium-integrated-call-30min-pre-review.json) completed on the pre-review artifact but **failed enhanced-runtime qualification**: DeepFilter stopped processing after roughly five minutes and the UI reported RNNoise after repeated underruns. The call used two encrypted peers and 6 ms of main-thread work every 16 ms; builds/tests also ran on the host. Metrics were recovered from its Playwright trace. Transport counters continued after fallback and cannot prove 30 minutes of enhanced inference. This artifact has no processor fingerprint, so it cannot qualify the final reviewed implementation; a final long-duration run remains required. The earlier test also left Settings open on assertion failure, which blocked teardown; the final test saves results and closes Settings before asserting.
-
-Linux Playwright WebKit initially lacked ICU74/flite dependencies. Task-local copies from the Ubuntu archive allowed it to launch, without changing host packages. The graph then produced **zero recorded output** in the synthetic test. That is a failed check, not a Safari pass; see [webkit-deepfilter.json](webkit-deepfilter.json). Physical desktop Safari, Android Chrome and iOS Safari remain untested.
+Linux Playwright WebKit produced zero output in the [synthetic check](webkit-deepfilter.json), even after task-local libraries allowed it to launch. It is not a Safari pass. Physical desktop Safari, Android Chrome and iOS Safari remain untested.
 
 ## Verification and review
 
-The branch includes regression tests for selection/fallback, jitter, stale output, privacy clearing, PTT, device-change/fallback races, reset correctness, preference migration, model exclusion and evidence binding. Build checks preserve lazy call loading and a single copy of core/RNNoise WASM; the evaluation profile adds one enhanced WASM and content-hashed model/glue plus build identity. Static `.bin` files are served with the expected content type; server APIs and encryption protocols did not change.
+Regression coverage includes fixed delay after stalls, 480/128 scheduling, bounded ownership, privacy clearing, PTT/device changes, transferred-stream cancellation, clone cleanup, clock rebases and stale loss notifications. Reviews found and corrected lifecycle issues; no important findings remained in the final scoped code review. Release evidence binds input/output hashes, blind keys, candidate, model lock and processor identity. Changing processor code invalidates earlier qualification.
 
-A fresh review found three important issues: fallback cancellation across device changes, retained sample/history memory on mute, and qualification combining unrelated evidence. Each was reproduced by a failing regression and corrected. Release qualification now binds corpus IDs, exact input/output hashes, blind keys, candidate engine, model lock and processor implementation. Qualified builds re-read hashed source evidence and recompute the verdict; editing buffering/VAD code invalidates older evidence.
+Final verification passed 4,943 repository Vitest tests, eight fixture tests, 18 noise-harness tests, lint, documentation/copy/CI guards, and media/web TypeScript checks. Default and evaluation builds passed asset-manifest, entry-isolation and Go static-serving checks. The qualified build correctly refused the missing release qualification evidence.
 
-The final follow-up passed **4,922 repository tests**, lint, media/web TypeScript checks and **14 harness tests**. Ordinary and evaluation builds passed their entry-chunk, asset-manifest and Go static-serving checks. The ordinary build contains no enhanced assets; the evaluation build contains one copy of each required WASM. A qualified build is correctly blocked without passing evidence. All **six final Chromium app checks passed**: enhanced preview/encrypted PTT, missing-model fallback and Off asset exclusion, local recording cleanup, mute/deafen, screen/camera sharing, and shared tab audio. The final Firefox processor smoke also passed. Machine-readable results are in [qualification.json](qualification.json).
+The final Chromium application suite passed six of seven checks. Its separate latency check measured 72.625 ms. The enhanced preview/PTT/load check failed with 12 underrun quanta across 4,597 buffers (0.261%), four drops, and a p99 inference upper bound of 5 ms. DeepFilter remained active; authenticated PTT frames were zero while idle, 37 while held and zero after release, with no third-party requests. This failure is retained in [the final integrated-call report](chromium-integrated-call.json). Firefox's final output/mute/same-origin smoke check passed; it does not qualify physical-device latency or endurance.
 
 ## Remaining release gates
 
-- Bring complete added delay within 80 ms and qualify sustained runtime on the required physical browser/device matrix.
-- Resolve the Linux WebKit zero-output result and test actual Safari/iOS devices.
-- Complete natural-noise/full-band/onset corpus coverage, obtain lawful matched Krisp outputs and run the five-listener blind study. Equally loud competing speakers remain a separately reported limitation.
-- Establish the exact DeepFilterNet3 weights redistribution grant. The author's paper supports open-source intent, but the checkpoint license question remains unresolved; see [artifact audit](../licenses/README.md).
+- Meet sustained enhanced-runtime qualification and the delay limit across the required physical browser/device matrix; the 60 ms target is still open.
+- Resolve Linux WebKit's zero output and test actual Safari/iOS devices.
+- Complete natural-noise/full-band/onset coverage, lawful matched Krisp references and the five-listener blind study.
+- Establish the exact DeepFilterNet3 weights redistribution grant; see the [artifact audit](../licenses/README.md).
 
-These gates keep the enhanced default disabled. The evaluation build is usable for testing the implemented feature; it is not a production quality or parity promise. No merge, push, release or deployment was performed.
+The enhanced default stays disabled. No merge, push, release or deployment was performed.

@@ -78,3 +78,57 @@ it('zeroes reusable PCM as well as pending output on privacy flush',()=>{
   b.setAllowed(false);
   expect(sent.every(f=>f.pcm.every(x=>x===0))).toBe(true);
 });
+
+it('recovers from a Worker stall without permanently delaying later speech',()=>{
+  let quantum=0;
+  const pending:Array<{at:number;frame:Parameters<FrameBridge['accept']>[0]}>=[];
+  // A 42.7 ms stall after steady playback. Later frames resume at their normal pace.
+  const b=new FrameBridge(frame=>pending.push({at:quantum>=300&&quantum<316?316:quantum+1,frame}));
+  b.setAllowed(true);
+  let lateSamples=0,heardAfterRecovery=0;
+  for(quantum=0;quantum<800;quantum++){
+    for(let i=0;i<pending.length;){if(pending[i].at<=quantum)b.accept(pending.splice(i,1)[0].frame);else i++;}
+    const input=Float32Array.from({length:128},(_,i)=>quantum*128+i+1),out=new Float32Array(128);
+    b.render(input,out);
+    if(quantum>340)for(let i=0;i<out.length;i++)if(out[i]>0){
+      heardAfterRecovery++;
+      // The 24 ms transport budget includes frame collection, scheduling and quantum rounding.
+      if(quantum*128+i+1-out[i]>1152)lateSamples++;
+    }
+  }
+  expect(heardAfterRecovery).toBeGreaterThan(50_000);
+  expect(lateSamples).toBe(0);
+  expect(b.stats.underruns).toBeGreaterThan(0);
+  expect(b.stats.dropped).toBeGreaterThan(0);
+});
+
+it('includes the capture quantum remainder in Worker scheduling headroom',()=>{
+  let q=0;
+  const pending:Array<{at:number;frame:Parameters<FrameBridge['accept']>[0]}>=[];
+  // Browser render batches can defer delivery to the fifth quantum after dispatch.
+  const b=new FrameBridge(frame=>pending.push({at:q+5,frame}));b.setAllowed(true);
+  let missing=0;
+  for(q=0;q<1500;q++){
+    for(let i=0;i<pending.length;){if(pending[i].at<=q)b.accept(pending.splice(i,1)[0].frame);else i++;}
+    const out=new Float32Array(128);b.render(new Float32Array(128).fill(.5),out);
+    if(q>=10)missing+=out.filter(x=>x!==.5).length;
+  }
+  expect(missing).toBe(0);expect(b.stats.underruns).toBe(0);expect(b.stats.dropped).toBe(0);
+});
+
+it('marks capture gaps so model lookahead cannot replay speech from before a stall',()=>{
+  const sent:Array<Parameters<FrameBridge['accept']>[0]>=[];
+  const b=new FrameBridge(frame=>sent.push(frame));b.setAllowed(true);
+  for(let i=0;i<6;i++)b.render(new Float32Array(480).fill(.8),new Float32Array(480));
+  expect(sent).toHaveLength(4);
+  b.accept(sent[0]);
+  b.render(new Float32Array(480).fill(.2),new Float32Array(480));
+  expect(sent.at(-1)?.discontinuity).toBe(true);
+  const c=new FrameBridge(frame=>sent.push(frame));c.setAllowed(true);
+  c.render(new Float32Array(480).fill(.8),new Float32Array(480));
+  c.render(new Float32Array(128).fill(.9),new Float32Array(128));
+  c.render(undefined,new Float32Array(128));
+  c.render(new Float32Array(480).fill(.1),new Float32Array(480));
+  expect(sent.at(-1)?.discontinuity).toBe(true);
+  expect(sent.at(-1)?.pcm.every(x=>Math.abs(x-.1)<1e-6)).toBe(true);
+});

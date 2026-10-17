@@ -17,3 +17,16 @@ test('DeepFilter reset clears all audio and recurrent state without recompiling 
     assert.ok(worst<10,`Reset took ${worst.toFixed(2)} ms; it must fit a 10 ms frame`);
   }finally{engine.destroy();}
 });
+
+test('priming inference leaves the first live speech identical to a fresh model',async()=>{
+  const {primeEnhancer}=await import('../../packages/media/src/audio/prime-enhancer.ts');
+  const engine=await createEngine('deepfilter',load),frames=Array.from({length:40},(_,n)=>Float32Array.from({length:480},(_,i)=>.15*Math.sin((n*480+i)*.13)));
+  try{
+    const fresh=frames.map(frame=>engine.process(frame).pcm.slice());
+    primeEnhancer(frame=>engine.process(frame),()=>engine.reset());
+    for(let n=0;n<frames.length;n++)assert.deepEqual(engine.process(frames[n]).pcm,fresh[n]);
+    let retained,reset=false;
+    assert.throws(()=>primeEnhancer(frame=>{retained=frame;throw Error('inference failed');},()=>{reset=true;}),/inference failed/);
+    assert.ok(reset);assert.ok(retained.every(x=>x===0));
+  }finally{engine.destroy();}
+});

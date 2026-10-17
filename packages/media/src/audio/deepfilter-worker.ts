@@ -3,8 +3,10 @@
 import rnnoiseFactory from '@jitsi/rnnoise-wasm/dist/rnnoise-sync.js';
 import { verifiedAsset, type NoiseAssets } from './enhanced-assets';
 import { LookaheadGate } from './lookahead-gate';
+import { primeEnhancer } from './prime-enhancer';
 import type { AudioFrame } from './frame-bridge';
 import type { GateMode } from './gate';
+import { TrackCapture } from './track-capture';
 interface DeepFilter {
   default(bytes: ArrayBuffer): Promise<unknown>;
   df_create(model: Uint8Array, attenuation: number): number;
@@ -36,14 +38,21 @@ self.onmessage = async event => {
     const gate=new LookaheadGate(mode);
     let epoch:number|null=null, time=0, slow=0, failed=false;
     const reset=()=>{df.df_reset(state);detector._rnnoise_destroy(detectionState);detectionState=detector._rnnoise_create(0);detector.HEAPF32.fill(0,at,at+480);gate.reset();};
-    port.onmessage=e=>{
+    primeEnhancer(pcm=>{
+      for(let i=0;i<480;i++)detector.HEAPF32[at+i]=pcm[i]*32768;
+      detector._rnnoise_process_frame(detectionState,pointer,pointer);
+      df.df_process_frame(state,pcm);
+    },reset);
+    const receive=(e:MessageEvent)=>{
+      if(e.data.kind==='capture'){void capture.apply(e.data).then(()=>self.postMessage({kind:'capture-closed',epoch:e.data.epoch})).catch(error=>{failed=true;self.postMessage({kind:'error',reason:'processor-error',detail:String(error)});});return;}
+      if(e.data.kind==='recycle'){capture.recycle(e.data.frame);return;}
       if(e.data.kind==='mode'){gate.setMode(e.data.mode);return;}
-      if(e.data.kind==='reset'){try{reset();epoch=e.data.epoch;}catch{failed=true;self.postMessage({kind:'error',reason:'processor-error'});}return;}
+      if(e.data.kind==='reset'){try{reset();epoch=e.data.epoch;if(e.data.mode)gate.setMode(e.data.mode);}catch{failed=true;self.postMessage({kind:'error',reason:'processor-error'});}return;}
       const frame=e.data as AudioFrame;
       const start=performance.now();
       try {
         if(failed){frame.pcm.fill(0);}else{
-          if(epoch!==null&&epoch!==frame.epoch)reset();
+          if(frame.discontinuity||epoch!==null&&epoch!==frame.epoch)reset();
           epoch=frame.epoch;
           for(let i=0;i<480;i++)detector.HEAPF32[at+i]=frame.pcm[i]*32768;
           const probability=detector._rnnoise_process_frame(detectionState,pointer,pointer);
@@ -57,6 +66,10 @@ self.onmessage = async event => {
         if(slow>=50&&!failed){failed=true;self.postMessage({kind:'error',reason:'sustained-overload'});}
       }catch {frame.pcm.fill(0);port.postMessage(frame,[frame.pcm.buffer]);if(!failed){failed=true;self.postMessage({kind:'error',reason:'processor-error'});}}
     };
+    const capture=new TrackCapture(frame=>receive({data:frame} as MessageEvent),
+      (nextEpoch,_allowed,mode)=>{reset();epoch=nextEpoch;gate.setMode(mode);},
+      count=>port.postMessage({kind:'capture-drop',epoch,count}),error=>{failed=true;self.postMessage({kind:'error',reason:'processor-error',detail:String(error)});});
+    port.onmessage=receive;self.onmessage=receive;
     port.start();self.postMessage({kind:'ready'});
   }catch(error){self.postMessage({kind:'error',reason:'initialization-failed',detail:String(error)});}
 };

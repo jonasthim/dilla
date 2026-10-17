@@ -3,7 +3,7 @@
   "qualified": false,
   "parityClaim": false,
   "assetLockSha256": "a7de345ad2255a41f30b8a9bd2ac333fea2bff48e2a6d821df2537246e409604",
-  "implementationSha256": "546ce1a696860f957315b0e1120b9ac0ef3162b295cbbc735afcc6449c1e9424",
+  "implementationSha256": "1ef805e9f8b00d71c3663aea14f3565921f96552ab5603d06cd839a1794ee61f",
   "implementation": {
     "integrated": true,
     "branch": "feat/private-noise-suppression",
@@ -13,7 +13,10 @@
       "Automatic / Lightweight / Off with effective status and visible one-way fallback",
       "same-origin verified assets; Worker inference and bounded AudioWorklet transport",
       "independent mute/PTT, privacy epochs and state resets",
-      "qualified build profile bound to exact measurements and model-license review"
+      "qualified build profile bound to exact measurements and model-license review",
+      "fixed playout timelines and hardware-backed output clock",
+      "Worker-owned capture, privacy-epoch clones and bounded acknowledged cleanup",
+      "calibrated direct-track latency comparison and encrypted-call endurance measurements"
     ]
   },
   "productionDefault": "lightweight (existing RNNoise)",
@@ -37,16 +40,17 @@
     ]
   },
   "verification": {
-    "repositoryTests": 4922,
-    "harnessTests": 14,
-    "chromiumAppTests": 6,
+    "repositoryTests": 4943,
+    "harnessTests": 18,
+    "chromiumAppTests": 7,
     "checks": [
       "repository documentation/copy/CI guards and lint",
       "media and web TypeScript",
       "default and evaluation builds, entry isolation and asset manifests",
       "Go static serving, including generated default and evaluation distributions",
       "qualified build refuses absent release evidence",
-      "review regressions: fallback races, private buffer/history clearing, evidence binding"
+      "review regressions: fallback races, private buffer/history clearing, evidence binding",
+      "latency follow-up regressions: transport stalls, clock rebases, transferred capture cancellation, fresh privacy clones, stale loss notices, primed model history"
     ],
     "chromiumAppCoverage": [
       "mute/deafen and PTT controls",
@@ -54,32 +58,83 @@
       "enhanced microphone preview and encrypted call with PTT",
       "local test stops capture before playback and discards recording",
       "screen and camera sharing",
-      "shared tab audio while microphone is muted"
+      "shared tab audio while microphone is muted",
+      "direct-track enhanced delay measured before encryption, with fresh authenticated receiver frames"
     ],
-    "freshReviewImportantFindings": 3,
-    "freshReviewImportantFindingsFixed": 3
+    "initialIntegrationReviewImportantFindings": 3,
+    "initialIntegrationReviewImportantFindingsFixed": 3,
+    "finalLatencyReviewImportantFindingsRemaining": 0,
+    "fixtureTests": 8,
+    "chromiumAppPassed": 6,
+    "chromiumAppFailed": 1,
+    "chromiumAppFailure": "Enhanced preview/encrypted PTT checks reached their assertions, but its short load phase exceeded the underrun threshold (12 / 4597 buffers; 4 drops)."
   },
   "runtime": {
-    "completeAddedDelayMs": 101.375,
-    "delayCorrelation": 0.92504752512016,
-    "delaySource": "chromium-deepfilter-speech-vad.json",
+    "completeAddedDelayMs": null,
+    "delaySource": "chromium-call-latency-30min.json",
     "hardLimitMs": 80,
     "targetMs": 60,
     "delayPassed": false,
-    "delayBoundary": "Raw capture tap to enhanced output tap, including browser MediaStream buffers, transport and VAD. Excludes network and playback device.",
-    "finalBuildShortCall": {
-      "source": "chromium-integrated-call.json",
-      "durationSeconds": 10.126,
+    "shortRunHardLimitPassed": true,
+    "targetConsistentlyMet": false,
+    "delayBoundary": "Raw microphone availability to outgoing processed track availability before encryption, including browser buffering and VAD; no observer AudioContext or subtracted bypass delay. Worst of three speech-window correlation estimates, not every-sample maximum.",
+    "shortLatencyComparison": {
+      "beforeSource": "chromium-track-latency-before.json",
+      "afterSource": "chromium-track-latency.json",
+      "beforeRangeMs": [
+        81,
+        85.22500002384186
+      ],
+      "afterRangeMs": [
+        57.72500002384186,
+        75.82500004768372
+      ],
+      "runs": 6,
       "passed": true,
-      "buffers": 4587,
-      "underruns": 2,
-      "dropped": 0,
-      "ptt": {
-        "idle": 0,
-        "held": 24,
-        "released": 0
-      },
-      "thirdPartyRequests": []
+      "drops": 0,
+      "underruns": 0
+    },
+    "encryptedCallRepeats": {
+      "source": "chromium-call-latency-repeats.json",
+      "runs": 3,
+      "durationSecondsPerRun": 20,
+      "addedDelayMs": [
+        65.625,
+        67.02499997615814,
+        67.57499992847443
+      ],
+      "passed": true,
+      "drops": 0,
+      "underruns": 0
+    },
+    "preservedShortFailures": [
+      "chromium-call-latency-short-unmeasured.json",
+      "chromium-integrated-call-short-stall.json"
+    ],
+    "finalLoadedCall": {
+      "source": "chromium-call-latency-30min.json",
+      "durationSeconds": 1800.0321999999285,
+      "passed": false,
+      "enhancedStartDelayMs": 64.77499997615814,
+      "enhancedFrames": 157595,
+      "buffers": 591139,
+      "underruns": 290,
+      "dropped": 103,
+      "p99ProcessingMs": 3.5,
+      "enhancedStoppedNearMinute": 26,
+      "effectiveAtEnd": "rnnoise",
+      "reason": "repeated-underruns",
+      "verifiedFramesAfterLoad": 6,
+      "enhancedEndDelayMeasured": false,
+      "note": "Cumulative underrun fraction was below 0.1%, but repeated capture losses triggered fallback. End windows observed fallback routing and cannot establish enhanced-path delay. Test also fails its stricter zero-drop assertion."
+    },
+    "workletInputComparison": {
+      "sources": [
+        "chromium-call-latency-worklet-comparison.json",
+        "chromium-track-latency-worklet-comparison.json"
+      ],
+      "passed": false,
+      "selectedForSupportedChromium": false
     },
     "historicalLoadedCall": {
       "source": "chromium-integrated-call-30min-pre-review.json",
@@ -90,18 +145,32 @@
       "implementationMatchesFinal": false,
       "note": "Pre-review artifact, with additional host builds/tests. Cannot qualify the final processor; transport counters continue after fallback."
     },
-    "finalImplementationLoadedCallMinutes": 0,
     "physicalPlatformsTested": [],
     "smoke": {
-      "chromium": "passed output/mute/same-origin checks",
-      "firefox": "passed output/mute/same-origin checks",
+      "chromium": "6/7 final app checks passed; enhanced short-call stress failed on underruns/drops. Six standalone timing runs and three separate 20s encrypted-call repeats passed.",
+      "firefox": "Final output/mute/same-origin smoke passed; no physical Firefox latency or duration qualification.",
       "linuxWebkit": "failed: zero recorded output; not physical Safari"
     },
-    "qualified": false
+    "qualified": false,
+    "finalBuildShortCall": {
+      "source": "chromium-integrated-call.json",
+      "durationSeconds": 10.179,
+      "passed": false,
+      "buffers": 4597,
+      "underruns": 12,
+      "dropped": 4,
+      "p99ProcessingMs": 5,
+      "ptt": {
+        "idle": 0,
+        "held": 37,
+        "released": 0
+      },
+      "thirdPartyRequests": []
+    }
   },
   "blockers": [
-    "Enhanced tap-to-tap delay of 101.375 ms exceeds the 80 ms hard release limit.",
-    "Thirty-minute pre-review call downgraded to RNNoise; final implementation still needs 30-minute qualification across the required physical browser/device matrix.",
+    "Final 30-minute call downgraded to RNNoise near minute 26 after repeated capture loss; sustained enhanced-runtime qualification still fails.",
+    "Complete added delay and sustained headroom still require the physical browser/device matrix; the 60 ms target is not consistently met.",
     "Linux WebKit produced no recorded output; physical Safari, Android Chrome and iOS Safari are untested.",
     "Corpus still needs complete natural-noise/full-band/onset coverage, matched lawful Krisp references and at least five blind listeners.",
     "Exact DeepFilterNet3 weight redistribution license requires clarification."
