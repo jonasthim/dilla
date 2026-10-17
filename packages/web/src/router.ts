@@ -28,6 +28,8 @@ export const SETTINGS_COMPARE = 'compareUser';
 
 /** The history-state key that marks an entry this app pushed on a phone: back is then `history.back()`, else a deep link's fallback. */
 export const PHONE_BACK = 'phoneBack';
+/** The path of the screen a pushed phone view was pushed from, kept beside `phoneBack` in the history state. */
+const PHONE_FROM = 'phoneFrom';
 
 const DM = /^\/dm\/([0-9a-f]{32})$/;
 const SETTINGS_SECTION = /^\/settings\/(devices|signin|notifications|appearance|voice|privacy|keyboard|diagnostics)$/;
@@ -123,13 +125,13 @@ const snapshot = () => location.pathname + location.search;
 function navigate(route: Route, replace = false, opts?: { phoneBack?: boolean; from?: string | null }): void {
   const path = routePath(route);
   if (!replace && path === snapshot()) return;
-  let state: { [SETTINGS_FROM]?: string | null; [SETTINGS_COMPARE]?: string; [PHONE_BACK]?: true } | null = null;
+  let state: { [SETTINGS_FROM]?: string | null; [SETTINGS_COMPARE]?: string; [PHONE_BACK]?: true; [PHONE_FROM]?: string } | null = null;
   if (route.name === 'settings') {
     const current = parseRoute(location.pathname, location.search, history.state);
     state = { [SETTINGS_FROM]: opts?.from !== undefined ? opts.from : current.name === 'settings' ? current.from : snapshot() };
     if (route.section === 'privacy' && route.compare !== undefined && HEX32.test(route.compare)) state[SETTINGS_COMPARE] = route.compare;
   }
-  if (opts?.phoneBack === true) state = { ...state, [PHONE_BACK]: true };
+  if (opts?.phoneBack === true) state = { ...state, [PHONE_BACK]: true, [PHONE_FROM]: snapshot() };
   if (replace) history.replaceState(state, '', path);
   else history.pushState(state, '', path);
   for (const listener of listeners) listener();
@@ -143,6 +145,13 @@ export function goBack(fallback: Route, go: (route: Route, replace?: boolean) =>
   const state: unknown = history.state;
   if (typeof state === 'object' && state !== null && (state as Record<string, unknown>)[PHONE_BACK] === true) history.back();
   else go(fallback, true);
+}
+
+/** Where the current history entry's phone view was pushed from, or null (a deep link, a reload, no push by the app). */
+export function pushedFrom(): Route | null {
+  const state: unknown = history.state;
+  const from = typeof state === 'object' && state !== null ? (state as Record<string, unknown>)[PHONE_FROM] : undefined;
+  return typeof from === 'string' ? routeOf(from) : null;
 }
 
 /** The phone tab a route belongs to: a channel is servers, a DM is dms, Settings is you. */

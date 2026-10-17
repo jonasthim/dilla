@@ -109,6 +109,16 @@ describe('usePhoneSheet', () => {
     back.mockRestore();
   });
 
+  it('close() twice before the pop arrives calls history.back() once', () => {
+    window.history.replaceState({ phoneBack: true }, '', '/c/x');
+    const { result, rerender } = renderHook(({ open }) => usePhoneSheet('members', open, vi.fn()), { initialProps: { open: false } });
+    rerender({ open: true });
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    act(() => { result.current.close(); result.current.close(); });
+    expect(back).toHaveBeenCalledTimes(1);
+    back.mockRestore();
+  });
+
   it('strips a stale sheet entry (a reload, a forward) so closing never pops the view', () => {
     window.history.replaceState({ phoneBack: true, phoneSheet: 'members' }, '', '/c/x');
     const onClose = vi.fn();

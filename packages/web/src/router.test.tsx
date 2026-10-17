@@ -187,7 +187,7 @@ describe('navigate with phoneBack', () => {
     window.history.replaceState(null, '', '/you');
     render(<PhoneProbe />);
     await user.click(screen.getByRole('button', { name: 'push back' }));
-    expect(window.history.state).toEqual({ [PHONE_BACK]: true });
+    expect(window.history.state).toEqual({ [PHONE_BACK]: true, phoneFrom: '/you' });
     window.history.replaceState(null, '', '/activity');
     await user.click(screen.getByRole('button', { name: 'plain' }));
     expect(window.history.state).toBeNull();
@@ -198,7 +198,7 @@ describe('navigate with phoneBack', () => {
     window.history.replaceState(null, '', '/you');
     render(<PhoneProbe />);
     await user.click(screen.getByRole('button', { name: 'open settings' }));
-    expect(window.history.state).toEqual({ [SETTINGS_FROM]: '/you', [PHONE_BACK]: true });
+    expect(window.history.state).toEqual({ [SETTINGS_FROM]: '/you', [PHONE_BACK]: true, phoneFrom: '/you' });
   });
 });
 

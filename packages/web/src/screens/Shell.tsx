@@ -10,7 +10,7 @@ import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
-import { baseRoute, goBack, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
+import { baseRoute, goBack, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
 import { phoneNow, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
@@ -1250,8 +1250,13 @@ export function Shell(): React.JSX.Element {
   const openTab = (to: PhoneTab, current: boolean) => {
     // The current tab in its pushed view goes to its list (the iOS convention): back when the app pushed the view, else a replace after a
     // deep link. Another tab opens where it was left, replacing the entry.
-    if (current) goBack(tabRoot(to), navigate);
-    else navigate(tabTarget(to), true);
+    if (current) {
+      // Back only when the view was pushed from this tab's own list; from anywhere else (Activity, another tab) back would land there.
+      const from = pushedFrom();
+      const fromList = from !== null && tabOf(from) === to && from.name !== 'dm' && from.name !== 'settings' && !(from.name === 'channel' && from.channelId !== null);
+      if (fromList) goBack(tabRoot(to), navigate);
+      else navigate(tabRoot(to), true);
+    } else navigate(tabTarget(to), true);
   };
   const tabBar = !phone ? undefined : (
     <TabBar label={t('nav.tabs.label')} onSelect={id => {

@@ -45,7 +45,7 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children,
   useEffect(() => {
     if (!open || !modeless) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
       const inDialog = e.target instanceof Element ? e.target.closest('dialog') : null;
       if (inDialog !== null && inDialog !== ref.current) return;
       e.preventDefault();
@@ -59,7 +59,7 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children,
   return (
     <dialog ref={ref} className="d-settings-frame" aria-labelledby={titleId} aria-modal={modeless ? undefined : 'true'} data-modeless={modeless || undefined}
       onCancel={e => { if (!ownEvent(e.target)) return; e.preventDefault(); onClose(); }}
-      onKeyDown={e => { if (e.key === 'Escape' && ownEvent(e.target)) { e.preventDefault(); onClose(); } }}
+      onKeyDown={e => { if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && ownEvent(e.target)) { e.preventDefault(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>
       {/* Contents exist only while open: a closed frame leaks no hidden text. */}
       {open ? (

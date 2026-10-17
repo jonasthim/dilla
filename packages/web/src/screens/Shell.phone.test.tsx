@@ -300,6 +300,28 @@ describe('the phone shell: tabs', () => {
     expect(back).toHaveBeenCalledTimes(1);
   });
 
+  it('the current tab lands on its own list, never on the screen the view was pushed from', async () => {
+    const { user } = phone({ path: '/activity' });
+    await screen.findByRole('heading', { name: t('activity.title') });
+    goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: '/activity' });
+    await screen.findByRole('textbox', { name: 'message #lobby' });
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    await user.click(tab('servers'));
+    expect(back).not.toHaveBeenCalled();
+    expect(here()).toBe(`/c/${A}`);
+  });
+
+  it('a DM opened from the servers list: the DMs tab lands on /dm', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await screen.findByRole('navigation', { name: t('shell.channels.label') });
+    goto(`/dm/${DM}`, { phoneBack: true, phoneFrom: `/c/${A}` });
+    await screen.findByRole('textbox');
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    await user.click(tab('DMs'));
+    expect(back).not.toHaveBeenCalled();
+    expect(here()).toBe('/dm');
+  });
+
   it('opens an unvisited tab at its root', async () => {
     const { user } = phone({ path: '/you' });
     await screen.findByRole('heading', { level: 1, name: t('you.title') });

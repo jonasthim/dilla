@@ -158,6 +158,20 @@ describe('SettingsFrame', () => {
       expect(p.onClose).not.toHaveBeenCalled();
     });
 
+    it('stays open when a nested element handled Escape (preventDefault)', () => {
+      const p = props();
+      render(<PhoneLayoutProvider value><SettingsFrame {...p}><input aria-label="key capture" onKeyDown={e => e.preventDefault()} /></SettingsFrame></PhoneLayoutProvider>);
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'key capture' }), { key: 'Escape' });
+      expect(p.onClose).not.toHaveBeenCalled();
+    });
+
+    it('ignores an Escape that ends an input-method composition', () => {
+      const p = props();
+      render(<><PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider><button type="button">tab</button></>);
+      fireEvent.keyDown(screen.getByRole('button', { name: 'tab' }), { key: 'Escape', isComposing: true });
+      expect(p.onClose).not.toHaveBeenCalled();
+    });
+
     it('an explicit modal prop wins', () => {
       const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
       phone({ modal: true });
