@@ -469,6 +469,24 @@ describe('phone layout', () => {
     expect(shell).not.toHaveAttribute('data-typing');
   });
 
+  it('typing: a focused field removed from the page with no focusout (WebKit) brings the tab bar back', async () => {
+    const holder = document.createElement('div');
+    const field = document.createElement('input');
+    holder.append(field);
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+    document.body.append(holder);
+    const shell = container.firstElementChild as HTMLElement;
+    act(() => { field.focus(); });
+    expect(shell).toHaveAttribute('data-typing', 'true');
+    // WebKit fires no focusout when the focused element leaves the DOM; drop the event to stand in for it.
+    const swallow = (e: Event) => e.stopImmediatePropagation();
+    window.addEventListener('focusout', swallow, true);
+    await act(async () => { holder.remove(); await Promise.resolve(); });
+    window.removeEventListener('focusout', swallow, true);
+    expect(shell).not.toHaveAttribute('data-typing');
+    expect(screen.getByRole('navigation', { name: 'main' })).toBeInTheDocument();
+  });
+
   it('covered: main, rail, sidebar, aside and call bar are inert; the tab bar and the ring are not', () => {
     const ring = <section aria-label="incoming calls"><button type="button">answer</button></section>;
     const { container } = render(<ComposedShell ring={ring} shell={phone({ phonePane: 'view', covered: true, aside: <p>pane</p>, asideLabel: 'members', asideOpen: true })} />);

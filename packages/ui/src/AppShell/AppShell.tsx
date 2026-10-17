@@ -154,6 +154,17 @@ export function AppShell({
     document.addEventListener('focusout', onOut);
     return () => { document.removeEventListener('focusin', onIn); document.removeEventListener('focusout', onOut); setTyping(false); };
   }, [phone]);
+  // WebKit fires no focusout when the focused field leaves the page (a dialog unmounts, a row re-renders): while typing,
+  // a change to the page re-reads the active element.
+  useEffect(() => {
+    if (!typing || typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => {
+      const el = document.activeElement;
+      if (!editable(el) || !(el as HTMLElement).isConnected) setTyping(false);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['open', 'hidden', 'disabled', 'readonly'] });
+    return () => observer.disconnect();
+  }, [typing]);
   // --d-tabbar-h is the tab bar's height (0px while hidden or absent). It is also set on <html>, where a settings page outside the shell reads it.
   const tabBarRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
