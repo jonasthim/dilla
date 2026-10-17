@@ -45,7 +45,7 @@
 /* The strip is for picking a tile: its volume overlay would cover the 7.5rem tile, so it stays on the focused or grid tile. */
 .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: none; }
 .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] {
-  grid-row: 1; grid-column: 1 / -1; position: sticky; left: 0; width: 100cqw; max-width: 100%; aspect-ratio: auto;
+  grid-row: 1; grid-column: 1 / -1; justify-self: start; position: sticky; left: 0; width: 100cqw; max-width: 100%; aspect-ratio: auto;
 }
 .d-call-stage__controls { display: flex; justify-content: center; }
 @media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {

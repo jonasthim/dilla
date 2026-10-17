@@ -214,10 +214,25 @@ function expectFocused(root: HTMLElement, story: string): void {
   // Centred in their columns: the filmstrip tiles are evenly spaced, and the first sits half a free column from the edge.
   const gaps = strip.slice(1).map((r, i) => r.left - strip[i].right);
   if (gaps.length > 1 && Math.max(...gaps) - Math.min(...gaps) > 2) throw new Error(`${story}: the filmstrip is ragged (gaps ${gaps.join(', ')})`);
-  // The hidden filmstrip volumes are not targets: check the rest by hiding them from the walk.
-  const hidden = Array.from(root.querySelectorAll<HTMLElement>('li[data-focused="false"] .d-call-tile__volume'));
-  hidden.forEach(v => v.remove());
-  expectVoiceTargets(root, story);
+  // The focused tile starts at the area's left edge (scrolled or not) and its full-screen button is on screen.
+  if (Math.abs(big.left - area.left) > 1) throw new Error(`${story}: the focused tile starts at ${String(big.left)}, not at the area's ${String(area.left)}`);
+  const fs = root.querySelector<HTMLElement>('li[data-focused="true"] .d-call-tile__fullscreen');
+  if (fs !== null) {
+    const f = fs.getBoundingClientRect();
+    if (f.right > area.right + 1 || f.right > window.innerWidth) throw new Error(`${story}: the focused tile's full-screen button is off screen (right edge ${String(f.right)})`);
+  }
+  expectVisibleTargets(root, story);
+}
+/** `expectVoiceTargets` for what is drawn: an element with no client rects (the strip's `display: none` volume) is no target. */
+function expectVisibleTargets(root: HTMLElement, story: string): void {
+  const min = window.innerWidth < 768 ? 44 : 40;
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, summary, input[type="range"]'))) {
+    if (el.getClientRects().length === 0) continue;
+    const r = el.getBoundingClientRect();
+    if (r.height < min || (!(el instanceof HTMLInputElement) && r.width < min)) {
+      throw new Error(`${story}: "${el.getAttribute('aria-label') ?? el.textContent ?? ''}" is ${String(r.width)} × ${String(r.height)}, under ${String(min)} px`);
+    }
+  }
 }
 
 const gridStory = (n: number, theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
@@ -230,6 +245,12 @@ const focusedStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
   globals: { theme }, decorators: [stageBox],
   render: args => <StageDemo {...args} initialFocus="d-ada:screen" />,
   play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectFocused(canvasElement, 'Focused'); },
+});
+/** Nine tiles with a person focused: the filmstrip overflows and scrolls, and the focused tile stays at the left edge. */
+const focusedNineStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+  args: { tiles: people(9), code: null }, globals: { theme }, decorators: [stageBox],
+  render: args => <StageDemo {...args} initialFocus="d-ed:camera" />,
+  play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectFocused(canvasElement, 'Focused9'); },
 });
 /** One tile fills the area above the toolbar. */
 export const Grid1: Story = gridStory(1, 'mesh');
@@ -249,4 +270,7 @@ export const Grid9HighContrast: Story = gridStory(9, 'high-contrast');
 export const Focused: Story = focusedStory('mesh');
 export const FocusedLight: Story = focusedStory('light');
 export const FocusedHighContrast: Story = focusedStory('high-contrast');
+export const Focused9: Story = focusedNineStory('mesh');
+export const Focused9Light: Story = focusedNineStory('light');
+export const Focused9HighContrast: Story = focusedNineStory('high-contrast');
 
