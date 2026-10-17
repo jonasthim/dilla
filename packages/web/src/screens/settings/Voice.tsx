@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { SETTINGS } from '@dilla/client-core';
 import { Banner, isPushToTalkKey, VoiceSettings, type CaptureKeyAction } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
+import { getProcessorStatus, subscribeProcessorStatus } from '../../call/processor-status.ts';
+import { noiseBuildMode, noisePreference } from '../../../../media/src/audio/noise-preference';
+import { MicrophoneTest } from './MicrophoneTest.tsx';
 import { t } from '../../strings/index.ts';
 
 const TITLE_ID = 'voice-settings-title';
@@ -102,7 +105,12 @@ export function Voice(): React.JSX.Element {
   const client = useCore();
   const settings = useSlice('settings') ?? {};
   const { inputs, outputs, granted } = useDevices();
-  const level = useInputLevel(granted, settings[SETTINGS.voiceInput] ?? '');
+  const call = useSlice('call');
+  const inCall = call !== undefined && ['joining', 'in', 'paused', 'leaving'].includes(call.phase);
+  const [testOpen, setTestOpen] = useState(false);
+  const status = useSyncExternalStore(subscribeProcessorStatus, getProcessorStatus);
+  const level = useInputLevel(granted && !inCall && !testOpen, settings[SETTINGS.voiceInput] ?? '');
+  const noise = noisePreference(settings[SETTINGS.voiceNoise]);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<UiError | null>(null);
   const write = (key: string, value: string | null) => {
@@ -125,17 +133,26 @@ export function Voice(): React.JSX.Element {
       {error === null ? null : <Banner tone="danger">{t('settings.error.other', { code: error.code })}</Banner>}
       <VoiceSettings inputs={inputs} outputs={outputs} input={settings[SETTINGS.voiceInput] ?? ''} output={settings[SETTINGS.voiceOutput] ?? ''}
         canSelectOutput={canSelectOutput} mode={settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad'} pttKey={pttKey}
-        capturing={capturing} noise={settings[SETTINGS.voiceNoise] !== 'off'} level={level}
+        capturing={capturing} noise={noise} level={level}
+        levelUnavailable={inCall || testOpen ? t('settings.voice.levelUnavailable') : undefined}
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
-          pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'),
+          pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'), automatic: t(noiseBuildMode === 'beta' ? 'settings.voice.automaticBeta' : 'settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
           level: t('settings.voice.level') }}
         onInput={id => write(SETTINGS.voiceInput, id === '' ? null : id)}
         onOutput={id => write(SETTINGS.voiceOutput, id === '' ? null : id)}
         onMode={mode => write(SETTINGS.voiceMode, mode)}
         onCaptureKey={onCaptureKey}
-        onNoise={on => write(SETTINGS.voiceNoise, on ? 'on' : 'off')} />
+        onNoise={mode => write(SETTINGS.voiceNoise, mode)} />
+      {noiseBuildMode === 'beta' ? <p>{t('settings.voice.noiseBeta')}</p> : null}
+      {noise === 'automatic' && status === null ? <p>{t('settings.voice.noisePending')}</p> : null}
+      {status === null ? null : <p role="status">
+        {t('settings.voice.processor', {processor: (status.effective === 'off' || (status.effective === 'browser' && status.browserNoise === 'off')) ? t('settings.voice.processor.off') : status.effective === 'browser' ? t('settings.voice.processor.browser') : status.effective === 'failed' ? t('settings.voice.processor.failed') : status.effective === 'initializing' ? t('settings.voice.processor.initializing') : status.engineName ?? t('settings.voice.lightweight')})}{' '}
+        {status.reason === null ? null : t(`settings.voice.fallback.${status.reason}`)}{' '}
+        {status.browserNoise === 'unknown' ? t('settings.voice.browserUnknown') : noise === 'off' && status.browserNoise === 'on' ? t('settings.voice.browserStillOn') : null}
+      </p>}
+      <MicrophoneTest input={settings[SETTINGS.voiceInput] ?? ''} noise={noise} disabled={inCall} onOpen={setTestOpen} />
     </section>
   );
 }

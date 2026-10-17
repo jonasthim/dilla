@@ -85,7 +85,7 @@ function fakeContext() {
     sources: [] as Array<{ stream: unknown; disconnected: boolean }>,
     audioWorklet: { addModule: async (url: string) => void ctx.modules.push(url) },
     resume: async () => {},
-    close: async () => void (ctx.closed = true),
+    close: async (): Promise<void> => void (ctx.closed = true),
     createMediaStreamSource(stream: unknown) {
       const s = { stream, disconnected: false, connect: (n: unknown) => n, disconnect: () => void (s.disconnected = true) };
       ctx.sources.push(s);
@@ -212,6 +212,40 @@ describe('DillaRnnoiseProcessor', () => {
     expect(node.port.sent).toContainEqual({ kind: 'destroy' });
     expect(ctx.closed).toBe(true);
     await expect(p.probe(1)).rejects.toThrow('reported nothing');
+  });
+
+  it('closes its context once when app leave and track stop destroy concurrently', async () => {
+    stubAudioGlobals();
+    const ctx = fakeContext();
+    let finish!: () => void;
+    const closing = new Promise<void>(resolve => { finish = resolve; });
+    ctx.close = vi.fn(() => {
+      if (ctx.closed) return Promise.reject(new DOMException("Can't close an AudioContext twice", 'InvalidStateError'));
+      ctx.closed = true;
+      return closing;
+    });
+    const p = new DillaRnnoiseProcessor({ createContext: () => ctx as unknown as AudioContext, workletUrl: '/w.js', wasmUrl: '/r.wasm', fetchWasm: async () => new ArrayBuffer(4) });
+    await p.init({ kind: Track.Kind.Audio, track: { id: 'mic-1' } as MediaStreamTrack } as AudioProcessorOptions);
+    const result = Promise.allSettled([p.destroy(), p.destroy()]);
+    finish();
+    expect((await result).map(r => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(ctx.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not close again when cancelled initialization resumes after teardown', async () => {
+    stubAudioGlobals();
+    const ctx = fakeContext();
+    ctx.close = vi.fn(async () => { ctx.closed = true; });
+    let loaded!: (bytes: ArrayBuffer) => void;
+    const p = new DillaRnnoiseProcessor({ createContext: () => ctx as unknown as AudioContext, workletUrl: '/w.js', wasmUrl: '/r.wasm', fetchWasm: () => new Promise(resolve => { loaded = resolve; }) });
+    const init = p.init({ kind: Track.Kind.Audio, track: { id: 'mic-1' } as MediaStreamTrack } as AudioProcessorOptions);
+    const cancelled = expect(init).rejects.toThrow('E_AUDIO_CANCELLED');
+    await vi.waitFor(() => expect(loaded).toBeTypeOf('function'));
+    await p.destroy();
+    loaded(new ArrayBuffer(4));
+    await cancelled;
+    expect(ctx.close).toHaveBeenCalledTimes(1);
+    expect(p.processedTrack).toBeUndefined();
   });
 });
 

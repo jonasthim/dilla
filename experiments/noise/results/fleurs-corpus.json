@@ -1,0 +1,1090 @@
+{
+  "clips": [
+    {
+      "id": "fleurs-sv_se-00",
+      "file": "sv_se-00.wav",
+      "sha256": "b0f95773b606d4a9950735ad39c6b330e905574957276d428dbb1953251214ae",
+      "language": "sv",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1557,
+      "transcript": "Efter att ha sett krigens skr\u00e4ck och grymheter under f\u00f6rsta v\u00e4rldskriget ville l\u00e4nder undvika att en s\u00e5dan situation upprepades i framtiden.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-01",
+      "file": "sv_se-01.wav",
+      "sha256": "17d02097951cb5a11e00ef0ee83e46f0ba4d56a02f2f9c9b6afb05d806b65398",
+      "language": "sv",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1628,
+      "transcript": "Hantverksprodukter kan definieras som antikviteter, fast de inte \u00e4r lika gamla som liknande massproducerade varor.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-02",
+      "file": "sv_se-02.wav",
+      "sha256": "5f864126d91e3dd6aed2089ca0c5f55aed24f9294a1acf022a9db7a6133bc2ad",
+      "language": "sv",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1587,
+      "transcript": "De f\u00f6rsta fallen av sjukdomen under den h\u00e4r s\u00e4songen rapporterades i slutet av juli.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-03",
+      "file": "sv_se-03.wav",
+      "sha256": "68b8280f2753f291d4a242bcc7a3f0793bc5fc262ff758644982f39cb4374e91",
+      "language": "sv",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1557,
+      "transcript": "Efter att ha sett krigens skr\u00e4ck och grymheter under f\u00f6rsta v\u00e4rldskriget ville l\u00e4nder undvika att en s\u00e5dan situation upprepades i framtiden.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-04",
+      "file": "sv_se-04.wav",
+      "sha256": "1eaefec35ffc8e9af7a5f6fc77a8623961593eb6be56b80a978f37d8f75c5691",
+      "language": "sv",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1532,
+      "transcript": "Baba Shyam serverades 108 tallrikar med Chhappan Bhog (i hinduismen inneb\u00e4r det 56 olika \u00e4tbara saker som godis, frukt, n\u00f6tter, r\u00e4tter med mera som erbjuds till gudomligheter).",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-05",
+      "file": "sv_se-05.wav",
+      "sha256": "b013f8ecb7192bcf7c974d0876def4c04893bb376d57b3f662b60ed5376027cf",
+      "language": "sv",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1574,
+      "transcript": "Vintern kan vara bedr\u00e4gligt kall: temperaturen faller s\u00e4llan under noll, men vinden och luftfuktigheten kombineras och g\u00f6r att det k\u00e4nns kallare \u00e4n vad termometern s\u00e4ger.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-06",
+      "file": "sv_se-06.wav",
+      "sha256": "ccd75422ef1ee1d3b548d14301091ec69efdb35f541c1c5e8f9b471052e1332c",
+      "language": "sv",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1519,
+      "transcript": "I m\u00e5nga fall kan att skriva in sig p\u00e5 en sabbats\u00e5rskurs utomlands faktiskt \u00f6ka chanserna att komma in p\u00e5 en h\u00f6gre utbildning i ditt hemland.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-07",
+      "file": "sv_se-07.wav",
+      "sha256": "1ecf121da6a6779aa62058c079f4527e44578379e96b70ed95c51a284ab9f36b",
+      "language": "sv",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1542,
+      "transcript": "\"Bushs talesman Gordon Johndroe kallade Nordkoreas l\u00f6fte \"\"ett stort steg mot m\u00e5let att uppn\u00e5 en bekr\u00e4ftad nedrustning p\u00e5 den koreanska halv\u00f6n.\"\"\"",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-08",
+      "file": "sv_se-08.wav",
+      "sha256": "8fea18d31014a1b49b33949109596a10d8851860c390169001af049dba343d25",
+      "language": "sv",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1650,
+      "transcript": "Saltvattenkrokodilens huvudsakliga livsmilj\u00f6 ligger i flodmynningarna norr om Rockhampton, s\u00e5 de lever vanligtvis inte i havet.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-09",
+      "file": "sv_se-09.wav",
+      "sha256": "ca02a42fc95ce29bc293362ba7c66523f46938f57a6451565f33e2fc13762b2a",
+      "language": "sv",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1527,
+      "transcript": "Maciej Krezel i det polska herrlaget f\u00f6r synskadade och ledsagaren Anna Ogarzynska slutade p\u00e5 trettonde plats i Super-G. Sydkoreas Jong Seork Park hamnade p\u00e5 tjugofj\u00e4rde plats i herrarnas sittande Super-G.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-10",
+      "file": "sv_se-10.wav",
+      "sha256": "2f9f99d25fd4801539f2af58f98d9b4d85ca68215349c42770186f53b2e198a1",
+      "language": "sv",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1619,
+      "transcript": "De flesta skyltarna \u00e4r emellertid bara p\u00e5 katalanska, d\u00e5 det enligt lag \u00e4r det prim\u00e4ra officiella spr\u00e5ket.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-11",
+      "file": "sv_se-11.wav",
+      "sha256": "8ab18952bbde76df4c8bf369b75d21c259e80370b1038ff201659fde95dc716d",
+      "language": "sv",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1632,
+      "transcript": "Kvinnor b\u00f6r f\u00f6rst\u00e5 att kulturella skillnader kan resultera i vad de skulle betrakta som trakasserier, och det \u00e4r inte ovanligt att n\u00e5gon f\u00f6ljer efter en, tar tag i ens arm, etc.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-12",
+      "file": "sv_se-12.wav",
+      "sha256": "010447341f5c8032d5aee05e4fff68f47c185a9c832ceaa312b070d5c1d02eed",
+      "language": "sv",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1586,
+      "transcript": "Hennes f\u00f6rsta var slalom, d\u00e4r hon fick en Did Not Finish i f\u00f6rsta \u00e5ket. 36 av de 116 konkurrenterna fick samma resultat i detta lopp.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-13",
+      "file": "sv_se-13.wav",
+      "sha256": "6953b748e2fb6552d853612d7f9e1437a48c602ee041ce692be3e020f6978ee8",
+      "language": "sv",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1541,
+      "transcript": "Kurirf\u00f6retag har bra betalt f\u00f6r att leverera saker snabbt. Ofta \u00e4r tid v\u00e4ldigt viktigt n\u00e4r det g\u00e4ller aff\u00e4rsdokument, handelsvaror eller reservdelar till en br\u00e5dskande reparation.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-14",
+      "file": "sv_se-14.wav",
+      "sha256": "edbff42f756d0733074928d8eb7220d5a0a54d4b783807ac7d0d7d924e5bab54",
+      "language": "sv",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1513,
+      "transcript": "Argentina \u00e4r v\u00e4lk\u00e4nt f\u00f6r att deras pololag och -spelare \u00e4r bland de b\u00e4sta i v\u00e4rlden.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-15",
+      "file": "sv_se-15.wav",
+      "sha256": "50ee36aee02d9abfe490ad7cf530cad54cc6a2d925b7226ed218b533cfc55310",
+      "language": "sv",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1542,
+      "transcript": "\"Bushs talesman Gordon Johndroe kallade Nordkoreas l\u00f6fte \"\"ett stort steg mot m\u00e5let att uppn\u00e5 en bekr\u00e4ftad nedrustning p\u00e5 den koreanska halv\u00f6n.\"\"\"",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-16",
+      "file": "sv_se-16.wav",
+      "sha256": "faeaa1180d28a6a4b4f2ec880e9bcd9229a2231e86dfcfa62dee3771ec38f50a",
+      "language": "sv",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1598,
+      "transcript": "Trots att tre personer befann sig i huset n\u00e4r bilen kolliderade med det, blev ingen av dem skadad.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-17",
+      "file": "sv_se-17.wav",
+      "sha256": "1aca8ee82ddfd390c24f0f1f80b4d8a53f3d2922a63352e090960299e4072505",
+      "language": "sv",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1511,
+      "transcript": "Snart tog sig polism\u00e4n utrustade med kravallutrustning in p\u00e5 g\u00e5rden och tr\u00e4ngde in internerna i ett h\u00f6rn med t\u00e5rgas.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-18",
+      "file": "sv_se-18.wav",
+      "sha256": "5e16aa78fcfe3b848a4424b06a03008902ea9acd4b6bee34683ff37b8b1fdbab",
+      "language": "sv",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1539,
+      "transcript": "Medlemmar i en subkultur signalerar ofta sin tillh\u00f6righet genom ett distinkt och symboliskt stilval, som inkluderar mode, man\u00e9r och jargong.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-19",
+      "file": "sv_se-19.wav",
+      "sha256": "9d25ce9d944ed34003aba8cf874eb977d726d82722060b50314bea1b5dffdaa9",
+      "language": "sv",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1549,
+      "transcript": "Teorierna g\u00f6r g\u00e4llande att m\u00e4nniskor har vissa behov och/eller beg\u00e4r som internaliseras efterhand de blir vuxna.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-20",
+      "file": "sv_se-20.wav",
+      "sha256": "9b018097a2e76e500597567bc0a96f99f3afc4b097e01a93195279c8ab95b76a",
+      "language": "sv",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1622,
+      "transcript": "USA:s president George W. Bush v\u00e4lkomnade beskedet.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-21",
+      "file": "sv_se-21.wav",
+      "sha256": "764c344aa67c715b81b039b3891d625e92901783258d62cdf3c3cb041a2735b6",
+      "language": "sv",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1652,
+      "transcript": "Den st\u00f6rsta religionen i Moldavien \u00e4r ortodox kristendom.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-22",
+      "file": "sv_se-22.wav",
+      "sha256": "87a7bc2d30b5524b9683a11b397634669f70da9a4637b7a7c9e5f7a2023caa77",
+      "language": "sv",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1531,
+      "transcript": "De \u00f6stafrikanska \u00f6arna ligger i Indiska oceanen utanf\u00f6r Afrikas \u00f6stra kust.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-23",
+      "file": "sv_se-23.wav",
+      "sha256": "32eeeb66c843065d38d093832c739ea3979787b86a459e4f395cf08feff68f69",
+      "language": "sv",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1581,
+      "transcript": "Amazonas \u00e4r ocks\u00e5 den bredaste floden p\u00e5 jorden, 9 km bred p\u00e5 vissa st\u00e4llen.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-24",
+      "file": "sv_se-24.wav",
+      "sha256": "b728ea0b95bb6cbe3e125187c1e148e4b7cdd73c20ed6e51424a4c86e921a762",
+      "language": "sv",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1643,
+      "transcript": "Parken t\u00e4cker 19 500 km\u00b2 och \u00e4r uppdelad i 14 olika ekozoner, som var och en hyser olika vilda djur.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-25",
+      "file": "sv_se-25.wav",
+      "sha256": "f12a18316cde4d144f9e023f90db304dcf7d782366a797565eabd7f0382a9aaa",
+      "language": "sv",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1609,
+      "transcript": "Robin Uthappa gjorde innings h\u00f6gsta po\u00e4ng, 70 runs p\u00e5 bara 41 bollar genom att sl\u00e5 11 fyror och 2 sexor.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-26",
+      "file": "sv_se-26.wav",
+      "sha256": "ae2a068378f10e1f1cf080a2119a5db8a381a041eaae889f2daa62d91a885ff4",
+      "language": "sv",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1567,
+      "transcript": "\u00c5rets st\u00f6rsta turnering \u00e4ger rum i december p\u00e5 polobanorna i Las Ca\u00f1itas.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-27",
+      "file": "sv_se-27.wav",
+      "sha256": "9ae5441d1c1aa4cc6388190e598a8b572932e41ba2ae068cbbb56fbcb982c4af",
+      "language": "sv",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1637,
+      "transcript": "Den vettskr\u00e4mde kung Ludvig XVI, drottning Marie Antoinette, deras tv\u00e5 sm\u00e5 barn (11-\u00e5riga Marie Therese och fyra\u00e5rige Louis-Charles) och kungens syster, madam \u00c9lisabeth, tvingades den 6 oktober 1789 tillbaka till Paris fr\u00e5n Versailles av en hop marknadskvinnor.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-28",
+      "file": "sv_se-28.wav",
+      "sha256": "246d4e751b6e7c2b042e2e93096b9795326a9883774c3d15519e1a1a338b9b80",
+      "language": "sv",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1630,
+      "transcript": "Arly Velasquez fr\u00e5n Mexiko slutade p\u00e5 femtonde plats i m\u00e4nnens sittande Super-G. Nya Zeelands Adam Hall slutade nia i m\u00e4nnens st\u00e5ende Super-G.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-sv_se-29",
+      "file": "sv_se-29.wav",
+      "sha256": "0259944e8caeb12889e3e5e58556933ec0d85f4db8e030485e84351714c75052",
+      "language": "sv",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/sv_se/validation/0000.parquet",
+      "sourceSha256": "4699f114728f60b832f1bac005d2161e4aff745f9c5a72ca67978a36f742a8f4",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1606,
+      "transcript": "Portugiserna f\u00f6rst\u00f6rde den och \u00e5teruppbyggde den under namnet Casa Branca. bara f\u00f6r att \u00f6verge den efter en jordb\u00e4vning \u00e5r 1755.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-00",
+      "file": "en_us-00.wav",
+      "sha256": "4152ce42264cf33689988c181bf5078581ec4b712617283529b5b0df76b73a19",
+      "language": "en",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1548,
+      "transcript": "When you call someone who is thousands of miles away, you are using a satellite.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-01",
+      "file": "en_us-01.wav",
+      "sha256": "ffe4e35d23bd7d5c3588ba3f9be96196b5ea4c568b13551c19ac63802e40efdd",
+      "language": "en",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1620,
+      "transcript": "Now widely available throughout the archipelago, Javanese cuisine features an array of simply seasoned dishes, the predominant flavorings the Javanese favor being peanuts, chillies, sugar (especially Javanese coconut sugar) and various aromatic spices.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-02",
+      "file": "en_us-02.wav",
+      "sha256": "8fb866035eb90a24fab900b15b036ac36fd35ee66e2d03408729c4807c36b35b",
+      "language": "en",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1510,
+      "transcript": "The U.N. also hopes to finalize a fund to help countries affected by global warming to cope with the impacts.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-03",
+      "file": "en_us-03.wav",
+      "sha256": "72219ff721f46ba95e75e0be13c1cbca49ece2abd8740745cae73042277c9cde",
+      "language": "en",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1578,
+      "transcript": "Then, Lakkha Singh took the lead in singing the bhajans.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-04",
+      "file": "en_us-04.wav",
+      "sha256": "9d85ada02eecdc43b977909ce28c04e4da2c4bad4fae3e8c4c03975e4cabfcee",
+      "language": "en",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1652,
+      "transcript": "The major religion in Moldova is Orthodox Christian.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-05",
+      "file": "en_us-05.wav",
+      "sha256": "0c0482af1484b59858304b610b5667696d779b9d398141add9cae4244d501501",
+      "language": "en",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1531,
+      "transcript": "The East African Islands are in the Indian Ocean off the eastern coast of Africa.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-06",
+      "file": "en_us-06.wav",
+      "sha256": "0ffb6dafa0ec84cb8979de4c8c9b25929d4bdc9727b6fcb816e80a15906535a7",
+      "language": "en",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1528,
+      "transcript": "Some festivals have special camping areas for families with young children.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-07",
+      "file": "en_us-07.wav",
+      "sha256": "ebddd62b7e21b4d6df6b2367ac2d7be0e4d24a15536ccadd7798ac4210141ffc",
+      "language": "en",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1595,
+      "transcript": "The Tibetan Buddhism is based on the teachings of Buddha, but were extended by the mahayana path of love and by a lot of techniques from Indian Yoga.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-08",
+      "file": "en_us-08.wav",
+      "sha256": "9d5d70bd4824015126eeb42f9730cc5430e4f128c1539d6177455e4c05cf0f67",
+      "language": "en",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1559,
+      "transcript": "Pronunciation is relatively easy in Italian since most words are pronounced exactly how they are written",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-09",
+      "file": "en_us-09.wav",
+      "sha256": "f91a17a95d25b3800ecad9ef35e61851288f601e6cdc821ede8eafea88d21911",
+      "language": "en",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1633,
+      "transcript": "In this dynamic transport shuttle everyone is somehow connected with, and supporting, a transport system based on private cars.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-10",
+      "file": "en_us-10.wav",
+      "sha256": "0e7af6b1f4d401160a6a508ef682609d667df0adb79b8c8903276415a617e2e9",
+      "language": "en",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1560,
+      "transcript": "As soon as you get out of the current, swimming back is no more difficult than normally.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-11",
+      "file": "en_us-11.wav",
+      "sha256": "b5584753f56619339f3bfa6ada98d2e9e9b1c204257d1b87a2d621ca6a723296",
+      "language": "en",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1536,
+      "transcript": "Local authorities are warning residents in the vicinity of the plant to stay indoors, turn off air-conditioners and not to drink tap water.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-12",
+      "file": "en_us-12.wav",
+      "sha256": "39de9dff96d213958bf65d5f2f42a4c942c38adddbe188afa9e945f0c9f29b7c",
+      "language": "en",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1619,
+      "transcript": "However, most signs are indicated only in Catalan because it is established by law as the first official language.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-13",
+      "file": "en_us-13.wav",
+      "sha256": "d1d5fa589ea44b6c635397b07feb4f2093cbc542a70454892d2278f18727bd89",
+      "language": "en",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1598,
+      "transcript": "Although three people were inside the house when the car impacted it, none of them were hurt.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-14",
+      "file": "en_us-14.wav",
+      "sha256": "fa6cc9b97b703a478d94a6d04bbb8f65c58183a115fbafd4e1fd0103da4ebac5",
+      "language": "en",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1549,
+      "transcript": "These theories suggest that people have certain needs and/or desires which have been internalized as they mature to adulthood.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-15",
+      "file": "en_us-15.wav",
+      "sha256": "586fff81fc8739bec9085bccda222d3e2f4c5760fe124ab328307615932e02e7",
+      "language": "en",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1583,
+      "transcript": "She came to this conclusion due to the multitude of positive comments and encouragement sent to her by both female and male individuals urging that contraception medication be considered a medical necessity.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-16",
+      "file": "en_us-16.wav",
+      "sha256": "93f07cb87d99de81abb52a5a5644b0f51692c9ec3e8d9608aeff2bfed742a659",
+      "language": "en",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1605,
+      "transcript": "Due to the long distance from the continent mammals were unable to make the journey making the giant tortoise the primary grazing animal in the Galapagos.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-17",
+      "file": "en_us-17.wav",
+      "sha256": "48467fa9f8c9c05bba4bd8e5546188bbe7bee2347c93979d03b8d7aede4fbf97",
+      "language": "en",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1593,
+      "transcript": "Eventually, wooden wheels were replaced by iron wheels. In 1767, the first full-iron rails were introduced.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-18",
+      "file": "en_us-18.wav",
+      "sha256": "49d6bbaba7cc06f06ef6b4de16cd0cd550064eae2659928f5398d8657a4beb67",
+      "language": "en",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1551,
+      "transcript": "They are still trying to determine just how large the crash was and how the Earth will be affected.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-19",
+      "file": "en_us-19.wav",
+      "sha256": "60b4fa2dd519744271f61ec7c50b3943c2ffa5f9844116809b98f60b8a58c010",
+      "language": "en",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1596,
+      "transcript": "Naturalists and philosophers focused on classical texts and, in particular, on the Bible in Latin.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-20",
+      "file": "en_us-20.wav",
+      "sha256": "9d63dfa005554a28e2ec6e456c17d0ce34eda362080f096291791f158af3b331",
+      "language": "en",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1573,
+      "transcript": "A satellite phone is not generally a replacement for a mobile phone, as you have to be outdoors with clear line of sight to the satellite to make a phone call.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-21",
+      "file": "en_us-21.wav",
+      "sha256": "d7034479cb01e7a54fa4e91cb55585a8a13b37ce6e17bb0ca9ed4a34329b25c7",
+      "language": "en",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1629,
+      "transcript": "Some reports put the official death toll at eight, and official reports confirm that up to 30 were injured; but final numbers are not yet known.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-22",
+      "file": "en_us-22.wav",
+      "sha256": "f6333533284545fe5e165f15f1b413a9a1c3b16ddf782835c21b6d9f7b4519a8",
+      "language": "en",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1615,
+      "transcript": "Thousands of years ago, a man called Aristarchus said that the Solar System moved around the Sun.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-23",
+      "file": "en_us-23.wav",
+      "sha256": "d9b581904f9f4e03251f10bec0c0fda3f1b3e27df116655c371b1810aff6e9fb",
+      "language": "en",
+      "categories": [
+        "onset"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1560,
+      "transcript": "As soon as you get out of the current, swimming back is no more difficult than normally.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; onset deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-24",
+      "file": "en_us-24.wav",
+      "sha256": "95f3f79bf69493a14fef0a2f082ab1bcf9c6622c9bd6d500eb6de803f606e123",
+      "language": "en",
+      "categories": [
+        "fan"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1526,
+      "transcript": "If you visit the Arctic or Antarctic areas in the winter you will experience the polar night, which means that the sun doesn't rise above the horizon.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; fan deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-25",
+      "file": "en_us-25.wav",
+      "sha256": "fcdad9343b8a548ace9b1e15f9e0d788d00d752425f5b73f6ffe994ade6143de",
+      "language": "en",
+      "categories": [
+        "keyboard"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1550,
+      "transcript": "Skiing is a major travelling activity with many enthusiasts, occasionally known as \"ski bums,\" planning entire vacations around skiing at a particular location.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; keyboard deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-26",
+      "file": "en_us-26.wav",
+      "sha256": "6a8f969ba18382a8f0280b4d0195562285a018ab7ee93f7d556759c56598bbdb",
+      "language": "en",
+      "categories": [
+        "tv"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1518,
+      "transcript": "A former Filipino policeman has kept Hong Kong tourists hostage by hijacking their bus in Manila, the capital of the Philippines.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; tv deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-27",
+      "file": "en_us-27.wav",
+      "sha256": "9c730f7fa6a55507d0393bc0b94dcca4a99e62272f6d2c06fd7259d7507b129a",
+      "language": "en",
+      "categories": [
+        "overlap"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1629,
+      "transcript": "Some reports put the official death toll at eight, and official reports confirm that up to 30 were injured; but final numbers are not yet known.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; overlap deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-28",
+      "file": "en_us-28.wav",
+      "sha256": "f4f7c02e773da6dd7e650bbe6831a6d75e71aaba0e0d9108e7ea715d3cf5ef69",
+      "language": "en",
+      "categories": [
+        "clean"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1607,
+      "transcript": "It's worth half an hour to stroll about the intriguing village.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; clean deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    },
+    {
+      "id": "fleurs-en_us-29",
+      "file": "en_us-29.wav",
+      "sha256": "bddd3cc2ec00b4faf7be0b76407ddc2eedf46aa76eef0aa29305c23dc528ce58",
+      "language": "en",
+      "categories": [
+        "quiet"
+      ],
+      "license": "CC-BY-4.0",
+      "consent": null,
+      "source": "https://huggingface.co/datasets/google/fleurs/resolve/refs%2Fconvert%2Fparquet/en_us/validation/0000.parquet",
+      "sourceSha256": "7c3eeb11a9597bd52cdc1b0d637e85389fe094cfd8763913e7bf4fdf7a853959",
+      "attribution": "Google FLEURS / Conneau et al., 2022, https://huggingface.co/datasets/google/fleurs",
+      "sourceId": 1517,
+      "transcript": "Research in AI involves making machines to automate tasks that require intelligent behavior.",
+      "originalRate": 16000,
+      "transform": "ffmpeg resample to 48 kHz, first 10 seconds, RMS .05; quiet deterministic variant (synthetic noise or FLEURS speech mix); not manually onset-annotated"
+    }
+  ],
+  "limitations": [
+    "16 kHz speech resampled to 48 kHz; does not qualify full-band naturalness.",
+    "Fan/keyboard noise is synthetic; TV is a quiet speech mix. Dogs and actual TV/keyboard/fan recordings remain missing.",
+    "Transcripts cover the original clip, which may exceed the retained 10 seconds. Human onset annotation required.",
+    "No Krisp reference or listening scores supplied."
+  ]
+}

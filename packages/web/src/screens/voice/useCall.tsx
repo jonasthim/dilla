@@ -299,7 +299,7 @@ export function useCall(o: UseCallOptions): CallView {
           input: settings[SETTINGS.voiceInput] ?? '',
           output: outputInForce.current,
           mode: settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad',
-          noise: settings[SETTINGS.voiceNoise] === 'off' ? 'off' : 'on',
+          noise: settings[SETTINGS.voiceNoise] === 'off' ? 'off' : settings[SETTINGS.voiceNoise] === 'automatic' ? 'automatic' : settings[SETTINGS.voiceNoise] === 'lightweight' ? 'lightweight' : 'on',
           volumes: mod.volumesFromSettings(settings),
           signal: abort.signal,
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
@@ -550,7 +550,7 @@ export function useCall(o: UseCallOptions): CallView {
     announce(t(wanted === 'ptt' ? 'settings.voice.ptt' : 'settings.voice.vad'));
   }, [session, wanted, announce]);
   // Product walk M1: noise suppression follows Settings → Voice during the call too.
-  const wantedNoise = o.settings[SETTINGS.voiceNoise] === 'off' ? 'off' : 'on';
+  const wantedNoise = o.settings[SETTINGS.voiceNoise] === 'off' ? 'off' : o.settings[SETTINGS.voiceNoise] === 'automatic' ? 'automatic' : o.settings[SETTINGS.voiceNoise] === 'lightweight' ? 'lightweight' : 'on';
   useEffect(() => {
     if (session === null || session.state.noise === wantedNoise) return;
     session.setNoise(wantedNoise).catch(() => undefined);

@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-17",
+  "targetTag": "v0.1.0-noise-beta.1",
+  "stage": "PR review fixes verified locally; updated GitHub CI and publication pending",
+  "implementationSha256": "cfbddb2e03e4ca704364519f6cf90d5a152e7a6e57ea773abf295b2e50acf66c",
+  "assetLockSha256": "a7de345ad2255a41f30b8a9bd2ac333fea2bff48e2a6d821df2537246e409604",
+  "priorPackagingEvidence": "release-readiness.json",
+  "fixes": [
+    "The shared noiseOff browser helper waits for the Off radio to be selected.",
+    "Voice settings replace the suspended meter with an explicit paused message during calls and microphone tests, without opening another capture.",
+    "Processor-error copy describes fallback without incorrectly naming the browser when RNNoise is active."
+  ],
+  "verification": {
+    "pausedMeterRegressionObservedFailThenPass": true,
+    "scopedVoiceAndCopyUnitTestsPassed": 27,
+    "webTypecheckAndLintPassed": true,
+    "betaBuildAndStaticServingPassed": true,
+    "chromiumBrowserTestsPassed": 5,
+    "browserTests": ["controls", "csp-axe", "enhanced-fallback", "microphone-test", "noise-beta"],
+    "pttReceivedFramesPer100ReceiverFrames": { "idle": 0, "held": 143, "released": 0 },
+    "reviewImportantFindingsRemaining": 0
+  },
+  "qualified": false,
+  "parityClaim": false,
+  "modelLicenseCleared": false,
+  "historicalReportsRestamped": false,
+  "newLatencyOrEnduranceQualificationRun": false
+}
