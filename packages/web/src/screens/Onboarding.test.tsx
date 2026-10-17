@@ -230,10 +230,10 @@ describe('creating the account', () => {
     expect(h1()).toHaveTextContent('What this browser keeps');
     expect(screen.getByText('Step 4 of 6')).toBeInTheDocument();
     const paragraphs = [
-      'This browser now holds the key of this device, in its storage for dilla.test. The key never leaves this browser.',
-      'Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.',
-      'To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.',
-      'A private window forgets all of this when it closes.',
+      "This browser now holds the key of this device, in its storage for dilla.test. The key never leaves this browser.",
+      "Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.",
+      "To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.",
+      "A private window forgets all of this when it closes.",
     ].map(text => screen.getByText(text));
     for (let i = 1; i < paragraphs.length; i++) {
       expect(paragraphs[i - 1].compareDocumentPosition(paragraphs[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

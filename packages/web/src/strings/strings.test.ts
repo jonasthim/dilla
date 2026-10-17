@@ -39,7 +39,7 @@ describe('the copy rules', () => {
   });
   it('says what the recovery key does now, and promises no history on a second browser (L-COPY-02)', () => {
     expect(en['onboarding.keys.loss']).toBe('This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.');
-    expect(en['onboarding.browser.oneBrowser']).toBe('To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.');
+    expect(en['onboarding.browser.oneBrowser']).toBe('To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.');
     expect(en['signin.done.body']).toBe('This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.');
     expect(en['signin.step']).toBe('Step {n} of 4');
     expect(en['signin.error.totpFailed']).toBe('That code did not work. Sign in again with a fresh code.');

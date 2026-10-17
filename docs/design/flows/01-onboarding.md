@@ -171,7 +171,7 @@ Step 4, this browser:
 |                      Clearing this site’s data removes the key and the messages kept         |
 |                      here, and this browser stops being your device.                         |
 |                      To use this account in another browser, sign in there with your         |
-|                      password, this recovery key and the second factor you add next.         |
+|                      password and the second factor you add next, then this recovery key.    |
 |                      Messages sent before that browser joins are not shown in it.            |
 |                      A private window forgets all of this when it closes.                    |
 |                      --------------------------------------------------                      |
@@ -448,7 +448,7 @@ are no single-key shortcuts.
 | `onboarding.browser.title` | `What this browser keeps` | step heading, step 4 |
 | `onboarding.browser.device` | `This browser now holds the key of this device, in its storage for {instance}. The key never leaves this browser.` | first paragraph, step 4 |
 | `onboarding.browser.clear` | `Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.` | second paragraph, step 4 |
-| `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.` | third paragraph, step 4 (L-COPY-02; web3.6 adds the second factor) |
+| `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, step 4 (L-COPY-02; web3.6 adds the second factor) |
 | `onboarding.browser.private` | `A private window forgets all of this when it closes.` | fourth paragraph, step 4 |
 | `onboarding.browser.submit` | `Create account` | button, forward on step 4 |
 | `onboarding.browser.submitting` | `Creating account…` | button, forward on step 4 while registering |

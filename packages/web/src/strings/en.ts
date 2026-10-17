@@ -19,6 +19,11 @@ import { slow } from './slow.ts';
 import { announce } from './announce.ts';
 import { thread } from './thread.ts';
 import { signInHint } from './signInHint.ts';
+import { enrol } from './enrol.ts';
+import { reload } from './reload.ts';
+import { pane } from './pane.ts';
+import { panel } from './panel.ts';
+import { stage } from './stage.ts';
 import { storeNewer } from './storeNewer.ts';
 export const en = {
   ...storeNewer,
@@ -41,6 +46,11 @@ export const en = {
   ...announce,
   ...thread,
   ...signInHint,
+  ...enrol,
+  ...reload,
+  ...pane,
+  ...panel,
+  ...stage,
   'settings.nav.privacy': 'privacy',
   'settings.nav.keyboard': 'keyboard',
   'settings.nav.diagnostics': 'diagnostics',
@@ -126,7 +136,7 @@ export const en = {
   'onboarding.browser.title': 'What this browser keeps',
   'onboarding.browser.device': 'This browser now holds the key of this device, in its storage for {instance}. The key never leaves this browser.',
   'onboarding.browser.clear': 'Clearing this site’s data removes the key and the messages kept here, and this browser stops being your device.',
-  'onboarding.browser.oneBrowser': 'To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.',
+  'onboarding.browser.oneBrowser': 'To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.',
   'onboarding.browser.private': 'A private window forgets all of this when it closes.',
   'onboarding.browser.submit': 'Create account',
   'onboarding.browser.submitting': 'Creating account…',
@@ -158,11 +168,12 @@ export const en = {
   'signin.totp.body': 'Enter the six-digit code from your authenticator app.',
   'signin.totp.code': 'Code',
   'signin.key.title': 'Your recovery key',
-  'signin.key.body': 'Type or paste the recovery key you wrote down when the account was created. Spaces and hyphens do not matter.',
+  'signin.key.body': 'Type or paste the 52-character recovery key you wrote down when the account was created. It is not a backup code: backup codes have 26 characters and go in the step before this one. Spaces and hyphens do not matter.',
   'signin.key.label': 'Recovery key',
   'signin.key.hint': '{n} of 52 characters',
   'signin.key.submit': 'Add this browser',
   'signin.key.working': 'Adding this browser to your account…',
+  'signIn.key.isBackupCode': 'That looks like a backup code, not the recovery key. This step needs the 52-character recovery key you saved when you created the account.',
   'signin.done.title': 'You’re in',
   'signin.done.body': 'This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.',
   'signin.done.next': 'Open dilla',

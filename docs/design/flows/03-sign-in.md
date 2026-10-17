@@ -26,11 +26,11 @@ characters of the device id: devices have no names in this version.
 |---|---|
 | `needs-signup`, `instance.passwordSignup` true | onboarding step 1 (`01-onboarding.md`) with the ghost button `onboarding.connect.signIn` under the invite field |
 | `needs-signup`, `instance.passwordSignup` false | onboarding step 1 without that button: this version signs in with a password only |
-| `signin-login` | step 1, recovery key, until the person continued with a key of 52 characters; then step 2, login |
-| `signin-totp` | step 3, second factor: the code of the authenticator app (after a passkey that did not check the person, the same form with a note above it) |
-| `signin-passkey` | step 3 as the passkey screen: the account has a passkey and no app, so no code is asked |
-| `factor-setup`, origin `signin` | step 3 as the set-up of a second factor (flow 10), for an account that is found to owe one when this browser is added; there is no skip |
-| `signin-key` | step 1, recovery key, for an enrolment already registered (a wrong key, a reload in the middle of the ceremony, see "Reload and interruption") |
+| `signin-login` | step 1, login |
+| `signin-totp` | step 2, second factor: the code of the authenticator app (after a passkey that did not check the person, the same form with a note above it) |
+| `signin-passkey` | step 2 as the passkey screen: the account has a passkey and no app, so no code is asked |
+| `factor-setup`, origin `signin` | step 2 as the set-up of a second factor (flow 10), for an account that is found to owe one when this browser is added; there is no skip |
+| `signin-key` | step 3 (or 2 when no factor step was shown; R7), recovery key, for an enrolment not yet registered (the factor passed) or already registered |
 | `enrolling` | the step whose button started it, in its working state |
 | `ready`, reached by a sign-in in this page | step 4, done |
 | `ready` on a fresh load | not this flow: the shell |
@@ -838,7 +838,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 |---|---|---|
 | `onboarding.connect.signIn` | `Use an existing account` | ghost button under the invite field, onboarding step 1, and under the closed frame's paragraph, when `instance.passwordSignup` |
 | `onboarding.keys.loss` | `This key is the only way to get your account back or to add another browser. If every browser you use loses its data and you do not have the key, the account and its history are gone, and the host cannot bring them back.` | second paragraph, onboarding step 3 (changed for web-2a) |
-| `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password, this recovery key and the second factor you add next. Messages sent before that browser joins are not shown in it.` | third paragraph, onboarding step 4 (changed for web-2a and web3.6) |
+| `onboarding.browser.oneBrowser` | `To use this account in another browser, sign in there with your password and the second factor you add next, then this recovery key. Messages sent before that browser joins are not shown in it.` | third paragraph, onboarding step 4 (changed for web-2a and web3.6) |
 | `signin.step` | `Step {n} of 4` | step line, steps 1–4 |
 | `signin.login.title` | `Sign in to {instance}` | step heading, step 2 |
 | `signin.login.body` | `Use the username and password of your account on {instance}.` | paragraph, step 2 |
@@ -851,7 +851,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.totp.body` | `Enter the six-digit code from your authenticator app.` | paragraph, step 3 |
 | `signin.totp.code` | `Code` | field label, step 3 |
 | `signin.key.title` | `Your recovery key` | step heading, step 1 |
-| `signin.key.body` | `Type or paste the recovery key you wrote down when the account was created. Spaces and hyphens do not matter.` | paragraph, step 1 |
+| `signin.key.body` | `Type or paste the 52-character recovery key you wrote down when the account was created. It is not a backup code: backup codes have 26 characters and go in the step before this one. Spaces and hyphens do not matter.` | paragraph, step 3 (or step 2 when no factor) |
 | `signin.key.label` | `Recovery key` | field label, step 1 |
 | `signin.key.hint` | `{n} of 52 characters` | hint under the key field (its description, not live), step 1 and the two key dialogs |
 | `signin.key.submit` | `Add this browser` | button, forward on step 1 of a registered enrolment (before the login, step 1's forward button is `signin.login.submit`) |

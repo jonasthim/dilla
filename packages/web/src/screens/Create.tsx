@@ -373,7 +373,6 @@ export function CreateChannelFlow(props: {
         // server", and the detail is never read (protocol/02), so it is worded by its code (W2a review 8).
         const { code, reason } = errorOf(e);
         fail(code === 'E_FORBIDDEN' ? t(chosen === 'announcement' ? 'announce.roleTooHigh' : 'create.channel.error.forbidden')
-          : code === 'E_BAD_INPUT' && reason === 'announce.noHeldRole' ? t('announce.noHeldRole')
           : code === 'E_INVALID_REQUEST' ? t('create.channel.error.refused')
             : t('create.channel.error.other', { code }));
       } finally {

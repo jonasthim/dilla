@@ -868,15 +868,6 @@ describe('CreateChannelFlow, announcement kind (web3.7)', () => {
     await user.click(announcement());
     expect(screen.queryByRole('switch', { name: 'private channel' })).toBeNull();
   });
-  it('words the creator’s missing held role by its reason, in the name field', async () => {
-    const { fake, user } = setup();
-    fake.handler = () => Promise.reject(Object.assign(refusal({ code: 'E_BAD_INPUT' }), { reason: 'announce.noHeldRole' }));
-    await user.click(announcement());
-    await user.type(nameField('Channel name'), 'news');
-    await user.click(screen.getByRole('button', { name: 'Create' }));
-    expect(await screen.findByText('Tick a role of yours that is below your highest role, so that you can post here too.')).toBeInTheDocument();
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-  });
   it('lists a role above the creator’s top only for the owner (I4)', async () => {
     const { fake, user } = setup();
     act(() => fake.set(`permissions:${SERVER}`, { top: 5, owner: true, manageCommunity: true, manageChannels: true, kickMembers: true, banMembers: true,
@@ -924,27 +915,6 @@ describe('CreateChannelFlow, announcement kind (web3.7)', () => {
     await user.type(nameField('Channel name'), 'news');
     await user.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(fake.calls[0]).toMatchObject({ kind: 'announcement', announce: { roleIds: [] } }));
-  });
-  it('shows the missing-held-role refusal end to end through the real bridge', async () => {
-    const listeners: ((e: MessageEvent) => void)[] = [];
-    const emit = (data: unknown) => { for (const l of listeners) l({ data } as MessageEvent); };
-    const worker = {
-      addEventListener: (_: string, l: (e: MessageEvent) => void) => { listeners.push(l); },
-      postMessage: (m: { t: string; id: number; command: { m: string } }) => {
-        if (m.command.m === 'createChannel') queueMicrotask(() => emit({ t: 'ret', id: m.id, ok: false, error: { code: 'E_BAD_INPUT', detail: '', status: 0, retryAfterMs: null, reason: 'announce.noHeldRole' } }));
-      },
-    } as unknown as Worker;
-    const bridge = connectCore(worker);
-    emit({ t: 'slice', name: 'account', rev: 1, value: account() });
-    emit({ t: 'slice', name: `permissions:${SERVER}`, rev: 1, value: { top: 5, owner: false, manageCommunity: false, manageChannels: true, kickMembers: false, banMembers: false,
-      createInvite: false, manageRoles: true, loaded: true, everyoneId: EVERYONE, overwritesLoaded: true } });
-    emit({ t: 'slice', name: `roles:${SERVER}`, rev: 1, value: [role(EVERYONE, '@everyone', 0), role(LOW, 'Players', 2)] });
-    const user = userEvent.setup();
-    render(<div className="d-root"><CoreProvider client={bridge}><CreateChannelFlow open community={{ id: SERVER, name: 'Midgard Crew' }} onDone={vi.fn()} onClose={vi.fn()} /></CoreProvider></div>);
-    await user.click(announcement());
-    await user.type(nameField('Channel name'), 'news');
-    await user.click(screen.getByRole('button', { name: 'Create' }));
-    expect(await screen.findByText('Tick a role of yours that is below your highest role, so that you can post here too.')).toBeInTheDocument();
   });
   it('has no serious axe violations with the roles listed', async () => {
     const { user, view } = setup();
