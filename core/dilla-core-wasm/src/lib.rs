@@ -551,7 +551,7 @@ mod tests {
         );
     }
 
-        #[cfg(feature = "vectors")]
+    #[cfg(feature = "vectors")]
     #[test]
     fn the_vector_report_is_green_and_serialises_as_json() {
         assert!(vectors_check_ok());
