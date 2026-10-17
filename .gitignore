@@ -4,6 +4,7 @@
 /node_modules/
 **/node_modules/
 *.wasm
+!third_party/noise/deepfilter/df_bg.wasm
 packages/ui/storybook-static/
 # local state
 /.superpowers/

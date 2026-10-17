@@ -32,17 +32,18 @@ type manifestDoc struct {
 // site is a small built client: the page, one hashed asset of each content type under /assets/,
 // and root files outside it.
 var site = map[string]string{
-	"index.html":               "<!doctype html><title>dilla</title>\n",
-	"assets/app-1a2b.js":       "export const a = 1;\n",
-	"assets/core_bg-5e6f.wasm": "\x00asm\x01\x00\x00\x00",
-	"assets/icon-3a4b.png":     "\x89PNG",
-	"assets/logo-1e2f.svg":     "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
-	"assets/mono-7a8b.woff2":   "wOF2fake",
-	"assets/mono-9c0d.woff":    "wOFFfake",
-	"assets/style-3c4d.css":    "body{}\n",
-	"config.json":              "{}\n",
-	"favicon.ico":              "ico",
-	"robots.txt":               "User-agent: *\n",
+	"index.html":                      "<!doctype html><title>dilla</title>\n",
+	"assets/app-1a2b.js":              "export const a = 1;\n",
+	"assets/noise-model-deadbeef.bin": "model bytes",
+	"assets/core_bg-5e6f.wasm":        "\x00asm\x01\x00\x00\x00",
+	"assets/icon-3a4b.png":            "\x89PNG",
+	"assets/logo-1e2f.svg":            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+	"assets/mono-7a8b.woff2":          "wOF2fake",
+	"assets/mono-9c0d.woff":           "wOFFfake",
+	"assets/style-3c4d.css":           "body{}\n",
+	"config.json":                     "{}\n",
+	"favicon.ico":                     "ico",
+	"robots.txt":                      "User-agent: *\n",
 }
 
 const notFound = "404 page not found\n"
@@ -281,6 +282,7 @@ func TestEveryServedFileCarriesItsTypeCacheAndSecurityHeaders(t *testing.T) {
 		{"/c/0123456789abcdef0123456789abcdef", "index.html", "text/html; charset=utf-8", revalidate},
 		{"/assets/app-1a2b.js", "assets/app-1a2b.js", "text/javascript; charset=utf-8", immutable},
 		{"/assets/style-3c4d.css", "assets/style-3c4d.css", "text/css; charset=utf-8", immutable},
+		{"/assets/noise-model-deadbeef.bin", "assets/noise-model-deadbeef.bin", "application/octet-stream", immutable},
 		{"/assets/core_bg-5e6f.wasm", "assets/core_bg-5e6f.wasm", "application/wasm", immutable},
 		{"/assets/mono-7a8b.woff2", "assets/mono-7a8b.woff2", "font/woff2", immutable},
 		{"/assets/mono-9c0d.woff", "assets/mono-9c0d.woff", "font/woff", immutable},

@@ -1,7 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { SettingsRow } from '../SettingsRow/SettingsRow.tsx';
 import { Segmented } from '../Segmented/Segmented.tsx';
-import { Toggle } from '../Toggle/Toggle.tsx';
 import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
 import '../Button/Button.css';
 import './VoiceSettings.css';
@@ -51,13 +50,15 @@ export interface VoiceSettingsProps {
   pttKey: string | null;
   /** True while the next key press becomes the push-to-talk key. */
   capturing: boolean;
-  noise: boolean;
+  noise: 'automatic' | 'lightweight' | 'off';
   /** The input meter's level, 0..12. */
   level: number;
+  /** Replaces the meter when capture is owned by a call or microphone test. */
+  levelUnavailable?: string;
   labels: {
     input: string; output: string; systemDefault: string; outputUnsupported: string;
     mode: string; vad: string; ptt: string; pttKey: string; pttNone: string; pttSet: string; pttPrompt: string; pttRefused: string;
-    noise: string; level: string;
+    noise: string; automatic: string; lightweight: string; off: string; level: string;
   };
   onInput(id: string): void;
   onOutput(id: string): void;
@@ -68,7 +69,7 @@ export interface VoiceSettingsProps {
    * prompt says why (`settings.voice.pttRefused`) and the capture goes on.
    */
   onCaptureKey(action: CaptureKeyAction): void;
-  onNoise(on: boolean): void;
+  onNoise(mode: 'automatic' | 'lightweight' | 'off'): void;
 }
 
 /** A native select of devices, the system default first. */
@@ -90,7 +91,7 @@ function DeviceSelect({ id, value, devices, systemDefault, label, onChange }: {
  * a key that types text or operates the page is refused with a reason; Tab still leaves, which cancels; Escape cancels.
  */
 export function VoiceSettings({
-  inputs, outputs, input, output, canSelectOutput, mode, pttKey, capturing, noise, level, labels,
+  inputs, outputs, input, output, canSelectOutput, mode, pttKey, capturing, noise, level, levelUnavailable, labels,
   onInput, onOutput, onMode, onCaptureKey, onNoise,
 }: VoiceSettingsProps) {
   const id = useId();
@@ -148,10 +149,12 @@ export function VoiceSettings({
       ) : null}
       <p id={`${id}-prompt`} className="d-voice-settings__prompt" role="status">{capturing && !blank ? (refused ? labels.pttRefused : labels.pttPrompt) : null}</p>
       <SettingsRow id={`${id}-noise`} label={labels.noise}>
-        <Toggle id={`${id}-noise-switch`} label={labels.noise} checked={noise} onChange={onNoise} />
+        <Segmented id={`${id}-noise-group`} label={labels.noise} value={noise}
+          options={[{value:'automatic',label:labels.automatic},{value:'lightweight',label:labels.lightweight},{value:'off',label:labels.off}]}
+          onChange={v => onNoise(v === 'automatic' ? 'automatic' : v === 'off' ? 'off' : 'lightweight')} />
       </SettingsRow>
       <SettingsRow id={`${id}-level`} label={labels.level}>
-        <AudioMeter level={level} label={labels.level} />
+        {levelUnavailable === undefined ? <AudioMeter level={level} label={labels.level} /> : <span>{levelUnavailable}</span>}
       </SettingsRow>
     </div>
   );

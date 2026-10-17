@@ -11,11 +11,11 @@ const labels: VoiceSettingsProps['labels'] = {
   pttKey: 'push-to-talk key', pttNone: 'no key set', pttSet: 'set key',
   pttPrompt: 'Press the key to use. Escape cancels. It works only while dilla is the active tab.',
   pttRefused: 'That key types text, moves the focus or needs another key. Use one key on its own, such as Pause, Scroll Lock or F13 to F24.',
-  noise: 'noise suppression', level: 'input level',
+  noise: 'noise suppression', automatic: 'Automatic', lightweight: 'Lightweight', off: 'Off', level: 'input level',
 };
 const base: VoiceSettingsProps = {
   inputs: [{ id: 'mic-1', label: 'USB microphone' }, { id: 'mic-2', label: 'Headset' }], outputs: [{ id: 'out-1', label: 'Speakers' }],
-  input: '', output: '', canSelectOutput: true, mode: 'vad', pttKey: null, capturing: false, noise: true, level: 4, labels,
+  input: '', output: '', canSelectOutput: true, mode: 'vad', pttKey: null, capturing: false, noise: 'lightweight', level: 4, labels,
   onInput: () => {}, onOutput: () => {}, onMode: () => {}, onCaptureKey: () => {}, onNoise: () => {},
 };
 
@@ -41,7 +41,7 @@ describe('VoiceSettings', () => {
     expect(screen.getByText('This browser plays voice on the system default device.')).toBeInTheDocument();
   });
 
-  it('voice activity is the default; push to talk shows its key row; noise suppression is a switch; the level is a meter', async () => {
+  it('voice activity is the default; push to talk shows its key row; noise suppression has three choices; the level is a meter', async () => {
     const onMode = vi.fn();
     const onNoise = vi.fn();
     const { rerender } = render(<VoiceSettings {...base} onMode={onMode} onNoise={onNoise} />);
@@ -49,8 +49,8 @@ describe('VoiceSettings', () => {
     expect(screen.queryByRole('button', { name: /set key/ })).toBeNull();
     await userEvent.click(screen.getByRole('radio', { name: 'push to talk' }));
     expect(onMode).toHaveBeenCalledWith('ptt');
-    await userEvent.click(screen.getByRole('switch', { name: 'noise suppression' }));
-    expect(onNoise).toHaveBeenCalledWith(false);
+    await userEvent.click(screen.getByRole('radio', { name: 'Off' }));
+    expect(onNoise).toHaveBeenCalledWith('off');
     expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '4');
     rerender(<VoiceSettings {...base} mode="ptt" />);
     expect(screen.getByText('no key set')).toBeInTheDocument();

@@ -11,3 +11,4 @@ export * from './audio/codecs';
 export * from './audio/speakers';
 export * from './audio/gate';
 export * from './audio/rnnoise';
+export * from './audio/microphone';

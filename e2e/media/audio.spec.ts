@@ -61,11 +61,13 @@ test('setProcessor and a mic restart keep the receiver decrypting (SP-10)', asyn
 
   const first = await pa.evaluate(() => (globalThis as unknown as W).harness.dillaSetProcessor());
   expect(first.senderIsProcessed).toBe(true);
+  expect(first).toMatchObject({processor:{effective:'rnnoise',browserNoise:'off'}});
   await rising(pb, aKid, 2_000);
 
   const second = await pa.evaluate(() => (globalThis as unknown as W).harness.dillaRestartMic());
   expect(second.processedTrackId).toBe(first.processedTrackId);
   expect(second.senderIsProcessed).toBe(true);
+  expect(second).toMatchObject({processor:{effective:'rnnoise',browserNoise:'off'}});
   await rising(pb, aKid, 2_000);
 
   const s = await stats(pb);

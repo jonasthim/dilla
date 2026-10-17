@@ -78,3 +78,12 @@ describe('camera and screen', () => {
 });
 
 const SCREEN_AUDIO_EXPECTED = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 };
+
+// Privacy preference must reach capture, not only the neural processor.
+it('Off disables browser suppression at acquisition while retaining echo cancellation', async () => {
+  const calls: MediaStreamConstraints[] = [];
+  const track = { stop() {} } as MediaStreamTrack;
+  const media = { enumerateDevices: async () => [{kind:'audioinput'} as MediaDeviceInfo], getUserMedia: async (c:MediaStreamConstraints) => {calls.push(c); return {getAudioTracks:()=>[track],getTracks:()=>[track]} as MediaStream;} };
+  await acquireMic(media, '', false);
+  expect(calls[0]).toMatchObject({audio:{noiseSuppression:false,echoCancellation:true,autoGainControl:true}});
+});

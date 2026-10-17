@@ -1,0 +1,126 @@
+{
+  "kind": "offline-inference",
+  "qualified": false,
+  "parityClaim": false,
+  "hardware": {
+    "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor",
+    "cores": 16,
+    "memoryBytes": 32748593152,
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.15.0"
+  },
+  "assets": {
+    "sources": {
+      "deepfilter": {
+        "url": "https://github.com/Rikorose/DeepFilterNet.git",
+        "revision": "d375b2d8309e0935d165700c91da9de862a99c31"
+      },
+      "hush": {
+        "url": "https://github.com/pulp-vision/Hush.git",
+        "revision": "9f6414e91461a8f4bdf9840c0cdcdcb7da986339"
+      }
+    },
+    "gtcrn": "@sapphi-red/gtcrn-wasm@0.0.3",
+    "rnnoise": "@jitsi/rnnoise-wasm@0.2.1",
+    "toolchain": {
+      "node": "v24.15.0",
+      "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "wasmPack": "wasm-pack 0.15.0"
+    },
+    "sha256": {
+      "DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+      "df.mjs": "4a4392376d668c937fbe5c35fdd43670537c77ac30a2629af9ef053dc20025c8",
+      "df_bg.wasm": "ae05fe540b43b93771b49d3d66f2045c796584eada572d4ff03123917a0e6c1e",
+      "hush-model.tar.gz": "45632ccaa82b71bb743d6caa7c78e983fe2f2790a3af7f6ec48e6ed7ba085df6",
+      "libweya_nc.so": "c4a5915c92e9500a49e6cd14804e6e88319277de2ef7d4d5cf6c0ac4456f3bbf",
+      "package/LICENSE": "ada7bc11ad5af42b0aab8d2e0ea7b028de3a9cd230a97f20bf57c90280a86a89",
+      "package/README.md": "3de8e2eea750997cafee1ec5cd1083cc9519dec5f60636c07fca401c038553be",
+      "package/dist/gtcrn.wasm": "01a5286ddaa1ce6d0dd5510bd9241f3bf0cc727a05d5767ae6881d85d9983719",
+      "package/dist/index.cjs": "42cacbef2eed481028a5ae4fc78469e538d472c25a23e97a4bf9b0131f812763",
+      "package/dist/index.cjs.map": "424e4e800e57fcd12f753ceb6526a360e08337ea61a56e654b04dcd4f227f8df",
+      "package/dist/index.d.cts": "ce0f30f8456588cb076ede949560ab04361b79e34af59050bc34325ed38f6519",
+      "package/dist/index.d.ts": "baedfc1ba47965137743408a755ec438f86baeba1c754358631dcd835e72b883",
+      "package/dist/index.js": "472878b0fb37c4b7baa2dd8ea11355f4febc1fa0d96bb7a49e1774207edf2f3a",
+      "package/dist/index.js.map": "14067320a553f8bb38da90edea8905c06ce01936555510f564705c74d6177631",
+      "package/package.json": "47cdbb00a89e551c3e98f6229d1d3e4b76820a3c4e76ecd3499e36aee12d9847",
+      "rnnoise.wasm": "4f513a50613de74378331237886138eab52fa2650e8b1a41eb587d932d9b8850",
+      "sapphi-red-gtcrn-wasm-0.0.3.tgz": "d0dd19d7494d687834657a8d16914849fc38bf6863532c9213d24642470ff7f2"
+    }
+  },
+  "settings": {
+    "rate": 48000,
+    "channels": 1,
+    "attenuationDb": 100,
+    "gate": "open",
+    "browserAEC": false,
+    "browserAGC": false,
+    "browserNS": false
+  },
+  "results": [
+    {
+      "clip": "synthetic-tone",
+      "inputSha256": "8d3d4ef515ff10ebe94ea3334c9bd8370b54b39738d7cf73e4825eeeca94cbd3",
+      "engine": "rnnoise",
+      "file": "0-rnnoise.wav",
+      "sha256": "253bbaba12950ad69f447f42c75163c88ecb8c264a9e3ed6d3211fb3082eb324",
+      "frames": 110,
+      "meanMs": 0.43749381818181726,
+      "p99Ms": 0.860833999999997,
+      "modelRate": 48000,
+      "frameMs": 10,
+      "addedDelayMs": null,
+      "alignment": "uncompensated; includes 100 ms tail padding"
+    },
+    {
+      "clip": "synthetic-tone",
+      "inputSha256": "8d3d4ef515ff10ebe94ea3334c9bd8370b54b39738d7cf73e4825eeeca94cbd3",
+      "engine": "deepfilter",
+      "file": "0-deepfilter.wav",
+      "sha256": "40b46e67c6de146590b6ae44e941939c6e7e25257181435ba3b26d2e6432eefa",
+      "frames": 110,
+      "meanMs": 0.7257544545454524,
+      "p99Ms": 1.8298280000000204,
+      "modelRate": 48000,
+      "frameMs": 10,
+      "addedDelayMs": null,
+      "alignment": "uncompensated; includes 100 ms tail padding"
+    },
+    {
+      "clip": "synthetic-tone",
+      "inputSha256": "8d3d4ef515ff10ebe94ea3334c9bd8370b54b39738d7cf73e4825eeeca94cbd3",
+      "engine": "gtcrn",
+      "file": "0-gtcrn.wav",
+      "sha256": "7c0b65a92b62c01d58fb3a3ea965dfeaafb496c3ae7a22ccd98da08bcb2e8c1d",
+      "frames": 69,
+      "meanMs": 1.341764971014489,
+      "p99Ms": 3.367827000000034,
+      "modelRate": 16000,
+      "frameMs": 16,
+      "addedDelayMs": null,
+      "alignment": "uncompensated; includes 100 ms tail padding"
+    },
+    {
+      "clip": "synthetic-tone",
+      "inputSha256": "8d3d4ef515ff10ebe94ea3334c9bd8370b54b39738d7cf73e4825eeeca94cbd3",
+      "engine": "hush",
+      "file": "0-hush.wav",
+      "sha256": "d186f09013831886b796da392d0264559577936cdf0e7749b11c6afc60c3717c",
+      "frames": 110,
+      "meanMs": 0.17790803474120118,
+      "p99Ms": 0.3062380710616708,
+      "modelRate": 16000,
+      "frameMs": 10,
+      "addedDelayMs": null,
+      "runtime": "native CPU; not a browser measurement",
+      "resampling": "upstream linear interpolation 48k/16k/48k",
+      "alignment": "uncompensated; includes 100 ms tail padding"
+    }
+  ],
+  "limitations": [
+    "Offline timings exclude capture, buffering, VAD and browser scheduling.",
+    "Browser+RNNoise baseline must be captured with browser-run.mjs using the identical WAV.",
+    "Krisp outputs must be supplied lawfully; no automatic download or substituted demos.",
+    "Synthetic test signal only; no human speech corpus or Krisp outputs."
+  ]
+}

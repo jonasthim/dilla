@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const ALLOWED_EXTENSIONS = ['.html', '.js', '.css', '.wasm', '.json', '.woff2', '.woff', '.svg', '.png', '.ico', '.txt'];
+export const ALLOWED_EXTENSIONS = ['.html', '.js', '.css', '.wasm', '.json', '.woff2', '.woff', '.svg', '.png', '.ico', '.txt', '.bin'];
 const TEXT_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.svg', '.txt']);
 
 function walk(dir, rel = '') {
@@ -39,7 +39,10 @@ export function checkDist(dir) {
     if (!ALLOWED_EXTENSIONS.includes(ext)) problems.push(`${path}: extension ${ext || '(none)'} is not served`);
   }
   // web-3 task 8: the core wasm (the core and media workers share it) and RNNoise's; check-entry-chunk.mjs names them.
-  if (wasm !== 2) problems.push(`expected exactly 2 .wasm files (the core and RNNoise), found ${wasm}`);
+  const enhanced = paths.some(path => /^assets\/noise-model-[a-f0-9]{16}\.bin$/.test(path));
+  const expected = enhanced ? 3 : 2;
+  if (enhanced && paths.filter(path=>/^assets\/noise-wasm-[a-f0-9]{16}\.wasm$/.test(path)).length !== 1) problems.push('enhanced build requires exactly one pinned model wasm');
+  if (wasm !== expected) problems.push(`expected exactly ${expected} .wasm files (${enhanced ? 'core, RNNoise and enhanced' : 'the core and RNNoise'}), found ${wasm}`);
   return problems;
 }
 

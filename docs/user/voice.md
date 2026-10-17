@@ -1,7 +1,7 @@
 # Voice, calls and media files
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
-camera and screen share, push to talk, sounds, and audio and video files in the web client as it is in "web-3.4".
+camera and screen share, push to talk, sounds, and audio and video files in the web client (updated 2026-10-17).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -116,8 +116,8 @@ Settings → voice also holds:
   refuses, the dock says "The output device did not change. Call sound plays where it did before." Firefox plays call
   sound on the system default device. A browser that cannot choose where sound plays says "This
   browser plays voice on the system default device."
-- **noise suppression**, on by default: it removes steady background noise from your microphone. Switching it during
-  a call applies at once.
+- **noise suppression** has **Automatic**, **Lightweight** and **Off**. Lightweight uses RNNoise locally and remains the default, including existing On preferences. Automatic currently also uses Lightweight while enhanced suppression is evaluated. The screen shows the effective processor and explains fallback during a call. Off disables both application and browser noise suppression where supported; echo cancellation stays enabled. Browser suppression is disabled for neural processing, avoiding duplicate processing. Switching the setting during a call applies at once.
+- **Test microphone** records up to ten seconds locally. Capture stops before playback; **Close and discard** releases the recording. Testing is disabled during calls. It uses the selected input and suppression setting. No recording is uploaded.
 - **input level**: a meter of what your microphone hears.
 
 ![Settings → Voice at 360 pixels wide](screenshots/voice-settings-phone.png)

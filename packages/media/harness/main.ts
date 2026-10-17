@@ -257,6 +257,7 @@ document.getElementById('ready')?.removeAttribute('hidden');
 import * as dillaLk from 'livekit-client';
 import { micOptions as dillaMicOptions, MIC_CAPTURE as DILLA_MIC_CAPTURE, decodeCaps as dillaDecodeCaps, publishDefaults as dillaPublishDefaults } from '../src/audio/presets';
 import { DillaRnnoiseProcessor, type RnnoiseProbe as DillaRnnoiseProbe } from '../src/audio/rnnoise';
+import { DillaMicrophoneProcessor, type ProcessorStatus } from '../src/audio/microphone';
 
 export type EpochWire = EpochKeysWire;
 
@@ -265,8 +266,8 @@ export interface DillaHarness {
   dillaInstall(k: EpochWire): Promise<void>;
   dillaStats(): Promise<DillaMediaStats>;
   dillaPublishMic(): Promise<void>;
-  dillaSetProcessor(): Promise<{ processedTrackId: string; senderIsProcessed: boolean }>;
-  dillaRestartMic(): Promise<{ processedTrackId: string; senderIsProcessed: boolean }>;
+  dillaSetProcessor(): Promise<{ processedTrackId: string; senderIsProcessed: boolean; processor: ProcessorStatus }>;
+  dillaRestartMic(): Promise<{ processedTrackId: string; senderIsProcessed: boolean; processor: ProcessorStatus }>;
   rnnoiseProbe(): Promise<DillaRnnoiseProbe & { lostQuanta: number }>;
   selectedPairs(): Promise<string[]>;
   dillaLeave(): Promise<void>;
@@ -284,7 +285,7 @@ const dillaPcs: RTCPeerConnection[] = [];
 }
 
 let dillaMic: dillaLk.LocalAudioTrack | null = null;
-let dillaProcessor: DillaRnnoiseProcessor | null = null;
+let dillaProcessor: DillaMicrophoneProcessor | null = null;
 let dillaCaps = dillaDecodeCaps([64_000, 2_500_000, 0]);
 
 function dillaBase(): HarnessApi {
@@ -296,10 +297,10 @@ function dillaRoom(): dillaLk.Room {
   return dillaSession.room;
 }
 
-function dillaMicState(): { processedTrackId: string; senderIsProcessed: boolean } {
+function dillaMicState(): { processedTrackId: string; senderIsProcessed: boolean; processor: ProcessorStatus } {
   const processed = dillaProcessor?.processedTrack;
   if (!dillaMic || !processed) throw new Error('no processed mic');
-  return { processedTrackId: processed.id, senderIsProcessed: dillaMic.sender?.track === processed };
+  return { processedTrackId: processed.id, senderIsProcessed: dillaMic.sender?.track === processed, processor: dillaProcessor!.status };
 }
 
 const dillaHarness: DillaHarness = {
@@ -324,19 +325,19 @@ const dillaHarness: DillaHarness = {
   },
   async dillaPublishMic() {
     const room = dillaRoom();
-    const [track] = await room.localParticipant.createTracks({ audio: DILLA_MIC_CAPTURE });
+    const [track] = await room.localParticipant.createTracks({ audio: {...DILLA_MIC_CAPTURE,noiseSuppression:false} });
     dillaMic = track as dillaLk.LocalAudioTrack;
     await room.localParticipant.publishTrack(dillaMic, dillaMicOptions(dillaCaps));
   },
   async dillaSetProcessor() {
     if (!dillaMic) throw new Error('dillaPublishMic first');
-    dillaProcessor = new DillaRnnoiseProcessor();
+    dillaProcessor = new DillaMicrophoneProcessor({ preference:'lightweight', mode:'open', allowed:true });
     await dillaMic.setProcessor(dillaProcessor);
     return dillaMicState();
   },
   async dillaRestartMic() {
     if (!dillaMic) throw new Error('dillaPublishMic first');
-    await dillaMic.restartTrack(DILLA_MIC_CAPTURE);
+    await dillaMic.restartTrack({...DILLA_MIC_CAPTURE,deviceId:dillaMic.mediaStreamTrack.getSettings().deviceId || 'default',noiseSuppression:false});
     return dillaMicState();
   },
   async rnnoiseProbe() {
@@ -697,7 +698,7 @@ const dillaHarness21: DillaHarness21 & Pick<DillaHarness, 'dillaJoin'> = {
     if (!agent) throw new Error('the real SFU agent participant is absent');
     room.localParticipant.setActiveAgent(agent);
     try {
-      const [track] = await dillaRoom().localParticipant.createTracks({ audio: DILLA_MIC_CAPTURE });
+      const [track] = await dillaRoom().localParticipant.createTracks({ audio: {...DILLA_MIC_CAPTURE,noiseSuppression:false} });
       const mic = track as dillaLk.LocalAudioTrack;
       mic.startPreConnectBuffer();
       await new Promise((resolve) => setTimeout(resolve, 500));
