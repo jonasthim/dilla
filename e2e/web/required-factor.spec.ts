@@ -7,7 +7,7 @@
 import { expect, type Page, type LaunchOptions, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type TestInfo, type ViewportSize } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectComposerReady, expectHeading, expectShell, splash,
-  keyText, newAccount, nextButton, openChannel, railItem, railNav, readRecoveryKey, sendText, signInToLoginStep,
+  keyField, keySubmit, keyText, newAccount, nextButton, openChannel, railItem, railNav, readRecoveryKey, sendText, signInToKeyStep,
   signUp, submitButton, test, type Account, type Guard,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -210,12 +210,11 @@ test('after a reset, a fresh browser takes the password and then the set-up, not
   try {
     await guard.attach(context);
     const p = context.pages()[0] ?? (await context.newPage());
-    await p.goto('/welcome');
-    await signInToLoginStep(p, instance, keyText(ada));
-    await p.getByLabel(copy(SIGNIN.username), { exact: true }).fill(ada.username);
-    await p.getByLabel(copy(SIGNIN.password), { exact: true }).fill(ada.password);
-    await p.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
-    // Step 3 is the set-up; no code was asked for.
+    // web3.8 (R7): the login, then the key as step 2 (no code was asked for), then the set-up as step 3.
+    await signInToKeyStep(p, ada, instance);
+    await expect(p.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+    await keyField(p).fill(keyText(ada));
+    await keySubmit(p).click();
     await expectHeading(p, 'factor.choose.title');
     await expect(p.getByText(copy(SIGNIN.step, { n: 3 }), { exact: true })).toBeVisible();
     await expect(p.getByRole('heading', { level: 1, name: copy('signin.totp.title'), exact: true })).toHaveCount(0);

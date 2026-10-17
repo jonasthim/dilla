@@ -23,6 +23,6 @@ export default defineConfig({
   projects: [
     { name: 'chromium-web', use: { ...devices['Desktop Chrome'], channel: 'chromium' } },
     { name: 'firefox-web', use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
+    { name: 'webkit-web', testMatch: /(^|\/)(signup|reload|phone|signin-order)\.spec\.ts$/, use: { ...devices['Desktop Safari'] } },
   ],
 });

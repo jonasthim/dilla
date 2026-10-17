@@ -32,13 +32,13 @@ export type Command =
   | { m: 'signInBegin' }                                         // needs-signup → signin-login
   // web3.8 (R6): the password and the factor first, the recovery key last. The login and the factor never register: the
   // worker holds the settled assertion, and signInKey registers it after the key's form check, back to back with the
-  // fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). The optional recoveryKey on signInLogin, signInTotp
-  // and signInPasskey is accepted and ignored until SIGNIN-W stops sending it (pre-flight C-3).
-  | { m: 'signInLogin'; username: string; password: string; recoveryKey?: string }   // → { needs }: 1 signin-totp, 2 signin-passkey, 0 signin-key
-  | { m: 'signInTotp'; code: string; recoveryKey?: string }                           // signin-totp → signin-key
+  // fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). The login, the code and the passkey carry no key
+  // (pre-flight C-3); only signInKey and signInBackupCode do.
+  | { m: 'signInLogin'; username: string; password: string }    // → { needs }: 1 signin-totp, 2 signin-passkey, 0 signin-key
+  | { m: 'signInTotp'; code: string }                            // signin-totp → signin-key
   // web3.6 (flow 10). The ceremony runs in the page (navigator.credentials); the worker holds no WebAuthn state.
   | { m: 'signInPasskeyBegin' }                                  // signin-login|totp|passkey → { ceremonyId (32 hex), options (JSON) }
-  | { m: 'signInPasskey'; ceremonyId: string; response: string; recoveryKey?: string } // → { needs }: 1 signin-totp, 0 signin-key
+  | { m: 'signInPasskey'; ceremonyId: string; response: string } // → { needs }: 1 signin-totp, 0 signin-key
   // A backup code is held in the page and sent only with the key, so an assertion that expired meanwhile spends none.
   | { m: 'signInBackupCode'; code: string; recoveryKey: string }      // signin-totp|passkey → ready; a refusal: signin-login
   | { m: 'factorSetupDone'; invite: string | null }              // factor-setup → ready → { communityId, joinError }

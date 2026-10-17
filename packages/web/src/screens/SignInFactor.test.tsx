@@ -1,4 +1,5 @@
-// web3.6 W2: the second factor in the sign-in ceremony (flow 10, states 14 to 16; flow 03 step 3).
+// web3.6 W2: the second factor in the sign-in ceremony (flow 10, states 14 to 16; flow 03 step 2). web3.8 (R6, R7): the
+// factor comes after the login and before the key; a backup code waits in the page and goes only with the key.
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
@@ -40,6 +41,8 @@ function move(fake: FakeClient, over: Partial<AccountState>): void {
   fake.set('account', { ...fake.get('account')!, ...over });
 }
 const readyMe = { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null, factorSetup: null } as const;
+// web3.8 (R6): a settled login, passkey or code holds the assertion and waits for the key.
+const held = { phase: 'signin-key', signIn: { username: 'ada', factor: null } } as const;
 
 function setup(phase: BootPhase, script: Script, over: Partial<AccountState> = {}, opts: { webauthn?: boolean } = {}) {
   const fake = new FakeClient();
@@ -59,16 +62,17 @@ const button = (name: string) => screen.getByRole('button', { name });
 const field = (name: string) => screen.getByRole('textbox', { name });
 const password = () => screen.getByLabelText('Password');
 
-async function holdKey(user: UserEvent): Promise<void> {
-  await user.click(field('Recovery key'));
-  await user.paste(GROUPED);
-  await user.click(button('Continue'));
-}
 async function login(user: UserEvent): Promise<void> {
-  await holdKey(user);
   await user.type(field('Username'), 'ada');
   await user.type(password(), 'correct horse');
   await user.click(button('Continue'));
+}
+/** The key step: the key, then Add this browser. */
+async function addWithKey(user: UserEvent): Promise<void> {
+  expect(h1()).toHaveTextContent('Your recovery key');
+  await user.click(field('Recovery key'));
+  await user.paste(GROUPED);
+  await user.click(button('Add this browser'));
 }
 
 /** A worker for an account with an app (needs 1) or a passkey only (needs 2); a passkey may or may not verify the person. */
@@ -78,17 +82,20 @@ const worker = (opts: { needs?: 0 | 1 | 2; passkeyNeeds?: 0 | 1 } = {}): Script 
       const needs = opts.needs ?? 1;
       if (needs === 1) move(fake, { phase: 'signin-totp', signIn: { username: 'ada', factor: 'totp' } });
       else if (needs === 2) move(fake, { phase: 'signin-passkey', signIn: { username: 'ada', factor: 'passkey' } });
-      else move(fake, readyMe);
+      else move(fake, held);
       return Promise.resolve({ needs });
     }
     case 'signInPasskeyBegin': return Promise.resolve({ ceremonyId: CEREMONY, options: OPTIONS });
     case 'signInPasskey': {
       const needs = opts.passkeyNeeds ?? 0;
       if (needs === 1) move(fake, { phase: 'signin-totp', signIn: { username: null, factor: 'passkey' } });
-      else move(fake, readyMe);
+      else move(fake, held);
       return Promise.resolve({ needs });
     }
-    case 'signInTotp': case 'signInBackupCode': case 'signInKey':
+    case 'signInTotp':
+      move(fake, held);
+      return Promise.resolve(null);
+    case 'signInBackupCode': case 'signInKey':
       move(fake, readyMe);
       return Promise.resolve(null);
     case 'signInCancel':
@@ -103,7 +110,7 @@ describe('the code step (flow 10 state 16)', () => {
     const { user, view } = setup('signin-login', worker());
     await login(user);
     expect(h1()).toHaveTextContent('Your second factor');
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
     expect(button(en['factorSignin.useBackup'])).toHaveAttribute('type', 'button');
     expect(screen.getByText('Lost your phone? Use a backup code, or ask the operator of dilla.test to reset your second factor.')).toBeInTheDocument();
     expect(screen.queryByText(/did not check that it is you/)).toBeNull();
@@ -114,14 +121,18 @@ describe('the code step (flow 10 state 16)', () => {
 
   it('says why a code is asked after a passkey that did not check the person', async () => {
     const { fake, user } = setup('signin-login', worker({ needs: 0, passkeyNeeds: 1 }));
-    await holdKey(user);
     get.mockResolvedValue(assertion());
     await user.click(button(en['factorSignin.usePasskey']));
     await waitFor(() => { expect(h1()).toHaveTextContent('Your second factor'); });
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
     expect(screen.getByText('This passkey did not check that it is you, so dilla.test also asks for your code.')).toBeInTheDocument();
-    // The key is kept for the code that follows.
+    // The code goes alone; the key follows as step 3.
     await user.type(field('Code'), '123456{Enter}');
-    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456', recoveryKey: GROUPED }]);
+    expect(fake.callsOf('signInTotp')).toEqual([{ m: 'signInTotp', code: '123456' }]);
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    await addWithKey(user);
+    expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
+    expect(h1()).toHaveTextContent('You’re in');
   });
 
   it('signs in with a backup code: the form, the format check, the cleaned code, the codes left', async () => {
@@ -130,7 +141,7 @@ describe('the code step (flow 10 state 16)', () => {
     fake.set('factors', { owed: false, totp: { confirmedAt: 1 }, passkeys: [], backupCodesLeft: 9, hasPassword: true });
     await user.click(button(en['factorSignin.useBackup']));
     expect(h1()).toHaveTextContent('Use a backup code');
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
     expect(document.activeElement).toBe(field('Backup code'));
     expect(screen.queryByRole('textbox', { name: 'Code' })).toBeNull();
     await expectNoAxeViolations(view.container);
@@ -139,6 +150,9 @@ describe('the code step (flow 10 state 16)', () => {
     expect(fake.callsOf('signInBackupCode')).toEqual([]);
     await user.clear(field('Backup code'));
     await user.type(field('Backup code'), 'abcde fghij-klmno pqrst uvwxy z{Enter}');
+    expect(fake.callsOf('signInBackupCode')).toEqual([]);
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    await addWithKey(user);
     expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
     expect(h1()).toHaveTextContent('You’re in');
     expect(screen.getByText('You have 9 backup codes left. Make new ones in Settings, under sign-in.')).toBeInTheDocument();
@@ -150,17 +164,19 @@ describe('the code step (flow 10 state 16)', () => {
     one.fake.set('factors', { owed: false, totp: { confirmedAt: 1 }, passkeys: [], backupCodesLeft: 1, hasPassword: true });
     await one.user.click(button(en['factorSignin.useBackup']));
     await one.user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    await addWithKey(one.user);
     expect(screen.getByText('You have 1 backup code left. Make new ones in Settings, under sign-in.')).toBeInTheDocument();
     one.view.unmount();
     const app = setup('signin-login', worker());
     await login(app.user);
     app.fake.set('factors', { owed: false, totp: { confirmedAt: 1 }, passkeys: [], backupCodesLeft: 9, hasPassword: true });
     await app.user.type(field('Code'), '123456{Enter}');
+    await addWithKey(app.user);
     expect(h1()).toHaveTextContent('You’re in');
     expect(screen.queryByText(/backup codes? left/)).toBeNull();
   });
 
-  it('a refused backup code returns to the login with the password cleared and the key kept', async () => {
+  it('a refused backup code returns to the login with the password cleared, and the next login sends no key', async () => {
     const script: Script = (c, f) => {
       if (c.m === 'signInBackupCode') {
         move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null } });
@@ -172,15 +188,18 @@ describe('the code step (flow 10 state 16)', () => {
     await login(user);
     await user.click(button(en['factorSignin.useBackup']));
     await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    await addWithKey(user);
+    expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
     await waitFor(() => { expect(h1()).toHaveTextContent('Sign in to dilla.test'); });
     expect(screen.getByRole('alert')).toHaveTextContent(en['factorSignin.backup.failed']);
     expect(password()).toHaveValue('');
     expect(document.activeElement).toBe(password());
     expect(screen.queryByRole('textbox', { name: 'Recovery key' })).toBeNull();
-    // Signing in again sends the key that was kept.
+    // Signing in again sends the username and the password only, and asks for a factor again.
     await user.type(password(), 'correct horse');
     await user.click(button('Continue'));
-    expect(fake.callsOf('signInLogin').at(-1)).toMatchObject({ recoveryKey: GROUPED });
+    expect(fake.callsOf('signInLogin').at(-1)).toEqual({ m: 'signInLogin', username: 'ada', password: 'correct horse' });
+    expect(h1()).toHaveTextContent('Your second factor');
   });
 
   it('Back leaves the backup-code form for the code form', async () => {
@@ -194,40 +213,42 @@ describe('the code step (flow 10 state 16)', () => {
 });
 
 describe('the passkey (flow 10 states 14 and 15)', () => {
-  it('is offered on the login only where passkeys can be used', async () => {
+  it('is offered on the login only where passkeys can be used', () => {
     const on = setup('signin-login', worker());
-    await holdKey(on.user);
     expect(button(en['factorSignin.usePasskey'])).toHaveAttribute('type', 'button');
     on.view.unmount();
     const off = setup('signin-login', worker(), {}, { webauthn: false });
-    await holdKey(off.user);
     expect(screen.queryByRole('button', { name: en['factorSignin.usePasskey'] })).toBeNull();
     off.view.unmount();
-    const none = setup('signin-login', worker(), { instance: { ...INSTANCE, passwordSignup: true, passkeys: false } });
-    await holdKey(none.user);
+    setup('signin-login', worker(), { instance: { ...INSTANCE, passwordSignup: true, passkeys: false } });
     expect(screen.queryByRole('button', { name: en['factorSignin.usePasskey'] })).toBeNull();
   });
 
-  it('signs in with a passkey on its own: the instance options, user verification required, the key sent', async () => {
+  it('signs in with a passkey on its own: the instance options, user verification required, then the key as step 2', async () => {
     const { fake, user } = setup('signin-login', worker({ needs: 0, passkeyNeeds: 0 }));
-    await holdKey(user);
     get.mockResolvedValue(assertion());
     await user.click(button(en['factorSignin.usePasskey']));
-    await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
+    await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
+    // The passkey was used on the login step, so no factor step was shown (R7).
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
     expect(fake.callsOf('signInPasskeyBegin')).toEqual([{ m: 'signInPasskeyBegin' }]);
     expect(get.mock.calls[0]?.[0].publicKey.userVerification).toBe('required');
     const sent = fake.callsOf('signInPasskey');
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ m: 'signInPasskey', ceremonyId: CEREMONY, recoveryKey: GROUPED });
+    expect(sent[0]).toMatchObject({ m: 'signInPasskey', ceremonyId: CEREMONY });
+    expect(Object.keys(sent[0] ?? {}).sort()).toEqual(['ceremonyId', 'm', 'response']);
     expect(typeof (sent[0] as { response: string }).response).toBe('string');
     expect(fake.callsOf('signInLogin')).toEqual([]);
+    await addWithKey(user);
+    expect(fake.callsOf('signInKey')).toEqual([{ m: 'signInKey', recoveryKey: GROUPED }]);
+    expect(h1()).toHaveTextContent('You’re in');
   });
 
   it('shows the passkey step for an account that owes only a passkey: no code field, no app wording', async () => {
     const { fake, user, view } = setup('signin-login', worker({ needs: 2 }));
     await login(user);
     expect(h1()).toHaveTextContent('Use your passkey');
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
     expect(screen.getByText(en['factorSignin.passkey.body'])).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Code' })).toBeNull();
     expect(screen.queryByText(/authenticator app/i)).toBeNull();
@@ -235,8 +256,10 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     await expectNoAxeViolations(view.container);
     get.mockResolvedValue(assertion());
     await user.click(button('Use passkey'));
-    await waitFor(() => { expect(h1()).toHaveTextContent('You’re in'); });
+    await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
     expect(fake.callsOf('signInPasskey')).toHaveLength(1);
+    expect(fake.callsOf('signInPasskey')[0]).not.toHaveProperty('recoveryKey');
   });
 
   it('a passkey-only account can use a backup code', async () => {
@@ -245,6 +268,8 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
     await user.click(button(en['factorSignin.useBackup']));
     expect(h1()).toHaveTextContent('Use a backup code');
     await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    expect(fake.callsOf('signInBackupCode')).toEqual([]);
+    await addWithKey(user);
     expect(fake.callsOf('signInBackupCode')).toEqual([{ m: 'signInBackupCode', code: BACKUP, recoveryKey: GROUPED }]);
   });
 
@@ -257,7 +282,6 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
       ? Promise.reject(refusal({ code, status: 401, detail: code === 'E_UNAUTHENTICATED' ? 'unknown passkey' : 'x' }))
       : worker()(c, f);
     const { user } = setup('signin-login', script);
-    await holdKey(user);
     arm();
     await user.click(button(en['factorSignin.usePasskey']));
     const alert = await screen.findByRole('alert');
@@ -269,7 +293,6 @@ describe('the passkey (flow 10 states 14 and 15)', () => {
 
   it('a cancelled ceremony shows the failed text and returns focus to the button that started it', async () => {
     const { fake, user } = setup('signin-login', worker());
-    await holdKey(user);
     get.mockRejectedValue(new DOMException('no', 'NotAllowedError'));
     await user.click(button(en['factorSignin.usePasskey']));
     expect(await screen.findByRole('alert')).toHaveTextContent(en['factorSignin.passkey.failed']);
@@ -421,6 +444,8 @@ describe('backup codes, tightened', () => {
     expect(fake.callsOf('signInBackupCode')).toEqual([]);
     await user.clear(field('Backup code'));
     await user.type(field('Backup code'), 'ABCDEFGHIJKLMNOPQRSTUVWXY7{Enter}');
+    expect(fake.callsOf('signInBackupCode')).toEqual([]);
+    await addWithKey(user);
     expect(fake.callsOf('signInBackupCode')).toHaveLength(1);
   });
 
@@ -436,6 +461,7 @@ describe('backup codes, tightened', () => {
     await login(user);
     await user.click(button(en['factorSignin.useBackup']));
     await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    await addWithKey(user);
     expect(await screen.findByRole('alert')).toHaveTextContent(en['factorSignin.backup.failed']);
     expect(document.activeElement).toBe(password());
   });
@@ -450,6 +476,7 @@ describe('a passkey-only account in a browser without passkeys', () => {
     expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
     expect(screen.getByText(en['factorSignin.passkey.unusable'])).toBeInTheDocument();
     await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    await addWithKey(user);
     expect(fake.callsOf('signInBackupCode')).toHaveLength(1);
     expect(fake.callsOf('signInPasskeyBegin')).toEqual([]);
   });

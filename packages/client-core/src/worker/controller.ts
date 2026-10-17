@@ -579,7 +579,7 @@ function invalid(command: Record<string, unknown>): string | null {
     }
   }
   if (m === 'factorSetupDone' && command.invite !== null && typeof command.invite !== 'string') return 'invite is not a string or null';
-  // web3.8 (pre-flight C-3): signInLogin, signInTotp and signInPasskey take an optional key and ignore it until SIGNIN-W.
+  // web3.8 (pre-flight C-3): only the key's commands carry a key; signInLogin, signInTotp and signInPasskey take none.
   if ((m === 'signInKey' || m === 'signInBackupCode' || m === 'signOutRevoke') && blank(command.recoveryKey)) {
     return 'the recovery key is empty';
   }

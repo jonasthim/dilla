@@ -45,12 +45,16 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
     return { noBackup: true, banner: { tone: 'danger', key, vars: { instance } } };
   }
   if (e.code === 'E_RECOVERY_KEY') return { field: 'key', fieldKey: 'signin.error.wrongKey' };
+  // web3.8 (R6, pre-flight C-15/C-16): the held assertion ran out during the key, from the registration or from the
+  // backup code on its path; nothing was spent and the worker is back at signin-login. The person logs in again.
+  if (e.code === 'E_SIGNIN_EXPIRED') return { banner: { tone: 'warn', key: 'enrol.expired', vars: {} }, focus: 'password' };
   // web3.6: the instance gives an unknown passkey its own code (never read from the detail text).
   if (e.code === 'E_PASSKEY_UNKNOWN' && command === 'passkey') {
     return { banner: { tone: 'danger', key: 'factorSignin.passkey.unknown', vars: { instance } }, focus: 'passkey' };
   }
   if ((e.code === 'E_UNAUTHENTICATED' || e.code === 'E_NO_ASSERTION') && command === 'backup') {
-    // The worker moved the phase to signin-login: the assertion is spent. The password is cleared, the key is kept.
+    // The worker moved the phase to signin-login: the assertion is spent. The password is cleared; the key text stays
+    // in page memory for the next key step.
     return { banner: { tone: 'warn', key: 'factorSignin.backup.failed', vars: {} }, focus: 'password' };
   }
   if ((e.code === 'E_UNAUTHENTICATED' || e.code === 'E_NO_ASSERTION') && command === 'totp') {
@@ -79,11 +83,13 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
 }
 
 /** The four-step sign-in ceremony of L-COPY-02. Rendered by App for the phases signin-login, signin-totp,
- *  signin-key and enrolling, and kept mounted after the phase turns ready until its done step calls onFinish.
- *  The recovery key comes first (coordinator ruling on REGISTRATION-DEVICES-02's concern 3): the page holds it while
- *  the person logs in and sends it with the login (and with the code), so the instance sees the login only once the
- *  key is in hand and the registration follows it within seconds. Phase signin-key is a registered enrolment that
- *  still needs the key (a wrong key, a reload mid-enrolment): its step sends signInKey. */
+ *  signin-passkey, signin-key and enrolling, and kept mounted after the phase turns ready until its done step calls
+ *  onFinish. web3.8 (R6): the login first, then the second factor, then the recovery key. The login and the factor
+ *  never register this browser: the worker holds the settled assertion, and the key's command registers it after the
+ *  key's form check, back to back with the fetch, the enrolment and the list PUT (REGISTRATION-DEVICES-02). A backup
+ *  code waits in page memory and goes only with the key (signInBackupCode), so an assertion that ran out meanwhile
+ *  spends none. Phase signin-key is the key step, before or after the registration (a wrong key, a reload after it):
+ *  its step sends signInKey. Step numbers follow R7. */
 export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
@@ -92,8 +98,10 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [key, setKey] = useState('');
-  // The key step passed its count and the key waits in page memory for the login; never stored.
-  const [keyHeld, setKeyHeld] = useState(false);
+  // The backup-code form passed its check and the code waits in page memory for the key step; never stored.
+  const [backupHeld, setBackupHeld] = useState(false);
+  // R7: a factor step (code, passkey or backup code) was shown in this ceremony, so the key is step 3, not 2.
+  const [factorShown, setFactorShown] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Field, StringKey>>>({});
   const [banner, setBanner] = useState<BannerState | null>(null);
   // The no-backup view's banner after a refusal of this mount; null otherwise.
@@ -137,17 +145,25 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   const shown: Shown = phase === 'ready' ? 'done'
     : phase === 'factor-setup' ? 'factor'
       : noBackupKey !== null ? 'noBackup'
-        : phase === 'signin-totp' ? (backupMode ? 'backup' : 'totp')
-          : phase === 'signin-passkey' ? (backupMode || noPasskeys ? 'backup' : 'passkey')
+        : phase === 'signin-totp' ? (backupHeld ? 'key' : backupMode ? 'backup' : 'totp')
+          : phase === 'signin-passkey' ? (backupHeld ? 'key' : backupMode || noPasskeys ? 'backup' : 'passkey')
             : phase === 'signin-key' ? 'key'
-              : enrolling ? (busy !== null && busyStep !== null ? busyStep : 'key')
-                : keyHeld ? 'login' : 'key';
+              : enrolling ? busyStep ?? 'key'
+                : 'login';
 
   // A cancel and a fresh ceremony start clean.
   useEffect(() => { if (phase !== 'signin-key') setNoBackup(null); }, [phase]);
-  // The backup-code form belongs to the code and passkey steps; a refused code or a cancel leaves it.
+  // The backup-code form and its held code belong to the code and passkey steps; a refused code, an expiry or a cancel
+  // leaves them, and so does signin-key (the code was spent by the registration that reached it).
   useEffect(() => {
-    if (phase !== 'signin-totp' && phase !== 'signin-passkey' && phase !== 'enrolling') { setBackupMode(false); setBackup(''); }
+    if (phase !== 'signin-totp' && phase !== 'signin-passkey' && phase !== 'enrolling') {
+      setBackupMode(false); setBackup(''); setBackupHeld(false);
+    }
+  }, [phase]);
+  // R7: the factor step counts from when it shows until the ceremony returns to the login.
+  useEffect(() => {
+    if (phase === 'signin-totp' || phase === 'signin-passkey') setFactorShown(true);
+    else if (phase === 'signin-login' || phase === 'needs-signup') setFactorShown(false);
   }, [phase]);
 
   // OnboardingFrame focuses its heading when the title changes; this effect runs after the frame's (child effects
@@ -183,8 +199,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     const view = signInRefusal(e, command, name);
     if (view.noBackup && view.banner) setNoBackup(view.banner.key);
     if (view.field && view.fieldKey) {
-      // A key refused by its form or by the account goes back to the key step, its text kept.
-      if (view.field === 'key') setKeyHeld(false);
+      // A key refused by its form or by the account stays on the key step, its text kept.
       setErrors({ [view.field]: view.fieldKey });
       requestFocus(view.field);
     }
@@ -210,12 +225,9 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     if (password === '') next.password = 'signin.error.required';
     if (showErrors(next)) return;
     begin('login', 'login');
-    run('login', client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password, recoveryKey: key }), (value) => {
+    // web3.8 (R6): the login carries no key; the factor step or the key step follows it.
+    run('login', client.call({ m: 'signInLogin', username: username.trim().toLowerCase(), password }), () => {
       setPassword('');
-      // With a second factor owed, the key goes again with the code; otherwise the browser is enrolled.
-      // web3.6: a login owing a code (needs 1) or a passkey (needs 2) keeps the key for the step that follows.
-      const needs = typeof value === 'object' && value !== null ? (value as { needs?: unknown }).needs : undefined;
-      if (needs !== 1 && needs !== 2) setKey('');
     });
   };
   const submitTotp = () => {
@@ -223,7 +235,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     const trimmed = code.replace(/\s/g, '');
     if (showErrors(trimmed === '' ? { code: 'signin.error.required' } : {})) return;
     begin('totp', 'totp');
-    run('totp', client.call({ m: 'signInTotp', code: trimmed, recoveryKey: key }), () => setKey(''));
+    run('totp', client.call({ m: 'signInTotp', code: trimmed }), () => setCode(''));
   };
   const submitKey = () => {
     // The page counts only; Rust normalises and judges the raw text (L-CORE-26 step 1).
@@ -231,23 +243,24 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       showErrors({ key: 'signin.error.keyLength' });
       return;
     }
-    // Before the login the key only waits here; the login sends it. A registered enrolment sends it at once.
-    if (phase === 'signin-login') {
-      setKeyHeld(true);
+    // R6: a held backup code goes now, with the key; the instance checks the assertion before the code.
+    if (backupHeld) {
+      begin('backup', 'key');
+      run('backup', client.call({ m: 'signInBackupCode', code: normaliseBackupCode(backup), recoveryKey: key }), () => {
+        setKey('');
+        setBackup('');
+        setUsedBackup(true);
+      });
       return;
     }
     begin('key', 'key');
     run('key', client.call({ m: 'signInKey', recoveryKey: key }), () => setKey(''));
   };
+  /** The backup code is checked for its form and held in page memory; the key step sends it (R6). */
   const submitBackup = () => {
-    const cleaned = normaliseBackupCode(backup);
-    if (!BACKUP_CODE.test(cleaned)) { showErrors({ backup: 'factorSignin.backup.format' }); return; }
-    begin('backup', 'backup');
-    run('backup', client.call({ m: 'signInBackupCode', code: cleaned, recoveryKey: key }), () => {
-      setKey('');
-      setBackup('');
-      setUsedBackup(true);
-    });
+    if (!BACKUP_CODE.test(normaliseBackupCode(backup))) { showErrors({ backup: 'factorSignin.backup.format' }); return; }
+    setBackupHeld(true);
+    requestFocus('heading');
   };
   /** The passkey on its own: the instance's options go to the browser and its answer back; the page makes no challenge. */
   const submitPasskey = (from: Shown) => {
@@ -259,10 +272,8 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       try {
         const began = await client.call({ m: 'signInPasskeyBegin' }) as { ceremonyId: string; options: string };
         const response = await getPasskey(began.options);
-        const value = await client.call({ m: 'signInPasskey', ceremonyId: began.ceremonyId, response, recoveryKey: key });
-        // A passkey that did not check the person goes on to a code and keeps the key for it.
-        const needs = typeof value === 'object' && value !== null ? (value as { needs?: unknown }).needs : undefined;
-        if (needs !== 1) setKey('');
+        // web3.8 (R6): the passkey carries no key; a code (needs 1) or the key step follows it.
+        await client.call({ m: 'signInPasskey', ceremonyId: began.ceremonyId, response });
       } catch (e) {
         if (e instanceof PasskeyError) {
           setBanner(PASSKEY_FAILED);
@@ -302,12 +313,15 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   };
   const cancel = () => {
     if (blocked) return;
-    setKeyHeld(false);
+    setBackupHeld(false);
+    setBackup('');
     setKey('');
     client.call({ m: 'signInCancel' }).catch((e: unknown) => { apply(errorOf(e), 'login'); });
   };
 
   const stepLabel = (n: number) => t('signin.step', { n });
+  // R7: login 1, the second factor 2, the key 3 (or 2 when no factor step was shown), done 4.
+  const keyStep = factorShown ? 3 : 2;
   const errorText = (field: Field) => {
     const k = errors[field];
     return k === undefined ? undefined : t(k);
@@ -353,7 +367,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     );
   } else if (shown === 'passkey') {
     const working = busy === 'passkey' || enrolling;
-    content = form(t('factorSignin.passkey.title'), 3, <>
+    content = form(t('factorSignin.passkey.title'), 2, <>
       {cancelButton('signin.cancel')}
       <Button id={FIELD_ID.passkey} variant="accent" type="submit" {...blockedProps}>
         {t(working ? 'factorSignin.passkey.working' : 'factorSignin.passkey.submit')}
@@ -364,10 +378,10 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       <p role="status">{enrolling ? t('signin.key.working') : null}</p>
     </>);
   } else if (shown === 'backup') {
-    content = form(t('factorSignin.backup.title'), 3, <>
+    content = form(t('factorSignin.backup.title'), 2, <>
       {noPasskeys ? cancelButton('signin.cancel')
         : <Button variant="ghost" type="button" onClick={closeBackup} {...blockedProps}>{t('factor.back')}</Button>}
-      <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'backup' ? 'signin.login.working' : 'signin.login.submit')}</Button>
+      <Button variant="accent" type="submit" {...blockedProps}>{t('signin.login.submit')}</Button>
     </>, <>
       {noPasskeys ? <p>{t('factorSignin.passkey.unusable')}</p> : null}
       <p>{t('factorSignin.backup.body')}</p>
@@ -377,12 +391,12 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     </>);
   } else if (shown === 'noBackup' && noBackupKey !== null) {
     content = (
-      <OnboardingFrame title={t('signin.key.title')} stepLabel={stepLabel(1)} footer={cancelButton('signin.cancel')}>
+      <OnboardingFrame title={t('signin.key.title')} stepLabel={stepLabel(keyStep)} footer={cancelButton('signin.cancel')}>
         <Banner tone="danger">{t(noBackupKey, { instance: name })}</Banner>
       </OnboardingFrame>
     );
   } else if (shown === 'totp') {
-    content = form(t('signin.totp.title'), 3, <>
+    content = form(t('signin.totp.title'), 2, <>
       {cancelButton('signin.cancel')}
       <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'totp' ? 'signin.login.working' : 'signin.login.submit')}</Button>
     </>, <>
@@ -397,16 +411,13 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
   } else if (shown === 'key') {
     const n = normaliseRecoveryKey(key).length;
     const short = n !== KEY_LENGTH;
-    const working = busy === 'key' || enrolling;
+    const working = busy === 'key' || busy === 'backup' || enrolling;
     // The text cannot change under a running enrolment.
     const onKey = change('key', setKey);
-    // Step 1 before the login: its forward button continues to the login, and its way out is a new account. On a
-    // registered enrolment the button adds this browser at once and the way out is Cancel.
-    const first = phase === 'signin-login';
-    content = form(t('signin.key.title'), 1, <>
-      {cancelButton(first ? 'signin.login.createInstead' : 'signin.cancel')}
+    content = form(t('signin.key.title'), keyStep, <>
+      {cancelButton('signin.cancel')}
       <Button variant="accent" type="submit" {...(short || blocked ? { 'aria-disabled': true } : {})}
-        aria-describedby={short ? LENGTH_ID : undefined}>{t(first ? 'signin.login.submit' : 'signin.key.submit')}</Button>
+        aria-describedby={short ? LENGTH_ID : undefined}>{t('signin.key.submit')}</Button>
     </>, <>
       <p>{t('signin.key.body')}</p>
       <RecoveryKeyField id={FIELD_ID.key} label={t('signin.key.label')} value={key}
@@ -421,8 +432,9 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
       <p className="d-sr-only" aria-live="polite" data-testid="signin-announcer">{announcement}</p>
     </>);
   } else {
-    content = form(t('signin.login.title', { instance: name }), 2, <>
-      {cancelButton('signin.cancel')}
+    // Step 1: the way out before anything is held is a new account (flow 03).
+    content = form(t('signin.login.title', { instance: name }), 1, <>
+      {cancelButton('signin.login.createInstead')}
       <Button variant="accent" type="submit" {...blockedProps}>{t(busy === 'login' ? 'signin.login.working' : 'signin.login.submit')}</Button>
     </>, <>
       <p>{t('signin.login.body', { instance: name })}</p>

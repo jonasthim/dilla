@@ -11,6 +11,7 @@ import {
   messageRow, type Account,
 } from './support/app';
 import { PROFILE_ROOT } from './support/persistent';
+import { nextCode } from './support/totp';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
@@ -22,6 +23,9 @@ let host: StartedHost | null = null;
 let instance = '';
 let listPath = '';
 let channelPath = '';
+// web3.8 (R6): the key step comes after the login and the code, so the sign-in test signs in as the account the first
+// test signed up (the suite is serial).
+let signedUp: Account | null = null;
 
 test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
 test.use({ baseURL: `http://127.0.0.1:${String(HOST.port)}`, ...PHONE });
@@ -142,6 +146,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectHeading(page, COPY.doneTitle);
       await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
       await expectShell(page);
+      signedUp = ada;
     });
 
     // 2. A server from the servers tab; the tab bar names four places and the status bar is gone.
@@ -436,20 +441,28 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
   const context = await phoneContext({ playwright, browserName, launchOptions, headless, channel }, dir);
   await guard.attach(context);
   const page = await context.newPage();
-  const key = Array.from({ length: 13 }, () => 'ABCD').join(' ');
+  if (signedUp === null) throw new Error('the phone shell test did not sign up an account');
+  const account = signedUp;
   try {
+    // web3.8 (R6, R7): the login first, then the code, then the key.
     await page.goto('/welcome');
     await expectHeading(page, COPY.connectTitle, { instance });
     await page.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
-    await expectHeading(page, SIGNIN.keyTitle);
-    await expectFieldSizes(page, 'sign-in key');
-    await expectUnzoomedOnFocus(page, keyField(page), 'the recovery key');
-    await keyField(page).fill(key);
-    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
     await expectHeading(page, SIGNIN.loginTitle, { instance });
     await expectFieldSizes(page, 'sign-in login');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.username), { exact: true }), 'the username');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.password), { exact: true }), 'the password');
+    await page.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
+    await page.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
+    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+    await expectHeading(page, 'signin.totp.title');
+    await expectFieldSizes(page, 'sign-in code');
+    await expectUnzoomedOnFocus(page, page.getByLabel(copy('signin.totp.code'), { exact: true }), 'the code');
+    await page.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
+    await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
+    await expectHeading(page, SIGNIN.keyTitle);
+    await expectFieldSizes(page, 'sign-in key');
+    await expectUnzoomedOnFocus(page, keyField(page), 'the recovery key');
     // web3.7.2: no shell here, so the page lock is off and a short window (the keyboard up) still scrolls the form.
     await page.setViewportSize({ width: 390, height: 300 });
     const scrolled = await page.evaluate(() => {

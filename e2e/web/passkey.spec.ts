@@ -6,8 +6,8 @@
 // with the copy keys of flow 10 through copy().
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, keyText, newAccount, nextButton,
-  railNav, readRecoveryKey, signInToLoginStep, submitButton, test,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, keyField, keySubmit, keyText,
+  newAccount, nextButton, railNav, readRecoveryKey, submitButton, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -108,7 +108,7 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
   await page.getByRole('button', { name: copy(COPY.finish), exact: true }).click();
   await expectShell(page);
 
-  // 2. A second browser holding a copy of the passkey: the key, then the passkey on the login step; no password typed.
+  // 2. A second browser holding a copy of the passkey: the passkey on the login step, no password typed; then the key.
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: 'http://localhost:8497' }, secondDir);
   try {
@@ -117,9 +117,16 @@ test('passkeys: sign up with one, sign in with a copy of it, add the app, remove
     const authenticator2 = await addAuthenticator(page2);
     expect(await copyCredentials(authenticator, authenticator2)).toBe(1);
     await page2.goto('/welcome');
-    await signInToLoginStep(page2, instance, keyText(bjorn));
+    await expectHeading(page2, COPY.connectTitle, { instance });
+    await page2.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
+    await expectHeading(page2, SIGNIN.loginTitle, { instance });
     await expect(page2.getByLabel(copy(SIGNIN.password), { exact: true })).toHaveValue('');
     await button(page2, 'factorSignin.usePasskey').click();
+    // web3.8 (R7): the passkey was used on the login step, so the key is step 2.
+    await expectHeading(page2, SIGNIN.keyTitle);
+    await expect(page2.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+    await keyField(page2).fill(keyText(bjorn));
+    await keySubmit(page2).click();
     await expectHeading(page2, SIGNIN.doneTitle);
     await page2.getByRole('button', { name: copy(SIGNIN.doneNext), exact: true }).click();
     await expectShell(page2);

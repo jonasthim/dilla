@@ -595,36 +595,36 @@ export function wrongKey(account: Account): string {
 export function keyField(page: Page): Locator { return page.getByLabel(copy(SIGNIN.keyLabel), { exact: true }); }
 export function keySubmit(page: Page): Locator { return page.getByRole('button', { name: copy(SIGNIN.keySubmit), exact: true }); }
 
-/** From a fresh profile through step 1: onboarding step 1's entry, then the recovery key, which the page holds until
- *  the login (the coordinator's ruling on REGISTRATION-DEVICES-02's concern 3); ends on the login step. */
-export async function signInToLoginStep(page: Page, instanceName: string, typed: string): Promise<void> {
+/** From a fresh profile to the key step (web3.8, R6): onboarding step 1's entry, the login step (username and password),
+ *  then the code when the account has an app (web3.6); ends on the key step. Nothing registers before the key. */
+export async function signInToKeyStep(page: Page, account: Account, instanceName: string): Promise<void> {
   await page.goto('/welcome');
   await expectHeading(page, COPY.connectTitle, { instance: instanceName });
   await page.getByRole('button', { name: copy(SIGNIN.entry), exact: true }).click();
-  await expectHeading(page, SIGNIN.keyTitle);
-  await keyField(page).fill(typed);
-  await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
   await expectHeading(page, SIGNIN.loginTitle, { instance: instanceName });
-}
-/** The login step to the shell: the username and password, `Continue` (which enrols), the done step, `Open dilla`. */
-export async function finishSignIn(page: Page, account: Account, instanceName: string): Promise<void> {
   await page.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
   await page.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
   await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
-  // web3.6: a new browser takes the code too.
-  await expect(heading(page, 'signin.totp.title').or(heading(page, SIGNIN.doneTitle))).toBeVisible({ timeout: WAIT });
+  await expect(heading(page, 'signin.totp.title').or(heading(page, SIGNIN.keyTitle))).toBeVisible({ timeout: WAIT });
   if (await heading(page, 'signin.totp.title').isVisible()) {
     await page.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
     await page.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true }).click();
   }
+  await expectHeading(page, SIGNIN.keyTitle);
+}
+/** The key step to the shell: the key as typed, `Add this browser` (which registers and enrols), the done step,
+ *  `Open dilla`. */
+export async function finishWithKey(page: Page, account: Account, instanceName: string, typed = keyText(account)): Promise<void> {
+  await keyField(page).fill(typed);
+  await keySubmit(page).click();
   await expectHeading(page, SIGNIN.doneTitle);
   await expect(page.getByText(copy(SIGNIN.doneBody, { username: account.username, instance: instanceName }), { exact: true })).toBeVisible();
   await page.getByRole('button', { name: copy(SIGNIN.doneNext), exact: true }).click();
   await expectShell(page);
 }
 export async function signIn(page: Page, account: Account, instanceName: string, typed = keyText(account)): Promise<void> {
-  await signInToLoginStep(page, instanceName, typed);
-  await finishSignIn(page, account, instanceName);
+  await signInToKeyStep(page, account, instanceName);
+  await finishWithKey(page, account, instanceName, typed);
 }
 
 export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';

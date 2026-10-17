@@ -98,35 +98,35 @@ test('a wrong recovery key is refused in place, and the right one typed in lower
   await expectAccessible(b, 'onboarding: the sign-in entry');
   await entry.click();
 
-  // The recovery key comes first, step 1; the page holds it until the login (coordinator ruling, concern 3).
-  await expectHeading(b, SIGNIN.keyTitle);
+  // web3.8 (R6, R7): the login comes first, step 1; then the code, step 2; then the recovery key, step 3.
+  await expectHeading(b, SIGNIN.loginTitle, { instance: instanceName });
   await expect(b.getByText(copy(SIGNIN.step, { n: 1 }), { exact: true })).toBeVisible();
+  await expectAccessible(b, 'sign-in: login');
   const forward = b.getByRole('button', { name: copy(SIGNIN.loginSubmit), exact: true });
+  await b.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
+  await b.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
+  await forward.click();
+  await expectHeading(b, 'signin.totp.title');
+  await expect(b.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
+  await b.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
+  await forward.click();
+
+  await expectHeading(b, SIGNIN.keyTitle);
+  await expect(b.getByText(copy(SIGNIN.step, { n: 3 }), { exact: true })).toBeVisible();
   const field = keyField(b);
   const full = account.recoveryKey.join('');
   await field.fill(full.slice(0, 51));
   await expect(b.getByText(copy(SIGNIN.keyHint, { n: 51 }), { exact: true })).toBeVisible();
-  await expect(forward).toHaveAttribute('aria-disabled', 'true');
-  await expect(forward).toHaveAccessibleDescription(copy(SIGNIN.keyLength));
+  await expect(keySubmit(b)).toHaveAttribute('aria-disabled', 'true');
+  await expect(keySubmit(b)).toHaveAccessibleDescription(copy(SIGNIN.keyLength));
   await expectAccessible(b, 'sign-in: key, too short');
 
   // Well formed, 52 characters of the alphabet, and not this account's key: only the account's root can tell.
   const wrong = wrongKey(account);
   await field.fill(wrong);
   await expect(b.getByText(copy(SIGNIN.keyHint, { n: 52 }), { exact: true })).toBeVisible();
-  await expect(forward).not.toHaveAttribute('aria-disabled', 'true');
-  await forward.click();
-
-  await expectHeading(b, SIGNIN.loginTitle, { instance: instanceName });
-  await expect(b.getByText(copy(SIGNIN.step, { n: 2 }), { exact: true })).toBeVisible();
-  await expectAccessible(b, 'sign-in: login');
-  await b.getByLabel(copy(SIGNIN.username), { exact: true }).fill(account.username);
-  await b.getByLabel(copy(SIGNIN.password), { exact: true }).fill(account.password);
-  await forward.click();
-  // web3.6: the password is followed by the code; the key is only checked after it.
-  await expectHeading(b, 'signin.totp.title');
-  await b.getByLabel(copy('signin.totp.code'), { exact: true }).fill(await nextCode(account.control, account));
-  await forward.click();
+  await expect(keySubmit(b)).not.toHaveAttribute('aria-disabled', 'true');
+  await keySubmit(b).click();
   await expect(b.getByRole('alert').filter({ hasText: copy(SIGNIN.wrongKey) })).toBeVisible({ timeout: WAIT });
   await expect(field).toBeFocused();
   await expect(field).toHaveValue(wrong);
