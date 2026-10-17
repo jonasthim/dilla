@@ -1260,6 +1260,23 @@ describe('the product walk fixes', () => {
       expect(call.state.speaking).toBe(true);
     });
 
+    it('m6: a remote meter that appears mid-call arms the sampler, and the last detach idles it', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      f.deps.createLevelMeter = (ctx, track) => (track === ownTrack(f) ? null : m.create(ctx, track));
+      const call = await start(f);
+      const idle = f.timers.size;
+      const { p, track, pub } = heard(f);
+      expect(f.timers.size).toBe(idle + 1);
+      m.levels.set(track.mst, 0.1);
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      expect(p.isSpeaking).toBe(false);
+      f.unsubscribeTrack(p, pub);
+      await f.advance(25);
+      expect(f.timers.size).toBe(idle);
+    });
+
     it('m4: the sampler idles when no meter exists, and runs once one does', async () => {
       const f = fakes();
       f.deps.createLevelMeter = () => null;
