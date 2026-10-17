@@ -20,7 +20,7 @@ describe('t', () => {
 });
 
 describe('the copy rules', () => {
-  const values = Object.entries(en) as [string, string][];
+  const values = Object.entries<string>(en);
   it('has no empty value and only one-word placeholders', () => {
     for (const [key, value] of values) {
       expect(value.trim(), key).not.toBe('');

@@ -173,7 +173,6 @@ export const en = {
   'signin.key.hint': '{n} of 52 characters',
   'signin.key.submit': 'Add this browser',
   'signin.key.working': 'Adding this browser to your account…',
-  'signIn.key.isBackupCode': 'That looks like a backup code, not the recovery key. This step needs the 52-character recovery key you saved when you created the account.',
   'signin.done.title': 'You’re in',
   'signin.done.body': 'This browser is now a device of {username} on {instance}. Messages sent before now are not shown here.',
   'signin.done.next': 'Open dilla',

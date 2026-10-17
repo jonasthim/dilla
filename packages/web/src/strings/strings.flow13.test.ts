@@ -14,6 +14,10 @@ describe('flow 13 (v0.1.0-web3.8, desktop call, shell and sign-in order)', () =>
     const table = en as Readonly<Record<string, string>>;
     expect(pairs.length).toBe(8);
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
+    // The curly apostrophe U+2019, pinned by code point so a straight one goes red in en.ts and in the flow.
+    expect(table['stage.screen'].codePointAt(6)).toBe(0x2019);
+    expect(table['stage.screen']).toBe('{name}\u2019s screen');
+    expect(pairs.find(([key]) => key === 'stage.screen')?.[1]).toBe('{name}\u2019s screen');
     for (const [key, value] of pairs) {
       for (const f of FORBIDDEN as { word: string; re: RegExp }[]) expect(f.re.test(value), `${key}: ${f.word}`).toBe(false);
     }
@@ -30,6 +34,12 @@ describe('flow 13 (v0.1.0-web3.8, desktop call, shell and sign-in order)', () =>
       return (next < 0 ? rest : rest.slice(0, next)).trim();
     };
     for (const title of ['States', 'Keyboard map', 'Focus rules', 'Announcements']) expect(body(title).length, title).toBeGreaterThan(0);
+    const keyboard = body('Keyboard map');
+    expect(keyboard).toContain('ArrowLeft widens it');
+    expect(keyboard).toContain('`.d-user-panel`');
+    expect(keyboard).toContain('`aria-keyshortcuts`');
+    expect(body('States')).toContain('without the "+"');
+    expect(body('Announcements')).toContain('`aria-pressed` carries both');
     const rows = body('States').split('\n').filter(l => l.startsWith('|') && !/^\|[-| ]+\|$/.test(l));
     expect(rows.length - 1).toBeGreaterThanOrEqual(15);
   });

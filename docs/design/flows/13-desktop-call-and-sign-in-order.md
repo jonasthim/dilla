@@ -15,19 +15,19 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 | 7. Sign-in key step after the factor | The sign-in form shows the key step with keys `signin.key.*` and `signIn.key.isBackupCode`. | `signin.key.body`, `signIn.key.isBackupCode` |
 | 8. Assertion expired | The assertion expires and returns to sign-in login step, showing `enrol.expired`. | `enrol.expired` |
 | 9. A splitter focused and dragged | Splitter shows `pane.resize.sidebar` and `pane.resize.aside`. | `pane.resize.sidebar`, `pane.resize.aside` |
-| 10. Channels tab with the "+" for a member who may manage channels | A plus icon for creating channels (`create.channel.open`). | `create.channel.open` |
+| 10. Channels tab with the "+", and without it | With the "+" (`create.channel.open`) for a member who may manage channels; without the "+" for one who may not: the tab shows the same list and no add control. | `create.channel.open` |
 | 11. One channel list with a live voice channel and its people nested | Inline state glyphs. | `voice.state.muted`, `voice.state.deafened`, `voice.state.speaking`, `voice.state.camera`, `voice.state.screen` |
 | 12. User panel outside a call, muted | Shows `panel.region` and `panel.settings`, `voice.mute`, `voice.deafen`. | `panel.region`, `panel.settings`, `voice.mute`, `voice.deafen` |
 | 13. Stage grid with separate camera and screen tiles | Camera and screen shown as separate tiles with labels like `stage.screen`. | `stage.screen` |
-| 14. A focused tile with the filmstrip | Focus button on the tile. | — |
-| 15. A tile in full screen | Full screen button shows `stage.fullscreen`. | `stage.fullscreen` |
+| 14. A focused tile with the filmstrip | The focused tile fills the stage and the other tiles sit in the filmstrip; each tile's focus button carries `aria-pressed`, true on the focused tile. | — |
+| 15. A tile in full screen | The tile fills the screen; the full screen button (`stage.fullscreen`) carries `aria-pressed` true, and Escape leaves it. | `stage.fullscreen` |
 
 ## Keyboard map
 
 | Key | Where | Effect |
 |---|---|---|
-| Mute/Deafen shortcut | User panel | Ctrl/⌘+Shift+M and Ctrl/⌘+Shift+D, in and out of a call |
-| ArrowLeft, ArrowRight | Splitter | ±1rem |
+| Mute/Deafen shortcut | User panel | Ctrl/⌘+Shift+M and Ctrl/⌘+Shift+D, in and out of a call; the panel's mute and deafen buttons carry `aria-keyshortcuts` with the same keys |
+| ArrowLeft, ArrowRight | Splitter | ±1rem (the aside's ArrowLeft widens it) |
 | Shift+ArrowLeft, Shift+ArrowRight | Splitter | ±4rem |
 | Home | Splitter | Minimum |
 | End | Splitter | Maximum |
@@ -36,6 +36,7 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 | Enter or Space | Focused tile | Returns to the grid |
 | Escape | Inside the stage outside full screen | Returns to the grid |
 | Tab | Desktop | Rail → sidebar → sidebar splitter → bottom panel (call panel, then user panel) → main |
+| (none) | `.d-user-panel` | The wrapper has no accessible name and is located by that class; only its toolbar is named, `panel.region`, so "your account" is not named twice |
 
 ## Focus rules
 
@@ -47,7 +48,7 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 ## Announcements
 
 - The link banner (`nav.link.offline`, `nav.link.connecting`) is `role="status"`.
-- No new announcement for focus or full screen.
+- No new announcement for focus or full screen: `aria-pressed` carries both.
 
 ## Copy
 
@@ -57,5 +58,5 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 - `pane.resize.aside='resize the side panel'`
 - `panel.region='your account'`
 - `panel.settings='user settings'`
-- `stage.screen='{name}'s screen'`
+- `stage.screen='{name}’s screen'`
 - `stage.fullscreen='full screen'`

@@ -84,7 +84,7 @@ describe('the ceremony', () => {
     expect(h1()).toHaveTextContent('Your recovery key');
     expect(document.activeElement).toBe(h1());
     expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
-    expect(screen.getByText('Type or paste the recovery key you wrote down when the account was created. Spaces and hyphens do not matter.')).toBeInTheDocument();
+    expect(screen.getByText('Type or paste the 52-character recovery key you wrote down when the account was created. It is not a backup code: backup codes have 26 characters and go in the step before this one. Spaces and hyphens do not matter.')).toBeInTheDocument();
     expect(button('Continue')).toHaveAttribute('type', 'submit');
     expect(button('Create a new account instead')).toHaveAttribute('type', 'button');
     await expectNoAxeViolations(view.container);
