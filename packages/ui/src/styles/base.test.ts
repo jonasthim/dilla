@@ -28,7 +28,7 @@ describe('base.css phone rules', () => {
     expect(css).toMatch(/\.d-app-shell__aside, [^{]*__backdrop \{ bottom: var\(--d-tabbar-h, 0px\); \}/);
   });
   it('starts the non-modal settings page below the ring, and pads the thread sheet composer once', () => {
-    expect(css).toMatch(/\[data-modeless\] \{[^}]*inset: var\(--d-ring-h, 0px\) 0 auto 0;[^}]*- var\(--d-ring-h, 0px\)\)/);
+    expect(css).toMatch(/\[data-modeless\] \{[^}]*inset: calc\(var\(--d-vvtop, 0px\) \+ var\(--d-ring-h, 0px\)\) 0 auto 0;[^}]*- var\(--d-ring-h, 0px\)\)/);
     expect(css).toMatch(/\.d-thread-pane\[data-phone\] \.d-composer \{ padding-bottom: 0\.5rem; \}/);
   });
   it('pads the phone grid, the ring and the aside by the landscape side insets', () => {

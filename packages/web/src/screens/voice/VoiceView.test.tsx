@@ -5,6 +5,7 @@ import {
   A, BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
+import { PHONE_QUERY } from '../../layout.ts';
 import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -756,5 +757,30 @@ describe('web3.7: one set of call controls', () => {
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
     expect(dockToolbar()).not.toBeNull();
     void app;
+  });
+});
+
+// A2 (web3.7.2): a phone that cannot capture a screen shows no share control; desktop keeps it, switched off with its reason.
+describe('screen share without getDisplayMedia', () => {
+  const asPhone = (phone: boolean) => {
+    window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY ? phone : false, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+  };
+  afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); });
+
+  it('on a phone there is no share button on the stage', async () => {
+    asPhone(true);
+    await inVoice();
+    const stage = within(main().getByRole('toolbar', { name: 'voice channel controls' }));
+    expect(stage.queryByRole('button', { name: t('voice.shareOn') })).toBeNull();
+    expect(stage.getByRole('button', { name: t('voice.cameraOn') })).toBeInTheDocument();
+  });
+
+  it('on desktop the share button stays, aria-disabled', async () => {
+    asPhone(false);
+    await inVoice();
+    const share = within(main().getByRole('toolbar', { name: 'voice channel controls' })).getByRole('button', { name: t('voice.shareOn') });
+    expect(share).toHaveAttribute('aria-disabled', 'true');
   });
 });

@@ -27,7 +27,8 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 const noop = () => {};
-const frame: CSSProperties = { width: 390, margin: -16, ['--d-shell-h' as string]: '844px' };
+// transform makes the frame the containing block of the fixed phone shell, so it stays inside its 390 px.
+const frame: CSSProperties = { width: 390, margin: -16, transform: 'translateZ(0)', ['--d-shell-h' as string]: '844px' };
 const Phone = ({ children }: { children: ReactNode }) => <div style={frame}>{children}</div>;
 
 type TabId = 'servers' | 'dms' | 'activity' | 'you';

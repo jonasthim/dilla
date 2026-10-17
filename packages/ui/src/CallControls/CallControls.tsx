@@ -229,6 +229,8 @@ export interface CallControlsProps {
   canCamera: boolean;
   /** False without screen capture, or while the call is paused (RV-3): the share control is aria-disabled. */
   canShare: boolean;
+  /** True on a phone that cannot capture a screen: the share control is left out (a tap would show no reason). */
+  hideShare?: boolean;
   /** True while joining: every control is aria-disabled. */
   busy: boolean;
   /** True while the call is paused or held; it picks the reason camera and share give. Absent, `!canCamera` stands for it. */
@@ -246,7 +248,7 @@ export interface CallControlsProps {
  * Mute and deafen carry their shortcuts. Busy (joining) makes every control aria-disabled; it stays focusable.
  */
 export function CallControls({
-  muted, deafened, camera, sharing, canCamera, canShare, busy, paused, labels, shortcuts, onMute, onDeafen, onCamera, onShare, onLeave,
+  muted, deafened, camera, sharing, canCamera, canShare, hideShare, busy, paused, labels, shortcuts, onMute, onDeafen, onCamera, onShare, onLeave,
 }: CallControlsProps) {
   const why = voiceWhy(labels.why, { busy, paused: paused ?? !canCamera, canCamera, canShare });
   const controls: ToolbarControl[] = [
@@ -255,7 +257,7 @@ export function CallControls({
     { id: 'camera', label: labels.camera, on: camera, inert: busy || !canCamera, why: why.camera, ...VOICE_ICONS.camera, onAction: onCamera },
     { id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare },
     { id: 'leave', label: labels.leave, inert: busy, danger: true, ...VOICE_ICONS.leave, onAction: onLeave },
-  ];
+  ].filter(c => c.id !== 'share' || hideShare !== true);
   return <VoiceToolbar label={labels.region} controls={controls} className="d-call-controls" />;
 }
 

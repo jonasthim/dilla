@@ -20,15 +20,19 @@ export function usePhoneLayout(): boolean {
 }
 
 /**
- * Keeps `--d-vvh` on <html> at the visual viewport's height while enabled, so the phone shell shrinks above a soft
- * keyboard and the composer stays in view. The property is removed when the hook unmounts or turns off.
+ * Keeps `--d-vvh` and `--d-vvtop` on <html> at the visual viewport's height and offset while enabled, so the phone shell
+ * shrinks above a soft keyboard, follows iOS panning the viewport, and the composer stays in view. Both are removed when
+ * the hook unmounts or turns off.
  */
 export function useVisualViewportHeight(enabled = true): void {
   useEffect(() => {
     const vv = window.visualViewport;
     if (!enabled || vv === null || vv === undefined) return;
     const root = document.documentElement;
-    const set = () => root.style.setProperty('--d-vvh', `${vv.height}px`);
+    const set = () => {
+      root.style.setProperty('--d-vvh', `${vv.height}px`);
+      root.style.setProperty('--d-vvtop', `${vv.offsetTop}px`);
+    };
     set();
     vv.addEventListener('resize', set);
     vv.addEventListener('scroll', set);
@@ -36,6 +40,7 @@ export function useVisualViewportHeight(enabled = true): void {
       vv.removeEventListener('resize', set);
       vv.removeEventListener('scroll', set);
       root.style.removeProperty('--d-vvh');
+      root.style.removeProperty('--d-vvtop');
     };
   }, [enabled]);
 }

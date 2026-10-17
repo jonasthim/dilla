@@ -16,6 +16,31 @@ describe('the phone breakpoint', () => {
   });
 });
 
+describe('the phone shell follows the visual viewport (web3.7.2)', () => {
+  const base = readFileSync(join(here, '..', '..', 'ui', 'src', 'styles', 'base.css'), 'utf8');
+  const app = readFileSync(join(here, 'app.css'), 'utf8');
+  const rule = (css: string, selector: string) => css.split('\n').find(l => l.trimStart().startsWith(selector)) ?? '';
+
+  it('fixes the phone shell at --d-vvtop', () => {
+    const shell = rule(base, '.d-app-shell[data-layout="phone"] {');
+    expect(shell).toContain('position: fixed');
+    expect(shell).toContain('top: var(--d-vvtop, 0px)');
+  });
+  it('moves the ring and the modeless Settings frame with it', () => {
+    expect(rule(base, '.d-app-shell .d-app-shell__ring')).toContain('var(--d-vvtop, 0px)');
+    expect(rule(base, '.d-settings-frame.d-settings-frame[data-modeless]')).toContain('var(--d-vvtop, 0px)');
+  });
+  it('moves the search palette and the other-tab overlay with it', () => {
+    expect(rule(app, '.dw-search {')).toContain('var(--d-vvtop, 0px)');
+    expect(rule(app, '.dw-other-tab--overlay')).toContain('var(--d-vvtop, 0px)');
+  });
+  it('stops the page itself scrolling on a phone, and only while the phone shell is mounted', () => {
+    const phone = app.slice(app.indexOf('@media (max-width: 47.99rem)'));
+    expect(phone).toMatch(/html:has\(\.d-app-shell\[data-layout="phone"\]\), body:has\(\.d-app-shell\[data-layout="phone"\]\) \{[^}]*overflow: hidden/);
+    expect(app).not.toMatch(/(^|\n)\s*html, body \{[^}]*overflow/);
+  });
+});
+
 describe('usePhoneLayout', () => {
   afterEach(() => { Reflect.deleteProperty(window, 'matchMedia'); });
 
@@ -42,7 +67,20 @@ describe('usePhoneLayout', () => {
 });
 
 describe('useVisualViewportHeight', () => {
-  afterEach(() => { Reflect.deleteProperty(window, 'visualViewport'); document.documentElement.style.removeProperty('--d-vvh'); });
+  afterEach(() => { Reflect.deleteProperty(window, 'visualViewport'); document.documentElement.style.removeProperty('--d-vvh'); document.documentElement.style.removeProperty('--d-vvtop'); });
+
+  it('sets --d-vvtop from the visual viewport offset, follows a scroll, and removes it on unmount', () => {
+    const target = new EventTarget();
+    const vv = Object.assign(target, { height: 500, offsetTop: 95 });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: vv });
+    const { unmount } = renderHook(() => useVisualViewportHeight());
+    expect(document.documentElement.style.getPropertyValue('--d-vvtop')).toBe('95px');
+    vv.offsetTop = 0;
+    act(() => { target.dispatchEvent(new Event('scroll')); });
+    expect(document.documentElement.style.getPropertyValue('--d-vvtop')).toBe('0px');
+    unmount();
+    expect(document.documentElement.style.getPropertyValue('--d-vvtop')).toBe('');
+  });
 
   it('sets --d-vvh from the visual viewport on resize and scroll, and removes it on unmount', () => {
     const target = new EventTarget();

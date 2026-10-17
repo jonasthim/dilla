@@ -16,6 +16,17 @@ const base: CallControlsProps = {
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('CallControls', () => {
+  it('hideShare leaves the share control out, and the rest keep their order and roving focus', async () => {
+    render(<CallControls {...base} hideShare />);
+    const buttons = within(screen.getByRole('toolbar', { name: 'call controls' })).getAllByRole('button');
+    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['mute', 'deafen', 'camera', 'leave']);
+    expect(buttons.filter(b => b.tabIndex === 0)).toEqual([buttons[0]]);
+    await userEvent.keyboard('{Tab}{End}');
+    expect(buttons[3]).toHaveFocus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(buttons[0]).toHaveFocus();
+  });
+
   it('is one toolbar named call controls with one tab stop and roving arrows', async () => {
     render(<CallControls {...base} />);
     const bar = screen.getByRole('toolbar', { name: 'call controls' });

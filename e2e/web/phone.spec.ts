@@ -193,6 +193,41 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
     });
 
+    // 3a. web3.7.2: the shell is fixed and follows the visual viewport's offset (--d-vvtop stands in for the iOS pan, which
+    // Playwright cannot produce), and a muted call bar button reads as off, not as the accent fill.
+    await test.step('the shell follows --d-vvtop and a muted call bar is not accent-filled', async () => {
+      const shell = page.locator('.d-app-shell');
+      await expect(shell).toHaveCSS('position', 'fixed');
+      await page.evaluate(() => document.documentElement.style.setProperty('--d-vvtop', '95px'));
+      expect((await shell.boundingBox())!.y, 'the shell sits at the visual viewport top').toBe(95);
+      const ringY = await page.evaluate(() => {
+        const ring = document.createElement('div');
+        ring.className = 'd-app-shell__ring';
+        document.querySelector('.d-app-shell')!.append(ring);
+        const y = ring.getBoundingClientRect().y;
+        ring.remove();
+        return y;
+      });
+      expect(ringY, 'the ring sits at the visual viewport top, not below it').toBe(95);
+      await page.evaluate(() => document.documentElement.style.setProperty('--d-vvtop', '0px'));
+      expect((await shell.boundingBox())!.y).toBe(0);
+      const muted = await page.evaluate(() => {
+        const host = document.querySelector('.d-app-shell')!;
+        const bar = document.createElement('div');
+        bar.className = 'd-call-bar';
+        bar.innerHTML = '<button type="button" class="d-btn d-call-bar__mute" aria-pressed="true" data-size="md"></button><i></i>';
+        host.append(bar);
+        bar.querySelector('i')!.style.setProperty('background', 'var(--surface-2)');
+        bar.querySelector('i')!.style.setProperty('color', 'var(--danger)');
+        const button = getComputedStyle(bar.querySelector('button')!);
+        const probe = getComputedStyle(bar.querySelector('i')!);
+        const out = { bg: button.backgroundColor, color: button.color, edge: button.borderTopColor, surface: probe.backgroundColor, danger: probe.color };
+        bar.remove();
+        return out;
+      });
+      expect(muted, 'a muted mic: the danger glyph and edge on surface-2').toEqual({ bg: muted.surface, color: muted.danger, edge: muted.danger, surface: muted.surface, danger: muted.danger });
+    });
+
     // 3b. A thread is a sheet: opened from the toolbar, closed by the system back, then reopened by a real click on the chip.
     await test.step('a thread sheet opens from the chip on a real click', async () => {
       const row = messageRow(page, 'general', 'hej');
@@ -410,6 +445,15 @@ test('the sign-in fields stay at 16 px and unzoomed on a phone', async ({ playwr
     await expectFieldSizes(page, 'sign-in login');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.username), { exact: true }), 'the username');
     await expectUnzoomedOnFocus(page, page.getByLabel(copy(SIGNIN.password), { exact: true }), 'the password');
+    // web3.7.2: no shell here, so the page lock is off and a short window (the keyboard up) still scrolls the form.
+    await page.setViewportSize({ width: 390, height: 300 });
+    const scrolled = await page.evaluate(() => {
+      const el = document.scrollingElement!;
+      el.scrollTo(0, 40);
+      return { tall: el.scrollHeight > el.clientHeight, y: el.scrollTop };
+    });
+    expect(scrolled, 'the sign-in page scrolls with a short window').toEqual({ tall: true, y: expect.any(Number) });
+    expect(scrolled.y).toBeGreaterThan(0);
   } finally {
     await guard.collectWorkers();
     await context.close();

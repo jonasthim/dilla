@@ -11,6 +11,7 @@ import {
 import { en, t } from '../../strings/index.ts';
 import { micNoticeKey, participantView, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
+import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
 
 /** What the voice surfaces read besides the CallView. */
@@ -213,11 +214,12 @@ function canCapture(): boolean {
 function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
   const s = v.call.state;
   const canShare = canCapture();
+  const hideShare = usePhoneLayout() && !canShare;
   // WB a11y I4: the toggles keep one label; WB a11y m6: *call* names a DM call only, so a voice channel's toolbar has
   // its own name (the dock's is voice.dock.region).
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
-      canCamera={!paused} canShare={!paused && canShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
+      canCamera={!paused} canShare={!paused && canShare} hideShare={hideShare} busy={v.call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
@@ -494,6 +496,7 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
  */
 export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string; stageShown: boolean }): React.JSX.Element | null {
   const { call } = v;
+  const noShare = usePhoneLayout() && !canCapture();
   const bannerRef = useRef<HTMLDivElement>(null);
   const id = call.channelId;
   const paused = id !== null && v.slice?.channelId === id && v.slice.phase === 'paused';
@@ -537,7 +540,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
           {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
           <HearingLine audio={call.state?.audio} silent={call.state?.deafened === true || call.state?.paused === true} />
         </>}
-        onMute={call.toggleMute} onDeafen={call.toggleDeafen} onCamera={call.toggleCamera} onShare={call.toggleShare}
+        onMute={call.toggleMute} onDeafen={call.toggleDeafen} onCamera={call.toggleCamera} onShare={noShare ? undefined : call.toggleShare}
         onLeave={call.leave} />
     </div>
   );
