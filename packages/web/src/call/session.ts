@@ -534,6 +534,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // web3.8 V1: speaking from local levels. A meter's reading is trusted only while the context runs (a suspended one
     // reads silence); otherwise, and for every track without a meter, the SFU's flag is the fallback.
     const levelsLive = (): boolean => ctx !== null && ctx.state === 'running';
+    let micSending: boolean | null = null;
+    /** True unless push to talk is in force and the key is up. RNNoise's ptt worklet keeps the track "sending" with the
+     *  key up, so speaking is gated on the key itself as well as on micSending. */
+    let keyOpen = opts.mode !== 'ptt';
+    const ownGate = (): boolean => micSending === true && keyOpen;
+    /** Arms the sampler once a meter exists (set at connect); it idles with none. */
+    let armSample: () => void = () => undefined;
     let ownMeter: LevelMeter | null = null;
     const ownDetector = new SpeakingDetector();
     let ownOn = false;
@@ -570,12 +577,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const ownLocal = (): boolean => ownMeter !== null && levelsLive();
     const level = (): number => {
       if (state.muted || state.paused) return 0;
-      if (ownLocal()) return micSending === true ? Math.max(0, Math.min(12, Math.round(ownRms * 48))) : 0;
+      if (ownLocal()) return ownGate() ? Math.max(0, Math.min(12, Math.round(ownRms * 48))) : 0;
       return Math.max(0, Math.min(12, Math.round((local.audioLevel ?? 0) * 12)));
     };
     const ownSpeaking = (): boolean => {
-      if (ownLocal()) return micSending === true && ownOn;
-      return local.isSpeaking === true && !state.muted && !state.deafened && !state.paused;
+      if (ownLocal()) return ownGate() && ownOn;
+      return ownGate() && local.isSpeaking === true && !state.muted && !state.deafened && !state.paused;
     };
     let lastSetAt = Number.NEGATIVE_INFINITY;
     const refresh = (): void => {
@@ -650,6 +657,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       let tap: MediaStreamTrack | undefined;
       try { tap = (el.srcObject as MediaStream | null)?.getAudioTracks()[0] ?? t.mediaStreamTrack; } catch { tap = t.mediaStreamTrack; }
       playing.set(t, { el, identity, meter: makeMeter(tap), detector: new SpeakingDetector(), on: false });
+      armSample();
       return true;
     };
     const detachAudio = (track: unknown): void => {
@@ -688,7 +696,6 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let micPub: LocalPub | null = null;
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
-    let micSending: boolean | null = null;
     /** Sets an RNNoise processor on the microphone in the mode in force; a failure goes on without it. */
     const startNoise = async (): Promise<void> => {
       const track = micPub?.track;
@@ -721,6 +728,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       ownOn = false;
       ownRms = 0;
       if (!ended) ownMeter = makeMeter((micPub?.track as { mediaStreamTrack?: MediaStreamTrack } | undefined)?.mediaStreamTrack);
+      armSample();
     };
     if ('track' in mic) {
       micTrack = mic.track;
@@ -1024,12 +1032,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     // ---- web3.8 V1: the sampler. One timer reads every meter each SPEAK_TICK_MS and feeds its detector. A speaking flip
     // (own or remote) reaches the state at once; a level change only every LEVEL_PUBLISH_MS. Nothing here leaves the page.
+    let sampler: unknown = null;
+    let sampling = false;
+    const hasMeter = (): boolean => ownMeter !== null || [...playing.values()].some((e) => e.meter !== null);
     const sample = (): void => {
+      sampler = null;
       if (ended) return;
       const now = deps.now();
       let flipped = false;
       if (ownMeter !== null && levelsLive()) {
-        if (micSending === true) {
+        if (ownGate()) {
           ownRms = ownMeter.read();
           const on = ownDetector.update(ownRms, now);
           if (on !== ownOn) flipped = true;
@@ -1051,7 +1063,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         }
       }
       if (flipped || (level() !== state.level && now - lastSetAt >= LEVEL_PUBLISH_MS)) refresh();
-      later(sample, SPEAK_TICK_MS);
+      armSample();
+    };
+    // The tick idles while no meter exists (a listen-only call on the SFU's flags) and is armed again by the next meter.
+    armSample = () => {
+      if (!sampling || sampler !== null || ended || !hasMeter()) return;
+      sampler = later(sample, SPEAK_TICK_MS);
     };
 
     // ---- connected (WB client m2: only while the room is still up)
@@ -1064,7 +1081,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // Product walk M5: a call started muted or deafened says so to the others at once.
     if (state.muted || state.deafened) sendSelf();
     later(poll, TILE_POLL_MS);
-    later(sample, SPEAK_TICK_MS);
+    sampling = true;
+    armSample();
     later(statsTick, STATS_EVERY_MS);
     scheduleIce(firstIce);
 
@@ -1092,7 +1110,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended || on === state.deafened) return;
         if (on) {
           mutedBeforeDeafen = state.muted;
-          set({ deafened: true, muted: true });
+          ownDetector.reset(); ownOn = false; ownRms = 0;
+          set({ deafened: true, muted: true, speaking: false });
         } else {
           set({ deafened: false, muted: mutedBeforeDeafen });
         }
@@ -1139,7 +1158,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended || mode !== 'ptt') return;
         gate.setPtt(down);
         if (processorMode === 'ptt') processor?.setPttActive(down);
+        keyOpen = down;
         applyMic();
+        if (!down) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); } // no hold after the release
       },
       setMode(next) {
         if (ended || next === mode) return;
@@ -1148,8 +1169,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         gate.setPtt(false);
         // A processor built for push to talk is held open under voice activity and closed again for push to talk.
         if (processorMode === 'ptt') processor?.setPttActive(next !== 'ptt');
+        keyOpen = next !== 'ptt';
         set({ mode: next });
         applyMic();
+        if (!keyOpen) { ownDetector.reset(); ownOn = false; ownRms = 0; refresh(); }
       },
       // Fix round 3 (m2): one switch at a time (the camera and screen lane), so a quick on-then-off never leaves a
       // processor set after the setting says off.

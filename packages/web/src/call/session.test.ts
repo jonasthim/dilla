@@ -1203,6 +1203,74 @@ describe('the product walk fixes', () => {
       expect(call.state.speaking).toBe(false);
     });
 
+    it('I1: with push to talk and the key up the own speaking is false whatever the level, also with a ptt processor', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+      const call = await start(f, { mode: 'ptt', noise: 'on' });
+      m.levels.set(ownTrack(f), 0.2);
+      await f.advance(150);
+      expect(call.state.speaking).toBe(false);
+      expect(call.state.level).toBe(0);
+      call.pushToTalk(true);
+      await f.advance(150);
+      expect(call.state.speaking).toBe(true);
+      call.pushToTalk(false);
+      expect(call.state.speaking).toBe(false); // at once, no 300 ms hold after the release
+      await f.advance(150);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('I2: a suspended AudioContext falls back to the SFU flag', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p, track } = heard(f);
+      m.levels.set(track.mst, 0.1);
+      m.levels.set(ownTrack(f), 0.1);
+      f.contexts[0].to('suspended');
+      await f.advance(150);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      expect(call.state.speaking).toBe(false);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+    });
+
+    it('m2: deafening silences the own speaking at once', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      m.levels.set(ownTrack(f), 0.2);
+      await f.advance(150);
+      expect(call.state.speaking).toBe(true);
+      call.setDeafened(true);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('m3: the own fallback (no context) is also false while push to talk is up', async () => {
+      const f = fakes();
+      f.deps.audioContext = () => null;
+      const call = await start(f, { mode: 'ptt' });
+      (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
+      expect(call.state.speaking).toBe(false);
+      call.pushToTalk(true);
+      f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
+      expect(call.state.speaking).toBe(true);
+    });
+
+    it('m4: the sampler idles when no meter exists, and runs once one does', async () => {
+      const f = fakes();
+      f.deps.createLevelMeter = () => null;
+      await start(f);
+      const idle = f.timers.size;
+      const g = fakes();
+      withMeters(g);
+      await start(g);
+      expect(g.timers.size).toBe(idle + 1);
+    });
+
     it('a meter that cannot be made means the fallback, never an error', async () => {
       const f = fakes();
       f.deps.createLevelMeter = () => null;
