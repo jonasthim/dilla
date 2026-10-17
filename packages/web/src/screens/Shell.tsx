@@ -10,8 +10,8 @@ import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
-import { baseRoute, goBack, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
-import { rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
+import { baseRoute, goBack, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
+import { phoneNow, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow, InviteFlow } from './Create.tsx';
@@ -700,7 +700,7 @@ export function Shell(): React.JSX.Element {
     if (targetId !== pending.id) return;
     const box = document.querySelector<HTMLTextAreaElement>('.d-composer textarea');
     if (box === null || createFlowOpen) return;
-    box.focus();
+    if (!phoneNow()) box.focus();
     pendingFocus.current = null;
   });
 
@@ -1230,13 +1230,14 @@ export function Shell(): React.JSX.Element {
   // The tabs (flow 12): a tab opens where it was last left, else at its root; the counts are what the sidebar's badges sum to.
   const serverRoot: Route = (routeCommunity ?? fallbackCommunity) !== null
     ? { name: 'channel', communityId: (routeCommunity ?? fallbackCommunity) as string, channelId: null } : { name: 'root' };
+  const tabRoot = (to: PhoneTab): Route => to === 'servers' ? serverRoot : to === 'dms' ? { name: 'dms' } : { name: to };
   const tabTarget = (to: PhoneTab): Route => {
     const kept = rememberedTab(to);
     if (kept !== null) {
       const remembered = routeOf(kept);
       if (tabOf(remembered) === to && remembered.name !== 'root') return remembered;
     }
-    return to === 'servers' ? serverRoot : to === 'dms' ? { name: 'dms' } : { name: to };
+    return tabRoot(to);
   };
   const activityCount = railItems.reduce((n, item) => n + item.mentions, 0) + dmCounts.unread;
   const tabLabel = (to: PhoneTab) => t(`nav.tab.${to}`);
@@ -1244,8 +1245,36 @@ export function Shell(): React.JSX.Element {
     id: to, label: tabLabel(to), href: routePath(tabTarget(to)), icon, current: phoneTab === to,
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
+  // The tab to open once an open sheet's entry has been popped (set while that pop is pending, so a second tap only retargets it).
+  const pendingTab = useRef<{ to: PhoneTab; current: boolean } | null>(null);
+  const openTab = (to: PhoneTab, current: boolean) => {
+    // The current tab in its pushed view goes to its list (the iOS convention): back when the app pushed the view, else a replace after a
+    // deep link. Another tab opens where it was left, replacing the entry.
+    if (current) {
+      // Back only when the view was pushed from this tab's own list; from anywhere else (Activity, another tab) back would land there.
+      const from = pushedFrom();
+      const fromList = from !== null && tabOf(from) === to && from.name !== 'dm' && from.name !== 'settings' && !(from.name === 'channel' && from.channelId !== null);
+      if (fromList) goBack(tabRoot(to), navigate);
+      else navigate(tabRoot(to), true);
+    } else navigate(tabTarget(to), true);
+  };
   const tabBar = !phone ? undefined : (
-    <TabBar label={t('nav.tabs.label')} onSelect={id => navigate(tabTarget(id as PhoneTab), true)} items={[
+    <TabBar label={t('nav.tabs.label')} onSelect={id => {
+      const to = id as PhoneTab;
+      const current = to === phoneTab && phonePane === 'view';
+      // Server settings is a page above the tabs: leaving by a tab closes it.
+      if (adminFor !== null) setAdminFor(null);
+      if (pendingTab.current !== null) { pendingTab.current = { to, current }; return; }
+      // An open sheet closes first. Its entry is popped (async), and only then does the tab open on the view's entry.
+      if (asideShown && (sideNow !== null ? threadSheet : memberSheet).close()) {
+        pendingTab.current = { to, current };
+        window.addEventListener('popstate', () => {
+          const next = pendingTab.current;
+          pendingTab.current = null;
+          if (next !== null) openTab(next.to, next.current);
+        }, { once: true });
+      } else openTab(to, current);
+    }} items={[
       tabItem('servers', 'server'), tabItem('dms', 'message-square', dmCounts.unread), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
     ]} />
   );
@@ -1300,7 +1329,7 @@ export function Shell(): React.JSX.Element {
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
       <AppShell
         skipLabel={t('shell.skip')}
-        layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar}
+        layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} covered={phone && (overlay || adminFor !== null)}
         rail={phone && phoneTab !== 'servers' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
           joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}

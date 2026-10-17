@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { Button } from '../Button/Button.tsx';
+import { usePhoneLayout } from '../internal/phoneLayout.ts';
 import './SettingsFrame.css';
 
 export interface SettingsFrameProps {
@@ -9,6 +10,8 @@ export interface SettingsFrameProps {
   onClose(): void;
   nav: ReactNode;
   children: ReactNode;
+  /** Default: modal, except inside a phone shell, where it is a non-modal page above the tab bar. A screen outside the shell passes `!phone`. */
+  modal?: boolean;
 }
 
 /**
@@ -17,8 +20,10 @@ export interface SettingsFrameProps {
  * closes. Its <h1> takes focus on every open. Escape, the native cancel and a click on the backdrop
  * call `onClose`; an Escape or a cancel that belongs to a dialog nested inside the frame (remove,
  * sign out, forget) is left to that dialog and never closes the frame (pre-flight ruling 1.2).
+ * On a phone (web3.7.1) it opens with `show()`: the tab bar beside it stays live, and Escape closes it through the key handler alone.
  */
-export function SettingsFrame({ open, title, closeLabel, onClose, nav, children }: SettingsFrameProps) {
+export function SettingsFrame({ open, title, closeLabel, onClose, nav, children, modal }: SettingsFrameProps) {
+  const modeless = !(modal ?? !usePhoneLayout());
   const ref = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const titleId = useId();
@@ -26,7 +31,7 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children 
   // return focus to the opener; unmounting it instead leaves focus on the document body.
   useEffect(() => {
     const el = ref.current; if (!el) return;
-    if (open && !el.open) { el.showModal(); titleRef.current?.focus(); }
+    if (open && !el.open) { if (modeless) el.show(); else el.showModal(); titleRef.current?.focus(); }
     if (!open && el.open) el.close();
   }, [open]);
   // A frame torn down while open still hands focus back.
@@ -34,12 +39,27 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children 
     const el = ref.current;
     return () => { if (el?.open) el.close(); };
   }, []);
+  // A non-modal frame gets no `cancel` and no key events while focus sits elsewhere (the tab bar, the body): Escape anywhere closes it.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open || !modeless) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      const inDialog = e.target instanceof Element ? e.target.closest('dialog') : null;
+      if (inDialog !== null && inDialog !== ref.current) return;
+      e.preventDefault();
+      onCloseRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, modeless]);
   // True when the event started in this frame and not inside a dialog nested in it.
   const ownEvent = (target: EventTarget) => target instanceof Element && target.closest('dialog') === ref.current;
   return (
-    <dialog ref={ref} className="d-settings-frame" aria-labelledby={titleId} aria-modal="true"
+    <dialog ref={ref} className="d-settings-frame" aria-labelledby={titleId} aria-modal={modeless ? undefined : 'true'} data-modeless={modeless || undefined}
       onCancel={e => { if (!ownEvent(e.target)) return; e.preventDefault(); onClose(); }}
-      onKeyDown={e => { if (e.key === 'Escape' && ownEvent(e.target)) { e.preventDefault(); onClose(); } }}
+      onKeyDown={e => { if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && ownEvent(e.target)) { e.preventDefault(); onClose(); } }}
       onClick={e => { if (e.target === ref.current) onClose(); }}>
       {/* Contents exist only while open: a closed frame leaks no hidden text. */}
       {open ? (

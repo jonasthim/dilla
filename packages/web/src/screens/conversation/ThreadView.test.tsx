@@ -73,6 +73,10 @@ describe('ThreadView (web3.7)', () => {
     setup();
     expect(box()).toHaveFocus();
   });
+  it('focuses no field on a phone (script focus opens no keyboard there)', () => {
+    setup({ phone: true });
+    expect(box()).not.toHaveFocus();
+  });
   it('closes on Escape inside it', async () => {
     const { user, onClose } = setup();
     await user.keyboard('{Escape}');

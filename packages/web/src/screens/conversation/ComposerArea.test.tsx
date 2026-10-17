@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { BROWSER_ATTACHMENT_CAP, type TrayItem } from '@dilla/client-core';
 import { refusal } from '../../test/fake-client.ts';
+import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { GEN, O1, O2, P1, PEER, ownRow, peerRow, renderConversation, rowOf } from '../../test/conversation.tsx';
 
@@ -242,6 +243,20 @@ describe('attaching (L-TS-35, Q16)', () => {
 });
 
 describe('tray focus handoff (F4)', () => {
+  it('on a phone the last removed entry puts no focus in the composer', async () => {
+    window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('t1', 'ready')]) });
+      await user.click(screen.getByRole('button', { name: 'remove t1.txt' }));
+      act(() => fake.set(`tray:${GEN}`, []));
+      expect(box()).not.toHaveFocus();
+    } finally {
+      Reflect.deleteProperty(window, 'matchMedia');
+    }
+  });
+
   it('moves a removed entry to the next remove button, then to the textarea', async () => {
     const { fake, user } = renderConversation({ before: f => f.set(`tray:${GEN}`, [entry('t1', 'ready'), entry('t2', 'ready'), entry('t3', 'ready')]) });
     await user.click(screen.getByRole('button', { name: 'remove t1.txt' }));

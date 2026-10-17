@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SettingsFrame, SettingsNav } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
+import { usePhoneLayout } from '../../layout.ts';
 import { t } from '../../strings/index.ts';
 import { BansSection } from './BansSection.tsx';
 import { ChannelsSection } from './ChannelsSection.tsx';
@@ -37,6 +38,7 @@ export interface ServerSettingsProps {
  * list while this is open (kicked, deleted) closes it.
  */
 export function ServerSettings({ communityId, tab, onTab, onClose, announce }: ServerSettingsProps): React.JSX.Element | null {
+  const phone = usePhoneLayout();
   const community = useSlice('communities')?.find(c => c.id === communityId);
   const access = useSlice(`permissions:${communityId}`);
   // The last community seen: leave and delete drop the server from the list before their command resolves, and the dialog
@@ -78,7 +80,7 @@ export function ServerSettings({ communityId, tab, onTab, onClose, announce }: S
   if (shown === undefined) return null;
   const common = { communityId, serverName: shown.name, announce };
   return (
-    <SettingsFrame open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={onClose}
+    <SettingsFrame modal={!phone} open={!closed && !gone} title={t('admin.title')} closeLabel={t('admin.cancel')} onClose={onClose}
       nav={<SettingsNav label={t('admin.nav')} items={tabs} activeId={active ?? ''} onSelect={id => onTab(id as AdminTab)} />}>
       {!loaded ? <p aria-busy="true">{t('admin.loading')}</p> : null}
       {active === 'overview' ? <OverviewSection {...common} /> : null}

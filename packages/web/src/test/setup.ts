@@ -8,6 +8,9 @@ if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.sho
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); this.dispatchEvent(new Event('close')); };
 }
+if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.show) {
+  HTMLDialogElement.prototype.show = function () { this.setAttribute('open', ''); };
+}
 
 afterEach(() => { if (typeof window !== 'undefined') window.history.replaceState(null, '', '/'); });
 

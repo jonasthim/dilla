@@ -319,7 +319,7 @@ describe('phone layout', () => {
     expect(sidebar).toHaveFocus();
   });
 
-  it('view pane: main shows with header, content and composer; the skip link targets main; no rail, sidebar or tab bar; the call bar stays', async () => {
+  it('view pane: main shows with header, content and composer; the skip link targets main; no rail or sidebar; the call bar and the tab bar stay', async () => {
     const user = userEvent.setup();
     const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
     const main = screen.getByRole('main');
@@ -329,7 +329,7 @@ describe('phone layout', () => {
     expect(within(main).getByRole('textbox', { name: 'message #general' })).toBeInTheDocument();
     expect(container.querySelector('.d-app-shell__rail')).toBeNull();
     expect(container.querySelector('.d-app-shell__sidebar')).toBeNull();
-    expect(screen.queryByTestId('tab-bar')).toBeNull();
+    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
     expect(screen.getByTestId('call-bar')).toBeInTheDocument();
     expect(container.firstElementChild).toHaveAttribute('data-pane', 'view');
     const skip = screen.getByRole('link', { name: 'skip to messages' });
@@ -437,6 +437,105 @@ describe('phone layout', () => {
     expect(markup(b.container)).toBe(html);
     expect(html).not.toContain('data-layout');
     expect(html).not.toContain('d-app-shell__tabbar');
+  });
+
+  it('view pane: the tab bar follows the call bar', () => {
+    render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+    expect(screen.getByTestId('call-bar').parentElement!.compareDocumentPosition(screen.getByTestId('tab-bar').parentElement!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('typing: focusing a textarea marks the shell and hides the tab bar; blur brings both back', () => {
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+    const wrapper = screen.getByTestId('tab-bar').parentElement!;
+    expect(container.firstElementChild).not.toHaveAttribute('data-typing');
+    expect(wrapper).not.toHaveAttribute('hidden');
+    act(() => { screen.getByRole('textbox', { name: 'message #general' }).focus(); });
+    expect(container.firstElementChild).toHaveAttribute('data-typing', 'true');
+    expect(wrapper).toHaveAttribute('hidden');
+    expect(screen.queryByRole('navigation', { name: 'main' })).toBeNull();
+    expect(screen.getByTestId('call-bar')).toBeInTheDocument();
+    act(() => { screen.getByRole('textbox', { name: 'message #general' }).blur(); });
+    expect(container.firstElementChild).not.toHaveAttribute('data-typing');
+    expect(wrapper).not.toHaveAttribute('hidden');
+  });
+
+  it('typing: a field outside the shell (a dialog, a settings page) hides the tab bar too', () => {
+    const { container } = render(<><ComposedShell shell={phone({ phonePane: 'view' })} /><textarea aria-label="elsewhere" /></>);
+    const shell = container.firstElementChild as HTMLElement;
+    act(() => { screen.getByRole('textbox', { name: 'elsewhere' }).focus(); });
+    expect(shell).toHaveAttribute('data-typing', 'true');
+    expect(screen.queryByRole('navigation', { name: 'main' })).toBeNull();
+    act(() => { screen.getByRole('textbox', { name: 'elsewhere' }).blur(); });
+    expect(shell).not.toHaveAttribute('data-typing');
+  });
+
+  it('typing: a focused field removed from the page with no focusout (WebKit) brings the tab bar back', async () => {
+    const holder = document.createElement('div');
+    const field = document.createElement('input');
+    holder.append(field);
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+    document.body.append(holder);
+    const shell = container.firstElementChild as HTMLElement;
+    act(() => { field.focus(); });
+    expect(shell).toHaveAttribute('data-typing', 'true');
+    // WebKit fires no focusout when the focused element leaves the DOM; drop the event to stand in for it.
+    const swallow = (e: Event) => e.stopImmediatePropagation();
+    window.addEventListener('focusout', swallow, true);
+    await act(async () => { holder.remove(); await Promise.resolve(); });
+    window.removeEventListener('focusout', swallow, true);
+    expect(shell).not.toHaveAttribute('data-typing');
+    expect(screen.getByRole('navigation', { name: 'main' })).toBeInTheDocument();
+  });
+
+  it('covered: main, rail, sidebar, aside and call bar are inert; the tab bar and the ring are not', () => {
+    const ring = <section aria-label="incoming calls"><button type="button">answer</button></section>;
+    const { container } = render(<ComposedShell ring={ring} shell={phone({ phonePane: 'view', covered: true, aside: <p>pane</p>, asideLabel: 'members', asideOpen: true })} />);
+    expect(screen.getByRole('main')).toHaveAttribute('inert');
+    expect(screen.getByTestId('call-bar').closest('.d-app-shell__callbar')).toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__aside')).toHaveAttribute('inert');
+    expect(screen.getByTestId('tab-bar').closest('.d-app-shell__tabbar')).not.toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__ring')).not.toHaveAttribute('inert');
+  });
+
+  it('covered alone (no aside) makes main and the call bar inert, and leaves the tab bar live', () => {
+    render(<ComposedShell shell={phone({ phonePane: 'view', covered: true })} />);
+    expect(screen.getByRole('main')).toHaveAttribute('inert');
+    expect(screen.getByTestId('call-bar').closest('.d-app-shell__callbar')).toHaveAttribute('inert');
+    expect(screen.getByTestId('tab-bar').closest('.d-app-shell__tabbar')).not.toHaveAttribute('inert');
+  });
+
+  it('typing: moving focus from one field to another never shows the tab bar in between', () => {
+    render(<><ComposedShell shell={phone({ phonePane: 'view' })} /><input aria-label="other" /></>);
+    const wrapper = document.querySelector('.d-app-shell__tabbar') as HTMLElement;
+    const composer = screen.getByRole('textbox', { name: 'message #general' });
+    act(() => { composer.focus(); });
+    expect(wrapper).toHaveAttribute('hidden');
+    const seen: Array<string | null> = [];
+    const watch = new MutationObserver(() => seen.push(wrapper.getAttribute('hidden')));
+    watch.observe(wrapper, { attributes: true, attributeFilter: ['hidden'] });
+    act(() => { screen.getByRole('textbox', { name: 'other' }).focus(); });
+    watch.disconnect();
+    expect(seen).toEqual([]);
+    expect(wrapper).toHaveAttribute('hidden');
+  });
+
+  it('typing: a read-only or disabled field does not count', () => {
+    const { container } = render(<><ComposedShell shell={phone({ phonePane: 'view' })} /><textarea aria-label="ro" readOnly /><select aria-label="sel" disabled><option>a</option></select></>);
+    act(() => { screen.getByRole('textbox', { name: 'ro' }).focus(); });
+    expect(container.firstElementChild).not.toHaveAttribute('data-typing');
+  });
+
+  it('typing: a checkbox does not count', () => {
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'view', tabBar: <input type="checkbox" aria-label="pick" /> })} />);
+    act(() => { screen.getByRole('checkbox', { name: 'pick' }).focus(); });
+    expect(container.firstElementChild).not.toHaveAttribute('data-typing');
+  });
+
+  it('desktop has no tab bar wrapper and no data-typing', () => {
+    const { container } = render(<ComposedShell shell={{ tabBar: tabs }} />);
+    act(() => { screen.getByRole('textbox', { name: 'message #general' }).focus(); });
+    expect(container.querySelector('.d-app-shell__tabbar')).toBeNull();
+    expect(container.firstElementChild).not.toHaveAttribute('data-typing');
   });
 
   it('desktop ignores the phone slots', () => {

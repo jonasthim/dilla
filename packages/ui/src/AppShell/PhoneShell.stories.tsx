@@ -198,8 +198,15 @@ export const ServersList: Story = {
 };
 export const ChannelView: Story = {
   render: () => (
-    <Phone><AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer}>{log}</AppShell></Phone>
+    <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={header} composer={composer}>{log}</AppShell></Phone>
   ),
+};
+// web3.7.1: focusing the composer is typing, so the tab bar steps aside (the shell sets data-typing and hides it).
+export const ChannelViewTyping: Story = {
+  render: () => (
+    <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={header} composer={composer}>{log}</AppShell></Phone>
+  ),
+  play: ({ canvasElement }) => { canvasElement.querySelector('textarea')?.focus(); },
 };
 export const DmsList: Story = {
   render: () => <Phone><AppShell {...common} layout="phone" phonePane="list" rail={null} sidebar={dmChannels} tabBar={tabBar('dms')}>{null}</AppShell></Phone>,
@@ -226,13 +233,13 @@ export const CallBarOnList: Story = {
 const readableHeader = <ChannelHeader name="lfg" readable readableLabel="readable by dilla.thim.dev" phone={{ backLabel: 'back to channels', onBack: noop, menu }} />;
 export const ReadableChannelView: Story = {
   render: () => (
-    <Phone><AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={readableHeader} composer={composer}>{log}</AppShell></Phone>
+    <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={readableHeader} composer={composer}>{log}</AppShell></Phone>
   ),
 };
 // In a call on the view pane: the call bar is the bottom row and clears the home indicator.
 export const ChannelViewInCall: Story = {
   render: () => (
-    <Phone><AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer} callBar={callBar}>{log}</AppShell></Phone>
+    <Phone><AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={header} composer={composer} callBar={callBar}>{log}</AppShell></Phone>
   ),
 };
 // A ring shows above the list pane, whose main is hidden.
@@ -245,7 +252,7 @@ export const RingOnList: Story = {
 export const MembersSheet: Story = {
   render: () => (
     <Phone>
-      <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer}
+      <AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={header} composer={composer}
         aside={members} asideLabel="members" asideOpen onAsideClose={noop} asideCloseLabel="back">{log}</AppShell>
     </Phone>
   ),
@@ -267,7 +274,7 @@ const threadComposer = (
 export const ThreadSheet: Story = {
   render: () => (
     <Phone>
-      <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer}
+      <AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={header} composer={composer}
         aside={<ThreadPane title="Thread" closeLabel="close thread" onClose={noop} root={threadRoot} composer={threadComposer} phone>{threadReplies}</ThreadPane>}
         asideLabel="thread" asideOpen onAsideClose={noop}>{log}</AppShell>
     </Phone>
@@ -278,7 +285,7 @@ export const ThreadSheet: Story = {
 export const RingOverThreadSheet: Story = {
   render: () => (
     <Phone>
-      <AppShell {...common} layout="phone" phonePane="view" rail={rail} sidebar={serverChannels} header={header} composer={composer} ring={ring}
+      <AppShell {...common} layout="phone" phonePane="view" tabBar={tabBar('servers')} rail={rail} sidebar={serverChannels} header={header} composer={composer} ring={ring}
         aside={<ThreadPane title="Thread" closeLabel="close thread" onClose={noop} root={threadRoot} composer={threadComposer} phone>{threadReplies}</ThreadPane>}
         asideLabel="thread" asideOpen onAsideClose={noop}>{log}</AppShell>
     </Phone>

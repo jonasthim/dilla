@@ -135,6 +135,8 @@ export function parseArgs(argv) {
       out[flag.slice(2)] = n;
     } else if (flag === '--out') {
       out.outDir = path.resolve(process.cwd(), value);
+    } else if (flag === '--ui-out') {
+      out.uiOut = path.resolve(process.cwd(), value);
     } else {
       throw new Error(`unknown flag ${flag}`);
     }
@@ -888,6 +890,49 @@ async function main(argv) {
     await composer(mira, 'general').waitFor({ state: 'visible', timeout: WAIT });
     await settle(mira, { keepFocus: false });
     await shoot('phone-channel');
+    // web3.7.1 (opt in with --ui-out): the tab bar on a channel, hidden while typing, under Settings and under the members
+    // sheet, in the Mesh, light and high-contrast themes. Mira ends where she began: reading #general, nothing focused.
+    if (o.uiOut !== undefined) {
+      mkdirSync(o.uiOut, { recursive: true });
+      const ui = async (name, theme) => {
+        await mira.evaluate((th) => { document.documentElement.dataset.theme = th; }, theme);
+        await settle(mira, { keepFocus: name.includes('typing') });
+        await mira.screenshot({ path: path.join(o.uiOut, `${name}.${theme}.png`) });
+      };
+      const channelMenu = mira.getByRole('button', { name: t('nav.channel.menu'), exact: true });
+      for (const theme of ['mesh', 'light', 'high-contrast']) {
+        // Right after opening: the tab bar shows, nothing is focused and there is no keyboard.
+        await phoneBack.click();
+        await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
+        await mira.getByRole('button', { name: 'general', exact: true }).click();
+        await composer(mira, 'general').waitFor({ timeout: WAIT });
+        await ui('phone-channel-opened', theme);
+        await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
+        await ui('phone-channel-tabbar', theme);
+        await composer(mira, 'general').focus();
+        await phoneTabs.waitFor({ state: 'hidden', timeout: WAIT });
+        await ui('phone-channel-typing', theme);
+        await mira.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+        await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
+        await phoneTab('nav.tab.you').click();
+        await mira.locator('[data-settings-section="devices"]').click();
+        await mira.getByRole('dialog', { name: t('settings.title'), exact: true }).waitFor({ timeout: WAIT });
+        await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
+        await ui('phone-settings-tabbar', theme);
+        await phoneBack.click();
+        await phoneTab('nav.tab.servers').click();
+        await composer(mira, 'general').waitFor({ timeout: WAIT });
+        await channelMenu.click();
+        await mira.getByRole('menuitem', { name: t('members.toggle'), exact: true }).click();
+        const closeMembers = mira.getByRole('button', { name: t('members.close'), exact: true });
+        await closeMembers.waitFor({ timeout: WAIT });
+        await ui('phone-members-tabbar', theme);
+        await closeMembers.click();
+        await closeMembers.waitFor({ state: 'hidden', timeout: WAIT });
+      }
+      await mira.evaluate(() => { document.documentElement.dataset.theme = 'mesh'; });
+      await settle(mira, { keepFocus: false });
+    }
     await phoneBack.click();
     await phoneTabs.waitFor({ state: 'visible', timeout: WAIT });
     await settle(mira);

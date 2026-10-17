@@ -338,7 +338,11 @@ test('on a phone the thread is a full-screen sheet, the system back closes it an
     const box = await sheet.boundingBox();
     expect(box!.x, 'the sheet starts at the left edge').toBeLessThanOrEqual(1);
     expect(box!.width, 'the sheet fills the width').toBeGreaterThanOrEqual(388);
-    expect(box!.y + box!.height, 'the sheet reaches the bottom').toBeGreaterThanOrEqual(840);
+    // web3.7.1: the tab bar stays under the sheet, so the sheet ends where the bar starts.
+    const bar = await page.getByRole('navigation', { name: copy('nav.tabs.label'), exact: true }).boundingBox();
+    expect(bar, 'the tab bar stays under the sheet').not.toBeNull();
+    expect(Math.abs(box!.y + box!.height - bar!.y), 'the sheet ends at the top of the tab bar').toBeLessThanOrEqual(1);
+    expect(bar!.y + bar!.height, 'the tab bar reaches the bottom').toBeGreaterThanOrEqual(840);
     // The sheet is an AppShell overlay: it takes focus to its first control, the back button (flow 11 says the composer; see the report).
     await expect(sheet.getByRole('button', { name: copy('thread.close'), exact: true })).toBeFocused();
     const composer = await threadComposer(page).boundingBox();

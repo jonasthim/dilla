@@ -4,6 +4,7 @@ import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { SettingsFrame, type SettingsFrameProps } from './SettingsFrame.tsx';
 import { SettingsNav } from '../SettingsNav/SettingsNav.tsx';
 import { Dialog } from '../Dialog/Dialog.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { expectNoAxeViolations } from '../test/setup.ts';
 
 // L-COPY-02: settings.title, settings.close, settings.nav.*, devices.title, devices.refresh.
@@ -106,6 +107,77 @@ describe('SettingsFrame', () => {
     rerender(<SettingsFrame {...p} open={false} />);
     rerender(<SettingsFrame {...p} open />);
     expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toHaveFocus();
+  });
+
+  it('on desktop opens with showModal', () => {
+    const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
+    const plain = vi.spyOn(HTMLDialogElement.prototype, 'show');
+    render(<SettingsFrame {...props()} />);
+    expect(modal).toHaveBeenCalledTimes(1);
+    expect(plain).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  describe('inside the phone layout', () => {
+    const phone = (over: Partial<SettingsFrameProps> = {}) => render(<PhoneLayoutProvider value><SettingsFrame {...props(over)} /></PhoneLayoutProvider>);
+
+    it('opens non-modal (show, not showModal) and the title takes focus', () => {
+      const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
+      const plain = vi.spyOn(HTMLDialogElement.prototype, 'show');
+      phone();
+      expect(modal).not.toHaveBeenCalled();
+      expect(plain).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('dialog', { name: 'Settings' })).not.toHaveAttribute('aria-modal');
+      expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toHaveFocus();
+      vi.restoreAllMocks();
+    });
+
+    it('closes on Escape through its own key handler', async () => {
+      const user = userEvent.setup();
+      const p = props();
+      render(<PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider>);
+      await user.keyboard('{Escape}');
+      expect(p.onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes on Escape pressed outside the frame (focus on the tab bar), once', async () => {
+      const user = userEvent.setup();
+      const p = props();
+      render(<><PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider><button type="button">tab</button></>);
+      screen.getByRole('button', { name: 'tab' }).focus();
+      await user.keyboard('{Escape}');
+      expect(p.onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not close on an Escape a nested dialog handled', async () => {
+      const user = userEvent.setup();
+      const p = props();
+      render(<PhoneLayoutProvider value><SettingsFrame {...p}><Dialog open title="Remove this device?" onClose={vi.fn()}><p>x</p></Dialog></SettingsFrame></PhoneLayoutProvider>);
+      act(() => { screen.getByRole('dialog', { name: 'Remove this device?' }).focus(); });
+      await user.keyboard('{Escape}');
+      expect(p.onClose).not.toHaveBeenCalled();
+    });
+
+    it('stays open when a nested element handled Escape (preventDefault)', () => {
+      const p = props();
+      render(<PhoneLayoutProvider value><SettingsFrame {...p}><input aria-label="key capture" onKeyDown={e => e.preventDefault()} /></SettingsFrame></PhoneLayoutProvider>);
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'key capture' }), { key: 'Escape' });
+      expect(p.onClose).not.toHaveBeenCalled();
+    });
+
+    it('ignores an Escape that ends an input-method composition', () => {
+      const p = props();
+      render(<><PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider><button type="button">tab</button></>);
+      fireEvent.keyDown(screen.getByRole('button', { name: 'tab' }), { key: 'Escape', isComposing: true });
+      expect(p.onClose).not.toHaveBeenCalled();
+    });
+
+    it('an explicit modal prop wins', () => {
+      const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
+      phone({ modal: true });
+      expect(modal).toHaveBeenCalledTimes(1);
+      vi.restoreAllMocks();
+    });
   });
 
   it('has no serious axe violations', async () => {

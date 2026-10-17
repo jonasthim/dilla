@@ -3,6 +3,7 @@ import { act, fireEvent, screen, within } from '@testing-library/react';
 import { en } from '../../strings/en.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { ME } from '../../test/fixtures.ts';
+import { PHONE_QUERY } from '../../layout.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import {
   GEN, MOD, O1, O2, P1, P2, PEER, ROLE, file, image, ownRow, peerRow, renderConversation, reply, rowOf,
@@ -83,6 +84,19 @@ describe('the roving log (keyboard map, ruling 21)', () => {
     expect(rowOf(O1)).toHaveFocus();
     await user.keyboard('{Escape}');
     expect(composer()).toHaveFocus();
+  });
+  it('on a phone Escape on the row puts no script focus in the composer', async () => {
+    window.matchMedia = vi.fn((query: string) => ({
+      matches: query === PHONE_QUERY, media: query, addEventListener: () => undefined, removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { user } = renderConversation({ items: [ownRow(O1, '1', 'mine')] });
+      act(() => rowOf(O1).focus());
+      await user.keyboard('{Escape}');
+      expect(composer()).not.toHaveFocus();
+    } finally {
+      Reflect.deleteProperty(window, 'matchMedia');
+    }
   });
 });
 

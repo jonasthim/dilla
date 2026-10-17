@@ -200,14 +200,14 @@ describe('the thread list', () => {
 });
 
 describe('threads on a phone (a sheet)', () => {
-  it('opens full screen as a history entry, closes on the system back, keeps the tab bar hidden and returns focus to the root row', async () => {
+  it('opens full screen as a history entry, closes on the system back, keeps the tab bar and returns focus to the root row', async () => {
     const { fake, user } = setup({ phone: true });
     await user.click(await screen.findByRole('button', { name: '2 replies' }));
     const sheet = await screen.findByRole('complementary', { name: en['thread.title'] });
     expect(sheet.querySelector('.d-thread-pane')).toHaveAttribute('data-phone', 'true');
     expect(window.history.state).toMatchObject({ phoneSheet: 'thread' });
     expect(within(sheet).getAllByRole('button', { name: en['thread.close'] })).toHaveLength(1);
-    expect(screen.queryByRole('navigation', { name: t('nav.tabs.label') })).toBeNull();
+    expect(screen.getByRole('navigation', { name: t('nav.tabs.label') })).toBeInTheDocument();
     act(() => { window.history.back(); });
     await waitFor(() => expect(threadPane()).toBeNull());
     expect(fake.callsOf('closeThread')).toHaveLength(1);

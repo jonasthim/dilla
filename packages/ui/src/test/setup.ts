@@ -10,6 +10,9 @@ if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.sho
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); this.dispatchEvent(new Event('close')); };
 }
+if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.show) {
+  HTMLDialogElement.prototype.show = function () { this.setAttribute('open', ''); };
+}
 
 export async function expectNoAxeViolations(container: Element) {
   const results = await axe(container, { rules: { 'color-contrast': { enabled: false } } }); // jsdom has no layout; contrast is guarded by design-tokens

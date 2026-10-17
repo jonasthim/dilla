@@ -84,6 +84,15 @@ const back = (page: Page) => page.getByRole('button', { name: copy('nav.back'), 
 const viewTitle = (page: Page) => page.locator('.d-app-shell__main .d-phone-header__title');
 const listHeading = (page: Page, key: string) => page.getByRole('heading', { name: copy(key), exact: true });
 
+/** The element ends at or above the top of the tab bar, so nothing sits under it. */
+async function expectAbove(el: Locator, bar: Locator, what: string): Promise<void> {
+  const a = await el.boundingBox();
+  const b = await bar.boundingBox();
+  expect(a, `${what} has a box`).not.toBeNull();
+  expect(b, 'the tab bar has a box').not.toBeNull();
+  expect(a!.y + a!.height, `${what} ends above the tab bar`).toBeLessThanOrEqual(b!.y + 1);
+}
+
 async function expectTapTargets(controls: Locator, state: string): Promise<void> {
   const count = await controls.count();
   expect(count, `${state} has controls to measure`).toBeGreaterThan(0);
@@ -141,9 +150,11 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
       await dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true }).press('Enter');
       await expect(dialog).toBeHidden({ timeout: WAIT });
-      // A new server opens its #general as a view (no tab bar); back from it is the server's list.
+      // A new server opens its #general as a view (the tab bar stays, and nothing focuses the composer: script focus does not
+      // open a phone's keyboard); back from it is the server's list.
       await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
-      await expect(tabBar(page)).toBeHidden();
+      await expect(tabBar(page)).toBeVisible();
+      await expect(page.locator('.d-composer textarea')).not.toBeFocused();
       await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(tabBar(page).getByRole('link')).toHaveCount(4);
@@ -153,12 +164,12 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       listPath = new URL(page.url()).pathname;
     });
 
-    // 3. Tap #general: a pushed view, focus on the title, no tab bar, a composer that does not zoom.
+    // 3. Tap #general: a pushed view, focus on the title, the tab bar under it, a composer that does not zoom and hides the bar.
     await test.step('open #general', async () => {
       await channelRow(page, 'general').tap();
       await expect(back(page)).toBeVisible({ timeout: WAIT });
       await expect(viewTitle(page)).toBeFocused();
-      await expect(tabBar(page)).toBeHidden();
+      await expect(tabBar(page)).toBeVisible();
       channelPath = new URL(page.url()).pathname;
       await expectComposerReady(page, 'general');
       const composer = composerBox(page, 'general');
@@ -166,8 +177,18 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await composer.tap();
       await expect(composer).toBeFocused();
       expect(await scale(page), 'visualViewport.scale after tapping into the composer').toBe(1);
+      // Typing: the tab bar steps aside, and the composer ends inside the viewport with nothing between it and the keyboard.
+      await expect(tabBar(page)).toBeHidden();
+      await expect(page.locator('.d-app-shell')).toHaveAttribute('data-typing', 'true');
+      const typing = await composer.boundingBox();
+      expect(typing!.y + typing!.height, 'the composer ends inside the viewport while typing').toBeLessThanOrEqual(await page.evaluate(() => window.visualViewport?.height ?? innerHeight));
       await sendText(page, 'general', 'hej');
       await expect(messageRow(page, 'general', 'hej')).toBeVisible();
+      // Tapping the message log blurs the composer: the tab bar comes back and the scale is still 1.
+      await page.getByRole('log').tap();
+      await expect(composer).not.toBeFocused();
+      await expect(tabBar(page)).toBeVisible();
+      expect(await scale(page), 'visualViewport.scale after leaving the composer').toBe(1);
       await expectAccessible(page, 'the channel view');
       await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
     });
@@ -190,6 +211,19 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeVisible({ timeout: WAIT });
       await page.goBack();
       await expect(page.getByRole('complementary', { name: copy('thread.title') })).toBeHidden({ timeout: WAIT });
+    });
+
+    // The tab bar is the way out of a view: the current tab goes to its list, and the tabs keep their memory.
+    await test.step('tapping the current tab in a channel view shows the channel list', async () => {
+      await tab(page, 'nav.tab.servers').tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+      await expect(page).toHaveURL(new RegExp(`${listPath}$`));
+      await tab(page, 'nav.tab.dms').tap();
+      await expect(tab(page, 'nav.tab.dms')).toHaveAttribute('aria-current', 'page');
+      await tab(page, 'nav.tab.servers').tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+      await channelRow(page, 'general').tap();
+      await expect(back(page)).toBeVisible({ timeout: WAIT });
     });
 
     // 4. Back: the list, with #general's row focused.
@@ -245,6 +279,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await page.getByRole('menuitem', { name: copy('members.toggle'), exact: true }).click();
       const close = page.getByRole('button', { name: copy('members.close'), exact: true });
       await expect(close).toBeVisible({ timeout: WAIT });
+      await expectAbove(page.getByRole('complementary', { name: /members/ }), tabBar(page), 'the members sheet');
       await page.goBack();
       await expect(close).toBeHidden({ timeout: WAIT });
       await expect(menu).toBeFocused();
@@ -287,9 +322,25 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await row.tap();
       await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
       await expect(back(page)).toBeVisible();
+      await expect(tabBar(page)).toBeVisible();
+      await expectAbove(page.getByRole('dialog', { name: copy('settings.title'), exact: true }), tabBar(page), 'Settings');
       await back(page).click();
       await expect(tabBar(page)).toBeVisible({ timeout: WAIT });
       await expect(row).toBeFocused();
+    });
+
+    // Server settings is a page under the tabs too, and Escape closes it.
+    await test.step('server settings keeps the tab bar and closes on Escape', async () => {
+      await tab(page, 'nav.tab.servers').tap();
+      await page.getByRole('button', { name: copy('nav.server.menu'), exact: true }).click();
+      await page.getByRole('menuitem', { name: copy('admin.open'), exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+      await expect(dialog).toBeVisible({ timeout: WAIT });
+      await expect(tabBar(page)).toBeVisible();
+      await expectAbove(dialog, tabBar(page), 'server settings');
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden({ timeout: WAIT });
+      await expect(tabBar(page)).toBeVisible();
     });
 
     // 6. The link banner follows the network.
