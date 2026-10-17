@@ -24,11 +24,11 @@ type PostPolicy struct {
 // Check decides one upload of class by userID into g at now (unix seconds). The delivery service
 // calls it under the group lock, before the store transaction, and returns its error unchanged.
 //
-// A nil class is a legacy two-element upload (web3.7 only, R28): the host cannot tell its type, so
-// it is checked for send_messages whatever it carries, and never slowed. A group whose channel is
-// gone is refused for every class (fail closed). The wait is read from the user's durable mark,
-// which Upload raises on every accepted class-0 post, so a pruned post still holds it.
-func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, class *uint8, now int64) error {
+// Every upload names its class: the route refuses the two-element legacy body web3.7 accepted
+// (web3.8 S1). A class other than 1 is decided as a post. A group whose channel is gone is refused
+// for every class (fail closed). The wait is read from the user's durable mark, which Upload
+// raises on every accepted class-0 post, so a pruned post still holds it.
+func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error {
 	if g.Kind != GroupText || g.CommunityID == nil {
 		return nil
 	}
@@ -45,14 +45,11 @@ func (p PostPolicy) Check(ctx context.Context, g store.GroupRow, userID id.ID, c
 	if err != nil {
 		return err
 	}
-	if class != nil && *class == 1 {
+	if class == 1 {
 		return nil
 	}
 	if !bits.Has(PermSendMessages) {
 		return server.Errorf(server.CodeForbidden, "missing permission")
-	}
-	if class == nil {
-		return nil // a legacy upload is never slowed (R28)
 	}
 	if ch.SlowmodeSeconds == 0 || bits.Has(PermBypassSlowmode) {
 		return nil

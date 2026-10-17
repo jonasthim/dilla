@@ -239,9 +239,9 @@ type Options struct {
 // SB1, protocol/02 § Upload class). Upload calls it under the group lock, after the current-leaf
 // check and before the store transaction, and returns its error unchanged.
 type PostPolicy interface {
-	// Check decides an upload of class (0 a post, 1 anything else, nil a legacy two-element upload) by userID
-	// into g, under the group lock. A nil class is checked for send_messages and never slowed (R28).
-	Check(ctx context.Context, g store.GroupRow, userID id.ID, class *uint8, now int64) error
+	// Check decides an upload of class (0 a post, 1 anything else) by userID into g, under the
+	// group lock. Every upload names its class (web3.8 S1).
+	Check(ctx context.Context, g store.GroupRow, userID id.ID, class uint8, now int64) error
 }
 
 type DS struct {

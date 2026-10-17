@@ -251,8 +251,9 @@ func (h *cliHarness) OpenGatewayConn(t *testing.T, user id.ID) *gatewayConn {
 	if op := readOp(); op != 0 {
 		t.Fatalf("first frame op %d, want hello (0)", op)
 	}
+	// The wire version the instance offers (web3.8 S1).
 	identify, err := cborx.Marshal([]any{uint64(1), uint64(1), nil,
-		[]any{"", uint64(1), uint64(1), uint64(1), uint64(0)}})
+		[]any{"", uint64(dillad.WireVersion), uint64(1), uint64(1), uint64(0)}})
 	if err != nil {
 		t.Fatalf("marshal identify: %v", err)
 	}

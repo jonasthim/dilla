@@ -582,7 +582,7 @@ func TestAHealThatMovesTheEpochReissuesAnOutstandingRemove(t *testing.T) {
 		t.Fatalf("re-issued row %+v: want a live instance Remove of leaf 1 recording %s with action %s",
 			r, target.String()[:8], action)
 	}
-	_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch()+1, h.message(t, g, g.Epoch()+1), nil)
+	_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch()+1, h.message(t, g, g.Epoch()+1), 0)
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_REQUIRED" {
 		t.Fatalf("a send after the heal: got %v, want 425 E_COMMIT_REQUIRED", err)

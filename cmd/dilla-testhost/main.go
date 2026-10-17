@@ -38,6 +38,8 @@ type options struct {
 	webauthnOrigin                                    string
 	productionACL                                     bool
 	sfu                                               sfuOptions
+	// wire is the one wire version the hello offers (-wire, web3.8 S1).
+	wire uint64
 }
 
 func parseFlags(args []string) (options, error) {
@@ -57,6 +59,7 @@ func parseFlags(args []string) (options, error) {
 	webRoot := fs.String("web-root", "", "a built web client directory (with its dilla-manifest.json) served at the public listener's origin instead of the embedded placeholder")
 	productionACL := fs.Bool("production-acl", false, "build the instance with production's ACL and channel seams (api.ResolverACL, api.StructureChannels) instead of the scenario harness's")
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
+	wire := fs.Uint64("wire", dillad.WireVersion, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only)")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -77,6 +80,7 @@ func parseFlags(args []string) (options, error) {
 	}
 	return options{public: *public, control: *control, dataDir: *dataDir, core: *core,
 		logLevel: *logLevel, webRoot: root, productionACL: *productionACL, webauthnOrigin: *webauthnOrigin,
+		wire: *wire,
 		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
@@ -96,7 +100,7 @@ func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostO
 		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
 		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1, SFUDepartureTimeout: o.sfu.departure,
 		ScrapeToken: scrapeToken, WebRoot: o.webRoot, ProductionACL: o.productionACL,
-		WebAuthnOrigin: o.webauthnOrigin,
+		WebAuthnOrigin: o.webauthnOrigin, WireVersions: []uint64{o.wire},
 	}
 	// A browser test (a web root) that calls (an SFU) reaches LiveKit through this host's own /rtc
 	// proxy over plain ws://: the instance domain's wss:// URL resolves to nothing on loopback.

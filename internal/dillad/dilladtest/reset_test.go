@@ -17,6 +17,7 @@ import (
 
 	"github.com/jonasthim/dilla/internal/auth"
 	"github.com/jonasthim/dilla/internal/cborx"
+	"github.com/jonasthim/dilla/internal/dillad"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/store"
 )
@@ -175,7 +176,8 @@ func identify(t *testing.T, base, token string) (*websocket.Conn, uint64, error)
 	if op, err := readOp(); err != nil || op != 0 {
 		t.Fatalf("first frame op %d (%v), want hello (0)", op, err)
 	}
-	frame, err := cborx.Marshal([]any{uint64(1), uint64(1), nil, []any{"", uint64(1), uint64(1), uint64(1), uint64(0)}})
+	// The wire version the instance offers (web3.8 S1).
+	frame, err := cborx.Marshal([]any{uint64(1), uint64(1), nil, []any{"", uint64(dillad.WireVersion), uint64(1), uint64(1), uint64(0)}})
 	if err != nil {
 		t.Fatalf("marshal identify: %v", err)
 	}

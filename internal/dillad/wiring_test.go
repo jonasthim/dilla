@@ -317,11 +317,12 @@ func readFrame(t *testing.T, ctx context.Context, c *websocket.Conn) (uint64, []
 }
 
 // identify sends op 1 with the credential left to the upgrade, which is the path both the
-// Authorization header and the ticket take.
+// Authorization header and the ticket take. It picks the wire version the instance offers
+// (web3.8 S1: dillad.WireVersion, 2).
 func identify(t *testing.T, ctx context.Context, c *websocket.Conn) {
 	t.Helper()
 	b, err := cborx.Marshal([]any{uint64(1), uint64(1), nil,
-		[]any{"", uint64(1), uint64(1), uint64(1), uint64(0)}})
+		[]any{"", uint64(dillad.WireVersion), uint64(1), uint64(1), uint64(0)}})
 	if err != nil {
 		t.Fatalf("marshal identify: %v", err)
 	}

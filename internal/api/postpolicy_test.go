@@ -176,7 +176,7 @@ func (f *policyFixture) post(g store.GroupRow, device id.ID, created int64, clas
 	}
 }
 
-func (f *policyFixture) check(g store.GroupRow, class *uint8, now int64) error {
+func (f *policyFixture) check(g store.GroupRow, class uint8, now int64) error {
 	return api.PostPolicy{Repo: f.repo, Resolver: api.NewResolver(f.repo)}.Check(context.Background(), g, f.user, class, now)
 }
 
@@ -213,9 +213,9 @@ func TestAPostWithoutSendIsForbidden(t *testing.T) {
 	for engine, repo := range policyEngines(t) {
 		t.Run(engine, func(t *testing.T) {
 			f := newPolicyFixture(t, repo, api.PermViewChannel, 0)
-			wantPolicyRefusal(t, "no send, class 0", f.check(f.group, classOf(0), policyT0), http.StatusForbidden, server.CodeForbidden)
+			wantPolicyRefusal(t, "no send, class 0", f.check(f.group, 0, policyT0), http.StatusForbidden, server.CodeForbidden)
 			f.grant(api.PermSendMessages)
-			wantPolicyNil(t, "a role with send, class 0", f.check(f.group, classOf(0), policyT0))
+			wantPolicyNil(t, "a role with send, class 0", f.check(f.group, 0, policyT0))
 		})
 	}
 }
@@ -224,7 +224,7 @@ func TestAFoldWithoutSendIsAccepted(t *testing.T) {
 	for engine, repo := range policyEngines(t) {
 		t.Run(engine, func(t *testing.T) {
 			f := newPolicyFixture(t, repo, api.PermViewChannel, 0)
-			wantPolicyNil(t, "no send, class 1", f.check(f.group, classOf(1), policyT0))
+			wantPolicyNil(t, "no send, class 1", f.check(f.group, 1, policyT0))
 		})
 	}
 }
@@ -234,8 +234,8 @@ func TestSlowModeRefusesTheSecondPostWithItsWait(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			f := newPolicyFixture(t, repo, viewSend, 10)
 			f.post(f.group, f.phone, policyT0, classOf(0))
-			wantPolicySlowed(t, "class 0 at +5", f.check(f.group, classOf(0), policyT0+5))
-			wantPolicyNil(t, "class 0 at +10", f.check(f.group, classOf(0), policyT0+10))
+			wantPolicySlowed(t, "class 0 at +5", f.check(f.group, 0, policyT0+5))
+			wantPolicyNil(t, "class 0 at +10", f.check(f.group, 0, policyT0+10))
 		})
 	}
 }
@@ -246,7 +246,7 @@ func TestBypassSlowmodeSkipsTheWait(t *testing.T) {
 			f := newPolicyFixture(t, repo, viewSend, 10)
 			f.post(f.group, f.phone, policyT0, classOf(0))
 			f.grant(api.PermBypassSlowmode)
-			wantPolicyNil(t, "bypass, class 0 at +5", f.check(f.group, classOf(0), policyT0+5))
+			wantPolicyNil(t, "bypass, class 0 at +5", f.check(f.group, 0, policyT0+5))
 		})
 	}
 }
@@ -256,7 +256,7 @@ func TestFoldsAreNotSlowed(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			f := newPolicyFixture(t, repo, viewSend, 10)
 			f.post(f.group, f.phone, policyT0, classOf(0))
-			wantPolicyNil(t, "class 1 at +5", f.check(f.group, classOf(1), policyT0+5))
+			wantPolicyNil(t, "class 1 at +5", f.check(f.group, 1, policyT0+5))
 		})
 	}
 }
@@ -267,8 +267,8 @@ func TestSlowModeCountsEveryDeviceOfTheUser(t *testing.T) {
 			f := newPolicyFixture(t, repo, viewSend, 10)
 			f.post(f.group, f.laptop, policyT0, classOf(0))
 			// The next upload comes from the phone: the session's device does not matter, the user does.
-			wantPolicySlowed(t, "class 0 at +5 after the other device's post", f.check(f.group, classOf(0), policyT0+5))
-			wantPolicyNil(t, "class 0 at +10", f.check(f.group, classOf(0), policyT0+10))
+			wantPolicySlowed(t, "class 0 at +5 after the other device's post", f.check(f.group, 0, policyT0+5))
+			wantPolicyNil(t, "class 0 at +10", f.check(f.group, 0, policyT0+10))
 		})
 	}
 }
@@ -279,7 +279,7 @@ func TestDirectMessagesAreUnchecked(t *testing.T) {
 			f := newPolicyFixture(t, repo, api.PermViewChannel, 10)
 			dm := f.newGroup(0, nil)
 			f.post(dm, f.phone, policyT0-1, classOf(0))
-			wantPolicyNil(t, "a DM group, class 0, a post 1 s earlier", f.check(dm, classOf(0), policyT0))
+			wantPolicyNil(t, "a DM group, class 0, a post 1 s earlier", f.check(dm, 0, policyT0))
 		})
 	}
 }
@@ -290,7 +290,7 @@ func TestACallGroupIsUnchecked(t *testing.T) {
 			f := newPolicyFixture(t, repo, api.PermViewChannel, 10)
 			cid := f.cid
 			call := f.newGroup(1, &cid)
-			wantPolicyNil(t, "a call group, no send, class 0", f.check(call, classOf(0), policyT0))
+			wantPolicyNil(t, "a call group, no send, class 0", f.check(call, 0, policyT0))
 		})
 	}
 }
@@ -301,18 +301,20 @@ func TestAnAdministratorDoesNotWait(t *testing.T) {
 			f := newPolicyFixture(t, repo, api.PermViewChannel, 10)
 			f.grant(api.PermAdministrator)
 			f.post(f.group, f.phone, policyT0, classOf(0))
-			wantPolicyNil(t, "an administrator, class 0 at +5", f.check(f.group, classOf(0), policyT0+5))
+			wantPolicyNil(t, "an administrator, class 0 at +5", f.check(f.group, 0, policyT0+5))
 		})
 	}
 }
 
-func TestALegacyUploadNeedsSend(t *testing.T) {
+// web3.8 S1: the legacy row of web3.7 (a nil class) is gone; every upload names its class, and a
+// class-0 upload is the one checked for send_messages. The control keeps the same inputs.
+func TestAClassZeroUploadNeedsSend(t *testing.T) {
 	for engine, repo := range policyEngines(t) {
 		t.Run(engine, func(t *testing.T) {
 			f := newPolicyFixture(t, repo, api.PermViewChannel, 0)
-			wantPolicyRefusal(t, "no send, a legacy upload", f.check(f.group, nil, policyT0), http.StatusForbidden, server.CodeForbidden)
+			wantPolicyRefusal(t, "no send, class 0", f.check(f.group, 0, policyT0), http.StatusForbidden, server.CodeForbidden)
 			f.grant(api.PermSendMessages)
-			wantPolicyNil(t, "a role with send, a legacy upload", f.check(f.group, nil, policyT0))
+			wantPolicyNil(t, "a role with send, class 0", f.check(f.group, 0, policyT0))
 		})
 	}
 }
@@ -328,19 +330,21 @@ func (r *slowReadRepo) LastClassZeroUploadAt(ctx context.Context, channelID, use
 	return r.Repository.LastClassZeroUploadAt(ctx, channelID, userID)
 }
 
-func TestALegacyUploadIsNotSlowed(t *testing.T) {
+// web3.8 S1: the legacy row of web3.7 becomes class 1, which never reads the slow-mode mark. The
+// control keeps the same inputs.
+func TestAClassOneUploadIsNotSlowed(t *testing.T) {
 	for engine, repo := range policyEngines(t) {
 		t.Run(engine, func(t *testing.T) {
 			f := newPolicyFixture(t, repo, viewSend, 10)
 			f.post(f.group, f.phone, policyT0, classOf(0))
 			rec := &slowReadRepo{Repository: repo}
 			p := api.PostPolicy{Repo: rec, Resolver: api.NewResolver(repo)}
-			wantPolicyNil(t, "a legacy upload at +5", p.Check(context.Background(), f.group, f.user, nil, policyT0+5))
+			wantPolicyNil(t, "class 1 at +5", p.Check(context.Background(), f.group, f.user, 1, policyT0+5))
 			if n := rec.reads.Load(); n != 0 {
-				t.Fatalf("a legacy upload read LastClassZeroUploadAt %d times, want 0", n)
+				t.Fatalf("a class-1 upload read LastClassZeroUploadAt %d times, want 0", n)
 			}
 			// Control: the same wrapper sees the read of a class-0 upload, which is slowed.
-			wantPolicySlowed(t, "class 0 at +5", p.Check(context.Background(), f.group, f.user, classOf(0), policyT0+5))
+			wantPolicySlowed(t, "class 0 at +5", p.Check(context.Background(), f.group, f.user, 0, policyT0+5))
 			if n := rec.reads.Load(); n != 1 {
 				t.Fatalf("a class-0 upload read LastClassZeroUploadAt %d times, want 1", n)
 			}
@@ -355,14 +359,14 @@ func TestADeletedChannelsGroupIsRefused(t *testing.T) {
 	for engine, repo := range policyEngines(t) {
 		t.Run(engine, func(t *testing.T) {
 			f := newPolicyFixture(t, repo, viewSend, 0)
-			wantPolicyNil(t, "control: class 0 before the delete", f.check(f.group, classOf(0), policyT0))
+			wantPolicyNil(t, "control: class 0 before the delete", f.check(f.group, 0, policyT0))
 			if err := repo.DeleteChannel(context.Background(), f.channel.ID, policyT0); err != nil {
 				t.Fatalf("DeleteChannel: %v", err)
 			}
 			for _, c := range []struct {
 				name  string
-				class *uint8
-			}{{"class 0", classOf(0)}, {"class 1", classOf(1)}, {"a legacy upload", nil}} {
+				class uint8
+			}{{"class 0", 0}, {"class 1", 1}} {
 				wantPolicyRefusal(t, c.name+" into a deleted channel's group", f.check(f.group, c.class, policyT0),
 					http.StatusForbidden, server.CodeForbidden)
 			}
@@ -381,10 +385,10 @@ func TestAPrunedPostKeepsItsSlowModeMark(t *testing.T) {
 			if err != nil || n != 1 {
 				t.Fatalf("PruneAppMessages = %d, %v; want the post pruned", n, err)
 			}
-			if err := f.check(f.group, classOf(0), policyT0+60); err == nil {
+			if err := f.check(f.group, 0, policyT0+60); err == nil {
 				t.Fatal("after the prune a post 60 s into a 3600 s slow mode is admitted")
 			}
-			wantPolicyNil(t, "control: at the end of the window", f.check(f.group, classOf(0), policyT0+3600))
+			wantPolicyNil(t, "control: at the end of the window", f.check(f.group, 0, policyT0+3600))
 		})
 	}
 }

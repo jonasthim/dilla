@@ -762,7 +762,7 @@ impl TestClient {
         body: &str,
     ) -> Result<MsgId, TestkitError> {
         let (epoch, message, msg_id) = self.seal(group_id, body)?;
-        ds.post_message_from(group_id, epoch, message, Some(0))?;
+        ds.post_message_from(group_id, epoch, message, 0)?;
         Ok(msg_id)
     }
 
@@ -774,7 +774,7 @@ impl TestClient {
         body: &str,
     ) -> Result<u64, TestkitError> {
         let (epoch, message, _) = self.seal(group_id, body)?;
-        Ok(ds.post_message_from(group_id, epoch, message, Some(0))?.seq)
+        Ok(ds.post_message_from(group_id, epoch, message, 0)?.seq)
     }
 
     /// Invariant 8's malformed upload: a real message of this group whose `authenticated_data` —
@@ -792,7 +792,7 @@ impl TestClient {
             group_id,
             epoch,
             with_authenticated_data_len(&message, len)?,
-            Some(0),
+            0,
         )?;
         Ok(())
     }
@@ -811,8 +811,7 @@ impl TestClient {
         // The upload class (web3.7 SB1): 0 for a post, 1 for every other envelope type.
         let class = if kind == EnvelopeType::Message { 0 } else { 1 };
         Ok((
-            ds.post_message_from(group_id, epoch, message, Some(class))?
-                .seq,
+            ds.post_message_from(group_id, epoch, message, class)?.seq,
             msg_id,
         ))
     }
@@ -835,7 +834,7 @@ impl TestClient {
             Vec::new(),
         )?;
         Ok((
-            ds.post_message_from(group_id, epoch, message, Some(0))?.seq,
+            ds.post_message_from(group_id, epoch, message, 0)?.seq,
             msg_id,
         ))
     }
