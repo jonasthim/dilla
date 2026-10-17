@@ -57,6 +57,7 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
   private fallingBack = false;
   private restarting = 0;
   private pendingFallback: ProcessorStatus['reason'] | undefined;
+  private destroying?: Promise<void>;
   constructor(private readonly options: MicrophoneOptions) {
     this.allowed = options.allowed ?? false; this.mode = options.mode ?? 'vad';
     this.status = { requested: options.preference, effective: 'initializing', reason: null, browserNoise: 'unknown', vad: 'unavailable' };
@@ -84,6 +85,7 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
   }
   private releaseReplacement(): void { for (const track of this.replacement?.getTracks() ?? []) track.stop(); this.replacement=undefined; }
   async init(opts: AudioProcessorOptions): Promise<void> {
+    this.destroying = undefined;
     const generation = ++this.generation; this.track = opts.track;
     let effective: 'deepfilter' | 'rnnoise' = 'rnnoise';
     let reason: ProcessorStatus['reason'] = this.options.preference === 'automatic' ? 'not-qualified' : null;
@@ -118,7 +120,9 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
       if (capture.track !== opts.track) await inner.restart({...opts,track:capture.track});
       if (generation !== this.generation) return;
       if (this.options.preference !== 'off' && (browserNoise === 'on' || browserNoise === 'unknown')) {
-        await inner.destroy(); this.inner = undefined; this.processedTrack = this.fallbackTrack = opts.track.clone();
+        await inner.destroy();
+        if (generation !== this.generation) return;
+        this.inner = undefined; this.processedTrack = this.fallbackTrack = opts.track.clone();
         this.report({ effective: 'browser', reason: 'browser-refused', browserNoise: await setBrowserSuppression(opts.track, true), vad: 'unavailable' });
       } else {
         this.processedTrack = inner.processedTrack;
@@ -170,6 +174,7 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
     }
   }
   async restart(opts: AudioProcessorOptions): Promise<void> {
+    if (this.destroying) return this.destroying;
     const generation = ++this.generation;
     this.restarting++;
     try {
@@ -200,8 +205,12 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
   setPttActive(active: boolean): void { this.ptt = active; this.inner?.setPttActive(active); this.setCaptureAllowed(this.allowed); }
   setMode(mode: GateMode): void { this.mode = mode; this.inner?.setMode?.(mode); this.setCaptureAllowed(this.allowed); }
   flush(): void { this.inner?.flush?.(); }
-  async destroy(): Promise<void> {
+  destroy(): Promise<void> {
+    if (this.destroying) return this.destroying;
     ++this.generation; this.pendingFallback = undefined; this.setCaptureAllowed(false); this.releaseReplacement();
-    await this.inner?.destroy(); this.fallbackTrack?.stop(); this.fallbackTrack = undefined; this.inner = undefined; this.track = undefined; this.processedTrack = undefined;
+    const inner = this.inner;
+    this.fallbackTrack?.stop(); this.fallbackTrack = undefined; this.inner = undefined; this.track = undefined; this.processedTrack = undefined;
+    this.destroying = Promise.resolve().then(() => inner?.destroy());
+    return this.destroying;
   }
 }

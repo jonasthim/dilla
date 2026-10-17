@@ -5,6 +5,52 @@ function input() {
   let noise=true;
   return {enabled:true, clone:()=>({enabled:true,stop(){}}), getSettings:()=>({noiseSuppression:noise}), getConstraints:()=>({echoCancellation:true,autoGainControl:true}), applyConstraints:vi.fn(async (c:MediaTrackConstraints)=>{noise=c.noiseSuppression===true;})} as unknown as MediaStreamTrack;
 }
+it('shares teardown when the application and LiveKit stop the same processor', async () => {
+  const track = input();
+  let finish!: () => void;
+  const closing = new Promise<void>(resolve => { finish = resolve; });
+  const inner = { name: 'test', processedTrack: input(), init: async () => {}, restart: async () => {}, destroy: vi.fn(() => closing), setPttActive: vi.fn(), setCaptureAllowed: vi.fn() };
+  const p = new DillaMicrophoneProcessor({ preference: 'lightweight', allowed: true, createLightweight: () => inner });
+  await p.init({track, kind: Track.Kind.Audio} as AudioProcessorOptions);
+  const first = p.destroy(), second = p.destroy();
+  expect(track.enabled).toBe(false);
+  expect(inner.processedTrack.enabled).toBe(false);
+  finish();
+  await Promise.all([first, second]);
+  expect(inner.destroy).toHaveBeenCalledTimes(1);
+  expect(p.processedTrack).toBeUndefined();
+});
+it('ignores a late device restart after teardown without opening a fallback capture', async () => {
+  const inner = {name: 'test', processedTrack: input(), init: async () => {}, restart: vi.fn(async () => {}), destroy: async () => {}, setPttActive: () => {}};
+  const p = new DillaMicrophoneProcessor({preference: 'lightweight', createLightweight: () => inner});
+  await p.init({track: input(), kind: Track.Kind.Audio} as AudioProcessorOptions);
+  await p.destroy();
+  const late = input();
+  late.clone = vi.fn(late.clone);
+  await p.restart({track: late, kind: Track.Kind.Audio} as AudioProcessorOptions);
+  await p.destroy();
+  expect(late.applyConstraints).not.toHaveBeenCalled();
+  expect(late.clone).not.toHaveBeenCalled();
+  expect(inner.restart).not.toHaveBeenCalled();
+  expect(p.processedTrack).toBeUndefined();
+});
+it('does not create browser fallback after teardown interrupts a refused-constraint transition', async () => {
+  const track = input();
+  track.applyConstraints = async () => {};
+  track.clone = vi.fn(track.clone);
+  let finish!: () => void;
+  const closing = new Promise<void>(resolve => { finish = resolve; });
+  const inner = {name: 'test', processedTrack: input(), init: async () => {}, restart: async () => {}, destroy: vi.fn(() => closing), setPttActive: () => {}};
+  const p = new DillaMicrophoneProcessor({preference: 'lightweight', createLightweight: () => inner});
+  const init = p.init({track, kind: Track.Kind.Audio} as AudioProcessorOptions);
+  await vi.waitFor(() => expect(inner.destroy).toHaveBeenCalledTimes(1));
+  const destroyed = p.destroy();
+  finish();
+  await Promise.all([init, destroyed]);
+  await p.destroy();
+  expect(track.clone).not.toHaveBeenCalled();
+  expect(p.processedTrack).toBeUndefined();
+});
 it('preserves Off and keeps legacy On on lightweight until qualification', () => {
   expect(noisePreference('off')).toBe('off'); expect(noisePreference('on')).toBe('lightweight'); expect(noisePreference(undefined)).toBe('lightweight'); expect(noisePreference('automatic')).toBe('automatic');
 });

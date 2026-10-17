@@ -49,6 +49,8 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   readonly name = 'dilla-rnnoise' as const;
   processedTrack?: MediaStreamTrack;
   private ctx?: AudioContext;
+  private destroying?: Promise<void>;
+  private readonly closing = new WeakMap<AudioContext, Promise<void>>();
   private allowed: boolean;
   private mode: GateMode;
   private generation = 0;
@@ -63,6 +65,7 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   constructor(private readonly opts: RnnoiseProcessorOptions = {}) { this.allowed = opts.allowed ?? true; this.mode = opts.mode ?? 'open'; }
 
   async init(opts: AudioProcessorOptions): Promise<void> {
+    this.destroying = undefined;
     this.lastProbe = null;
     const generation = ++this.generation;
     const current = () => { if (generation !== this.generation) throw new Error('E_AUDIO_CANCELLED'); };
@@ -111,28 +114,42 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
       this.node?.port.postMessage({ kind: 'destroy' });
       this.source?.disconnect();
       this.node?.disconnect();
-      await bounded(ctx.close(), 'close').catch(() => undefined);
-      this.ctx = undefined;
+      await bounded(this.closeContext(ctx), 'close').catch(() => undefined);
       throw err;
     }
   }
 
   async restart(opts: { track: MediaStreamTrack; kind: Track.Kind.Audio }): Promise<void> {
+    if (this.destroying) return this.destroying;
     this.node?.port.postMessage({ kind: 'flush' });
     this.source?.disconnect();
     this.connectSource(opts.track);
   }
 
-  async destroy(): Promise<void> {
+  destroy(): Promise<void> {
+    if (this.destroying) return this.destroying;
     this.generation++;
-    if (this.ctx) this.ctx.onstatechange = null;
+    const ctx = this.ctx;
+    if (ctx) ctx.onstatechange = null;
     this.lastProbe = null;
     this.node?.port.postMessage({ kind: 'destroy' });
     this.source?.disconnect();
     this.node?.disconnect();
     this.processedTrack?.stop?.();
-    await this.ctx?.close();
-    this.ctx = undefined;
+    this.processedTrack = undefined;
+    this.destroying = ctx ? this.closeContext(ctx) : Promise.resolve();
+    return this.destroying;
+  }
+
+  /** Startup cancellation and track teardown can both own a pending close. */
+  private closeContext(ctx: AudioContext): Promise<void> {
+    const existing = this.closing.get(ctx);
+    if (existing) return existing;
+    if (this.ctx === ctx) this.ctx = undefined;
+    ctx.onstatechange = null;
+    const closing = Promise.resolve().then(() => ctx.state === 'closed' ? undefined : ctx.close());
+    this.closing.set(ctx, closing);
+    return closing;
   }
 
   useBrowserFallback(): void {
