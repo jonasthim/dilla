@@ -19,6 +19,6 @@
 .d-media-player__error { margin: 0; font-size: var(--text-sm); color: var(--danger); }
 .d-media-player__error:not(:empty) { margin-bottom: 0.375rem; }
 .d-media-player__error-glyph { margin-right: 0.375rem; }
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-media-player .d-media-player__play, .d-media-player .d-media-player__save { min-height: 2.75rem; }
 }

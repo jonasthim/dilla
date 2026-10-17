@@ -8,3 +8,7 @@
 .d-lightbox__bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; padding: 0.5rem 1rem; background: var(--surface); border-top: 1px solid var(--hairline); }
 .d-lightbox__label { margin: 0; min-width: 0; flex: 1 1 12rem; font-size: var(--text-sm); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .d-lightbox__nav, .d-lightbox__actions { display: flex; gap: 0.5rem; }
+/* web3.8 (m6): the same, so the bar of buttons stays above a soft keyboard. */
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
+  .d-lightbox:modal { top: var(--d-vvtop, 0px); max-height: calc(var(--d-vvh, 100dvh) - 2rem); }
+}

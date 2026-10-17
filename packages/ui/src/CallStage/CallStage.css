@@ -26,7 +26,7 @@
 .d-call-stage__tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); align-content: start; gap: 0.75rem; margin-bottom: 0; padding: 0; list-style: none; min-width: 0; }
 .d-call-stage__tile { min-width: 0; }
 .d-call-stage__controls { display: flex; justify-content: center; }
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-call-stage { padding: 0.5rem; }
   .d-call-stage__notice .d-call-stage__notice-action { grid-column: 2; justify-self: start; min-height: 2.75rem; }
   .d-call-stage__summary { min-height: 2.75rem; min-width: 2.75rem; }

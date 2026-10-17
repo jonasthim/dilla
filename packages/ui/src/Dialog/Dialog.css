@@ -7,3 +7,7 @@
 .d-dialog__title { margin: 0 0 10px; font-size: var(--text-lg); font-weight: var(--weight-display); letter-spacing: 0.02em; }
 .d-dialog__body { font-size: var(--text-base); color: var(--fg-2); }
 .d-dialog__footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* web3.8 (m6): on a phone the dialog sits in the visual viewport, which a soft keyboard shrinks (--d-vvh, --d-vvtop are set by the web app only then). */
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
+  .d-dialog:modal { top: var(--d-vvtop, 0px); bottom: calc(100dvh - var(--d-vvtop, 0px) - var(--d-vvh, 100dvh)); max-height: calc(var(--d-vvh, 100dvh) - 2rem); }
+}

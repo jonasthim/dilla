@@ -8,7 +8,7 @@
 .d-voice-toolbar .d-voice-toolbar__control {
   height: auto; min-height: 2.5rem; min-width: 2.5rem; padding: 0 0.5rem; justify-content: center;
 }
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   .d-voice-toolbar .d-voice-toolbar__control { min-height: 2.75rem; min-width: 2.75rem; }
 }
 .d-voice-toolbar .d-voice-toolbar__control > .d-btn__label { display: flex; }

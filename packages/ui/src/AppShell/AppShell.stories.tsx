@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { ComposedShell } from './AppShell.fixture.tsx';
+import { ComposedShell, fixtureStatusBar } from './AppShell.fixture.tsx';
+import { LinkBanner } from '../LinkBanner/LinkBanner.tsx';
 import { MemberList } from '../MemberList/MemberList.tsx';
 
 const meta: Meta = { title: 'Shell/AppShell' };
@@ -29,3 +30,13 @@ export const AsideNarrowClose: Story = {
 };
 export const AsideNarrow: Story = { render: () => <div style={{ width: 360, ['--d-shell-h' as string]: '740px' }}><ComposedShell shell={withAside} /></div> };
 export const Offline: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell banner /></div> };
+// web3.8 (R4): the desktop shell has no status bar, so the link banner is the only word on the link, in the banner slot as on a phone.
+export const LinkBannerDesktop: Story = {
+  render: () => (
+    <div style={{ ['--d-shell-h' as string]: '768px' }}>
+      <ComposedShell shell={{ banner: <LinkBanner status="offline" labels={{ offline: 'offline · reconnecting to dilla.thim.dev', connecting: 'connecting to dilla.thim.dev' }} /> }} />
+    </div>
+  ),
+};
+// The optional status row, still available to a shell that passes one.
+export const WithStatusBar: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ statusBar: fixtureStatusBar }} /></div> };

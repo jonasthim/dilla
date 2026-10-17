@@ -46,7 +46,9 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children,
     if (!open || !modeless) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
-      const inDialog = e.target instanceof Element ? e.target.closest('dialog') : null;
+      // An event aimed at the document itself belongs to whatever has focus.
+      const from = e.target instanceof Element ? e.target : document.activeElement;
+      const inDialog = from instanceof Element ? from.closest('dialog') : null;
       if (inDialog !== null && inDialog !== ref.current) return;
       e.preventDefault();
       onCloseRef.current();

@@ -11,7 +11,11 @@ export interface AppShellProps {
   header: ReactNode;
   children: ReactNode;
   composer: ReactNode;
-  statusBar: ReactNode;
+  /**
+   * web3.8: optional, desktop only. Absent (undefined, null or false) the shell renders no status wrapper and the grid
+   * has no status row. A phone never has one: the banner says when the link is down.
+   */
+  statusBar?: ReactNode;
   banner?: ReactNode;
   /**
    * The incoming-ring banner (web-3, flow 06): the first thing in main, so its answer and decline are main's first
@@ -46,6 +50,12 @@ export interface AppShellProps {
   callBar?: ReactNode;
   /** web3.7.1: a page above the shell on a phone (Settings): main, rail, sidebar, aside and call bar are inert; the tab bar stays live. */
   covered?: boolean;
+  /**
+   * web3.8: a page above a phone shell (Settings). Rendered after the call bar and before the tab bar, in a wrapper that
+   * takes no box (`display: contents`), so the page positions itself. Ignored on desktop. While `covered`, the banner
+   * above it stays live and `--d-banner-h` on <html> is its height, which the page starts below.
+   */
+  page?: ReactNode;
 }
 
 /** The shell width from which the aside is a column (base.css holds the same 64rem in its container query). */
@@ -56,16 +66,18 @@ const editable = (el: EventTarget | null) => el instanceof HTMLElement
   && (el instanceof HTMLInputElement ? !NOT_TEXT.has(el.type) && !el.readOnly && !el.disabled
     : el instanceof HTMLTextAreaElement ? !el.readOnly && !el.disabled
       : el instanceof HTMLSelectElement ? !el.disabled : el.isContentEditable || el.getAttribute('contenteditable') === 'true');
+/** The least the window must outgrow the visual viewport by for a soft keyboard to be up (browser bars move it by less). */
+const KEYBOARD_PX = 100;
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 /**
  * The Mesh shell: rail | sidebar | main (header, content, composer), a banner
- * above and the status bar below. DOM order is the focus order of the web-1
+ * above and an optional status bar below. DOM order is the focus order of the web-1
  * keyboard map: skip link → banner → rail → sidebar → main → status bar.
  */
 export function AppShell({
   skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
-  layout, phonePane = 'list', tabBar, callBar, covered,
+  layout, phonePane = 'list', tabBar, callBar, covered, page,
 }: AppShellProps) {
   const mainId = useId();
   const mainRef = useRef<HTMLElement>(null);
@@ -73,6 +85,7 @@ export function AppShell({
   const ringRef = useRef<HTMLDivElement>(null);
   const asideRef = useRef<HTMLElement>(null);
   const hasRing = ring !== undefined && ring !== null && ring !== false;
+  const hasStatus = statusBar !== undefined && statusBar !== null && statusBar !== false;
   const showAside = asideOpen === true && aside !== undefined && aside !== null && aside !== false;
 
   // Narrower than 64rem (root font size) of shell width: the aside is the overlay drawer. jsdom has no layout: width 0 reads as narrow.
@@ -143,28 +156,42 @@ export function AppShell({
   }, [hasRing, layout]);
   const phone = layout === 'phone';
   const hasTabBar = phone && tabBar !== undefined && tabBar !== null && tabBar !== false;
-  // Typing: an editable element anywhere in the document has focus (a dialog and a settings page included), which is when a phone opens its keyboard. The tab bar steps aside.
-  const [typing, setTyping] = useState(false);
+  // Typing: an editable element anywhere in the document has focus (a dialog and a settings page included) AND the soft
+  // keyboard is up, which is when a phone has lost the room under the composer. The tab bar steps aside.
+  // On Android the keyboard can close (the back button) while the field keeps focus; the visual viewport says so (M4).
+  const [fieldFocus, setFieldFocus] = useState(false);
+  const [keyboardUp, setKeyboardUp] = useState(true);
+  const typing = fieldFocus && keyboardUp;
   useEffect(() => {
     const root = rootRef.current;
-    if (!phone || root === null) { setTyping(false); return; }
-    const onIn = (e: FocusEvent) => setTyping(editable(e.target));
-    const onOut = (e: FocusEvent) => setTyping(editable(e.relatedTarget));
+    if (!phone || root === null) { setFieldFocus(false); return; }
+    setFieldFocus(editable(document.activeElement));
+    const onIn = (e: FocusEvent) => setFieldFocus(editable(e.target));
+    const onOut = (e: FocusEvent) => setFieldFocus(editable(e.relatedTarget));
     document.addEventListener('focusin', onIn);
     document.addEventListener('focusout', onOut);
-    return () => { document.removeEventListener('focusin', onIn); document.removeEventListener('focusout', onOut); setTyping(false); };
+    return () => { document.removeEventListener('focusin', onIn); document.removeEventListener('focusout', onOut); setFieldFocus(false); };
+  }, [phone]);
+  // The keyboard is up when the visual viewport is clearly shorter than the window. Without a visualViewport it is assumed up.
+  useEffect(() => {
+    const vv: VisualViewport | null | undefined = window.visualViewport; // undefined in jsdom and old browsers
+    if (!phone || vv === null || vv === undefined) { setKeyboardUp(true); return; }
+    const read = () => setKeyboardUp(window.innerHeight - vv.height > KEYBOARD_PX);
+    read();
+    vv.addEventListener('resize', read);
+    return () => { vv.removeEventListener('resize', read); setKeyboardUp(true); };
   }, [phone]);
   // WebKit fires no focusout when the focused field leaves the page (a dialog unmounts, a row re-renders): while typing,
   // a change to the page re-reads the active element.
   useEffect(() => {
-    if (!typing || typeof MutationObserver === 'undefined') return;
+    if (!fieldFocus || typeof MutationObserver === 'undefined') return;
     const observer = new MutationObserver(() => {
       const el = document.activeElement;
-      if (!editable(el) || !(el as HTMLElement).isConnected) setTyping(false);
+      if (!editable(el) || !(el as HTMLElement).isConnected) setFieldFocus(false);
     });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['open', 'hidden', 'disabled', 'readonly'] });
     return () => observer.disconnect();
-  }, [typing]);
+  }, [fieldFocus]);
   // --d-tabbar-h is the tab bar's height (0px while hidden or absent). It is also set on <html>, where a settings page outside the shell reads it.
   const tabBarRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -180,6 +207,22 @@ export function AppShell({
     return () => { observer.disconnect(); html.style.removeProperty('--d-tabbar-h'); };
   }, [phone, hasTabBar, typing]);
   const hasBanner = banner !== undefined && banner !== null && banner !== false;
+  // --d-banner-h is the banner wrapper's height while a page covers a phone shell; it is set on <html>, where the page (and a
+  // settings page outside the shell) starts below it. Cleared otherwise.
+  const bannerRef = useRef<HTMLDivElement>(null);
+  const bannerCover = phone && covered === true;
+  useLayoutEffect(() => {
+    if (!bannerCover) return;
+    const html = document.documentElement;
+    const el = bannerRef.current;
+    const measureBanner = () => { html.style.setProperty('--d-banner-h', `${el?.offsetHeight ?? 0}px`); };
+    measureBanner();
+    const clear = () => html.style.removeProperty('--d-banner-h');
+    if (el === null || typeof ResizeObserver === 'undefined') return clear;
+    const observer = new ResizeObserver(measureBanner);
+    observer.observe(el);
+    return () => { observer.disconnect(); clear(); };
+  }, [bannerCover, hasBanner]);
   const listPane = phone && phonePane === 'list';
   const sidebarRef = useRef<HTMLDivElement>(null);
   // No hash change and no history entry: focus moves to <main> (on a phone's list pane, the sidebar) and the URL stays.
@@ -202,12 +245,12 @@ export function AppShell({
     return (
       <PhoneLayoutProvider value>
       <div ref={rootRef} className="d-app-shell" data-layout="phone" data-pane={phonePane} data-typing={typing ? 'true' : undefined} data-rail={listPane && rail === null ? 'none' : undefined}>
-        <a className="d-app-shell__skip" href={`#${listPane ? sidebarId : mainId}`} onClick={onSkip}>{skipLabel}</a>
+        <a className="d-app-shell__skip" href={`#${listPane ? sidebarId : mainId}`} onClick={onSkip} inert={covered === true || undefined}>{skipLabel}</a>
         <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
           {/* The ring is outside main (the list pane hides main), above whichever pane shows, and clears the notch. It is
               never inert and sits above the sheet (final fix I3), so a call can be answered while a sheet is open. */}
           {hasRing ? <div ref={ringRef} className="d-app-shell__ring">{ring}</div> : null}
-          {hasBanner ? <div className="d-app-shell__banner" inert={inert}>{banner}</div> : null}
+          {hasBanner ? <div ref={bannerRef} className="d-app-shell__banner" inert={overlay || undefined}>{banner}</div> : null}
           {listPane ? (
             <>
               {rail === null ? null : <div className="d-app-shell__rail" inert={inert}>{rail}</div>}
@@ -223,6 +266,7 @@ export function AppShell({
             {aside}
           </aside> : null}
           {callBar !== undefined && callBar !== null && callBar !== false ? <div className="d-app-shell__callbar" inert={inert}>{callBar}</div> : null}
+          {page !== undefined && page !== null && page !== false ? <div className="d-app-shell__page">{page}</div> : null}
           {hasTabBar ? <div ref={tabBarRef} className="d-app-shell__tabbar" hidden={typing || undefined}>{tabBar}</div> : null}
         </div>
       </div>
@@ -251,7 +295,7 @@ export function AppShell({
           ) : null}
           {aside}
         </aside> : null}
-        <div className="d-app-shell__status" inert={overlay || undefined}>{statusBar}</div>
+        {hasStatus ? <div className="d-app-shell__status" inert={overlay || undefined}>{statusBar}</div> : null}
       </div>
     </div>
   );

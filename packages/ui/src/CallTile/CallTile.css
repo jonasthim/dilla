@@ -51,4 +51,4 @@
 .d-call-tile__volume input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 0.75rem; height: 1rem; margin-top: -0.375rem; background: var(--fg); border: 1px solid var(--bg); border-radius: 0; }
 .d-call-tile__volume input::-moz-range-thumb { width: 0.75rem; height: 1rem; background: var(--fg); border: 1px solid var(--bg); border-radius: 0; }
 .d-call-tile__volume input:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
-@media (max-width: 47.99rem) { .d-call-tile__volume input { min-height: 2.75rem; } }
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) { .d-call-tile__volume input { min-height: 2.75rem; } }

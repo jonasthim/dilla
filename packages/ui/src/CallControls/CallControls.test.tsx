@@ -84,6 +84,29 @@ describe('CallControls', () => {
     }
   });
 
+  // web3.8 (R3): the stage toolbar keeps its own mute and deafen, but the user panel's carry the shortcuts, so the
+  // stage's tip still shows them and its buttons carry no aria-keyshortcuts (one element per shortcut).
+  it('keyshortcuts={false}: no aria-keyshortcuts and no -keys description on mute and deafen, and the tip still shows the shortcut', async () => {
+    const shortcuts = { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' };
+    const { rerender } = render(<CallControls {...base} shortcuts={shortcuts} keyshortcuts={false} />);
+    for (const name of ['mute', 'deafen']) {
+      const b = screen.getByRole('button', { name });
+      expect(b).not.toHaveAttribute('aria-keyshortcuts');
+      expect(b.getAttribute('aria-describedby') ?? '').not.toContain('-keys');
+    }
+    const bar = screen.getByRole('toolbar', { name: 'call controls' });
+    expect(bar.querySelector('[id$="-keys"]')).toBeNull();
+    await userEvent.keyboard('{Tab}');
+    const tip = bar.querySelector<HTMLElement>('[role="tooltip"]');
+    expect(tip).toBeVisible();
+    expect(tip).toHaveTextContent('mute');
+    expect(tip).toHaveTextContent('Ctrl+Shift+M');
+    // The default (control): the shortcuts are carried and described.
+    rerender(<CallControls {...base} shortcuts={shortcuts} />);
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(screen.getByRole('button', { name: 'mute' })).toHaveAccessibleDescription('Ctrl+Shift+M');
+  });
+
   // Voice controls as icons (plan 2026-10-15, VI-1): the name is the label via aria-label, the icon is decorative,
   // and the voice toolbar drops the Button primitive's [x] / [ ] mark; the swapped glyph carries the state instead.
   it('each control is an icon button named by its label, with no [x] mark', () => {

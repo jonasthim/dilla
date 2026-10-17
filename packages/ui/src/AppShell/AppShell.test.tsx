@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi } from 'vitest';
-import { ComposedShell } from './AppShell.fixture.tsx';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { ComposedShell, fixtureStatusBar } from './AppShell.fixture.tsx';
 import { AppShell } from './AppShell.tsx';
 import { CommunityRail } from '../CommunityRail/CommunityRail.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -25,6 +25,20 @@ describe('AppShell', () => {
     expect(screen.getByRole('textbox', { name: 'message #general' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('button', { name: 'send' })).toHaveFocus();
+  });
+
+  // web3.8 (R4): the status bar is optional on desktop; without one there is no wrapper and no grid row.
+  it('desktop with no statusBar renders no status wrapper; with one it follows main in the focus order', async () => {
+    const user = userEvent.setup();
+    const { container, rerender } = render(<ComposedShell />);
+    expect(container.querySelector('.d-app-shell__status')).toBeNull();
+    rerender(<ComposedShell shell={{ statusBar: null }} />);
+    expect(container.querySelector('.d-app-shell__status')).toBeNull();
+    rerender(<ComposedShell shell={{ statusBar: false }} />);
+    expect(container.querySelector('.d-app-shell__status')).toBeNull();
+    rerender(<ComposedShell shell={{ statusBar: fixtureStatusBar }} />);
+    expect(container.querySelector('.d-app-shell__status')).not.toBeNull();
+    screen.getByRole('button', { name: 'send' }).focus();
     await user.tab();
     expect(screen.getByRole('button', { name: /connection/ })).toHaveFocus();
   });
@@ -94,13 +108,12 @@ describe('AppShell aside', () => {
     expect(container.querySelector('.d-app-shell__grid')?.className).toBe('d-app-shell__grid');
   });
 
-  it('open: an aside landmark after main and before the status bar', () => {
+  it('open: an aside landmark after main', () => {
     const { container } = render(<ComposedShell shell={open()} />);
     const side = screen.getByRole('complementary', { name: 'members' });
     const main = screen.getByRole('main');
-    const status = container.querySelector('.d-app-shell__status') as Node;
     expect(main.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(side.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.d-app-shell__status')).toBeNull();
     expect(container.querySelector('.d-app-shell__grid')).toHaveClass('d-app-shell__grid--aside');
   });
 
@@ -110,10 +123,20 @@ describe('AppShell aside', () => {
     expect(screen.queryByRole('button', { name: 'pane control' })).toBeNull();
   });
 
-  it('the focus order runs main, aside, status bar', async () => {
+  it('the focus order runs main, then aside', async () => {
     const user = userEvent.setup();
     const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1280);
     render(<ComposedShell shell={open()} />);
+    screen.getByRole('button', { name: 'send' }).focus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'pane control' })).toHaveFocus();
+    width.mockRestore();
+  });
+
+  it('with a status bar the focus order runs main, aside, status bar', async () => {
+    const user = userEvent.setup();
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1280);
+    render(<ComposedShell shell={open({ statusBar: fixtureStatusBar })} />);
     screen.getByRole('button', { name: 'send' }).focus();
     await user.tab();
     expect(screen.getByRole('button', { name: 'pane control' })).toHaveFocus();
@@ -153,7 +176,7 @@ describe('AppShell aside', () => {
 
   // Fix round 1: the overlay drawer is modal.
   const blockers = (c: HTMLElement) =>
-    ['.d-app-shell__rail', '.d-app-shell__sidebar', '.d-app-shell__main', '.d-app-shell__status'].map(s => c.querySelector(s) as HTMLElement);
+    ['.d-app-shell__rail', '.d-app-shell__sidebar', '.d-app-shell__main'].map(s => c.querySelector(s) as HTMLElement);
 
   it('as an overlay the rest of the shell is inert and a backdrop sits behind the drawer; closed, neither', () => {
     const { container, rerender } = render(<ComposedShell shell={open()} />);
@@ -340,7 +363,7 @@ describe('phone layout', () => {
 
   it('with no rail (the DMs, activity and you tabs) no rail element renders and the root says so', () => {
     const { container } = render(
-      <AppShell layout="phone" skipLabel="skip" rail={null} sidebar={<p>dms</p>} header={<h2>x</h2>} composer={null} statusBar={null}>
+      <AppShell layout="phone" skipLabel="skip" rail={null} sidebar={<p>dms</p>} header={<h2>x</h2>} composer={null}>
         <p>content</p>
       </AppShell>,
     );
@@ -371,7 +394,7 @@ describe('phone layout', () => {
   it('the phone drops the rail settings tile; the desktop keeps it', () => {
     const railWith = <CommunityRail label="servers" activeId="a" onSelect={() => {}} joinLabel="join" onJoin={() => {}} settingsLabel="settings" onSettings={() => {}} items={[{ id: 'a', name: 'Alpha' }]} />;
     const shell = (layout: 'phone' | 'desktop') => (
-      <AppShell layout={layout} skipLabel="skip" rail={railWith} sidebar={<p>s</p>} header={<h2>x</h2>} composer={null} statusBar={null}><p>c</p></AppShell>
+      <AppShell layout={layout} skipLabel="skip" rail={railWith} sidebar={<p>s</p>} header={<h2>x</h2>} composer={null}><p>c</p></AppShell>
     );
     const phoneView = render(shell('phone'));
     expect(screen.getByRole('button', { name: 'join' })).toBeInTheDocument();
@@ -531,6 +554,112 @@ describe('phone layout', () => {
     expect(container.firstElementChild).not.toHaveAttribute('data-typing');
   });
 
+  // web3.8 (M9): a page above the phone shell (Settings) renders after the call bar and before the tab bar.
+  it('page renders after the call bar and before the tab bar, on a phone only', () => {
+    const page = <p data-testid="page">settings</p>;
+    const { container, unmount } = render(<ComposedShell shell={phone({ phonePane: 'view', page })} />);
+    const slot = screen.getByTestId('page').closest('.d-app-shell__page') as HTMLElement;
+    expect(slot).not.toBeNull();
+    const call = screen.getByTestId('call-bar').parentElement as HTMLElement;
+    const tabs = screen.getByTestId('tab-bar').parentElement as HTMLElement;
+    expect(call.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(slot.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmount();
+    render(<ComposedShell shell={{ page }} />);
+    expect(screen.queryByTestId('page')).toBeNull();
+    expect(container).toBeDefined();
+  });
+
+  // web3.8 (M10): a covering page leaves the banner live and takes the skip link out.
+  it('covered: the skip link is inert and the banner wrapper is live; uncovered, neither', () => {
+    const { container, rerender } = render(<ComposedShell banner shell={phone({ phonePane: 'view', covered: true })} />);
+    expect(container.querySelector('.d-app-shell__skip')).toHaveAttribute('inert');
+    expect(container.querySelector('.d-app-shell__banner')).not.toHaveAttribute('inert');
+    rerender(<ComposedShell banner shell={phone({ phonePane: 'view' })} />);
+    expect(container.querySelector('.d-app-shell__skip')).not.toHaveAttribute('inert');
+  });
+
+  it('covered: --d-banner-h on <html> follows the banner wrapper height; uncovered, it is cleared', () => {
+    let notify: () => void = () => {};
+    let height = 36;
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('d-app-shell__banner') ? height : 0;
+    });
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { notify = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const html = document.documentElement;
+    const { rerender, unmount } = render(<ComposedShell banner shell={phone({ phonePane: 'view', covered: true })} />);
+    expect(html.style.getPropertyValue('--d-banner-h')).toBe('36px');
+    height = 52;
+    act(() => notify());
+    expect(html.style.getPropertyValue('--d-banner-h')).toBe('52px');
+    rerender(<ComposedShell banner shell={phone({ phonePane: 'view' })} />);
+    expect(html.style.getPropertyValue('--d-banner-h')).toBe('');
+    rerender(<ComposedShell banner shell={phone({ phonePane: 'view', covered: true })} />);
+    expect(html.style.getPropertyValue('--d-banner-h')).toBe('52px');
+    unmount();
+    expect(html.style.getPropertyValue('--d-banner-h')).toBe('');
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // web3.8 (M4): on Android the keyboard can close (the back button) while the field keeps focus; the tab bar follows the keyboard.
+  describe('typing follows the visual viewport', () => {
+    class FakeViewport extends EventTarget { height = window.innerHeight; scale = 1; }
+    let vv: FakeViewport;
+    const resize = (height: number) => { vv.height = height; act(() => { vv.dispatchEvent(new Event('resize')); }); };
+    beforeEach(() => {
+      vv = new FakeViewport();
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: vv });
+    });
+    afterEach(() => { Reflect.deleteProperty(window, 'visualViewport'); });
+
+    it('a closed keyboard with focus kept is not typing; the keyboard opening again is', () => {
+      const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+      const shell = container.firstElementChild as HTMLElement;
+      const wrapper = screen.getByTestId('tab-bar').parentElement!;
+      resize(window.innerHeight - 300);
+      act(() => { screen.getByRole('textbox', { name: 'message #general' }).focus(); });
+      expect(shell).toHaveAttribute('data-typing', 'true');
+      expect(wrapper).toHaveAttribute('hidden');
+      resize(window.innerHeight);
+      expect(screen.getByRole('textbox', { name: 'message #general' })).toHaveFocus();
+      expect(shell).not.toHaveAttribute('data-typing');
+      expect(wrapper).not.toHaveAttribute('hidden');
+      resize(window.innerHeight - 300);
+      expect(shell).toHaveAttribute('data-typing', 'true');
+      expect(wrapper).toHaveAttribute('hidden');
+    });
+
+    it('a focused field with the keyboard still closed is not typing yet', () => {
+      const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+      act(() => { screen.getByRole('textbox', { name: 'message #general' }).focus(); });
+      expect(container.firstElementChild).not.toHaveAttribute('data-typing');
+      resize(window.innerHeight - 300);
+      expect(container.firstElementChild).toHaveAttribute('data-typing', 'true');
+    });
+
+    it('stops listening to the viewport on unmount', () => {
+      const off = vi.spyOn(vv, 'removeEventListener');
+      render(<ComposedShell shell={phone({ phonePane: 'view' })} />).unmount();
+      expect(off).toHaveBeenCalledWith('resize', expect.any(Function));
+    });
+  });
+
+  it('typing seeds from the focused element on mount', () => {
+    const field = document.createElement('input');
+    document.body.append(field);
+    field.focus();
+    const { container } = render(<ComposedShell shell={phone({ phonePane: 'view' })} />);
+    expect(container.firstElementChild).toHaveAttribute('data-typing', 'true');
+    expect(screen.getByTestId('tab-bar').parentElement).toHaveAttribute('hidden');
+    field.remove();
+  });
+
   it('desktop has no tab bar wrapper and no data-typing', () => {
     const { container } = render(<ComposedShell shell={{ tabBar: tabs }} />);
     act(() => { screen.getByRole('textbox', { name: 'message #general' }).focus(); });
@@ -542,7 +671,7 @@ describe('phone layout', () => {
     const { container } = render(<ComposedShell shell={{ tabBar: tabs, callBar: calls }} />);
     expect(screen.queryByTestId('tab-bar')).toBeNull();
     expect(screen.queryByTestId('call-bar')).toBeNull();
-    expect(container.querySelector('.d-app-shell__status')).not.toBeNull();
+    expect(container.querySelector('.d-app-shell__status')).toBeNull();
   });
 
   it('has no serious axe violations on either pane', async () => {
