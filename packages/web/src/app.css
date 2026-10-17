@@ -39,7 +39,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-trust-state[data-tone="warn"] { border-left-color: var(--warn); }
 .dw-trust-state[data-tone="danger"] { border-left-color: var(--danger); }
 /* W-06: a modal <dialog> filling the viewport; the top layer makes the shell beneath it inert. */
-.dw-search { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; box-sizing: border-box; overflow: auto; background: var(--bg); color: var(--fg); padding: var(--group-gap); }
+.dw-search { position: fixed; inset: var(--d-vvtop, 0px) 0 0 0; width: 100%; height: var(--d-vvh, 100%); max-width: none; max-height: none; margin: 0; border: 0; box-sizing: border-box; overflow: auto; background: var(--bg); color: var(--fg); padding: var(--group-gap); }
 .dw-search::backdrop { background: var(--bg); }
 .dw-search .d-search-palette { max-width: 720px; margin: 0 auto; }
 .dw-search :focus-visible, .dw-trust-list :focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
