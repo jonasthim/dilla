@@ -117,6 +117,7 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
 export function CallTile({ view, own, volume, media, inset = null, mirror = null, labels, onVolume, id, source = 'camera', title,
   fullscreenLabel, focused = false, onFocusTile }: CallTileProps) {
   const ticks = useId();
+  const statesId = useId();
   const liRef = useRef<HTMLLIElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => {
@@ -133,8 +134,8 @@ export function CallTile({ view, own, volume, media, inset = null, mirror = null
   const toggleFullscreen = () => {
     const li = liRef.current;
     if (!li) return;
-    if (document.fullscreenElement === li) void document.exitFullscreen();
-    else void li.requestFullscreen();
+    if (document.fullscreenElement === li) void document.exitFullscreen().catch(() => {});
+    else void li.requestFullscreen().catch(() => {});
   };
   const body = (
     <>
@@ -146,7 +147,7 @@ export function CallTile({ view, own, volume, media, inset = null, mirror = null
       ) : onFocusTile ? <div className="d-call-tile__avatar"><Avatar name={name} size="lg" /></div> : null}
       <span className="d-call-tile__caption">
         <span className="d-call-tile__name">{name}</span>
-        <span className="d-call-tile__states">
+        <span id={statesId} className="d-call-tile__states">
           <VoiceStates words={words} prefix="d-call-tile" />
           {!isScreen && view.web ? <span className="d-call-tile__tag">{labels.state.web}</span> : null}
           {!isScreen && view.bot ? <span className="d-call-tile__tag">{labels.state.bot}</span> : null}
@@ -160,7 +161,7 @@ export function CallTile({ view, own, volume, media, inset = null, mirror = null
       <div className="d-call-tile" data-source={source} data-voice-state={view.state} data-speaking={view.speaking ? 'true' : 'false'}
         data-own={own ? 'true' : undefined} data-media={showMedia ? 'true' : undefined} data-stage={onFocusTile ? 'true' : undefined}>
         {onFocusTile ? (
-          <button type="button" className="d-call-tile__focus" aria-pressed={focused} aria-label={name}
+          <button type="button" className="d-call-tile__focus" aria-pressed={focused} aria-label={name} aria-describedby={statesId}
             onClick={onFocusTile} onDoubleClick={canFullscreen ? toggleFullscreen : undefined}>{body}</button>
         ) : body}
         {canFullscreen ? (

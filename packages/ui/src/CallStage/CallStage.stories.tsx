@@ -208,6 +208,15 @@ function expectFocused(root: HTMLElement, story: string): void {
   for (const r of strip) {
     if (Math.abs(r.height - 7.5 * rem) > 1 || r.top < big.bottom - 1 || Math.abs(r.top - strip[0].top) > 1) throw new Error(`${story}: the filmstrip is not one row of 7.5rem tiles under the focused tile`);
   }
+  for (const volume of Array.from(root.querySelectorAll<HTMLElement>('li[data-focused="false"] .d-call-tile__volume'))) {
+    if (getComputedStyle(volume).display !== 'none') throw new Error(`${story}: a filmstrip tile shows its volume`);
+  }
+  // Centred in their columns: the filmstrip tiles are evenly spaced, and the first sits half a free column from the edge.
+  const gaps = strip.slice(1).map((r, i) => r.left - strip[i].right);
+  if (gaps.length > 1 && Math.max(...gaps) - Math.min(...gaps) > 2) throw new Error(`${story}: the filmstrip is ragged (gaps ${gaps.join(', ')})`);
+  // The hidden filmstrip volumes are not targets: check the rest by hiding them from the walk.
+  const hidden = Array.from(root.querySelectorAll<HTMLElement>('li[data-focused="false"] .d-call-tile__volume'));
+  hidden.forEach(v => v.remove());
   expectVoiceTargets(root, story);
 }
 

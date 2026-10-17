@@ -109,7 +109,10 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
   const hideMedia = notice !== null && notice.kind !== 'info';
   const tiles = hideMedia ? allTiles.filter(t => t.source !== 'screen') : allTiles;
   const idOf = (t: (typeof allTiles)[number]) => t.id ?? t.view.deviceId;
+  const stageMode = onFocus !== undefined;
   const focusedHere = !hideMedia && focusedId !== null && tiles.some(t => idOf(t) === focusedId);
+  // A lone focused tile keeps the grid: a filmstrip row of nothing would only shrink it.
+  const focusedLayout = focusedHere && tiles.length > 1;
   const tileCount = tiles.length;
 
   useEffect(() => {
@@ -118,7 +121,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
 
   useEffect(() => {
     const el = tilesRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
+    if (!stageMode || !el || typeof ResizeObserver === 'undefined') return;
     const measure = () => {
       const { clientWidth: w, clientHeight: h } = el;
       if (w <= 0 || h <= 0 || tileCount === 0) return;
@@ -132,7 +135,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => { observer.disconnect(); };
-  }, [tileCount]);
+  }, [stageMode, tileCount]);
 
   const onStageKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== 'Escape' || !focusedHere || document.fullscreenElement) return;
@@ -143,7 +146,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
 
   return (
     <section className="d-call-stage" aria-labelledby={titleId} data-media-hidden={hideMedia ? 'true' : undefined}
-      data-focused-stage={focusedHere ? 'true' : undefined} onKeyDown={onStageKey}>
+      data-focused-stage={focusedLayout ? 'true' : undefined} onKeyDown={onStageKey}>
       <header className="d-call-stage__head">
         <h2 id={titleId} className="d-call-stage__title">{title}</h2>
         {outgoing !== null ? <p className="d-call-stage__outgoing">{outgoing.text}</p> : null}
@@ -173,8 +176,8 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
       {tiles.length === 0 ? (
         notice === null ? <p className="d-call-stage__empty">{labels.empty}</p> : null
       ) : (
-        <ul ref={tilesRef} role="list" aria-label={labels.tiles} className="d-call-stage__tiles"
-          style={focusedHere ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties : undefined}>
+        <ul ref={tilesRef} role="list" aria-label={labels.tiles} className="d-call-stage__tiles" data-tiles={stageMode ? 'stage' : undefined}
+          style={focusedLayout ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties : undefined}>
           {tiles.map(t => {
             const id = idOf(t);
             const focused = focusedHere && id === focusedId;

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
 import { CallStage, stageColumns, type CallStageProps } from './CallStage.tsx';
 import type { CallTileProps } from '../CallTile/CallTile.tsx';
@@ -132,7 +132,7 @@ describe('CallStage', () => {
     });
 
     it.each([
-      [1, 1200, 700, 1], [2, 1400, 600, 2], [2, 1200, 700, 1], [4, 1200, 700, 2], [9, 1600, 900, 3], [2, 400, 900, 1],
+      [1, 1200, 700, 1], [2, 1400, 600, 2], [2, 1200, 700, 1], [4, 1200, 700, 2], [9, 1600, 900, 3], [2, 400, 900, 1], [5, 1200, 300, 3],
     ])('stageColumns picks the column count that maximises the 16:9 tile: n=%i in %ix%i is %i', (n, w, h, cols) => {
       expect(stageColumns(n, w, h, 12)).toBe(cols);
     });
@@ -254,8 +254,8 @@ describe('CallStage', () => {
     });
 
     it('the full-screen button requests full screen on the tile li, exits it when that li is full screen, and follows fullscreenchange', async () => {
-      const request = vi.fn();
-      const exit = vi.fn();
+      const request = vi.fn(() => Promise.resolve());
+      const exit = vi.fn(() => Promise.resolve());
       Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: request });
       Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: exit });
       setFullscreen(true);
@@ -273,7 +273,7 @@ describe('CallStage', () => {
     });
 
     it('a double-click on the focus button toggles full screen', async () => {
-      const request = vi.fn();
+      const request = vi.fn(() => Promise.resolve());
       Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: request });
       setFullscreen(true);
       render(<Harness />);
@@ -285,6 +285,66 @@ describe('CallStage', () => {
       setFullscreen(false);
       render(<Harness />);
       expect(screen.queryByRole('button', { name: /^full screen/ })).toBeNull();
+    });
+
+    it('a refused full-screen request or exit is caught', async () => {
+      const caught = vi.fn();
+      Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: vi.fn(() => ({ catch: caught })) });
+      Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: vi.fn(() => ({ catch: caught })) });
+      setFullscreen(true);
+      const { container } = render(<Harness />);
+      await userEvent.click(screen.getByRole('button', { name: 'full screen ada' }));
+      setFullscreen(true, container.querySelector('li'));
+      await userEvent.click(screen.getByRole('button', { name: 'full screen ada' }));
+      expect(caught).toHaveBeenCalledTimes(2);
+    });
+
+    it('the focus button is described by the states in the caption, the stream states included', () => {
+      const bad = src('cy', 'camera', null, { view: { ...tile('cy', null).view, muted: true, deafened: true, state: 'unverified' } });
+      render(<CallStage {...base} tiles={[bad]} focusedId={null} onFocus={() => {}} />);
+      const button = focusBtn('cy');
+      // jsdom does not fold a child image's aria-label into a description; a browser does, so the glyphs are pinned by id.
+      const states = document.getElementById(button.getAttribute('aria-describedby') ?? '')!;
+      expect(states).toContainElement(screen.getByRole('img', { name: 'muted' }));
+      expect(states).toContainElement(screen.getByRole('img', { name: 'deafened' }));
+      expect(button).toHaveAccessibleDescription(/unverified stream/);
+    });
+
+    it('focusing the only tile leaves the grid layout: no focused stage, so no empty filmstrip row', () => {
+      const { container } = render(<CallStage {...base} tiles={[src('ada', 'camera', sA)]} focusedId="d-ada:camera" onFocus={() => {}} />);
+      expect(container.querySelector('li')).toHaveAttribute('data-focused', 'true');
+      expect(container.querySelector('.d-call-stage')).not.toHaveAttribute('data-focused-stage');
+      expect(container.querySelector('.d-call-stage__tiles')).not.toHaveAttribute('style', expect.stringContaining('--d-strip-n'));
+    });
+
+    describe('stage mode is on only when onFocus is given (pre-flight C-2)', () => {
+      class FakeObserver { observe() {} disconnect() {} }
+      beforeEach(() => {
+        (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeObserver;
+        Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 1200 });
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 700 });
+      });
+      afterEach(() => {
+        Reflect.deleteProperty(globalThis, 'ResizeObserver');
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientWidth');
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      });
+
+      it('with onFocus the tiles area is a stage grid and its columns and width are written', () => {
+        const { container } = render(<CallStage {...base} focusedId={null} onFocus={() => {}} />);
+        const ul = container.querySelector<HTMLElement>('.d-call-stage__tiles')!;
+        expect(ul).toHaveAttribute('data-tiles', 'stage');
+        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('1');
+        expect(ul.style.getPropertyValue('--d-tile-w')).not.toBe('');
+      });
+
+      it('without onFocus nothing is written and the area keeps the old layout', () => {
+        const { container } = render(<CallStage {...base} />);
+        const ul = container.querySelector<HTMLElement>('.d-call-stage__tiles')!;
+        expect(ul).not.toHaveAttribute('data-tiles');
+        expect(ul.style.getPropertyValue('--d-stage-cols')).toBe('');
+        expect(ul.style.getPropertyValue('--d-tile-w')).toBe('');
+      });
     });
   });
 });

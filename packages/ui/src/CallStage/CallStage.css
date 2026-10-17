@@ -23,24 +23,27 @@
 .d-call-stage__notice-text { margin: 0; font-size: var(--text-sm); color: var(--fg); }
 .d-call-stage__notice .d-call-stage__notice-action { height: auto; min-height: 2.5rem; }
 .d-call-stage__empty { align-self: center; margin-bottom: 0; font-size: var(--text-sm); color: var(--fg-2); }
-/* The tiles fill the area above the pinned toolbar (U4). Grid: `--d-stage-cols` and `--d-tile-w` are written by the stage's
-   ResizeObserver from `stageColumns`; tiles are 16:9 and centred. Without them (no observer) it is one column. */
-.d-call-stage__tiles {
-  flex: 1 1 auto; min-height: 0; min-width: 0; container-type: inline-size;
-  display: grid; grid-template-columns: repeat(var(--d-stage-cols, 1), var(--d-tile-w, 100%));
-  justify-content: center; align-content: safe center; gap: 0.75rem;
-  margin-bottom: 0; padding: 0; list-style: none; overflow: auto;
-}
+.d-call-stage__tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); align-content: start; gap: 0.75rem; margin-bottom: 0; padding: 0; list-style: none; min-width: 0; }
 .d-call-stage__tile { min-width: 0; }
+/* Stage mode (U4: the caller passes `onFocus`, so `data-tiles="stage"`; callers without it keep the rules above). The tiles
+   fill the area above the pinned toolbar. `--d-stage-cols` and `--d-tile-w` are written by the stage's ResizeObserver from
+   `stageColumns`; tiles are 16:9 and centred. Without them (no observer) it is one column. */
+.d-call-stage__tiles[data-tiles="stage"] {
+  flex: 1 1 auto; min-height: 0; container-type: inline-size;
+  grid-template-columns: repeat(var(--d-stage-cols, 1), var(--d-tile-w, 100%));
+  justify-content: center; align-content: safe center; overflow: auto;
+}
 .d-call-stage__tile[data-stage] { position: relative; width: 100%; aspect-ratio: 16 / 9; }
 /* Focus (R27): CSS only, nothing moves in the DOM. The focused tile spans row 1; the others flow into row 2 as a
    filmstrip above the toolbar and scroll sideways. The columns are explicit (`--d-strip-n` is the strip's count) so that
    the focused tile has a span; it is as wide as the visible area (`100cqw`) and sticks to its left edge. */
-.d-call-stage[data-focused-stage] .d-call-stage__tiles {
+.d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] {
   grid-template-columns: repeat(var(--d-strip-n, 1), minmax(calc(7.5rem * 16 / 9), 1fr)); grid-template-rows: minmax(0, 1fr) 7.5rem;
   grid-auto-flow: column; justify-content: stretch; align-content: stretch; overflow-x: auto; overflow-y: hidden;
 }
-.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage] { grid-row: 2; width: auto; height: 100%; justify-self: start; }
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage] { grid-row: 2; width: auto; height: 100%; justify-self: center; }
+/* The strip is for picking a tile: its volume overlay would cover the 7.5rem tile, so it stays on the focused or grid tile. */
+.d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: none; }
 .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] {
   grid-row: 1; grid-column: 1 / -1; position: sticky; left: 0; width: 100cqw; max-width: 100%; aspect-ratio: auto;
 }
@@ -51,7 +54,7 @@
   .d-call-stage__summary { min-height: 2.75rem; min-width: 2.75rem; }
   /* Phone (R9): no filmstrip. One column; the focused tile takes the full width and goes first, the others follow
      below it in today's one-column flow. */
-  .d-call-stage__tiles, .d-call-stage[data-focused-stage] .d-call-stage__tiles {
+  .d-call-stage__tiles[data-tiles="stage"], .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"] {
     grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; justify-content: stretch;
     align-content: start; overflow-x: hidden; overflow-y: auto;
   }
@@ -60,4 +63,5 @@
     grid-row: auto; grid-column: auto; position: relative; width: 100%; height: auto; aspect-ratio: 16 / 9; max-width: 100%;
   }
   .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] { order: -1; }
+  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: grid; }
 }
