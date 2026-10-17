@@ -13,6 +13,9 @@ import {
 } from '@dilla/media';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
+import {
+  analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
+} from './speaking.ts';
 import { callStatsReport, connectionOf, mediaTotals, STATS_EVERY_MS, type MediaTotals } from './stats.ts';
 import { gainOf, isVolume, type Volumes } from './volume.ts';
 
@@ -120,6 +123,9 @@ export interface PageCallDeps {
    *  (webAudioMix), used only when PageCallOptions.audioContext is absent; a new AudioContext by default (null where the
    *  browser has none). The session closes the context on every leave. */
   audioContext?: () => AudioContext | null;
+  /** web3.8 V1: a level reader on one audio track in the call's context (an AnalyserNode, never connected to the
+   *  destination); analyserMeter by default. Null means no local level: the SFU's speaker flag is the fallback. */
+  createLevelMeter?(ctx: AudioContext, track: MediaStreamTrack): LevelMeter | null;
 }
 
 function defaultAudioContext(): AudioContext | null {
@@ -271,7 +277,11 @@ interface RemoteView {
   trackPublications?: Map<string, { track?: unknown }>;
 }
 /** What the session needs of a subscribed remote track to play it (livekit’s RemoteAudioTrack). */
-interface RemoteAudio { kind: string; attach(): HTMLMediaElement; detach(element: HTMLMediaElement): unknown }
+interface RemoteAudio {
+  kind: string; attach(): HTMLMediaElement; detach(element: HTMLMediaElement): unknown;
+  /** The decrypted track the element plays (livekit’s); web3.8 V1 reads its level when the element has no stream. */
+  mediaStreamTrack?: MediaStreamTrack;
+}
 interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void> } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
 
@@ -298,8 +308,29 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   // device is set on it: with webAudioMix the elements stay muted and everything plays through the context’s destination.
   const ctx = opts.audioContext !== undefined ? opts.audioContext : (deps.audioContext ?? defaultAudioContext)();
   let ctxClosed = false;
+  // web3.8 V1: every level meter registers its close here, so every way out that closes the context closes them first.
+  const meterClosers = new Set<() => void>();
+  /** Makes a meter on `track` in the call's context, or null (no context, a refusal, a closed context): the SFU's flag
+   *  is then the fallback. Never throws. The returned meter's close is idempotent and unregisters itself. */
+  const makeMeter = (track: MediaStreamTrack | null | undefined): LevelMeter | null => {
+    if (ctx === null || ctxClosed || track == null) return null;
+    let made: LevelMeter | null;
+    try { made = (deps.createLevelMeter ?? analyserMeter)(ctx, track); } catch { return null; }
+    if (made === null) return null;
+    const inner = made;
+    let closed = false;
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      meterClosers.delete(close);
+      try { inner.close(); } catch { /* the node is gone with the context */ }
+    };
+    meterClosers.add(close);
+    return { read: () => inner.read(), close };
+  };
   const closeCtx = (): void => {
     if (ctx === null || ctxClosed) return;
+    for (const close of [...meterClosers]) close();
     ctxClosed = true;
     try { void Promise.resolve(ctx.close()).catch(() => undefined); } catch { /* already closed */ }
   };
@@ -500,6 +531,23 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     // ---- tiles and remote audio
     const streamOf = (p: RemoteView, source: Source): MediaStream | null => p.getTrackPublication(source)?.track?.mediaStream ?? null;
+    // web3.8 V1: speaking from local levels. A meter's reading is trusted only while the context runs (a suspended one
+    // reads silence); otherwise, and for every track without a meter, the SFU's flag is the fallback.
+    const levelsLive = (): boolean => ctx !== null && ctx.state === 'running';
+    let ownMeter: LevelMeter | null = null;
+    const ownDetector = new SpeakingDetector();
+    let ownOn = false;
+    let ownRms = 0;
+    /** The remote person's speaking from their attached tracks' meters, or null when none has a live meter and a gain. */
+    const remoteLocal = (identity: string): boolean | null => {
+      if (!levelsLive() || gainFor(identity) <= 0) return null;
+      let any: boolean | null = null;
+      for (const entry of playing.values()) {
+        if (entry.identity !== identity || entry.meter === null) continue;
+        any = (any ?? false) || entry.on;
+      }
+      return any;
+    };
     const tiles = (): PageCallTile[] => {
       const out: PageCallTile[] = [];
       const inRoom = new Set<string>();
@@ -508,7 +556,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const r = roster.get(p.identity);
         const tileState: TileState = r === undefined ? 'unverified' : verified.has(p.identity) ? 'ok' : 'not-heard';
         const show = tileState === 'ok' && !state.paused;
-        out.push({ deviceId: p.identity, userId: r?.userId ?? '', state: tileState, speaking: p.isSpeaking === true,
+        const speaking = !state.paused && (remoteLocal(p.identity) ?? p.isSpeaking === true);
+        out.push({ deviceId: p.identity, userId: r?.userId ?? '', state: tileState, speaking,
           video: show ? streamOf(p, SOURCE.camera) : null, screen: show ? streamOf(p, SOURCE.screen) : null });
       }
       for (const [deviceId, r] of roster) {
@@ -517,9 +566,23 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       }
       return out;
     };
-    const level = (): number => (state.muted || state.paused ? 0 : Math.max(0, Math.min(12, Math.round((local.audioLevel ?? 0) * 12))));
-    const ownSpeaking = (): boolean => local.isSpeaking === true && !state.muted && !state.deafened && !state.paused;
-    const refresh = (): void => { if (!ended) set({ tiles: tiles(), level: level(), speaking: ownSpeaking() }); };
+    // The own mic counts only while it is sending (micSending === true: not muted, deafened, paused, or push to talk up).
+    const ownLocal = (): boolean => ownMeter !== null && levelsLive();
+    const level = (): number => {
+      if (state.muted || state.paused) return 0;
+      if (ownLocal()) return micSending === true ? Math.max(0, Math.min(12, Math.round(ownRms * 48))) : 0;
+      return Math.max(0, Math.min(12, Math.round((local.audioLevel ?? 0) * 12)));
+    };
+    const ownSpeaking = (): boolean => {
+      if (ownLocal()) return micSending === true && ownOn;
+      return local.isSpeaking === true && !state.muted && !state.deafened && !state.paused;
+    };
+    let lastSetAt = Number.NEGATIVE_INFINITY;
+    const refresh = (): void => {
+      if (ended) return;
+      lastSetAt = deps.now();
+      set({ tiles: tiles(), level: level(), speaking: ownSpeaking() });
+    };
     const gainFor = (identity: string): number =>
       gainOf(roster.get(identity)?.userId ?? '', volumes, { deafened: state.deafened, paused: state.paused });
     /** The gains of every remote person; first, the held-back tracks whose gain rose above 0 are attached (fix round 1,
@@ -543,7 +606,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // `pending` until its gain rises (applyGains). Decryption and the tile’s verification are the receiver’s media
     // worker’s, so an unattached track still turns its tile ok.
     const audioHost = deps.audioHost ?? defaultAudioHost;
-    const playing = new Map<RemoteAudio, { el: HTMLMediaElement; identity: string }>();
+    const playing = new Map<RemoteAudio, {
+      el: HTMLMediaElement; identity: string; meter: LevelMeter | null; detector: SpeakingDetector; on: boolean;
+    }>();
     const pending = new Map<RemoteAudio, string>();
     /** Takes a subscribed remote audio track in: it is attached by the next applyGains once its gain is above 0. A no-op
      *  for a track already attached, for video, and after the end. */
@@ -580,7 +645,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       el.tabIndex = -1;
       el.setAttribute('aria-hidden', 'true');
       host.appendChild(el);
-      playing.set(t, { el, identity });
+      // web3.8 V1: the level is read from the element's own (decrypted, played) track; Chromium routes WebRTC audio to
+      // WebAudio only through the element livekit attached. A failure to make a meter is the fallback, never an error.
+      let tap: MediaStreamTrack | undefined;
+      try { tap = (el.srcObject as MediaStream | null)?.getAudioTracks()[0] ?? t.mediaStreamTrack; } catch { tap = t.mediaStreamTrack; }
+      playing.set(t, { el, identity, meter: makeMeter(tap), detector: new SpeakingDetector(), on: false });
       return true;
     };
     const detachAudio = (track: unknown): void => {
@@ -589,6 +658,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const entry = playing.get(t);
       if (entry !== undefined) {
         playing.delete(t);
+        entry.meter?.close();
         try { t.detach(entry.el); } catch { /* the element is removed all the same */ }
         entry.el.remove();
       }
@@ -642,6 +712,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       micSending = send;
       void Promise.resolve(send ? track.unmute() : track.mute()).catch(() => undefined);
     };
+    /** web3.8 V1: the own meter reads the track livekit publishes (the processed one, when a processor is set); it is made
+     *  again whenever that track changes. No microphone, or a refusal, leaves the SFU's flag as the fallback. */
+    const restartOwnMeter = (): void => {
+      ownMeter?.close();
+      ownMeter = null;
+      ownDetector.reset();
+      ownOn = false;
+      ownRms = 0;
+      if (!ended) ownMeter = makeMeter((micPub?.track as { mediaStreamTrack?: MediaStreamTrack } | undefined)?.mediaStreamTrack);
+    };
     if ('track' in mic) {
       micTrack = mic.track;
       // Product walk M5: a start muted sends no frame before the mute lands (LiveKit's unmute enables it again).
@@ -653,9 +733,11 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         micTrack = null;
         state = { ...state, mic: 'failed', error: 'E_MIC_PUBLISH' };
       }
+      if (micPub !== null) restartOwnMeter();
       checkAborted();
       if (opts.noise === 'on') {
         await startNoise();
+        restartOwnMeter();
         checkAborted();
       }
     } else {
@@ -940,6 +1022,38 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       return leaving;
     };
 
+    // ---- web3.8 V1: the sampler. One timer reads every meter each SPEAK_TICK_MS and feeds its detector. A speaking flip
+    // (own or remote) reaches the state at once; a level change only every LEVEL_PUBLISH_MS. Nothing here leaves the page.
+    const sample = (): void => {
+      if (ended) return;
+      const now = deps.now();
+      let flipped = false;
+      if (ownMeter !== null && levelsLive()) {
+        if (micSending === true) {
+          ownRms = ownMeter.read();
+          const on = ownDetector.update(ownRms, now);
+          if (on !== ownOn) flipped = true;
+          ownOn = on;
+        } else {
+          if (ownOn) flipped = true;
+          ownRms = 0;
+          ownDetector.reset();
+          ownOn = false;
+        }
+      }
+      if (levelsLive()) {
+        for (const entry of playing.values()) {
+          if (entry.meter === null) continue;
+          const on = gainFor(entry.identity) > 0 && !state.paused ? entry.detector.update(entry.meter.read(), now) : false;
+          if (on !== entry.on) flipped = true;
+          entry.on = on;
+          if (!on && (gainFor(entry.identity) <= 0 || state.paused)) entry.detector.reset();
+        }
+      }
+      if (flipped || (level() !== state.level && now - lastSetAt >= LEVEL_PUBLISH_MS)) refresh();
+      later(sample, SPEAK_TICK_MS);
+    };
+
     // ---- connected (WB client m2: only while the room is still up)
     checkAborted();
     if ((room as unknown as { state?: string }).state === 'disconnected') throw new PageCallError('E_DISCONNECTED');
@@ -950,6 +1064,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // Product walk M5: a call started muted or deafened says so to the others at once.
     if (state.muted || state.deafened) sendSelf();
     later(poll, TILE_POLL_MS);
+    later(sample, SPEAK_TICK_MS);
     later(statsTick, STATS_EVERY_MS);
     scheduleIce(firstIce);
 
@@ -964,7 +1079,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended) return;
         const patch: Partial<PageCallState> = { muted: on };
         if (!on && state.deafened) patch.deafened = false;
-        patch.speaking = local.isSpeaking === true && !on && !state.paused;
+        // With a local meter the own mic starts silent after an unmute (the detector needs its 50 ms again); without one
+        // the SFU's flag is the fallback.
+        patch.speaking = ownLocal() ? false : local.isSpeaking === true && !on && !state.paused;
+        if (on) { ownDetector.reset(); ownOn = false; ownRms = 0; }
         set(patch);
         applyMic();
         applyGains();
@@ -1048,6 +1166,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           applyMic();
           await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
         }
+        restartOwnMeter(); // the processor swaps the published track
         applyMic();
       }),
       // Fix round 1 (M2): both run synchronously inside the "turn on audio" press (the dock’s button, the user activation

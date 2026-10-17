@@ -57,8 +57,11 @@ function fakeLocalTrack(kind: string): FakeTrack {
 function fakeRemoteTrack(kind: 'audio' | 'video', sid: string) {
   const t = {
     kind, sid, attached: [] as HTMLMediaElement[], made: [] as HTMLMediaElement[],
+    /** The MediaStreamTrack livekit puts on the element it attaches (web3.8 V1: the level meter reads it). */
+    mst: { kind, id: sid } as unknown as MediaStreamTrack,
     attach: vi.fn((el?: HTMLMediaElement) => {
       const out = el ?? document.createElement(kind);
+      if (kind === 'audio') out.srcObject = { getAudioTracks: () => [t.mst] } as unknown as MediaStream;
       t.attached.push(out);
       t.made.push(out);
       return out;
@@ -1033,15 +1036,279 @@ describe('the product walk fixes', () => {
     expect(call.state.localScreen).toBeNull();
   });
 
-  it('M4: the own speaking follows the SFU, never while muted', async () => {
-    const f = fakes();
-    const call = await start(f);
-    expect(call.state.speaking).toBe(false);
-    (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
-    f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
-    expect(call.state.speaking).toBe(true);
-    call.setMuted(true);
-    expect(call.state.speaking).toBe(false);
+  describe('web3.8 V1: speaking follows the audio itself', () => {
+    /** Fake levels: a meter per track, its RMS set by the test; every meter's close() is counted. */
+    const meters = () => {
+      const levels = new Map<unknown, number>();
+      const made: Array<{ track: unknown; close: ReturnType<typeof vi.fn> }> = [];
+      const create = vi.fn((_ctx: AudioContext, track: MediaStreamTrack) => {
+        const close = vi.fn();
+        made.push({ track, close });
+        return { read: () => levels.get(track) ?? 0, close };
+      });
+      return { levels, made, create };
+    };
+    const withMeters = (f: ReturnType<typeof fakes>) => {
+      const m = meters();
+      f.deps.createLevelMeter = m.create;
+      return m;
+    };
+    const ownTrack = (f: ReturnType<typeof fakes>) => f.localTracks[0].mediaStreamTrack;
+    const tileOf = (call: PageCall, id: string) => call.state.tiles.find((t) => t.deviceId === id)!;
+    const heard = (f: ReturnType<typeof fakes>, id = BOB_DEV) => {
+      const p = f.addRemote(id);
+      f.verified.add(id);
+      const { track, pub } = f.subscribeTrack(p, 'microphone');
+      return { p, track, pub };
+    };
+
+    it('M4: the own speaking comes on after 50 ms of level and goes off 300 ms after it ends', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      expect(call.state.speaking).toBe(false);
+      m.levels.set(ownTrack(f), 0.05);
+      // The first sample that hears the level starts the run: 25 ms of it is not speaking, 50 ms is.
+      await f.advance(25);
+      expect(call.state.speaking).toBe(false);
+      await f.advance(25);
+      expect(call.state.speaking).toBe(false);
+      await f.advance(25);
+      expect(call.state.speaking).toBe(true);
+      m.levels.set(ownTrack(f), 0);
+      await f.advance(25);
+      await f.advance(275);
+      expect(call.state.speaking).toBe(true);
+      await f.advance(25);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('M4: the SFU flag no longer decides the own speaking while a meter reads', async () => {
+      const f = fakes();
+      withMeters(f);
+      const call = await start(f);
+      (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [f.room.localParticipant]);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('the own speaking is false whatever the level while muted, deafened, paused or push to talk is up', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      m.levels.set(ownTrack(f), 0.2);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.setMuted(true);
+      expect(call.state.speaking).toBe(false);
+      await f.advance(200);
+      expect(call.state.speaking).toBe(false);
+      expect(call.state.level).toBe(0);
+      call.setMuted(false);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.setDeafened(true);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+      call.setDeafened(false);
+      call.setMuted(false);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      await call.setPaused(true);
+      expect(call.state.speaking).toBe(false); // at once, before the next sample
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+      await call.setPaused(false);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.setMode('ptt');
+      await f.advance(100);
+      expect(call.state.speaking).toBe(false);
+      call.pushToTalk(true);
+      await f.advance(100);
+      expect(call.state.speaking).toBe(true);
+      call.pushToTalk(false);
+      await f.advance(50);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('a remote tile with an attached track follows its meter and ignores the SFU flag', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p, track } = heard(f);
+      await f.advance(100);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      m.levels.set(track.mst, 0.1);
+      await f.advance(75);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      p.isSpeaking = false;
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      m.levels.set(track.mst, 0);
+      await f.advance(325);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+    });
+
+    it('a track that is not attached (deafened) falls back to the SFU flag; paused gives false for every tile', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f, { self: 'deafened' });
+      const { p, track } = heard(f);
+      expect(track.attach).not.toHaveBeenCalled();
+      expect(m.made.filter((x) => x.track === track.mst)).toHaveLength(0);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      await call.setPaused(true);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      await call.setPaused(false);
+      p.isSpeaking = false;
+      f.room.emit('activeSpeakersChanged', []);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+    });
+
+    it('a track attached before the volume went to 0 falls back to the SFU flag from then on', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p, track } = heard(f);
+      m.levels.set(track.mst, 0.1);
+      await f.advance(100);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      call.setVolume(BOB, 0);
+      await f.advance(25);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(false);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+    });
+
+    it('with no AudioContext both fall back to the SFU flags', async () => {
+      const f = fakes();
+      f.deps.audioContext = () => null;
+      const m = withMeters(f);
+      const call = await start(f);
+      const { p } = heard(f);
+      expect(m.create).not.toHaveBeenCalled();
+      p.isSpeaking = true;
+      (f.room.localParticipant as unknown as { isSpeaking: boolean }).isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p, f.room.localParticipant]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      expect(call.state.speaking).toBe(true);
+      call.setMuted(true);
+      expect(call.state.speaking).toBe(false);
+    });
+
+    it('a meter that cannot be made means the fallback, never an error', async () => {
+      const f = fakes();
+      f.deps.createLevelMeter = () => null;
+      const call = await start(f);
+      const { p } = heard(f);
+      p.isSpeaking = true;
+      f.room.emit('activeSpeakersChanged', [p]);
+      expect(tileOf(call, BOB_DEV).speaking).toBe(true);
+      expect(call.state.error).toBeNull();
+      const g = fakes();
+      g.deps.createLevelMeter = () => { throw new Error('no analyser'); };
+      const other = await start(g);
+      expect(other.state.error).toBeNull();
+      expect(other.state.phase).toBe('connected');
+    });
+
+    it('the level (0..12) comes from the own meter', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      m.levels.set(ownTrack(f), 0.1);
+      await f.advance(100);
+      expect(call.state.level).toBe(5);
+      m.levels.set(ownTrack(f), 0.9);
+      await f.advance(100);
+      expect(call.state.level).toBe(12);
+    });
+
+    it('a speaking flip is published at once, a level change at most every 100 ms', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const seen: Array<[boolean, number]> = [];
+      call.subscribe(() => { seen.push([call.state.speaking, call.state.level]); });
+      m.levels.set(ownTrack(f), 0.1);
+      await f.advance(75);
+      expect(seen.some(([s]) => s)).toBe(true);
+      seen.length = 0;
+      // The level wanders every tick; the state changes at most once per 100 ms.
+      for (let i = 0; i < 8; i++) {
+        m.levels.set(ownTrack(f), 0.1 + (i % 2 === 0 ? 0.02 : 0.04));
+        await f.advance(25);
+      }
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.length).toBeLessThanOrEqual(2);
+    });
+
+    it('every meter is closed on detach and on leave("user"), and no timer is left after ended', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const bob = heard(f);
+      const carol = heard(f, CAROL_DEV);
+      const closed = (t: unknown) => m.made.find((x) => x.track === t)!.close;
+      expect(closed(ownTrack(f))).not.toHaveBeenCalled();
+      f.unsubscribeTrack(bob.p, bob.pub);
+      expect(closed(bob.track.mst)).toHaveBeenCalledTimes(1);
+      expect(closed(carol.track.mst)).not.toHaveBeenCalled();
+      await call.leave('user');
+      expect(closed(ownTrack(f))).toHaveBeenCalledTimes(1);
+      expect(closed(carol.track.mst)).toHaveBeenCalledTimes(1);
+      expect(f.timers.size).toBe(0);
+    });
+
+    it('every meter is closed when the room ends', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f);
+      const bob = heard(f);
+      f.room.emit('disconnected', 1);
+      await f.advance(10);
+      expect(call.state.phase).toBe('ended');
+      expect(m.made.some((x) => x.track === bob.track.mst)).toBe(true);
+      for (const x of m.made) expect(x.close).toHaveBeenCalledTimes(1);
+      expect(f.timers.size).toBe(0);
+    });
+
+    it('the own meter is closed when a start fails after the publish', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      (f.room as unknown as { state: string }).state = 'disconnected';
+      await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, opts)).rejects.toMatchObject({ code: 'E_DISCONNECTED' });
+      expect(m.made.length).toBeGreaterThan(0);
+      for (const x of m.made) expect(x.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('the own meter is replaced when the noise processor swaps the track', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      const call = await start(f, { noise: 'on' });
+      const first = m.made.length;
+      const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void> };
+      mic.stopProcessor = vi.fn(async () => undefined);
+      await call.setNoise('off');
+      expect(m.made.length).toBe(first + 1);
+      expect(m.made[first - 1].close).toHaveBeenCalledTimes(1);
+    });
+
+    it('no level reaches the bridge', async () => {
+      const f = fakes();
+      const m = withMeters(f);
+      await start(f);
+      m.levels.set(ownTrack(f), 0.1);
+      await f.advance(200);
+      expect(JSON.stringify(f.calls)).not.toMatch(/rms|level|speaking/i);
+    });
   });
 
   it('M1: noise suppression switches during the call', async () => {
