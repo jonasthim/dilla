@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CallStage, type CallStageProps } from './CallStage.tsx';
 import { CallControls, type CallControlsProps } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
-import { expectVoiceTargets } from '../CallControls/CallControls.stories.tsx';
+import { expectVoiceTargets, nextFrame } from '../CallControls/CallControls.stories.tsx';
 
 // Every string is L-COPY-05's, quoted (en.ts gains them in task 9).
 const STATE: CallTileProps['labels']['state'] = {
@@ -157,4 +157,87 @@ export const Held: Story = {
 export const Reconnecting: Story = { args: { tiles: [tile('ada', { state: 'not-heard' }), tile('bo', { muted: true }), tile('you', {}, true)] } };
 /** Toggles pressed (WB a11y I4): the labels stay mute, deafen, camera and share screen; `[x]` and aria-pressed say on. */
 export const TogglesPressed: Story = { args: { controls: controls({ muted: true, deafened: true, camera: true, sharing: true }) } };
+
+// U4: the grid, the focus layout and full screen. Tiles are keyed by `${deviceId}:${source}` and have a focus button.
+type StageTile = CallStageProps['tiles'][number];
+function person(name: string, more: Partial<VoiceParticipantView> = {}, own = false): StageTile {
+  const t = tile(name, more, own);
+  const source = more.video ? 'camera' : 'avatar';
+  return { ...t, id: `${t.view.deviceId}:${source}`, source, title: name, fullscreenLabel: `full screen ${name}`, mirror: own };
+}
+function shared(name: string): StageTile {
+  const t = tile(name, { screen: true });
+  return { ...t, id: `${t.view.deviceId}:screen`, source: 'screen', title: `${name} screen`, fullscreenLabel: `full screen ${name} screen` };
+}
+const NAMES = ['ada', 'bo', 'cy', 'di', 'ed', 'fy', 'gu', 'hi'];
+function people(n: number): StageTile[] {
+  return [...NAMES.slice(0, n - 1).map((name, i) => person(name, { video: i % 2 === 0, speaking: i === 1, muted: i === 2 })), person('you', { video: true }, true)];
+}
+
+/** A stateful stage: the focus button toggles `focusedId`; the stand-in cameras are drawn at story time. */
+function StageDemo(props: CallStageProps & { initialFocus?: string | null }) {
+  const media = useDrawnStream();
+  const [focusedId, setFocusedId] = useState<string | null>(props.initialFocus ?? null);
+  return <CallStage {...props} tiles={props.tiles.map(t => (t.view.video || t.source === 'screen' ? { ...t, media } : t))} focusedId={focusedId} onFocus={setFocusedId} />;
+}
+const stageBox = (Story: () => React.JSX.Element) => (
+  <div style={{ width: 960, height: 620, display: 'grid', gridTemplateRows: 'minmax(0, 1fr)' }}><Story /></div>
+);
+
+/** The tiles are 16:9, none overflows the area, and they are as wide as the area allows (no tile is smaller than a row's worth). */
+function expectGrid(root: HTMLElement, story: string, n: number): void {
+  const tiles = Array.from(root.querySelectorAll<HTMLElement>('li.d-call-stage__tile'));
+  const area = root.querySelector<HTMLElement>('.d-call-stage__tiles')!.getBoundingClientRect();
+  if (tiles.length !== n) throw new Error(`${story}: ${String(tiles.length)} tiles, expected ${String(n)}`);
+  for (const li of tiles) {
+    const r = li.getBoundingClientRect();
+    if (Math.abs(r.width / r.height - 16 / 9) > 0.03) throw new Error(`${story}: a tile is ${String(r.width)} × ${String(r.height)}, not 16:9`);
+    if (r.right > area.right + 1 || r.bottom > area.bottom + 1 || r.left < area.left - 1 || r.top < area.top - 1) throw new Error(`${story}: a tile overflows the area`);
+  }
+  expectVoiceTargets(root, story);
+}
+/** Focused: the focused tile spans row 1 at the visible width, the others are 7.5rem high and flow in one row below it. */
+function expectFocused(root: HTMLElement, story: string): void {
+  const stage = root.querySelector('.d-call-stage');
+  if (stage?.hasAttribute('data-focused-stage') !== true) throw new Error(`${story}: the stage is not focused`);
+  const big = root.querySelector<HTMLElement>('li[data-focused="true"]')!.getBoundingClientRect();
+  const area = root.querySelector<HTMLElement>('.d-call-stage__tiles')!.getBoundingClientRect();
+  const strip = Array.from(root.querySelectorAll<HTMLElement>('li[data-focused="false"]')).map(li => li.getBoundingClientRect());
+  if (big.width < area.width - 2) throw new Error(`${story}: the focused tile is ${String(big.width)} wide in ${String(area.width)}`);
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  for (const r of strip) {
+    if (Math.abs(r.height - 7.5 * rem) > 1 || r.top < big.bottom - 1 || Math.abs(r.top - strip[0].top) > 1) throw new Error(`${story}: the filmstrip is not one row of 7.5rem tiles under the focused tile`);
+  }
+  expectVoiceTargets(root, story);
+}
+
+const gridStory = (n: number, theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+  args: { tiles: people(n), code: null }, globals: { theme }, decorators: [stageBox],
+  render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectGrid(canvasElement, `Grid${String(n)}`, n); },
+});
+const focusedStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
+  args: { tiles: [person('ada', { video: true }), shared('ada'), person('bo', { video: true, speaking: true }), person('cy', { muted: true }), person('you', { video: true }, true)], code: null },
+  globals: { theme }, decorators: [stageBox],
+  render: args => <StageDemo {...args} initialFocus="d-ada:screen" />,
+  play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectFocused(canvasElement, 'Focused'); },
+});
+/** One tile fills the area above the toolbar. */
+export const Grid1: Story = gridStory(1, 'mesh');
+export const Grid1Light: Story = gridStory(1, 'light');
+export const Grid1HighContrast: Story = gridStory(1, 'high-contrast');
+/** Two tiles: one column or two, whichever makes the tiles widest. */
+export const Grid2: Story = gridStory(2, 'mesh');
+export const Grid2Light: Story = gridStory(2, 'light');
+export const Grid2HighContrast: Story = gridStory(2, 'high-contrast');
+export const Grid4: Story = gridStory(4, 'mesh');
+export const Grid4Light: Story = gridStory(4, 'light');
+export const Grid4HighContrast: Story = gridStory(4, 'high-contrast');
+export const Grid9: Story = gridStory(9, 'mesh');
+export const Grid9Light: Story = gridStory(9, 'light');
+export const Grid9HighContrast: Story = gridStory(9, 'high-contrast');
+/** A shared screen focused: it spans row 1 and the people flow into the filmstrip under it; the same video elements stay. */
+export const Focused: Story = focusedStory('mesh');
+export const FocusedLight: Story = focusedStory('light');
+export const FocusedHighContrast: Story = focusedStory('high-contrast');
 

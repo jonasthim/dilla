@@ -20,7 +20,13 @@ export interface CallStageNotice {
 export interface CallStageProps {
   /** The stage's heading, e.g. 'voice harbour' or the DM's name. */
   title: string;
-  tiles: readonly CallTileProps[];
+  /** The tiles, in one stable order, keyed by `id` (R27). `focused` and `onFocusTile` are injected here, never passed. */
+  tiles: readonly Omit<CallTileProps, 'focused' | 'onFocusTile'>[];
+  /** The focused tile's id, or null for the grid. An id that names no current tile renders the grid. Additive: without
+   *  `onFocus` the tiles have no focus button (pre-flight C-2). */
+  focusedId?: string | null;
+  /** Focus a tile (`id`) or clear the focus (`null`): a click on a tile's focus button, Escape, or a pause notice. */
+  onFocus?(id: string | null): void;
   /** The call code, 30 digits (spaces are ignored), or null when there is none yet. */
   code: string | null;
   /** A notice on the stage: the RV-3 pause banner (with its `voice.pausedAction`), a block notice or a transient one. */
@@ -40,15 +46,43 @@ function groupCode(code: string): string {
   return /^\d{30}$/.test(digits) ? (digits.match(/\d{5}/g) ?? []).join(' ') : code;
 }
 
+const TILE_GAP_PX = 12; // 0.75rem at the root size the stage is laid out for; the CSS gap is the same 0.75rem.
+
+/**
+ * The column count c in 1..n that makes the 16:9 tiles of an n-tile grid widest in a `w` x `h` area with `gap` between
+ * them: the tile width is `min((w - gap(c-1))/c, ((h - gap(r-1))/r) * 16/9)` with `r = ceil(n/c)`. A tie goes to
+ * the fewer columns.
+ */
+export function stageColumns(n: number, w: number, h: number, gap: number): number {
+  let best = 1;
+  let bestWidth = -Infinity;
+  for (let c = 1; c <= n; c++) {
+    const width = tileWidth(c, n, w, h, gap);
+    if (width > bestWidth + 1e-9) { best = c; bestWidth = width; }
+  }
+  return best;
+}
+
+/** The width of a 16:9 tile when `n` tiles sit in `c` columns of a `w` x `h` area. */
+function tileWidth(c: number, n: number, w: number, h: number, gap: number): number {
+  const r = Math.ceil(n / c);
+  return Math.min((w - gap * (c - 1)) / c, ((h - gap * (r - 1)) / r) * (16 / 9));
+}
+
 /**
  * The call stage: the heading, the outgoing ring, the call code behind a closed disclosure (Escape closes it and
  * returns focus to it), a notice region, the tiles as a list named `voice.tiles` (or `voice.empty`), and the
  * controls. The notice region is a `role="status"` that is always present, so its text is announced; a notice
- * with `focusOnce` takes focus once per text. While a pause or block notice shows, no tile renders media; while any
- * notice shows, the stage does not also say that nobody is in voice.
+ * with `focusOnce` takes focus once per text. While a pause or block notice shows, no tile renders media, no screen
+ * tile renders and the focus is cleared; while any notice shows, the stage does not also say that nobody is in voice.
+ *
+ * The tiles are one keyed list that never changes order or parent: focus only sets `data-focused-stage` on the stage
+ * and `data-focused` on the tile, and CSS grid does the rest (R27). In the grid a ResizeObserver writes
+ * `--d-stage-cols` and `--d-tile-w` from `stageColumns`. Escape unfocuses a tile, unless full screen is on.
  */
-export function CallStage({ title, tiles, code, notice, controls, outgoing, labels }: CallStageProps) {
+export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, code, notice, controls, outgoing, labels }: CallStageProps) {
   const titleId = useId();
+  const tilesRef = useRef<HTMLUListElement>(null);
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const noticeRef = useRef<HTMLDivElement>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
@@ -73,8 +107,43 @@ export function CallStage({ title, tiles, code, notice, controls, outgoing, labe
   };
 
   const hideMedia = notice !== null && notice.kind !== 'info';
+  const tiles = hideMedia ? allTiles.filter(t => t.source !== 'screen') : allTiles;
+  const idOf = (t: (typeof allTiles)[number]) => t.id ?? t.view.deviceId;
+  const focusedHere = !hideMedia && focusedId !== null && tiles.some(t => idOf(t) === focusedId);
+  const tileCount = tiles.length;
+
+  useEffect(() => {
+    if (hideMedia && focusedId !== null) onFocus?.(null);
+  }, [hideMedia, focusedId, onFocus]);
+
+  useEffect(() => {
+    const el = tilesRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const { clientWidth: w, clientHeight: h } = el;
+      if (w <= 0 || h <= 0 || tileCount === 0) return;
+      const gap = TILE_GAP_PX * (parseFloat(getComputedStyle(document.documentElement).fontSize) / 16 || 1);
+      const cols = stageColumns(tileCount, w, h, gap);
+      const width = tileWidth(cols, tileCount, w, h, gap);
+      el.style.setProperty('--d-stage-cols', String(cols));
+      el.style.setProperty('--d-tile-w', `${String(Math.max(0, Math.floor(width)))}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => { observer.disconnect(); };
+  }, [tileCount]);
+
+  const onStageKey = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key !== 'Escape' || !focusedHere || document.fullscreenElement) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onFocus?.(null);
+  };
+
   return (
-    <section className="d-call-stage" aria-labelledby={titleId} data-media-hidden={hideMedia ? 'true' : undefined}>
+    <section className="d-call-stage" aria-labelledby={titleId} data-media-hidden={hideMedia ? 'true' : undefined}
+      data-focused-stage={focusedHere ? 'true' : undefined} onKeyDown={onStageKey}>
       <header className="d-call-stage__head">
         <h2 id={titleId} className="d-call-stage__title">{title}</h2>
         {outgoing !== null ? <p className="d-call-stage__outgoing">{outgoing.text}</p> : null}
@@ -104,12 +173,16 @@ export function CallStage({ title, tiles, code, notice, controls, outgoing, labe
       {tiles.length === 0 ? (
         notice === null ? <p className="d-call-stage__empty">{labels.empty}</p> : null
       ) : (
-        <ul role="list" aria-label={labels.tiles} className="d-call-stage__tiles">
-          {tiles.map(t => (
-            <li key={t.view.deviceId} className="d-call-stage__tile">
-              <CallTile {...t} media={hideMedia ? null : t.media} inset={hideMedia ? null : t.inset ?? null} />
-            </li>
-          ))}
+        <ul ref={tilesRef} role="list" aria-label={labels.tiles} className="d-call-stage__tiles"
+          style={focusedHere ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties : undefined}>
+          {tiles.map(t => {
+            const id = idOf(t);
+            const focused = focusedHere && id === focusedId;
+            return (
+              <CallTile key={id} {...t} media={hideMedia ? null : t.media} inset={hideMedia ? null : t.inset ?? null}
+                focused={focused} onFocusTile={onFocus ? () => { onFocus(focused ? null : id); } : undefined} />
+            );
+          })}
         </ul>
       )}
       <div className="d-call-stage__controls">{controls}</div>

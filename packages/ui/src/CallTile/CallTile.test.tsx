@@ -48,7 +48,7 @@ describe('CallTile', () => {
     expect(dot).toHaveAttribute('title', 'speaking');
     expect(dot.querySelector('.d-state-dot')).toHaveAttribute('data-tone', 'ok');
     expect(dot).toHaveAttribute('data-state', 'speaking');
-    expect(container.firstElementChild).toHaveAttribute('data-speaking', 'true');
+    expect(container.querySelector('.d-call-tile')).toHaveAttribute('data-speaking', 'true');
   });
 
   it('shows each glyph-only state as a named image, the stream states as glyph plus word, and the state hook', () => {
@@ -63,7 +63,7 @@ describe('CallTile', () => {
     expect(screen.getByText('web')).toBeInTheDocument();
     rerender(<CallTile view={{ ...view, state: 'not-heard' }} {...rest} />);
     expect(screen.getByText('not heard yet')).toBeInTheDocument();
-    expect(container.firstElementChild).toHaveAttribute('data-voice-state', 'not-heard');
+    expect(container.querySelector('.d-call-tile')).toHaveAttribute('data-voice-state', 'not-heard');
     rerender(<CallTile view={{ ...view, state: 'connecting' }} {...rest} />);
     expect(screen.getByText('connecting')).toBeInTheDocument();
   });
@@ -134,8 +134,28 @@ describe('CallTile', () => {
 
   it.each(['mesh', 'light', 'high-contrast'])('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;
-    const { container } = render(<div className="d-root"><CallTile {...(meta.args as CallTileProps)} /></div>);
+    const { container } = render(<div className="d-root"><ul><CallTile {...(meta.args as CallTileProps)} /></ul></div>);
     // jsdom has no layout or canvas, so contrast is left to the Storybook axe run in a real browser.
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
+  });
+
+  it('given only today\'s props (inset, mirror media) it renders as before: its own li, no focus button, no full-screen button', () => {
+    Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, value: true });
+    const { container } = render(<CallTile view={{ ...view, video: true, screen: true }} {...rest} media={new MediaStream()} inset={new MediaStream()} mirror="media" />);
+    Reflect.deleteProperty(document, 'fullscreenEnabled');
+    const li = container.firstElementChild!;
+    expect(li.tagName).toBe('LI');
+    expect(li).toHaveClass('d-call-stage__tile');
+    expect(li).toHaveAttribute('data-source', 'camera');
+    expect(container.querySelectorAll('video')).toHaveLength(2);
+    expect(container.querySelector('video')).toHaveAttribute('data-mirror', 'true');
+    expect(container.querySelector('.d-call-tile__inset')).not.toBeNull();
+    expect(container.querySelector('.d-call-tile__focus')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('mirror true mirrors the media element', () => {
+    const { container } = render(<CallTile view={{ ...view, video: true }} {...rest} own media={new MediaStream()} mirror />);
+    expect(container.querySelector('video')).toHaveAttribute('data-mirror', 'true');
   });
 });

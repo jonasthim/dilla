@@ -53,7 +53,7 @@ function WithScreenAndCamera(props: CallTileProps) {
 const meta = {
   title: 'Voice/CallTile', component: CallTile,
   args: { view: VIEW, own: false, volume: 100, media: null, labels: LABELS, onVolume: () => {} },
-  decorators: [Story => <div style={{ width: 280 }}><Story /></div>],
+  decorators: [(Story, ctx) => <ul style={{ width: (ctx.parameters.tileWidth as string | undefined) ?? '280px', boxSizing: 'border-box', margin: 0, padding: 0, listStyle: 'none' }}><Story /></ul>],
   // The volume range is a voice control: 40 px high, 44 px on a phone (flow 06).
   play: ({ canvasElement }) => { expectVoiceTargets(canvasElement, 'CallTile'); expectGlyphLine(canvasElement, 'CallTile'); },
 } satisfies Meta<typeof CallTile>;
@@ -81,7 +81,7 @@ export const LouderVolume: Story = { args: { volume: 150 } };
 // Walk 37 #18: the volume row fits a 360 px phone, with a three-digit value and a long name.
 export const Phone360: Story = {
   args: { volume: 100, labels: { ...LABELS, volume: 'volume for ada-lovelace' } },
-  render: args => <div style={{ width: 'calc(100vw - 32px)', boxSizing: 'border-box' }}><CallTile {...args} /></div>,
+  parameters: { tileWidth: 'calc(100vw - 32px)' },
 };
 
 /** Every glyph and a long name in the 280 px tile: the name truncates, the glyphs stay on its line (R29). */
