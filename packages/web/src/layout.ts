@@ -65,9 +65,9 @@ const sheetOf = (state: unknown): unknown =>
  * A sheet on a phone is a history entry, so the system back closes the sheet and not the view under it. While `open`,
  * one entry carrying `phoneSheet: <name>` is pushed on top of the current one (its state kept). A popstate that leaves
  * that entry calls `onClose`. `close()` is what the sheet's own controls call: it pops the entry (which ends in
- * `onClose` through the popstate), or calls `onClose` at once when the sheet has no entry.
+ * `onClose` through the popstate, and returns true), or calls `onClose` at once when the sheet has no entry (returns false).
  */
-export function usePhoneSheet(name: 'members' | 'thread', open: boolean, onClose: () => void): { close: () => void } {
+export function usePhoneSheet(name: 'members' | 'thread', open: boolean, onClose: () => void): { close: () => boolean } {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const pushed = useRef(false);
@@ -99,8 +99,9 @@ export function usePhoneSheet(name: 'members' | 'thread', open: boolean, onClose
     return () => window.removeEventListener('popstate', onPop);
   }, [open, name]);
   const close = useCallback(() => {
-    if (pushed.current && sheetOf(window.history.state) === name) window.history.back();
-    else onCloseRef.current();
+    if (pushed.current && sheetOf(window.history.state) === name) { window.history.back(); return true; }
+    onCloseRef.current();
+    return false;
   }, [name]);
   return { close };
 }

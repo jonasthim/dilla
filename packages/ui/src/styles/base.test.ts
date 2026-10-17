@@ -21,8 +21,11 @@ describe('base.css phone rules', () => {
     expect(css).toMatch(/\.d-app-shell__ring \{[^}]*padding-top: env\(safe-area-inset-top\)/);
   });
   it('pads a call bar by the home indicator when no tab bar follows it, and the composer then drops its own', () => {
-    expect(css).toMatch(/__callbar:not\(:has\(\+ \.d-app-shell__tabbar\)\) \{[^}]*padding-bottom: env\(safe-area-inset-bottom\)/);
+    expect(css).toMatch(/__callbar:not\(:has\(\+ \.d-app-shell__tabbar:not\(\[hidden\]\)\)\) \{[^}]*padding-bottom: env\(safe-area-inset-bottom\)/);
     expect(css).toMatch(/:has\(\.d-app-shell__callbar\) \.d-composer \{ padding-bottom: 0\.5rem; \}/);
+    expect(css).toMatch(/\[data-typing="true"\]\):has\(\.d-app-shell__tabbar\) \.d-composer \{ padding-bottom: 0\.5rem; \}/);
+    expect(css).toMatch(/\.d-app-shell__tabbar\[hidden\], [^{]*\[data-typing="true"\] \.d-app-shell__tabbar \{ display: none; \}/);
+    expect(css).toMatch(/\.d-app-shell__aside, [^{]*__backdrop \{ bottom: var\(--d-tabbar-h, 0px\); \}/);
   });
   it('pads the phone grid, the ring and the aside by the landscape side insets', () => {
     expect(css).toMatch(/\[data-layout="phone"\] \.d-app-shell__grid \{[^}]*padding-left: env\(safe-area-inset-left\); padding-right: env\(safe-area-inset-right\)/);

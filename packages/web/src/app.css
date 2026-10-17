@@ -202,11 +202,11 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 
 /* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
 @media (max-width: 47.99rem) {
-  .d-settings-frame:has(.d-phone-header) { width: 100vw; height: var(--d-vvh, 100dvh); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
+  .d-settings-frame:has(.d-phone-header) { max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__panel { display: block; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__side, .d-settings-frame:has(.d-phone-header) .d-settings-frame__bar { display: none; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__pane { height: 100%; }
-  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body { padding: 0 0 max(1.5rem, env(safe-area-inset-bottom)); }
+  .d-settings-frame:has(.d-phone-header) .d-settings-frame__body { padding: 0 0 1.5rem; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > :not(.d-phone-header):not(dialog) { margin-left: var(--row-pad-x); margin-right: var(--row-pad-x); }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__body > .d-phone-header + * { margin-top: 1rem; }
 }

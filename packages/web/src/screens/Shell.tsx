@@ -1230,13 +1230,14 @@ export function Shell(): React.JSX.Element {
   // The tabs (flow 12): a tab opens where it was last left, else at its root; the counts are what the sidebar's badges sum to.
   const serverRoot: Route = (routeCommunity ?? fallbackCommunity) !== null
     ? { name: 'channel', communityId: (routeCommunity ?? fallbackCommunity) as string, channelId: null } : { name: 'root' };
+  const tabRoot = (to: PhoneTab): Route => to === 'servers' ? serverRoot : to === 'dms' ? { name: 'dms' } : { name: to };
   const tabTarget = (to: PhoneTab): Route => {
     const kept = rememberedTab(to);
     if (kept !== null) {
       const remembered = routeOf(kept);
       if (tabOf(remembered) === to && remembered.name !== 'root') return remembered;
     }
-    return to === 'servers' ? serverRoot : to === 'dms' ? { name: 'dms' } : { name: to };
+    return tabRoot(to);
   };
   const activityCount = railItems.reduce((n, item) => n + item.mentions, 0) + dmCounts.unread;
   const tabLabel = (to: PhoneTab) => t(`nav.tab.${to}`);
@@ -1245,7 +1246,15 @@ export function Shell(): React.JSX.Element {
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
   const tabBar = !phone ? undefined : (
-    <TabBar label={t('nav.tabs.label')} onSelect={id => navigate(tabTarget(id as PhoneTab), true)} items={[
+    <TabBar label={t('nav.tabs.label')} onSelect={id => {
+      const to = id as PhoneTab;
+      // The current tab in its pushed view goes to its list (the iOS convention); another tab opens where it was left.
+      const target = to === phoneTab && phonePane === 'view' ? tabRoot(to) : tabTarget(to);
+      // An open sheet closes first. Its entry is popped (async), and only then does the tab's replace land on the view's entry.
+      if (asideShown && phone && (sideNow !== null ? threadSheet : memberSheet).close()) {
+        window.addEventListener('popstate', () => navigate(target, true), { once: true });
+      } else navigate(target, true);
+    }} items={[
       tabItem('servers', 'server'), tabItem('dms', 'message-square', dmCounts.unread), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
     ]} />
   );

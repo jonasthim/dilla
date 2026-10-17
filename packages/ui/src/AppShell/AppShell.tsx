@@ -40,7 +40,7 @@ export interface AppShellProps {
   layout?: 'desktop' | 'phone';
   /** The phone pane: 'list' (rail and sidebar, main hidden) or 'view' (main alone). Default 'list'. */
   phonePane?: 'list' | 'view';
-  /** The phone's bottom navigation; rendered only on the list pane of a phone. */
+  /** The phone's bottom navigation; rendered on both panes of a phone, and hidden while an editable element has focus (data-typing). */
   tabBar?: ReactNode;
   /** The phone's call strip; rendered on both panes of a phone. */
   callBar?: ReactNode;
@@ -48,6 +48,10 @@ export interface AppShellProps {
 
 /** The shell width from which the aside is a column (base.css holds the same 64rem in its container query). */
 const COLUMN_REM = 64;
+const NOT_TEXT = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'file', 'image', 'color']);
+/** An element the soft keyboard opens for: a text-like input, a textarea, a select or a contenteditable. */
+const editable = (el: EventTarget | null) => el instanceof HTMLElement
+  && (el instanceof HTMLInputElement ? !NOT_TEXT.has(el.type) : el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el.isContentEditable || el.getAttribute('contenteditable') === 'true');
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 /**
@@ -130,8 +134,34 @@ export function AppShell({
     observer.observe(el);
     return () => observer.disconnect();
   }, [hasRing]);
-  const hasBanner = banner !== undefined && banner !== null && banner !== false;
   const phone = layout === 'phone';
+  const hasTabBar = phone && tabBar !== undefined && tabBar !== null && tabBar !== false;
+  // Typing: an editable element in the shell has focus, which is when a phone opens its keyboard. The tab bar steps aside.
+  const [typing, setTyping] = useState(false);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!phone || root === null) { setTyping(false); return; }
+    const onIn = (e: FocusEvent) => setTyping(editable(e.target));
+    const onOut = (e: FocusEvent) => setTyping(editable(e.relatedTarget));
+    root.addEventListener('focusin', onIn);
+    root.addEventListener('focusout', onOut);
+    return () => { root.removeEventListener('focusin', onIn); root.removeEventListener('focusout', onOut); setTyping(false); };
+  }, [phone]);
+  // --d-tabbar-h is the tab bar's height (0px while hidden or absent). It is also set on <html>, where a settings page outside the shell reads it.
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const el = tabBarRef.current;
+    if (root === null || !phone) return;
+    const html = document.documentElement;
+    const measureTabs = () => { const h = `${el?.offsetHeight ?? 0}px`; root.style.setProperty('--d-tabbar-h', h); html.style.setProperty('--d-tabbar-h', h); };
+    measureTabs();
+    if (el === null || typeof ResizeObserver === 'undefined') return () => html.style.removeProperty('--d-tabbar-h');
+    const observer = new ResizeObserver(measureTabs);
+    observer.observe(el);
+    return () => { observer.disconnect(); html.style.removeProperty('--d-tabbar-h'); };
+  }, [phone, hasTabBar, typing]);
+  const hasBanner = banner !== undefined && banner !== null && banner !== false;
   const listPane = phone && phonePane === 'list';
   const sidebarRef = useRef<HTMLDivElement>(null);
   // No hash change and no history entry: focus moves to <main> (on a phone's list pane, the sidebar) and the URL stays.
@@ -141,7 +171,7 @@ export function AppShell({
   };
   if (phone) {
     // One pane at a time. DOM order is the focus order: skip link, banner, (list: rail, sidebar, hidden main | view: main),
-    // the aside and its backdrop, the call bar, the tab bar. There is no status bar: the banner says when the link is down.
+    // the aside and its backdrop, the call bar, the tab bar (on both panes; the sheet ends above it and it stays live). There is no status bar: the banner says when the link is down.
     const sidebarId = `${mainId}-list`;
     const inert = overlay || undefined;
     const mainEl = (
@@ -153,7 +183,7 @@ export function AppShell({
     );
     return (
       <PhoneLayoutProvider value>
-      <div ref={rootRef} className="d-app-shell" data-layout="phone" data-pane={phonePane} data-rail={listPane && rail === null ? 'none' : undefined}>
+      <div ref={rootRef} className="d-app-shell" data-layout="phone" data-pane={phonePane} data-typing={typing ? 'true' : undefined} data-rail={listPane && rail === null ? 'none' : undefined}>
         <a className="d-app-shell__skip" href={`#${listPane ? sidebarId : mainId}`} onClick={onSkip}>{skipLabel}</a>
         <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
           {/* The ring is outside main (the list pane hides main), above whichever pane shows, and clears the notch. It is
@@ -175,7 +205,7 @@ export function AppShell({
             {aside}
           </aside> : null}
           {callBar !== undefined && callBar !== null && callBar !== false ? <div className="d-app-shell__callbar" inert={inert}>{callBar}</div> : null}
-          {listPane && tabBar !== undefined && tabBar !== null && tabBar !== false ? <div className="d-app-shell__tabbar" inert={inert}>{tabBar}</div> : null}
+          {hasTabBar ? <div ref={tabBarRef} className="d-app-shell__tabbar" hidden={typing || undefined}>{tabBar}</div> : null}
         </div>
       </div>
       </PhoneLayoutProvider>

@@ -746,15 +746,18 @@ The tab bar ("sections") has **servers**, **DMs**, **activity** and **you**. A n
 
 ### Opening a channel and going back
 
-Choosing a channel or a direct message opens it over the whole screen. The tab bar goes away so that the message box
-has room. At the top, **back** (the arrow at the left) returns to the list you came from, and the phone's own back
+Choosing a channel or a direct message opens it over the whole screen, with the four tabs still at the bottom. When
+you tap the message box (or any other field), the tabs step aside so that the message box sits right above the keyboard,
+and they come back when you leave the field. Tapping the tab you are already in takes you to that tab's list, and tapping
+another tab takes you to where you were in it. At the top, **back** (the arrow at the left) returns to the list you came from, and the phone's own back
 button or swipe does the same. The **channel menu** at the right holds the channel's other actions, such as pins and
 **threads**. Each tab remembers where you were in it. If you reload the page on a channel, back still takes you to its list.
 
 ![A channel: back at the top left, the channel name, the channel menu, the messages and the message box](screenshots/phone-channel.png)
 
-Sheets (the member list, a thread, a pin list) open over the screen too, and the phone's back button closes the sheet
-first. Escape closes them with a keyboard.
+Sheets (the member list, a thread, a pin list) open over the screen too, above the tabs, and the phone's back button
+closes the sheet first. Tapping a tab closes the sheet and opens that tab. Escape closes a sheet with a keyboard.
+Settings, and a server's settings, are pages above the tabs as well; **back** or a tab leaves them.
 
 ### The call bar
 

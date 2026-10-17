@@ -114,7 +114,7 @@ export function Settings(): React.JSX.Element {
   };
 
   return (
-    <SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
+    <SettingsFrame modal={!phone} open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}
       nav={phone ? null : <SettingsNav label={t('settings.nav.label')} items={NAV.map(i => ({ id: i.id, label: t(i.key) }))}
         activeId={section} onSelect={select} />}>
       {/* On a phone Settings is a pushed view of the You tab (R40): its own header and back in place of the section nav. */}

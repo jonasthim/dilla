@@ -103,7 +103,7 @@ describe('usePhoneSheet', () => {
       window.history.replaceState({ phoneBack: true }, '', '/c/x');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    act(() => result.current.close());
+    act(() => { result.current.close(); });
     expect(back).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
     back.mockRestore();
@@ -117,7 +117,7 @@ describe('usePhoneSheet', () => {
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
     rerender({ open: true });
     expect(window.history.state).toEqual({ phoneBack: true, phoneSheet: 'members' });
-    act(() => result.current.close());
+    act(() => { result.current.close(); });
     expect(back).toHaveBeenCalledTimes(1);
     back.mockRestore();
     // A forward onto a sheet entry while closed is stripped too, and its close is not a back.
@@ -126,7 +126,7 @@ describe('usePhoneSheet', () => {
     act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
     expect(window.history.state).toBeNull();
     const again = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
-    act(() => result.current.close());
+    act(() => { result.current.close(); });
     expect(again).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
     again.mockRestore();
@@ -140,7 +140,7 @@ describe('usePhoneSheet', () => {
     rerender({ open: false });
     window.history.replaceState({ phoneSheet: 'members' }, '', '/c/x');
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
-    act(() => result.current.close());
+    act(() => { result.current.close(); });
     expect(back).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
     back.mockRestore();
@@ -150,7 +150,7 @@ describe('usePhoneSheet', () => {
     window.history.replaceState(null, '', '/c/x');
     const onClose = vi.fn();
     const { result } = renderHook(() => usePhoneSheet('thread', false, onClose));
-    act(() => result.current.close());
+    act(() => { result.current.close(); });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
