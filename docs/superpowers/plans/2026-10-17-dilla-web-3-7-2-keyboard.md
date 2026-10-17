@@ -98,3 +98,24 @@
 - [ ] Send Jonas the shots.
 - [ ] PR, CI green (WebKit included), merge, tag, verify the assets, set the release notes, and ask Homelab to deploy.
 - [ ] Jonas confirms the keyboard on his iPhone. CI can't test this; the e2e only forces the offset.
+
+## Amendment (2026-10-17, after Task 1)
+
+**A1. The page lock applies only under the phone shell.**
+- The defect: `html, body { overflow: hidden }` on every phone page stops a tall sign-up or sign-in form from scrolling while the keyboard is up.
+- The rule: the lock applies only while the phone shell is mounted. Use `html:has(.d-app-shell[data-layout="phone"])` and the same for `body`, inside the phone media query.
+- The test: the pinned CSS checks the `:has(...)` selector. A sign-in page at 390×844 in e2e stays scrollable: `document.scrollingElement.scrollHeight > clientHeight` lets `scrollTo` move, with the window shrunk to 390×500.
+
+**A2. No screen-share button on a phone that cannot share.**
+- Jonas, 2026-10-17: "Screen share seems not to work from phone, nothing happen when I click the button."
+- Why: iOS (every browser is WebKit) and Android Chrome have no `navigator.mediaDevices.getDisplayMedia`. dilla already switches the control off (`canCapture()`, VoiceView.tsx:210). Its reason, `voice.why.noShare`, is a hover/focus tooltip that a tap never shows, so the button looks live and does nothing.
+- The rule: on the phone layout (`usePhoneLayout()`), when `canCapture()` is false, the share control is not rendered at all:
+  - not in the stage's CallControls;
+  - not in any phone menu that lists it.
+- Desktop keeps the switched-off control with its tooltip, as it is now.
+- Implementation: `CallControls` gets an optional `hideShare?: boolean`. When it is true, the share item is left out of the toolbar list. VoiceView passes `hideShare={phone && !canCapture()}` at both call sites (lines 220 and 530).
+- Tests:
+  - a CallControls unit test: with `hideShare` there is no share button, and the remaining controls keep their order and roving focus;
+  - a VoiceView test: on a phone with `getDisplayMedia` undefined, there is no share button;
+  - a VoiceView test: on desktop with it undefined, the share button exists and is `aria-disabled`.
+- Release notes: "On a phone, the screen-share button is gone. Phone browsers cannot share a screen (iOS allows no web page to capture the screen; Android's Chrome neither). Share from a desktop browser."
