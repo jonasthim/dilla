@@ -32,7 +32,10 @@ export function noiseBuild(mode=process.env.DILLA_NOISE_MODE??'disabled'){
       }
     }
     for(const [key,name] of Object.entries({glue:'df.mjs',wasm:'df_bg.wasm',model:'deepfilter-model.bin',detector:'rnnoise.wasm'})){
-      const source=readFileSync(resolve(root,'experiments/noise/assets',name)),sha256=hash(source);
+      const assetPath=mode==='evaluation'?resolve(root,'experiments/noise/assets',name)
+        :key==='detector'?resolve(root,'packages/media/src/audio/generated/rnnoise.wasm')
+        :resolve(root,'third_party/noise/deepfilter',name);
+      const source=readFileSync(assetPath),sha256=hash(source);
       if(sha256!==lock.sha256[name])throw Error(`Local noise asset changed: ${name}; run noise:prepare and requalify`);
       const ext=key==='glue'?'.js':name.slice(name.lastIndexOf('.')),fileName=`assets/noise-${key}-${sha256.slice(0,16)}${ext}`;
       manifest[key]={url:`/${fileName}`,sha256};if(key!=='detector')files.push({fileName,source});

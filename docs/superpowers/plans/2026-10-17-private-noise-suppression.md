@@ -31,3 +31,7 @@ Latency follow-up outcome: final Chromium idle/loaded timing runs measured 57.72
 ## Opt-in beta follow-up
 
 The user accepted the proposed opt-in beta and asked to make Automatic available as beta. Implement an explicit `beta` build mode, **Automatic (beta)** in Voice settings, a visible explanation before selection, and active beta status. Keep Lightweight as the default and preserve stored preferences. Retain local assets, existing fallback and the qualified-build gate. Verify settings, actual beta builds, lazy asset requests, encrypted calls, preview, startup fallback and switching back to Lightweight. Record the new implementation identity separately from historical measurements. The user's performance-risk acceptance does not assert qualification or clear the model-license audit. No merge, public release or deployment is requested by this follow-up.
+
+## Release authorization
+
+The user subsequently instructed **“Release it.”** Publish an opt-in beta prerelease through the repository's normal PR/CI/main/tag flow. This supersedes the earlier no-publication scope. Preserve the default, qualified-build gate and failed evidence. Bundle the exact evaluated runtime artifacts with verified hashes; select beta only for explicit noise-beta tags. Record the unresolved model grant and runtime/device limitations in the published notes without asserting license clearance or qualification. Preserve the user's separate local main and web3.8 worktrees. Release publication does not imply changing the homelab deployment.

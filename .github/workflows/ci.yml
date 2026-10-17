@@ -382,6 +382,7 @@ jobs:
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
       - run: npm run build -w @dilla/web
+      - run: npm run test:noise-release
       # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.
       - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core

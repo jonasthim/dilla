@@ -37,6 +37,7 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
       version: ${{ steps.tag.outputs.version }}
+      noise_mode: ${{ steps.tag.outputs.noise_mode }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -63,6 +64,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "noise_mode=$(node scripts/release-noise-mode.mjs "$tag")" >> "$GITHUB_OUTPUT"
 
   web-build:
     runs-on: ubuntu-latest
@@ -111,6 +113,9 @@ jobs:
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
       - run: npm run build -w @dilla/web
+        env:
+          DILLA_NOISE_MODE: ${{ needs.tag.outputs.noise_mode }}
+      - run: npm run test:noise-release
       - run: go test -tags webdist ./internal/web/...
       - uses: actions/upload-artifact@v7
         with:
@@ -221,5 +226,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists; delete it first to rebuild it"; exit 1; fi
           flags=""
           if [ "$PRERELEASE" = true ]; then flags="--prerelease"; fi
-          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes $flags \
+          notes=(--generate-notes)
+          if [ -f "docs/deploy/releases/$TAG.md" ]; then notes=(--notes-file "docs/deploy/releases/$TAG.md"); fi
+          gh release create "$TAG" --verify-tag --title "$TAG" "${notes[@]}" $flags \
             release/dillad-linux-amd64 release/dillad-linux-arm64 release/dilla_core_wasi.wasm release/install.sh release/SHA256SUMS

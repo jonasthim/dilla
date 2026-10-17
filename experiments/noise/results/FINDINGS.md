@@ -56,8 +56,10 @@ The final Chromium application suite passed six of seven checks. Its separate la
 - Complete natural-noise/full-band/onset coverage, lawful matched Krisp references and the five-listener blind study.
 - Establish the exact DeepFilterNet3 weights redistribution grant; see the [artifact audit](../licenses/README.md).
 
-The enhanced default stays disabled. No merge, push, release or deployment was performed.
+The enhanced default stayed disabled at the end of latency qualification. No merge, push, release or deployment was performed in that stage.
 
 ## Opt-in beta follow-up
 
-The owner accepted offering Automatic as an opt-in beta while keeping Lightweight as the default. The branch adds an explicit beta build, an **Automatic (beta)** label, a pre-selection explanation of glitches/fallback, and active beta status. Existing preferences, one-way fallback, qualification checks and all failed measurements are preserved. This is a rollout decision, not new runtime or listening qualification. Public redistribution of the model has not been cleared; the release workflow remains unchanged. See the [beta instructions](../README.md#opt-in-beta).
+The owner accepted offering Automatic as an opt-in beta while keeping Lightweight as the default. The branch adds an explicit beta build, an **Automatic (beta)** label, a pre-selection explanation of glitches/fallback, and active beta status. Existing preferences, one-way fallback, qualification checks and all failed measurements are preserved. This is a rollout decision, not new runtime or listening qualification. At the local-beta stage the release workflow remained unchanged. See the [beta instructions](../README.md#opt-in-beta).
+
+The owner subsequently explicitly requested publication. Release preparation pins the same evaluated runtime bytes in `third_party/noise/`, selects beta for explicit noise-beta tags, and publishes the [known limitations and unresolved exact-weights grant](../../../docs/deploy/releases/v0.1.0-noise-beta.1.md). Publication authorization does not establish upstream license clearance or change any failed qualification result. Historical readiness records retain their original implementation identity and stage-specific publication status.
