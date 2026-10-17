@@ -40,3 +40,11 @@ export const LinkBannerDesktop: Story = {
 };
 // The optional status row, still available to a shell that passes one.
 export const WithStatusBar: Story = { render: () => <div style={{ ['--d-shell-h' as string]: '768px' }}><ComposedShell shell={{ statusBar: fixtureStatusBar }} /></div> };
+// web3.8 (U2): both splitters at 1280 (the aside is a column), with widths already dragged. Strict target size applies here (Shell/).
+export const Splitters: Story = {
+  render: () => (
+    <div style={{ ['--d-shell-h' as string]: '768px' }}>
+      <ComposedShell shell={{ ...withAside, paneWidths: { sidebar: 288, aside: 264 }, onPaneResize: () => {}, resizeLabels: { sidebar: 'resize the channel list', aside: 'resize the member list' } }} />
+    </div>
+  ),
+};

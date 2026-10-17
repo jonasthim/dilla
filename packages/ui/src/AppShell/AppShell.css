@@ -1,10 +1,10 @@
 .d-app-shell { container: d-shell / inline-size; position: relative; height: var(--d-shell-h, 100dvh); background: var(--bg); color: var(--fg); }
-.d-app-shell__grid { display: grid; height: 100%; grid-template-columns: var(--rail-w) var(--sidebar-w) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "banner banner banner" "rail sidebar main" "status status status"; }
+.d-app-shell__grid { display: grid; height: 100%; grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "banner banner banner" "rail sidebar main" "status status status"; }
 .d-app-shell__banner { grid-area: banner; min-width: 0; }
 /* web3.8 (R4): a desktop shell with no status bar has no status row: the grid ends at the main row. */
 .d-app-shell__grid:not(:has(> .d-app-shell__status)) { grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "banner banner banner" "rail sidebar main"; }
 .d-app-shell__rail { grid-area: rail; min-height: 0; }
-.d-app-shell__sidebar { grid-area: sidebar; min-height: 0; min-width: 0; }
+.d-app-shell__sidebar { grid-area: sidebar; position: relative; min-height: 0; min-width: 0; }
 .d-app-shell__main { grid-area: main; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 /* The phone's list pane keeps main in the DOM, hidden; the flex display above must not win over the attribute. */
 .d-app-shell__main[hidden] { display: none; }
@@ -21,3 +21,6 @@
 .d-app-shell__aside-head { display: flex; justify-content: flex-end; padding: 0.75rem 0.75rem 0; }
 /* The modal drawer's backdrop: behind the aside, over the (inert) shell. A column has none. */
 .d-app-shell__backdrop { position: absolute; inset: 0; z-index: 24; background: rgba(0, 0, 0, 0.5); }
+/* web3.8 (U2): with splitters the column aside lets its splitter hang over its left edge, so the scrolling moves to a body inside it. */
+.d-app-shell__aside[data-resizable] { display: flex; flex-direction: column; overflow: visible; }
+.d-app-shell__aside[data-resizable] > .d-app-shell__aside-body { flex: 1; min-height: 0; overflow-y: auto; }

@@ -1,0 +1,8 @@
+/* web3.8 (U2): a 24px hit area centred on the 1px line the neighbouring pane draws (its border), which stays the only drawn line. */
+.d-splitter { position: absolute; top: 0; bottom: 0; width: 24px; z-index: 5; touch-action: none; cursor: col-resize; }
+.d-splitter--sidebar { right: -12px; }
+.d-splitter--aside { left: -12px; }
+/* Hovered, focused or dragged, the line is accented over the hairline instead of a second line beside it. */
+.d-splitter:hover, .d-splitter:focus-visible, .d-app-shell[data-resizing] .d-splitter { background: linear-gradient(var(--accent), var(--accent)) center / 1px 100% no-repeat; }
+.d-root .d-splitter:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.d-app-shell[data-resizing] { cursor: col-resize; user-select: none; }

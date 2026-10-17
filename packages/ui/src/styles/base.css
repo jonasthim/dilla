@@ -109,9 +109,9 @@
 /* web3.4: from 64rem of shell width an open aside (the member list) is a fourth grid column; below that it stays the
    overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */
 @container d-shell (min-width: 64rem) {
-  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--sidebar-w) minmax(0, 1fr) var(--sidebar-w); grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "status status status status"; }
+  .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) var(--d-aside-w, var(--sidebar-w)); grid-template-areas: "banner banner banner banner" "rail sidebar main aside" "status status status status"; }
   .d-app-shell .d-app-shell__grid--aside:not(:has(> .d-app-shell__status)) { grid-template-areas: "banner banner banner banner" "rail sidebar main aside"; }
-  .d-app-shell .d-app-shell__aside { position: static; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
+  .d-app-shell .d-app-shell__aside { position: relative; grid-area: aside; width: auto; min-height: 0; min-width: 0; z-index: auto; box-shadow: none; }
 }
 /* A drawer focused only by script (no control inside) draws no ring around the whole pane; its controls keep theirs. */
 .d-root .d-app-shell__aside[tabindex="-1"]:focus-visible { outline: none; }

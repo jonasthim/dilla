@@ -1,7 +1,8 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { Button } from '../Button/Button.tsx';
 import { PhoneHeader } from '../PhoneHeader/PhoneHeader.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
+import { Splitter, type Pane } from './Splitter.tsx';
 import './AppShell.css';
 
 export interface AppShellProps {
@@ -56,6 +57,60 @@ export interface AppShellProps {
    * above it stays live and `--d-banner-h` on <html> is its height, which the page starts below.
    */
   page?: ReactNode;
+  /**
+   * web3.8: desktop only, ignored on a phone. The widths of the channel list and of the aside column in CSS px; a missing
+   * one is the default (--sidebar-w). The shell clamps them to what keeps main at 24rem and reports a width it had to
+   * change through `onPaneResize`. The package never stores them: the app does.
+   */
+  paneWidths?: { sidebar?: number; aside?: number };
+  /** A committed drag, key or reset. `null` is a reset to the default width. */
+  onPaneResize?(pane: Pane, px: number | null): void;
+  /** The accessible names of the two splitters. Without them the shell renders no splitter and its DOM is today's. */
+  resizeLabels?: { sidebar: string; aside: string };
+}
+
+const SIDEBAR_REM = { min: 12, max: 24 };
+const ASIDE_REM = { min: 14, max: 28 };
+const MAIN_MIN_REM = 24;
+/** The widths --sidebar-w gives both panes when nothing was dragged (packages/design-tokens). */
+const DEFAULT_PANE_PX = 240;
+const DEFAULT_RAIL_PX = 60;
+
+export interface ClampInput {
+  /** The shell's width, the rail's, and the two panes' requested widths, in CSS px. */
+  shell: number;
+  rail: number;
+  sidebar: number;
+  aside: number;
+  /** True while the aside is a column of the grid (it takes room from main). */
+  asideColumn: boolean;
+  /** The root font size in px. */
+  rem: number;
+}
+
+const clampTo = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
+
+/** The limits of one pane given the other pane's width: its own rem range, and main staying at 24rem. The minimum wins over the main rule. */
+function paneRange(pane: Pane, i: ClampInput, otherPx: number) {
+  const own = pane === 'sidebar' ? SIDEBAR_REM : ASIDE_REM;
+  const min = own.min * i.rem;
+  const taken = i.rail + (pane === 'sidebar' ? (i.asideColumn ? otherPx : 0) : otherPx);
+  // An unmeasured shell (width 0: jsdom, or before layout) gives no room to reason about: only the pane's own range holds.
+  const room = i.shell > 0 ? i.shell - taken - MAIN_MIN_REM * i.rem : Infinity;
+  return { min, max: Math.max(min, Math.min(own.max * i.rem, room)) };
+}
+
+/**
+ * The widths the two panes may have (web3.8): sidebar in [12rem, 24rem], aside in [14rem, 28rem], and main (the shell less
+ * the rail, the sidebar and a column aside) at least 24rem. If even the minimums break that, the minimums win. The sidebar
+ * is placed first; the aside takes what is left.
+ */
+export function clampPanes(i: ClampInput): { sidebar: number; aside: number } {
+  const asideFirst = clampTo(i.aside, ASIDE_REM.min * i.rem, ASIDE_REM.max * i.rem);
+  const sr = paneRange('sidebar', i, asideFirst);
+  const sidebar = clampTo(i.sidebar, sr.min, sr.max);
+  const ar = paneRange('aside', i, sidebar);
+  return { sidebar, aside: clampTo(i.aside, ar.min, ar.max) };
 }
 
 /** The shell width from which the aside is a column (base.css holds the same 64rem in its container query). */
@@ -77,7 +132,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
  */
 export function AppShell({
   skipLabel, rail, sidebar, header, children, composer, statusBar, banner, ring, aside, asideLabel, asideOpen, onAsideClose, asideCloseLabel, asideReturnRef,
-  layout, phonePane = 'list', tabBar, callBar, covered, page,
+  layout, phonePane = 'list', tabBar, callBar, covered, page, paneWidths, onPaneResize, resizeLabels,
 }: AppShellProps) {
   const mainId = useId();
   const mainRef = useRef<HTMLElement>(null);
@@ -91,23 +146,92 @@ export function AppShell({
   // Narrower than 64rem (root font size) of shell width: the aside is the overlay drawer. jsdom has no layout: width 0 reads as narrow.
   const [narrow, setNarrow] = useState(true);
   const narrowRef = useRef(true);
+  const railRef = useRef<HTMLDivElement>(null);
+  const [remPx, setRemPx] = useState(16);
+  const [shellPx, setShellPx] = useState(0);
+  const [railPx, setRailPx] = useState(DEFAULT_RAIL_PX);
   const measure = () => {
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const next = (rootRef.current?.offsetWidth ?? 0) < COLUMN_REM * rem;
+    const width = rootRef.current?.offsetWidth ?? 0;
+    const next = width < COLUMN_REM * rem;
     narrowRef.current = next;
     setNarrow(next);
+    setRemPx(rem);
+    setShellPx(width);
+    setRailPx(railRef.current?.offsetWidth || DEFAULT_RAIL_PX);
     return next;
+  };
+  // Re-clamp the given pane widths to the shell as it is now (read from the DOM and a props snapshot, so the observer's
+  // first-render closure sees the latest). A width is reported only when it had to change.
+  const desktopRef = useRef({ paneWidths, onPaneResize, showAside, enabled: false });
+  const reclamp = () => {
+    const { paneWidths: w, onPaneResize: report, showAside: asideShown, enabled } = desktopRef.current;
+    const root = rootRef.current;
+    if (!enabled || w === undefined || report === undefined || root === null) return;
+    const shell = root.offsetWidth;
+    if (shell <= 0) return;
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const next = clampPanes({
+      shell, rail: railRef.current?.offsetWidth || DEFAULT_RAIL_PX, rem, asideColumn: asideShown && shell >= COLUMN_REM * rem,
+      sidebar: w.sidebar ?? DEFAULT_PANE_PX, aside: w.aside ?? DEFAULT_PANE_PX,
+    });
+    if (w.sidebar !== undefined && next.sidebar !== w.sidebar) report('sidebar', next.sidebar);
+    if (w.aside !== undefined && next.aside !== w.aside) report('aside', next.aside);
   };
   // Live: the shell's own size decides, so a resize or a rotation while open switches column and drawer at once.
   useLayoutEffect(() => {
     const root = rootRef.current;
     measure();
     if (root === null || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => { measure(); });
+    const observer = new ResizeObserver(() => { measure(); reclamp(); });
     observer.observe(root);
     return () => observer.disconnect();
   }, []);
   const overlay = showAside && narrow;
+
+  // web3.8 splitters: desktop only, and only when the app named them.
+  const resizable = layout !== 'phone' && resizeLabels !== undefined;
+  const columnAside = showAside && !narrow;
+  desktopRef.current = { paneWidths, onPaneResize, showAside, enabled: resizable };
+  // The limits hold on load and when the given widths or the aside column change; the observer covers a window resize.
+  useEffect(() => { reclamp(); }, [resizable, columnAside, paneWidths?.sidebar, paneWidths?.aside]);
+  const [drag, setDrag] = useState<{ pane: Pane; px: number } | null>(null);
+  const dragRef = useRef(drag);
+  const widthsIn = {
+    shell: shellPx, rail: railPx, rem: remPx, asideColumn: columnAside,
+    sidebar: (drag?.pane === 'sidebar' ? drag.px : paneWidths?.sidebar) ?? DEFAULT_PANE_PX,
+    aside: (drag?.pane === 'aside' ? drag.px : paneWidths?.aside) ?? DEFAULT_PANE_PX,
+  };
+  const widths = clampPanes(widthsIn);
+  const ranges = { sidebar: paneRange('sidebar', widthsIn, widths.aside), aside: paneRange('aside', widthsIn, widths.sidebar) };
+  const given = { sidebar: drag?.pane === 'sidebar' ? drag.px : paneWidths?.sidebar, aside: drag?.pane === 'aside' ? drag.px : paneWidths?.aside };
+  const paneVars = resizable && (given.sidebar !== undefined || given.aside !== undefined) ? {
+    ...(given.sidebar !== undefined ? { '--d-sidebar-w': `${widths.sidebar}px` } : {}),
+    ...(given.aside !== undefined ? { '--d-aside-w': `${widths.aside}px` } : {}),
+  } as CSSProperties : undefined;
+  const onDrag = (pane: Pane, px: number) => {
+    const r = ranges[pane];
+    dragRef.current = { pane, px: clampTo(px, r.min, r.max) };
+    setDrag(dragRef.current);
+  };
+  const onDragEnd = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setDrag(null);
+    if (d !== null) onPaneResize?.(d.pane, d.px);
+  };
+  const onSet = (pane: Pane, px: number | null) => {
+    if (px === null) { onPaneResize?.(pane, null); return; }
+    const r = ranges[pane];
+    const next = clampTo(px, r.min, r.max);
+    if (next !== widths[pane]) onPaneResize?.(pane, next);
+  };
+  const splitSidebarId = `${mainId}-sidebar`;
+  const asideId = `${mainId}-aside`;
+  const splitter = (pane: Pane, controls: string) => resizeLabels === undefined ? null : (
+    <Splitter pane={pane} label={resizeLabels[pane]} controls={controls} now={widths[pane]} min={ranges[pane].min} max={ranges[pane].max}
+      rem={remPx} onDrag={px => onDrag(pane, px)} onDragEnd={onDragEnd} onSet={px => onSet(pane, px)} />
+  );
 
   // The drawer takes focus on open and hands it back to its opener when it closes; a column does neither.
   // It also runs when an open aside turns into the overlay (a resize), so focus left in now-inert content comes along.
@@ -274,12 +398,12 @@ export function AppShell({
     );
   }
   return (
-    <div ref={rootRef} className="d-app-shell">
+    <div ref={rootRef} className="d-app-shell" style={paneVars} data-resizing={drag !== null ? 'true' : undefined}>
       <a className="d-app-shell__skip" href={`#${mainId}`} onClick={onSkip}>{skipLabel}</a>
       <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
         {hasBanner ? <div className="d-app-shell__banner" inert={overlay || undefined}>{banner}</div> : null}
-        <div className="d-app-shell__rail" inert={overlay || undefined}>{rail}</div>
-        <div className="d-app-shell__sidebar" inert={overlay || undefined}>{sidebar}</div>
+        <div ref={railRef} className="d-app-shell__rail" inert={overlay || undefined}>{rail}</div>
+        <div id={resizable ? splitSidebarId : undefined} className="d-app-shell__sidebar" inert={overlay || undefined}>{sidebar}{resizable ? splitter('sidebar', splitSidebarId) : null}</div>
         <main id={mainId} ref={mainRef} tabIndex={-1} className="d-app-shell__main" inert={overlay || undefined}>
           {hasRing ? <div ref={ringRef} className="d-app-shell__ring">{ring}</div> : null}
           {header}
@@ -287,13 +411,14 @@ export function AppShell({
           {composer}
         </main>
         {overlay ? <div className="d-app-shell__backdrop" aria-hidden="true" onClick={() => onAsideClose?.()} /> : null}
-        {showAside ? <aside ref={asideRef} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside" inert={covered === true || undefined}>
+        {showAside ? <aside ref={asideRef} id={resizable ? asideId : undefined} aria-label={asideLabel} tabIndex={-1} className="d-app-shell__aside" data-resizable={resizable && columnAside ? 'true' : undefined} inert={covered === true || undefined}>
+          {resizable && columnAside ? splitter('aside', asideId) : null}
           {overlay && asideCloseLabel !== undefined ? (
             <div className="d-app-shell__aside-head">
               <Button variant="ghost" size="sm" onClick={() => onAsideClose?.()}>{asideCloseLabel}</Button>
             </div>
           ) : null}
-          {aside}
+          {resizable ? <div className="d-app-shell__aside-body">{aside}</div> : aside}
         </aside> : null}
         {hasStatus ? <div className="d-app-shell__status" inert={overlay || undefined}>{statusBar}</div> : null}
       </div>
