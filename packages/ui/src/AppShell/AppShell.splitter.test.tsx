@@ -232,7 +232,7 @@ describe('AppShell splitters', () => {
     expect(container.querySelector('.d-app-shell')?.getAttribute('style') ?? '').not.toContain('--d-sidebar-w');
   });
 
-  it('re-clamps when the shell shrinks, reporting only the width that had to change', () => {
+  it('a shrink only clamps what is shown: the stored width is never reported, and a wider window restores it', () => {
     shellW = 1280;
     let notify: () => void = () => {};
     stubWidths();
@@ -244,11 +244,26 @@ describe('AppShell splitters', () => {
     });
     const onPaneResize = vi.fn();
     const { container } = render(<ComposedShell shell={shellProps({ onPaneResize, paneWidths: { sidebar: 360, aside: 224 } })} />);
-    expect(onPaneResize).not.toHaveBeenCalled();
+    const root = container.querySelector('.d-app-shell');
+    expect(root).toHaveStyle({ '--d-sidebar-w': '360px' });
     shellW = 1024;
     act(() => notify());
-    expect(onPaneResize).toHaveBeenCalledTimes(1);
-    expect(onPaneResize).toHaveBeenCalledWith('sidebar', 356);
-    expect(container.querySelector('.d-app-shell')).toHaveStyle({ '--d-sidebar-w': '356px' });
+    expect(root).toHaveStyle({ '--d-sidebar-w': '356px' });
+    shellW = 1280;
+    act(() => notify());
+    expect(root).toHaveStyle({ '--d-sidebar-w': '360px' });
+    expect(onPaneResize).not.toHaveBeenCalled();
+  });
+
+  it('opening the aside column clamps what is shown and reports nothing', () => {
+    shellW = 1024; stubWidths();
+    const onPaneResize = vi.fn();
+    const props = shellProps({ onPaneResize, paneWidths: { sidebar: 360, aside: 224 } });
+    const { container, rerender } = render(<ComposedShell shell={{ ...props, asideOpen: false }} />);
+    const root = container.querySelector('.d-app-shell');
+    expect(root).toHaveStyle({ '--d-sidebar-w': '360px' });
+    rerender(<ComposedShell shell={props} />);
+    expect(root).toHaveStyle({ '--d-sidebar-w': '356px' });
+    expect(onPaneResize).not.toHaveBeenCalled();
   });
 });

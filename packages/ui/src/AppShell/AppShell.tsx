@@ -59,8 +59,7 @@ export interface AppShellProps {
   page?: ReactNode;
   /**
    * web3.8: desktop only, ignored on a phone. The widths of the channel list and of the aside column in CSS px; a missing
-   * one is the default (--sidebar-w). The shell clamps them to what keeps main at 24rem and reports a width it had to
-   * change through `onPaneResize`. The package never stores them: the app does.
+   * one is the default (--sidebar-w). The shell shows them clamped to what keeps main at 24rem and never rewrites them. The package never stores them: the app does.
    */
   paneWidths?: { sidebar?: number; aside?: number };
   /** A committed drag, key or reset. `null` is a reset to the default width. */
@@ -161,29 +160,12 @@ export function AppShell({
     setRailPx(railRef.current?.offsetWidth || DEFAULT_RAIL_PX);
     return next;
   };
-  // Re-clamp the given pane widths to the shell as it is now (read from the DOM and a props snapshot, so the observer's
-  // first-render closure sees the latest). A width is reported only when it had to change.
-  const desktopRef = useRef({ paneWidths, onPaneResize, showAside, enabled: false });
-  const reclamp = () => {
-    const { paneWidths: w, onPaneResize: report, showAside: asideShown, enabled } = desktopRef.current;
-    const root = rootRef.current;
-    if (!enabled || w === undefined || report === undefined || root === null) return;
-    const shell = root.offsetWidth;
-    if (shell <= 0) return;
-    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const next = clampPanes({
-      shell, rail: railRef.current?.offsetWidth || DEFAULT_RAIL_PX, rem, asideColumn: asideShown && shell >= COLUMN_REM * rem,
-      sidebar: w.sidebar ?? DEFAULT_PANE_PX, aside: w.aside ?? DEFAULT_PANE_PX,
-    });
-    if (w.sidebar !== undefined && next.sidebar !== w.sidebar) report('sidebar', next.sidebar);
-    if (w.aside !== undefined && next.aside !== w.aside) report('aside', next.aside);
-  };
   // Live: the shell's own size decides, so a resize or a rotation while open switches column and drawer at once.
   useLayoutEffect(() => {
     const root = rootRef.current;
     measure();
     if (root === null || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => { measure(); reclamp(); });
+    const observer = new ResizeObserver(() => { measure(); });
     observer.observe(root);
     return () => observer.disconnect();
   }, []);
@@ -192,9 +174,8 @@ export function AppShell({
   // web3.8 splitters: desktop only, and only when the app named them.
   const resizable = layout !== 'phone' && resizeLabels !== undefined;
   const columnAside = showAside && !narrow;
-  desktopRef.current = { paneWidths, onPaneResize, showAside, enabled: resizable };
-  // The limits hold on load and when the given widths or the aside column change; the observer covers a window resize.
-  useEffect(() => { reclamp(); }, [resizable, columnAside, paneWidths?.sidebar, paneWidths?.aside]);
+  // The limits hold on every render: the width shown is the given one clamped to the shell as it is now (the observer re-renders on a
+  // resize), and the given width is never rewritten, so a wider window restores the person's choice.
   const [drag, setDrag] = useState<{ pane: Pane; px: number } | null>(null);
   const dragRef = useRef(drag);
   const widthsIn = {

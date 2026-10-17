@@ -6,3 +6,8 @@
 .d-splitter:hover, .d-splitter:focus-visible, .d-app-shell[data-resizing] .d-splitter { background: linear-gradient(var(--accent), var(--accent)) center / 1px 100% no-repeat; }
 .d-root .d-splitter:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 .d-app-shell[data-resizing] { cursor: col-resize; user-select: none; }
+/* Forced colours: the line is a solid 1px strip in a system colour (the borders are transparent padding that centre it), not the gradient. */
+@media (forced-colors: active) {
+  .d-splitter:hover, .d-splitter:focus-visible, .d-app-shell[data-resizing] .d-splitter { forced-color-adjust: none; background: none; background-color: CanvasText; background-clip: content-box; border-inline: 11.5px solid transparent; box-sizing: border-box; }
+  .d-splitter:focus-visible { background-color: Highlight; }
+}
