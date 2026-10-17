@@ -166,7 +166,7 @@ describe('voice in the shell', () => {
     expect(await screen.findByRole('heading', { name: 'active voice' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'voice' })).toBeInTheDocument();
     expect(screen.getAllByText('bob').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('muted').length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('img', { name: 'muted' }).length).toBeGreaterThan(0);
   });
 });
 

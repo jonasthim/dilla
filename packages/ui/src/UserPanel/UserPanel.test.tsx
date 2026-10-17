@@ -69,7 +69,11 @@ describe('UserPanel', () => {
     expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(2);
   });
 
-  it('its buttons are at least 2rem square (CSS pin)', () => {
+  it('mute and deafen are at least 2rem square too (CSS pin)', () => {
+    expect(panelCss).toMatch(/\.d-user-panel \.d-voice-toolbar \.d-voice-toolbar__control \{[^}]*min-width: 2rem; min-height: 2rem/);
+  });
+
+  it('the settings button is at least 2rem square (CSS pin)', () => {
     expect(panelCss).toMatch(/\.d-user-panel__settings \{[^}]*min-width: 2rem; min-height: 2rem/);
   });
 

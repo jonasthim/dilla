@@ -132,9 +132,9 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
   it('M3: the sidebar row of a person says speaking while the call hears them', async () => {
     const app = await inHarbour();
     const sidebar = () => within(document.querySelector('.dw-sidebar') as HTMLElement);
-    expect(sidebar().queryByText(t('voice.state.speaking'))).toBeNull();
+    expect(sidebar().queryByRole('img', { name: t('voice.state.speaking') })).toBeNull();
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: true, video: null, screen: null }] }));
-    await waitFor(() => expect(sidebar().getAllByText(t('voice.state.speaking')).length).toBeGreaterThan(0));
+    await waitFor(() => expect(sidebar().getAllByRole('img', { name: t('voice.state.speaking') }).length).toBeGreaterThan(0));
   });
 });
 
