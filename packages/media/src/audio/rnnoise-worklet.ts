@@ -4,7 +4,8 @@
 // never read.
 // @ts-ignore -- @jitsi/rnnoise-wasm 0.2.1 ships no type declarations (no "types", no "exports")
 import createRNNWasmModuleSync from '@jitsi/rnnoise-wasm/dist/rnnoise-sync.js';
-import { VoiceGate, type GateMode } from './gate';
+import { type GateMode } from './gate';
+import { OnsetGate } from './onset-gate';
 
 declare const currentTime: number;
 declare const sampleRate: number;
@@ -33,7 +34,11 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
   private m: RnnoiseModule | null = null;
   private state = 0;
   private buf = 0;
-  private readonly gate: VoiceGate;
+  private readonly gate: OnsetGate;
+  private allowed = true;
+  private ptt = false;
+  private readonly denoise: boolean;
+  private readonly enhanced = new Float32Array(FRAME);
   private mode: GateMode;
   private readonly inQ = new Float32Array(RING);
   private inLen = 0;
@@ -44,13 +49,15 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
   private stopped = false;
   private readonly unsupportedRate: boolean;
 
-  constructor(options: { processorOptions?: { mode?: GateMode } }) {
+  constructor(options: { processorOptions?: { mode?: GateMode; denoise?: boolean; allowed?: boolean } }) {
     const t0 = Date.now();
     super();
     this.mode = options.processorOptions?.mode ?? 'open';
+    this.allowed = options.processorOptions?.allowed ?? true;
+    this.denoise = options.processorOptions?.denoise ?? true;
     this.unsupportedRate = sampleRate !== 48_000;
-    this.gate = new VoiceGate({ mode: this.mode });
-    this.port.onmessage = (e: MessageEvent) => this.onMessage(e.data as { kind: string; module?: WebAssembly.Module; bytes?: ArrayBuffer; active?: boolean; mode?: GateMode });
+    this.gate = new OnsetGate(this.mode);
+    this.port.onmessage = (e: MessageEvent) => this.onMessage(e.data as { kind: string; module?: WebAssembly.Module; bytes?: ArrayBuffer; active?: boolean; allowed?: boolean; mode?: GateMode });
     this.post({ kind: 'probe', atob: typeof (globalThis as { atob?: unknown }).atob, ctorMs: Date.now() - t0, compiled: false, error: null });
     if (this.unsupportedRate) this.post({ kind: 'probe', atob: 'none', ctorMs: 0, compiled: false, error: `E_AUDIO_RATE: expected 48000 Hz, got ${sampleRate}` });
   }
@@ -79,7 +86,7 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
     }
   }
 
-  private onMessage(d: { kind: string; module?: WebAssembly.Module; bytes?: ArrayBuffer; active?: boolean; mode?: GateMode }): void {
+  private onMessage(d: { kind: string; module?: WebAssembly.Module; bytes?: ArrayBuffer; active?: boolean; allowed?: boolean; mode?: GateMode }): void {
     switch (d.kind) {
       case 'module':
         if (d.module) this.load(d.module);
@@ -92,13 +99,23 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
           );
         }
         break;
+      case 'capture':
+        this.allowed = d.allowed === true;
+        this.flush();
+        break;
+      case 'flush':
+        this.flush();
+        break;
       case 'ptt':
-        this.gate.setPtt(d.active === true);
+        this.ptt = d.active === true;
+        this.flush();
+        this.gate.setPtt(this.ptt);
         break;
       case 'mode':
-        if (d.mode) { this.mode = d.mode; this.gate.setMode(d.mode); }
+        if (d.mode) { this.mode = d.mode; this.gate.setMode(d.mode); this.ptt = false; this.flush(); }
         break;
       case 'destroy':
+        this.flush();
         if (this.m) {
           this.m._free(this.buf);
           this.m._rnnoise_destroy(this.state);
@@ -109,23 +126,29 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
     }
   }
 
+  private flush(): void {
+    this.inQ.fill(0); this.outQ.fill(0); this.inLen = this.outLen = 0;
+    this.gate.reset(); this.gate.setPtt(this.ptt);
+    if (this.m) { this.m._rnnoise_destroy(this.state); this.state = this.m._rnnoise_create(0); }
+  }
+
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const out = outputs[0][0];
     const input = inputs[0]?.[0];
     if (this.stopped) return false;
-    if (!input) {
+    if (!this.allowed || (this.mode === 'ptt' && !this.ptt) || !input) {
       out.fill(0);
       return true;
     }
     const m = this.m;
     if (this.unsupportedRate) {
-      if (this.mode !== 'vad' && this.gate.update(0, currentTime * 1000)) out.set(input);
+      if (this.mode !== 'vad' && (this.mode !== 'ptt' || this.ptt)) out.set(input);
       else out.fill(0);
       return true;
     }
     if (!m) {
       // VAD has no voice probability until RNNoise loads: fail closed.
-      if (this.mode !== 'vad' && this.gate.update(0, currentTime * 1000)) out.set(input);
+      if (this.mode !== 'vad' && (this.mode !== 'ptt' || this.ptt)) out.set(input);
       else out.fill(0);
       return true;
     }
@@ -135,8 +158,8 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
       const base = this.buf >> 2;
       for (let i = 0; i < FRAME; i++) m.HEAPF32[base + i] = this.inQ[i] * 32768;
       const vad = m._rnnoise_process_frame(this.state, this.buf, this.buf);
-      const open = this.gate.update(vad, currentTime * 1000);
-      for (let i = 0; i < FRAME; i++) this.outQ[this.outLen + i] = open ? m.HEAPF32[base + i] / 32768 : 0;
+      for (let i = 0; i < FRAME; i++) this.enhanced[i] = this.denoise ? m.HEAPF32[base + i] / 32768 : this.inQ[i];
+      this.outQ.set(this.gate.process(this.enhanced, vad, currentTime * 1000), this.outLen);
       this.outLen += FRAME;
       this.inQ.copyWithin(0, FRAME, this.inLen);
       this.inLen -= FRAME;

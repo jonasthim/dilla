@@ -14,8 +14,8 @@ export type MicResult = { track: MediaStreamTrack } | { mic: 'denied' | 'missing
 
 const stopAll = (s: MediaStream): void => { for (const t of s.getTracks()) t.stop(); };
 
-function micConstraints(input: string): MediaStreamConstraints {
-  const capture = { echoCancellation: MIC_CAPTURE.echoCancellation, noiseSuppression: MIC_CAPTURE.noiseSuppression,
+function micConstraints(input: string, noise = true): MediaStreamConstraints {
+  const capture = { echoCancellation: MIC_CAPTURE.echoCancellation, noiseSuppression: noise,
     autoGainControl: MIC_CAPTURE.autoGainControl } as MediaTrackConstraints;
   return { audio: input === '' ? capture : { deviceId: { exact: input }, ...capture } };
 }
@@ -24,7 +24,7 @@ function micConstraints(input: string): MediaStreamConstraints {
  * The microphone: 'denied' when the person or the browser refused it, 'missing' when there is none (none listed, not
  * found, or unreadable). A chosen input that is gone falls back to the system default once.
  */
-export async function acquireMic(media: CaptureMedia, input: string): Promise<MicResult> {
+export async function acquireMic(media: CaptureMedia, input: string, noise = true): Promise<MicResult> {
   let devices: MediaDeviceInfo[] = [];
   try {
     devices = await media.enumerateDevices();
@@ -34,7 +34,7 @@ export async function acquireMic(media: CaptureMedia, input: string): Promise<Mi
   if (!devices.some((d) => d.kind === 'audioinput')) return { mic: 'missing' };
   const attempt = async (id: string): Promise<MicResult | 'retry'> => {
     try {
-      const stream = await media.getUserMedia(micConstraints(id));
+      const stream = await media.getUserMedia(micConstraints(id, noise));
       const track = stream.getAudioTracks()[0];
       if (track === undefined) {
         stopAll(stream);

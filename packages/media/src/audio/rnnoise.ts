@@ -11,6 +11,9 @@ export interface RnnoiseProbe {
 
 export interface RnnoiseProcessorOptions {
   mode?: GateMode;
+  denoise?: boolean;
+  allowed?: boolean;
+  onFailure?: (reason: string) => void;
   /** Test seam; the default is a private 48 kHz interactive context (G40 a). */
   createContext?: () => AudioContext;
   workletUrl?: string;
@@ -46,6 +49,10 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   readonly name = 'dilla-rnnoise' as const;
   processedTrack?: MediaStreamTrack;
   private ctx?: AudioContext;
+  private allowed: boolean;
+  private mode: GateMode;
+  private generation = 0;
+  private bypass = false;
   private node?: AudioWorkletNode;
   private source?: MediaStreamAudioSourceNode;
   private dest?: MediaStreamAudioDestinationNode;
@@ -53,32 +60,38 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   private lastProbe: RnnoiseProbe | null = null;
   private probeWaiters: Array<(p: RnnoiseProbe) => void> = [];
 
-  constructor(private readonly opts: RnnoiseProcessorOptions = {}) {}
+  constructor(private readonly opts: RnnoiseProcessorOptions = {}) { this.allowed = opts.allowed ?? true; this.mode = opts.mode ?? 'open'; }
 
   async init(opts: AudioProcessorOptions): Promise<void> {
     this.lastProbe = null;
+    const generation = ++this.generation;
+    const current = () => { if (generation !== this.generation) throw new Error('E_AUDIO_CANCELLED'); };
     const ctx = (this.opts.createContext ?? (() => new AudioContext({ sampleRate: 48_000, latencyHint: 'interactive' })))();
     this.ctx = ctx;
     try {
     await bounded(ctx.resume(), 'resume');
+    current();
     ctx.onstatechange = () => {
       if (ctx.state === 'suspended') {
-        this.onWorklet({ kind: 'probe', atob: 'none', ctorMs: 0, compiled: false, error: 'E_AUDIO_SUSPENDED' });
+        this.opts.onFailure?.('audio-suspended');
         void bounded(ctx.resume(), 'resume').catch(() => undefined);
       }
     };
     await bounded(ctx.audioWorklet.addModule(this.opts.workletUrl ?? (await bounded(defaultWorkletUrl(), 'worklet URL'))), 'addModule');
+    current();
     const node = new AudioWorkletNode(ctx, 'dilla-rnnoise-gate', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
       outputChannelCount: [1],
       channelCount: 1,
       channelCountMode: 'explicit',
-      processorOptions: { mode: this.opts.mode ?? 'open' },
+      processorOptions: { mode: this.mode, denoise: this.opts.denoise ?? true, allowed: this.allowed },
     });
     node.port.onmessage = (e: MessageEvent) => this.onWorklet(e.data as { kind: string; p?: number } & RnnoiseProbe);
     this.node = node;
+    node.onprocessorerror = () => this.opts.onFailure?.('processor-error');
     const bytes = await bounded((this.opts.fetchWasm ?? defaultFetch)(this.opts.wasmUrl ?? (await bounded(defaultWasmUrl(), 'wasm URL'))), 'fetch wasm');
+    current();
     // The Module handoff stalled in Chromium 153 headless (NV-11); the cause was not isolated.
     // Compile bytes asynchronously while the unloaded worklet passes audio through.
     node.port.postMessage({ kind: 'bytes', bytes }, [bytes]);
@@ -91,6 +104,7 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
     node.connect(dest);
     this.processedTrack = dest.stream.getAudioTracks()[0];
     const probe = await this.probe(INIT_TIMEOUT_MS);
+    current();
     if (!probe.compiled) throw new Error(probe.error ?? 'E_WASM: RNNoise did not compile');
     } catch (err) {
       ctx.onstatechange = null;
@@ -104,18 +118,39 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   }
 
   async restart(opts: { track: MediaStreamTrack; kind: Track.Kind.Audio }): Promise<void> {
+    this.node?.port.postMessage({ kind: 'flush' });
     this.source?.disconnect();
     this.connectSource(opts.track);
   }
 
   async destroy(): Promise<void> {
+    this.generation++;
+    if (this.ctx) this.ctx.onstatechange = null;
     this.lastProbe = null;
     this.node?.port.postMessage({ kind: 'destroy' });
     this.source?.disconnect();
     this.node?.disconnect();
+    this.processedTrack?.stop?.();
     await this.ctx?.close();
     this.ctx = undefined;
   }
+
+  useBrowserFallback(): void {
+    this.bypass = true;
+    this.node?.port.postMessage({ kind: 'destroy' });
+    this.source?.disconnect(); this.node?.disconnect();
+    if (this.source && this.dest) this.source.connect(this.dest);
+  }
+
+  setCaptureAllowed(allowed: boolean): void {
+    if (this.allowed === allowed) return;
+    this.allowed = allowed;
+    this.node?.port.postMessage({ kind: 'capture', allowed });
+  }
+
+  setMode(mode: GateMode): void { this.mode = mode; this.node?.port.postMessage({ kind: 'mode', mode }); }
+
+  flush(): void { this.node?.port.postMessage({ kind: 'flush' }); }
 
   setPttActive(active: boolean): void {
     this.node?.port.postMessage({ kind: 'ptt', active });
@@ -144,7 +179,7 @@ export class DillaRnnoiseProcessor implements TrackProcessor<Track.Kind.Audio, A
   private connectSource(track: MediaStreamTrack): void {
     const ctx = this.ctx!;
     const source = ctx.createMediaStreamSource(new MediaStream([track]));
-    source.connect(this.node!);
+    source.connect(this.bypass ? this.dest! : this.node!);
     this.source = source;
   }
 

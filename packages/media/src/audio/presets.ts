@@ -48,7 +48,7 @@ export const SCREEN_AUDIO_CAPTURE: MediaTrackConstraints = {
   channelCount: 2,
 };
 
-/** The mic capture: the browser's own AEC/NS/AGC stay on; RNNoise runs after them. */
+/** Browser fallback capture defaults. Neural capture requests NS off at acquisition on browsers with immutable audio constraints; AEC/AGC remain enabled. */
 export const MIC_CAPTURE: AudioCaptureOptions = {
   echoCancellation: true,
   noiseSuppression: true,

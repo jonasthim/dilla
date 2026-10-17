@@ -8,9 +8,10 @@
 // This module is loaded only through load.ts (L-WEB-51), so livekit-client and RNNoise stay out of the entry chunk.
 import type { CallJoinResult, CoreClient, IceServerTuple } from '@dilla/client-core';
 import {
-  chooseVideoCodec, decodeCaps, DillaRnnoiseProcessor, joinCall, micOptions, publishDefaults, refreshIceServers,
-  screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions,
+  chooseVideoCodec, decodeCaps, DillaMicrophoneProcessor, noisePreference, setBrowserSuppression, joinCall, micOptions, publishDefaults, refreshIceServers,
+  screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
 } from '@dilla/media';
+import { reportProcessorStatus } from './processor-status.ts';
 import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
 import { callStatsReport, connectionOf, mediaTotals, STATS_EVERY_MS, type MediaTotals } from './stats.ts';
@@ -51,7 +52,7 @@ export interface PageCallState {
   localCamera: MediaStream | null;
   localScreen: MediaStream | null;
   /** Product walk M1: noise suppression in force; it follows Settings → Voice during the call. */
-  noise: 'on' | 'off';
+  noise: NoisePreference | 'on';
   /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
   audioBlocked: boolean;
   /** web3.4 V2: the remote audio tracks this device is subscribed to (expected: pending and attached) and those
@@ -84,7 +85,7 @@ export interface PageCall {
   /** Switches the input mode during the call: push to talk closes the microphone at once, until the key is held. */
   setMode(mode: 'vad' | 'ptt'): void;
   /** Product walk M1: switches noise suppression during the call (the microphone's processor is set or stopped). */
-  setNoise(noise: 'on' | 'off'): Promise<void>;
+  setNoise(noise: NoisePreference | 'on'): Promise<void>;
   /** web3.3: the "turn on audio" press: room.startAudio(), then canPlaybackAudio read again; a refusal never throws. */
   startAudio(): Promise<void>;
   /** web3.4 V1: moves the call's sound to output device `id` ('' is the system default) during the call. A no-op where
@@ -94,7 +95,7 @@ export interface PageCall {
 }
 
 /** What the session needs of an RNNoise processor; DillaRnnoiseProcessor by default. */
-export interface NoiseProcessor { setPttActive(active: boolean): void }
+export interface NoiseProcessor { setPttActive(active: boolean): void; setCaptureAllowed?(allowed: boolean): void; setMode?(mode: 'vad' | 'ptt'): void; flush?(): void; destroy?(): Promise<void> }
 
 export interface PageCallDeps {
   bridge: Pick<CoreClient, 'call' | 'onCallKeys'>;
@@ -147,7 +148,7 @@ export interface PageCallOptions {
   input: string;
   output: string;
   mode: 'vad' | 'ptt';
-  noise: 'on' | 'off';
+  noise: NoisePreference | 'on';
   /** user id → 0..200 (the voice.volume.<user> settings). */
   volumes: Volumes;
   /** WB client I1: aborting ends a start that has not connected yet, the microphone prompt included: callLeave is
@@ -272,7 +273,7 @@ interface RemoteView {
 }
 /** What the session needs of a subscribed remote track to play it (livekit’s RemoteAudioTrack). */
 interface RemoteAudio { kind: string; attach(): HTMLMediaElement; detach(element: HTMLMediaElement): unknown }
-interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void> } }
+interface LocalPub { track?: { mute(): unknown; unmute(): unknown; setProcessor?(p: unknown): Promise<void>; stopProcessor?(): Promise<void>; restartTrack?(constraints: MediaTrackConstraints): Promise<unknown>; mediaStreamTrack?: MediaStreamTrack } }
 interface Permissions { canPublish?: boolean; canPublishSources?: number[] }
 
 /** The earliest expiry, in ms, among the TURN usernames (`<expiry seconds>:<…>`), or null. */
@@ -312,7 +313,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   if (setSink !== null && opts.output !== '') void setSink(opts.output).catch(() => undefined);
   let mic: Awaited<ReturnType<typeof acquireMic>>;
   try {
-    mic = await abortable(acquireMic(deps.media, opts.input), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
+    mic = await abortable(acquireMic(deps.media, opts.input, false), opts.signal, (late) => { if ('track' in late) late.track.stop(); });
   } catch (err) {
     closeCtx();
     throw err;
@@ -336,6 +337,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   // pagehide is heard from here on (review m1). During startup it ends the attempt at once: no install afterwards,
   // callLeave('pagehide') posted, media released without waiting; once the call is up it becomes leave('pagehide').
   const win = deps.win ?? (typeof window === 'undefined' ? undefined : window);
+  const statusOwner = Symbol('microphone');
   let aborted = false;
   let joinedSession: CallSession | null = null;
   const stopMic = (): void => { if ('track' in mic) mic.track.stop(); };
@@ -343,6 +345,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const startupHide = (reason: 'pagehide' | 'user' = 'pagehide'): void => {
     if (aborted) return;
     aborted = true;
+    reportProcessorStatus(statusOwner, null);
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
@@ -367,6 +370,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const abandon = async (err: unknown, posted: boolean): Promise<PageCallError> => {
     if (aborted) return new PageCallError('E_ABORTED');
     aborted = true;
+    reportProcessorStatus(statusOwner, null);
     relay.close();
     unsubscribe();
     win?.removeEventListener('pagehide', pageHide);
@@ -611,33 +615,62 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
 
     // ---- the microphone
     const gate = new VoiceGate({ mode: opts.mode === 'ptt' ? 'ptt' : 'open' });
-    // The mode in force, and the mode an RNNoise processor was built in: a processor built for push to talk gates the
-    // audio itself (held open while voice activity is in force); otherwise push to talk mutes the track.
+    // Track mute/PTT enforcement is independent of the processor's internal gate.
     let mode: 'vad' | 'ptt' = opts.mode;
     let processorMode: 'vad' | 'ptt' = opts.mode;
     let micPub: LocalPub | null = null;
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
+    const reportStatus = (status: ProcessorStatus): void => { if (!ended && !aborted) reportProcessorStatus(statusOwner, status); };
+    const browserStatus = async (reason: ProcessorStatus['reason'] = null): Promise<void> => {
+      if (!micTrack) return;
+      let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+      const track = micPub?.track;
+      if (track?.restartTrack && browserNoise !== 'unsupported' && browserNoise !== (state.noise === 'off' ? 'off' : 'on')) {
+        try {
+          await track.restartTrack({ ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 });
+          if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
+          if (ended) { micTrack.stop(); return; }
+          applyMic();
+          browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
+        } catch { /* Report the observed constraint state if capture cannot be reopened. */ }
+      }
+      reportStatus({requested: noisePreference(state.noise), effective: state.noise === 'off' ? 'off' : 'browser', browserNoise, reason, vad: 'unavailable'});
+    };
     let micSending: boolean | null = null;
     /** Sets an RNNoise processor on the microphone in the mode in force; a failure goes on without it. */
     const startNoise = async (): Promise<void> => {
       const track = micPub?.track;
-      if (!track?.setProcessor || processor !== null) return;
+      if (!track?.setProcessor) { await browserStatus('initialization-failed'); return; }
+      if (processor !== null) return;
       processorMode = mode;
-      const made = (deps.createNoiseProcessor ?? ((m) => new DillaRnnoiseProcessor({ mode: m })))(processorMode);
+      const made = (deps.createNoiseProcessor ?? ((m) => new DillaMicrophoneProcessor({ mode: m, preference: noisePreference(state.noise), allowed: false, onStatus: reportStatus })))(processorMode);
       try {
         await track.setProcessor(made);
+        if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
         processor = made;
+        const status = (made as {status?:ProcessorStatus}).status;
+        if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
+          await track.restartTrack({...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
+          if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
+        }
+        // Settings and held keys may change while LiveKit initializes the processor.
+        if (made.setMode) { made.setMode(mode); processorMode = mode; }
+        if (processorMode === 'ptt') made.setPttActive(mode !== 'ptt' || gate.update(0, deps.now()));
       } catch {
-        processor = null; // the microphone goes on without noise suppression
+        await made.destroy?.().catch(() => undefined);
+        processor = null;
+        await browserStatus('initialization-failed');
       }
     };
     const applyMic = (): void => {
       const track = micPub?.track;
       if (!track) return;
-      // With RNNoise, its worklet gates push to talk; without it, the track itself is muted while the key is up.
-      const pttOpen = mode !== 'ptt' || (processor !== null && processorMode === 'ptt') || gate.update(0, deps.now());
+      // Close the track and processor together, including fallback and initialization transitions.
+      const pttOpen = mode !== 'ptt' || gate.update(0, deps.now());
       const send = !ended && !state.muted && !state.deafened && !state.paused && pttOpen;
+      processor?.setCaptureAllowed?.(send);
+      if (micTrack) micTrack.enabled = send;
       if (send === micSending) return;
       micSending = send;
       void Promise.resolve(send ? track.unmute() : track.mute()).catch(() => undefined);
@@ -645,7 +678,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     if ('track' in mic) {
       micTrack = mic.track;
       // Product walk M5: a start muted sends no frame before the mute lands (LiveKit's unmute enables it again).
-      if (state.muted) mic.track.enabled = false;
+      if (state.muted || mode === 'ptt') mic.track.enabled = false;
       try {
         micPub = await local.publishTrack(mic.track, micOptions(caps));
       } catch {
@@ -654,10 +687,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         state = { ...state, mic: 'failed', error: 'E_MIC_PUBLISH' };
       }
       checkAborted();
-      if (opts.noise === 'on') {
+      if (opts.noise !== 'off') {
         await startNoise();
         checkAborted();
-      }
+      } else { await browserStatus(); }
     } else {
       state = { ...state, mic: mic.mic };
     }
@@ -900,6 +933,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let leaving: Promise<void> | null = null;
     const stopEverything = (): void => {
       ended = true;
+      processor?.setCaptureAllowed?.(false);
+      processor?.flush?.();
+      void processor?.destroy?.().catch(() => undefined);
+      reportProcessorStatus(statusOwner, null);
       relay.close();
       unsubscribe();
       for (const h of [...timers]) cancel(h);
@@ -1029,7 +1066,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         gate.setMode(next === 'ptt' ? 'ptt' : 'open');
         gate.setPtt(false);
         // A processor built for push to talk is held open under voice activity and closed again for push to talk.
-        if (processorMode === 'ptt') processor?.setPttActive(next !== 'ptt');
+        if (processor?.setMode) { processor.setMode(next); processorMode = next; }
+        else if (processorMode === 'ptt') processor?.setPttActive(next !== 'ptt');
         set({ mode: next });
         applyMic();
       },
@@ -1039,15 +1077,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         if (ended || next === state.noise) return;
         set({ noise: next });
         const track = micPub?.track;
-        if (next === 'on') {
-          await startNoise();
-        } else if (processor !== null) {
+        processor?.setCaptureAllowed?.(false);
+        processor?.flush?.();
+        if (processor !== null) {
           processor = null;
-          // Fix round 3 (I-1): the push-to-talk gate decides before the processor goes, so the raw microphone LiveKit
-          // swaps in stays muted with the key up (a processor built for push to talk held the track open itself).
           applyMic();
           await Promise.resolve(track?.stopProcessor?.()).catch(() => undefined);
         }
+        if (next !== 'off') await startNoise();
+        else { if (track?.mediaStreamTrack) micTrack = track.mediaStreamTrack; await browserStatus(); }
         applyMic();
       }),
       // Fix round 1 (M2): both run synchronously inside the "turn on audio" press (the dock’s button, the user activation

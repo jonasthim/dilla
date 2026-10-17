@@ -1,0 +1,8 @@
+{
+  "kind": "browser-streaming-smoke",
+  "browser": "firefox",
+  "engine": "deepfilter",
+  "qualified": false,
+  "parityClaim": false,
+  "error": "Error: Audio clock/startup timed out; check headless audio backend"
+}

@@ -1,0 +1,75 @@
+{
+  "kind": "browser-streaming-smoke",
+  "engine": "deepfilter",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+  "hardwareConcurrency": 16,
+  "seconds": 3,
+  "loadedCall": false,
+  "qualified": false,
+  "parityClaim": false,
+  "inputSettings": {
+    "channelCount": 1,
+    "deviceId": "WebAudio-2e2cd356-fd42-4547-b548-10d6dabc478b",
+    "latency": 0.01,
+    "sampleRate": 48000,
+    "sampleSize": 16
+  },
+  "rate": 48000,
+  "inputSamples": 144768,
+  "outputSamples": 144768,
+  "outputPeak": 0.015995953232049942,
+  "mutedPeak": 0,
+  "addedDelayMs": null,
+  "events": [
+    {
+      "kind": "metrics",
+      "buffers": 0,
+      "underruns": 0,
+      "dropped": 0,
+      "processingMs": 0
+    },
+    {
+      "kind": "ready",
+      "effective": "deepfilter"
+    },
+    {
+      "kind": "metrics",
+      "buffers": 66,
+      "underruns": 1,
+      "dropped": 2,
+      "processingMs": 91.50000023841858
+    },
+    {
+      "kind": "metrics",
+      "buffers": 441,
+      "underruns": 11,
+      "dropped": 5,
+      "processingMs": 519.200000166893
+    },
+    {
+      "kind": "metrics",
+      "buffers": 816,
+      "underruns": 11,
+      "dropped": 5,
+      "processingMs": 870.3000005483627
+    },
+    {
+      "kind": "metrics",
+      "buffers": 1153,
+      "underruns": 19,
+      "dropped": 7,
+      "processingMs": 1306.9999998807907
+    }
+  ],
+  "limitations": [
+    "Synthetic/fake-capture smoke check, not speech quality or a loaded encrypted call.",
+    "Complete added latency and alignment are unmeasured."
+  ],
+  "browserVersion": "153.0.8010.12",
+  "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor",
+  "platform": "linux",
+  "thirdPartyRequests": [],
+  "errors": [],
+  "inputSha256": null,
+  "assetLockSha256": "b917fd521b1bf8cc620e65a5817a14774da386c4161c1846effb02136f1c76d3"
+}

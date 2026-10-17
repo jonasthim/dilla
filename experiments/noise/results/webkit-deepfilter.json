@@ -1,0 +1,8 @@
+{
+  "kind": "browser-streaming-smoke",
+  "browser": "webkit",
+  "engine": "deepfilter",
+  "qualified": false,
+  "parityClaim": false,
+  "error": "Error: browserType.launch: \n╔══════════════════════════════════════════════════════╗\n║ Host system is missing dependencies to run browsers. ║\n║ Please install them with the following command:      ║\n║                                                      ║\n║     sudo npx playwright install-deps                 ║\n║                                                      ║\n║ Alternatively, use apt:                              ║\n║     sudo apt-get install libicu74\\                   ║\n║         libflite1                                    ║\n║                                                      ║\n║ <3 Playwright Team                                   ║\n╚══════════════════════════════════════════════════════╝"
+}

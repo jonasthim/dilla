@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-17",
+  "qualified": false,
+  "parityClaim": false,
+  "productionDefault": "lightweight (existing RNNoise)",
+  "experimentalEnabledInProduction": false,
+  "listening": {
+    "clips": 0,
+    "listeners": 0,
+    "krispReferences": 0,
+    "status": "not run"
+  },
+  "runtime": {
+    "completeAddedDelayMs": null,
+    "loadedCallMinutes": 0,
+    "physicalPlatformsTested": [],
+    "smokeOnly": [
+      "chromium-deepfilter.json",
+      "firefox-deepfilter.json",
+      "webkit-deepfilter.json"
+    ]
+  },
+  "blockers": [
+    "Licensed/consented English and Swedish corpus and matched lawful Krisp references unavailable.",
+    "Five-listener blind evaluation and onset missing-word scoring not run.",
+    "Chromium synthetic DF streaming underruns exceed 0.1%; 19/1153 output quanta in this smoke run.",
+    "Complete latency, 30-minute loaded calls and physical Chrome/Firefox/Safari/Android/iOS matrix not measured.",
+    "Firefox headless audio clock timed out; WebKit host dependencies missing.",
+    "Exact DeepFilterNet3 weight redistribution license requires clarification."
+  ],
+  "assetLockSha256": "b917fd521b1bf8cc620e65a5817a14774da386c4161c1846effb02136f1c76d3"
+}

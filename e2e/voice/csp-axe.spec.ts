@@ -54,7 +54,8 @@ test('the ring, the call, a player and Settings → Voice pass axe in three them
     });
 
     await test.step('Settings → Voice during the call', async () => {
-      await openVoiceSettings(bob.page);
+      const settings = await openVoiceSettings(bob.page);
+      await expect(settings.getByRole('button', {name:copy('settings.voice.test'),exact:true})).toBeDisabled();
       await axeEverywhere(bob.page, 'Settings → Voice');
       await closeSettings(bob.page);
     });

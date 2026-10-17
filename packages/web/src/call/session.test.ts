@@ -1044,6 +1044,41 @@ describe('the product walk fixes', () => {
     expect(call.state.speaking).toBe(false);
   });
 
+  it('Off reopens a capture with browser suppression disabled when live constraints are immutable',async()=>{
+    const f=fakes();f.deps.createNoiseProcessor=()=>({setPttActive:vi.fn()});
+    const call=await start(f,{noise:'lightweight',mode:'ptt'});
+    const mic=f.localTracks[0] as unknown as {stopProcessor:()=>Promise<void>;restartTrack:ReturnType<typeof vi.fn>;mediaStreamTrack:MediaStreamTrack};
+    mic.stopProcessor=async()=>{};
+    const raw=f.room.localParticipant.publishTrack.mock.calls[0][0];
+    raw.getSettings=()=>({noiseSuppression:true,deviceId:'chosen'});raw.getConstraints=()=>({});raw.applyConstraints=async()=>{};mic.mediaStreamTrack=raw;
+    const fresh={enabled:true,stop:vi.fn(),getSettings:()=>({noiseSuppression:false}),getConstraints:()=>({}),applyConstraints:async()=>{}} as unknown as MediaStreamTrack;
+    mic.restartTrack=vi.fn(async()=>{mic.mediaStreamTrack=fresh;});
+    await call.setNoise('off');
+    expect(mic.restartTrack).toHaveBeenCalledWith(expect.objectContaining({noiseSuppression:false,echoCancellation:true,autoGainControl:true}));
+    expect(fresh.enabled).toBe(false);
+  });
+
+  it('replays held PTT after replacing the noise processor', async () => {
+    const f = fakes();
+    const made: Array<{setPttActive: ReturnType<typeof vi.fn>;setMode: ReturnType<typeof vi.fn>}> = [];
+    f.deps.createNoiseProcessor = () => { const p={setPttActive:vi.fn(),setMode:vi.fn()};made.push(p);return p; };
+    const call=await start(f,{noise:'lightweight',mode:'ptt'});
+    call.pushToTalk(true);
+    await call.setNoise('automatic');
+    expect(made[1].setPttActive).toHaveBeenLastCalledWith(true);
+    expect(made[1].setMode).toHaveBeenLastCalledWith('ptt');
+  });
+  it('uses the current mode after asynchronous processor initialization', async () => {
+    const f=fakes(),p={setPttActive:vi.fn(),setMode:vi.fn()};
+    f.deps.createNoiseProcessor=()=>p;
+    const call=await start(f,{noise:'off',mode:'ptt'});
+    let finish!:()=>void;
+    f.localTracks[0].setProcessor=vi.fn(()=>new Promise<void>(resolve=>{finish=resolve;}));
+    const enable=call.setNoise('lightweight');await flush();
+    call.setMode('vad');finish();await enable;
+    expect(p.setMode).toHaveBeenLastCalledWith('vad');
+  });
+
   it('M1: noise suppression switches during the call', async () => {
     const f = fakes();
     const made: string[] = [];
@@ -1122,14 +1157,14 @@ describe('fix round 3 (wb-fix2-review-client I-1, m1, m2)', () => {
     const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, mode: 'ptt', noise: 'on' });
     open.push(call);
     const mic = f.localTracks[0] as FakeTrack & { stopProcessor?: () => Promise<void> };
-    // RNNoise built for push to talk gates the audio itself: the track is unmuted, the worklet holds it closed.
-    expect(mic.muted).toBe(false);
+    // Track gating now enforces PTT independently of the denoiser.
+    expect(mic.muted).toBe(true);
     const order: string[] = [];
     const mute = mic.mute.bind(mic);
     mic.mute = () => { order.push('mute'); mute(); };
     mic.stopProcessor = vi.fn(async () => { order.push(`stop (muted ${String(mic.muted)})`); });
     await call.setNoise('off');
-    expect(order).toEqual(['mute', 'stop (muted true)']);
+    expect(order).toEqual(['stop (muted true)']);
     expect(mic.muted).toBe(true);
   });
 
@@ -1774,4 +1809,16 @@ describe('web3.3 fix round 2: the passed context, newcomers before the roster, t
     call.setVolume(BOB, 70);
     expect(track.attach).toHaveBeenCalledTimes(2);
   });
+});
+
+it('PTT privacy is enforced by the track even when the denoiser is present', async () => {
+  const f=fakes(), allowed:boolean[]=[];
+  f.deps.createNoiseProcessor=()=>({setPttActive:()=>{},setCaptureAllowed:(a:boolean)=>allowed.push(a)});
+  const call=await startPageCall(f.deps,{channelId:CH,vdec:'vp8'},{...opts,noise:'on',mode:'ptt'});
+  try {
+    expect(f.localTracks[0].muted).toBe(true);
+    call.pushToTalk(true);expect(allowed.at(-1)).toBe(true);
+    call.setMuted(true);expect(allowed.at(-1)).toBe(false);
+    call.pushToTalk(false);call.setMuted(false);expect(allowed.at(-1)).toBe(false);
+  } finally {await call.leave('user');}
 });

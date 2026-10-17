@@ -1,0 +1,19 @@
+diff --git a/libDF/src/wasm.rs b/libDF/src/wasm.rs
+--- a/libDF/src/wasm.rs
++++ b/libDF/src/wasm.rs
+@@ -48,6 +48,15 @@ pub unsafe fn df_create(
+     Box::into_raw(df.boxed())
+ }
+
++/// Release the raw Box returned by df_create. The generated DFState class
++/// destructor accepts a WasmRefCell pointer and cannot free this raw pointer.
++#[wasm_bindgen]
++pub unsafe fn df_free(st: *mut DFState) {
++    if !st.is_null() {
++        drop(Box::from_raw(st));
++    }
++}
++
+ /// Get DeepFilterNet frame size in samples.
+ #[wasm_bindgen]
+ pub unsafe fn df_get_frame_length(st: *mut DFState) -> usize {
