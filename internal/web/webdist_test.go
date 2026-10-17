@@ -143,7 +143,7 @@ func TestBuiltClientIsServed(t *testing.T) {
 		var build struct {
 			Mode string `json:"mode"`
 		}
-		if err := json.Unmarshal(raw, &build); err != nil || (build.Mode != "evaluation" && build.Mode != "qualified") {
+		if err := json.Unmarshal(raw, &build); err != nil || (build.Mode != "evaluation" && build.Mode != "beta" && build.Mode != "qualified") {
 			t.Fatal("invalid enhanced build identity")
 		}
 		wantWasm = 3

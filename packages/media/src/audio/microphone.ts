@@ -9,7 +9,7 @@ export interface ProcessorStatus {
   requested: NoisePreference;
   engineName?: string;
   effective: 'initializing' | 'failed' | 'deepfilter' | 'rnnoise' | 'browser' | 'off';
-  reason: 'fallback-failed' | 'evaluation' | 'enhanced-failed' | 'sustained-overload' | 'repeated-underruns' | 'not-qualified' | 'initialization-failed' | 'browser-refused' | 'processor-error' | 'audio-suspended' | null;
+  reason: 'fallback-failed' | 'evaluation' | 'beta' | 'enhanced-failed' | 'sustained-overload' | 'repeated-underruns' | 'not-qualified' | 'initialization-failed' | 'browser-refused' | 'processor-error' | 'audio-suspended' | null;
   browserNoise: BrowserNoise;
   vad: 'rnnoise' | 'unavailable';
 }
@@ -99,7 +99,7 @@ export class DillaMicrophoneProcessor implements TrackProcessor<Track.Kind.Audio
           if (inner) {
             this.inner = inner;
             await inner.init(opts);
-            effective = 'deepfilter'; reason = noiseBuildMode === 'evaluation' ? 'evaluation' : null;
+            effective = 'deepfilter'; reason = noiseBuildMode === 'evaluation' || noiseBuildMode === 'beta' ? noiseBuildMode : null;
           }
         } catch {
           await inner?.destroy().catch(() => undefined); inner = undefined; reason = 'enhanced-failed';

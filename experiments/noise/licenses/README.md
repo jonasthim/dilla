@@ -1,6 +1,6 @@
 # Artifact licensing audit (2026-10-17)
 
-The exact files and source revisions are in `../asset-lock.json`. Build-time acquisition is explicit in `../prepare.mjs`; no upstream assets are requested at runtime. Models, WASM and the native Hush binary are ignored development artifacts, excluded from ordinary application builds. Explicit evaluation builds bundle the pinned DeepFilter assets locally; qualified builds require separate model licensing evidence.
+The exact files and source revisions are in `../asset-lock.json`. Build-time acquisition is explicit in `../prepare.mjs`; no upstream assets are requested at runtime. Models, WASM and the native Hush binary are ignored development artifacts, excluded from ordinary application builds. Explicit evaluation and opt-in beta builds bundle the pinned DeepFilter assets locally; qualified builds require separate model licensing evidence. Adding the beta build does not resolve this audit or record permission to redistribute the weights publicly.
 
 | Artifact | Code / wrapper | Exact model evidence | Release status |
 | --- | --- | --- | --- |

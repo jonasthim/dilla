@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {noiseBuild,validateRelease} from '../../scripts/noise-build.mjs';
+test('beta bundles verified local enhancement assets without claiming qualification',()=>{
+  const plugin=noiseBuild('beta'),emitted=[];
+  plugin.generateBundle.call({emitFile:f=>emitted.push(f)});
+  assert.equal(plugin.config().define.__DILLA_NOISE_MODE__,'"beta"');
+  assert.equal(JSON.parse(emitted.find(f=>f.fileName==='noise-build.json').source).mode,'beta');
+  for(const asset of ['model','wasm','glue'])assert.ok(emitted.some(f=>f.fileName.startsWith(`assets/noise-${asset}-`)));
+  assert.ok(emitted.some(f=>f.fileName==='assets/noise-LICENSE-MIT.txt'));
+  assert.equal(plugin.load('/repo/packages/media/src/audio/enhanced-provider.ts'),undefined);
+});
 test('ordinary builds have no enhanced assets and reject unknown enablement modes',()=>{
   const plugin=noiseBuild('disabled'),emitted=[];
   plugin.generateBundle.call({emitFile:f=>emitted.push(f)});

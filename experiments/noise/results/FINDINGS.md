@@ -4,7 +4,7 @@
 
 ## Latency follow-up
 
-The final implementation identity is `1ef805e9f8b00d71c3663aea14f3565921f96552ab5603d06cd839a1794ee61f`. The pinned model assets did not change.
+The latency-tested implementation identity is `1ef805e9f8b00d71c3663aea14f3565921f96552ab5603d06cd839a1794ee61f`. The pinned model assets did not change. The subsequent opt-in beta UI/build changes have a separate [readiness record](beta-readiness.json); these measurements are not relabeled with that implementation's identity.
 
 | Measurement | Result | Interpretation |
 |---|---|---|
@@ -57,3 +57,7 @@ The final Chromium application suite passed six of seven checks. Its separate la
 - Establish the exact DeepFilterNet3 weights redistribution grant; see the [artifact audit](../licenses/README.md).
 
 The enhanced default stays disabled. No merge, push, release or deployment was performed.
+
+## Opt-in beta follow-up
+
+The owner accepted offering Automatic as an opt-in beta while keeping Lightweight as the default. The branch adds an explicit beta build, an **Automatic (beta)** label, a pre-selection explanation of glitches/fallback, and active beta status. Existing preferences, one-way fallback, qualification checks and all failed measurements are preserved. This is a rollout decision, not new runtime or listening qualification. Public redistribution of the model has not been cleared; the release workflow remains unchanged. See the [beta instructions](../README.md#opt-in-beta).

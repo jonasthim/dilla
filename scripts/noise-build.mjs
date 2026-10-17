@@ -17,7 +17,7 @@ export function validateRelease(report,review,lockHash,implementationHash){
   if(!Array.isArray(review.evidence)||!review.evidence.length)throw Error('Release evidence is missing');
 }
 export function noiseBuild(mode=process.env.DILLA_NOISE_MODE??'disabled'){
-  if(!['disabled','evaluation','qualified'].includes(mode))throw Error('DILLA_NOISE_MODE must be disabled, evaluation, or qualified');
+  if(!['disabled','evaluation','beta','qualified'].includes(mode))throw Error('DILLA_NOISE_MODE must be disabled, evaluation, beta, or qualified');
   let manifest={},files=[];
   if(mode!=='disabled'){
     const lockPath=resolve(root,'experiments/noise/asset-lock.json'),lockBytes=readFileSync(lockPath),lock=JSON.parse(lockBytes);

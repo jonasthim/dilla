@@ -5,7 +5,7 @@ import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { getProcessorStatus, subscribeProcessorStatus } from '../../call/processor-status.ts';
-import { noisePreference } from '../../../../media/src/audio/noise-preference';
+import { noiseBuildMode, noisePreference } from '../../../../media/src/audio/noise-preference';
 import { MicrophoneTest } from './MicrophoneTest.tsx';
 import { t } from '../../strings/index.ts';
 
@@ -137,13 +137,14 @@ export function Voice(): React.JSX.Element {
         labels={{ input: t('settings.voice.input'), output: t('settings.voice.output'), systemDefault: t('settings.voice.systemDefault'),
           outputUnsupported: t('settings.voice.outputUnsupported'), mode: t('settings.voice.mode'), vad: t('settings.voice.vad'),
           ptt: t('settings.voice.ptt'), pttKey: t('settings.voice.pttKey'), pttNone: t('settings.voice.pttNone'), pttSet: t('settings.voice.pttSet'),
-          pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'), automatic: t('settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
+          pttPrompt: t('settings.voice.pttPrompt'), pttRefused: t('settings.voice.pttRefused'), noise: t('settings.voice.noise'), automatic: t(noiseBuildMode === 'beta' ? 'settings.voice.automaticBeta' : 'settings.voice.automatic'), lightweight: t('settings.voice.lightweight'), off: t('settings.voice.off'),
           level: t('settings.voice.level') }}
         onInput={id => write(SETTINGS.voiceInput, id === '' ? null : id)}
         onOutput={id => write(SETTINGS.voiceOutput, id === '' ? null : id)}
         onMode={mode => write(SETTINGS.voiceMode, mode)}
         onCaptureKey={onCaptureKey}
         onNoise={mode => write(SETTINGS.voiceNoise, mode)} />
+      {noiseBuildMode === 'beta' ? <p>{t('settings.voice.noiseBeta')}</p> : null}
       {noise === 'automatic' && status === null ? <p>{t('settings.voice.noisePending')}</p> : null}
       {status === null ? null : <p role="status">
         {t('settings.voice.processor', {processor: (status.effective === 'off' || (status.effective === 'browser' && status.browserNoise === 'off')) ? t('settings.voice.processor.off') : status.effective === 'browser' ? t('settings.voice.processor.browser') : status.effective === 'failed' ? t('settings.voice.processor.failed') : status.effective === 'initializing' ? t('settings.voice.processor.initializing') : status.engineName ?? t('settings.voice.lightweight')})}{' '}
