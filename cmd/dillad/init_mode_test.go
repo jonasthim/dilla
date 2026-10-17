@@ -1,16 +1,135 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/exit"
+	"github.com/jonasthim/dilla/internal/store/sqlite"
 )
+
+// Review minor 1: removing restrictUmask() from dispatch must fail a test. Not parallel.
+func TestDispatchRestrictsTheUmask(t *testing.T) {
+	old := syscall.Umask(0o022)
+	t.Cleanup(func() { syscall.Umask(old) })
+	if _, _, err := run(t, "--help"); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if got := syscall.Umask(0o022); got != 0o077 {
+		t.Fatalf("umask after dispatch = %04o, want 0077", got)
+	}
+}
+
+// Review minor 4: the flag package appends "(default ...)" itself, so the usage text must not
+// leave it a second time.
+func TestInitHelpShowsTheConfigDefaultOnce(t *testing.T) {
+	out, _, err := run(t, "init", "--help")
+	if err != nil {
+		t.Fatalf("init --help: %v", err)
+	}
+	if n := strings.Count(out, `(default "/etc/dilla/dilla.toml")`); n != 0 {
+		t.Fatalf("init --help appends a second default after the brief's own:\n%s", out)
+	}
+	if !strings.Contains(out, "where init writes dilla.toml (default /etc/dilla/dilla.toml); an existing file is refused unless --overwrite-config") {
+		t.Fatalf("init --help lost the brief's --config line:\n%s", out)
+	}
+}
+
+// oldInstanceConfig is an install made before OpenWrite pre-created the file: a database and a
+// live -wal at 0644. It is a snapshot taken while a connection holds the database open (a crash
+// image), so the -wal carries a row and survives the next open's recovery.
+func oldInstanceConfig(t *testing.T) *config.Config {
+	t.Helper()
+	old := syscall.Umask(0o022)
+	t.Cleanup(func() { syscall.Umask(old) })
+	src := filepath.Join(t.TempDir(), "src.db")
+	db, err := sqlite.OpenWrite(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE t (x INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO t VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Default()
+	c.DB.Driver = "sqlite"
+	c.DB.Path = filepath.Join(t.TempDir(), "dilla.db")
+	for _, suffix := range []string{"", "-wal"} {
+		b, err := os.ReadFile(src + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(c.DB.Path+suffix, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(c.DB.Path+suffix, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return c
+}
+
+// Review minor 2: serve's open path repairs an old install's 0644 database and -wal.
+func TestOpenRepositoryRepairsAnOldInstallsModes(t *testing.T) {
+	c := oldInstanceConfig(t)
+	repo, _, err := openRepository(c)
+	if err != nil {
+		t.Fatalf("openRepository: %v", err)
+	}
+	defer func() { _ = repo.Close() }()
+	for _, p := range []string{c.DB.Path, c.DB.Path + "-wal"} {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s has mode %04o, want 0600", p, perm)
+		}
+	}
+}
+
+// Review minor 3: a chmod that fails at serve is a warning, at init it is fatal. Not parallel:
+// it swaps the package hook and the default logger.
+func TestSecureFilesFailureWarnsAtServeAndStopsInit(t *testing.T) {
+	old := secureFiles
+	secureFiles = func(string) error { return errors.New("chmod: operation not permitted") }
+	t.Cleanup(func() { secureFiles = old })
+
+	var logs bytes.Buffer
+	oldLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(oldLog) })
+
+	repo, _, err := openRepository(oldInstanceConfig(t))
+	if err != nil {
+		t.Fatalf("openRepository failed on a chmod error, want a warning: %v", err)
+	}
+	_ = repo.Close()
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "operation not permitted") {
+		t.Fatalf("no warning logged: %q", logs.String())
+	}
+
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "dilla.toml")
+	_, _, err = run(t, initArgs(cfg, filepath.Join(tmp, "data"))...)
+	if err == nil || !strings.Contains(err.Error(), "operation not permitted") {
+		t.Fatalf("init err = %v, want the chmod failure to be fatal", err)
+	}
+	if _, statErr := os.Stat(cfg); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("init wrote a config after a fatal chmod failure")
+	}
+}
 
 func initArgs(cfg, data string, extra ...string) []string {
 	return append([]string{"init", "--config=" + cfg, "--data-dir=" + data, "--agree-tos",

@@ -48,7 +48,10 @@ func writeSecret(dir, name string, n int) (string, error) {
 // instance (dilla.db, or a dilla.toml left by an older init) whatever the flag.
 func runInit(args []string, stdout, stderr io.Writer) error {
 	fs, cfgFlag := newFlagSet("init", stderr)
-	fs.Lookup("config").Usage = "where init writes dilla.toml (default /etc/dilla/dilla.toml); an existing file is refused unless --overwrite-config"
+	cfgF := fs.Lookup("config")
+	cfgF.Usage = "where init writes dilla.toml (default /etc/dilla/dilla.toml); an existing file is refused unless --overwrite-config"
+	// The usage line already names the default; an empty DefValue stops the flag package printing it again.
+	cfgF.DefValue = ""
 	overwrite := fs.Bool("overwrite-config", false, "replace an existing file at --config")
 	dataDir := fs.String("data-dir", "/var/lib/dilla", "state root")
 	domain := fs.String("domain", "", "public DNS name (required)")
@@ -135,7 +138,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		_ = write.Close()
 		return fmt.Errorf("init: %w: %w", err, exit.CantCreate)
 	}
-	if err := sqlite.SecureFiles(c.DB.Path); err != nil {
+	if err := secureFiles(c.DB.Path); err != nil {
 		_ = write.Close()
 		_ = read.Close()
 		return fmt.Errorf("init: %w: %w", err, exit.CantCreate)
