@@ -51,9 +51,11 @@ export interface AppShellProps {
 /** The shell width from which the aside is a column (base.css holds the same 64rem in its container query). */
 const COLUMN_REM = 64;
 const NOT_TEXT = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'file', 'image', 'color']);
-/** An element the soft keyboard opens for: a text-like input, a textarea, a select or a contenteditable. */
+/** An element the soft keyboard opens for: a text-like input, a textarea, a select or a contenteditable; not a read-only or disabled one. */
 const editable = (el: EventTarget | null) => el instanceof HTMLElement
-  && (el instanceof HTMLInputElement ? !NOT_TEXT.has(el.type) : el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el.isContentEditable || el.getAttribute('contenteditable') === 'true');
+  && (el instanceof HTMLInputElement ? !NOT_TEXT.has(el.type) && !el.readOnly && !el.disabled
+    : el instanceof HTMLTextAreaElement ? !el.readOnly && !el.disabled
+      : el instanceof HTMLSelectElement ? !el.disabled : el.isContentEditable || el.getAttribute('contenteditable') === 'true');
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 /**
@@ -129,13 +131,16 @@ export function AppShell({
     const root = rootRef.current;
     const el = ringRef.current;
     if (root === null) return;
-    const measureRing = () => root.style.setProperty('--d-ring-h', `${el?.offsetHeight ?? 0}px`);
+    // Also on <html> on a phone, where a settings page outside the shell starts below the ring.
+    const html = layout === 'phone' ? document.documentElement : null;
+    const measureRing = () => { const h = `${el?.offsetHeight ?? 0}px`; root.style.setProperty('--d-ring-h', h); html?.style.setProperty('--d-ring-h', h); };
     measureRing();
-    if (el === null || typeof ResizeObserver === 'undefined') return;
+    const clear = () => html?.style.removeProperty('--d-ring-h');
+    if (el === null || typeof ResizeObserver === 'undefined') return clear;
     const observer = new ResizeObserver(measureRing);
     observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasRing]);
+    return () => { observer.disconnect(); clear(); };
+  }, [hasRing, layout]);
   const phone = layout === 'phone';
   const hasTabBar = phone && tabBar !== undefined && tabBar !== null && tabBar !== false;
   // Typing: an editable element anywhere in the document has focus (a dialog and a settings page included), which is when a phone opens its keyboard. The tab bar steps aside.

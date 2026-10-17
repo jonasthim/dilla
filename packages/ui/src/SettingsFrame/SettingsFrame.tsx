@@ -39,6 +39,21 @@ export function SettingsFrame({ open, title, closeLabel, onClose, nav, children,
     const el = ref.current;
     return () => { if (el?.open) el.close(); };
   }, []);
+  // A non-modal frame gets no `cancel` and no key events while focus sits elsewhere (the tab bar, the body): Escape anywhere closes it.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open || !modeless) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const inDialog = e.target instanceof Element ? e.target.closest('dialog') : null;
+      if (inDialog !== null && inDialog !== ref.current) return;
+      e.preventDefault();
+      onCloseRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, modeless]);
   // True when the event started in this frame and not inside a dialog nested in it.
   const ownEvent = (target: EventTarget) => target instanceof Element && target.closest('dialog') === ref.current;
   return (

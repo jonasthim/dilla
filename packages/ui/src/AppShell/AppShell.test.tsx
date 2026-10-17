@@ -479,6 +479,34 @@ describe('phone layout', () => {
     expect(container.querySelector('.d-app-shell__ring')).not.toHaveAttribute('inert');
   });
 
+  it('covered alone (no aside) makes main and the call bar inert, and leaves the tab bar live', () => {
+    render(<ComposedShell shell={phone({ phonePane: 'view', covered: true })} />);
+    expect(screen.getByRole('main')).toHaveAttribute('inert');
+    expect(screen.getByTestId('call-bar').closest('.d-app-shell__callbar')).toHaveAttribute('inert');
+    expect(screen.getByTestId('tab-bar').closest('.d-app-shell__tabbar')).not.toHaveAttribute('inert');
+  });
+
+  it('typing: moving focus from one field to another never shows the tab bar in between', () => {
+    render(<><ComposedShell shell={phone({ phonePane: 'view' })} /><input aria-label="other" /></>);
+    const wrapper = document.querySelector('.d-app-shell__tabbar') as HTMLElement;
+    const composer = screen.getByRole('textbox', { name: 'message #general' });
+    act(() => { composer.focus(); });
+    expect(wrapper).toHaveAttribute('hidden');
+    const seen: Array<string | null> = [];
+    const watch = new MutationObserver(() => seen.push(wrapper.getAttribute('hidden')));
+    watch.observe(wrapper, { attributes: true, attributeFilter: ['hidden'] });
+    act(() => { screen.getByRole('textbox', { name: 'other' }).focus(); });
+    watch.disconnect();
+    expect(seen).toEqual([]);
+    expect(wrapper).toHaveAttribute('hidden');
+  });
+
+  it('typing: a read-only or disabled field does not count', () => {
+    const { container } = render(<><ComposedShell shell={phone({ phonePane: 'view' })} /><textarea aria-label="ro" readOnly /><select aria-label="sel" disabled><option>a</option></select></>);
+    act(() => { screen.getByRole('textbox', { name: 'ro' }).focus(); });
+    expect(container.firstElementChild).not.toHaveAttribute('data-typing');
+  });
+
   it('typing: a checkbox does not count', () => {
     const { container } = render(<ComposedShell shell={phone({ phonePane: 'view', tabBar: <input type="checkbox" aria-label="pick" /> })} />);
     act(() => { screen.getByRole('checkbox', { name: 'pick' }).focus(); });

@@ -86,6 +86,8 @@
 /* The tab bar pads the home indicator once: the composers above it (the thread pane's too) add none, until the bar steps aside while typing. */
 .d-app-shell[data-layout="phone"]:not([data-typing="true"]):has(.d-app-shell__tabbar) .d-composer { padding-bottom: 0.5rem; }
 .d-app-shell[data-layout="phone"]:not([data-typing="true"]):has(.d-app-shell__tabbar) .d-thread-pane[data-phone] .d-thread-pane__composer { padding-bottom: 0; }
+/* The thread sheet's wrapper pads the home indicator, so the composer inside it adds none (once, also while typing). */
+.d-app-shell[data-layout="phone"] .d-thread-pane[data-phone] .d-composer { padding-bottom: 0.5rem; }
 /* The list pane has no header of its own: it clears the notch itself, unless the link banner or the ring (which do) is the top row. */
 .d-app-shell[data-layout="phone"][data-pane="list"]:not(:has(.d-link-banner:not(:empty), .d-app-shell__ring)) .d-app-shell__grid { padding-top: env(safe-area-inset-top); box-sizing: border-box; }
 .d-app-shell[data-layout="phone"]:has(.d-link-banner:not(:empty)) .d-phone-header { padding-top: 0; }
@@ -113,7 +115,7 @@
 }
 /* web3.7.1: on a phone the frame is a non-modal page that ends above the tab bar (--d-tabbar-h, set on <html> by the shell), below the ring. */
 @media (max-width: 47.99rem) {
-  .d-settings-frame.d-settings-frame[data-modeless] { position: fixed; inset: 0 0 auto 0; width: 100%; height: calc(var(--d-vvh, 100dvh) - var(--d-tabbar-h, 0px)); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; z-index: 20; }
+  .d-settings-frame.d-settings-frame[data-modeless] { position: fixed; inset: var(--d-ring-h, 0px) 0 auto 0; width: 100%; height: calc(var(--d-vvh, 100dvh) - var(--d-tabbar-h, 0px) - var(--d-ring-h, 0px)); max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; z-index: 20; }
 }
 @container d-settings (max-width: 44.99rem) {
   /* A11Y-DESIGN-01: stacked, the whole panel scrolls as one column (at 320 × 256, 400 % zoom, a fixed navigation left

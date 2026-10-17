@@ -99,7 +99,7 @@ export function usePhoneSheet(name: 'members' | 'thread', open: boolean, onClose
     return () => window.removeEventListener('popstate', onPop);
   }, [open, name]);
   const close = useCallback(() => {
-    if (pushed.current && sheetOf(window.history.state) === name) { window.history.back(); return true; }
+    if (pushed.current && sheetOf(window.history.state) === name) { pushed.current = false; window.history.back(); return true; }
     onCloseRef.current();
     return false;
   }, [name]);

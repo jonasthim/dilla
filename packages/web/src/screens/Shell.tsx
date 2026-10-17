@@ -1245,15 +1245,30 @@ export function Shell(): React.JSX.Element {
     id: to, label: tabLabel(to), href: routePath(tabTarget(to)), icon, current: phoneTab === to,
     ...(count !== undefined && count > 0 ? { count, countLabel: t('nav.tab.unread', { name: tabLabel(to), count }) } : {}),
   });
+  // The tab to open once an open sheet's entry has been popped (set while that pop is pending, so a second tap only retargets it).
+  const pendingTab = useRef<{ to: PhoneTab; current: boolean } | null>(null);
+  const openTab = (to: PhoneTab, current: boolean) => {
+    // The current tab in its pushed view goes to its list (the iOS convention): back when the app pushed the view, else a replace after a
+    // deep link. Another tab opens where it was left, replacing the entry.
+    if (current) goBack(tabRoot(to), navigate);
+    else navigate(tabTarget(to), true);
+  };
   const tabBar = !phone ? undefined : (
     <TabBar label={t('nav.tabs.label')} onSelect={id => {
       const to = id as PhoneTab;
-      // The current tab in its pushed view goes to its list (the iOS convention); another tab opens where it was left.
-      const target = to === phoneTab && phonePane === 'view' ? tabRoot(to) : tabTarget(to);
-      // An open sheet closes first. Its entry is popped (async), and only then does the tab's replace land on the view's entry.
-      if (asideShown && phone && (sideNow !== null ? threadSheet : memberSheet).close()) {
-        window.addEventListener('popstate', () => navigate(target, true), { once: true });
-      } else navigate(target, true);
+      const current = to === phoneTab && phonePane === 'view';
+      // Server settings is a page above the tabs: leaving by a tab closes it.
+      if (adminFor !== null) setAdminFor(null);
+      if (pendingTab.current !== null) { pendingTab.current = { to, current }; return; }
+      // An open sheet closes first. Its entry is popped (async), and only then does the tab open on the view's entry.
+      if (asideShown && (sideNow !== null ? threadSheet : memberSheet).close()) {
+        pendingTab.current = { to, current };
+        window.addEventListener('popstate', () => {
+          const next = pendingTab.current;
+          pendingTab.current = null;
+          if (next !== null) openTab(next.to, next.current);
+        }, { once: true });
+      } else openTab(to, current);
     }} items={[
       tabItem('servers', 'server'), tabItem('dms', 'message-square', dmCounts.unread), tabItem('activity', 'activity', activityCount), tabItem('you', 'user'),
     ]} />

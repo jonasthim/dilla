@@ -268,6 +268,38 @@ describe('the phone shell: tabs', () => {
     expect((window.history.state as { phoneSheet?: unknown } | null)?.phoneSheet).toBeUndefined();
   });
 
+  it('a tab tap closes server settings too', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
+    await user.click(screen.getByRole('menuitem', { name: t('admin.open') }));
+    expect(await screen.findByRole('dialog', { name: t('admin.title') })).toBeInTheDocument();
+    await user.click(tab('DMs'));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: t('admin.title') })).toBeNull());
+    expect(here()).toBe('/dm');
+    expect(document.querySelector('main')).not.toHaveAttribute('inert');
+  });
+
+  it('two quick taps on a tab with a sheet open pop the sheet entry once', async () => {
+    phone({ path: `/c/${A}/${TEXT}` });
+    const { user } = { user: (await import('@testing-library/user-event')).default.setup() };
+    await user.click(await screen.findByRole('button', { name: t('nav.channel.menu') }));
+    await user.click(screen.getByRole('menuitem', { name: t('members.toggle') }));
+    await screen.findByRole('complementary', { name: 'members of Midgard' });
+    const back = vi.spyOn(window.history, 'back');
+    const link = tab('activity');
+    act(() => { link.click(); link.click(); });
+    await waitFor(() => expect(here()).toBe('/activity'));
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it('the current tab in a view the app pushed goes back instead of replacing it', async () => {
+    const { user } = phone({ path: `/c/${A}` });
+    await user.click(await screen.findByRole('button', { name: 'lobby' }));
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    await user.click(tab('servers'));
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
   it('opens an unvisited tab at its root', async () => {
     const { user } = phone({ path: '/you' });
     await screen.findByRole('heading', { level: 1, name: t('you.title') });

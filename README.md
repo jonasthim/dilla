@@ -16,7 +16,7 @@ machine their group can reach can host it.
 
 ## What works today
 
-As of web-3.7 (2026-10-16).
+As of web-3.7.1 (2026-10-17).
 
 | Part | State |
 |---|---|

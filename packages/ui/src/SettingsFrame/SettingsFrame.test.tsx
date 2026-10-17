@@ -140,6 +140,24 @@ describe('SettingsFrame', () => {
       expect(p.onClose).toHaveBeenCalledTimes(1);
     });
 
+    it('closes on Escape pressed outside the frame (focus on the tab bar), once', async () => {
+      const user = userEvent.setup();
+      const p = props();
+      render(<><PhoneLayoutProvider value><SettingsFrame {...p} /></PhoneLayoutProvider><button type="button">tab</button></>);
+      screen.getByRole('button', { name: 'tab' }).focus();
+      await user.keyboard('{Escape}');
+      expect(p.onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not close on an Escape a nested dialog handled', async () => {
+      const user = userEvent.setup();
+      const p = props();
+      render(<PhoneLayoutProvider value><SettingsFrame {...p}><Dialog open title="Remove this device?" onClose={vi.fn()}><p>x</p></Dialog></SettingsFrame></PhoneLayoutProvider>);
+      act(() => { screen.getByRole('dialog', { name: 'Remove this device?' }).focus(); });
+      await user.keyboard('{Escape}');
+      expect(p.onClose).not.toHaveBeenCalled();
+    });
+
     it('an explicit modal prop wins', () => {
       const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
       phone({ modal: true });
