@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +30,12 @@ import (
 // Plan 1 shipped.
 func inviteEnv(t *testing.T) (*env, id.ID, string) {
 	t.Helper()
+	return inviteEnvFor(t, "dilla.example")
+}
+
+// inviteEnvFor is inviteEnv with the instance domain the landing page names.
+func inviteEnvFor(t *testing.T, domain string) (*env, id.ID, string) {
+	t.Helper()
 	e := newEnv(t)
 	log := slog.New(slog.DiscardHandler)
 	cfg := config.Default()
@@ -37,7 +45,7 @@ func inviteEnv(t *testing.T) (*env, id.ID, string) {
 	api.NewInvites(e.Repo, e.Clk, "https://dilla.example", log).Register(e.Mux)
 	api.Deps{
 		Repo: e.Repo, Clock: e.Clk, Log: log, Limiter: limiter, Config: cfg,
-		Domain: "dilla.example",
+		Domain: domain,
 	}.RegisterPublicInvites(e.Mux)
 	_, tok := e.NewUser("owner")
 	return e, createCommunity(t, e, tok), tok
@@ -602,15 +610,247 @@ func TestTheLandingPageLinksIntoTheWebClient(t *testing.T) {
 		t.Fatalf("GET /i/{code} = %d", resp.StatusCode)
 	}
 	page := string(body)
-	if !strings.Contains(page, `<a href="/welcome?invite=`+code+`">Open dilla in this browser</a>`) {
+	if !strings.Contains(page, `href="/welcome?invite=`+code+`"`) || !strings.Contains(page, `>Open dilla in this browser</a>`) {
 		t.Fatalf("the landing page does not link into the web client:\n%s", page)
 	}
-	if !strings.Contains(page, "into a dilla client for <code>dilla.example</code>. This page never asks for a password.</p>") {
+	if !strings.Contains(page, "Or paste the code into a dilla client for dilla.example. This page never asks for a password.") {
 		t.Fatalf("the landing page lost the paste-the-code sentence:\n%s", page)
 	}
 	for _, absent := range []string{"Open a dilla client", "<script", "<form"} {
 		if strings.Contains(page, absent) {
 			t.Fatalf("the landing page contains %q:\n%s", absent, page)
 		}
+	}
+}
+
+// landingEnv mints an invite straight into the store with an exact expiry and
+// use count, for the tests that read the page's wording. The community is the
+// env's own (named "Midgard Crew") unless instance is set, which is the shape
+// `dillad init` writes for the bootstrap invite.
+func landingEnv(t *testing.T, instance bool, maxUses, used uint64, expiresIn time.Duration) (*env, string) {
+	t.Helper()
+	e, cid, tok := inviteEnvFor(t, "dilla.test")
+	if status, _ := e.Do(http.MethodPatch, "/v1/communities/"+cid.String(), tok,
+		[]any{"Midgard Crew", nil, nil, nil}); status != http.StatusOK {
+		t.Fatal("PATCH name failed")
+	}
+	code, hash := auth.NewInviteCode()
+	row := store.InviteRow{
+		ID: id.New(), CodeHash: hash, MaxUses: maxUses, UsedCount: used,
+		Created: e.Clk.Now().Unix(), ExpiresAt: e.Clk.Now().Add(expiresIn).Unix(),
+	}
+	if !instance {
+		row.CommunityID = &cid
+	}
+	if err := e.Repo.CreateInvite(t.Context(), row); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	return e, code
+}
+
+func landingBody(t *testing.T, e *env, code string) (getResult, string) {
+	t.Helper()
+	resp, body := rawGet(t, e, "/i/"+code, "text/html")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /i/{code} = %d (%s)", resp.StatusCode, body)
+	}
+	return resp, string(body)
+}
+
+// Step 1 of INV: a community invite made through the route the "invite link"
+// action calls always names its community.
+func TestALandingOfACommunityInviteNamesTheCommunity(t *testing.T) {
+	e, cid, tok := inviteEnv(t)
+	if status, _ := e.Do(http.MethodPatch, "/v1/communities/"+cid.String(), tok,
+		[]any{"Midgard Crew", nil, nil, nil}); status != http.StatusOK {
+		t.Fatal("PATCH name failed")
+	}
+	code := mintInvite(t, e, cid, tok, 5, 3600)
+	_, page := landingBody(t, e, code)
+	if !strings.Contains(page, "Midgard Crew") {
+		t.Fatalf("the landing page does not name the community:\n%s", page)
+	}
+	for _, want := range []string{
+		"<title>Invitation to Midgard Crew on dilla.example</title>",
+		"You have been invited to Midgard Crew",
+		"on dilla.example",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the landing page lacks %q:\n%s", want, page)
+		}
+	}
+}
+
+// The invite `dillad init` prints has no community, by design: the page then
+// names the instance and prints no community line.
+func TestLandingBootstrapInviteHasNoCommunity(t *testing.T) {
+	e, code := landingEnv(t, true, 1, 0, 24*time.Hour)
+	_, page := landingBody(t, e, code)
+	for _, want := range []string{
+		"<title>Invitation to dilla.test</title>",
+		"<h1>You have been invited to dilla.test</h1>",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the landing page lacks %q:\n%s", want, page)
+		}
+	}
+	for _, absent := range []string{"Midgard", "Community", "community"} {
+		if strings.Contains(page, absent) {
+			t.Fatalf("an instance invite's page contains %q:\n%s", absent, page)
+		}
+	}
+}
+
+func TestLandingHasNoScriptNoFormOneLink(t *testing.T) {
+	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
+	_, page := landingBody(t, e, code)
+	for _, absent := range []string{"<script", "<form", "<link", "<img", "http:", "https:", "src="} {
+		if strings.Contains(page, absent) {
+			t.Fatalf("the landing page contains %q:\n%s", absent, page)
+		}
+	}
+	if n := strings.Count(page, "href="); n != 1 {
+		t.Fatalf("the landing page has %d href=, want 1:\n%s", n, page)
+	}
+	if !strings.Contains(page, `href="/welcome?invite=`) {
+		t.Fatalf("the one link is not same-origin /welcome?invite=:\n%s", page)
+	}
+}
+
+func TestLandingHeadersUnchanged(t *testing.T) {
+	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
+	resp, _ := landingBody(t, e, code)
+	for k, want := range map[string]string{
+		"Cache-Control":           "no-store",
+		"Referrer-Policy":         "no-referrer",
+		"X-Content-Type-Options":  "nosniff",
+		"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+	} {
+		if got := resp.Header.Get(k); got != want {
+			t.Fatalf("%s = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestLandingPlurals(t *testing.T) {
+	for _, tc := range []struct {
+		remaining uint64
+		want      string
+	}{{1, "1 use left"}, {2, "2 uses left"}} {
+		e, code := landingEnv(t, false, 5, 5-tc.remaining, 24*time.Hour)
+		_, page := landingBody(t, e, code)
+		if !strings.Contains(page, tc.want) {
+			t.Fatalf("remaining %d: page lacks %q:\n%s", tc.remaining, tc.want, page)
+		}
+	}
+}
+
+func TestLandingExpiry(t *testing.T) {
+	start := time.Unix(1_790_000_000, 0).UTC()
+	for _, tc := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{23*time.Hour + 59*time.Minute, "Expires in 23 hours"},
+		{61 * time.Minute, "Expires in 1 hour"},
+		{12 * time.Minute, "Expires in 12 minutes"},
+		{30 * time.Second, "Expires in less than a minute"},
+		{72 * time.Hour, "Expires on 24 September 2026 (UTC)"},
+	} {
+		e, code := landingEnv(t, false, 5, 0, tc.in)
+		_, page := landingBody(t, e, code)
+		if !strings.Contains(page, tc.want) {
+			t.Fatalf("in %s: page lacks %q:\n%s", tc.in, tc.want, page)
+		}
+		iso := start.Add(tc.in).Format(time.RFC3339)
+		if !strings.Contains(page, `<time datetime="`+iso+`">`) {
+			t.Fatalf("in %s: page lacks <time datetime=%q>:\n%s", tc.in, iso, page)
+		}
+	}
+}
+
+func TestLandingOpenGraph(t *testing.T) {
+	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
+	_, page := landingBody(t, e, code)
+	for _, want := range []string{
+		`<meta property="og:title" content="Invitation to Midgard Crew on dilla.test">`,
+		`<meta property="og:description" content="Join Midgard Crew on dilla.test, a dilla server. Open the link to accept.">`,
+		`<meta name="description" content="Join Midgard Crew on dilla.test, a dilla server. Open the link to accept.">`,
+		`<meta property="og:type" content="website">`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the page lacks %s:\n%s", want, page)
+		}
+	}
+	for _, absent := range []string{"og:url", "og:image"} {
+		if strings.Contains(page, absent) {
+			t.Fatalf("the page carries %s", absent)
+		}
+	}
+	for _, line := range strings.Split(page, "\n") {
+		if strings.Contains(line, "<meta") && (strings.Contains(line, code) || strings.Contains(line, "Expires") || strings.Contains(line, "use left") || strings.Contains(line, "uses left")) {
+			t.Fatalf("a meta tag carries the code, expiry or uses: %s", line)
+		}
+	}
+
+	e, code = landingEnv(t, true, 1, 0, 24*time.Hour)
+	_, page = landingBody(t, e, code)
+	for _, want := range []string{
+		`<meta property="og:title" content="Invitation to dilla.test">`,
+		`<meta property="og:description" content="Join dilla.test, a dilla server. Open the link to accept.">`,
+		`<meta name="description" content="Join dilla.test, a dilla server. Open the link to accept.">`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the instance page lacks %s:\n%s", want, page)
+		}
+	}
+}
+
+// The template's literal colours are the Mesh tokens, dark and light.
+func TestLandingTokensMatchMesh(t *testing.T) {
+	raw, err := os.ReadFile("../../packages/design-tokens/dist/tokens.css")
+	if err != nil {
+		t.Fatalf("read tokens.css: %v", err)
+	}
+	css := string(raw)
+	dark := css[strings.Index(css, `[data-theme="mesh"] {`):]
+	dark = dark[:strings.Index(dark, "}")]
+	light := css[strings.Index(css, "@media (prefers-color-scheme: light)"):]
+	light = light[:strings.Index(light, "}")]
+
+	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
+	_, page := landingBody(t, e, code)
+	cut := strings.Index(page, "prefers-color-scheme: light")
+	if cut < 0 {
+		t.Fatalf("the page has no light scheme:\n%s", page)
+	}
+	pageDark, pageLight := page[:cut], page[cut:]
+	decl := regexp.MustCompile(`--(bg|surface|fg|fg-2|accent|accent-ink|hairline):\s*(#[0-9A-Fa-f]{6})`)
+	find := func(src, name string) string {
+		for _, m := range decl.FindAllStringSubmatch(src, -1) {
+			if m[1] == name {
+				return m[2]
+			}
+		}
+		return ""
+	}
+	for _, name := range []string{"bg", "surface", "fg", "fg-2", "accent", "accent-ink", "hairline"} {
+		for _, side := range []struct{ tokens, page string }{{dark, pageDark}, {light, pageLight}} {
+			want, got := find(side.tokens, name), find(side.page, name)
+			if want == "" || !strings.EqualFold(got, want) {
+				t.Fatalf("--%s = %q in the page, %q in tokens.css", name, got, want)
+			}
+		}
+	}
+}
+
+// Guard, green at start: a landing page never spends a use.
+func TestLandingNeverMutates(t *testing.T) {
+	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
+	for range 3 {
+		landingBody(t, e, code)
+	}
+	if got := usedCount(t, e, code); got != 0 {
+		t.Fatalf("used_count = %d after 3 GETs", got)
 	}
 }
