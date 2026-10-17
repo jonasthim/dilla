@@ -9,3 +9,15 @@ Implement the user-approved plan from 2026-10-17 on an isolated branch from main
 5. Qualification: at least 60 licensed/consented English/Swedish clips across clean/quiet/onsets/keyboards/fans/dogs/TV/overlap; identical legally obtained Krisp references; five blind listeners, three five-point ratings, no category >0.25 below Krisp, no extra missing onset words. End-to-end added delay target <=60 ms, hard <=80 ms, underruns <0.1% in 30-minute loaded calls with sustained headroom, Chrome/Firefox/Safari/Android/iOS. Failures/uncertainty must be reported. No parity claim without evidence.
 
 Unqualified DeepFilterNet stays experimental. No default migration, proprietary dependency, enrollment, remote processing, model CDN requests, telemetry, server API or encryption changes. Equal-level competing speakers remain a separately reported limitation.
+
+## Branch completion follow-up
+
+The user requires the feature to be complete in this branch, beyond an isolated prototype. Continue the existing implementation with:
+
+1. Reproduce/fix transport underruns; instrument scheduling, delay and bounded state, and correct the test host's audio backend before drawing runtime conclusions.
+2. Move the enhanced processor into the shared media implementation, integrate Automatic selection, live fallback/status/mode/PTT, microphone preview and same-origin verified assets. A deliberate evaluation build must run the actual application with enhanced processing; ordinary release builds stay gated until qualification passes. Preserve legacy preferences.
+3. Add a qualification gate with verifiable evidence rather than hard-coded permanent disablement. Complete corpus acquisition and paired evaluation tooling; report unavailable matched Krisp/listener evidence honestly.
+4. Exercise the integrated enhanced path under encryption and lifecycle transitions, measure actual signal delay, run sustained loaded checks where the environment supports them, and validate default-build asset isolation.
+5. Review the completed software, fix important findings, update findings/docs and commit. No release/merge/deploy is requested in this follow-up.
+
+External perceptual and physical-device qualification cannot be manufactured. A working evaluation build is a distinct deliverable from a qualified release; retain both statuses explicitly.

@@ -5,6 +5,7 @@ import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { getProcessorStatus, subscribeProcessorStatus } from '../../call/processor-status.ts';
+import { noisePreference } from '../../../../media/src/audio/noise-preference';
 import { MicrophoneTest } from './MicrophoneTest.tsx';
 import { t } from '../../strings/index.ts';
 
@@ -109,7 +110,7 @@ export function Voice(): React.JSX.Element {
   const [testOpen, setTestOpen] = useState(false);
   const status = useSyncExternalStore(subscribeProcessorStatus, getProcessorStatus);
   const level = useInputLevel(granted && !inCall && !testOpen, settings[SETTINGS.voiceInput] ?? '');
-  const noise = settings[SETTINGS.voiceNoise] === 'off' ? 'off' : settings[SETTINGS.voiceNoise] === 'automatic' ? 'automatic' : 'lightweight';
+  const noise = noisePreference(settings[SETTINGS.voiceNoise]);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<UiError | null>(null);
   const write = (key: string, value: string | null) => {
@@ -145,7 +146,7 @@ export function Voice(): React.JSX.Element {
         onNoise={mode => write(SETTINGS.voiceNoise, mode)} />
       {noise === 'automatic' && status === null ? <p>{t('settings.voice.noisePending')}</p> : null}
       {status === null ? null : <p role="status">
-        {t('settings.voice.processor', {processor: (status.effective === 'off' || (status.effective === 'browser' && status.browserNoise === 'off')) ? t('settings.voice.processor.off') : status.effective === 'browser' ? t('settings.voice.processor.browser') : status.effective === 'initializing' ? t('settings.voice.processor.initializing') : status.engineName ?? t('settings.voice.lightweight')})}{' '}
+        {t('settings.voice.processor', {processor: (status.effective === 'off' || (status.effective === 'browser' && status.browserNoise === 'off')) ? t('settings.voice.processor.off') : status.effective === 'browser' ? t('settings.voice.processor.browser') : status.effective === 'failed' ? t('settings.voice.processor.failed') : status.effective === 'initializing' ? t('settings.voice.processor.initializing') : status.engineName ?? t('settings.voice.lightweight')})}{' '}
         {status.reason === null ? null : t(`settings.voice.fallback.${status.reason}`)}{' '}
         {status.browserNoise === 'unknown' ? t('settings.voice.browserUnknown') : noise === 'off' && status.browserNoise === 'on' ? t('settings.voice.browserStillOn') : null}
       </p>}

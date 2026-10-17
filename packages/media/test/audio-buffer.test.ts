@@ -47,3 +47,34 @@ describe('VAD onset buffer', () => {
     expect(g.process(frame(6), 1, 50)[0]).toBe(4);
   });
 });
+
+it('absorbs bounded worker jitter without gaps after initial playout starts', () => {
+  let quantum=0, firstOutput=-1;
+  const pending:Array<{at:number;frame:Parameters<FrameBridge['accept']>[0]}>=[];
+  const b=new FrameBridge(frame=>pending.push({at:quantum+(frame.id%4+1),frame}));
+  const output=new Float32Array(128),input=new Float32Array(128).fill(1);
+  b.setAllowed(true);
+  for(quantum=0;quantum<4000;quantum++) {
+    for(let i=0;i<pending.length;) {if(pending[i].at<=quantum)b.accept(pending.splice(i,1)[0].frame);else i++;}
+    b.render(input,output);
+    if(firstOutput<0&&output.some(x=>x!==0)) firstOutput=quantum;
+    if(firstOutput>=0)expect(output.every(x=>x===1),`playout gap at quantum ${quantum}`).toBe(true);
+  }
+  expect(firstOutput*128/48).toBeLessThanOrEqual(30);
+  expect(b.stats.underruns).toBe(0);expect(b.stats.dropped).toBe(0);
+});
+it('privacy flushes are not counted as overload or underruns',()=>{
+  const pending:Array<Parameters<FrameBridge['accept']>[0]>=[];
+  const b=new FrameBridge(f=>pending.push(f));b.setAllowed(true);
+  b.render(new Float32Array(480).fill(.4),new Float32Array(480));
+  b.setAllowed(false);for(const frame of pending)b.accept(frame);
+  expect(b.stats.dropped).toBe(0);expect(b.stats.underruns).toBe(0);
+});
+it('zeroes reusable PCM as well as pending output on privacy flush',()=>{
+  const sent:Array<Parameters<FrameBridge['accept']>[0]>=[];
+  const b=new FrameBridge(f=>{sent.push(f);b.accept(f);});b.setAllowed(true);
+  for(let i=0;i<6;i++)b.render(new Float32Array(480).fill(.8),new Float32Array(480));
+  for(let i=0;i<4;i++)b.render(undefined,new Float32Array(480));
+  b.setAllowed(false);
+  expect(sent.every(f=>f.pcm.every(x=>x===0))).toBe(true);
+});

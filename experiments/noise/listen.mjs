@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import {createHash} from 'node:crypto';
 import { blindOrder } from './benchmark.mjs';
 const [reportPath,outPath,seedText='42'] = process.argv.slice(2);
 if(!reportPath||!outPath)throw Error('Usage: node listen.mjs output/report.json blind-directory [seed]');
@@ -11,7 +12,8 @@ for(const [index,clip] of [...new Set(report.results.map(r=>r.clip))].entries())
   for(const [sample,{engine}] of blindOrder(rows.map(r=>r.engine),seed+index).entries()) {
     const row=rows.find(r=>r.engine===engine),code=`c${index}-s${sample}`,file=`${code}.wav`;
     if(!row.file||resolve(base,row.file).startsWith(base+'/')===false)throw Error('Unsafe output path');
-    copyFileSync(resolve(base,row.file),resolve(out,file));key.push({code,clip,engine});items.push({code,file,label:`Clip ${index+1}, sample ${sample+1}`});
+    if(createHash('sha256').update(readFileSync(resolve(base,row.file))).digest('hex')!==row.sha256)throw Error('Output audio hash changed');
+    copyFileSync(resolve(base,row.file),resolve(out,file));key.push({code,clip,engine,sha256:row.sha256,inputSha256:row.inputSha256});items.push({code,file,label:`Clip ${index+1}, sample ${sample+1}`});
   }
 }
 // Keep this outside the blind page's directory. Listeners receive only the directory itself.

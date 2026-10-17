@@ -14,7 +14,7 @@ it('disables browser suppression only after the neural processor is ready', asyn
   const p=new DillaMicrophoneProcessor({preference:'automatic',createLightweight:()=>inner});
   const init=p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);
   expect(track.getSettings().noiseSuppression).toBe(true);
-  ready(); await init;
+  await vi.waitFor(()=>expect(ready).toBeTypeOf('function')); ready(); await init;
   expect(track.getSettings().noiseSuppression).toBe(false);
   expect(p.status).toMatchObject({effective:'rnnoise',reason:'not-qualified'});
   p.setCaptureAllowed(false); expect(inner.setCaptureAllowed).toHaveBeenLastCalledWith(false);
@@ -73,4 +73,81 @@ it('disposes a late replacement capture after teardown',async()=>{
     await p.destroy();grant({getAudioTracks:()=>[fresh],getTracks:()=>[fresh]});await init;
     expect(fresh.stop).toHaveBeenCalled();expect(p.processedTrack).toBeUndefined();
   }finally{vi.unstubAllGlobals();}
+});
+it('Automatic uses the enabled enhanced processor and reports its effective engine',async()=>{
+  const track=input();
+  const enhanced={name:'enhanced',processedTrack:input(),init:vi.fn(async()=>{}),restart:async()=>{},destroy:async()=>{},setPttActive:vi.fn(),setMode:vi.fn()};
+  const light=vi.fn();
+  const p=new DillaMicrophoneProcessor({preference:'automatic',createEnhanced:async()=>enhanced,createLightweight:light});
+  await p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);
+  expect(enhanced.init).toHaveBeenCalled();expect(light).not.toHaveBeenCalled();
+  expect(p.status).toMatchObject({effective:'deepfilter',engineName:'DeepFilterNet3',browserNoise:'off'});
+  p.setMode('ptt');p.setPttActive(true);expect(enhanced.setPttActive).toHaveBeenLastCalledWith(true);
+  await p.destroy();
+});
+it('Automatic tries lightweight after enhanced startup fails; Lightweight and Off never load enhanced assets',async()=>{
+  const track=input();
+  const createEnhanced=vi.fn(async()=>({name:'enhanced',init:async()=>{throw Error('bad model')},restart:async()=>{},destroy:vi.fn(async()=>{}),setPttActive:()=>{}}));
+  const createLightweight=vi.fn(()=>({name:'light',processedTrack:input(),init:async()=>{},restart:async()=>{},destroy:async()=>{},setPttActive:()=>{}}));
+  const p=new DillaMicrophoneProcessor({preference:'automatic',createEnhanced,createLightweight});
+  await p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);
+  expect(createEnhanced).toHaveBeenCalledOnce();expect(createLightweight).toHaveBeenCalledOnce();
+  expect(p.status).toMatchObject({effective:'rnnoise',reason:'enhanced-failed'});await p.destroy();
+  createEnhanced.mockClear();
+  for(const preference of ['lightweight','off'] as const){const p=new DillaMicrophoneProcessor({preference,createEnhanced,createLightweight});await p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);await p.destroy();}
+  expect(createEnhanced).not.toHaveBeenCalled();
+});
+it('closes the published fallback track while PTT is released, including before initialization',async()=>{
+  const track=input();
+  const p=new DillaMicrophoneProcessor({preference:'lightweight',mode:'ptt',allowed:true,createLightweight:()=>({name:'failed',init:async()=>{throw Error('failed')},restart:async()=>{},destroy:async()=>{},setPttActive:()=>{}})});
+  await p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);
+  expect(p.processedTrack!.enabled).toBe(false);
+  p.setPttActive(true);expect(p.processedTrack!.enabled).toBe(true);
+  p.setPttActive(false);expect(p.processedTrack!.enabled).toBe(false);await p.destroy();
+});
+it('bypasses a failed neural graph before restarting into browser fallback',async()=>{
+  const track=input();let fail!:(reason:string)=>void,bypassed=false;
+  const inner={name:'neural',processedTrack:input(),init:async()=>{},restart:vi.fn(async()=>{if(!bypassed)throw Error('failed neural graph');}),destroy:async()=>{},setPttActive:()=>{},useBrowserFallback:()=>{bypassed=true;}};
+  const p=new DillaMicrophoneProcessor({preference:'lightweight',createLightweight:o=>{fail=o.onFailure!;return inner;}});
+  await p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);fail('processor-error');
+  await vi.waitFor(()=>expect(p.status.effective).toBe('browser'));expect(bypassed).toBe(true);await p.destroy();
+});
+it('carries a requested browser downgrade across a concurrent device restart',async()=>{
+  const track=input();track.getSettings=()=>({deviceId:'old',noiseSuppression:false});
+  const next=input();
+  let grant!:(stream:unknown)=>void,fail!:(reason:string)=>void;
+  const late=input();late.stop=vi.fn();late.getSettings=()=>({deviceId:'old',noiseSuppression:true});
+  vi.stubGlobal('navigator',{mediaDevices:{getUserMedia:()=>new Promise(r=>{grant=r;})}});
+  const inner={name:'failed',processedTrack:input(),init:async()=>{},restart:vi.fn(async()=>{}),destroy:async()=>{},setPttActive:()=>{},useBrowserFallback:vi.fn()};
+  try{
+    const p=new DillaMicrophoneProcessor({preference:'lightweight',createLightweight:o=>{fail=o.onFailure!;return inner;}});
+    await p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);fail('processor-error');
+    await vi.waitFor(()=>expect(grant).toBeTypeOf('function'));
+    await p.restart({track:next,kind:Track.Kind.Audio} as AudioProcessorOptions);
+    grant({getAudioTracks:()=>[late],getTracks:()=>[late]});
+    await vi.waitFor(()=>expect(p.status.effective).toBe('browser'));
+    expect(inner.useBrowserFallback).toHaveBeenCalled();expect(late.stop).toHaveBeenCalled();await p.destroy();
+  }finally{vi.unstubAllGlobals();}
+});
+it('reports a failed browser transition and permits retry instead of leaving a poisoned downgrade flag',async()=>{
+  let fail!:(reason:string)=>void,reject=true;
+  const inner={name:'failed',processedTrack:input(),init:async()=>{},restart:async()=>{if(reject)throw Error('source failed');},destroy:async()=>{},setPttActive:()=>{},useBrowserFallback:()=>{}};
+  const p=new DillaMicrophoneProcessor({preference:'lightweight',createLightweight:o=>{fail=o.onFailure!;return inner;}});
+  await p.init({track:input(),kind:Track.Kind.Audio} as AudioProcessorOptions);fail('processor-error');
+  await vi.waitFor(()=>expect(p.status.effective).toBe('failed'));
+  expect(p.processedTrack!.enabled).toBe(false);
+  p.setCaptureAllowed(true);expect(p.processedTrack!.enabled).toBe(false);
+  reject=false;fail('processor-error');await vi.waitFor(()=>expect(p.status.effective).toBe('browser'));await p.destroy();
+});
+it('serializes fallback capture behind an active device restart',async()=>{
+  let fail!:(reason:string)=>void,finish!:()=>void,noise=false;
+  const track=input(),next=input();next.getSettings=()=>({noiseSuppression:noise});
+  next.applyConstraints=async (c={})=>{if(c.noiseSuppression===false)await new Promise<void>(r=>{finish=r;});noise=c.noiseSuppression===true;};
+  const inner={name:'test',processedTrack:input(),init:async()=>{},restart:async()=>{},destroy:async()=>{},setPttActive:()=>{},useBrowserFallback:vi.fn()};
+  const p=new DillaMicrophoneProcessor({preference:'lightweight',createLightweight:o=>{fail=o.onFailure!;return inner;}});
+  await p.init({track,kind:Track.Kind.Audio} as AudioProcessorOptions);
+  const restarting=p.restart({track:next,kind:Track.Kind.Audio} as AudioProcessorOptions);
+  await vi.waitFor(()=>expect(finish).toBeTypeOf('function'));fail('processor-error');await new Promise(r=>setTimeout(r,10));
+  expect(inner.useBrowserFallback).not.toHaveBeenCalled();
+  finish();await restarting;expect(p.status.effective).toBe('browser');await p.destroy();
 });

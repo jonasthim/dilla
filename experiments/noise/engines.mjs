@@ -23,7 +23,7 @@ export async function createEngine(name, load) {
     if (df.df_get_frame_length(state) !== 480) throw Error('Unexpected DeepFilterNet frame size');
     return { frameSize:480, modelRate:48000, lookaheadMs:40,
       process(input) { return { pcm:df.df_process_frame(state, input), probability:0 }; },
-      reset() { df.df_free(state); state = df.df_create(model,100); },
+      reset() { df.df_reset(state); },
       destroy() { df.df_free(state); },
     };
   }

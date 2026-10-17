@@ -1,10 +1,42 @@
+diff --git a/libDF/src/tract.rs b/libDF/src/tract.rs
+index b39a987..e68a326 100644
+--- a/libDF/src/tract.rs
++++ b/libDF/src/tract.rs
+@@ -397,10 +397,26 @@ impl DfTract {
+         };
+     }
+ 
++    /// Reset every state that can carry samples or inference history between captures.
++    pub fn reset_stream(&mut self) -> Result<()> {
++        for model in [&mut self.enc, &mut self.erb_dec, &mut self.df_dec] {
++            model.reset_turn()?;
++            model.session_state = Default::default();
++            model.reset_op_states()?;
++        }
++        for state in &mut self.df_states {
++            state.reset();
++            state.init_norm_states(self.nb_df);
++        }
++        self.skip_counter = 0;
++        self.init()
++    }
++
+     pub fn init(&mut self) -> Result<()> {
+         let ch = self.ch;
+         let spec_shape = [ch, 1, 1, self.n_freqs, 2];
+         self.rolling_spec_buf_y.clear();
++        self.rolling_spec_buf_x.clear();
+         for _ in 0..(self.df_order + self.conv_lookahead) {
+             self.rolling_spec_buf_y
+                 .push_back(tensor0(0f32).broadcast_scalar_to_shape(&spec_shape)?);
 diff --git a/libDF/src/wasm.rs b/libDF/src/wasm.rs
+index 2e02095..996c699 100644
 --- a/libDF/src/wasm.rs
 +++ b/libDF/src/wasm.rs
-@@ -48,6 +48,15 @@ pub unsafe fn df_create(
+@@ -40,6 +40,21 @@ pub unsafe fn df_create(
      Box::into_raw(df.boxed())
  }
-
+ 
 +/// Release the raw Box returned by df_create. The generated DFState class
 +/// destructor accepts a WasmRefCell pointer and cannot free this raw pointer.
 +#[wasm_bindgen]
@@ -12,6 +44,12 @@ diff --git a/libDF/src/wasm.rs b/libDF/src/wasm.rs
 +    if !st.is_null() {
 +        drop(Box::from_raw(st));
 +    }
++}
++
++/// Clear stream history without rebuilding the compiled inference plans.
++#[wasm_bindgen]
++pub unsafe fn df_reset(st: *mut DFState) {
++    st.as_mut().expect("Invalid pointer").0.reset_stream().expect("Could not reset stream");
 +}
 +
  /// Get DeepFilterNet frame size in samples.

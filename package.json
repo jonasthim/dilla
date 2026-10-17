@@ -27,7 +27,10 @@
     "test:wasm-size-check": "node --test scripts/check-wasm-size.test.mjs",
     "test:install": "bash deploy/install_test.sh",
     "vectors": "[ ! -d packages ] || npm run vectors --workspaces --if-present",
-    "test:e2e": "npm run test:e2e -w @dilla/e2e"
+    "test:e2e": "npm run test:e2e -w @dilla/e2e",
+    "noise:prepare": "node experiments/noise/prepare.mjs",
+    "noise:test": "node --test experiments/noise/test/*.test.mjs experiments/noise/*.test.mjs",
+    "noise:build": "DILLA_NOISE_MODE=evaluation npm run build -w @dilla/web"
   },
   "devDependencies": {
     "eslint": "9.39.5",

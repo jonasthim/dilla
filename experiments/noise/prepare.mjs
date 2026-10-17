@@ -22,7 +22,7 @@ for (const [name, s] of Object.entries(sources)) {
     const output = resolve(work, 'df-wasm');
     copyFileSync(resolve(here, 'deepfilter-Cargo.lock'), resolve(src, 'Cargo.lock'));
     try { run('git', ['-C', src, 'apply', resolve(here, 'deepfilter-free.patch')]);
-    run('wasm-pack', ['build', 'libDF', '--target', 'web', '--release', '--out-dir', output, '--', '--locked', '--no-default-features', '--features', 'wasm'], src); } finally { writeFileSync(resolve(src, 'Cargo.lock'), execFileSync('git', ['-C', src, 'show', 'HEAD:Cargo.lock'])); writeFileSync(resolve(src, 'libDF/src/wasm.rs'), execFileSync('git', ['-C', src, 'show', 'HEAD:libDF/src/wasm.rs'])); }
+    run('wasm-pack', ['build', 'libDF', '--target', 'web', '--release', '--out-dir', output, '--', '--locked', '--no-default-features', '--features', 'wasm'], src); } finally { writeFileSync(resolve(src, 'Cargo.lock'), execFileSync('git', ['-C', src, 'show', 'HEAD:Cargo.lock'])); for (const name of ['libDF/src/wasm.rs','libDF/src/tract.rs']) writeFileSync(resolve(src,name), execFileSync('git', ['-C', src, 'show', `HEAD:${name}`])); }
     for (const f of ['df.js', 'df_bg.wasm']) copyFileSync(resolve(output, f), resolve(assets, f === 'df.js' ? 'df.mjs' : f));
     copyFileSync(resolve(src, 'models/DeepFilterNet3_onnx.tar.gz'), resolve(assets, 'deepfilter-model.bin'));
     for (const f of ['LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE']) copyFileSync(resolve(src, f), resolve(here, 'licenses', `deepfilter-${f}`));
@@ -43,4 +43,4 @@ copyFileSync(resolve(here, '../../packages/media/src/audio/generated/rnnoise.was
 const hashes = {};
 function scan(dir) { for (const e of readdirSync(dir, {withFileTypes:true})) { const p = resolve(dir, e.name); if (e.isDirectory()) scan(p); else hashes[p.slice(assets.length + 1)] = createHash('sha256').update(readFileSync(p)).digest('hex'); } }
 scan(assets);
-writeFileSync(resolve(here, 'asset-lock.json'), JSON.stringify({sources, gtcrn:'@sapphi-red/gtcrn-wasm@0.0.3', rnnoise:'@jitsi/rnnoise-wasm@0.2.1', toolchain:{node:process.version, rust:execFileSync('rustc',['--version'],{encoding:'utf8'}).trim(), wasmPack:execFileSync('wasm-pack',['--version'],{encoding:'utf8'}).trim()}, sha256:hashes},null,2)+'\n');
+writeFileSync(resolve(here, 'asset-lock.json'), JSON.stringify({sources, gtcrn:'@sapphi-red/gtcrn-wasm@0.0.3', rnnoise:'@jitsi/rnnoise-wasm@0.2.1', patchSha256:createHash('sha256').update(readFileSync(resolve(here,'deepfilter-free.patch'))).digest('hex'), toolchain:{node:process.version, rust:execFileSync('rustc',['--version'],{encoding:'utf8'}).trim(), wasmPack:execFileSync('wasm-pack',['--version'],{encoding:'utf8'}).trim()}, sha256:hashes},null,2)+'\n');

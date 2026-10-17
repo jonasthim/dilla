@@ -138,8 +138,18 @@ func TestBuiltClientIsServed(t *testing.T) {
 		}
 	}
 	// web-3 task 8: one core wasm (the core and media workers share it) and RNNoise's, as check-entry-chunk.mjs.
-	if wasm != 2 {
-		t.Errorf("the build has %d wasm files, want 2 (the core and RNNoise)", wasm)
+	wantWasm := 2
+	if raw, err := os.ReadFile(filepath.Join(dir, "noise-build.json")); err == nil {
+		var build struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.Unmarshal(raw, &build); err != nil || (build.Mode != "evaluation" && build.Mode != "qualified") {
+			t.Fatal("invalid enhanced build identity")
+		}
+		wantWasm = 3
+	}
+	if wasm != wantWasm {
+		t.Errorf("the build has %d wasm files, want %d for this build profile", wasm, wantWasm)
 	}
 	for _, glob := range []string{"assets/dilla_core_wasm_bg-*.wasm", "assets/rnnoise-*.wasm"} {
 		n := 0

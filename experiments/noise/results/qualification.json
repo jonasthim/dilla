@@ -2,31 +2,114 @@
   "date": "2026-10-17",
   "qualified": false,
   "parityClaim": false,
+  "assetLockSha256": "a7de345ad2255a41f30b8a9bd2ac333fea2bff48e2a6d821df2537246e409604",
+  "implementationSha256": "546ce1a696860f957315b0e1120b9ac0ef3162b295cbbc735afcc6449c1e9424",
+  "implementation": {
+    "integrated": true,
+    "branch": "feat/private-noise-suppression",
+    "enhancedBuildCommand": "npm run noise:build",
+    "features": [
+      "shared DeepFilterNet3 processor in calls and local microphone test",
+      "Automatic / Lightweight / Off with effective status and visible one-way fallback",
+      "same-origin verified assets; Worker inference and bounded AudioWorklet transport",
+      "independent mute/PTT, privacy epochs and state resets",
+      "qualified build profile bound to exact measurements and model-license review"
+    ]
+  },
   "productionDefault": "lightweight (existing RNNoise)",
   "experimentalEnabledInProduction": false,
   "listening": {
-    "clips": 0,
+    "preparedClips": 60,
+    "languages": {
+      "en": 30,
+      "sv": 30
+    },
+    "license": "FLEURS CC-BY-4.0; source hashes and attribution in fleurs-corpus.json",
+    "offlineOutputs": 240,
     "listeners": 0,
     "krispReferences": 0,
-    "status": "not run"
-  },
-  "runtime": {
-    "completeAddedDelayMs": null,
-    "loadedCallMinutes": 0,
-    "physicalPlatformsTested": [],
-    "smokeOnly": [
-      "chromium-deepfilter.json",
-      "firefox-deepfilter.json",
-      "webkit-deepfilter.json"
+    "status": "Offline comparisons ran; blind human comparison has not run.",
+    "coverageComplete": false,
+    "limitations": [
+      "Speech sources are 16 kHz, resampled to 48 kHz.",
+      "Fan and keyboard noises are synthetic; dog recordings and onset annotations are missing.",
+      "No matched lawful Krisp outputs or human ratings."
     ]
   },
+  "verification": {
+    "repositoryTests": 4922,
+    "harnessTests": 14,
+    "chromiumAppTests": 6,
+    "checks": [
+      "repository documentation/copy/CI guards and lint",
+      "media and web TypeScript",
+      "default and evaluation builds, entry isolation and asset manifests",
+      "Go static serving, including generated default and evaluation distributions",
+      "qualified build refuses absent release evidence",
+      "review regressions: fallback races, private buffer/history clearing, evidence binding"
+    ],
+    "chromiumAppCoverage": [
+      "mute/deafen and PTT controls",
+      "missing model visibly falls back; Off avoids enhancement assets",
+      "enhanced microphone preview and encrypted call with PTT",
+      "local test stops capture before playback and discards recording",
+      "screen and camera sharing",
+      "shared tab audio while microphone is muted"
+    ],
+    "freshReviewImportantFindings": 3,
+    "freshReviewImportantFindingsFixed": 3
+  },
+  "runtime": {
+    "completeAddedDelayMs": 101.375,
+    "delayCorrelation": 0.92504752512016,
+    "delaySource": "chromium-deepfilter-speech-vad.json",
+    "hardLimitMs": 80,
+    "targetMs": 60,
+    "delayPassed": false,
+    "delayBoundary": "Raw capture tap to enhanced output tap, including browser MediaStream buffers, transport and VAD. Excludes network and playback device.",
+    "finalBuildShortCall": {
+      "source": "chromium-integrated-call.json",
+      "durationSeconds": 10.126,
+      "passed": true,
+      "buffers": 4587,
+      "underruns": 2,
+      "dropped": 0,
+      "ptt": {
+        "idle": 0,
+        "held": 24,
+        "released": 0
+      },
+      "thirdPartyRequests": []
+    },
+    "historicalLoadedCall": {
+      "source": "chromium-integrated-call-30min-pre-review.json",
+      "minutes": 30,
+      "passed": false,
+      "effectiveAtEnd": "rnnoise",
+      "reason": "repeated-underruns",
+      "implementationMatchesFinal": false,
+      "note": "Pre-review artifact, with additional host builds/tests. Cannot qualify the final processor; transport counters continue after fallback."
+    },
+    "finalImplementationLoadedCallMinutes": 0,
+    "physicalPlatformsTested": [],
+    "smoke": {
+      "chromium": "passed output/mute/same-origin checks",
+      "firefox": "passed output/mute/same-origin checks",
+      "linuxWebkit": "failed: zero recorded output; not physical Safari"
+    },
+    "qualified": false
+  },
   "blockers": [
-    "Licensed/consented English and Swedish corpus and matched lawful Krisp references unavailable.",
-    "Five-listener blind evaluation and onset missing-word scoring not run.",
-    "Chromium synthetic DF streaming underruns exceed 0.1%; 19/1153 output quanta in this smoke run.",
-    "Complete latency, 30-minute loaded calls and physical Chrome/Firefox/Safari/Android/iOS matrix not measured.",
-    "Firefox headless audio clock timed out; WebKit host dependencies missing.",
+    "Enhanced tap-to-tap delay of 101.375 ms exceeds the 80 ms hard release limit.",
+    "Thirty-minute pre-review call downgraded to RNNoise; final implementation still needs 30-minute qualification across the required physical browser/device matrix.",
+    "Linux WebKit produced no recorded output; physical Safari, Android Chrome and iOS Safari are untested.",
+    "Corpus still needs complete natural-noise/full-band/onset coverage, matched lawful Krisp references and at least five blind listeners.",
     "Exact DeepFilterNet3 weight redistribution license requires clarification."
   ],
-  "assetLockSha256": "b917fd521b1bf8cc620e65a5817a14774da386c4161c1846effb02136f1c76d3"
+  "release": {
+    "merged": false,
+    "pushed": false,
+    "released": false,
+    "deployed": false
+  }
 }

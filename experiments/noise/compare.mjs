@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
+import {noiseIdentity} from '../../scripts/noise-identity.mjs';
 import { validateCorpus, decodeWav, encodeWav } from './benchmark.mjs';
 import { createEngine, processClip } from './engines.mjs';
 const here=dirname(fileURLToPath(import.meta.url));
@@ -14,7 +15,7 @@ const corpus=JSON.parse(readFileSync(manifest)), base=dirname(resolve(manifest))
 validateCorpus(corpus); mkdirSync(output,{recursive:true});
 for (const [file,expected] of Object.entries(lock.sha256)) if(hash(readFileSync(resolve(here,'assets',file)))!==expected) throw Error(`Asset changed: ${file}`);
 const load = async path => { const b=readFileSync(resolve(here,'assets',path)); return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength); };
-const report={kind:'offline-inference', qualified:false, parityClaim:false, hardware:{cpu:os.cpus()[0]?.model,cores:os.cpus().length,memoryBytes:os.totalmem(),platform:os.platform(),arch:os.arch(),node:process.version},assets:lock,settings:{rate:48000,channels:1,attenuationDb:100,gate:'open',browserAEC:false,browserAGC:false,browserNS:false},results:[],limitations:['Offline timings exclude capture, buffering, VAD and browser scheduling.','Browser+RNNoise baseline must be captured with browser-run.mjs using the identical WAV.','Krisp outputs must be supplied lawfully; no automatic download or substituted demos.']};
+const report={...noiseIdentity(),kind:'offline-inference', qualified:false, parityClaim:false, hardware:{cpu:os.cpus()[0]?.model,cores:os.cpus().length,memoryBytes:os.totalmem(),platform:os.platform(),arch:os.arch(),node:process.version},assets:lock,settings:{rate:48000,channels:1,attenuationDb:100,gate:'open',browserAEC:false,browserAGC:false,browserNS:false},results:[],limitations:['Offline timings exclude capture, buffering, VAD and browser scheduling.','Browser+RNNoise baseline must be captured with browser-run.mjs using the identical WAV.','Krisp outputs must be supplied lawfully; no automatic download or substituted demos.']};
 for (const [index,clip] of corpus.clips.entries()) {
   const bytes=readFileSync(resolve(base,clip.file)); if(hash(bytes)!==clip.sha256) throw Error(`Input changed: ${clip.id}`);
   const input=decodeWav(bytes);

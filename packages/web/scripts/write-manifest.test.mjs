@@ -41,7 +41,7 @@ describe('checkDist', () => {
     expect(checkDist(dir)).toEqual([]);
   });
   it('names the served extensions of the dillad content-type table', () => {
-    expect(ALLOWED_EXTENSIONS).toEqual(['.html', '.js', '.css', '.wasm', '.json', '.woff2', '.woff', '.svg', '.png', '.ico', '.txt']);
+    expect(ALLOWED_EXTENSIONS).toEqual(['.html', '.js', '.css', '.wasm', '.json', '.woff2', '.woff', '.svg', '.png', '.ico', '.txt', '.bin']);
   });
   it('refuses an inline script, an inline style and a style attribute', () => {
     validDist();

@@ -9,56 +9,73 @@
   "parityClaim": false,
   "inputSettings": {
     "channelCount": 1,
-    "deviceId": "WebAudio-2e2cd356-fd42-4547-b548-10d6dabc478b",
+    "deviceId": "WebAudio-f39aeb32-6171-433f-a122-5b360f74faf6",
     "latency": 0.01,
     "sampleRate": 48000,
     "sampleSize": 16
   },
   "rate": 48000,
-  "inputSamples": 144768,
-  "outputSamples": 144768,
-  "outputPeak": 0.015995953232049942,
+  "inputSamples": 144384,
+  "outputSamples": 144384,
+  "outputPeak": 0.09979668259620667,
   "mutedPeak": 0,
   "addedDelayMs": null,
   "events": [
     {
+      "kind": "clock",
+      "baseLatency": 0.010666666666666666,
+      "outputLatency": 0.032
+    },
+    {
       "kind": "metrics",
-      "buffers": 0,
+      "buffers": 175,
       "underruns": 0,
       "dropped": 0,
-      "processingMs": 0
-    },
-    {
-      "kind": "ready",
-      "effective": "deepfilter"
+      "processingMs": 74.4000015258789,
+      "maxRoundTripSamples": 512,
+      "roundTrips": [
+        44,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
     },
     {
       "kind": "metrics",
-      "buffers": 66,
+      "buffers": 550,
       "underruns": 1,
-      "dropped": 2,
-      "processingMs": 91.50000023841858
+      "dropped": 0,
+      "processingMs": 198.7000037431717,
+      "maxRoundTripSamples": 640,
+      "roundTrips": [
+        144,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
     },
     {
       "kind": "metrics",
-      "buffers": 441,
-      "underruns": 11,
-      "dropped": 5,
-      "processingMs": 519.200000166893
-    },
-    {
-      "kind": "metrics",
-      "buffers": 816,
-      "underruns": 11,
-      "dropped": 5,
-      "processingMs": 870.3000005483627
-    },
-    {
-      "kind": "metrics",
-      "buffers": 1153,
-      "underruns": 19,
-      "dropped": 7,
-      "processingMs": 1306.9999998807907
+      "buffers": 925,
+      "underruns": 1,
+      "dropped": 0,
+      "processingMs": 310.3000054359436,
+      "maxRoundTripSamples": 640,
+      "roundTrips": [
+        244,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
     }
   ],
   "limitations": [
@@ -71,5 +88,5 @@
   "thirdPartyRequests": [],
   "errors": [],
   "inputSha256": null,
-  "assetLockSha256": "b917fd521b1bf8cc620e65a5817a14774da386c4161c1846effb02136f1c76d3"
+  "assetLockSha256": "a7de345ad2255a41f30b8a9bd2ac333fea2bff48e2a6d821df2537246e409604"
 }

@@ -127,6 +127,8 @@ class DillaRnnoiseGate extends AudioWorkletProcessor {
   }
 
   private flush(): void {
+    this.enhanced.fill(0);
+    if(this.m)this.m.HEAPF32.fill(0,this.buf>>>2,(this.buf>>>2)+FRAME);
     this.inQ.fill(0); this.outQ.fill(0); this.inLen = this.outLen = 0;
     this.gate.reset(); this.gate.setPtt(this.ptt);
     if (this.m) { this.m._rnnoise_destroy(this.state); this.state = this.m._rnnoise_create(0); }

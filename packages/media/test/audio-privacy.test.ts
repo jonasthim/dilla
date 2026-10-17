@@ -37,3 +37,11 @@ it('PTT release flushes audio already queued for output', async () => {
   p.process([[new Float32Array(128).fill(0.5)]],[[out]]);
   expect([...out].every(x=>x===0)).toBe(true);
 });
+it('clears RNNoise enhanced scratch memory when capture closes',async()=>{
+  const p=await make('open',false),out=new Float32Array(128);
+  for(let i=0;i<8;i++)p.process([[new Float32Array(128).fill(.7)]],[[out]]);
+  const enhanced=(p as unknown as {enhanced:Float32Array}).enhanced;
+  expect(enhanced.some(x=>x!==0)).toBe(true);
+  p.port.onmessage({data:{kind:'capture',allowed:false}});
+  expect(enhanced.every(x=>x===0)).toBe(true);
+});

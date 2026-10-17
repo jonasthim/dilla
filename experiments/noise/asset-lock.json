@@ -11,14 +11,16 @@
   },
   "gtcrn": "@sapphi-red/gtcrn-wasm@0.0.3",
   "rnnoise": "@jitsi/rnnoise-wasm@0.2.1",
+  "patchSha256": "a4308bf3c7c2eee02ccc44be707d7ebf45f538f9b365bf9348925098b4890aeb",
   "toolchain": {
     "node": "v24.15.0",
     "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "wasmPack": "wasm-pack 0.15.0"
   },
   "sha256": {
-    "df.mjs": "4a4392376d668c937fbe5c35fdd43670537c77ac30a2629af9ef053dc20025c8",
-    "df_bg.wasm": "ae05fe540b43b93771b49d3d66f2045c796584eada572d4ff03123917a0e6c1e",
+    "deepfilter-model.bin": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+    "df.mjs": "e970ed95c62b97fbbba0cf8a35a5ba2b0f16e2c0d633c2dbf102e473ac39e15b",
+    "df_bg.wasm": "91ccea2cbeb482942947f357d01065fef246c3deebced27ee8e268d20ea3e0a4",
     "hush-model.tar.gz": "45632ccaa82b71bb743d6caa7c78e983fe2f2790a3af7f6ec48e6ed7ba085df6",
     "libweya_nc.so": "c4a5915c92e9500a49e6cd14804e6e88319277de2ef7d4d5cf6c0ac4456f3bbf",
     "package/LICENSE": "ada7bc11ad5af42b0aab8d2e0ea7b028de3a9cd230a97f20bf57c90280a86a89",
@@ -32,7 +34,6 @@
     "package/dist/index.js.map": "14067320a553f8bb38da90edea8905c06ce01936555510f564705c74d6177631",
     "package/package.json": "47cdbb00a89e551c3e98f6229d1d3e4b76820a3c4e76ecd3499e36aee12d9847",
     "rnnoise.wasm": "4f513a50613de74378331237886138eab52fa2650e8b1a41eb587d932d9b8850",
-    "sapphi-red-gtcrn-wasm-0.0.3.tgz": "d0dd19d7494d687834657a8d16914849fc38bf6863532c9213d24642470ff7f2",
-    "deepfilter-model.bin": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616"
+    "sapphi-red-gtcrn-wasm-0.0.3.tgz": "d0dd19d7494d687834657a8d16914849fc38bf6863532c9213d24642470ff7f2"
   }
 }
