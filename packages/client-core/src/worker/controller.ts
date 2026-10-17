@@ -645,7 +645,8 @@ export class Controller {
   private enrol: Enrol | null = null;
   private fetched: EnrolFetched | null = null;
   private signInRunning = false;
-  /** When the held sign-in assertion was minted (deps.now), to tell its expiry from a refused backup code. */
+  /** When the held sign-in assertion was minted, on the monotonic clock (elapsed()), to tell its expiry from a refused
+   *  backup code; a wall-clock step must not age it (C1 fix m3). */
   private assertionAt: number | null = null;
   /** web3.6: the community a signup that stopped at factor-setup was to join (null: none), joined by factorSetupDone. */
   private pendingJoin: { communityId: Id | null; invite: string } | null = null;
@@ -1750,6 +1751,11 @@ export class Controller {
     return work().finally(() => { this.signInRunning = false; });
   }
 
+  /** Elapsed time in ms (deps.monotonic, performance.now in the worker; the wall clock when a host gives none). */
+  private elapsed(): number {
+    return (this.deps.monotonic ?? this.deps.now)();
+  }
+
   private signInBegin(): Promise<null> {
     if (this.storeCleared) return Promise.reject(new Refusal('E_NOT_READY', 'the store was cleared: reload'));
     this.fetched = null;
@@ -1780,7 +1786,7 @@ export class Controller {
       this.setAccount({ phase: 'signin-login', error: errorOf(e) });
       throw e;
     }
-    this.assertionAt = this.deps.now();
+    this.assertionAt = this.elapsed();
     // web3.6: needs 1 asks for the app's code, needs 2 (passkeys and no app) for a passkey; either takes a backup code.
     if (needs === 1) {
       this.setAccount({ phase: 'signin-totp', signIn: signInOf(username, 'totp'), error: null });
@@ -1819,7 +1825,7 @@ export class Controller {
       this.setAccount({ phase: back, error: errorOf(e) });
       throw e;
     }
-    this.assertionAt = this.deps.now();
+    this.assertionAt = this.elapsed();
     if (needs === 1) {
       this.setAccount({ phase: 'signin-totp', signIn: signInOf(null, 'passkey'), error: null });
       return { needs };
@@ -1841,7 +1847,7 @@ export class Controller {
     try {
       await enrol.backupCode(backupCode(code));
     } catch (e) {
-      if (isStatus(e, 401) && heldAt !== null && this.deps.now() - heldAt >= ASSERTION_EXPIRED_MS) throw this.expired();
+      if (isStatus(e, 401) && heldAt !== null && this.elapsed() - heldAt >= ASSERTION_EXPIRED_MS) throw this.expired();
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
@@ -1860,7 +1866,7 @@ export class Controller {
       this.setAccount({ phase: 'signin-login', signIn: signInOf(username, null), error: errorOf(e) });
       throw e;
     }
-    this.assertionAt = this.deps.now();
+    this.assertionAt = this.elapsed();
     this.setAccount({ phase: 'signin-key', signIn: signInOf(username, null), error: null });
     return null;
   }

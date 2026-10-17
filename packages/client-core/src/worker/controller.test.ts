@@ -2617,11 +2617,72 @@ describe('Controller sign-in order (web3.8 C1, R6)', () => {
     await toLoginStep(w);
     w.call(3, LOGIN);
     await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
-    clock += 240_000;
+    clock += 299_999;   // fix m1: one millisecond inside the 5 minutes pins the threshold at 300 000
     w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_UNAUTHENTICATED', status: 401 } });
     expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_UNAUTHENTICATED' } });
+  });
+
+  // Fix m2: a passkey that owes a code (needs 1) holds the assertion the backup code then spends; its age starts there.
+  it('a passkey owing a code, then a backup code: a 401 past 5 minutes is the expiry, inside them the refusal', async () => {
+    for (const [elapsed, want] of [[300_001, EXPIRED], [299_999, { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null }]] as const) {
+      let clock = 1_700_000_000_000;
+      const w = world({ phase: 0, now: () => clock });
+      w.enrol.passkey.mockImplementationOnce(() => { w.calls.push('enrol.passkey'); return Promise.resolve({ needs: 1 as const }); });
+      w.enrol.backupCode.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
+      await toLoginStep(w);
+      w.call(3, { m: 'signInPasskey', ceremonyId: 'ce'.repeat(16), response: '{"id":"x"}' });
+      await vi.waitFor(() => expect(w.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 1 } }));
+      expect(w.enrol.login).not.toHaveBeenCalled();
+      clock += elapsed;
+      w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+      expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
+      expect(w.account()).toMatchObject({ phase: 'signin-login', error: want });
+      expect(w.enrol.register).not.toHaveBeenCalled();
+    }
+  });
+
+  // Fix m3: the age is elapsed time (deps.monotonic); a wall clock stepped forward does not age the assertion.
+  it('a forward wall-clock jump does not turn a mistyped backup code into the expiry; monotonic time does', async () => {
+    for (const [wall, mono, want] of [[600_000, 1_000, 'E_UNAUTHENTICATED'], [0, 300_001, 'E_SIGNIN_EXPIRED']] as const) {
+      let clock = 1_700_000_000_000;
+      let elapsed = 5_000;
+      const w = world({ phase: 0, now: () => clock, monotonic: () => elapsed });
+      w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 2 as const }); });
+      w.enrol.backupCode.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
+      await toLoginStep(w);
+      w.call(3, LOGIN);
+      await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+      clock += wall;
+      elapsed += mono;
+      w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+      expect(w.ret(4)).toMatchObject({ ok: false, error: { code: want } });
+      expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: want } });
+    }
+  });
+
+  // Fix m4: the key's form is checked before the code goes out, so a malformed key spends no backup code.
+  it('a malformed key on the backup path leaves the code unspent and the step in place', async () => {
+    const w = world({ phase: 0 });
+    w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 2 as const }); });
+    await toLoginStep(w);
+    w.call(3, LOGIN);
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    expect(w.account()?.phase).toBe('signin-passkey');
+    w.core.recoveryKeyCheck.mockImplementationOnce(() => { throw new CoreError('E_RECOVERY_KEY', ''); });
+    w.call(4, { m: 'signInBackupCode', code: BACKUP, recoveryKey: 'Z'.repeat(52) });
+    await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
+    expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: { code: 'E_RECOVERY_KEY', detail: '', status: 0, retryAfterMs: null } });
+    expect(w.enrol.backupCode).not.toHaveBeenCalled();
+    expect(w.enrol.register).not.toHaveBeenCalled();
+    expect(w.account()).toMatchObject({ phase: 'signin-passkey', signIn: { username: 'web' }, error: { code: 'E_RECOVERY_KEY' } });
+    // Control: the same code with the right key is spent once and signs in.
+    w.call(5, { m: 'signInBackupCode', code: BACKUP, recoveryKey: RECOVERY_KEY });
+    await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
+    expect(w.enrol.backupCode).toHaveBeenCalledTimes(1);
   });
 
   it('a malformed key at signin-key stays there with E_RECOVERY_KEY and keeps the assertion', async () => {
