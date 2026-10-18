@@ -1,4 +1,4 @@
-import { createElement, Fragment } from 'react';
+import { createElement, Fragment, type FunctionComponent } from 'react';
 import { vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -158,7 +158,7 @@ export class FakeSession implements PageCall {
   readonly setNoise = vi.fn((noise: 'on' | 'off') => { this.log.push(`noise:${noise}`); this.update({ noise }); return Promise.resolve(); });
   setMuted(on: boolean): void { this.log.push(`muted:${String(on)}`); this.update({ muted: on }); }
   setDeafened(on: boolean): void { this.log.push(`deafened:${String(on)}`); this.update({ deafened: on, muted: on || this.state.muted }); }
-  setCamera(on: boolean): Promise<void> { this.update({ camera: on }); return Promise.resolve(); }
+  readonly setCamera = vi.fn((on: boolean): Promise<void> => { this.update({ camera: on }); return Promise.resolve(); });
   setSharing(on: boolean): Promise<void> { this.update({ sharing: on }); return Promise.resolve(); }
 }
 
@@ -168,6 +168,7 @@ export interface FakeSounds { played: ('join' | 'leave')[]; ringing: boolean; st
 export interface FakeNote { title: string; options: NotificationOptions; closed: boolean; onclick: ((ev: Event) => unknown) | null; close(): void }
 
 export interface VoiceHarnessOptions {
+  update?: import('../screens/Shell.tsx').ShellUpdateDeps;
   path?: string;
   settings?: Record<string, string>;
   permission?: NotificationPermission | null;
@@ -193,9 +194,10 @@ export interface VoiceHarnessOptions {
 /** A call AudioContext double (VoiceDeps.createCallContext): which one, and whether it was closed. */
 export interface FakeCallContext { n: number; closed: boolean; close(): Promise<void> }
 
-function Root({ withSettings }: { withSettings: boolean }) {
+function Root({ withSettings, update }: { withSettings: boolean; update?: import('../screens/Shell.tsx').ShellUpdateDeps }) {
   const [route] = useRoute();
-  return createElement(Fragment, null, createElement(Shell), withSettings && route.name === 'settings' ? createElement(Settings) : null);
+  return createElement(Fragment, null, createElement(Shell as FunctionComponent<{ update?: import('../screens/Shell.tsx').ShellUpdateDeps }>, { update }),
+    withSettings && route.name === 'settings' ? createElement(Settings) : null);
 }
 
 export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
@@ -306,7 +308,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     }),
   };
   const user = userEvent.setup();
-  const tree = createElement(VoiceDepsContext.Provider, { value: deps }, createElement(Root, { withSettings: o.withSettings ?? false }));
+  const tree = createElement(VoiceDepsContext.Provider, { value: deps }, createElement(Root, { withSettings: o.withSettings ?? false, update: o.update }));
   const view = render(createElement('div', { className: 'd-root' }, createElement(CoreProvider, { client: fake, children: tree })));
   return {
     client: fake,

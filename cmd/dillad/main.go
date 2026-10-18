@@ -29,6 +29,8 @@ type verb struct {
 func verbs() map[string]verb {
 	return map[string]verb{
 		"serve":   {"serve", "run the instance", runServe},
+		"media":   {"media", "run the sidecar SFU", runMedia},
+		"netns":   {"netns", "hold the Compose network namespace", runNetns},
 		"init":    {"init", "create the data directory, config, database and bootstrap invite", runInit},
 		"migrate": {"migrate", "apply or inspect schema migrations", runMigrate},
 		"doctor":  {"doctor", "check configuration, database, wasi artifact and clock", runDoctor},

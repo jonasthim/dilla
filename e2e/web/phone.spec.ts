@@ -114,6 +114,7 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
   await guard.attach(context);
   const page = await context.newPage();
   const ada: Account = newAccount('Ada', h.control);
+  let offlineLogged: number | null = null;
   try {
     // 1. The sign-up steps: no field under 16 px, and the focused fields leave the page at scale 1.
     await test.step('sign up with the bootstrap invite', async () => {
@@ -381,17 +382,12 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
     // 6. The link banner follows the network.
     await test.step('offline shows the link banner, online removes it', async () => {
       await tab(page, 'nav.tab.servers').tap();
-      const logged = guard.consoleErrors.length;
+      offlineLogged = guard.consoleErrors.length;
       await context.setOffline(true);
       await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeVisible({ timeout: WAIT });
       await context.setOffline(false);
       await expect(page.getByText(copy('nav.link.offline'), { exact: true })).toBeHidden({ timeout: WAIT });
-      // The browser logs the requests it refused while the network was off; that is this step's doing, not a fault. Only the
-      // entries this step added are cleared, and only those lines: Chromium's ERR_INTERNET_DISCONNECTED, and WebKit's
-      // wording for the same refusal (CI webkit-web, 2026-10-16).
-      const offlineLine = (text: string): boolean =>
-        text.includes('ERR_INTERNET_DISCONNECTED') || text === 'Failed to load resource: WebKit encountered an internal error';
-      for (let i = guard.consoleErrors.length - 1; i >= logged; i--) if (offlineLine(guard.consoleErrors[i])) guard.consoleErrors.splice(i, 1);
+      // WebKit can report an offline fetch after this step ends. Clear the known browser wording after closing the context.
     });
 
     // A deep link or a first load moves no focus.
@@ -421,6 +417,15 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
   } finally {
     await guard.collectWorkers();
     await context.close();
+    if (offlineLogged !== null) {
+      const offlineLine = (text: string): boolean => text.includes('ERR_INTERNET_DISCONNECTED')
+        || text === 'Failed to load resource: WebKit encountered an internal error'
+        || (text.startsWith(`Fetch API cannot load http://127.0.0.1:${String(HOST.port)}/v1/`)
+          && text.endsWith(' due to access control checks.'));
+      for (let i = guard.consoleErrors.length - 1; i >= offlineLogged; i--) {
+        if (offlineLine(guard.consoleErrors[i])) guard.consoleErrors.splice(i, 1);
+      }
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -10,6 +10,7 @@ import { formatTime } from '../strings/index.ts';
 import { en } from '../strings/en.ts';
 import { joinErrorState } from '../router.ts';
 import { Shell } from './Shell.tsx';
+import type { ShellUpdateDeps } from './Shell.tsx';
 
 const A = 'a1'.repeat(16);
 const B = 'b2'.repeat(16);
@@ -46,7 +47,8 @@ function timeline(over: Partial<TimelineState> = {}): TimelineState {
   return { channelId: GEN, group: 'active', items: [], hasEarlier: false, ...over };
 }
 // `state` is the history entry's state (task 23 carries a refused join in it, pre-flight ruling (g)).
-function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string; owner: string }[]; state?: unknown; before?(fake: FakeClient): void } = {}) {
+function setup(path: string, opts: { channels?: boolean; communities?: { id: string; name: string; owner: string }[]; state?: unknown; before?(fake: FakeClient): void;
+  update?: ShellUpdateDeps } = {}) {
   window.history.replaceState(opts.state ?? null, '', path);
   const fake = new FakeClient();
   fake.set('account', account());
@@ -56,12 +58,166 @@ function setup(path: string, opts: { channels?: boolean; communities?: { id: str
   fake.set(`members:${A}`, MEMBERS);
   opts.before?.(fake);
   const user = userEvent.setup();
-  const view = render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
+  const view = render(<div className="d-root"><CoreProvider client={fake}><Shell update={opts.update} /></CoreProvider></div>);
   return { fake, user, view };
 }
 const path = () => window.location.pathname;
 const composer = (name = 'general') => screen.getByRole('textbox', { name: `message #${name}` });
 const sendButton = () => screen.getByRole('button', { name: 'send' });
+
+it('checkpoints an unsent draft before refreshing to a new UI build', async () => {
+  let changed!: (entry: string) => void;
+  const save = vi.fn<(...args: [unknown, unknown, readonly File[]]) => Promise<void>>().mockResolvedValue();
+  const reload = vi.fn();
+  const update: ShellUpdateDeps = { currentEntry: '/assets/old.js',
+    watch: options => { changed = entry => options.changed(entry); return () => undefined; },
+    store: { save, load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload };
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  fake.handler = command => command.m === 'checkpointFiles' ? Promise.resolve([]) : Promise.resolve(null);
+  await user.type(composer(), 'keep me');
+  act(() => changed('/assets/new.js'));
+  await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+  expect(fake.callsOf('checkpointFiles')).toContainEqual({ m: 'checkpointFiles', channelId: GEN });
+  expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN, draft: { channelId: GEN, text: 'keep me' } });
+});
+
+it('checkpoints selected files even when the current conversation has no text draft', async () => {
+  let changed!: (entry: string) => void;
+  const file = new File(['attachment'], 'only-file.txt', { type: 'text/plain' });
+  const save = vi.fn<(...args: [unknown, unknown, readonly File[]]) => Promise<void>>().mockResolvedValue();
+  const reload = vi.fn();
+  const update: ShellUpdateDeps = { currentEntry: '/assets/old.js',
+    watch: options => { changed = entry => options.changed(entry); return () => undefined; },
+    store: { save, load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload };
+  const { fake } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  fake.handler = command => command.m === 'checkpointFiles' ? Promise.resolve([file]) : Promise.resolve(null);
+  await waitFor(() => expect(changed).toBeTypeOf('function'));
+  act(() => changed('/assets/new.js'));
+  await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+  expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN });
+  expect(save.mock.calls[0]?.[2]).toEqual([file]);
+});
+
+it('locks the app while checkpointing and waits for a click after a failed save', async () => {
+  let changed!: (entry: string) => void;
+  const save = vi.fn<(...args: [unknown, unknown, readonly File[]]) => Promise<void>>()
+    .mockRejectedValueOnce(new Error('store unavailable')).mockResolvedValue();
+  const reload = vi.fn();
+  const update: ShellUpdateDeps = { currentEntry: '/assets/old.js',
+    watch: options => { changed = entry => options.changed(entry); return () => undefined; },
+    store: { save, load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload };
+  const { fake } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  fake.handler = command => command.m === 'checkpointFiles' ? Promise.resolve([]) : Promise.resolve(null);
+  await waitFor(() => expect(changed).toBeTypeOf('function'));
+  act(() => changed('/assets/new.js'));
+  await waitFor(() => expect(screen.getByText(en['update.failed'])).toBeInTheDocument());
+  expect(document.querySelector<HTMLElement>('.d-root')?.inert).toBe(false);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(reload).not.toHaveBeenCalled();
+  await userEvent.setup().click(screen.getByRole('button', { name: en['update.retry'] }));
+  await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+  expect(save).toHaveBeenCalledTimes(2);
+});
+
+it('retries a failed checkpoint restore before starting the update watcher', async () => {
+  const load = vi.fn().mockRejectedValueOnce(new Error('temporary IDB failure'))
+    .mockResolvedValue({ state: { draft: { channelId: GEN, text: 'still saved' } }, files: [] });
+  const watch = vi.fn(() => () => undefined);
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch,
+    store: { save: () => Promise.resolve(), load, remove: () => Promise.resolve() }, reload: () => undefined };
+  setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(screen.getByText(en['update.restoreFailed'])).toBeInTheDocument());
+  expect(watch).not.toHaveBeenCalled();
+  await userEvent.setup().click(screen.getByRole('button', { name: en['update.retry'] }));
+  await waitFor(() => expect(composer()).toHaveValue('still saved'));
+  await waitFor(() => expect(watch).toHaveBeenCalledOnce());
+});
+
+it('loads older messages before restoring a saved scroll anchor', async () => {
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { view: {
+      main: { fromBottom: 120, anchor: { seq: '42', offset: 10 } }, thread: null, focus: null } }, files: [] }),
+      remove: () => Promise.resolve() }, reload: () => undefined };
+  const { fake } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline({ hasEarlier: true })) });
+  fake.handler = command => {
+    if (command.m === 'loadEarlier') fake.set(`timeline:${GEN}`, timeline({ hasEarlier: false,
+      items: [item({ key: 's42', seq: '42', msgId: '42'.repeat(16), body: 'older' })] }));
+    return Promise.resolve(null);
+  };
+  await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: GEN }));
+  await screen.findByText('older');
+});
+
+it('waits for an unsaved dialog to close before applying an update', async () => {
+  let changed!: (entry: string) => void;
+  const reload = vi.fn();
+  const update: ShellUpdateDeps = { currentEntry: '/assets/old.js',
+    watch: options => { changed = entry => options.changed(entry); return () => undefined; },
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload };
+  const { fake, user } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  fake.handler = command => command.m === 'checkpointFiles' ? Promise.resolve([]) : Promise.resolve(null);
+  await user.click(screen.getByRole('button', { name: 'new server' }));
+  await user.type(screen.getByRole('textbox', { name: 'Server name' }), 'unfinished');
+  act(() => changed('/assets/new.js'));
+  expect(screen.getByText(en['update.finishDialog'])).toBeInTheDocument();
+  expect(reload).not.toHaveBeenCalled();
+  await user.click(within(screen.getByRole('dialog', { name: 'Start a server' })).getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+});
+
+it('restores the draft after a refreshed tab boots and clears the checkpoint', async () => {
+  const remove = vi.fn(() => Promise.resolve());
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { draft: { channelId: GEN, text: 'kept across reload' } }, files: [] }), remove },
+    reload: () => undefined };
+  setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(composer()).toHaveValue('kept across reload'));
+  expect(remove).toHaveBeenCalledOnce();
+});
+
+it('restores selected files before clearing a refreshed tab checkpoint', async () => {
+  const file = new File(['attachment'], 'kept.txt', { type: 'text/plain' });
+  const remove = vi.fn(() => Promise.resolve());
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { conversationId: GEN,
+      draft: { channelId: RAND, text: 'draft elsewhere' } }, files: [file] }), remove },
+    reload: () => undefined };
+  const { fake } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(fake.callsOf('attachFiles')).toContainEqual({ m: 'attachFiles', channelId: GEN, files: [file] }));
+  await waitFor(() => expect(remove).toHaveBeenCalledOnce());
+});
+
+it('reopens the same thread with its unsent reply after an update', async () => {
+  const root = 'fa'.repeat(16);
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { draft: { channelId: GEN, text: '' },
+      side: { channelId: GEN, view: 'thread', rootMsgId: root }, threadDraft: { channelId: GEN, rootMsgId: root, text: 'reply survives' } }, files: [] }),
+      remove: () => Promise.resolve() }, reload: () => undefined };
+  const { fake } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(fake.callsOf('openThread')).toContainEqual({ m: 'openThread', channelId: GEN, rootMsgId: root }));
+  expect(screen.getByRole('textbox', { name: en['thread.composer'] })).toHaveValue('reply survives');
+});
+it('restores the reply target and member pane after the channel list arrives', async () => {
+  const reply = { msgId: 'ab'.repeat(16), author: 'Bob', excerpt: 'Earlier' };
+  const remove = vi.fn(() => Promise.resolve());
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { conversationId: GEN, draft: { channelId: GEN, text: 'later' },
+      membersOpen: true, ui: { reply, editing: null, pinsOpen: false, jump: null, notice: null, trayError: null } }, files: [] }),
+      remove }, reload: () => undefined };
+  const { fake } = setup(`/c/${A}/${GEN}`, { channels: false, update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(remove).toHaveBeenCalledOnce());
+  act(() => fake.set(`channels:${A}`, CHANNELS));
+  await waitFor(() => expect(composer()).toHaveValue('later'));
+  await waitFor(() => expect(screen.getByText(/replying to Bob/i)).toBeInTheDocument());
+});
+it('reopens the search dialog with its query after an update', async () => {
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { search: { open: true, query: 'lantern', scope: 'all' } }, files: [] }),
+      remove: () => Promise.resolve() }, reload: () => undefined };
+  setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Search your messages' })).toHaveValue('lantern'));
+});
 it('opens scoped search with a modifier and sends the typed query', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
   await user.keyboard('{Control>}/{/Control}');

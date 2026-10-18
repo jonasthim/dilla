@@ -1,0 +1,35 @@
+[Unit]
+Description=dilla media SFU
+Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dillad media --config=%E/dilla/dilla.toml
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=78
+TimeoutStartSec=30s
+TimeoutStopSec=25s
+User=dillad
+Group=dillad
+StateDirectory=dillad
+StateDirectoryMode=0700
+ConfigurationDirectory=dilla
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

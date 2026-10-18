@@ -232,6 +232,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'loadPins',
   'closePins',
   'attachFiles',
+  'checkpointFiles',
   'discardAttachment',
   'openAttachment',
   'refreshTrust',
@@ -319,6 +320,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   loadPins: ['channelId'],
   closePins: ['channelId'],
   attachFiles: ['channelId'],
+  checkpointFiles: ['channelId'],
   discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
   verifyContact: ['userId'],
@@ -400,6 +402,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'closeThread',
     'loadThreads',
     'attachFiles',
+    'checkpointFiles',
     'discardAttachment',
     'openAttachment',
     'refreshTrust',
@@ -1019,6 +1022,7 @@ export class Controller {
       case 'loadPins': return this.loadPins(command.channelId);
       case 'closePins': return this.closePins(command.channelId);
       case 'attachFiles': return this.attachFiles(command.channelId, command.files);
+      case 'checkpointFiles': return Promise.resolve(this.trays.get(command.channelId)?.files() ?? []);
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
       case 'refreshTrust': return this.refreshTrust();

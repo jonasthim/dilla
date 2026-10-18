@@ -199,6 +199,9 @@ func (c *Config) Validate() error {
 			c.TURN.MaxAllocationAge, c.TURN.CredentialTTL)
 	}
 	if c.LiveKit.Enabled {
+		if c.LiveKit.Mode != "in_process" && c.LiveKit.Mode != "sidecar" {
+			add("livekit.mode %q is not supported; choose in_process or sidecar", c.LiveKit.Mode)
+		}
 		if err := secretFile(c.LiveKit.APISecretFile, 32); err != nil {
 			add("livekit.api_secret_file: %v", err)
 		}

@@ -45,8 +45,8 @@ type Options struct {
 	// Plan 2. Blobs is the attachment store the blob and admin routes read
 	// and unlink from; nil means New opens blobs.dir itself and closes it on
 	// Shutdown, while a store passed in stays the caller's (`dillad serve`
-	// passes the one its garbage collector sweeps). SFU is the in-process
-	// LiveKit serve started when livekit.enabled; nil means no SFU, so /rtc is
+	// passes the one its garbage collector sweeps). SFU controls LiveKit when
+	// livekit.enabled; nil means no SFU, so /rtc is
 	// not mounted and a call that would open answers 501.
 	Blobs *blob.Store
 	SFU   SFU

@@ -93,13 +93,11 @@ describe('a join can be cancelled (wb-client I1)', () => {
 });
 
 describe('a call that ends on its own says why (wb-client I3)', () => {
-  it('a lost connection on the stage shows voice.disconnected in the stage region and offers the join again', async () => {
+  it('a lost connection on the stage offers automatic rejoin and a way to leave', async () => {
     const app = await inVoice();
-    const region = document.querySelector('.d-call-stage__notice');
     act(() => app.session.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
-    await waitFor(() => expect(region).toHaveTextContent(t('voice.disconnected')));
-    expect(region?.isConnected).toBe(true);
-    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(t('update.rejoiningVoice'))).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'leave' })).toBeInTheDocument();
   });
 
   it('a call ended for everyone off the stage is announced in the region that outlives the dock', async () => {

@@ -1,8 +1,8 @@
 [Unit]
 Description=dilla server (dillad)
 Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
-After=network-online.target
-Wants=network-online.target
+After=network-online.target dilla-media.service
+Wants=network-online.target dilla-media.service
 
 [Service]
 Type=notify

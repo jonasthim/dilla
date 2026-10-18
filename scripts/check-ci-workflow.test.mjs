@@ -13,7 +13,7 @@ const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
 // The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
-const GO_TEST = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
 
 const GOOD_BASE = `name: ci
 on:
@@ -116,6 +116,7 @@ jobs:
       - run: cargo deny --all-features check advisories bans licenses sources
   go:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [rust-wasi]
     steps:
       - uses: actions/download-artifact@v8
@@ -124,7 +125,7 @@ jobs:
           path: internal/mlswasi/testdata
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
-      - run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
+      - run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
       - run: ${NON_RACE_STEP}
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 

@@ -23,6 +23,9 @@ export function ThreadView(p: {
   channelId: string; rootMsgId: string; channelName: string; phone: boolean; onClose: () => void; announce: (text: string) => void;
   /** Where focus goes when the thread closes, when the shell knows better than the element focused at opening. */
   returnFocus?: () => HTMLElement | null;
+  initialDraft?: string;
+  onDraftChange?: (text: string) => void;
+  onEditingChange?: (editing: boolean) => void;
 }): React.JSX.Element {
   const client = useCore();
   const [route] = useRoute();
@@ -34,7 +37,12 @@ export function ThreadView(p: {
   const bits = useChannelBits(communityId, p.channelId);
   const self = account?.user ?? null;
   const [ui, dispatch] = useReducer(conversationReducer, INITIAL_UI);
-  const [draft, setDraft] = useState('');
+  const onEditingChange = p.onEditingChange;
+  useEffect(() => { onEditingChange?.(ui.editing !== null); return () => onEditingChange?.(false); }, [onEditingChange, ui.editing]);
+  const [draft, setDraft] = useState(p.initialDraft ?? '');
+  const draftChange = useRef(p.onDraftChange);
+  draftChange.current = p.onDraftChange;
+  useEffect(() => { draftChange.current?.(draft); }, [draft]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [emojiFor, setEmojiFor] = useState<{ msgId: string } | null>(null);
   const [deleteFor, setDeleteFor] = useState<{ msgId: string; key: string } | null>(null);

@@ -88,6 +88,11 @@ function unanswered(outgoing: NonNullable<CallState['outgoing']>, othersInCall: 
 export interface CallView {
   /** The channel or DM this device is in, or is joining. */
   channelId: string | null;
+  /** A voice room lost during a service restart, retained until its automatic join succeeds or the person leaves. */
+  recoveryChannelId: string | null;
+  recoveryCamera: boolean;
+  recoverySharing: boolean;
+  recentlyEnded: { channelId: string; camera: boolean; sharing: boolean; at: number } | null;
   joining: boolean;
   session: PageCall | null;
   state: PageCallState | null;
@@ -111,6 +116,7 @@ export interface CallView {
   /** The outgoing ring of the DM call this device opened has run its 30 s (product walk I6). */
   ringExpired: boolean;
   join: (channelId: string) => void;
+  restore: (channelId: string, camera: boolean, sharing: boolean) => void;
   /** `after`: the notice the stage or strip shows once left (product walk I6: the unanswered ring's last line). */
   leave: (after?: CallNotice) => void;
   closeUnsupported: () => void;
@@ -133,6 +139,8 @@ export interface UseCallOptions {
   onLeft(channelId: string): void;
   /** Whether the call's stage is on screen (its notices then speak for themselves). */
   stageShown(channelId: string): boolean;
+  /** A community voice room closed during a known app upgrade may be opened again. */
+  recoverEnded?(channelId: string): boolean;
 }
 
 /** The mute and deafen shortcut letters (WB a11y m1: matched on the letter the key types, so AZERTY's M is M). */
@@ -147,6 +155,12 @@ export function useCall(o: UseCallOptions): CallView {
   const [session, setSession] = useState<PageCall | null>(null);
   const [state, setState] = useState<PageCallState | null>(null);
   const [channelId, setChannelId] = useState<string | null>(null);
+  const [recoveryChannelId, setRecoveryChannelId] = useState<string | null>(null);
+  const [recoveryCamera, setRecoveryCamera] = useState(false);
+  const [recoverySharing, setRecoverySharing] = useState(false);
+  const [recentlyEnded, setRecentlyEnded] = useState<CallView['recentlyEnded']>(null);
+  const recoveryRef = useRef<string | null>(null);
+  const recoveryCameraRef = useRef(false);
   const [joining, setJoining] = useState(false);
   const [announcement, setAnnouncement] = useState('');
   const [lasting, setLasting] = useState('');
@@ -220,6 +234,8 @@ export function useCall(o: UseCallOptions): CallView {
     // web3.3 review M1: the browser holding call audio back is said once, in the dock’s status region, on each change
     // from playing to held back (a call that starts held back says it with the join).
     let audioBlocked = next.state.audioBlocked;
+    let cameraBeforeLoss = next.state.camera;
+    let sharingBeforeLoss = next.state.sharing;
     // Fix round 2 (Nit 3): a hold that arrives in the same tick as the join’s announcement joins it, never replaces it.
     const joined = t('voice.announce.joined', { where: live.current.whereOf(id) });
     let joinTick = true;
@@ -227,22 +243,50 @@ export function useCall(o: UseCallOptions): CallView {
     unsubscribe.current = next.subscribe(() => {
       if (sessionRef.current !== next) return;
       setState(next.state);
+      if (next.state.phase !== 'ended') {
+        cameraBeforeLoss = next.state.camera;
+        sharingBeforeLoss = next.state.sharing;
+      }
       if (next.state.audioBlocked && !audioBlocked) announce(joinTick ? `${joined} ${t('voice.audioBlocked')}` : t('voice.audioBlocked'));
       audioBlocked = next.state.audioBlocked;
       // The room ended on its own (the session already left; a person's own leave detaches first, so it never gets
       // here). WB client I3: say why, in the stage's notice and, off the stage, where it outlives the dock.
       if (next.state.phase === 'ended') {
         const key = END_NOTICE[next.state.error ?? ''] ?? 'voice.disconnected';
+        const recoverEnded = next.state.error === 'E_CALL_ENDED' && live.current.recoverEnded?.(id) === true;
+        if (next.state.error === 'E_CALL_ENDED') {
+          setRecentlyEnded({ channelId: id, camera: cameraBeforeLoss, sharing: sharingBeforeLoss, at: Date.now() });
+        }
+        if (next.state.error === 'E_DISCONNECTED' || recoverEnded) {
+          recoveryRef.current = id;
+          setRecoveryChannelId(id);
+          recoveryCameraRef.current = cameraBeforeLoss;
+          setRecoveryCamera(cameraBeforeLoss);
+          setRecoverySharing(sharingBeforeLoss);
+        }
         detach();
-        setNotice({ channelId: id, key });
-        if (!live.current.stageShown(id)) setLasting(t(key));
+        if (next.state.error !== 'E_DISCONNECTED' && !recoverEnded) {
+          setNotice({ channelId: id, key });
+          if (!live.current.stageShown(id)) setLasting(t(key));
+        }
       }
     });
     announce(audioBlocked ? `${joined} ${t('voice.audioBlocked')}` : joined);
+    if (recoveryRef.current === id && recoveryCameraRef.current) {
+      void next.setCamera(true).catch(() => undefined);
+    }
   }, [announce, detach]);
 
   /** `made`: the call context a queued join's own press made (it waited for the cancelled start to end). */
   const join = useCallback((id: string, made?: AudioContext | null) => {
+    if (recoveryRef.current !== null && recoveryRef.current !== id) {
+      recoveryRef.current = null;
+      setRecoveryChannelId(null);
+      recoveryCameraRef.current = false;
+      setRecoveryCamera(false);
+      setRecoverySharing(false);
+    }
+    setRecentlyEnded(null);
     if (channelRef.current === id && (starting.current || sessionRef.current !== null)) { closeContext(made); return; }
     // web3.3 fix round 2 (Minor 1): the call’s AudioContext is made here, synchronously in the press, before any await
     // (the leave in flight, the module load, a switch’s leave); the session it is handed to closes it on every way out,
@@ -311,12 +355,30 @@ export function useCall(o: UseCallOptions): CallView {
         // The shell unmounted while the start was pending: nobody drives this call, so it ends at once.
         if (!mounted.current) { void next.leave('user'); return; }
         attach(next, id);
+        setRecentlyEnded(null);
+        if (recoveryRef.current === id) {
+          recoveryRef.current = null;
+          setRecoveryChannelId(null);
+          recoveryCameraRef.current = false;
+          setRecoveryCamera(false);
+        }
       } catch (e) {
         if (sessionRef.current === null) { channelRef.current = null; setChannelId(null); }
         // A start the person cancelled says nothing (WB client I1). The worker's side of it (its join cancelled, its
         // self-Remove sent) is awaited by the next join through a leave of its own, which answers once that is done.
         if (abort.signal.aborted) leaving.current = client.call({ m: 'callLeave', reason: 'user' }).catch(() => undefined);
-        const key = abort.signal.aborted ? null : joinFailureKey(errorOf(e).code);
+        const code = errorOf(e).code;
+        // A disconnected room may come back after a network or media restart. A refusal that
+        // cannot improve by waiting ends the automatic attempt and leaves its reason visible.
+        if (recoveryRef.current === id && ['E_FORBIDDEN', 'E_REMOVED', 'E_CALL_FULL', 'E_CALL_IN_OTHER_TAB',
+          'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH', 'E_BINDING'].includes(code)) {
+          recoveryRef.current = null;
+          setRecoveryChannelId(null);
+          recoveryCameraRef.current = false;
+          setRecoveryCamera(false);
+          setRecoverySharing(false);
+        }
+        const key = abort.signal.aborted ? null : joinFailureKey(code);
         if (key !== null) setNotice({ channelId: id, key });
       } finally {
         if (!handed) closeContext(ctx);
@@ -334,8 +396,22 @@ export function useCall(o: UseCallOptions): CallView {
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
   const joinOnly = useCallback((id: string) => join(id), [join]);
+  const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
+    recoveryRef.current = id;
+    recoveryCameraRef.current = camera;
+    setRecoveryChannelId(id);
+    setRecoveryCamera(camera);
+    setRecoverySharing(sharing);
+    join(id);
+  }, [join]);
 
   const leave = useCallback((after?: CallNotice) => {
+    recoveryRef.current = null;
+    setRecoveryChannelId(null);
+    recoveryCameraRef.current = false;
+    setRecoveryCamera(false);
+    setRecoverySharing(false);
+    setRecentlyEnded(null);
     const current = sessionRef.current;
     const id = channelRef.current;
     if (current === null && starting.current) {
@@ -486,6 +562,20 @@ export function useCall(o: UseCallOptions): CallView {
         announce(t('voice.resumed'));
       }
     } else if (phase === 'blocked' || phase === 'removed') {
+      const recoverEnded = phase === 'removed' && now?.error?.code === 'E_CALL_ENDED' && live.current.recoverEnded?.(id) === true;
+      if (phase === 'removed' && now?.error?.code === 'E_CALL_ENDED') {
+        setRecentlyEnded({ channelId: id, camera: s.state.camera, sharing: s.state.sharing, at: Date.now() });
+      }
+      if (phase === 'removed' && (now?.error?.code === 'E_DISCONNECTED' || recoverEnded)) {
+        recoveryRef.current = id;
+        setRecoveryChannelId(id);
+        recoveryCameraRef.current = s.state.camera;
+        setRecoveryCamera(s.state.camera);
+        setRecoverySharing(s.state.sharing);
+        setPauseFocusPending(false);
+        teardown(s, phase);
+        return;
+      }
       if (phase === 'blocked') setBlockedMidCall(id);
       else { setNotice({ channelId: id, key: 'voice.removed' }); removedFrom.current = id; }
       // Off the stage, nothing else would say why the call ended (review I6).
@@ -496,6 +586,27 @@ export function useCall(o: UseCallOptions): CallView {
       teardown(s, 'removed');
     }
   }, [slice, session, client, announce, safely, teardown]);
+  useEffect(() => {
+    if (recoveryChannelId === null) return;
+    let delay = 1_000;
+    let timer: ReturnType<typeof setTimeout>;
+    const retry = () => {
+      if (recoveryRef.current !== recoveryChannelId) return;
+      const phase = client.get('call')?.phase;
+      const removedCode = client.get('call')?.error?.code;
+      if (phase === 'blocked' || (phase === 'removed' && removedCode !== 'E_DISCONNECTED'
+        && !(removedCode === 'E_CALL_ENDED' && live.current.recoverEnded?.(recoveryChannelId)))) {
+        recoveryRef.current = null;
+        setRecoveryChannelId(null);
+        return;
+      }
+      if (navigator.onLine && sessionRef.current === null && !starting.current) joinRef.current(recoveryChannelId);
+      delay = Math.min(delay * 2, 30_000);
+      timer = setTimeout(retry, delay);
+    };
+    timer = setTimeout(retry, delay);
+    return () => clearTimeout(timer);
+  }, [recoveryChannelId, client]);
 
   // Product walk I6: the outgoing ring of a DM call this device opened. It lasts 30 s from the call's start, whoever was
   // rung; once every ring ended with nobody else ever in the call, the caller leaves by itself after a short grace, and the
@@ -586,6 +697,7 @@ export function useCall(o: UseCallOptions): CallView {
   useEffect(() => {
     mounted.current = true;
     return () => {
+      recoveryRef.current = null;
       mounted.current = false;
       const s = sessionRef.current;
       unsubscribe.current?.();
@@ -597,9 +709,10 @@ export function useCall(o: UseCallOptions): CallView {
 
   leaveRef.current = leave;
   return {
-    channelId, joining, session, state, announcement, lasting, announce, notice, blockedMidCall, unsupported, ringExpired,
+    channelId, recoveryChannelId, recoveryCamera, recoverySharing, recentlyEnded, joining, session, state, announcement, lasting, announce,
+    notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
+    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
   };
 }

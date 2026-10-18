@@ -69,6 +69,7 @@ export type Command =
   | { m: 'loadPins'; channelId: string }                                                  // ready → null; slice pins:<channel>
   | { m: 'closePins'; channelId: string }                                                 // ready → null
   | { m: 'attachFiles'; channelId: string; files: readonly File[] }                       // ready → { trayIds }; slice tray:<channel>
+  | { m: 'checkpointFiles'; channelId: string }                                          // ready → File[] selected in this channel
   | { m: 'discardAttachment'; channelId: string; trayId: string }                         // ready → null
   | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean } // ready → { blob, name, mime }
   | { m: 'refreshTrust' } // ready: bounded signed-list refresh

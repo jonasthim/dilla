@@ -27,9 +27,10 @@ import (
 	"github.com/jonasthim/dilla/internal/store"
 )
 
-// SFU is the in-process LiveKit `dillad serve` starts when livekit.enabled: the call routes' SFU
+// SFU is the LiveKit control surface used when livekit.enabled: the call routes' SFU
 // (token mint, room and permission control), its HTTP origin /rtc is proxied to, and the verifier of
-// the room tokens it minted, which the /rtc join gate reads. *sfu.Server is one.
+// the room tokens it minted, which the /rtc join gate reads. Both the local and sidecar
+// implementations satisfy it.
 type SFU interface {
 	api.CallTokens
 	// HTTPURL is the SFU's signalling origin over HTTP, e.g. http://127.0.0.1:7880.

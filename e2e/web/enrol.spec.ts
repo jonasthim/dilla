@@ -32,8 +32,13 @@ test('a second browser joins the account by password and recovery key, and the f
   const shownText = await b.evaluate(() => document.body.innerText.replace(/\s+/g, ''));
   expect(shownText).not.toContain(keyChars.slice(0, 12));
   expect(b.url()).not.toContain(keyChars.slice(0, 12));
-  expect(await b.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length, cookie: document.cookie })))
-    .toEqual({ local: 0, session: 0, cookie: '' });
+  const webStorage = await b.evaluate(() => ({ local: localStorage.length, cookie: document.cookie,
+    session: Array.from({ length: sessionStorage.length }, (_, index) => {
+      const name = sessionStorage.key(index)!;
+      return [name, sessionStorage.getItem(name)];
+    }) }));
+  expect(webStorage).toEqual({ local: 0, cookie: '',
+    session: [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
 
   // The peer speaks: both browsers of the account read it.
   const fromPeer = `peer to both ${tag()}`;

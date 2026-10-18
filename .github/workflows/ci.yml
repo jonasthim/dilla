@@ -585,7 +585,7 @@ jobs:
 
   go:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     # rust-wasi (Plan A's CI task) builds and uploads the dilla-core-wasi
     # artifact this job downloads. Without `needs:` GitHub starts the jobs in
     # parallel, download-artifact finds nothing in the run, and the job is red on
@@ -610,9 +610,11 @@ jobs:
         run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       # Every package but internal/ds, which go-ds runs: together they are ./... (the checker pins
       # both lines). internal/ds under -race took ~7.5 min of a 4-core machine's ~8 min alone and
-      # pushed this job past its 25 minutes on the runner (run 36697379567).
+      # pushed this job past its 25 minutes on the runner (run 36697379567). The API package
+      # alone reached its former 15-minute package timeout while still advancing under -race
+      # on run 39143866608, so it has a 20-minute package budget within this 30-minute job.
       - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
-        run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
+        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
         env:
           GORACE: halt_on_error=1
       # I8: these five video publishing tests are gated out of -race due to the pinned LiveKit race.
