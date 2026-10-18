@@ -75,7 +75,10 @@ if [ "$1" = restart ] && [ -n "${FAKE_SCHEMA:-}" ]; then
 fi
 exit 0'
 # runuser -u dillad -- cmd args: run cmd args.
-stub runuser 'echo "runuser $*" >>"'"$LOG"'"; while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; shift; exec "$@"'
+stub runuser 'echo "runuser $*" >>"'"$LOG"'"; while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; shift
+# The real-binary config test has no media process: simulate only its readiness probe.
+if [ -n "${STUB_MEDIA_PROBE_SUCCESS:-}" ] && [ "${2:-}" = media ] && [ "${3:-}" = --probe ]; then exit 0; fi
+exec "$@"'
 
 # The fake dillad. $1 is the verb.
 FAKE="$TMP/fake-dillad"
@@ -858,10 +861,10 @@ if [ -n "${DILLA_TEST_DILLAD:-}" ]; then
 		seed_root
 		if [ "$mode" = proxy ]; then
 			# shellcheck disable=SC2086
-			KEEP_ROOT=1 run $PROXY_ARGS --node-ip 203.0.113.10 --release-url "file://$REAL"
+			STUB_MEDIA_PROBE_SUCCESS=1 KEEP_ROOT=1 run $PROXY_ARGS --node-ip 203.0.113.10 --release-url "file://$REAL"
 		else
 			# shellcheck disable=SC2086
-			KEEP_ROOT=1 run $PUBLIC_ARGS --udp-port 7999 --release-url "file://$REAL"
+			STUB_MEDIA_PROBE_SUCCESS=1 KEEP_ROOT=1 run $PUBLIC_ARGS --udp-port 7999 --release-url "file://$REAL"
 		fi
 		# The fake core fails the wasi leg; the config leg is what this checks.
 		if has "$ERR" "OK    config" && has "$OUT" "https://chat.example.org/i/"; then
