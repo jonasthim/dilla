@@ -10,6 +10,45 @@ and the Proxmox LXC helper.
 
 ### Open tabs during an upgrade
 
+For upgrades already running the media sidecar, the normal path is:
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant Rollout as Upgrade process
+    participant API as dillad API and web
+    participant Media as dillad media
+    participant Tab as Open browser tab
+    participant Store as Browser IndexedDB
+
+    Operator->>Rollout: Upgrade to a new release
+    Rollout->>API: Replace binary and web assets, then restart
+    Note over Media: Existing rooms survive the API restart
+    Rollout->>Media: Restart after API checks
+    Note over Media: A media restart closes its rooms
+    loop On load, on visibility or network return, and while active
+        Tab->>API: GET /app-version.json (no-store)
+        API-->>Tab: Current JavaScript entry path
+    end
+    alt Entry differs from the tab's loaded entry
+        Note over Tab: Wait for an open modal form to close
+        Tab->>Store: Save encrypted view, drafts, files, and call choice
+        Tab->>API: Reload the page
+        API-->>Tab: Serve the new web build
+        Tab->>Store: Read checkpoint
+        Store-->>Tab: Return encrypted checkpoint
+        Tab->>Tab: Decrypt and restore view, drafts, files, and call choice
+        Tab->>Store: Delete checkpoint
+        opt Previously in community voice
+            Tab->>API: Reconnect and request call admission
+            API-->>Tab: Allow the call join
+            Tab->>Media: Establish a new media connection
+        end
+    else Entry is unchanged
+        Note over Tab: Keep the current page
+    end
+```
+
 Once a browser has loaded a release with the update watcher, it checks `/app-version.json` when
 the page opens or becomes visible, every 30 seconds while visible, and every 3 seconds during a
 voice call even if the tab is hidden. A changed entry triggers a per-tab encrypted checkpoint of

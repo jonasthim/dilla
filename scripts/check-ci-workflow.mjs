@@ -442,7 +442,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
  * a variable cc reads for the compiler, archiver or flags, no wasm job may write GITHUB_ENV or GITHUB_PATH,
  * and the workflow may use no YAML anchor, alias or merge key, whose expansion a line-based checker cannot see.
  */
-export const WASM_LLVM_VERSION = '1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82';
+export const WASM_LLVM_VERSION = '1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83';
 export const WASM_LLVM_KEY_FPR = '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421';
 const WASM_LLVM_PACKAGES = [
   'clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev',
