@@ -45,10 +45,19 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   }, [anyOpen]);
   useLayoutEffect(() => {
     const old = focusedRow.current;
-    if (old === null || old.isConnected || document.activeElement !== document.body) return;
-    const target = focusReturnTarget(old, () => region.current);
-    target?.focus();
-    focusedRow.current = target;
+    if (old === null || old.isConnected) return;
+    // A presence snapshot can briefly replace every row with a loading message as a role dialog closes. Keep the old
+    // row key while focus rests on the pane, then return to its new trigger when the snapshot brings the row back.
+    const active = document.activeElement;
+    if (active !== document.body && active !== region.current) return;
+    const target = focusReturnTarget(old);
+    if (target !== null) {
+      target.focus();
+      focusedRow.current = target;
+    } else {
+      if (active === document.body) region.current?.focus();
+      if (members !== undefined && presence != null && !members.some(m => old.dataset.focusKey === `member:${m.userId}`)) focusedRow.current = null;
+    }
   });
 
   const community = communities?.find(c => c.id === communityId);

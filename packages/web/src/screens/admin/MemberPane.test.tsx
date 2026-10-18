@@ -244,6 +244,16 @@ describe('BanFlow', () => {
 });
 
 describe('role assignment focus', () => {
+  it('returns focus when the member list reloads while the dialog closes', async () => {
+    const { user, fake } = setup(access({ manageRoles: true, top: 6 }));
+    await pick(user, 'bob', 'roles');
+    act(() => fake.set(`presence:${CID}`, null));
+    expect(screen.getByRole('status')).toHaveTextContent('Loading members');
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' }));
+    expect(screen.getByRole('button', { name: 'actions for bob' })).toHaveFocus();
+  });
   it('Done after a grant that moves the member into a hoisted group returns focus to his re-mounted menu trigger', async () => {
     const { user, fake } = setup(access({ manageRoles: true, top: 6 }));
     fake.handler = c => {
