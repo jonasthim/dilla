@@ -1,11 +1,38 @@
 import { expect } from '@playwright/test';
 import {
-  COPY, PAST_BROWSER_SESSION_S, TEST_TIMEOUT, WAIT, advanceClock, clearKek, copy, expectAccessible,
+  COPY, PAST_BROWSER_SESSION_S, TEST_TIMEOUT, WAIT, advanceClock, attachInput, clearKek, composerBox, copy, expectAccessible,
   expectComposerReady, expectHeading, expectShell, instanceInvite, joinCommunity, messageRow, onboardingFrame,
-  openChannel, sendText, signUp, splash, tag, test,
+  openChannel, sendText, signUp, splash, tag, test, trayEntries,
 } from '../support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
+
+test('a new web build reloads an open tab and restores its draft and selected file', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup();
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  const draft = `unsent before update ${tag()}`;
+  await composerBox(page, peer.channelName).fill(draft);
+  await attachInput(page).setInputFiles({ name: 'update-notes.txt', mimeType: 'text/plain', buffer: Buffer.from('saved file') });
+  await expect(trayEntries(page)).toHaveCount(1, { timeout: WAIT });
+  await expect(trayEntries(page).first()).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+
+  let first = true;
+  await page.route('**/app-version.json', async route => {
+    if (first) {
+      first = false;
+      await route.fulfill({ json: { entry: '/assets/next-build.js' } });
+    } else await route.fallback();
+  });
+  const loaded = page.waitForEvent('load', { timeout: WAIT });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await loaded;
+  await expectShell(page);
+  await expect(composerBox(page, peer.channelName)).toHaveValue(draft, { timeout: WAIT });
+  await expect(trayEntries(page).first()).toContainText('update-notes.txt', { timeout: WAIT });
+});
 
 test('a relaunched profile comes back from its stored device key, even after its session expired', async ({ page, peer, relaunch, instanceName }) => {
   const setup = await peer.setup();
