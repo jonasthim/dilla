@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"

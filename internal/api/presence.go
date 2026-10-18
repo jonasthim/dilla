@@ -70,7 +70,8 @@ func (p *PresenceService) Changed(ctx context.Context, user id.ID) {
 			audience[member] = struct{}{}
 		}
 	}
-	payload, err := gateway.PresencePayload(user, uint64(status), uint64(p.clk.Now().Unix()), "")
+	timestamp := uint64(p.clk.Now().Unix()) //nolint:gosec // G115: an instance clock's Unix second, never before 1970
+	payload, err := gateway.PresencePayload(user, uint64(status), timestamp, "")
 	if err != nil {
 		return
 	}
@@ -111,7 +112,8 @@ func (d Deps) PatchPresence(w http.ResponseWriter, r *http.Request) {
 	// A choice can change while the visible state stays Idle (Online on an inactive device).
 	// The account's other devices still need to re-read the choice for alert suppression.
 	if status, err := d.Presence.status(r.Context(), sess.UserID); err == nil {
-		if payload, err := gateway.PresencePayload(sess.UserID, uint64(status), uint64(d.Clock.Now().Unix()), ""); err == nil {
+		timestamp := uint64(d.Clock.Now().Unix()) //nolint:gosec // G115: an instance clock's Unix second, never before 1970
+		if payload, err := gateway.PresencePayload(sess.UserID, uint64(status), timestamp, ""); err == nil {
 			d.Presence.gw.DeliverUser(sess.UserID, gateway.Frame{Op: gateway.OpPresence, Payload: payload})
 		}
 	}
