@@ -837,7 +837,9 @@ export function checkReleaseWorkflow(root) {
   if (/docker\/|ghcr\.io|packages: write/.test(text)) problems.push(`${file}: builds or pushes a container image; the release carries only the native assets`);
   // A tag run can restore a cache a branch run wrote, and the release embeds what it builds (review M7).
   lines.forEach((line, i) => {
-    if (/^\s*cache:\s*(?!false\s*$)\S/.test(line) || /uses:\s*Swatinem\/rust-cache@/.test(line)) {
+    if (/^\s*cache:\s*(?!false\s*$)\S/.test(line)
+      || /uses:\s*Swatinem\/rust-cache@/.test(line)
+      || /uses:\s*actions\/cache(?:\/[^@\s]+)?@/.test(line)) {
       problems.push(`${file}:${i + 1}: a build cache in the release workflow; release builds start clean`);
     }
   });

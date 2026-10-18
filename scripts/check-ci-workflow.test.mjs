@@ -1556,6 +1556,16 @@ test('a release workflow that no longer runs on v* tags is reported', () => {
   assertReported(releaseProblems((t) => t.replace("tags: ['v*']", "tags: ['*']")), "tags 'v*'");
 });
 
+for (const action of ['actions/cache', 'actions/cache/restore']) {
+  test(`a release build that restores ${action} is rejected as a build cache`, () => {
+    const problems = releaseProblems((t) => t.replace(
+      '      - run: rustup show active-toolchain',
+      `      - uses: ${action}@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n      - run: rustup show active-toolchain`,
+    ));
+    assertReported(problems, 'a build cache in the release workflow');
+  });
+}
+
 test('a third-party action pinned by tag in the release workflow is reported', () => {
   const problems = releaseProblems((t) => t.replace(/taiki-e\/install-action@[0-9a-f]{40} # v2/, 'taiki-e/install-action@' + 'v2'));
   assertReported(problems, 'taiki-e/install-action@' + 'v2 is a third-party action not pinned');
