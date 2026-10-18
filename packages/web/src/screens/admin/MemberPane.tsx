@@ -65,6 +65,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const groups: MemberListGroup[] = memberGroups(list, roleList, ownerId, selfId, presence ?? undefined).map(g => ({
     id: g.id,
     title: t('members.group', { name: g.id === 'offline' ? t('members.groupOffline') : g.role?.name ?? t('members.groupMembers'), count: g.members.length }),
+    color: g.role?.color ?? null,
     members: g.members.map(row => {
       const summary = byId.get(row.userId);
       const items = summary === undefined ? [] : menuFor(summary, access, ctx);
