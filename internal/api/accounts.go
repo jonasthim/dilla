@@ -247,7 +247,7 @@ func (d Deps) registrationError(r *http.Request, err error) error {
 	return server.Errorf(server.CodeInternal, "")
 }
 
-// GetMe answers [user_id, username, display, kind, flags, created].
+// GetMe answers [user_id, username, display, kind, flags, created, presence_choice].
 func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 	sess, ok := session(r)
 	if !ok {
@@ -259,8 +259,13 @@ func (d Deps) GetMe(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	choice, err := d.Repo.GetPresenceChoice(r.Context(), sess.UserID)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
 	d.write(w, r, http.StatusOK, []any{
-		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created), //nolint:gosec // G115: a small account-kind enum and a unix second, never negative
+		u.ID, u.Username, u.Display, uint64(u.Kind), u.Flags, uint64(u.Created), choice, //nolint:gosec // G115: a small account-kind enum and a unix second, never negative
 	})
 }
 

@@ -274,7 +274,7 @@ var wantTables = []string{
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
 	"mls_pending_proposals", "mls_welcome_payloads", "mls_welcomes", "oidc_identities",
-	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "slowmode_marks", "totp_secrets", "users",
+	"password_credentials", "pending_joins", "read_state", "readable_messages", "recovery_codes", "reports", "roles", "sessions", "slowmode_marks", "totp_secrets", "user_presence", "users",
 	"voice_sessions", "webauthn_ceremonies", "webauthn_credentials", "webauthn_users",
 }
 

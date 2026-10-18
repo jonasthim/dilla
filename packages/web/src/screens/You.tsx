@@ -5,6 +5,7 @@ import { t } from '../strings/index.ts';
 import { devicesChunk, mergeMembers } from './shell-model.ts';
 import { NAV } from './Settings.tsx';
 import { SignOutAction } from './settings/SignOut.tsx';
+import { PresencePicker } from './PresencePicker.tsx';
 
 const CHEVRON = 'chevron-right';
 const SECTION_ICON: Record<SettingsSection, IconName> = {
@@ -36,6 +37,7 @@ export function You(props: { onOpenSettings(section: SettingsSection): void }): 
           {self === null ? null : <span className="dw-phone-row__meta">{`@${self.username}`}</span>}
         </div>
       </div>
+      <div className="dw-you__presence"><PresencePicker /></div>
       <section className="dw-you__card" aria-labelledby="dw-you-status">
         <h2 id="dw-you-status" className="d-label dw-you__cardhead">{t('you.status')}</h2>
         <dl className="dw-you__facts">

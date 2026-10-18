@@ -1129,7 +1129,7 @@ describe('keyboard', () => {
     expect(composer()).toHaveFocus();
     expect(composer()).toHaveAttribute('aria-disabled', 'true');
   });
-  it('tabs through skip link, rail, sidebar tabs, channels, the pins button, the active row and the composer in that order', async () => {
+  it('tabs through skip link, rail, sidebar tabs, channels, status, the pins button, the active row and the composer in that order', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`);
     act(() => fake.set(`timeline:${GEN}`, timeline({ items: [item({ key: 's1', body: 'x' })] })));
     await user.tab();
@@ -1154,6 +1154,8 @@ describe('keyboard', () => {
     // Its join is the next stop (task-9 ruling: keyboard reachable).
     await user.tab();
     expect(document.activeElement).toHaveAccessibleName('join voice');
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Your status' }));
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');

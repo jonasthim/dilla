@@ -20,6 +20,7 @@ function setup(acc: CommunityAccess | undefined = access()) {
   const fake = new FakeClient();
   fake.set('communities', [{ id: CID, name: 'Midgard', owner: OWNER }]);
   fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob'), m(CAL, 'carol', [MOD.id])]);
+  fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' });
   fake.set(`roles:${CID}`, [MOD]);
   if (acc) fake.set(`permissions:${CID}`, acc);
   const announce = vi.fn();
@@ -35,6 +36,14 @@ async function pick(user: ReturnType<typeof userEvent.setup>, who: string, item:
 }
 
 describe('MemberPane', () => {
+  it('waits for presence, then places offline members at the bottom with a spoken label', () => {
+    const { fake } = setup();
+    act(() => fake.set(`presence:${CID}`, null));
+    expect(screen.getByRole('status')).toHaveTextContent('Loading members');
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'offline', [ME]: 'online', [BOB]: 'dnd', [CAL]: 'idle' }));
+    expect(screen.getByRole('heading', { name: 'Offline — 1' })).toBeInTheDocument();
+    expect(screen.getByText('Do Not Disturb')).toBeInTheDocument();
+  });
   it('lists groups with the owner and you tags', async () => {
     const { view } = setup();
     expect(screen.getByRole('heading', { name: 'mods — 2' })).toBeInTheDocument();

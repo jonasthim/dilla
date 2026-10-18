@@ -22,6 +22,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const { communityId, selfId } = props;
   const communities = useSlice('communities');
   const members = useSlice(`members:${communityId}`);
+  const presence = useSlice(`presence:${communityId}`);
   const roles = useSlice(`roles:${communityId}`);
   const access = useSlice(`permissions:${communityId}`);
   const [kick, setKick] = useState<ModTarget | null>(null);
@@ -53,13 +54,13 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const labelOf: Record<MenuAction, string> = {
     message: t('members.menu.message'), compare: t('members.menu.compare'), roles: t('roles.menu.assign'), kick: t('members.menu.kick'), ban: t('members.menu.ban'),
   };
-  const groups: MemberListGroup[] = memberGroups(list, roleList, ownerId, selfId).map(g => ({
+  const groups: MemberListGroup[] = memberGroups(list, roleList, ownerId, selfId, presence ?? undefined).map(g => ({
     id: g.id,
-    title: t('members.group', { name: g.role?.name ?? t('members.groupMembers'), count: g.members.length }),
+    title: t('members.group', { name: g.id === 'offline' ? t('members.groupOffline') : g.role?.name ?? t('members.groupMembers'), count: g.members.length }),
     members: g.members.map(row => {
       const summary = byId.get(row.userId);
       const items = summary === undefined ? [] : menuFor(summary, access, ctx);
-      return { id: row.userId, name: row.name, color: row.color, tags: row.tags.map(tag => t(`members.${tag}`)), actionsLabel: t('members.actions', { name: row.name }),
+      return { id: row.userId, name: row.name, color: row.color, presence: presence?.[row.userId] ?? 'offline', tags: row.tags.map(tag => t(`members.${tag}`)), actionsLabel: t('members.actions', { name: row.name }),
         actions: items.map(id => ({ id, label: labelOf[id], danger: id === 'kick' || id === 'ban' })) };
     }),
   }));
@@ -80,7 +81,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   return (
     <div ref={region} tabIndex={-1}>
       {/* Final fix M5: the shell's aside carries the name "members of {server}"; the list repeats no region of its own. */}
-      <MemberList groups={groups} loading={members === undefined}
+      <MemberList groups={groups} loading={members === undefined || presence === undefined || presence === null}
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} onAction={onAction} />
       <KickFlow open={kickOpen} communityId={communityId} serverName={serverName} target={kick} announce={text => props.announce(text)}
         onClose={() => setKickOpen(false)} onDone={() => setKickOpen(false)} />

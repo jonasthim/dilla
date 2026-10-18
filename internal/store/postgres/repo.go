@@ -21,6 +21,7 @@ import (
 // read-your-writes sequence sees its own uncommitted rows.
 type Repo struct {
 	db      *sql.DB
+	tx      *sql.Tx
 	w       *pgdb.Queries // bound to db (or to the tx)
 	r       *pgdb.Queries // bound to db (or to the tx)
 	inTx    bool
@@ -60,7 +61,7 @@ func (r *Repo) Tx(ctx context.Context, fn func(store.Repository) error) error {
 		}
 	}()
 	q := pgdb.New(tx)
-	sub := &Repo{db: r.db, w: q, r: q, inTx: true, rawRead: r.rawRead}
+	sub := &Repo{db: r.db, tx: tx, w: q, r: q, inTx: true, rawRead: r.rawRead}
 	if err := fn(sub); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
 			return errors.Join(err, fmt.Errorf("store: rollback: %w", rbErr))
@@ -190,6 +191,33 @@ func (r *Repo) GetUser(ctx context.Context, userID id.ID) (store.UserRow, error)
 		return store.UserRow{}, wrap(err)
 	}
 	return userRow(row), nil
+}
+
+func (r *Repo) GetPresenceChoice(ctx context.Context, userID id.ID) (uint8, error) {
+	var choice uint8
+	var err error
+	if r.tx != nil {
+		err = r.tx.QueryRowContext(ctx, "SELECT choice FROM user_presence WHERE user_id = $1", userID).Scan(&choice)
+	} else {
+		err = r.db.QueryRowContext(ctx, "SELECT choice FROM user_presence WHERE user_id = $1", userID).Scan(&choice)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return 1, nil
+	}
+	return choice, wrap(err)
+}
+
+func (r *Repo) SetPresenceChoice(ctx context.Context, userID id.ID, choice uint8) error {
+	if choice < 1 || choice > 4 {
+		return fmt.Errorf("invalid presence choice %d", choice)
+	}
+	var err error
+	if r.tx != nil {
+		_, err = r.tx.ExecContext(ctx, "INSERT INTO user_presence(user_id, choice) VALUES ($1, $2) ON CONFLICT(user_id) DO UPDATE SET choice = excluded.choice", userID, choice)
+	} else {
+		_, err = r.db.ExecContext(ctx, "INSERT INTO user_presence(user_id, choice) VALUES ($1, $2) ON CONFLICT(user_id) DO UPDATE SET choice = excluded.choice", userID, choice)
+	}
+	return wrap(err)
 }
 
 func (r *Repo) GetUserByUsername(ctx context.Context, username string) (store.UserRow, error) {

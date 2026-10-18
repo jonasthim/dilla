@@ -15,6 +15,13 @@ const access = (over: Partial<CommunityAccess> = {}): CommunityAccess => ({ top:
   kickMembers: true, banMembers: true, createInvite: false, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: EVERYONE, ...over });
 
 describe('memberGroups', () => {
+  it('moves offline members into one bottom group regardless of role', () => {
+    const presence = { [OWNER]: 'offline', [ME]: 'online', [BOB]: 'dnd', [CAL]: 'idle', [BOT]: 'offline' } as const;
+    const groups = memberGroups(MEMBERS, ROLES, OWNER, ME, presence);
+    expect(groups.map(g => [g.id, g.members.map(r => r.userId)])).toEqual([
+      [MOD.id, [BOB]], [CREW.id, [ME]], ['members', [CAL]], ['offline', [OWNER, BOT]],
+    ]);
+  });
   it('groups by the highest hoisted role, highest first, and the rest last; an unhoisted role does not group', () => {
     const groups = memberGroups(MEMBERS, ROLES, OWNER, ME);
     expect(groups.map(g => [g.id, g.members.map(r => r.userId)])).toEqual([[MOD.id, [BOB]], [CREW.id, [ME]], ['members', [CAL, OWNER, BOT]]]);

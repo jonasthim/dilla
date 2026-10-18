@@ -37,6 +37,7 @@ import { useSounds } from './voice/useSounds.tsx';
 import { Activity } from './Activity.tsx';
 import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
+import { PresencePicker } from './PresencePicker.tsx';
 
 /**
  * Focuses the rail's settings button (task 17 names it by `aria-label`), where focus returns when Settings closes;
@@ -796,11 +797,11 @@ export function Shell(): React.JSX.Element {
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
   );
 
-  useSounds({ rings, room: call.channelId === null ? undefined : voiceSlice?.[call.channelId], inCall: call.channelId,
+  useSounds({ rings, room: call.channelId === null ? undefined : voiceSlice?.[call.channelId], inCall: call.channelId, presenceChoice: account?.presenceChoice,
     deafened: call.state?.deafened ?? false, settings: settings ?? {}, selfId: self?.id ?? null,
     ringCommunity: id => (railSlices.flat() as ChannelSummary[]).find(c => c.id === id)?.communityId });
   // A ring is answered in its DM: the DM opens and its call is joined (leaving the current voice first, useCall's join).
-  const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}}
+  const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}} presenceChoice={account?.presenceChoice}
     inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
     onOpen={id => navigate({ name: 'dm', channelId: id })}
     onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
@@ -949,6 +950,7 @@ export function Shell(): React.JSX.Element {
             onJoin={id => { openVoice(id); call.join(id); }} /> : undefined} />
       {phone ? null : <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
         stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />}
+      {phone ? null : <div className="dw-account-area"><PresencePicker /></div>}
     </div>);
   }
 

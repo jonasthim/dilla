@@ -21,6 +21,8 @@ import (
 // Options configures a Gateway. Every duration and byte count has a default; withDefaults fills
 // them and enforces the ring-vs-queue contract.
 type Options struct {
+	// OnPresenceChanged publishes an account's newly derived presence to shared communities.
+	OnPresenceChanged func(id.ID)
 	// Store is deliberately narrow: the gateway calls exactly three storage methods, and holding
 	// store.Repository here would make every gateway test build a database.
 	Store   Store
@@ -348,6 +350,10 @@ func (g *Gateway) touch(ctx context.Context, device id.ID, now time.Time) {
 // connections and not the number ever opened.
 func (g *Gateway) addLive(c *conn) {
 	g.reg.add(c)
+	g.presence.activity(c.deviceID, c.userID)
+	if g.opts.OnPresenceChanged != nil {
+		g.opts.OnPresenceChanged(c.userID)
+	}
 	if g.opts.Metrics != nil {
 		g.opts.Metrics.GatewayConnections.Inc()
 	}
@@ -357,6 +363,12 @@ func (g *Gateway) addLive(c *conn) {
 // call is the one that removed it.
 func (g *Gateway) removeLive(c *conn) {
 	if g.reg.remove(c) {
+		if len(g.reg.connsOfDevice(c.deviceID)) == 0 {
+			g.presence.clearActivity(c.deviceID)
+		}
+		if g.opts.OnPresenceChanged != nil {
+			g.opts.OnPresenceChanged(c.userID)
+		}
 		if g.opts.Metrics != nil {
 			g.opts.Metrics.GatewayConnections.Dec()
 		}
@@ -584,6 +596,11 @@ func (g *Gateway) sweepLiveness() {
 		}
 	}
 	g.sweepSessions(context.Background())
+	for _, user := range g.presence.expireActivity(now) {
+		if g.opts.OnPresenceChanged != nil {
+			g.opts.OnPresenceChanged(user)
+		}
+	}
 	g.sweepSuspended()
 }
 

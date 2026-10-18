@@ -321,6 +321,11 @@ dense on every device of its audience; `group_id` is null.
 | 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
 | 54 | `community_changed` | S→C | `[community_id(bstr 16)]` |
 
+Presence status values are `0` Offline, `1` Online, `2` Idle and `3` Do Not Disturb.
+Invisible is an account choice, exposed to other members as Offline. The frame is sent only to
+current members of a shared community and to the account's own devices. A fresh connection reads
+the authenticated community presence snapshot; ephemeral frames are never replayed.
+
 All ephemeral frames have `n=0` and `group_id=null`; a client may put a `cid` only in the
 frame header, never in the payload. The server accepts `typing_set` only from a member currently
 allowed to view that channel, with at most one update per `(device,channel)` every 3 seconds and

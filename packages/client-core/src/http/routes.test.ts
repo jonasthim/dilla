@@ -300,8 +300,8 @@ const CASES: Case[] = [
   {
     name: 'getAccountMe ignores an appended element', call: (r) => r.getAccountMe(),
     method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 'appended later']),
-    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n },
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'appended later']),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3 },
   },
   {
     name: 'getLimits reads elements 0, 4, 5, 7 and 8', call: (r) => r.getLimits(),

@@ -254,7 +254,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 
+	var presence *api.PresenceService
 	gw := gateway.New(gateway.Options{
+		OnPresenceChanged: func(user id.ID) {
+			if presence != nil {
+				presence.Changed(context.Background(), user)
+			}
+		},
 		// A sweep that closes a device's socket because its account now owes a second factor
 		// (web3.6 S3: the operator's reset, run by another process) also cuts the device's calls.
 		OnFactorOwed:      func(device id.ID) { cutFromCalls(context.Background(), device) },
@@ -297,6 +303,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		FramesPerSecond: float64(o.Config.Gateway.FrameBurst),
 		FrameBurst:      o.Config.Gateway.FrameBurstMax,
 	})
+	presence = api.NewPresenceService(o.Repo, gw, o.Clock)
+	deps.Presence = presence
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
 		Store:    o.Repo,

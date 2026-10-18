@@ -58,6 +58,8 @@ export type Command =
   | { m: 'signOutRevoke'; recoveryKey: string }                  // ready: this device → store wiped → cleared
   | { m: 'forgetBrowser' }                                       // ready (and revoked, pre-flight ruling d): sessions deleted, store wiped → cleared
   | { m: 'markRead'; channelId: string }                         // ready
+  | { m: 'setPresenceChoice'; choice: 'online' | 'idle' | 'dnd' | 'invisible' }
+  | { m: 'presenceActivity' }
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)

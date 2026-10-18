@@ -1,12 +1,14 @@
 import { useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
 import { RoleDot } from '../internal/RoleDot.tsx';
+import { StateDot } from '../StateDot/StateDot.tsx';
 import './MemberList.css';
 
 export interface MemberListMember {
   id: string; name: string; tags: readonly string[]; actionsLabel: string; actions: readonly ActionMenuItem[];
   /** The colour of the member's top coloured role, 0xRRGGBB. Null or 0: no dot. The name keeps its token colour. */
   color?: number | null;
+  presence?: 'online' | 'idle' | 'dnd' | 'offline';
 }
 export interface MemberListGroup { id: string; title: string; members: readonly MemberListMember[] }
 export interface MemberListProps {
@@ -59,6 +61,8 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
             {group.members.map(m => (
               <li key={m.id} className="d-member-list__row" onContextMenu={e => onContextMenu(m, e)} onKeyDown={e => onKeyDown(m, e)}>
                 {m.color ? <RoleDot color={m.color} /> : null}
+                {m.presence ? <><StateDot tone={{ online: 'ok', idle: 'idle', dnd: 'dnd', offline: 'off' }[m.presence] as 'ok' | 'idle' | 'dnd' | 'off'} />
+                  <span className="d-sr-only">{({ online: 'Online', idle: 'Idle', dnd: 'Do Not Disturb', offline: 'Offline' } as const)[m.presence]}</span></> : null}
                 <span className="d-member-list__name">{m.name}</span>
                 {m.tags.map(tag => <span key={tag} className="d-member-list__tag">{tag}</span>)}
                 {m.actions.length > 0 ? (

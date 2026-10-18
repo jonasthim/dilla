@@ -14,6 +14,33 @@ import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('loads a presence snapshot on ready, applies frames, and reloads after reconnect', async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.last(`presence:${toHex(COMMUNITY)}`)).toEqual({ [toHex(USER)]: 'online' }));
+    w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null,
+      payload: [USER, 2n, 1n, ''] } });
+    expect(w.last(`presence:${toHex(COMMUNITY)}`)).toEqual({ [toHex(USER)]: 'idle' });
+    w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
+    expect(w.last(`presence:${toHex(COMMUNITY)}`)).toBeNull();
+    w.routes.getPresenceSnapshot.mockResolvedValue([{ userId: USER, status: 3 }]);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.last(`presence:${toHex(COMMUNITY)}`)).toEqual({ [toHex(USER)]: 'dnd' }));
+  });
+  it('saves a status choice and re-reads one changed on another device', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(991, { m: 'setPresenceChoice', choice: 'invisible' });
+    await vi.waitFor(() => expect(w.ret(991)).toMatchObject({ ok: true }));
+    expect(w.routes.setPresenceChoice).toHaveBeenCalledWith(4);
+    expect(w.account()?.presenceChoice).toBe('invisible');
+    w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 3 });
+    w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
+    await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
+  });
   it('start reads the instance, waits as other-tab while another tab holds the lock, and boots when it is released', async () => {
     const h = harness({ boot: () => Promise.resolve({ kind: 'unsupported', reason: 'no OPFS in this test' }) });
     const release = h.locks.holdElsewhere(LOCK);

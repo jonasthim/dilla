@@ -21,6 +21,8 @@ const ctx = (over: Partial<NotifyContext> = {}): NotifyContext => ({ permission:
 describe('shouldNotify (L-TS-25)', () => {
   const rows: [string, Notice, 0 | 3 | 4, NotifyContext, boolean][] = [
     ['a DM by default', dmNotice(), 3, ctx(), true],
+    ['a DM in Do Not Disturb', dmNotice(), 3, ctx({ presenceChoice: 'dnd' }), false],
+    ['a mention in Do Not Disturb', notice({ kind: 'mention' }), 0, ctx({ presenceChoice: 'dnd' }), false],
     ['a group DM by default', dmNotice(), 4, ctx(), true],
     ['a plain message by default', notice(), 0, ctx(), false],
     ['a mention by default', notice({ kind: 'mention' }), 0, ctx(), true],
@@ -251,6 +253,11 @@ describe('ringNotification (flow 06, R1, R8)', () => {
       expect(ringNotification(r, deps(Ctor, settings))).toBeNull();
       expect(made).toEqual([]);
     }
+  });
+  it('raises nothing for a ring in Do Not Disturb', () => {
+    const { Ctor, made } = ctor('granted');
+    expect(ringNotification(ring(), { ...deps(Ctor), presenceChoice: 'dnd' })).toBeNull();
+    expect(made).toEqual([]);
   });
   it('raises nothing for a ring in a muted or silenced server', () => {
     for (const settings of [{ [`mute.community.${A}`]: '1' }, { [`notify.community.${A}`]: 'nothing' }]) {

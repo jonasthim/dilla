@@ -344,6 +344,9 @@ export function world(opts: {
       calls.push('listMembers');
       return Promise.resolve([{ userId: USER, username: 'web', display: 'Web', kind: 0 as const, nick: '', roleIds: state.roleIds }]);
     }),
+    getPresenceSnapshot: vi.fn((_id: Uint8Array) => Promise.resolve([{ userId: USER, status: 1 }])),
+    setPresenceChoice: vi.fn((_choice: number) => Promise.resolve()),
+    sendPresenceActivity: vi.fn(() => Promise.resolve()),
     // wave 1 (web3.4): the admin routes. None of them pushes into `calls`, which the older suites read in order.
     getPermissions: vi.fn((_id: Uint8Array) => Promise.resolve({ bits: (1n << 30n) - 1n, top: OWNER_TOP })),
     listRoles: vi.fn((_id: Uint8Array) => Promise.resolve([] as RoleRow[])),
@@ -388,7 +391,7 @@ export function world(opts: {
         hasPassword: true });
     }),
     passkeyLoginBegin: vi.fn(() => Promise.resolve({ ceremonyId: new Uint8Array(16).fill(0xce), options: '{"publicKey":{}}' })),
-    getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n })),
+    getAccountMe: vi.fn(() => Promise.resolve({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 1 })),
     listDms: vi.fn(() => { calls.push('listDms'); return Promise.resolve(state.dms); }),
     getChannel: vi.fn((_id: Uint8Array) => Promise.resolve({
       id: DM_CHANNEL, kind: 3, mode: 0, visibility: 0, parentId: null, name: '', topic: '', position: 0, seq: 1n, textGroupId: DM_GROUP,

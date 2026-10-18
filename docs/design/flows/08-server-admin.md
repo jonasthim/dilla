@@ -98,7 +98,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 
 *Members:*
 - `members.toggle='members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
-- `members.groupMembers='members'`, `members.owner='owner'`, `members.you='you'`, `members.bot='bot'`
+- `members.groupMembers='members'`, `members.groupOffline='Offline'`, `members.owner='owner'`, `members.you='you'`, `members.bot='bot'`
 - `members.actions='actions for {name}'`, `members.menu.message='message'`, `members.menu.compare='compare safety numbers'`
 - `members.menu.kick='kick'`, `members.menu.ban='ban'`, `members.loading='Loading members…'`
 - `members.empty='No one else is in this server yet.'`, `members.close='close members'`

@@ -8,6 +8,7 @@ import { notificationCtor, ringNotification, type NotificationHandle } from '../
 import { t } from '../../strings/index.ts';
 
 export interface RingFlowProps {
+  presenceChoice?: string;
   client: Pick<CoreClient, 'call'>;
   rings: readonly Ring[] | undefined;
   dms: readonly DmSummary[] | undefined;
@@ -31,7 +32,7 @@ function useRingNotifications(p: RingFlowProps): void {
   live.current = p;
   const visible = useDocumentVisible();
   useEffect(() => {
-    const rings = visible ? [] : p.rings ?? [];
+    const rings = visible || p.presenceChoice === 'dnd' ? [] : p.rings ?? [];
     const now = new Set(rings.map(key));
     for (const [k, note] of open.current) {
       if (now.has(k)) continue;
@@ -42,12 +43,12 @@ function useRingNotifications(p: RingFlowProps): void {
       const k = key(ring);
       if (open.current.has(k)) continue;
       const kind = p.dms?.find(d => d.id === ring.channelId)?.kind ?? 3;
-      const note = ringNotification(ring, { Notification: notificationCtor(), settings: p.settings, kind, visible,
+      const note = ringNotification(ring, { Notification: notificationCtor(), settings: p.settings, kind, visible, presenceChoice: p.presenceChoice,
         focus: () => window.focus(), open: id => live.current.onOpen(id) });
       // A ring that may not notify is remembered too, so a later render never raises it.
       open.current.set(k, note ?? { onclick: null, close: () => undefined });
     }
-  }, [p.rings, p.dms, p.settings, visible]);
+  }, [p.rings, p.dms, p.settings, p.presenceChoice, visible]);
   useEffect(() => () => {
     for (const note of open.current.values()) note.close();
     open.current.clear();

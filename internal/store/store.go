@@ -79,6 +79,9 @@ type Instance interface {
 }
 
 type Accounts interface {
+	// PresenceChoice is the account-wide visibility/alert preference (1 online by default).
+	GetPresenceChoice(ctx context.Context, userID id.ID) (uint8, error)
+	SetPresenceChoice(ctx context.Context, userID id.ID, choice uint8) error
 	CreateUser(ctx context.Context, u UserRow) error
 	GetUser(ctx context.Context, userID id.ID) (UserRow, error)
 	GetUserByUsername(ctx context.Context, username string) (UserRow, error)

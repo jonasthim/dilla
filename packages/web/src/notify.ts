@@ -13,11 +13,13 @@ import { mergeMembers, nameBook, plainBody } from './screens/shell-model.ts';
 export interface NotificationHandle { onclick: ((ev: Event) => unknown) | null; close(): void; }
 export interface NotificationCtor { readonly permission: NotificationPermission; new (title: string, options: NotificationOptions): NotificationHandle; }
 export interface NotifyContext { permission: PermissionState; settings: Readonly<Record<string, string>>; visible: boolean; onScreen: string | null;
+  presenceChoice?: string;
   /** The person's own user id and role ids, for a server that ignores @everyone and @here (WA5); either unset keeps every mention (fails open). */
   me?: string; roles?: readonly string[]; }
 
 /** L-TS-25's decision for one notice; kind is the channel's for the mode: 0 a community channel, 3 | 4 a DM. */
 export function shouldNotify(notice: Notice, kind: 0 | 3 | 4, ctx: NotifyContext): boolean {
+  if (ctx.presenceChoice === 'dnd') return false;
   if (ctx.permission !== 'granted') return false;
   const server = notice.communityId ?? undefined;
   if (isMuted(ctx.settings, notice.channelId, server)) return false;
@@ -81,6 +83,7 @@ export function startNotifier(deps: NotifierDeps): () => void {
       settings: client.get('settings') ?? {},
       visible: deps.visible(),
       onScreen: deps.onScreen(),
+      presenceChoice: client.get('account')?.presenceChoice,
     };
     if (Ctor === undefined || !shouldNotify(item, kind, ctx)) return;
     const communityId = item.communityId;
@@ -126,6 +129,7 @@ export function startNotifier(deps: NotifierDeps): () => void {
 }
 
 export interface RingNotifyDeps {
+  presenceChoice?: string;
   Notification: NotificationCtor | undefined;
   settings: Readonly<Record<string, string>>;
   /** The DM's kind for its notify mode: 3 a DM, 4 a group DM. */
@@ -150,6 +154,7 @@ export interface RingNotifyDeps {
  * step 8); what it shows is that caller's own display name.
  */
 export function ringNotification(ring: Ring, deps: RingNotifyDeps): NotificationHandle | null {
+  if (deps.presenceChoice === 'dnd') return null;
   const Ctor = deps.Notification;
   if (Ctor === undefined || Ctor.permission !== 'granted' || deps.visible) return null;
   const server = deps.communityId ?? undefined;
