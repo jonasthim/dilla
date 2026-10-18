@@ -17,6 +17,17 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 }
 
 describe('rings (flow 06, R1–R8)', () => {
+  it('Do Not Disturb stops ringing and notifications while keeping the in-app banner', async () => {
+    const app = renderVoiceShell({ hidden: true, permission: 'granted' });
+    app.client.publish('rings', [ring()]);
+    expect(await screen.findByRole('alert')).toHaveTextContent('bob is calling');
+    expect(app.sounds.ringing).toBe(true);
+    expect(app.notifications).toHaveLength(1);
+    app.client.publish('account', { ...app.client.get('account')!, presenceChoice: 'dnd' });
+    expect(app.sounds.ringing).toBe(false);
+    expect(app.notifications[0].closed).toBe(true);
+    expect(screen.getByRole('alert')).toHaveTextContent('bob is calling');
+  });
   it('an incoming ring shows the banner, plays the ring and raises one notification; state 0 stops all three', async () => {
     const app = renderVoiceShell({ hidden: true, permission: 'granted', settings: {} });
     app.client.publish('rings', [ring({ busy: false, quiet: false })]);

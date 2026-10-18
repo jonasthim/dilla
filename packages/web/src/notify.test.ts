@@ -16,11 +16,14 @@ const notice = (over: Partial<Notice> = {}): Notice => ({
   id: 0, channelId: RAND, communityId: A, kind: 'message', senderUser: '28'.repeat(16), senderName: 'bob', body: 'hi', ts: 1_790_000_000, threadRoot: null, ...over,
 });
 const dmNotice = (over: Partial<Notice> = {}): Notice => notice({ channelId: DM, communityId: null, kind: 'dm', ...over });
-const ctx = (over: Partial<NotifyContext> = {}): NotifyContext => ({ permission: 'granted', settings: {}, visible: true, onScreen: GEN, ...over });
+const ctx = (over: Partial<NotifyContext> = {}): NotifyContext => ({ permission: 'granted', settings: {}, visible: true, onScreen: GEN, presenceChoice: 'online', ...over });
 
 describe('shouldNotify (L-TS-25)', () => {
   const rows: [string, Notice, 0 | 3 | 4, NotifyContext, boolean][] = [
     ['a DM by default', dmNotice(), 3, ctx(), true],
+    ['a DM in Do Not Disturb', dmNotice(), 3, ctx({ presenceChoice: 'dnd' }), false],
+    ['a DM before the saved choice loads', dmNotice(), 3, ctx({ presenceChoice: undefined }), false],
+    ['a mention in Do Not Disturb', notice({ kind: 'mention' }), 0, ctx({ presenceChoice: 'dnd' }), false],
     ['a group DM by default', dmNotice(), 4, ctx(), true],
     ['a plain message by default', notice(), 0, ctx(), false],
     ['a mention by default', notice({ kind: 'mention' }), 0, ctx(), true],
@@ -92,7 +95,7 @@ describe('startNotifier under @everyone suppression (web3.5 WA5 fix)', () => {
     expect(run(withRole, [`<@${ROLE}>`, `<@${ME.id}>`, '<@everyone>'])).toBe(2);
   });
   it('fails open when the own user is unknown', () => {
-    expect(run(h => h.fake.set(`members:${A}`, []), ['<@everyone>'])).toBe(1);
+    expect(run(h => { h.fake.set('account', account({ user: null })); h.fake.set(`members:${A}`, []); }, ['<@everyone>'])).toBe(1);
   });
   it('fails open when the community members are not loaded', () => {
     expect(run(h => h.fake.set('account', account()), ['<@everyone>'])).toBe(1);
@@ -120,6 +123,7 @@ function harness(over: { visible?: boolean; onScreen?: string | null } = {}) {
   Note.made = [];
   Note.permission = 'granted';
   const fake = new FakeClient();
+  fake.set('account', account());
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, [ch(GEN, 'general'), ch(RAND, 'random')]);
   fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }]);
@@ -231,7 +235,7 @@ describe('ringNotification (flow 06, R1, R8)', () => {
     return { Ctor: N as unknown as NotificationCtor, made, requestPermission };
   }
   const deps = (Ctor: NotificationCtor | undefined, settings: Record<string, string> = {}) =>
-    ({ Notification: Ctor, settings, kind: 3 as const, visible: false, focus: vi.fn(), open: vi.fn() });
+    ({ Notification: Ctor, settings, kind: 3 as const, visible: false, presenceChoice: 'online', focus: vi.fn(), open: vi.fn() });
 
   it('raises one tagged notification for a ring that is neither busy nor quiet, with permission granted', () => {
     const { Ctor, made } = ctor('granted');
@@ -245,12 +249,22 @@ describe('ringNotification (flow 06, R1, R8)', () => {
     expect(made[0].closed).toBe(true);
     handle?.close();
   });
+  it('waits for the saved status before notifying about a ring', () => {
+    const { Ctor, made } = ctor('granted');
+    expect(ringNotification(ring(), { ...deps(Ctor), presenceChoice: undefined })).toBeNull();
+    expect(made).toHaveLength(0);
+  });
   it('raises nothing for a busy ring, a quiet (muted) ring or a DM set to nothing', () => {
     for (const [r, settings] of [[ring({ busy: true }), {}], [ring({ quiet: true }), {}], [ring(), { [`notify.channel.${DM}`]: 'nothing' }]] as const) {
       const { Ctor, made } = ctor('granted');
       expect(ringNotification(r, deps(Ctor, settings))).toBeNull();
       expect(made).toEqual([]);
     }
+  });
+  it('raises nothing for a ring in Do Not Disturb', () => {
+    const { Ctor, made } = ctor('granted');
+    expect(ringNotification(ring(), { ...deps(Ctor), presenceChoice: 'dnd' })).toBeNull();
+    expect(made).toEqual([]);
   });
   it('raises nothing for a ring in a muted or silenced server', () => {
     for (const settings of [{ [`mute.community.${A}`]: '1' }, { [`notify.community.${A}`]: 'nothing' }]) {

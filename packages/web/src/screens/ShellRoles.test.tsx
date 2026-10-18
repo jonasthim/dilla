@@ -36,6 +36,7 @@ function setup(opts: { acc?: Partial<CommunityAccess>; base?: number; overwrites
   fake.set('communities', [{ id: A, name: 'Midgard', owner: OWNER }]);
   fake.set(`channels:${A}`, [ch(GEN, 'general', 0), ch(LOBBY, 'lobby', 1)]);
   fake.set(`members:${A}`, MEMBERS);
+  fake.set(`presence:${A}`, { [ME.id]: 'online', [BOB]: 'online' });
   fake.set(`roles:${A}`, opts.base === undefined ? ROLES : [role(EVERYONE, '@everyone', 0, opts.base), ROLES[1]]);
   fake.set(`overwrites:${A}`, opts.overwrites ?? {});
   fake.set(`permissions:${A}`, access(opts.acc));
@@ -46,6 +47,11 @@ function setup(opts: { acc?: Partial<CommunityAccess>; base?: number; overwrites
   render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
   return { fake, user };
 }
+it('keeps account presence in the desktop sidebar and connection state in the status bar', () => {
+  setup();
+  expect(screen.getByRole('combobox', { name: 'Your status' }).closest('.dw-account-area')).not.toBeNull();
+  expect(screen.getByText('online', { selector: '.d-chunk__v' })).toBeInTheDocument();
+});
 const box = () => screen.getByRole('textbox', { name: 'message #general' });
 // Waits in real time outside act, so React flushes each announcer step instead of batching them.
 const pause = (ms = 450) => {

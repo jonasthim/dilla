@@ -10,6 +10,8 @@ export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'paused-error'
  *  a reload, an operator reset). */
 export type FactorSetupOrigin = 'signup' | 'signin' | 'required';
 export interface AccountState {
+	/** Persisted account-wide choice. Defaults to online for an older instance. */
+  presenceChoice?: PresenceChoice;
   phase: BootPhase;
   /** passwordSignup, totp and passkeys: auth_methods holds 0, 1 and 2. */
   instance: { id: string; name: string; registrationMode: 0 | 1 | 2; passwordSignup: boolean; totp: boolean; passkeys: boolean } | null;
@@ -50,6 +52,10 @@ export interface ChannelSummary { id: string; communityId: string; kind: 0 | 1 |
    *  they are unknown). */
   announcement: boolean; group: ChannelGroupState; }
 export interface MemberSummary { userId: string; username: string; display: string; kind: 0 | 1; roleIds: string[]; }   // roleIds: hex of member-row element 3, in order
+export type PresenceChoice = 'online' | 'idle' | 'dnd' | 'invisible';
+export type PresenceStatus = 'offline' | 'online' | 'idle' | 'dnd';
+/** null means the authenticated snapshot has not arrived yet. */
+export type PresenceState = Record<string, PresenceStatus> | null;
 export type TimelineItemState = 'ok' | 'pending' | 'failed' | 'cannot-read' | 'deleted';
 /** `threadRoot` (web3.7): the msg id of the thread root the quoted message shows in, null for a channel message. */
 export interface ReplyRef { msgId: string; state: 'ok' | 'missing' | 'deleted'; senderUser: string | null; excerpt: string; seq: string | null; threadRoot: string | null; }
@@ -190,13 +196,13 @@ export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | n
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }
-export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `timeline:${string}`
+export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
   | `slow:${string}` | `thread:${string}` | `threads:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
-  [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `timeline:${string}`]: TimelineState;
+  [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
   [k: `typing:${string}`]: TypingState[];
   [k: `permissions:${string}`]: CommunityAccess; [k: `roles:${string}`]: RoleSummary[];

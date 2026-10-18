@@ -49,7 +49,9 @@ before it ("every route below is `E`").
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/accounts` | — | `[code(tstr), username(tstr), display(tstr), umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64), password(tstr\|null), device(array)]` where `device = [device_id(bstr16), dsk_pub(bstr32), tier(uint), signer_tier(uint), credential(bstr)]` | `[user_id(bstr16), device_id(bstr16), token(tstr), expires(uint)]` |
-| `GET /v1/accounts/me` | E, F | — | `[user_id, username, display, kind, flags, created]` |
+| `GET /v1/accounts/me` | E, F | — | `[user_id, username, display, kind, flags, created, presence_choice]` |
+| `PATCH /v1/accounts/me/presence` | E | `[choice(uint)]` | `204`; choice: 1 Online, 2 Idle, 3 Do Not Disturb, 4 Invisible |
+| `POST /v1/accounts/me/presence/activity` | E | — | `204`; refreshes this live device's activity time |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
 | `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7) and, `device cap reached`, at 8 live devices; `429 E_RATE_LIMITED` with `retry_after_ms` past 3 live rows created in the hour; it never evicts; `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
@@ -319,6 +321,7 @@ community answers `404` to everyone.
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
 | `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/presence` | — | `[[user_id, status]]` for all current members; membership required; status 0 Offline, 1 Online, 2 Idle, 3 Do Not Disturb |
 | `GET /v1/communities/{id}/permissions` | — | `[bits(uint), top(uint)]`: the caller's community-wide permissions (§ Permissions; no channel overwrite applied) and the position of the caller's highest role, `0` for `@everyone` alone and `2147483648` for the owner |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |

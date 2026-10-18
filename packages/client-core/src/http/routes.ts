@@ -40,7 +40,7 @@ export interface SeqEpoch { seq: bigint; epoch: bigint; }
 export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | null; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
-export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; }
+export interface AccountMe { userId: Uint8Array; username: string; display: string; kind: number; flags: bigint; presenceChoice?: number; }
 export interface Limits { maxCiphertextBytes: number; keypackagesPerDevice: number; keypackageRefillThreshold: number;
   heartbeatMs: number; maxFrameBytes: number; }
 // ---- web-3 calls (L-HTTP-100..104, L-TS-55) ----
@@ -578,7 +578,20 @@ export class Routes {
   }
   async getAccountMe(): Promise<AccountMe> {
     const a = atLeast(decode(await this.body('GET', '/v1/accounts/me', 'read', true)), 5);
-    return { userId: bin(a[0], 16), username: str(a[1]), display: str(a[2]), kind: u53(a[3]), flags: u64(a[4]) };
+    return { userId: bin(a[0], 16), username: str(a[1]), display: str(a[2]), kind: u53(a[3]), flags: u64(a[4]),
+      presenceChoice: a.length > 6 ? u53(a[6]) : 1 };
+  }
+  async setPresenceChoice(choice: number): Promise<void> {
+    await this.body('PATCH', '/v1/accounts/me/presence', 'write', true, { body: encode([choice]), ok: [204] });
+  }
+  async sendPresenceActivity(): Promise<void> {
+    await this.body('POST', '/v1/accounts/me/presence/activity', 'write', true, { ok: [204] });
+  }
+  async getPresenceSnapshot(communityId: Uint8Array): Promise<{ userId: Uint8Array; status: number }[]> {
+    return arr(decode(await this.body('GET', `/v1/communities/${toHex(communityId)}/presence`, 'read', true))).map(row => {
+      const a = atLeast(row, 2);
+      return { userId: bin(a[0], 16), status: u53(a[1]) };
+    });
   }
   async getLimits(): Promise<Limits> {
     const a = atLeast(decode(await this.body('GET', '/v1/instance/limits', 'read', true, { auth: false })), 9);

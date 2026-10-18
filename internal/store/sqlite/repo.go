@@ -20,6 +20,7 @@ import (
 type Repo struct {
 	write   *sql.DB
 	read    *sql.DB
+	tx      *sql.Tx
 	w       *sqlitedb.Queries // bound to write (or to the tx)
 	r       *sqlitedb.Queries // bound to read  (or to the tx)
 	inTx    bool
@@ -63,7 +64,7 @@ func (r *Repo) Tx(ctx context.Context, fn func(store.Repository) error) error {
 		}
 	}()
 	q := sqlitedb.New(tx)
-	sub := &Repo{write: r.write, read: r.read, w: q, r: q, inTx: true, rawRead: r.rawRead}
+	sub := &Repo{write: r.write, read: r.read, tx: tx, w: q, r: q, inTx: true, rawRead: r.rawRead}
 	if err := fn(sub); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
 			return errors.Join(err, fmt.Errorf("store: rollback: %w", rbErr))
@@ -189,6 +190,65 @@ func (r *Repo) GetUser(ctx context.Context, userID id.ID) (store.UserRow, error)
 		return store.UserRow{}, wrap(err)
 	}
 	return userRow(row), nil
+}
+
+func (r *Repo) GetPresenceChoice(ctx context.Context, userID id.ID) (uint8, error) {
+	var choice uint8
+	var err error
+	if r.tx != nil {
+		err = r.tx.QueryRowContext(ctx, "SELECT choice FROM user_presence WHERE user_id = ?", userID).Scan(&choice)
+	} else {
+		err = r.read.QueryRowContext(ctx, "SELECT choice FROM user_presence WHERE user_id = ?", userID).Scan(&choice)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return 1, nil
+	}
+	return choice, wrap(err)
+}
+
+func (r *Repo) ListPresenceChoices(ctx context.Context, users []id.ID) (map[id.ID]uint8, error) {
+	choices := make(map[id.ID]uint8, len(users))
+	if len(users) == 0 {
+		return choices, nil
+	}
+	args := make([]any, len(users))
+	for i, user := range users {
+		args[i] = user
+	}
+	query := "SELECT user_id, choice FROM user_presence WHERE user_id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(users)), ",") + ")" //nolint:gosec // G202: placeholders come only from the bounded user count
+	var rows *sql.Rows
+	var err error
+	if r.tx != nil {
+		rows, err = r.tx.QueryContext(ctx, query, args...)
+	} else {
+		rows, err = r.read.QueryContext(ctx, query, args...)
+	}
+	if err != nil {
+		return nil, wrap(err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var user id.ID
+		var choice uint8
+		if err := rows.Scan(&user, &choice); err != nil {
+			return nil, wrap(err)
+		}
+		choices[user] = choice
+	}
+	return choices, wrap(rows.Err())
+}
+
+func (r *Repo) SetPresenceChoice(ctx context.Context, userID id.ID, choice uint8) error {
+	if choice < 1 || choice > 4 {
+		return fmt.Errorf("invalid presence choice %d", choice)
+	}
+	var err error
+	if r.tx != nil {
+		_, err = r.tx.ExecContext(ctx, "INSERT INTO user_presence(user_id, choice) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET choice = excluded.choice", userID, choice)
+	} else {
+		_, err = r.write.ExecContext(ctx, "INSERT INTO user_presence(user_id, choice) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET choice = excluded.choice", userID, choice)
+	}
+	return wrap(err)
 }
 
 func (r *Repo) GetUserByUsername(ctx context.Context, username string) (store.UserRow, error) {

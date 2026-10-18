@@ -71,6 +71,28 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const reloaded = useRef(false);
   const reload = props.reload;
   const phase = account?.phase;
+  // One active tab refreshes its device's activity at most once a minute. Hidden tabs send no
+  // keepalive; the server derives Idle after ten minutes without activity on every live device.
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    let last = 0;
+    const activity = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - last < 60_000) return;
+      last = Date.now();
+      void client.call({ m: 'presenceActivity' }).catch(() => undefined);
+    };
+    window.addEventListener('pointerdown', activity);
+    window.addEventListener('pointermove', activity);
+    window.addEventListener('keydown', activity);
+    document.addEventListener('visibilitychange', activity);
+    activity();
+    return () => {
+      window.removeEventListener('pointerdown', activity);
+      window.removeEventListener('pointermove', activity);
+      window.removeEventListener('keydown', activity);
+      document.removeEventListener('visibilitychange', activity);
+    };
+  }, [client, phase]);
   // Walk M9: the forced screen holds dilla as the shell does, so a tab that asks for it ("Use this tab") is answered there too.
   const holdsDilla = phase === 'ready' || (phase === 'factor-setup' && account?.factorSetup?.origin === 'required');
   useEffect(() => {

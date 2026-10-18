@@ -31,6 +31,7 @@ import (
 // A field a later task fills is declared nil here and named with that task, so
 // no task silently widens a struct another task owns.
 type Deps struct {
+	Presence     *PresenceService
 	Repo         store.Repository
 	Clock        clock.Clock
 	Log          *slog.Logger
@@ -219,6 +220,9 @@ func Register(m *server.Mux, d Deps) {
 
 	// Accounts. Every one of these is an enrolled session; GET is also an owed one's (`E, F`).
 	m.Handle("GET /v1/accounts/me", d.owedOK(d.GetMe))
+	m.Handle("PATCH /v1/accounts/me/presence", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchPresence)))
+	m.Handle("POST /v1/accounts/me/presence/activity", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PresenceActivity)))
+	m.Handle("GET /v1/communities/{community_id}/presence", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.PresenceSnapshot)))
 	m.Handle("PATCH /v1/accounts/me", d.enrolled(d.PatchMe))
 	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
 

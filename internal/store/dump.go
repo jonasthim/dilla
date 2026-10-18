@@ -45,7 +45,7 @@ const (
 // the structure, readable and blob tables — and a restore replays it front to
 // back.
 var DumpTables = []string{
-	"instances", "instance_settings", "users", "devices", "device_lists", "sessions",
+	"instances", "instance_settings", "users", "user_presence", "devices", "device_lists", "sessions",
 	"password_credentials", "totp_secrets", "recovery_codes", "webauthn_users",
 	"webauthn_credentials", "webauthn_ceremonies", "oidc_identities", "login_attempts",
 	"invites", "reports", "audit_log",
