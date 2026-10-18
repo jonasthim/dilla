@@ -52,6 +52,8 @@ const FORBIDDEN = [
   { re: /\|\|\s*true/, what: '|| true' },
   { re: /continue-on-error/, what: 'continue-on-error' },
   { re: /if:.*always\(\)/, what: 'if: always()' },
+  { re: /uses:\s*dtolnay\/rust-toolchain@/, what: 'third-party Rust toolchain action' },
+  { re: /uses:\s*Swatinem\/rust-cache@/, what: 'third-party Rust cache action' },
 ];
 
 /**
@@ -141,7 +143,7 @@ const REQUIRED_STEPS = {
     'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
     // Ruling 40/task 26: lint wasm-only modules and typecheck the browser wrapper.
     'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings',
-    'components: clippy',
+    '- run: rustup show active-toolchain',
     // Task 17 (dilla-media): the media worker's wasm-backed tests, the BaseE2EEManager type contract and the
     // JS half of the signalling-schema contract (DEV-66) run where the web wasm is built.
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
@@ -835,7 +837,9 @@ export function checkReleaseWorkflow(root) {
   if (/docker\/|ghcr\.io|packages: write/.test(text)) problems.push(`${file}: builds or pushes a container image; the release carries only the native assets`);
   // A tag run can restore a cache a branch run wrote, and the release embeds what it builds (review M7).
   lines.forEach((line, i) => {
-    if (/^\s*cache:\s*(?!false\s*$)\S/.test(line) || /uses:\s*Swatinem\/rust-cache@/.test(line)) {
+    if (/^\s*cache:\s*(?!false\s*$)\S/.test(line)
+      || /uses:\s*Swatinem\/rust-cache@/.test(line)
+      || /uses:\s*actions\/cache(?:\/[^@\s]+)?@/.test(line)) {
       problems.push(`${file}:${i + 1}: a build cache in the release workflow; release builds start clean`);
     }
   });

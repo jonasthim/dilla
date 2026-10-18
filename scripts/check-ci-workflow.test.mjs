@@ -12,6 +12,15 @@ const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
+test('Rust CI and release setup use the pinned rustup toolchain without third-party helper actions', () => {
+  const toolchain = readFileSync(join(REPO_ROOT, 'rust-toolchain.toml'), 'utf8');
+  assert.match(toolchain, /channel = "1\.98\.1"/);
+  for (const workflow of [REAL_CI, REAL_RELEASE]) {
+    assert.doesNotMatch(workflow, /uses:\s*(?:dtolnay\/rust-toolchain|Swatinem\/rust-cache)@/);
+    assert.match(workflow, /- run: rustup show active-toolchain/);
+  }
+});
+
 // The go job's test step: every package but internal/ds, which go-ds runs (CI budget, fix wave).
 const GO_TEST = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
 
@@ -75,10 +84,7 @@ jobs:
   rust-wasm-node:
     runs-on: ubuntu-latest
     steps:
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
-        with:
-          targets: wasm32-unknown-unknown
-          components: clippy
+      - run: rustup show active-toolchain
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
       - run: cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
@@ -1062,7 +1068,7 @@ for (const [job, needle] of [
   ['node', 'npm run test:install'],
   ['rust-wasm-node', 'npm run typecheck -w @dilla/core-wasm'],
   ['rust-wasm-node', 'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings'],
-  ['rust-wasm-node', 'components: clippy'],
+  ['rust-wasm-node', '- run: rustup show active-toolchain'],
 ]) {
   test(`a ${job} job that lost "${needle}" is reported (web-1)`, () => {
     const body = jobBody(job);
@@ -1550,13 +1556,23 @@ test('a release workflow that no longer runs on v* tags is reported', () => {
   assertReported(releaseProblems((t) => t.replace("tags: ['v*']", "tags: ['*']")), "tags 'v*'");
 });
 
+for (const action of ['actions/cache', 'actions/cache/restore']) {
+  test(`a release build that restores ${action} is rejected as a build cache`, () => {
+    const problems = releaseProblems((t) => t.replace(
+      '      - run: rustup show active-toolchain',
+      `      - uses: ${action}@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n      - run: rustup show active-toolchain`,
+    ));
+    assertReported(problems, 'a build cache in the release workflow');
+  });
+}
+
 test('a third-party action pinned by tag in the release workflow is reported', () => {
   const problems = releaseProblems((t) => t.replace(/taiki-e\/install-action@[0-9a-f]{40} # v2/, 'taiki-e/install-action@' + 'v2'));
   assertReported(problems, 'taiki-e/install-action@' + 'v2 is a third-party action not pinned');
 });
 
 test('a third-party action pinned by SHA but without its tag comment is reported', () => {
-  const problems = releaseProblems((t) => t.replace(/(dtolnay\/rust-toolchain@[0-9a-f]{40}) # 1\.98\.1/, '$1'));
+  const problems = releaseProblems((t) => t.replace(/(taiki-e\/install-action@[0-9a-f]{40}) # v2/, '$1'));
   assertReported(problems, 'not pinned to a 40-hex commit SHA');
 });
 
