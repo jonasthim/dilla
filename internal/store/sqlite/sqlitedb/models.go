@@ -429,6 +429,11 @@ type TotpSecrets struct {
 	Created     int64
 }
 
+type UserPresence struct {
+	UserID id.ID
+	Choice int64
+}
+
 type Users struct {
 	ID         id.ID
 	Username   string
