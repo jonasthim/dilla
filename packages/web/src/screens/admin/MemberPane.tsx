@@ -1,5 +1,5 @@
 // Flow 08: the member pane. W3 mounts it in the shell's aside; it reads the members, roles and permissions slices.
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MemberList, focusReturnTarget, type MemberListGroup } from '@dilla/ui';
 import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
@@ -35,6 +35,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   // group (a hoisted role given meanwhile), else (a kicked member's row is gone) the pane. The same rule as Dialog's own.
   const region = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
+  const focusedRow = useRef<HTMLElement | null>(null);
   const restore = useRef(false);
   const anyOpen = kickOpen || banOpen || rolesFor !== null;
   useEffect(() => {
@@ -42,6 +43,13 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
     restore.current = false;
     focusReturnTarget(opener.current, () => region.current)?.focus();
   }, [anyOpen]);
+  useLayoutEffect(() => {
+    const old = focusedRow.current;
+    if (old === null || old.isConnected || document.activeElement !== document.body) return;
+    const target = focusReturnTarget(old, () => region.current);
+    target?.focus();
+    focusedRow.current = target;
+  });
 
   const community = communities?.find(c => c.id === communityId);
   const serverName = community?.name ?? '';
@@ -79,7 +87,9 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   };
 
   return (
-    <div ref={region} tabIndex={-1}>
+    <div ref={region} tabIndex={-1} onFocusCapture={event => {
+      if (event.target instanceof HTMLElement && event.target.dataset.focusKey?.startsWith('member:')) focusedRow.current = event.target;
+    }}>
       {/* Final fix M5: the shell's aside carries the name "members of {server}"; the list repeats no region of its own. */}
       <MemberList groups={groups} loading={members === undefined || presence === undefined || presence === null}
         loadingLabel={t('members.loading')} emptyLabel={t('members.empty')} onAction={onAction} />

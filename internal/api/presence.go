@@ -64,7 +64,7 @@ func (p *PresenceService) Changed(ctx context.Context, user id.ID) {
 	for _, community := range communities {
 		members, err := communityMemberIDs(ctx, p.repo, community.ID)
 		if err != nil {
-			continue
+			return
 		}
 		for _, member := range members {
 			audience[member] = struct{}{}
@@ -174,12 +174,21 @@ func (d Deps) PresenceSnapshot(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, d.storeError(r, err))
 			return
 		}
+		users := make([]id.ID, len(rows))
+		for i, member := range rows {
+			users[i] = member.UserID
+		}
+		choices, err := d.Repo.ListPresenceChoices(r.Context(), users)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
 		for _, member := range rows {
-			status, err := d.Presence.status(r.Context(), member.UserID)
-			if err != nil {
-				server.WriteError(w, d.storeError(r, err))
-				return
+			choice := choices[member.UserID]
+			if choice == 0 {
+				choice = 1
 			}
+			status := d.Presence.gw.PresenceStatus(member.UserID, choice)
 			out = append(out, []any{member.UserID, status})
 		}
 		if len(rows) < int(memberPage) {

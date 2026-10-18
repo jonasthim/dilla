@@ -32,7 +32,7 @@ function useRingNotifications(p: RingFlowProps): void {
   live.current = p;
   const visible = useDocumentVisible();
   useEffect(() => {
-    const rings = visible || p.presenceChoice === 'dnd' ? [] : p.rings ?? [];
+    const rings = visible || p.presenceChoice === undefined || p.presenceChoice === 'dnd' ? [] : p.rings ?? [];
     const now = new Set(rings.map(key));
     for (const [k, note] of open.current) {
       if (now.has(k)) continue;

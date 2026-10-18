@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -17,6 +18,19 @@ type presenceGatewayFake struct {
 	live   map[id.ID]bool
 	to     []id.ID
 	frames []gateway.Frame
+}
+
+type flakyPresenceMembers struct {
+	store.Repository
+	fail bool
+}
+
+func (r *flakyPresenceMembers) ListMembersOfCommunity(ctx context.Context, community, after id.ID, limit int32) ([]store.MemberOfCommunityRow, error) {
+	if r.fail {
+		r.fail = false
+		return nil, errors.New("temporary member read failure")
+	}
+	return r.Repository.ListMembersOfCommunity(ctx, community, after, limit)
 }
 
 func (g *presenceGatewayFake) PresenceStatus(user id.ID, choice uint8) uint8 {
@@ -111,4 +125,33 @@ func TestPresenceChoiceAndSnapshotAreMemberScoped(t *testing.T) {
 			t.Fatal("presence sent to removed member")
 		}
 	}
+}
+
+func TestPresenceBroadcastRetriesAfterAudienceReadFailure(t *testing.T) {
+	_, deps := newTestAPI(t)
+	owner, _, _ := seedSession(t, deps)
+	peer, _, _ := seedSession(t, deps)
+	ctx := context.Background()
+	cid := id.New()
+	if err := deps.Repo.CreateCommunity(ctx, store.CommunityRow{ID: cid, Owner: owner.ID, Name: "test", PolicyJSON: []byte("{}"), PolicyVersion: 1, Created: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []id.ID{owner.ID, peer.ID} {
+		if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: user, Joined: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gw := &presenceGatewayFake{live: map[id.ID]bool{owner.ID: true}}
+	service := api.NewPresenceService(&flakyPresenceMembers{Repository: deps.Repo, fail: true}, gw, deps.Clock)
+	service.Changed(ctx, owner.ID)
+	if len(gw.to) != 0 {
+		t.Fatalf("broadcast after failed audience read: %v", gw.to)
+	}
+	service.Changed(ctx, owner.ID)
+	for _, to := range gw.to {
+		if to == peer.ID {
+			return
+		}
+	}
+	t.Fatalf("retry did not reach peer: %v", gw.to)
 }

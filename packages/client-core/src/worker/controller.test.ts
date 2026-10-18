@@ -41,6 +41,33 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
   });
+  it('keeps a successful choice save when the own frame refresh fails', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.getAccountMe.mockRejectedValueOnce(new Error('temporarily unavailable'));
+    w.routes.setPresenceChoice.mockImplementation(async () => {
+      w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
+      await Promise.resolve();
+    });
+    w.call(992, { m: 'setPresenceChoice', choice: 'dnd' });
+    await vi.waitFor(() => expect(w.ret(992)).toMatchObject({ ok: true }));
+    expect(w.account()?.presenceChoice).toBe('dnd');
+  });
+  it('buffers live updates during one in-flight snapshot', async () => {
+    const w = world();
+    await toReady(w);
+    let resolveSnapshot!: (rows: { userId: typeof USER; status: number }[]) => void;
+    w.routes.getPresenceSnapshot.mockImplementation(() => new Promise(resolve => { resolveSnapshot = resolve; }));
+    w.routes.getPresenceSnapshot.mockClear();
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.routes.getPresenceSnapshot).toHaveBeenCalledTimes(1));
+    for (const status of [2n, 1n, 3n]) w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null,
+      payload: [USER, status, 1n, ''] } });
+    expect(w.routes.getPresenceSnapshot).toHaveBeenCalledTimes(1);
+    resolveSnapshot([{ userId: USER, status: 1 }]);
+    await vi.waitFor(() => expect(w.last(`presence:${toHex(COMMUNITY)}`)).toEqual({ [toHex(USER)]: 'dnd' }));
+  });
   it('start reads the instance, waits as other-tab while another tab holds the lock, and boots when it is released', async () => {
     const h = harness({ boot: () => Promise.resolve({ kind: 'unsupported', reason: 'no OPFS in this test' }) });
     const release = h.locks.holdElsewhere(LOCK);

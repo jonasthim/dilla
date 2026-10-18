@@ -44,6 +44,15 @@ describe('MemberPane', () => {
     expect(screen.getByRole('heading', { name: 'Offline — 1' })).toBeInTheDocument();
     expect(screen.getByText('Do Not Disturb')).toBeInTheDocument();
   });
+  it('keeps keyboard focus on a member action when presence moves its row', () => {
+    const { fake } = setup();
+    const before = screen.getByRole('button', { name: 'actions for bob' });
+    act(() => before.focus());
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
+    const after = screen.getByRole('button', { name: 'actions for bob' });
+    expect(after).not.toBe(before);
+    expect(after).toHaveFocus();
+  });
   it('lists groups with the owner and you tags', async () => {
     const { view } = setup();
     expect(screen.getByRole('heading', { name: 'mods — 2' })).toBeInTheDocument();

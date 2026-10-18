@@ -1458,7 +1458,7 @@ export class Controller {
         ? { status, generation, reason: 'version' }
         : { status, generation };
       this.slices.set('connection', this.connectionState);
-      if (status === 'offline') for (const community of this.slices.get('communities') ?? []) this.slices.set(`presence:${community.id}`, null);
+      if (status === 'offline') for (const community of this.slices.get('communities') ?? []) this.clearPresence(community.id);
       this.stopTypingIfUnviewable();
     } else if (e.type === 'ready') {
       this.onReady(e.info);
@@ -1481,7 +1481,7 @@ export class Controller {
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
-    for (const community of this.slices.get('communities') ?? []) this.slices.set(`presence:${community.id}`, null);
+    for (const community of this.slices.get('communities') ?? []) this.clearPresence(community.id);
     void this.barrier.track(this.refreshPresenceChoice());
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
     if (this.phase === 'ready') this.noticeFloor = this.serverNowS();
@@ -2031,7 +2031,7 @@ export class Controller {
     }
     this.slices.set(`channels:${communityId}`, []);
     this.slices.set(`members:${communityId}`, []);
-    this.slices.set(`presence:${communityId}`, null);
+    this.clearPresence(communityId);
     this.admin.forget(communityId);
     // web3.5 C4: a server joined again is sent its views again, once its member list and access are read again.
     this.membersRead.delete(communityId);
@@ -2184,7 +2184,7 @@ export class Controller {
     this.publishChannels(communityId);
     // C4 fix round 1: the role view is pushed once, after the access read below, not from the member list as well.
     if (members !== null) this.publishMembers(communityId, members, false);
-    this.slices.set(`presence:${communityId}`, null);
+    this.clearPresence(communityId);
     void this.barrier.track(this.loadPresence(communityId));
     this.updateExpected();
     this.publishBadges();
@@ -2599,35 +2599,63 @@ export class Controller {
   private static readonly PRESENCE_CHOICES: readonly PresenceChoice[] = ['online', 'idle', 'dnd', 'invisible'];
   private static readonly PRESENCE_STATUSES: readonly PresenceStatus[] = ['offline', 'online', 'idle', 'dnd'];
   private presenceSeq = new Map<string, number>();
-  private presenceChoiceSeq = 0;
+  private presenceLoads = new Map<string, { seq: number; updates: Record<string, PresenceStatus>; promise: Promise<void> }>();
+  private presenceChoiceReadSeq = 0;
+  private presenceChoiceWriteSeq = 0;
+  private presenceChoiceAppliedRead = 0;
+
+  private clearPresence(communityId: string): void {
+    this.presenceSeq.set(communityId, (this.presenceSeq.get(communityId) ?? 0) + 1);
+    this.presenceLoads.delete(communityId);
+    this.slices.set(`presence:${communityId}`, null);
+  }
 
   private async refreshPresenceChoice(): Promise<void> {
-    const seq = ++this.presenceChoiceSeq;
+    const seq = ++this.presenceChoiceReadSeq;
+    const write = this.presenceChoiceWriteSeq;
     try {
       const me = await this.routes.getAccountMe();
-      if (this.revoked() || this.presenceChoiceSeq !== seq) return;
+      if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
       const choice = Controller.PRESENCE_CHOICES[(me.presenceChoice ?? 1) - 1] ?? 'online';
+      this.presenceChoiceAppliedRead = seq;
       this.setAccount({ presenceChoice: choice });
     } catch { /* the next ready retries */ }
   }
 
   private async setPresenceChoice(choice: PresenceChoice): Promise<null> {
-    const seq = ++this.presenceChoiceSeq;
+    const write = ++this.presenceChoiceWriteSeq;
+    ++this.presenceChoiceReadSeq;
+    const appliedRead = this.presenceChoiceAppliedRead;
     await this.routes.setPresenceChoice(Controller.PRESENCE_CHOICES.indexOf(choice) + 1);
-    if (this.presenceChoiceSeq === seq) this.setAccount({ presenceChoice: choice });
+    if (this.presenceChoiceWriteSeq === write && this.presenceChoiceAppliedRead === appliedRead) this.setAccount({ presenceChoice: choice });
     return null;
   }
 
-  private async loadPresence(communityId: string): Promise<void> {
-    const seq = (this.presenceSeq.get(communityId) ?? 0) + 1;
-    this.presenceSeq.set(communityId, seq);
-    try {
-      const rows = await this.routes.getPresenceSnapshot(fromHex(communityId));
-      if (!this.listed(communityId) || this.connectionState.status !== 'online' || this.presenceSeq.get(communityId) !== seq) return;
-      const statuses: Record<string, PresenceStatus> = {};
-      for (const row of rows) statuses[toHex(row.userId)] = Controller.PRESENCE_STATUSES[row.status] ?? 'offline';
-      this.slices.set(`presence:${communityId}`, statuses);
-    } catch { /* keep the loading state until a reconnect or structure refresh succeeds */ }
+  private loadPresence(communityId: string): Promise<void> {
+    const seq = this.presenceSeq.get(communityId) ?? 0;
+    const current = this.presenceLoads.get(communityId);
+    if (current?.seq === seq) return current.promise;
+    const pending = { seq, updates: {} as Record<string, PresenceStatus>, promise: Promise.resolve() };
+    const work = (async () => {
+      let failed = false;
+      try {
+        const rows = await this.routes.getPresenceSnapshot(fromHex(communityId));
+        if (!this.listed(communityId) || this.connectionState.status !== 'online' || this.presenceSeq.get(communityId) !== seq) return;
+        const statuses: Record<string, PresenceStatus> = {};
+        for (const row of rows) statuses[toHex(row.userId)] = Controller.PRESENCE_STATUSES[row.status] ?? 'offline';
+        this.slices.set(`presence:${communityId}`, { ...statuses, ...pending.updates });
+      } catch { failed = true; }
+      finally {
+        if (this.presenceLoads.get(communityId) === pending) this.presenceLoads.delete(communityId);
+        if (failed) this.deps.setTimeout(() => {
+          if (this.listed(communityId) && this.connectionState.status === 'online' && this.presenceSeq.get(communityId) === seq
+            && this.slices.get(`presence:${communityId}`) === null) void this.barrier.track(this.loadPresence(communityId));
+        }, 10_000);
+      }
+    })();
+    pending.promise = work;
+    this.presenceLoads.set(communityId, pending);
+    return work;
   }
 
   private incomingPresence(payload: readonly unknown[]): void {
@@ -2638,7 +2666,11 @@ export class Controller {
     for (const community of this.slices.get('communities') ?? []) {
       if (!this.slices.get(`members:${community.id}`)?.some(m => m.userId === user)) continue;
       const current = this.slices.get(`presence:${community.id}`);
-      if (current === undefined || current === null) { this.presenceSeq.set(community.id, (this.presenceSeq.get(community.id) ?? 0) + 1); void this.barrier.track(this.loadPresence(community.id)); }
+      if (current === undefined || current === null) {
+        void this.barrier.track(this.loadPresence(community.id));
+        const pending = this.presenceLoads.get(community.id);
+        if (pending !== undefined) pending.updates[user] = status;
+      }
       else this.slices.set(`presence:${community.id}`, { ...current, [user]: status });
     }
     if (this.accountState.user?.id === user) void this.barrier.track(this.refreshPresenceChoice());
@@ -2924,7 +2956,7 @@ export class Controller {
     for (const communityId of communities) {
       this.slices.set(`channels:${communityId}`, []);
       this.slices.set(`members:${communityId}`, []);
-      this.slices.set(`presence:${communityId}`, null);
+      this.clearPresence(communityId);
     }
     for (const channelId of timelines) {
       this.slices.set(`timeline:${channelId}`, { channelId, group: 'none', items: [], hasEarlier: false });

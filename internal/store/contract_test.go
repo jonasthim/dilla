@@ -35,7 +35,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"SetGeneration",
 		}},
 		{"Accounts", reflect.TypeOf((*store.Accounts)(nil)).Elem(), []string{
-			"CreateUser", "GetUser", "GetUserByUsername", "ListUsers", "SetUserDisabled", "GetPresenceChoice", "SetPresenceChoice",
+			"CreateUser", "GetUser", "GetUserByUsername", "ListUsers", "SetUserDisabled", "GetPresenceChoice", "ListPresenceChoices", "SetPresenceChoice",
 			"TombstoneUser",
 			// dilla web3.6 S1: the owed second factor and its boot reconcile.
 			"MarkFactorOwedWithoutFactor", "SetFactorOwed",

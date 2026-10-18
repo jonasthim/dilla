@@ -19,7 +19,7 @@ export interface NotifyContext { permission: PermissionState; settings: Readonly
 
 /** L-TS-25's decision for one notice; kind is the channel's for the mode: 0 a community channel, 3 | 4 a DM. */
 export function shouldNotify(notice: Notice, kind: 0 | 3 | 4, ctx: NotifyContext): boolean {
-  if (ctx.presenceChoice === 'dnd') return false;
+  if (ctx.presenceChoice === undefined || ctx.presenceChoice === 'dnd') return false;
   if (ctx.permission !== 'granted') return false;
   const server = notice.communityId ?? undefined;
   if (isMuted(ctx.settings, notice.channelId, server)) return false;
@@ -154,7 +154,7 @@ export interface RingNotifyDeps {
  * step 8); what it shows is that caller's own display name.
  */
 export function ringNotification(ring: Ring, deps: RingNotifyDeps): NotificationHandle | null {
-  if (deps.presenceChoice === 'dnd') return null;
+  if (deps.presenceChoice === undefined || deps.presenceChoice === 'dnd') return null;
   const Ctor = deps.Notification;
   if (Ctor === undefined || Ctor.permission !== 'granted' || deps.visible) return null;
   const server = deps.communityId ?? undefined;

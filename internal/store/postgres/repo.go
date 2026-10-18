@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -205,6 +206,43 @@ func (r *Repo) GetPresenceChoice(ctx context.Context, userID id.ID) (uint8, erro
 		return 1, nil
 	}
 	return choice, wrap(err)
+}
+
+func (r *Repo) ListPresenceChoices(ctx context.Context, users []id.ID) (map[id.ID]uint8, error) {
+	choices := make(map[id.ID]uint8, len(users))
+	if len(users) == 0 {
+		return choices, nil
+	}
+	args := make([]any, len(users))
+	var placeholders strings.Builder
+	for i, user := range users {
+		if i > 0 {
+			placeholders.WriteByte(',')
+		}
+		fmt.Fprintf(&placeholders, "$%d", i+1)
+		args[i] = user
+	}
+	query := "SELECT user_id, choice FROM user_presence WHERE user_id IN (" + placeholders.String() + ")" //nolint:gosec // G202: placeholders contain only generated parameter numbers
+	var rows *sql.Rows
+	var err error
+	if r.tx != nil {
+		rows, err = r.tx.QueryContext(ctx, query, args...)
+	} else {
+		rows, err = r.db.QueryContext(ctx, query, args...)
+	}
+	if err != nil {
+		return nil, wrap(err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var user id.ID
+		var choice uint8
+		if err := rows.Scan(&user, &choice); err != nil {
+			return nil, wrap(err)
+		}
+		choices[user] = choice
+	}
+	return choices, wrap(rows.Err())
 }
 
 func (r *Repo) SetPresenceChoice(ctx context.Context, userID id.ID, choice uint8) error {
