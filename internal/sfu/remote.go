@@ -21,6 +21,9 @@ func (r *Remote) Token(room, identity string, perm *livekit.ParticipantPermissio
 	return r.control.Token(room, identity, perm, attrs)
 }
 func (r *Remote) Rooms(ctx context.Context) ([]string, error) { return r.control.Rooms(ctx) }
+func (r *Remote) RoomSID(ctx context.Context, room string) (string, bool, error) {
+	return r.control.RoomSID(ctx, room)
+}
 func (r *Remote) DeleteRoom(ctx context.Context, room string) error {
 	return r.control.DeleteRoom(ctx, room)
 }

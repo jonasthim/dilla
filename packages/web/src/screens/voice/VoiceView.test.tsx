@@ -34,6 +34,23 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 }
 
 describe('voice in the shell', () => {
+  it('retries a restored call after a transient start failure', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const app = renderVoiceShell({ update: { currentEntry: '/assets/new.js', watch: () => () => undefined,
+      store: { save: () => Promise.resolve(), load: async () => { await gate; return { state: { call: { channelId: GENV, camera: true, sharing: false } }, files: [] }; },
+        remove: () => Promise.resolve() }, reload: vi.fn() } });
+    let attempts = 0;
+    app.client.handler = command => {
+      if (command.m === 'callJoin' && ++attempts === 1) return Promise.reject(Object.assign(new Error('temporary'), { code: 'E_DISCONNECTED' }));
+      if (command.m === 'callJoin') app.client.set('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+      return Promise.resolve(null);
+    };
+    release();
+    await waitFor(() => expect(attempts).toBe(2), { timeout: 4_000 });
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.session.setCamera).toHaveBeenCalledWith(true);
+  });
   it('rejoins after a lost media connection and keeps the call available', async () => {
     const app = await inVoice();
     act(() => {
@@ -84,7 +101,11 @@ describe('voice in the shell', () => {
       store: { save: () => new Promise<void>(() => undefined), load: () => Promise.resolve(null), remove: () => Promise.resolve() },
       reload: vi.fn() } });
     act(() => changed('/assets/new.js'));
-    act(() => app.session.update({ phase: 'ended', error: 'E_CALL_ENDED' }));
+    act(() => {
+      app.session.update({ phase: 'ended', error: 'E_CALL_ENDED' });
+      app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+        error: { code: 'E_CALL_ENDED', detail: '', status: 0, retryAfterMs: null } }));
+    });
     await waitFor(() => expect(app.sessions).toHaveLength(2), { timeout: 4_000 });
     expect(app.client.callsOf('callJoin')).toHaveLength(2);
   });

@@ -25,6 +25,7 @@ export function ThreadView(p: {
   returnFocus?: () => HTMLElement | null;
   initialDraft?: string;
   onDraftChange?: (text: string) => void;
+  onEditingChange?: (editing: boolean) => void;
 }): React.JSX.Element {
   const client = useCore();
   const [route] = useRoute();
@@ -36,6 +37,7 @@ export function ThreadView(p: {
   const bits = useChannelBits(communityId, p.channelId);
   const self = account?.user ?? null;
   const [ui, dispatch] = useReducer(conversationReducer, INITIAL_UI);
+  useEffect(() => { p.onEditingChange?.(ui.editing !== null); return () => p.onEditingChange?.(false); }, [p.onEditingChange, ui.editing]);
   const [draft, setDraft] = useState(p.initialDraft ?? '');
   const draftChange = useRef(p.onDraftChange);
   draftChange.current = p.onDraftChange;

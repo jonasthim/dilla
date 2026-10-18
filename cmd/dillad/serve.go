@@ -259,10 +259,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("serve: livekit.api_secret_file: %w: %w", readErr, exit.Config)
 		}
 		remoteSFU = sfu.NewRemote(sfuConfig(cfg.LiveKit, string(body)))
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, probeErr := remoteSFU.Rooms(probeCtx)
-		cancel()
-		if probeErr != nil {
+		if probeErr := waitRemoteSFU(ctx, remoteSFU, 20*time.Second); probeErr != nil {
 			return fmt.Errorf("serve: sidecar SFU at %s is unavailable: %w: %w", remoteSFU.HTTPURL(), probeErr, exit.Unavailable)
 		}
 		callSFU = remoteSFU

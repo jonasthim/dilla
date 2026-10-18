@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"strconv"
@@ -12,6 +13,26 @@ import (
 	"github.com/jonasthim/dilla/internal/config"
 	"github.com/jonasthim/dilla/internal/sfu"
 )
+
+type delayedRooms struct{ calls int }
+
+func (d *delayedRooms) Rooms(context.Context) ([]string, error) {
+	d.calls++
+	if d.calls < 3 {
+		return nil, errors.New("not listening yet")
+	}
+	return nil, nil
+}
+
+func TestWaitRemoteSFURetriesUntilRoomServiceIsReady(t *testing.T) {
+	remote := &delayedRooms{}
+	if err := waitRemoteSFU(t.Context(), remote, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if remote.calls != 3 {
+		t.Fatalf("probes = %d, want 3", remote.calls)
+	}
+}
 
 func TestMediaRunsSeparatelyAndTheAPIControlsItsRooms(t *testing.T) {
 	fd := sfuDeps(t, func(lk *config.LiveKit) { lk.Mode = "sidecar" })
@@ -42,6 +63,9 @@ func TestMediaRunsSeparatelyAndTheAPIControlsItsRooms(t *testing.T) {
 		t.Fatal(err)
 	}
 	remote := sfu.NewRemote(sfuConfig(fd.cfg.LiveKit, string(secret)))
+	if err := waitRemoteSFU(t.Context(), remote, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
 	if err := remote.CreateRoom(t.Context(), "sidecar-test"); err != nil {
 		t.Fatal(err)
 	}

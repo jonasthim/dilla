@@ -409,8 +409,8 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
     stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded });
-  const callJoinRef = useRef(call.join);
-  callJoinRef.current = call.join;
+  const callRestoreRef = useRef(call.restore);
+  callRestoreRef.current = call.restore;
   useLayoutEffect(() => {
     if (leftFrom === null) return;
     const name = whereOf(leftFrom.id);
@@ -1357,18 +1357,25 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     target.focus();
   }, [paneKey, phone, phonePane, phoneTab, dms, ordered]);
   const [updateEntry, setUpdateEntry] = useState<string | null>(null);
+  const [threadEditing, setThreadEditing] = useState(false);
   const recentUpdateCall = call.recentlyEnded !== null && Date.now() - call.recentlyEnded.at < 15_000
+    && (railSlices.flat() as ChannelSummary[]).some(c => c.id === call.recentlyEnded?.channelId && c.kind === 1)
     ? call.recentlyEnded : null;
   // These dialogs own form drafts in their own components. Apply the update after the person finishes the form.
   const updateBlocked = overlay || joinOpen || pickerOpen || createOpen || channelOpen || inviteOpen
-    || editChannelId !== null || adminFor !== null;
+    || editChannelId !== null || adminFor !== null || ui.editing !== null || threadEditing;
   const updateVoiceActive = useRef(false);
   updateVoiceActive.current = call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null;
   const [updateError, setUpdateError] = useState(false);
   const [updateRetry, setUpdateRetry] = useState(0);
+  const [restoreError, setRestoreError] = useState(false);
+  const [restoreRetry, setRestoreRetry] = useState(0);
   const [restoreDone, setRestoreDone] = useState(props.update === undefined);
+  const restoreApplied = useRef(false);
   const [pendingUi, setPendingUi] = useState<{ channelId: string; ui: ConversationUi } | null>(null);
   const [pendingView, setPendingView] = useState<ViewPlace | null>(null);
+  const viewLoadEarlier = useRef(false);
+  const viewLoadAttempts = useRef(0);
   const [pendingCamera, setPendingCamera] = useState<string | null>(null);
   const [sharingStopped, setSharingStopped] = useState(false);
   useEffect(() => { if (call.recoverySharing) setSharingStopped(true); }, [call.recoverySharing]);
@@ -1388,8 +1395,9 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     let active = true;
     void update.store.load(updateScope).then(async restored => {
       if (!active) return;
-      if (restored !== null && typeof restored.state === 'object' && restored.state !== null) {
+      if (restored !== null && !restoreApplied.current && typeof restored.state === 'object' && restored.state !== null) {
         const saved = restored.state as { draft?: { channelId?: unknown; text?: unknown }; call?: { channelId?: unknown; camera?: unknown; sharing?: unknown } | null;
+          conversationId?: unknown;
           side?: Side | null; threadDraft?: { channelId?: unknown; rootMsgId?: unknown; text?: unknown } | null;
           membersOpen?: unknown; tab?: unknown; ui?: unknown; view?: unknown;
           search?: { open?: unknown; query?: unknown; scope?: unknown; id?: unknown } };
@@ -1421,25 +1429,27 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
               .catch(() => undefined).finally(() => setSearchBusy(false));
           }
         }
+        const owner = typeof saved.conversationId === 'string' && HEX32.test(saved.conversationId) ? saved.conversationId : null;
         const restoredUi = restoredConversationUi(saved.ui);
-        if (restoredUi !== null && typeof saved.draft?.channelId === 'string' && HEX32.test(saved.draft.channelId)) {
-          setPendingUi({ channelId: saved.draft.channelId, ui: restoredUi });
+        if (restoredUi !== null && owner !== null) {
+          setPendingUi({ channelId: owner, ui: restoredUi });
         }
         if (saved.call !== null && typeof saved.call?.channelId === 'string' && HEX32.test(saved.call.channelId)) {
           upgradeRejoinUntil.current = Date.now() + 120_000;
           if (saved.call.camera === true) setPendingCamera(saved.call.channelId);
           if (saved.call.sharing === true) setSharingStopped(true);
-          callJoinRef.current(saved.call.channelId);
+          callRestoreRef.current(saved.call.channelId, saved.call.camera === true, saved.call.sharing === true);
         }
-        if (restored.files.length > 0 && typeof saved.draft?.channelId === 'string' && HEX32.test(saved.draft.channelId)) {
-          await client.call({ m: 'attachFiles', channelId: saved.draft.channelId, files: restored.files });
+        if (restored.files.length > 0 && owner !== null) {
+          await client.call({ m: 'attachFiles', channelId: owner, files: restored.files });
         }
-        await update.store.remove(updateScope);
+        restoreApplied.current = true;
       }
+      if (restored !== null) await update.store.remove(updateScope);
       setRestoreDone(true);
-    }).catch(() => { if (active) { setUpdateError(true); setRestoreDone(true); } });
+    }).catch(() => { if (active) setRestoreError(true); });
     return () => { active = false; };
-  }, [update, updateScope, client, channelId]);
+  }, [update, updateScope, client, channelId, restoreRetry]);
   useEffect(() => {
     if (pendingUi === null || pendingUi.channelId !== targetId) return;
     rawDispatch({ type: 'restore', ui: pendingUi.ui });
@@ -1447,11 +1457,23 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   }, [pendingUi, targetId, rawDispatch]);
   useEffect(() => {
     if (pendingView === null) return;
-    const apply = () => { if (restoreViewPlace(pendingView)) setPendingView(null); };
+    const apply = () => {
+      const main = pendingView.main;
+      const missingMain = main?.anchor !== undefined && document.querySelector(`.d-app-shell__main .d-message-row[data-seq="${main.anchor.seq}"]`) === null;
+      const canLoad = missingMain && targetId !== null && viewLoadAttempts.current < 100
+        && client.get(`timeline:${targetId}`)?.hasEarlier === true;
+      if (canLoad && !viewLoadEarlier.current) {
+        viewLoadEarlier.current = true;
+        viewLoadAttempts.current++;
+        void client.call({ m: 'loadEarlier', channelId: targetId }).catch(() => undefined).finally(() => { viewLoadEarlier.current = false; });
+      }
+      if (canLoad || viewLoadEarlier.current) return;
+      if (restoreViewPlace(pendingView, true)) setPendingView(null);
+    };
     apply();
     const timer = setInterval(apply, 150);
     return () => clearInterval(timer);
-  }, [pendingView]);
+  }, [pendingView, targetId, client]);
   useEffect(() => {
     if (pendingCamera === null || call.channelId !== pendingCamera || call.session === null || call.state?.phase !== 'connected') return;
     setPendingCamera(null);
@@ -1465,13 +1487,16 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       shouldCheck: () => updateVoiceActive.current });
   }, [update, restoreDone]);
   useEffect(() => {
-    if (updateEntry === null || update === undefined || updateScope === null || !restoreDone || updating.current || updateBlocked) return;
+    if (updateEntry === null || update === undefined || updateScope === null || !restoreDone || updating.current || updateBlocked
+      || updateError) return;
     updating.current = true;
+    const lock = document.querySelector<HTMLElement>('.d-root');
+    if (lock !== null) lock.inert = true;
     void (async () => {
       try {
         const files = targetId === null ? [] : await client.call({ m: 'checkpointFiles', channelId: targetId }) as File[];
         const resumeId = call.channelId ?? call.recoveryChannelId ?? recentUpdateCall?.channelId ?? null;
-        await update.store.save(updateScope, { draft, side, threadDraft, membersOpen, ui, tab, view: captureViewPlace(),
+        await update.store.save(updateScope, { conversationId: targetId, draft, side, threadDraft, membersOpen, ui, tab, view: captureViewPlace(),
           search: { open: searchOpen, query: searchQuery, scope: searchScope, id: searchId },
           call: resumeId === null ? null
             : { channelId: resumeId,
@@ -1482,12 +1507,14 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       } catch {
         updating.current = false;
         setUpdateError(true);
+      } finally {
+        if (lock !== null) lock.inert = false;
       }
     })();
-  }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, targetId, client, draft, side, threadDraft, membersOpen, ui, tab,
+  }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, tab,
     searchOpen, searchQuery, searchScope, searchId, call, recentUpdateCall]);
   const updateNoStorage = updateEntry !== null && updateScope === null;
-  const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || sharingStopped
+  const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
     || call.recoveryChannelId !== null;
   return (
     <>
@@ -1499,6 +1526,10 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
             setUpdateError(false);
             setUpdateRetry(n => n + 1);
           } }}>{t('update.failed')}</Banner> : null}
+          {restoreError ? <Banner tone="warn" action={{ label: t('update.retry'), onAction: () => {
+            setRestoreError(false);
+            setRestoreRetry(n => n + 1);
+          } }}>{t('update.restoreFailed')}</Banner> : null}
           {sharingStopped ? <Banner tone="info" action={{ label: t('shell.banner.dismiss'), onAction: () => setSharingStopped(false) }}>
             {t('update.sharingStopped')}</Banner> : null}
           {call.recoveryChannelId !== null ? <Banner tone="info" action={{ label: t('voice.leave'), onAction: () => call.leave() }}>
@@ -1544,6 +1575,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
             initialDraft={threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : ''}
+            onEditingChange={setThreadEditing}
             onDraftChange={text => setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text })} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>

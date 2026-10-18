@@ -38,3 +38,23 @@ it('waits until the log has loaded and rejects malformed places', () => {
   expect(restoreViewPlace(saved)).toBe(false);
   expect(validViewPlace({ ...saved, main: { fromBottom: -1 } })).toBeNull();
 });
+
+it('waits for an older anchor and restores that message once history arrives', () => {
+  const { log } = logFixture();
+  Object.defineProperties(log, { scrollHeight: { value: 2000 }, clientHeight: { value: 200 } });
+  const row = document.createElement('article');
+  row.className = 'd-message-row';
+  row.dataset.seq = '42';
+  row.getBoundingClientRect = () => ({ top: 135, bottom: 175 } as DOMRect);
+  log.getBoundingClientRect = () => ({ top: 100 } as DOMRect);
+  log.append(row);
+  log.scrollTop = 500;
+  const saved = captureViewPlace();
+  expect(saved.main?.anchor).toEqual({ seq: 42, offset: 35 });
+  row.remove();
+  expect(restoreViewPlace(saved)).toBe(false);
+  log.append(row);
+  row.getBoundingClientRect = () => ({ top: 160, bottom: 200 } as DOMRect);
+  expect(restoreViewPlace(saved)).toBe(true);
+  expect(log.scrollTop).toBe(525);
+});

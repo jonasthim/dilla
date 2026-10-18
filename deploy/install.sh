@@ -521,6 +521,7 @@ livekit_mode() {
 		inside && /^[[:space:]]*mode[[:space:]]*=/ {
 			line = $0
 			sub(/^[^=]*=[[:space:]]*/, "", line)
+			sub(/[[:space:]]*#.*/, "", line)
 			gsub(/["\047[:space:]]/, "", line)
 			print line
 			exit
@@ -639,7 +640,7 @@ if [ "$UPGRADE" -eq 1 ]; then
 		systemctl stop dilla >&2 || die "could not stop the previous in-process SFU"
 		set_livekit_mode sidecar
 	fi
-	if ! systemctl enable --now dilla-media >&2; then
+	if ! systemctl enable --now dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
 		log "error: dilla-media did not start; restoring the previous binary and config"
 		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || systemctl disable --now dilla-media >&2 || :
 		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || cp -p "$CONF.prev" "$CONF"
@@ -684,8 +685,8 @@ if [ "$UPGRADE" -eq 1 ]; then
 	fi
 	doctor_and_report || exit 1
 	log "restarting the sidecar SFU on the new binary; connected calls rejoin"
-	if ! systemctl restart dilla-media >&2; then
-		die "the API upgraded, but dilla-media did not restart; read journalctl -o cat -u dilla-media"
+	if ! systemctl restart dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
+		die "the API upgraded, but dilla-media did not become ready; read journalctl -o cat -u dilla-media"
 	fi
 	log "upgrade done; the previous binary, core and config are kept as $BIN_DIR/dillad.prev, $CORE_NAME.prev and $CONF.prev"
 	log "dilla.service was not rewritten; compare it with the release's deploy/dilla.service"
@@ -843,7 +844,9 @@ fi
 
 log "starting the service"
 STATUS=0
-if systemctl daemon-reload >&2 && systemctl enable --now dilla-media >&2 && systemctl enable --now dilla >&2; then
+if systemctl daemon-reload >&2 && systemctl enable --now dilla-media >&2 &&
+	runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2 &&
+	systemctl enable --now dilla >&2; then
 	doctor_and_report || STATUS=1
 else
 	STATUS=1

@@ -116,6 +116,7 @@ export interface CallView {
   /** The outgoing ring of the DM call this device opened has run its 30 s (product walk I6). */
   ringExpired: boolean;
   join: (channelId: string) => void;
+  restore: (channelId: string, camera: boolean, sharing: boolean) => void;
   /** `after`: the notice the stage or strip shows once left (product walk I6: the unanswered ring's last line). */
   leave: (after?: CallNotice) => void;
   closeUnsupported: () => void;
@@ -395,6 +396,14 @@ export function useCall(o: UseCallOptions): CallView {
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
   const joinOnly = useCallback((id: string) => join(id), [join]);
+  const restore = useCallback((id: string, camera: boolean, sharing: boolean) => {
+    recoveryRef.current = id;
+    recoveryCameraRef.current = camera;
+    setRecoveryChannelId(id);
+    setRecoveryCamera(camera);
+    setRecoverySharing(sharing);
+    join(id);
+  }, [join]);
 
   const leave = useCallback((after?: CallNotice) => {
     recoveryRef.current = null;
@@ -584,7 +593,9 @@ export function useCall(o: UseCallOptions): CallView {
     const retry = () => {
       if (recoveryRef.current !== recoveryChannelId) return;
       const phase = client.get('call')?.phase;
-      if (phase === 'blocked' || (phase === 'removed' && client.get('call')?.error?.code !== 'E_DISCONNECTED')) {
+      const removedCode = client.get('call')?.error?.code;
+      if (phase === 'blocked' || (phase === 'removed' && removedCode !== 'E_DISCONNECTED'
+        && !(removedCode === 'E_CALL_ENDED' && live.current.recoverEnded?.(recoveryChannelId)))) {
         recoveryRef.current = null;
         setRecoveryChannelId(null);
         return;
@@ -702,6 +713,6 @@ export function useCall(o: UseCallOptions): CallView {
     notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
+    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
   };
 }

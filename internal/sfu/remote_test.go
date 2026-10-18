@@ -43,4 +43,7 @@ func TestRemoteUsesLoopbackEndpointAndSharedRoomTokenKey(t *testing.T) {
 	if err := remote.CreateRoom(t.Context(), "room"); err == nil {
 		t.Fatal("remote RoomService failure was ignored")
 	}
+	if _, _, err := remote.RoomSID(t.Context(), "room"); err == nil {
+		t.Fatal("remote RoomSID did not forward the RoomService failure")
+	}
 }

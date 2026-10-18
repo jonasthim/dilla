@@ -166,6 +166,10 @@ doctor)
 	fi
 	exit "${FAKE_DOCTOR_EXIT:-0}"
 	;;
+media)
+	[ "$1" = --probe ] || exit 64
+	[ -z "${FAKE_MEDIA_PROBE_FAIL:-}" ] || exit 69
+	;;
 version) echo "dillad fake ${FAKE_VERSION:-1}" ;;
 migrate)
 	# v1's highest migration is 16, v2's is 17. The database's version is in $FAKE_SCHEMA (16
@@ -508,12 +512,13 @@ seed_root
 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
 sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
+sed -i "s/^  mode = 'in_process'$/  mode = 'in_process' # local SFU/" "$MIGRATING_CONF"
 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
 calls="$(cat "$LOG")"
 problems=""
 [ "$RC" -eq 0 ] || problems="$problems|upgrade exited $RC: $ERR"
 [ "$(toml_get "$MIGRATING_CONF" livekit mode)" = "'sidecar'" ] || problems="$problems|livekit.mode was not migrated"
-[ "$(toml_get "$MIGRATING_CONF.prev" livekit mode)" = "'in_process'" ] || problems="$problems|the old config was not saved"
+[ "$(toml_get "$MIGRATING_CONF.prev" livekit mode)" = "'in_process' # local SFU" ] || problems="$problems|the old config was not saved"
 has "$calls" "systemctl stop dilla" || problems="$problems|the old SFU was not stopped"
 has "$calls" "systemctl enable --now dilla-media" || problems="$problems|the sidecar was not started"
 has "$calls" "systemctl restart dilla" || problems="$problems|the API was not restarted"
@@ -546,6 +551,28 @@ if [ -z "$problems" ]; then pass "failed first migration restores the old combin
 	IFS='|'
 	# shellcheck disable=SC2086
 	fail "failed first migration restores the old combined service" $problems
+	IFS='
+'
+fi
+
+# A Type=simple service start can succeed before LiveKit binds. Its authenticated
+# probe must fail the upgrade and restore the previous combined service.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
+sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-probe"
+FAKE_MEDIA_PROBE_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|upgrade unexpectedly succeeded"
+[ "$(toml_get "$MIGRATING_CONF" livekit mode)" = "'in_process'" ] || problems="$problems|old mode was not restored"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-probe" || problems="$problems|old binary was not restored"
+has "$(cat "$LOG")" "media --probe" || problems="$problems|media readiness was not checked"
+has "$(cat "$LOG")" "systemctl disable --now dilla-media" || problems="$problems|failed media was not disabled"
+if [ -z "$problems" ]; then pass "first migration rolls back when media never becomes ready"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "first migration rolls back when media never becomes ready" $problems
 	IFS='
 '
 fi
@@ -802,8 +829,7 @@ if [ -z "$problems" ]; then pass "a failed down migration never starts the previ
 fi
 
 # The new release refuses the installed dilla.toml (web3.6 refuses auth.methods without totp or
-# passkey): serve exits 78 before any migration, and so does every other verb of the new binary.
-# The database never moved, so the rollback reads it with the previous binary and puts it back.
+# passkey). The new media probe catches that before the API restart, so the existing API stays up.
 seed_root
 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 [ "$RC" -eq 0 ] || fail "the install before the config-refused case" "rc $RC" "stderr: $ERR"
@@ -813,14 +839,14 @@ FAKE_SCHEMA="$TMP/schema" FAKE_V2_CONFIG_FAIL=1 KEEP_ROOT=1 run --upgrade --rele
 calls="$(cat "$LOG")"
 problems=""
 [ "$RC" -ne 0 ] || problems="$problems|exit status 0, want non-zero: the upgrade failed"
-has "$ERR" "the previous release is running" || problems="$problems|stderr does not say the previous release is running"
+has "$ERR" "the media service did not start" || problems="$problems|stderr does not report the media readiness failure"
 cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" || problems="$problems|the previous binary is not back"
 [ "$(cat "$TMP/schema")" = 16 ] || problems="$problems|the database is at schema $(cat "$TMP/schema"), want 16"
 has "$calls" "migrate down" && problems="$problems|a down migration ran although the database never moved"
-[ "$(printf '%s\n' "$calls" | grep -c 'systemctl restart dilla')" -eq 2 ] || problems="$problems|the previous binary was not restarted"
-if [ -z "$problems" ]; then pass "a new release that refuses the config rolls back to the previous release running"; else
+[ "$(printf '%s\n' "$calls" | grep -c 'systemctl restart dilla')" -eq 0 ] || problems="$problems|the old API was restarted unnecessarily"
+if [ -z "$problems" ]; then pass "a new release that refuses the config leaves the previous API running"; else
 	IFS='|'
-	fail "a new release that refuses the config rolls back to the previous release running" $problems "stderr: $ERR" "log: $calls"
+	fail "a new release that refuses the config leaves the previous API running" $problems "stderr: $ERR" "log: $calls"
 	unset IFS
 fi
 
