@@ -50,7 +50,7 @@ it('waits for an older anchor and restores that message once history arrives', (
   log.append(row);
   log.scrollTop = 500;
   const saved = captureViewPlace();
-  expect(saved.main?.anchor).toEqual({ seq: 42, offset: 35 });
+  expect(saved.main?.anchor).toEqual({ seq: '42', offset: 35 });
   row.remove();
   expect(restoreViewPlace(saved)).toBe(false);
   log.append(row);

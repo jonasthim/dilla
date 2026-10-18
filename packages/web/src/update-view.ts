@@ -1,5 +1,5 @@
 /** The visible position of a scroll region, measured from its end so new messages keep the reader's place. */
-export interface ScrollPlace { fromBottom: number; anchor?: { seq: number; offset: number } }
+export interface ScrollPlace { fromBottom: number; anchor?: { seq: string; offset: number } }
 export type FocusPlace = 'composer' | 'thread-composer' | 'log' | 'thread-log' | 'search' | null;
 export interface ViewPlace { main: ScrollPlace | null; thread: ScrollPlace | null; focus: FocusPlace }
 
@@ -8,9 +8,9 @@ function scrollPlace(selector: string): ScrollPlace | null {
   if (element === null) return null;
   const top = element.getBoundingClientRect().top;
   const visible = [...element.querySelectorAll<HTMLElement>('.d-message-row[data-seq]')].find(row => row.getBoundingClientRect().bottom > top);
-  const seq = visible === undefined ? NaN : Number(visible.dataset.seq);
+  const seq = visible?.dataset.seq;
   return { fromBottom: Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop),
-    ...(Number.isSafeInteger(seq) && seq >= 0 && visible !== undefined
+    ...(seq !== undefined && /^\d{1,20}$/.test(seq) && visible !== undefined
       ? { anchor: { seq, offset: visible.getBoundingClientRect().top - top } } : {}) };
 }
 
@@ -33,7 +33,7 @@ export function validViewPlace(value: unknown): ViewPlace | null {
     && typeof (p as ScrollPlace).fromBottom === 'number' && Number.isFinite((p as ScrollPlace).fromBottom)
     && (p as ScrollPlace).fromBottom >= 0
     && ((p as ScrollPlace).anchor === undefined || (typeof (p as ScrollPlace).anchor === 'object'
-      && Number.isSafeInteger((p as ScrollPlace).anchor?.seq) && (p as ScrollPlace).anchor!.seq >= 0
+      && typeof (p as ScrollPlace).anchor?.seq === 'string' && /^\d{1,20}$/.test((p as ScrollPlace).anchor!.seq)
       && Number.isFinite((p as ScrollPlace).anchor?.offset))));
   if (!validScroll(view.main) || !validScroll(view.thread)
     || ![null, 'composer', 'thread-composer', 'log', 'thread-log', 'search'].includes(view.focus as FocusPlace)) return null;
@@ -50,7 +50,7 @@ export function restoreViewPlace(view: ViewPlace, allowMissingAnchor = false): b
     const element = document.querySelector<HTMLElement>(selector);
     if (element === null || element.getAttribute('aria-busy') === 'true') return false;
     const anchor = place.anchor === undefined ? null : [...element.querySelectorAll<HTMLElement>('.d-message-row[data-seq]')]
-      .find(row => Number(row.dataset.seq) === place.anchor?.seq) ?? null;
+      .find(row => row.dataset.seq === place.anchor?.seq) ?? null;
     if (place.anchor !== undefined && anchor === null && !allowMissingAnchor) return false;
     if (anchor !== null) element.scrollTop += anchor.getBoundingClientRect().top - element.getBoundingClientRect().top - place.anchor!.offset;
     else element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - place.fromBottom);

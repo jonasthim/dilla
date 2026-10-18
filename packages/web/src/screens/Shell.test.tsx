@@ -137,12 +137,12 @@ it('retries a failed checkpoint restore before starting the update watcher', asy
 it('loads older messages before restoring a saved scroll anchor', async () => {
   const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
     store: { save: () => Promise.resolve(), load: () => Promise.resolve({ state: { view: {
-      main: { fromBottom: 120, anchor: { seq: 42, offset: 10 } }, thread: null, focus: null } }, files: [] }),
+      main: { fromBottom: 120, anchor: { seq: '42', offset: 10 } }, thread: null, focus: null } }, files: [] }),
       remove: () => Promise.resolve() }, reload: () => undefined };
   const { fake } = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline({ hasEarlier: true })) });
   fake.handler = command => {
     if (command.m === 'loadEarlier') fake.set(`timeline:${GEN}`, timeline({ hasEarlier: false,
-      items: [item({ key: 's42', seq: 42, msgId: '42'.repeat(16), body: 'older' })] }));
+      items: [item({ key: 's42', seq: '42', msgId: '42'.repeat(16), body: 'older' })] }));
     return Promise.resolve(null);
   };
   await waitFor(() => expect(fake.callsOf('loadEarlier')).toContainEqual({ m: 'loadEarlier', channelId: GEN }));
