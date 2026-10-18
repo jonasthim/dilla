@@ -44,6 +44,15 @@ function harness(opts: { thumb?: ThumbDeps | null; failPut?: Error; failDelete?:
 const text = (s: string, name = 'note.txt'): File => new File([new TextEncoder().encode(s)], name, { type: 'text/plain' });
 
 describe('Tray (L-TS-32, ruling 7)', () => {
+  it('exports only files still selected for an update checkpoint', async () => {
+    const h = harness();
+    const first = text('one', 'one.txt');
+    const second = text('two', 'two.txt');
+    const [one] = await h.tray.add([first, second]);
+    expect(h.tray.files()).toEqual([first, second]);
+    await h.tray.discard(one);
+    expect(h.tray.files()).toEqual([second]);
+  });
   it('takes a file through reading, preparing, uploading and ready, and its descriptor opens the uploaded bytes', async () => {
     const h = harness();
     const [id] = await h.tray.add([text('hello tray')]);

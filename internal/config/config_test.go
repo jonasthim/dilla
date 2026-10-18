@@ -499,7 +499,13 @@ func TestTheLiveKitMediaKeys(t *testing.T) {
 	if err := valid(t).Validate(); err != nil {
 		t.Fatalf("the defaults: %v", err)
 	}
+	sidecar := valid(t)
+	sidecar.LiveKit.Mode = "sidecar"
+	if err := sidecar.Validate(); err != nil {
+		t.Fatalf("sidecar mode: %v", err)
+	}
 	for name, set := range map[string]func(*config.Config){
+		"livekit.mode unsupported":                func(c *config.Config) { c.LiveKit.Mode = "external" },
 		"livekit.webhook_listen not loopback":     func(c *config.Config) { c.LiveKit.WebhookListen = "0.0.0.0:7883" },
 		"livekit.webhook_listen without a port":   func(c *config.Config) { c.LiveKit.WebhookListen = "127.0.0.1" },
 		"livekit.webhook_listen a hostname":       func(c *config.Config) { c.LiveKit.WebhookListen = "dilla.example:7883" },

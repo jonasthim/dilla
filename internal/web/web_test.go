@@ -105,6 +105,26 @@ func TestNewAcceptsATreeItsManifestDescribes(t *testing.T) {
 	newSite(t)
 }
 
+func TestBuildVersionEndpointTracksTheEntryAsset(t *testing.T) {
+	files := maps.Clone(site)
+	files["index.html"] = `<!doctype html><script type="module" crossorigin src="/assets/app-1a2b.js"></script>`
+	fsys, _ := tree(t, files)
+	h, err := web.New(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := do(t, h, http.MethodGet, "/app-version.json", nil)
+	if got.Code != http.StatusOK || got.Body.String() != `{"entry":"/assets/app-1a2b.js"}` {
+		t.Fatalf("version = %d %q", got.Code, got.Body.String())
+	}
+	if got.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("version cache = %q", got.Header().Get("Cache-Control"))
+	}
+	if got.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("version content type = %q", got.Header().Get("Content-Type"))
+	}
+}
+
 // Fail-closed content: New refuses every tree its manifest does not describe exactly.
 func TestNewRefusesATreeItsManifestDoesNotDescribe(t *testing.T) {
 	for _, c := range []struct {

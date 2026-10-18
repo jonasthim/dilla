@@ -17,6 +17,10 @@ const tabbable = (row: HTMLElement) => Array.from(row.querySelectorAll<HTMLEleme
 const replyButton = (row: HTMLElement) => within(row.querySelector('.d-message-row__reply') as HTMLElement).getByRole('button');
 
 describe('conversationReducer', () => {
+  it('restores an unsent reply and edit when a tab updates', () => {
+    const saved = { ...INITIAL_UI, reply: { msgId: P1, author: 'Ada', excerpt: 'hello' }, editing: { msgId: O1, value: 'changed' } };
+    expect(conversationReducer(INITIAL_UI, { type: 'restore', ui: saved })).toEqual(saved);
+  });
   it('keeps a reply and an edit apart, counts jumps, and a jump closes the pins', () => {
     const r = { msgId: P1, author: 'bob', excerpt: 'x' };
     let s = conversationReducer(INITIAL_UI, { type: 'reply', reply: r });

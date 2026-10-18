@@ -249,9 +249,32 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			_ = whln.Close()
 		}
 	}()
-	sfuServer, stopSFU, err := startSFU(ctx, fd)
-	if err != nil {
-		return err
+	var sfuServer *sfu.Server
+	var callSFU dillad.SFU
+	var remoteSFU *sfu.Remote
+	stopSFU := func() {}
+	if cfg.LiveKit.Mode == "sidecar" && cfg.LiveKit.Enabled {
+		body, readErr := os.ReadFile(cfg.LiveKit.APISecretFile)
+		if readErr != nil {
+			return fmt.Errorf("serve: livekit.api_secret_file: %w: %w", readErr, exit.Config)
+		}
+		remoteSFU = sfu.NewRemote(sfuConfig(cfg.LiveKit, string(body)))
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, probeErr := remoteSFU.Rooms(probeCtx)
+		cancel()
+		if probeErr != nil {
+			return fmt.Errorf("serve: sidecar SFU at %s is unavailable: %w: %w", remoteSFU.HTTPURL(), probeErr, exit.Unavailable)
+		}
+		callSFU = remoteSFU
+		health.Gate("livekit").Set(true, "sidecar SFU on "+remoteSFU.HTTPURL())
+	} else {
+		sfuServer, stopSFU, err = startSFU(ctx, fd)
+		if err != nil {
+			return err
+		}
+		if sfuServer != nil {
+			callSFU = sfuServer
+		}
 	}
 	defer stopSFU()
 
@@ -263,8 +286,8 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
 		Blobs: blobStore, Relay: relayRev,
 	}
-	if sfuServer != nil {
-		opts.SFU = sfuServer
+	if callSFU != nil {
+		opts.SFU = callSFU
 	}
 	srv, err := dillad.New(ctx, opts)
 	if err != nil {
@@ -281,6 +304,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if remoteSFU != nil {
+		go watchRemoteSFU(runCtx, remoteSFU, health.Gate("livekit"))
+	}
 	sfuExit := make(chan error, 1)
 	if sfuServer != nil {
 		died := watchSFU(runCtx, sfuServer.Done(), health.Gate("livekit"), log)
@@ -424,4 +450,26 @@ func notifyReady() {
 	}
 	defer func() { _ = conn.Close() }()
 	_, _ = conn.Write([]byte("READY=1"))
+}
+
+// A sidecar can restart without the API restarting. Its readiness gate follows the actual
+// RoomService connection, so an API that is up while media is down never reports ready.
+func watchRemoteSFU(ctx context.Context, remote *sfu.Remote, gate *obs.Gate) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			_, err := remote.Rooms(probeCtx)
+			cancel()
+			if err != nil {
+				gate.Set(false, "sidecar SFU unavailable: "+err.Error())
+			} else {
+				gate.Set(true, "sidecar SFU on "+remote.HTTPURL())
+			}
+		}
+	}
 }

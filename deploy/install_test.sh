@@ -22,6 +22,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 INSTALL="$HERE/install.sh"
 UNIT="$HERE/dilla.service"
+MEDIA_UNIT="$HERE/dilla-media.service"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASSED=0
@@ -57,7 +58,7 @@ stub getent 'echo "getent $*" >>"'"$LOG"'"; exit 2'
 stub useradd 'echo "useradd $*" >>"'"$LOG"'"'
 stub chown 'echo "chown $*" >>"'"$LOG"'"'
 stub apt-get 'echo "apt-get $*" >>"'"$LOG"'"'
-stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; [ -z "${STUB_SYSTEMCTL_FAIL:-}" ] || exit 1
+stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
 # With FAKE_SCHEMA (a file holding the database schema version), a restart models dillad serve:
 # the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails when
 # STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
@@ -381,6 +382,7 @@ check_common_install() { # NAME
 	cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" || problems="$problems|/usr/local/bin/dillad is not the release binary"
 	cmp -s "$ROOT/usr/local/bin/dilla_core_wasi.wasm" "$REL/dilla_core_wasi.wasm" || problems="$problems|the core is not beside the binary"
 	cmp -s "$ROOT/etc/systemd/system/dilla.service" "$UNIT" || problems="$problems|the installed unit differs from deploy/dilla.service"
+	cmp -s "$ROOT/etc/systemd/system/dilla-media.service" "$MEDIA_UNIT" || problems="$problems|the media unit differs from deploy/dilla-media.service"
 	[ "$(mode_of "$ROOT/etc/dilla/dilla.toml")" = 640 ] || problems="$problems|dilla.toml mode $(mode_of "$ROOT/etc/dilla/dilla.toml"), want 640"
 	[ "$(mode_of "$ROOT/var/lib/dillad")" = 700 ] || problems="$problems|/var/lib/dillad mode $(mode_of "$ROOT/var/lib/dillad"), want 700"
 	[ "$(mode_of "$ROOT/usr/local/bin/dillad")" = 755 ] || problems="$problems|dillad mode $(mode_of "$ROOT/usr/local/bin/dillad"), want 755"
@@ -391,6 +393,7 @@ check_common_install() { # NAME
 	has "$calls" "chown -R dillad:dillad $ROOT/var/lib/dillad" || problems="$problems|the data directory is not dillad's"
 	has "$calls" "systemctl daemon-reload" || problems="$problems|no daemon-reload"
 	has "$calls" "systemctl enable --now dilla" || problems="$problems|the service was not enabled and started"
+	has "$calls" "systemctl enable --now dilla-media" || problems="$problems|the media service was not enabled and started"
 	has "$calls" "doctor --config=$ROOT/etc/dilla/dilla.toml" || problems="$problems|doctor did not run against /etc/dilla/dilla.toml"
 	has "$calls" "apt-get" && problems="$problems|apt-get ran although curl and ca-certificates were present"
 	if [ -z "$problems" ]; then pass "$name"; else
@@ -428,6 +431,7 @@ want_toml server trusted_proxy_cidrs "['10.0.0.0/24', '10.0.1.7/32']"
 want_toml server listen "':443'"
 want_toml turn enabled false
 want_toml livekit udp_port 7999
+want_toml livekit mode "'sidecar'"
 want_toml livekit node_ip "'203.0.113.10'"
 want_toml instance public_ip "'203.0.113.10'"
 want_toml instance domain "'chat.example.org'"
@@ -472,6 +476,7 @@ ls -la "$ROOT/var/lib/dillad" >"$TMP/data.after" 2>&1 || :
 cmp -s "$TMP/data.before" "$TMP/data.after" || problems="$problems|the upgrade changed the data directory"
 has "$(cat "$LOG")" "dillad init" && problems="$problems|the upgrade ran init"
 has "$(cat "$LOG")" "systemctl restart dilla" || problems="$problems|the upgrade did not restart dilla"
+has "$(cat "$LOG")" "systemctl restart dilla-media" || problems="$problems|the upgrade did not restart media"
 has "$(cat "$LOG")" "doctor --config=" || problems="$problems|the upgrade did not run doctor"
 if [ -z "$problems" ]; then pass "--upgrade replaces only the binary and the core, restarts and runs doctor"; else
 	IFS='|'
@@ -495,6 +500,55 @@ expect_refusal "--upgrade with a mode flag is refused" "--upgrade"
 
 run --upgrade $URL
 expect_refusal "--upgrade with no instance is refused" "no instance"
+
+# An instance from the old all-in-one release is migrated once. The old process
+# releases the UDP port before the sidecar starts, and the previous config stays
+# beside the new one for rollback.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
+sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
+KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+calls="$(cat "$LOG")"
+problems=""
+[ "$RC" -eq 0 ] || problems="$problems|upgrade exited $RC: $ERR"
+[ "$(toml_get "$MIGRATING_CONF" livekit mode)" = "'sidecar'" ] || problems="$problems|livekit.mode was not migrated"
+[ "$(toml_get "$MIGRATING_CONF.prev" livekit mode)" = "'in_process'" ] || problems="$problems|the old config was not saved"
+has "$calls" "systemctl stop dilla" || problems="$problems|the old SFU was not stopped"
+has "$calls" "systemctl enable --now dilla-media" || problems="$problems|the sidecar was not started"
+has "$calls" "systemctl restart dilla" || problems="$problems|the API was not restarted"
+if [ -z "$problems" ]; then pass "an all-in-one install migrates to the sidecar on upgrade"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "an all-in-one install migrates to the sidecar on upgrade" $problems
+	IFS='
+'
+fi
+
+# If the new API fails after that migration, it must restore the old config and
+# stop the new media service before starting the old combined process again.
+seed_root
+KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+MIGRATING_CONF="$ROOT/etc/dilla/dilla.toml"
+sed -i "s/^  mode = 'sidecar'$/  mode = 'in_process'/" "$MIGRATING_CONF"
+cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-migration"
+echo 16 >"$TMP/schema"
+FAKE_SCHEMA="$TMP/schema" STUB_FAIL_V2=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+calls="$(cat "$LOG")"
+problems=""
+[ "$RC" -ne 0 ] || problems="$problems|upgrade unexpectedly succeeded"
+[ "$(toml_get "$MIGRATING_CONF" livekit mode)" = "'in_process'" ] || problems="$problems|the old mode was not restored"
+cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-migration" || problems="$problems|the old binary was not restored"
+has "$calls" "systemctl disable --now dilla-media" || problems="$problems|the sidecar was not stopped and disabled"
+has "$calls" "systemctl restart dilla" || problems="$problems|the combined process was not restarted"
+has "$ERR" "the previous release is running" || problems="$problems|the previous release did not restart"
+if [ -z "$problems" ]; then pass "failed first migration restores the old combined service"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "failed first migration restores the old combined service" $problems
+	IFS='
+'
+fi
 
 # ------------------------------------------------------- public install ----
 seed_root
@@ -683,7 +737,7 @@ fi
 seed_root
 KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 cp "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade"
-STUB_SYSTEMCTL_FAIL=1 KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
+STUB_SYSTEMCTL_FAIL=restart KEEP_ROOT=1 run --upgrade --release-url "file://$NEW"
 if [ "$RC" -ne 0 ] && cmp -s "$ROOT/usr/local/bin/dillad" "$TMP/pre-upgrade" && cmp -s "$ROOT/usr/local/bin/dilla_core_wasi.wasm" "$REL/dilla_core_wasi.wasm" && has "$ERR" "rolled back"; then
 	pass "a failed upgrade restart rolls the binary and the core back"
 else

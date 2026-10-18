@@ -3638,6 +3638,18 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     expect(w.routes.putBlob.mock.calls.map((c) => c[2].length)).toEqual([5 + 16, 70 + 16]);
   });
 
+  it('exports selected files for a local update checkpoint without attachment keys', async () => {
+    const w = world();
+    await toReady(w);
+    await openGeneral(w);
+    const selected = file('update.txt', 'text/plain', 5);
+    await attachReady(w, 4, [selected]);
+    w.call(5, { m: 'checkpointFiles', channelId: CH_HEX });
+    await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
+    expect(okValue<File[]>(w, 5)).toEqual([selected]);
+    expect(bytesIn(w.ret(5))).toEqual([]);
+  });
+
   it('send takes the ready descriptors, sends one type-0 request, and no slice ever carries a key, a nonce or a blob id', async () => {
     const w = world();
     await toReady(w);
