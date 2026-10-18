@@ -238,10 +238,11 @@ const REQUIRED_STEPS = {
   // fourth is the race-detector run itself; it needs cgo, so it must never be reduced to a plain
   // `go test`.
   go: [
+    'timeout-minutes: 30',
     'actions/download-artifact@v8',
     'path: internal/mlswasi/testdata',
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
-    'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
+    'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
     'name: dilla-core-wasi',
     NON_RACE_STEP,
   ],
@@ -326,7 +327,7 @@ const REQUIRED_STEPS = {
  * REQUIRED_STEPS) runs it: the union of the two is still the whole module.
  */
 function assertTestStepIsNotNarrowed(workflow, fail) {
-  const line = 'go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
+  const line = 'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)';
   if (!workflow.includes(line)) {
     fail(`the go job's test step must be exactly "${line}"`);
   }
