@@ -37,7 +37,8 @@ export function ThreadView(p: {
   const bits = useChannelBits(communityId, p.channelId);
   const self = account?.user ?? null;
   const [ui, dispatch] = useReducer(conversationReducer, INITIAL_UI);
-  useEffect(() => { p.onEditingChange?.(ui.editing !== null); return () => p.onEditingChange?.(false); }, [p.onEditingChange, ui.editing]);
+  const onEditingChange = p.onEditingChange;
+  useEffect(() => { onEditingChange?.(ui.editing !== null); return () => onEditingChange?.(false); }, [onEditingChange, ui.editing]);
   const [draft, setDraft] = useState(p.initialDraft ?? '');
   const draftChange = useRef(p.onDraftChange);
   draftChange.current = p.onDraftChange;
