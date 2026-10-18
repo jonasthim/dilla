@@ -10,7 +10,7 @@ function props(over: Partial<MemberListProps> = {}): MemberListProps {
   return {
     label: 'members', loading: false, loadingLabel: 'Loading members…', emptyLabel: 'No members yet.', onAction: vi.fn(),
     groups: [
-      { id: 'mods', title: 'moderators', members: [
+      { id: 'mods', title: 'moderators', color: 0xe74c3c, members: [
         { id: 'u1', name: 'Astrid', tags: ['owner'], actionsLabel: 'actions for Astrid', actions: kickBan },
       ] },
       { id: 'members', title: 'members', members: [

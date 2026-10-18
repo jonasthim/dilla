@@ -1,6 +1,7 @@
-import { useState, type KeyboardEvent, type MouseEvent } from 'react';
+import { useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
 import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
 import { RoleDot } from '../internal/RoleDot.tsx';
+import { hex } from '../internal/hex.ts';
 import { StateDot } from '../StateDot/StateDot.tsx';
 import './MemberList.css';
 
@@ -10,7 +11,7 @@ export interface MemberListMember {
   color?: number | null;
   presence?: 'online' | 'idle' | 'dnd' | 'offline';
 }
-export interface MemberListGroup { id: string; title: string; members: readonly MemberListMember[] }
+export interface MemberListGroup { id: string; title: string; color?: number | null; members: readonly MemberListMember[] }
 export interface MemberListProps {
   /** The region's name. Left out inside a landmark that already names the list (the shell's aside): a plain container. */
   label?: string;
@@ -56,7 +57,8 @@ export function MemberList({ label, groups, loading, loadingLabel, emptyLabel, o
         <p className="d-member-list__note">{emptyLabel}</p>
       ) : shown.map(group => (
         <div key={group.id} className="d-member-list__group">
-          <h3 className="d-member-list__title">{group.title}</h3>
+          <h3 className={`d-member-list__title${group.color ? ' d-member-list__title--colored' : ''}`}
+            style={group.color ? { '--d-group-color': hex(group.color) } as CSSProperties : undefined}>{group.title}</h3>
           <ul className="d-member-list__rows" role="list">
             {group.members.map(m => (
               <li key={m.id} className="d-member-list__row" onContextMenu={e => onContextMenu(m, e)} onKeyDown={e => onKeyDown(m, e)}>
