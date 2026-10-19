@@ -25,5 +25,17 @@
 .d-channel-list__voice > .d-voice-row__people { grid-column: 1 / -1; }
 .d-channel-list__join { grid-column: 1; grid-row: 1; justify-self: end; align-self: center; margin-right: 0.25rem; min-height: 24px; position: relative; z-index: 1; opacity: 0; transition: opacity var(--duration-fast); }
 .d-channel-list__voice:hover > .d-channel-list__join, .d-channel-list__voice:focus-within > .d-channel-list__join { opacity: 1; }
-@media (hover: none) { .d-channel-list__join { opacity: 1; } }
+/* The join and the member count share the row's end and never overlap (G1). With a pointer, the join replaces the count while
+   it shows (hover or focus inside the item), and nothing is reserved. Without hover, and in the phone layout, the join is
+   always shown: the row reserves its width with right padding, so the count sits just before it. */
+@media (hover: hover) {
+  .d-channel-list__voice:hover > .d-voice-row .d-voice-row__count,
+  .d-channel-list__voice:focus-within > .d-voice-row .d-voice-row__count { visibility: hidden; }
+}
+@media (hover: none) {
+  .d-channel-list__join { opacity: 1; }
+  .d-channel-list__voice:has(> .d-channel-list__join) > .d-voice-row { padding-right: 7rem; }
+}
+[data-layout="phone"] .d-channel-list__join { opacity: 1; }
+[data-layout="phone"] .d-channel-list__voice:has(> .d-channel-list__join) > .d-voice-row { padding-right: 7rem; }
 @media (prefers-reduced-motion: reduce) { .d-channel-list__join { transition: none; } }

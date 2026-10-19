@@ -108,3 +108,32 @@ const oneListPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => {
 export const OneList: Story = { args: ONE_LIST_ARGS, globals: { theme: 'mesh' }, play: oneListPlay };
 export const OneListLight: Story = { args: ONE_LIST_ARGS, globals: { theme: 'light' }, play: oneListPlay };
 export const OneListHighContrast: Story = { args: ONE_LIST_ARGS, globals: { theme: 'high-contrast' }, play: oneListPlay };
+
+// G1: the join and the member count never overlap. With the join showing (focus-within here, as hover would) the count is
+// hidden; in the phone layout the join is always shown and the row reserves its width, so the two sit side by side.
+const overlap = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+function expectJoinClearsCount(root: HTMLElement, name: string): void {
+  const item = Array.from(root.querySelectorAll<HTMLElement>('.d-channel-list__voice')).find(li => li.querySelector('.d-channel-list__join') !== null);
+  const join = item?.querySelector<HTMLElement>('.d-channel-list__join');
+  const count = item?.querySelector<HTMLElement>('.d-voice-row__count');
+  if (!join || !count) throw new Error(`${name}: no join or no count to measure`);
+  if (getComputedStyle(join).opacity !== '1') throw new Error(`${name}: the join is not shown`);
+  if (getComputedStyle(count).visibility !== 'hidden' && overlap(join.getBoundingClientRect(), count.getBoundingClientRect())) {
+    throw new Error(`${name}: the join overlaps the count`);
+  }
+}
+export const JoinShownHidesCount: Story = { args: ONE_LIST_ARGS, globals: { theme: 'mesh' },
+  play: async ({ canvasElement }) => {
+    const join = canvasElement.querySelector<HTMLElement>('.d-channel-list__join');
+    join?.focus();
+    await Promise.all((join?.getAnimations() ?? []).map(a => a.finished));
+    expectJoinClearsCount(canvasElement, 'JoinShownHidesCount');
+  } };
+export const JoinOnPhone: Story = { args: ONE_LIST_ARGS, globals: { theme: 'mesh' },
+  decorators: [Story => <div data-layout="phone" style={{ width: 240, height: 360 }}><Story /></div>],
+  play: async ({ canvasElement }) => {
+    await Promise.all(canvasElement.getAnimations({ subtree: true }).map(a => a.finished));
+    const count = canvasElement.querySelector<HTMLElement>('.d-voice-row__count');
+    if (count !== null && getComputedStyle(count).visibility === 'hidden') throw new Error('JoinOnPhone: the count is hidden without hover');
+    expectJoinClearsCount(canvasElement, 'JoinOnPhone');
+  } };

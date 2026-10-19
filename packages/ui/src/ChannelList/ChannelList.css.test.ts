@@ -18,3 +18,14 @@ describe('a voice row with its join (WS5 fix round 1, F1)', () => {
     expect(join).toMatch(/justify-self:\s*end/);
   });
 });
+
+describe('the join and the member count never overlap (WS5 fix round 2, G1)', () => {
+  it('on a pointer device the shown join replaces the count', () => {
+    expect(css).toMatch(/@media \(hover: hover\) \{[^}]*\.d-channel-list__voice:hover > \.d-voice-row \.d-voice-row__count[^}]*\.d-channel-list__voice:focus-within > \.d-voice-row \.d-voice-row__count[^}]*visibility:\s*hidden/);
+  });
+  it('on a phone the join is always shown and the row reserves its width, in the media query and the layout twin', () => {
+    expect(css).toMatch(/@media \(hover: none\) \{[\s\S]*?\.d-channel-list__voice:has\(> \.d-channel-list__join\) > \.d-voice-row \{ padding-right: [^;}]+; \}/);
+    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__voice:has\(> \.d-channel-list__join\) > \.d-voice-row \{ padding-right: [^;}]+; \}/);
+    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__join \{ opacity: 1; \}/);
+  });
+});
