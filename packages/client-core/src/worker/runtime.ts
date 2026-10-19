@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 // The real browser wiring of the core worker (C5, C7): the worker scope's fetch, WebSocket, Web Locks,
 // IndexedDB and OPFS, and the one dynamic import of the wasm core.
-import { boot, opfsDirectoryExists, wasmCoreOpener } from '../account/boot';
+import { boot, lazyStoreExists, wasmCoreOpener } from '../account/boot';
 import { indexedDbKekStore } from '../account/kek';
 import type { CoreWasmModule } from '../core-port';
 import { toHex } from '../hex';
@@ -52,11 +52,11 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
     testHooks: options.testHooks,
     boot: async (instance) => {
       const mod = await loadCoreWasm();
-      const root = await scope.navigator.storage.getDirectory();
+      // The root is asked for lazily: a private WebKit window rejects getDirectory(), and boot()'s probe must report that first.
       return boot({
         instance,
         probePersistence: () => mod.probe_persistence(),
-        storeExists: (dir) => opfsDirectoryExists(root, dir),
+        storeExists: lazyStoreExists(() => scope.navigator.storage.getDirectory()),
         kek,
         openCore: wasmCoreOpener(mod, (ms) => sleep(ms)),
       });

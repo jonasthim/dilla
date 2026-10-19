@@ -3,7 +3,7 @@ import { encode } from '../cbor';
 import type { CoreHandle, CoreWasmModule, StoreOpenConfigLike } from '../core-port';
 import type { Instance } from '../http/routes';
 import { FakeCore } from '../testing/fake-core';
-import { boot, opfsDirectoryExists, OPEN_BACKOFF_MS, RESERVE_CAPACITY, STORE_DB_NAME, storeDirectory, wasmCoreOpener,
+import { boot, lazyStoreExists, opfsDirectoryExists, OPEN_BACKOFF_MS, RESERVE_CAPACITY, STORE_DB_NAME, storeDirectory, wasmCoreOpener,
   WRONG_KEY_TEXT, type BootDeps } from './boot';
 import type { KekStore } from './kek';
 
@@ -76,6 +76,33 @@ describe('boot', () => {
     expect(t.kek.records.size).toBe(0);
     const bad = setup({ probePersistence: () => Promise.resolve('not json') });
     expect(await boot(bad.deps)).toEqual({ kind: 'unsupported', reason: 'probe' });
+  });
+
+  it('a private WebKit window answers the probe before the storage root is asked for (E_INTERNAL fix)', async () => {
+    // WebKit private windows reject navigator.storage.getDirectory() with UnknownError (docs/spikes/2026-09-browser.md). The
+    // worker used to await the root before boot() ran the probe, so that rejection escaped as E_INTERNAL.
+    let asked = 0;
+    const getRoot = (): Promise<FileSystemDirectoryHandle> => {
+      asked++;
+      return Promise.reject(new DOMException('The operation failed for an unknown transient reason', 'UnknownError'));
+    };
+    const t = setup({
+      probePersistence: () => Promise.resolve('{"mode":"memory","reason":"getDirectory:UnknownError"}'),
+      storeExists: lazyStoreExists(getRoot),
+    });
+    expect(await boot(t.deps)).toEqual({ kind: 'unsupported', reason: 'getDirectory:UnknownError' });
+    expect(asked).toBe(0);
+  });
+
+  it('a storage root refused after the probe passed is the unsupported state, by error name', async () => {
+    const refuse = (name: string) => setup({ storeExists: lazyStoreExists(() => Promise.reject(new DOMException('refused', name))) });
+    for (const name of ['UnknownError', 'SecurityError']) {
+      expect(await boot(refuse(name).deps), name).toEqual({ kind: 'unsupported', reason: 'storage' });
+    }
+    // Any other failure stays a bug: it propagates.
+    await expect(boot(refuse('QuotaExceededError').deps)).rejects.toThrow('refused');
+    const plain = setup({ storeExists: () => Promise.reject(new Error('UnknownError')) });
+    await expect(boot(plain.deps)).rejects.toThrow('UnknownError');
   });
 
   it('creates a KEK on first run, opens the store with it, reserves capacity and zero-fills the KEK', async () => {
