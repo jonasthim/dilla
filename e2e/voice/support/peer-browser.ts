@@ -292,13 +292,13 @@ export interface PeerBrowsers {
 }
 
 /** The control that leaves the call from where this page shows one: the stage's toolbar while the call's stage is on
- *  screen (the dock then holds no controls), else the dock's own, else the phone's call bar. */
+ *  screen (the dock holds a leave too, web3.8, so the stage's comes first), else the dock's own, else the phone's call bar. */
 export function leaveControl(page: Page): Locator {
   const leave = copy('voice.leave');
   const stageLeave = page.locator('.dw-voice-stage').getByRole('button', { name: leave, exact: true });
   const dockLeave = page.locator('.dw-voice-dock').getByRole('button', { name: leave, exact: true });
   const barLeave = page.locator('.d-call-bar').getByRole('button', { name: leave, exact: true });
-  return stageLeave.or(dockLeave).or(barLeave);
+  return stageLeave.or(dockLeave).or(barLeave).first();
 }
 
 /** Leaves voice through the app's own leave (a person's leave), and waits until the page's media worker has ended. */

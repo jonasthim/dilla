@@ -259,7 +259,7 @@ describe('voice in the shell', () => {
     expect(opts).toMatchObject({ mode: 'ptt', noise: 'off', input: '', output: '' });
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
-    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+    expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
     expect(screen.getByText('in general')).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
@@ -799,12 +799,14 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-disabled');
   });
 
-  it('the dock’s and the stage’s mute and deafen are described by their shortcut, as this platform writes it', async () => {
+  it('the dock’s mute and deafen are described by their shortcut and carry it; the stage’s tip shows it and they carry none', async () => {
     await inVoice();
-    expect(stage().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
-    await offStage();
+    expect(stage().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
+    expect(stage().getByRole('button', { name: t('voice.deafen') })).not.toHaveAttribute('aria-keyshortcuts');
     expect(dock().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
     expect(dock().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
+    await offStage();
+    expect(dock().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
   });
 
   // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*), in the dock and on the stage; the name stays.
@@ -869,16 +871,31 @@ describe('voiceShortcutText', () => {
 });
 
 describe('web3.7: one set of call controls', () => {
-  it('the dock has no toolbar while the stage is shown, and the toolbar as before off the stage', async () => {
-    const app = await inVoice();
-    const dockToolbar = () => document.querySelector('.dw-voice-dock .d-voice-dock__controls');
-    expect(document.querySelector('.dw-voice-dock')).not.toBeNull();
-    expect(dockToolbar()).toBeNull();
-    window.history.pushState(null, '', `/c/${A}/${TEXT}`);
-    window.dispatchEvent(new PopStateEvent('popstate'));
+  it('the dock keeps its toolbar while the stage is shown', async () => {
+    await inVoice();
+    expect(document.querySelector('.dw-voice-dock .d-voice-dock__controls')).not.toBeNull();
+    expect(main().getByRole('toolbar', { name: 'voice channel controls' })).toBeInTheDocument();
+    go(`/c/${A}/${TEXT}`);
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull());
-    expect(dockToolbar()).not.toBeNull();
-    void app;
+    expect(document.querySelector('.dw-voice-dock .d-voice-dock__controls')).not.toBeNull();
+  });
+
+  it('repeats no element id while both toolbars are on screen', async () => {
+    await inVoice();
+    const ids = [...document.querySelectorAll('[id]')].map(e => e.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+  });
+
+  it('join focuses the stage’s first control, and ArrowRight in the dock toolbar leaves the stage’s focus alone', async () => {
+    const app = await inVoice();
+    const first = () => main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')!;
+    await waitFor(() => expect(first()).toHaveFocus());
+    const dockFirst = screen.getByRole('toolbar', { name: 'voice controls' }).querySelector('button')!;
+    dockFirst.focus();
+    await app.user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('toolbar', { name: 'voice controls' }).contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(dockFirst);
+    expect(main().getByRole('toolbar', { name: 'voice channel controls' }).contains(document.activeElement)).toBe(false);
   });
 });
 
