@@ -824,6 +824,14 @@ impl DsStub {
             code: "E_INVALID_REQUEST",
             detail: "body must be [epoch, private_message, class], got 2 elements".into(),
         })?;
+        // The class set is 0 and 1, refused as the instance refuses it (S1 fix round 1, m4).
+        if class > 1 {
+            return Err(DsError::Remote {
+                status: 400,
+                code: "E_INVALID_REQUEST",
+                detail: "class must be 0 or 1".into(),
+            });
+        }
         let commitment = commitment.ok_or(DsError::CommitmentInvalid)?;
         let k_frank = self.cfg.k_frank;
         let recv_ts = self.clock;

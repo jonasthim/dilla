@@ -63,6 +63,10 @@ func parseFlags(args []string) (options, error) {
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
+	// Wire versions start at 1: a hello offering 0 names no version any client speaks.
+	if *wire < 1 {
+		return options{}, fmt.Errorf("-wire %d: a wire version is 1 or more", *wire)
+	}
 	root := *webRoot
 	if root != "" {
 		abs, err := filepath.Abs(root)

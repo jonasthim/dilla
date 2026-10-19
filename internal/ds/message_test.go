@@ -533,6 +533,36 @@ func TestUploadAsksThePostPolicyAndItsRefusalIsTheAnswer(t *testing.T) {
 	}
 }
 
+// S1 fix round 1 (m4): Upload range-checks the class itself, not only the route: 2 and 255 are
+// 400 E_INVALID_REQUEST before the policy is asked or anything is stored. The control is class 1
+// into the same group, which is accepted.
+func TestUploadRefusesAClassOutsideZeroAndOne(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.group(t)
+	ctx := context.Background()
+	before, err := h.repo.GetGroup(ctx, g.id)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	for _, class := range []uint8{2, 255} {
+		_, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), class)
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_INVALID_REQUEST" || dsErr.Status != 400 {
+			t.Fatalf("an upload of class %d = %v, want 400 E_INVALID_REQUEST", class, err)
+		}
+	}
+	if calls := h.postPolicy.take(); len(calls) != 0 {
+		t.Fatalf("an out-of-range class reached the post policy %d times", len(calls))
+	}
+	if after, err := h.repo.GetGroup(ctx, g.id); err != nil || after.Seq != before.Seq {
+		t.Fatalf("a refused class moved the group's seq from %d to %d (%v)", before.Seq, after.Seq, err)
+	}
+	// Control: class 1.
+	if _, err := h.ds.Upload(ctx, g.session, g.id, g.Epoch(), h.message(t, g, g.Epoch()), 1); err != nil {
+		t.Fatalf("control: class 1: %v", err)
+	}
+}
+
 // SB1 fix round 1 (review): a closed group takes no upload, whatever its class. ds.Close closes a
 // deleted channel's group and one a restore replaced; before the fix an upload into it was still
 // sequenced and fanned out. 404 E_NOT_FOUND, as for a group that does not exist, and the policy is

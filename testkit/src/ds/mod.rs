@@ -322,11 +322,38 @@ mod tests {
                 ..
             })
         ));
-        // Control: class 0.
-        assert!(matches!(
-            ds.post_message_from(&group, 0, device, vec![1, 2, 3], Some([0x0c; 32]), Some(0)),
-            Err(DsError::NotFound)
-        ));
+        // S1 fix round 1 (m4): a class outside 0 and 1 is refused the same way, as DS.Upload does.
+        for class in [2u8, 255] {
+            assert!(
+                matches!(
+                    &ds.post_message_from(
+                        &group,
+                        0,
+                        device,
+                        vec![1, 2, 3],
+                        Some([0x0c; 32]),
+                        Some(class)
+                    ),
+                    Err(DsError::Remote { status: 400, code: "E_INVALID_REQUEST", detail })
+                        if detail == "class must be 0 or 1"
+                ),
+                "class {class}"
+            );
+        }
+        // Control: class 0 and class 1 pass the check and meet the next one (no such group).
+        for class in [0u8, 1] {
+            assert!(matches!(
+                ds.post_message_from(
+                    &group,
+                    0,
+                    device,
+                    vec![1, 2, 3],
+                    Some([0x0c; 32]),
+                    Some(class)
+                ),
+                Err(DsError::NotFound)
+            ));
+        }
     }
 
     /// No WebSocket TLS stack may enter the workspace: those crates pull licences the allow-list

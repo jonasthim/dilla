@@ -568,6 +568,35 @@ func TestALegacyUploadIsRefused(t *testing.T) {
 	}
 }
 
+// S1 fix round 1 (I1): a row a web3.7 legacy upload stored has a NULL class, and the catch-up
+// still serves it as null (0xf6), never as 0: a receiver drops a row whose class disagrees with
+// its decrypted type, so an old edit served as class 0 would be lost. The control is a class-0
+// row in the same response, served as 0x00.
+func TestALegacyRowStillReadsBackNull(t *testing.T) {
+	h, _ := newClassAPI(t)
+	member := h.memberToken(t)
+	epoch := h.groupEpoch(t)
+	res := h.post(t, member, []any{epoch, apiPrivateMessage(t, epoch, 64), uint64(0)})
+	if res.Code != http.StatusOK {
+		t.Fatalf("the class-0 upload: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
+	posted := uploadSeq(t, res)
+	legacy := posted + 1
+	if err := h.deps.Repo.PutAppMessage(context.Background(), store.AppMessageRow{
+		GroupID: h.groupID, Seq: legacy, Epoch: epoch, UploaderDevice: id.New(), Blob: []byte("ct"),
+		FrankingTag: make([]byte, 32), Size: 2, Created: 1, Class: nil,
+	}); err != nil {
+		t.Fatalf("seed the legacy row: %v", err)
+	}
+	if row := h.catchUpRow(t, member, legacy); len(row) != 9 || !bytes.Equal(row[8], []byte{0xf6}) {
+		t.Fatalf("the legacy row has %d elements, the 9th %x; want 9, null (f6)", len(row), row[len(row)-1])
+	}
+	// Control: the class-0 row in the same catch-up.
+	if row := h.catchUpRow(t, member, posted); len(row) != 9 || !bytes.Equal(row[8], []byte{0x00}) {
+		t.Fatalf("the class-0 row has %d elements, the 9th %x; want 9, 00", len(row), row[len(row)-1])
+	}
+}
+
 func TestAnUploadOfAnyOtherShapeIsRefused(t *testing.T) {
 	h, policy := newClassAPI(t)
 	member := h.memberToken(t)

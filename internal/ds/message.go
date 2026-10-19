@@ -35,6 +35,11 @@ type UploadResult struct {
 // stored on the row and relayed as message.ct's 7th element; the post policy, when one is set,
 // decides every upload by it.
 func (d *DS) Upload(ctx context.Context, s Session, groupID id.ID, epoch uint64, pm []byte, class uint8) (UploadResult, error) {
+	// The class set is 0 and 1 (protocol/02 § Upload class). The route refuses anything else at
+	// decode; this keeps the service from relying on it (S1 fix round 1, m4), with the route's text.
+	if class > 1 {
+		return UploadResult{}, errInvalid("class must be 0 or 1")
+	}
 	if len(pm) > d.opts.Policy.MaxCiphertextBytes {
 		return UploadResult{}, errTooLarge(len(pm), d.opts.Policy.MaxCiphertextBytes)
 	}
