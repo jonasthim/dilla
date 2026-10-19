@@ -467,10 +467,18 @@ export function useCall(o: UseCallOptions): CallView {
     keepSelf(s);
     announce(t(on ? 'voice.announce.deafened' : 'voice.announce.undeafened'));
   }, [announce, keepSelf]);
-  /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in. */
+  /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
+   *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
+   *  and never the stale slice. A refused write drops it, and the panel (which reads the stored slice) never claimed it. */
+  const written = useRef<{ seq: number; value: string | null } | null>(null);
+  const writeSeq = useRef(0);
   const writeSelf = useCallback((pick: (current: string | undefined) => 'muted' | 'deafened' | null) => {
-    const value = pick((client.get('settings') ?? {})[SETTINGS.voiceSelf]);
-    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).catch(() => undefined);
+    const current = written.current !== null ? written.current.value ?? undefined : (client.get('settings') ?? {})[SETTINGS.voiceSelf];
+    const value = pick(current);
+    const mine = { seq: ++writeSeq.current, value };
+    written.current = mine;
+    const done = () => { if (written.current === mine) written.current = null; };
+    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(done, done);
   }, [client]);
   const selfMute = useCallback(() => {
     if (sessionRef.current !== null) { toggleMute(); return; }
@@ -663,6 +671,14 @@ export function useCall(o: UseCallOptions): CallView {
 
   // Control/⌘+Shift+M and Control/⌘+Shift+D while in voice, and on the desktop shell outside a call too (decision 1; the user panel advertises them); no single-key shortcut, and none during an IME
   // composition. Either modifier works on every platform, as the Control/⌘+K entry does.
+  // Fail closed: a mute or deafen pressed while the join was starting is in `voice.self` but not in the session it started
+  // with (it read the setting before). When the session attaches, the more private of the two wins; never the other way.
+  useEffect(() => {
+    if (session === null) return;
+    const kept = (written.current !== null ? written.current.value ?? undefined : (client.get('settings') ?? {})[SETTINGS.voiceSelf]);
+    if (kept === 'deafened' && !session.state.deafened) session.setDeafened(true);
+    else if ((kept === 'muted' || kept === 'deafened') && !session.state.muted) session.setMuted(true);
+  }, [session, client]);
   const selfShortcuts = o.selfShortcuts === true;
   useEffect(() => {
     if (session === null && !selfShortcuts) return;

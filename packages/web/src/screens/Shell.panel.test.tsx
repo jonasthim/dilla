@@ -204,3 +204,62 @@ describe('one set of shortcuts and the call panel (R3)', () => {
     expect(app.client.callsOf('setSetting').map(c => c.value)).toEqual(['muted']);
   });
 });
+
+describe('fail closed (security round 1)', () => {
+  it('a mute pressed while the join is pending leaves the session muted once it starts', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    window.history.pushState(null, '', `/c/${A}/${GENV}`);
+    act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
+    const release = app.holdStart();
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    expect(writes(app)).toEqual(['muted']);
+    // Until the session exists the panel shows the stored setting.
+    expect(inPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-pressed', 'true');
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.state.muted).toBe(true));
+    expect(app.log).toContain('muted:true');
+    expect(inPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('only ever toward privacy: with no setting the attach changes nothing, and a session started muted is never opened', async () => {
+    const app = shell();
+    await joinVoice(app);
+    expect(app.log.filter(l => l.startsWith('muted:') || l.startsWith('deafened:'))).toEqual([]);
+    act(() => app.session.update({ muted: true }));
+    expect(app.log).not.toContain('muted:false');
+  });
+
+  it('two quick presses read one source: muted, then null', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    // The worker answers late: the slice still says "none" when the second press lands.
+    const inner = app.client.handler;
+    const held: (() => void)[] = [];
+    app.client.handler = (command: Command) => (command.m === 'setSetting'
+      ? new Promise(resolve => { held.push(() => { void inner(command).then(resolve); }); }) : inner(command));
+    const mute = () => inPanel().getByRole('button', { name: t('voice.mute') });
+    await app.user.click(mute());
+    await app.user.click(mute());
+    expect(writes(app)).toEqual(['muted', null]);
+    held.forEach(h => h());
+  });
+
+  it('a refused setSetting leaves the panel showing what is stored, and the next press writes again', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    const inner = app.client.handler;
+    let refuse = true;
+    app.client.handler = (command: Command) => (command.m === 'setSetting' && refuse ? Promise.reject(new Error('E_INTERNAL')) : inner(command));
+    const mute = () => inPanel().getByRole('button', { name: t('voice.mute') });
+    await app.user.click(mute());
+    expect(mute()).toHaveAttribute('aria-pressed', 'false');
+    refuse = false;
+    await app.user.click(mute());
+    expect(writes(app)).toEqual(['muted', 'muted']);
+    await waitFor(() => expect(mute()).toHaveAttribute('aria-pressed', 'true'));
+  });
+});
