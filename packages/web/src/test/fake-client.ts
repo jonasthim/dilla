@@ -38,7 +38,8 @@ export function refusal(init: { code: string; detail?: string; status?: number; 
 /** An in-memory CoreClient: tests set slices and script the answers of calls. */
 export class FakeClient implements CoreClient {
   readonly calls: Command[] = [];
-  handler: (command: Command) => Promise<unknown> = () => Promise.resolve(null);
+  handler: (command: Command) => Promise<unknown> = command => Promise.resolve(command.m === 'getAFKSettings'
+    ? { channelId: null, timeoutSeconds: 300 } : null);
   private readonly values = new Map<string, unknown>();
   private readonly listeners = new Map<string, Set<() => void>>();
 
@@ -237,6 +238,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   fake.set('connection', { status: 'online', generation: '1' });
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, CHANNELS);
+  fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, occupants: [] });
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', DMS);
   fake.set('settings', o.settings ?? {});

@@ -14,6 +14,32 @@ import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('returns full AFK settings through the authenticated settings route', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.getAFKSettings.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 900 });
+    w.call(993, { m: 'getAFKSettings', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(993)).toEqual({ t: 'ret', id: 993, ok: true,
+      value: { channelId: toHex(CHANNEL), timeoutSeconds: 900 } }));
+  });
+  it('loads AFK occupants on ready and refreshes them after a community change and reconnect', async () => {
+    const w = world();
+    await toReady(w);
+    const key = `afk:${toHex(COMMUNITY)}` as const;
+    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: null, timeoutSeconds: 300, occupants: [] }));
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60,
+      occupants: [{ userId: USER, deviceId: DEVICE }] });
+    w.gateway.emit({ type: 'frame', frame: { op: Op.communityChanged, n: 0n, groupId: null, payload: [COMMUNITY] } });
+    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60,
+      occupants: [{ userId: toHex(USER), deviceId: toHex(DEVICE) }] }));
+    w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null });
+    expect(w.last(key)).toBeNull();
+    w.routes.getAFK.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 60, occupants: [] });
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.last(key)).toEqual({ channelId: toHex(CHANNEL), timeoutSeconds: 60, occupants: [] }));
+  });
+
   it('loads a presence snapshot on ready, applies frames, and reloads after reconnect', async () => {
     const w = world();
     await toReady(w);

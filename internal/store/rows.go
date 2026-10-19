@@ -370,6 +370,12 @@ type CommunityRow struct {
 	DeletedAt            *int64
 }
 
+// CommunityAFK configures the optional silent destination for idle voice devices.
+type CommunityAFK struct {
+	ChannelID      *id.ID
+	TimeoutSeconds uint64
+}
+
 // MemberOfCommunityRow mirrors `members`. The name keeps it apart from
 // MemberRow, which is an MLS leaf.
 type MemberOfCommunityRow struct {

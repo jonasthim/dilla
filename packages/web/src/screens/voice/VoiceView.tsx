@@ -29,6 +29,7 @@ export interface VoiceContext {
   onCompare(userId: string): void;
   /** Opens Settings → Voice (product walk M7: the dock's push to talk with no key set leads there). */
   onVoiceSettings(): void;
+  onJoinVoice?(channelId: string): void;
 }
 
 const VOLUME = /^(0|[1-9]0|1[0-9]0|200)$/;
@@ -254,7 +255,7 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
       <CallStage title={title} tiles={joined ? callTiles(v, channelId) : roomTiles(v, channelId)} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
         controls={joined ? <Controls v={v} paused={paused} dm={dm} />
-          : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.call.join(channelId)}>{t('voice.join')}</Button>}
+          : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
         labels={STAGE_LABELS()} />
     </div>
   );
@@ -322,7 +323,7 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
         <StripNotice notice={notice} refObj={noticeRef} />
         {notice?.action != null ? <Button className="dw-call-strip__action" onClick={() => notice.action?.onAction()}>{notice.action.label}</Button> : null}
         {inThisCall || held ? null : (
-          <Button className="dw-call-strip__start" onClick={() => v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
+          <Button className="dw-call-strip__start" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t(live ? 'call.join' : 'call.start')}</Button>
         )}
       </div>
       {inThisCall ? (

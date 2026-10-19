@@ -91,6 +91,22 @@ interface Case {
 
 const CASES: Case[] = [
   {
+    name: 'AFK snapshot includes silent occupants', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [[USER, DEVICE]]]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, occupants: [{ userId: USER, deviceId: DEVICE }] },
+  },
+  {
+    name: 'AFK activity names the actual voice room', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/afk/activity`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([CHANNEL]), reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'AFK setting writes an existing channel and timeout', call: r => r.setAFKSettings(COMMUNITY, CHANNEL, 60),
+    method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/afk/settings`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([CHANNEL, 60]), reply: () => noContent(), expected: undefined,
+  },
+  {
     // S2 review (M5): the session's bearer goes along whenever there is one, so instance.discovery = "session" (E, F)
     // answers an owed client too; before sign-in token() is null and nothing is sent (below).
     name: 'getInstance reads elements 3 to 8 and 10, with the session bearer', call: (r) => r.getInstance(),

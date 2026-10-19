@@ -36,6 +36,8 @@ export const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server res
  * serve prints another status and still fails the test.
  */
 export const ABORTED_FONT_LINE = /^\[JavaScript Error: "downloadable font: download failed \(.*\): status=2152398850 source: /;
+/** Firefox's Playwright juggler worker can log this when a test closes its second browser context. */
+export const ABORTED_JUGGLER_LINE = /^\[JavaScript Error: "NS_BINDING_ABORTED: " \{file: "chrome:\/\/juggler\/content\/content\/WorkerMain\.js" line: 6\}\]$/;
 
 // The copy keys the e2e drives: L-COPY-01 (onboarding) and the keys tasks 22 and 24 add to en.ts. The
 // values always come from the app's own strings, so a reworded text never breaks the suite.
@@ -335,8 +337,9 @@ function newGuard(projectName: string): Guard {
         // paced 429 and 503; any other status, or a line of another shape, still fails the test (E2E-CI-01).
         // Firefox printed nothing for them and keeps the full guard.
         const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
-        const abortedFont = projectName.startsWith('firefox') && ABORTED_FONT_LINE.test(m.text());
-        if (m.type() === 'error' && !resourceLine && !abortedFont) {
+        const firefoxBrowserAbort = projectName.startsWith('firefox') &&
+          (ABORTED_FONT_LINE.test(m.text()) || ABORTED_JUGGLER_LINE.test(m.text()));
+        if (m.type() === 'error' && !resourceLine && !firefoxBrowserAbort) {
           consoleErrors.push(m.text());
         }
       });

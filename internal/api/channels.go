@@ -977,6 +977,18 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
 		}
+		if row.CommunityID != nil {
+			cfg, err := tx.GetCommunityAFK(r.Context(), *row.CommunityID)
+			if err != nil {
+				return err
+			}
+			if cfg.ChannelID != nil && *cfg.ChannelID == row.ID {
+				cfg.ChannelID = nil
+				if err := tx.SetCommunityAFK(r.Context(), *row.CommunityID, cfg); err != nil {
+					return err
+				}
+			}
+		}
 		// A deleted category's channels stay, at the top level: the tombstone
 		// keeps its row, so ON DELETE SET NULL never fires, and a child left
 		// naming it could never be edited again (its parent is not live).

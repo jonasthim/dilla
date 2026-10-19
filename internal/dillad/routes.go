@@ -114,6 +114,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) *api.Calls {
 	// an open tab re-reads its lists; a delete tells the members it had, and a leave, kick or ban
 	// tells the user it removed once.
 	notify := api.NewStructureNotifier(p.gw, repo, log)
+	calls.WithAFKLive(p.gw, notify)
 	api.NewCommunities(repo, p.delivery, clk, log).
 		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).WithNotifier(notify).Register(m)
 	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify)

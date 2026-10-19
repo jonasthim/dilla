@@ -33,6 +33,9 @@ export interface DmOpened { channelId: Uint8Array; created: boolean; }
 export interface DmRow { channelId: Uint8Array; kind: 3 | 4; members: Uint8Array[]; }
 export interface Ticket { ticket: string; expires: bigint; }
 export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array; policyVersion: bigint; }
+export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number;
+  occupants: { userId: Uint8Array; deviceId: Uint8Array }[] }
+export interface AFKSettings { channelId: Uint8Array | null; timeoutSeconds: number }
 export interface ChannelRow { id: Uint8Array; kind: number; mode: number; visibility: number; parentId: Uint8Array | null;
   name: string; topic: string; position: number; slowmode: number; seq: bigint; textGroupId: Uint8Array | null; }
 export interface MemberRow { userId: Uint8Array; username: string; display: string; kind: 0 | 1; nick: string; roleIds: Uint8Array[]; }
@@ -351,6 +354,33 @@ export class Routes {
       const a = atLeast(value, 4);
       return { id: bin(a[0], 16), name: str(a[1]), owner: bin(a[2], 16), policyVersion: u64(a[3]) };
     });
+  }
+  async getAFK(communityId: Uint8Array): Promise<AFKSnapshot> {
+    const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk`, 'read', true)), 3);
+    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]),
+      occupants: bounded(a[2], 1024, 'AFK occupants').map(value => {
+        const row = atLeast(value, 2);
+        return { userId: bin(row[0], 16), deviceId: bin(row[1], 16) };
+      }) };
+  }
+  async getAFKSettings(communityId: Uint8Array): Promise<AFKSettings> {
+    const a = atLeast(decode(await this.body('GET', `/v1/communities/${id('communityId', communityId)}/afk/settings`, 'read', true)), 2);
+    return { channelId: opt(a[0], v => bin(v, 16)), timeoutSeconds: u53(a[1]) };
+  }
+  async setAFKSettings(communityId: Uint8Array, channelId: Uint8Array | null, timeoutSeconds: number): Promise<void> {
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/afk/settings`, 'write', true,
+      { body: encode([channelId === null ? null : inputId('channelId', channelId), timeoutSeconds]), ok: [204] });
+  }
+  async sendAFKActivity(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
+    await this.body('POST', `/v1/communities/${id('communityId', communityId)}/afk/activity`, 'write', true,
+      { body: encode([inputId('channelId', channelId)]), ok: [204] });
+  }
+  async moveToAFK(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
+    await this.body('POST', `/v1/communities/${id('communityId', communityId)}/afk`, 'write', false,
+      { body: encode([inputId('channelId', channelId)]), ok: [204] });
+  }
+  async leaveAFK(communityId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/afk`, 'write', true, { ok: [204] });
   }
   async joinCommunity(communityId: Uint8Array, invite: string | null): Promise<void> {
     await this.body('POST', `/v1/communities/${id('communityId', communityId)}/join`, 'none', true, { body: encode([invite]) });
