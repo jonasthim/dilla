@@ -12,6 +12,8 @@ import {
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
+import { installWorkerPort, portSlice } from './support/worker-port';
+import type { ChannelSummary } from '../../packages/client-core/src/state/types';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
 
@@ -54,9 +56,10 @@ const dmLog = (page: Page, name: string) => page.getByRole('log', { name: copy('
 const dmRow = (page: Page, name: string, text: string) => dmLog(page, name).locator('.d-message-row').filter({ hasText: text });
 
 test('from an empty instance: start a server, invite a friend through a link, reply, DM and add a channel', async ({
-  page, guard, playwright, browserName, launchOptions, headless, channel, viewport,
+  page, context, guard, playwright, browserName, launchOptions, headless, channel, viewport,
 }, testInfo) => {
   const h = started();
+  await installWorkerPort(context);
 
   // 1. The first person on the instance: the bootstrap invite, then a shell that says how to begin.
   // The host prints its instance invites comma-separated; the first is the one an operator would hand on.
@@ -89,6 +92,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
   await page.keyboard.press('Enter');
   await expect(start).toBeHidden({ timeout: WAIT });
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
+  const serverId = new URL(page.url()).pathname.split('/')[2] ?? '';
   await expect(railItem(page, SERVER)).toHaveAttribute('aria-current', 'page');
   await expect(button(page, 'voice.open', { name: 'general' })).toBeVisible();
   await expectComposerReady(page, 'general');
@@ -129,6 +133,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
   try {
+    await installWorkerPort(second);
     const page2 = second.pages()[0] ?? (await second.newPage());
     await page2.goto(new URL(link).pathname);
     const openLink = page2.getByRole('link', { name: 'Open dilla in this browser', exact: true });
@@ -190,7 +195,12 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await page.keyboard.press('Enter');
     await expect(newChannel).toBeHidden({ timeout: WAIT });
     await expectComposerReady(page, SECOND_CHANNEL);
+    const plansId = new URL(page.url()).pathname.split('/')[3] ?? '';
     await expect(channelRow(page2, SECOND_CHANNEL)).toBeVisible({ timeout: 5_000 });
+    // The sidebar update can precede the MLS Welcome. Send only after Björn's
+    // browser has joined the new group, or the first message is unrecoverable there.
+    await expect.poll(async () => (await portSlice<ChannelSummary[]>(page2, `channels:${serverId}`))
+      ?.find((c) => c.id === plansId)?.group, { timeout: WAIT }).toBe('active');
     await openChannel(page2, SERVER, SECOND_CHANNEL);
     const inPlans = `the first words in #${SECOND_CHANNEL} ${tag()}`;
     await sendText(page, SECOND_CHANNEL, inPlans);
