@@ -644,7 +644,7 @@ export async function closeSettings(page: Page): Promise<void> {
   // A viewport change reaches the app a tick late: Escape waits until the shell's data-layout agrees with the window.
   await page.waitForFunction(() => {
     const shell = document.querySelector('.d-app-shell');
-    const phone = window.matchMedia('(max-width: 47.99rem)').matches;
+    const phone = window.matchMedia('(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)').matches;
     return shell === null || (shell.getAttribute('data-layout') === 'phone') === phone;
   }, undefined, { timeout: WAIT });
   await page.keyboard.press('Escape');

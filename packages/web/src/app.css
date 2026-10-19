@@ -135,6 +135,21 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
   .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__where:not(:has(+ .d-voice-dock__meter)) { grid-column: 1 / -1; }
   .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__controls { grid-column: 1 / -1; }
 }
+/* web3.8 (R9, pre-flight C-7): the container rules above cannot see the viewport, and a landscape phone's shell is wide, so each
+   phone rule has a twin keyed on the shell's own data-layout, with identical declarations; layout.test.ts pins the pairs. */
+[data-layout="phone"] .dw-voice-section__join, [data-layout="phone"] .dw-call-strip .d-btn { min-height: 2.75rem; }
+[data-layout="phone"] .dw-dm-call__bar { display: flex; justify-content: flex-end; padding: 0.25rem var(--row-pad-x); }
+[data-layout="phone"] .dw-dm-call { flex: 1 1 auto; max-height: none; }
+[data-layout="phone"] .d-app-shell__content:has(> .dw-dm-call[data-view="stage"]) > .dw-conversation { display: none; }
+[data-layout="phone"] .d-app-shell__main:has(.dw-dm-call[data-view="stage"]) .d-composer { display: none; }
+[data-layout="phone"] .dw-dm-call[data-view="messages"] { flex: 0 0 auto; }
+[data-layout="phone"] .dw-dm-call[data-view="messages"] .dw-voice-stage { display: none; }
+[data-layout="phone"] .dw-voice-stage .d-call-stage__tiles { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
+[data-layout="phone"] .dw-voice-stage .d-call-tile { min-height: 0; padding: 0.5rem; }
+[data-layout="phone"] .dw-voice-stage .d-call-stage__controls { position: static; padding-block: 0.5rem; }
+[data-layout="phone"] .dw-dm-call .d-call-stage__controls { position: static; }
+[data-layout="phone"] .dw-voice-dock__paused .d-btn, [data-layout="phone"] .dw-voice-dock__audio .d-btn { min-height: 2.75rem; }
+[data-layout="phone"] .dw-voice-dock__mode .d-btn { min-height: 2.75rem; }
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;
 }
@@ -210,10 +225,11 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 .dw-you__signout .d-btn:hover { background: var(--surface-2); }
 
 /* Settings on a phone (R40): the frame fills the screen, one column, the PhoneHeader in place of the section nav. */
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
   /* The shell is fixed on a phone, so under it the page never scrolls; the log and the lists scroll themselves. Sign-up and
-     sign-in have no shell and keep their page scroll above the keyboard. */
-  html:has(.d-app-shell[data-layout="phone"]), body:has(.d-app-shell[data-layout="phone"]) { overflow: hidden; }
+     sign-in have no shell and keep their page scroll above the keyboard. The layout.ts hook sets the attribute while the phone
+     shell is mounted (R10). */
+  html[data-phone-shell], html[data-phone-shell] body { overflow: hidden; }
   .d-settings-frame:has(.d-phone-header) { max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__panel { display: block; }
   .d-settings-frame:has(.d-phone-header) .d-settings-frame__side, .d-settings-frame:has(.d-phone-header) .d-settings-frame__bar { display: none; }
@@ -238,6 +254,7 @@ html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[d
 @container d-shell (max-width: 47.99rem) {
   .dw-thread-list__row { min-height: 2.75rem; }
 }
+[data-layout="phone"] .dw-thread-list__row { min-height: 2.75rem; }
 /* The thread pane fills the aside or the phone sheet, so its composer sits at the bottom. */
 .dw-thread { height: 100%; min-height: 0; }
 /* The thread composer's label is its accessible name; the pane's title gives the context. */

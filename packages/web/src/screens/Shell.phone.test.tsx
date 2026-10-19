@@ -458,6 +458,30 @@ describe('the phone shell: settings', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: t('settings.title') })).toBeNull());
   });
 
+  it('puts Settings inside the shell, in tab order: its title, then its controls, then the tab bar', async () => {
+    window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
+    const { user } = phone({ path: '/settings/devices', withSettings: true });
+    const header = await waitFor(() => { const h = document.querySelector<HTMLElement>('.d-phone-header'); expect(h).not.toBeNull(); return h!; });
+    const dialog = screen.getByRole('dialog', { name: t('settings.title') });
+    expect(dialog.closest('.d-app-shell__page')).not.toBeNull();
+    const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const title = within(header).getByRole('heading', { level: 2 });
+    const back = within(header).getByRole('button', { name: t('nav.back') });
+    expect(follows(title, back) || follows(back, title)).toBe(true);
+    expect(follows(dialog, tabs()!)).toBe(true);
+    // Walk the real Tab order from the top: every stop in the page comes before the first stop in the tab bar.
+    const where: string[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      await user.tab();
+      const el = document.activeElement;
+      where.push(el !== null && dialog.contains(el) ? 'page' : el !== null && tabs()!.contains(el) ? 'tabs' : 'other');
+    }
+    expect(where).toContain('page');
+    expect(where).toContain('tabs');
+    expect(where.indexOf('tabs')).toBeGreaterThan(where.lastIndexOf('page', where.indexOf('tabs')));
+    expect(where.slice(0, where.indexOf('tabs')).every(w => w !== 'other')).toBe(true);
+  });
+
   it('makes the shell behind a phone Settings inert, except the tab bar', async () => {
     window.history.replaceState({ settingsFrom: null }, '', '/settings/devices');
     phone({ path: '/settings/devices', withSettings: true });

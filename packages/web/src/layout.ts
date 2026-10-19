@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
-/** The phone breakpoint (flow 12). The same 47.99rem as the shell's container query and the page's media query in base.css. */
-export const PHONE_QUERY = '(max-width: 47.99rem)';
+/**
+ * The phone breakpoint (flow 12, R9): a window under 47.99rem wide, or a coarse-pointer window under 31.99rem tall (a
+ * landscape phone). The page's media queries in ui and web read the same string; the shell's container queries cannot see
+ * the viewport and have `[data-layout="phone"]` twins instead.
+ */
+export const PHONE_QUERY = '(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)';
 
 function subscribe(onChange: () => void): () => void {
   if (typeof window.matchMedia !== 'function') return () => undefined;
@@ -19,28 +23,52 @@ export function usePhoneLayout(): boolean {
   return useSyncExternalStore(subscribe, snapshot, () => false);
 }
 
+/** An element the soft keyboard types into. */
+const editable = (el: Element | null): el is HTMLElement => el instanceof HTMLElement
+  && (el.isContentEditable || el instanceof HTMLTextAreaElement
+    || (el instanceof HTMLInputElement && !['button', 'checkbox', 'radio', 'submit', 'reset', 'range', 'file', 'image', 'color'].includes(el.type)));
+
 /**
- * Keeps `--d-vvh` and `--d-vvtop` on <html> at the visual viewport's height and offset while enabled, so the phone shell
- * shrinks above a soft keyboard, follows iOS panning the viewport, and the composer stays in view. Both are removed when
- * the hook unmounts or turns off.
+ * What a mounted phone shell does to the window, while enabled (R10). Sets `data-phone-shell` on <html> (the page lock in
+ * app.css reads it), and keeps `--d-vvh` and `--d-vvtop` on <html> at the visual viewport's height and offset, so the shell
+ * shrinks above a soft keyboard, follows iOS panning the viewport, and the composer stays in view. After a resize that shrinks
+ * the height, the focused field is scrolled into view on the next frame (m7). All of it is removed when the hook unmounts or
+ * turns off.
  */
 export function useVisualViewportHeight(enabled = true): void {
   useEffect(() => {
-    const vv = window.visualViewport;
-    if (!enabled || vv === null || vv === undefined) return;
+    if (!enabled) return;
     const root = document.documentElement;
+    root.setAttribute('data-phone-shell', '');
+    const vv = window.visualViewport;
+    if (vv === null || vv === undefined) return () => root.removeAttribute('data-phone-shell');
+    let height = vv.height;
+    let frame = 0;
     const set = () => {
       root.style.setProperty('--d-vvh', `${vv.height}px`);
       root.style.setProperty('--d-vvtop', `${vv.offsetTop}px`);
     };
+    const onResize = () => {
+      set();
+      const shrank = vv.height < height;
+      height = vv.height;
+      if (!shrank) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (editable(active)) active.scrollIntoView({ block: 'nearest' });
+      });
+    };
     set();
-    vv.addEventListener('resize', set);
+    vv.addEventListener('resize', onResize);
     vv.addEventListener('scroll', set);
     return () => {
-      vv.removeEventListener('resize', set);
+      cancelAnimationFrame(frame);
+      vv.removeEventListener('resize', onResize);
       vv.removeEventListener('scroll', set);
       root.style.removeProperty('--d-vvh');
       root.style.removeProperty('--d-vvtop');
+      root.removeAttribute('data-phone-shell');
     };
   }, [enabled]);
 }

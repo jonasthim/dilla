@@ -139,7 +139,7 @@ function restoredConversationUi(value: unknown): ConversationUi | null {
  * under a settings route the shell shows the route Settings was opened over and never navigates (L-TS-27). The
  * worker loads a server's lists on selectCommunity and opens a channel's or DM's group on openChannel.
  */
-export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Element {
+export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}): React.JSX.Element {
   const client = useCore();
   const phone = usePhoneLayout();
   useVisualViewportHeight(phone);
@@ -1345,14 +1345,18 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   });
   // The tab to open once an open sheet's entry has been popped (set while that pop is pending, so a second tap only retargets it).
   const pendingTab = useRef<{ to: PhoneTab; current: boolean } | null>(null);
+  // The listener goBack leaves for the pop (N5); a newer tap or the shell going away removes it.
+  const tabBackOff = useRef<() => void>(() => undefined);
+  useEffect(() => () => tabBackOff.current(), []);
   const openTab = (to: PhoneTab, current: boolean) => {
+    tabBackOff.current();
     // The current tab in its pushed view goes to its list (the iOS convention): back when the app pushed the view, else a replace after a
     // deep link. Another tab opens where it was left, replacing the entry.
     if (current) {
       // Back only when the view was pushed from this tab's own list; from anywhere else (Activity, another tab) back would land there.
       const from = pushedFrom();
       const fromList = from !== null && tabOf(from) === to && from.name !== 'dm' && from.name !== 'settings' && !(from.name === 'channel' && from.channelId !== null);
-      if (fromList) goBack(tabRoot(to), navigate);
+      if (fromList) tabBackOff.current = goBack(tabRoot(to), navigate, tabRoot(to));
       else navigate(tabRoot(to), true);
     } else navigate(tabTarget(to), true);
   };
@@ -1582,6 +1586,9 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const updateNoStorage = updateEntry !== null && updateScope === null;
   const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
     || call.recoveryChannelId !== null;
+  // Server settings is a page above the shell on a phone (the same slot as Settings), and after it on a desktop.
+  const adminPage = adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
+    onClose={() => setAdminFor(null)} announce={announce} /> : null;
   return (
     <>
       {updateNotice ? <div className="dw-update-notice" role="status">
@@ -1605,6 +1612,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       <AppShell
         skipLabel={t('shell.skip')}
         layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} covered={phone && (overlay || adminFor !== null)}
+        page={phone ? <>{adminPage}{props.page}</> : undefined}
         rail={phone && phoneTab !== 'servers' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
           joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}
@@ -1681,8 +1689,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       <InviteFlow open={inviteOpen} community={community} onClose={() => setInviteOpen(false)}
         onMoreOptions={() => { if (community !== null) openAdminFor(community.id, 'invites'); }} />
       <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} announce={announce} onClose={() => setEditChannelId(null)} />
-      {adminFor !== null ? <ServerSettings communityId={adminFor} tab={adminTab} onTab={setAdminTab}
-        onClose={() => setAdminFor(null)} announce={announce} /> : null}
+      {phone ? null : <>{adminPage}{props.page}</>}
     </>
   );
 }

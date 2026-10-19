@@ -272,7 +272,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       case 'factor': return <ForcedFactor />;
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
-      case 'shell': return <><Shell update={props.update} />{route.name === 'settings' ? <Settings /> : null}</>;
+      case 'shell': return <Shell update={props.update} page={route.name === 'settings' ? <Settings /> : null} />;
     }
   }
 }

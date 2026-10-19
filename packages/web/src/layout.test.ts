@@ -7,12 +7,53 @@ import { PHONE_QUERY, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet,
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+const FULL_QUERY = '(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)';
+const PHONE_ATTR = '[data-layout="phone"]';
+
 describe('the phone breakpoint', () => {
-  it('is the same 47.99rem in the query, the shell container and the page media query', () => {
-    expect(PHONE_QUERY).toBe('(max-width: 47.99rem)');
+  it('is the 47.99rem width or a coarse pointer under 32rem tall (R9), in the query and base.css', () => {
+    expect(PHONE_QUERY).toBe(FULL_QUERY);
     const css = readFileSync(join(here, '..', '..', 'ui', 'src', 'styles', 'base.css'), 'utf8');
     expect(css).toContain('@container d-shell (max-width: 47.99rem)');
-    expect(css).toContain('@media (max-width: 47.99rem)');
+    expect(css).toContain(`@media ${FULL_QUERY}`);
+  });
+});
+
+describe('R9 (web half): app.css reads the same phone query and has the container twins', () => {
+  const app = readFileSync(join(here, 'app.css'), 'utf8');
+  const block = (css: string, open: number): string => {
+    let depth = 0;
+    for (let i = open; i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}' && (depth -= 1) === 0) return css.slice(open + 1, i);
+    }
+    throw new Error('unbalanced braces');
+  };
+  const rules = (css: string) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .map(m => ({ selector: m[1].trim(), body: m[2].trim() }));
+  const parts = (selector: string) => selector.split(',').map(x => x.trim());
+
+  it('every @media rule with 47.99rem in app.css reads exactly the landscape query (pre-flight C-6)', () => {
+    const found = [...app.matchAll(/@media[^{]*\{/g)].map(m => m[0].slice(0, -1).trim()).filter(p => p.includes('47.99rem'));
+    expect(found).toEqual([`@media ${FULL_QUERY}`]);
+  });
+
+  it('every phone-only rule of the @container d-shell blocks has a [data-layout="phone"] twin with identical declarations (pre-flight C-7)', () => {
+    const opens = [...app.matchAll(/@container d-shell \(max-width: 47\.99rem\) \{/g)];
+    expect(opens.length).toBe(2);
+    const flat = rules(app.replace(/@(container|media)[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, ''));
+    let count = 0;
+    for (const m of opens) {
+      for (const r of rules(block(app, m.index + m[0].length - 1))) {
+        // A rule that already excludes the phone shell is desktop-only and has nothing to twin.
+        if (r.selector.includes(`:not(${PHONE_ATTR})`)) continue;
+        count += 1;
+        const twin = flat.find(t => t.body === r.body && parts(t.selector).every(x => x.startsWith(`${PHONE_ATTR} `))
+          && parts(t.selector).map(x => x.slice(PHONE_ATTR.length + 1)).join(', ') === parts(r.selector).join(', '));
+        expect(twin, r.selector).toBeDefined();
+      }
+    }
+    expect(count).toBeGreaterThan(10);
   });
 });
 
@@ -34,9 +75,10 @@ describe('the phone shell follows the visual viewport (web3.7.2)', () => {
     expect(rule(app, '.dw-search {')).toContain('var(--d-vvtop, 0px)');
     expect(rule(app, '.dw-other-tab--overlay')).toContain('var(--d-vvtop, 0px)');
   });
-  it('stops the page itself scrolling on a phone, and only while the phone shell is mounted', () => {
-    const phone = app.slice(app.indexOf('@media (max-width: 47.99rem)'));
-    expect(phone).toMatch(/html:has\(\.d-app-shell\[data-layout="phone"\]\), body:has\(\.d-app-shell\[data-layout="phone"\]\) \{[^}]*overflow: hidden/);
+  it('locks the page by the data-phone-shell attribute (R10), inside the landscape query, not by :has', () => {
+    const phone = app.slice(app.indexOf(`@media ${FULL_QUERY}`));
+    expect(phone).toMatch(/html\[data-phone-shell\], html\[data-phone-shell\] body \{[^}]*overflow: hidden/);
+    expect(app).not.toContain(':has(.d-app-shell[data-layout="phone"])');
     expect(app).not.toMatch(/(^|\n)\s*html, body \{[^}]*overflow/);
   });
 });
@@ -96,6 +138,67 @@ describe('useVisualViewportHeight', () => {
     expect(document.documentElement.style.getPropertyValue('--d-vvh')).toBe('350px');
     unmount();
     expect(document.documentElement.style.getPropertyValue('--d-vvh')).toBe('');
+  });
+
+  it('sets data-phone-shell on <html> while enabled and removes it on unmount or when turned off (R10)', () => {
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: Object.assign(new EventTarget(), { height: 600, offsetTop: 0 }) });
+    const { rerender, unmount } = renderHook(({ on }) => useVisualViewportHeight(on), { initialProps: { on: true } });
+    expect(document.documentElement.hasAttribute('data-phone-shell')).toBe(true);
+    rerender({ on: false });
+    expect(document.documentElement.hasAttribute('data-phone-shell')).toBe(false);
+    rerender({ on: true });
+    expect(document.documentElement.hasAttribute('data-phone-shell')).toBe(true);
+    unmount();
+    expect(document.documentElement.hasAttribute('data-phone-shell')).toBe(false);
+  });
+
+  it('sets data-phone-shell even where there is no visualViewport', () => {
+    const { unmount } = renderHook(() => useVisualViewportHeight(true));
+    expect(document.documentElement.hasAttribute('data-phone-shell')).toBe(true);
+    unmount();
+    expect(document.documentElement.hasAttribute('data-phone-shell')).toBe(false);
+  });
+
+  describe('after a resize that shrinks the height (m7)', () => {
+    let frames: FrameRequestCallback[] = [];
+    afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+    const setup = () => {
+      frames = [];
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length; });
+      const target = new EventTarget();
+      const vv = Object.assign(target, { height: 600, offsetTop: 0 });
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: vv });
+      const field = document.createElement('input');
+      document.body.append(field);
+      field.focus();
+      const scroll = vi.fn();
+      field.scrollIntoView = scroll;
+      const { unmount } = renderHook(() => useVisualViewportHeight(true));
+      return { vv, target, scroll, unmount };
+    };
+
+    it('scrolls the focused field into view on the next frame', () => {
+      const { vv, target, scroll } = setup();
+      vv.height = 350;
+      act(() => { target.dispatchEvent(new Event('resize')); });
+      expect(scroll).not.toHaveBeenCalled();
+      act(() => { frames.forEach(f => f(0)); });
+      expect(scroll).toHaveBeenCalledWith({ block: 'nearest' });
+    });
+
+    it('does nothing when the height grows, or when focus is not on a field', () => {
+      const { vv, target, scroll, unmount } = setup();
+      vv.height = 700;
+      act(() => { target.dispatchEvent(new Event('resize')); });
+      act(() => { frames.forEach(f => f(0)); });
+      expect(scroll).not.toHaveBeenCalled();
+      (document.activeElement as HTMLElement).blur();
+      vv.height = 300;
+      act(() => { target.dispatchEvent(new Event('resize')); });
+      act(() => { frames.forEach(f => f(0)); });
+      expect(scroll).not.toHaveBeenCalled();
+      unmount();
+    });
   });
 
   it('does nothing when disabled', () => {
