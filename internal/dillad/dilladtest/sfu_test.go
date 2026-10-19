@@ -585,3 +585,15 @@ func TestTheWithholdHookIsNotLinkedIntoProductionDillad(t *testing.T) {
 		}
 	}
 }
+
+// Only participant_left can be held back: any other event name is refused with 400.
+func TestWithholdRefusesEveryOtherEvent(t *testing.T) {
+	control := httptest.NewServer(ControlHandler(sfuHost(t, true)))
+	t.Cleanup(control.Close)
+	for _, event := range []string{"participant_joined", "room_finished", "bogus", ""} {
+		body := `{"event":"` + event + `","on":true}`
+		if got := postWithhold(t, control.URL, body); got != http.StatusBadRequest {
+			t.Errorf("withhold %q = %d, want 400", event, got)
+		}
+	}
+}

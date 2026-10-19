@@ -168,7 +168,8 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 	})
 	// POST /debug/sfu/withhold {"event":"participant_left","on":true} drops that webhook event before
 	// it reaches the instance (so a test can hold a departure back, as a lost webhook would); on:false
-	// restores delivery. Events already dropped stay lost.
+	// restores delivery. A withheld event is dropped, not queued: it is never delivered later and turning
+	// the hold off does not replay it. Only participant_left is accepted; any other name is 400.
 	mux.HandleFunc("POST /debug/sfu/withhold", func(w http.ResponseWriter, r *http.Request) {
 		if h.sfu == nil {
 			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
@@ -181,8 +182,8 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 		if !decode(w, r, &body) {
 			return
 		}
-		if body.Event == "" {
-			http.Error(w, "event is required", http.StatusBadRequest)
+		if body.Event != "participant_left" {
+			http.Error(w, `only "participant_left" can be withheld`, http.StatusBadRequest)
 			return
 		}
 		h.setWithheld(body.Event, body.On)
