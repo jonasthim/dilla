@@ -163,6 +163,11 @@ export interface PageCallOptions {
   /** Product walk M5: this browser's own mute or deafen kept from its last call; the call starts in it, so a reload never
    *  reopens a microphone the person had muted. */
   self?: 'muted' | 'deafened' | null;
+  /** web3.8 MUTE: the own mute or deafen as it stands now (the page's last press, else the stored setting). `self` is read
+   *  before the microphone prompt; a press after it is read here right before the microphone is published (so it goes out
+   *  already closed) and again when the call connects. Only ever toward privacy: a value less private than the session's
+   *  changes nothing. A getter that throws counts as no answer. */
+  selfNow?: () => 'muted' | 'deafened' | null;
   /** Fix round 2 (Minor 1): the call’s AudioContext, made by the shell synchronously inside the person’s press (useCall’s
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
@@ -523,6 +528,23 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
     let mutedBeforeDeafen = opts.self === 'deafened';
+    /** web3.8 MUTE: a mute or deafen pressed while the start runs (selfNow) joins the session's state before it is in use,
+     *  never the other way. A deafen is applied as a mute first and then a deafen, so an undeafen keeps the microphone muted
+     *  (R25: deafened goes back to muted, never to an open microphone). True when it changed anything. */
+    const catchUp = (): boolean => {
+      let now: 'muted' | 'deafened' | null = null;
+      try { now = opts.selfNow?.() ?? null; } catch { now = null; }
+      if (now === 'deafened' && !state.deafened) {
+        mutedBeforeDeafen = true;
+        state = { ...state, muted: true, deafened: true, speaking: false };
+        return true;
+      }
+      if (now === 'muted' && !state.muted) {
+        state = { ...state, muted: true, speaking: false };
+        return true;
+      }
+      return false;
+    };
     let verified = new Set<string>();
     const timers = new Set<unknown>();
     const later = (fn: () => void, ms: number): unknown => {
@@ -729,7 +751,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const status = (made as {status?:ProcessorStatus}).status;
         if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
           await track.restartTrack({...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
+          // web3.8 MUTE: the restart captures a new track; the mute and push to talk govern that one from here on.
+          if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
           if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }
+          applyMic();
         }
         // Settings and held keys may change while LiveKit initializes the processor.
         if (made.setMode) { made.setMode(mode); processorMode = mode; }
@@ -740,12 +765,41 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         await browserStatus('initialization-failed');
       }
     };
+    /** Whether the microphone may send now: not muted, deafened, paused or ended, and push to talk's key down. */
+    const sendNow = (): boolean => !ended && !state.muted && !state.deafened && !state.paused && (mode !== 'ptt' || gate.update(0, deps.now()));
+    /** web3.8 MUTE: LiveKit enables a track it is handed, and again after a capture restart (its LocalTrack sets
+     *  `enabled = !isMuted`, and isMuted stays false until the session's mute() lands, which is asynchronous). The microphone
+     *  track the session holds therefore refuses to be enabled while the session must not send: a call started muted (or in
+     *  push to talk with the key up) sends no frame during its publish. Idempotent; a track that cannot be guarded is still
+     *  closed by applyMic. */
+    const guardMic = (t: MediaStreamTrack | null): void => {
+      if (t === null || Object.prototype.hasOwnProperty.call(t, 'enabled')) return;
+      let proto = Object.getPrototypeOf(t) as object | null;
+      let native: { get?: (this: void) => unknown; set?: (this: void, v: boolean) => void } | undefined;
+      while (proto !== null && native === undefined) {
+        native = Object.getOwnPropertyDescriptor(proto, 'enabled');
+        proto = Object.getPrototypeOf(proto) as object | null;
+      }
+      const read = native?.get;
+      const write = native?.set;
+      let plain = (t as { enabled?: boolean }).enabled !== false;
+      try {
+        Object.defineProperty(t, 'enabled', {
+          configurable: true,
+          get: () => (read !== undefined ? Boolean(Reflect.apply(read, t, [])) : plain),
+          set: (v: boolean) => {
+            const on = Boolean(v) && sendNow();
+            if (write !== undefined) Reflect.apply(write, t, [on]); else plain = on;
+          },
+        });
+      } catch { /* not guardable: applyMic still closes it */ }
+    };
     const applyMic = (): void => {
+      guardMic(micTrack);
       const track = micPub?.track;
       if (!track) return;
       // Close the track and processor together, including fallback and initialization transitions.
-      const pttOpen = mode !== 'ptt' || gate.update(0, deps.now());
-      const send = !ended && !state.muted && !state.deafened && !state.paused && pttOpen;
+      const send = sendNow();
       processor?.setCaptureAllowed?.(send);
       if (micTrack) micTrack.enabled = send;
       if (send === micSending) return;
@@ -765,7 +819,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     if ('track' in mic) {
       micTrack = mic.track;
-      // Product walk M5: a start muted sends no frame before the mute lands (LiveKit's unmute enables it again).
+      // web3.8 MUTE: a mute or deafen pressed since the start read `self` (the microphone prompt, the connect) is in force
+      // before the publish.
+      catchUp();
+      // Product walk M5: a start muted sends no frame before the mute lands. web3.8 MUTE: LiveKit enables the track it is
+      // handed while it publishes, so the track is guarded first (see guardMic).
+      guardMic(mic.track);
       if (state.muted || mode === 'ptt') mic.track.enabled = false;
       try {
         micPub = await local.publishTrack(mic.track, micOptions(caps));
@@ -774,6 +833,10 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         micTrack = null;
         state = { ...state, mic: 'failed', error: 'E_MIC_PUBLISH' };
       }
+      // web3.8 MUTE: a press during the publish is read again, and the published track takes the state at once, LiveKit's
+      // mute included (a later restartTrack enables the new capture track only when LiveKit's track is unmuted).
+      catchUp();
+      applyMic();
       if (micPub !== null) restartOwnMeter();
       checkAborted();
       if (opts.noise !== 'off') {
@@ -1112,6 +1175,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     checkAborted();
     if ((room as unknown as { state?: string }).state === 'disconnected') throw new PageCallError('E_DISCONNECTED');
     opts.signal?.removeEventListener('abort', onAbort);
+    // web3.8 MUTE: a mute or deafen pressed while the microphone was set up (the noise processor, the room) is in force
+    // before the call counts as connected; the page's attach applies anything later.
+    if (catchUp()) applyMic();
     sweepAudio();
     applyGains();
     state = { ...state, phase: 'connected', tiles: tiles(), audioBlocked: playbackBlocked() };

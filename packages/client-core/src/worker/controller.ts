@@ -28,7 +28,7 @@ import {
 } from '../http/routes';
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
-import { PENDING_JOIN_KEY, SETTINGS, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
+import { PENDING_JOIN_KEY, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
 import { readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
@@ -799,8 +799,6 @@ export class Controller {
   private readonly ownInCall = new Set<string>();
   /** web3.8 VM: the re-sends of the own voice_self left in this join of the call (VOICE_SELF_RESENDS). */
   private selfResends: { callId: string; left: number } | null = null;
-  /** web3.8 VM: the voice.self setting as this call's join started, which is what the page's start read. */
-  private selfAtJoin: { callId: string; flags: 0 | 1 | 2 | 3 } | null = null;
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -844,7 +842,6 @@ export class Controller {
       callEnded: (call) => {
         if (this.lastVoiceSelf?.callId === call) this.lastVoiceSelf = null;
         if (this.selfResends?.callId === call) this.selfResends = null;
-        if (this.selfAtJoin?.callId === call) this.selfAtJoin = null;
         this.ownInCall.delete(call);
       },
       onCommitted: (g, result) => { this.onGroupChanged(g, result); },
@@ -1080,15 +1077,7 @@ export class Controller {
       case 'typing': return this.typing(command.channelId, command.on);
       case 'voiceSelf': return this.voiceSelf(command.callId, command.flags);
       case 'loadVoice': return this.calls.loadVoice(command.communityId, command.channelId);
-      case 'callJoin': {
-        const joining = this.calls.join(command.channelId, command.vdec);
-        // web3.8 VM: past the join's synchronous start (which drops what was kept for the call), the voice.self it started in.
-        const started = this.slices.get('call');
-        if (started?.phase === 'joining' && started.channelId === command.channelId) {
-          this.selfAtJoin = { callId: command.channelId, flags: this.settingSelfFlags() };
-        }
-        return joining;
-      }
+      case 'callJoin': return this.calls.join(command.channelId, command.vdec);
       case 'callLeave': return this.calls.leave(false, command.reason === 'lost');
       case 'callShare': return this.calls.share(command.on);
       case 'callRefresh': return this.calls.refresh();
@@ -3157,7 +3146,7 @@ export class Controller {
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.calls.reset();
-    this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null; this.selfAtJoin = null;
+    this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null;
     this.setConnection({ status: 'offline', generation: null });
   }
 
@@ -3820,9 +3809,11 @@ export class Controller {
   }
 
   private voiceSelf(callId: string, flags: number): Promise<null> {
+    // web3.8 MUTE: kept before the online check, so a mute made while offline is sent again once the own voice_state
+    // after the reconnect lacks it (the re-send rule below), and the others never keep "unmuted" for a muted session.
+    this.lastVoiceSelf = { callId, flags: flags as 0 | 1 | 2 | 3 };
     if (this.connectionState.status !== 'online') throw new Refusal('E_NOT_READY', '');
     this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
-    this.lastVoiceSelf = { callId, flags: flags as 0 | 1 | 2 | 3 };
     return Promise.resolve(null);
   }
 
@@ -3830,7 +3821,9 @@ export class Controller {
    *  the call's room, so one sent before the join webhook is lost. web3.8 VM: the SFU may list the device only after the
    *  join transition, so a voice_self is refused then too. While this device's own voice_state for the call lacks the self
    *  bits of the last voice_self for that call, it is sent again: online only, at most VOICE_SELF_RESENDS times per join.
-   *  A mute or deafen pressed while the join was starting (in voice.self after the start read it) joins it at in_call. */
+   *  web3.8 MUTE: only what the page said is sent. The worker never infers a voice_self from voice.self: the page applies a
+   *  press made while the join started (its start reads it live, and its attach reconcile sends the voice_self), so page
+   *  and worker never disagree for a call. */
   private ownVoiceState(frame: Frame): void {
     let f;
     try { f = voiceStateOf(frame); } catch { return; }
@@ -3840,17 +3833,6 @@ export class Controller {
     if (!this.ownInCall.has(call)) {
       this.ownInCall.add(call);
       this.selfResends = { callId: call, left: VOICE_SELF_RESENDS };
-      const read = this.selfAtJoin;
-      if (read !== null && read.callId === call) {
-        this.selfAtJoin = null;
-        const now = this.settingSelfFlags();
-        if (now !== read.flags) {
-          // Fail closed, as the page does when its session attaches: the more private of the two wins, never the other way.
-          const held = this.lastVoiceSelf?.callId === call ? this.lastVoiceSelf.flags : read.flags;
-          const want = (held | now) as 0 | 1 | 2 | 3;
-          if (want !== held) this.lastVoiceSelf = { callId: call, flags: want };
-        }
-      }
     }
     const last = this.lastVoiceSelf;
     if (last === null || last.callId !== call || this.connectionState.status !== 'online') return;
@@ -3859,13 +3841,6 @@ export class Controller {
     if (budget === null || budget.callId !== call || budget.left <= 0) return;
     budget.left -= 1;
     this.gateway?.sendVoiceSelf(f.callId, last.flags);
-  }
-
-  /** The voice.self setting as voice_self flags (bit 0 muted, bit 1 deafened; deafened is muted too). */
-  private settingSelfFlags(): 0 | 1 | 3 {
-    let value: string | undefined;
-    try { value = this.core?.settings()[SETTINGS.voiceSelf]; } catch { return 0; }
-    return value === 'deafened' ? 3 : value === 'muted' ? 1 : 0;
   }
 
   private typingOff(): void {

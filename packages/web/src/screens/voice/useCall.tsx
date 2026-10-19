@@ -207,6 +207,20 @@ export function useCall(o: UseCallOptions): CallView {
   const opener = useRef<HTMLElement | null>(null);
   const live = useRef(o);
   live.current = o;
+  /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
+   *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
+   *  and never the stale slice. A refused press outside a call drops it, and the panel (which reads the stored slice) never
+   *  claimed it. web3.8 MUTE: an in-call toggle whose write is refused is `held` instead: the session was in that state, so
+   *  a rejoin (after a disconnect) starts in it and the panel shows it, until a later write is answered. */
+  const written = useRef<{ seq: number; value: string | null; held?: true } | null>(null);
+  const writeSeq = useRef(0);
+  /** web3.8 MUTE: the own mute or deafen as it stands now: the last press not yet answered (or held), else the stored setting.
+   *  The join starts in it, the session reads it again before it publishes and at connected, and the attach reconcile
+   *  reads it last; all three apply it only toward privacy. */
+  const selfNow = useCallback((): 'muted' | 'deafened' | null => {
+    const value = written.current !== null ? written.current.value : (client.get('settings') ?? {})[SETTINGS.voiceSelf];
+    return value === 'deafened' ? 'deafened' : value === 'muted' ? 'muted' : null;
+  }, [client]);
 
   // WB a11y I3: the same text again (a second "You joined harbour.") is said again: the region is emptied first and the
   // text set a moment later, since setting identical text changes nothing a screen reader hears.
@@ -360,7 +374,9 @@ export function useCall(o: UseCallOptions): CallView {
           volumes: mod.volumesFromSettings(settings),
           signal: abort.signal,
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
-          self: settings[SETTINGS.voiceSelf] === 'deafened' ? 'deafened' : settings[SETTINGS.voiceSelf] === 'muted' ? 'muted' : null,
+          self: selfNow(),
+          // web3.8 MUTE: a press while the start runs is read again before the publish and at connected.
+          selfNow,
           ...(ctx !== null ? { audioContext: ctx } : {}),
         };
         handed = true;
@@ -404,7 +420,7 @@ export function useCall(o: UseCallOptions): CallView {
         else closeContext(next?.ctx);
       }
     })();
-  }, [deps, client, attach, detach]);
+  }, [deps, client, attach, detach, selfNow]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
@@ -451,7 +467,14 @@ export function useCall(o: UseCallOptions): CallView {
   /** Product walk M5: the own mute and deafen are kept per browser (a device-local setting), for the next call. */
   const keepSelf = useCallback((s: PageCall) => {
     const value = s.state.deafened ? 'deafened' : s.state.muted ? 'muted' : null;
-    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).catch(() => undefined);
+    // web3.8 MUTE: kept in memory as well (the same ref as writeSelf), and still kept when the write is refused, so a
+    // rejoin after a disconnect starts in the state the session was in.
+    const mine: { seq: number; value: string | null; held?: true } = { seq: ++writeSeq.current, value };
+    written.current = mine;
+    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(
+      () => { if (written.current === mine) written.current = null; },
+      () => { if (written.current === mine) mine.held = true; },
+    );
   }, [client]);
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
@@ -469,11 +492,6 @@ export function useCall(o: UseCallOptions): CallView {
     keepSelf(s);
     announce(t(on ? 'voice.announce.deafened' : 'voice.announce.undeafened'));
   }, [announce, keepSelf]);
-  /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in.
-   *  `written` is the last value sent and not yet answered, so two quick presses read one source (the second sees the first)
-   *  and never the stale slice. A refused write drops it, and the panel (which reads the stored slice) never claimed it. */
-  const written = useRef<{ seq: number; value: string | null } | null>(null);
-  const writeSeq = useRef(0);
   const writeSelf = useCallback((pick: (current: string | undefined) => 'muted' | 'deafened' | null) => {
     const current = written.current !== null ? written.current.value ?? undefined : (client.get('settings') ?? {})[SETTINGS.voiceSelf];
     const value = pick(current);
@@ -677,12 +695,15 @@ export function useCall(o: UseCallOptions): CallView {
   // composition. Either modifier works on every platform, as the Control/⌘+K entry does.
   // Fail closed: a mute or deafen pressed while the join was starting is in `voice.self` but not in the session it started
   // with (it read the setting before). When the session attaches, the more private of the two wins; never the other way.
+  // A deafen is applied as a mute first, then the deafen, so an undeafen keeps the microphone muted (R25: deafened goes back
+  // to muted, never to an open microphone). The session's own setMuted and setDeafened tell the others (voiceSelf).
   useEffect(() => {
     if (session === null) return;
-    const kept = (written.current !== null ? written.current.value ?? undefined : (client.get('settings') ?? {})[SETTINGS.voiceSelf]);
+    const kept = selfNow();
+    if (kept === null) return;
+    if (!session.state.muted) session.setMuted(true);
     if (kept === 'deafened' && !session.state.deafened) session.setDeafened(true);
-    else if ((kept === 'muted' || kept === 'deafened') && !session.state.muted) session.setMuted(true);
-  }, [session, client]);
+  }, [session, selfNow]);
   const selfShortcuts = o.selfShortcuts === true;
   useEffect(() => {
     if (session === null && !selfShortcuts) return;
@@ -698,7 +719,8 @@ export function useCall(o: UseCallOptions): CallView {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [session, selfShortcuts, selfMute, selfDeafen]);
-  const kept = o.settings[SETTINGS.voiceSelf];
+  // web3.8 MUTE: an in-call toggle whose write was refused is what the next join starts in, so the panel shows it.
+  const kept = written.current?.held === true ? (written.current.value ?? undefined) : o.settings[SETTINGS.voiceSelf];
   const selfMuted = state !== null && session !== null ? state.muted : kept === 'muted' || kept === 'deafened';
   const selfDeafened = state !== null && session !== null ? state.deafened : kept === 'deafened';
 

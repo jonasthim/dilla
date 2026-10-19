@@ -288,6 +288,132 @@ describe('fail closed (security round 1)', () => {
     held.forEach(h => h());
   });
 
+  /** The voice channel's stage with its join button, before any join. */
+  async function openVoiceChannel() {
+    await screen.findByRole('main');
+    window.history.pushState(null, '', `/c/${A}/${GENV}`);
+    act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
+    return main().findByRole('button', { name: 'join voice' });
+  }
+  /** setSetting answers only when its turn is released, one by one, in the order sent. */
+  function holdWrites(app: ReturnType<typeof shell>) {
+    const inner = app.client.handler;
+    const held: (() => void)[] = [];
+    app.client.handler = (command: Command) => (command.m === 'setSetting'
+      ? new Promise(resolve => { held.push(() => { void inner(command).then(resolve); }); }) : inner(command));
+    return { next: () => { act(() => { held.shift()?.(); }); }, all: () => { act(() => { held.splice(0).forEach(h => h()); }); } };
+  }
+  const selfLog = (app: ReturnType<typeof shell>) => app.log.filter(l => l.startsWith('muted:') || l.startsWith('deafened:'));
+  const startOpts = (app: ReturnType<typeof shell>, n = 0) => vi.mocked(app.module.startPageCall).mock.calls[n][2];
+
+  it('a deafen pressed while the join is pending: the session is muted first, then deafened (so an undeafen stays muted)', async () => {
+    const app = shell();
+    const join = await openVoiceChannel();
+    const release = app.holdStart();
+    await app.user.click(join);
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.deafen') }));
+    expect(writes(app)).toEqual(['deafened']);
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.state.deafened).toBe(true));
+    expect(selfLog(app)).toEqual(['muted:true', 'deafened:true']);
+  });
+
+  it('the attach reads a write still unanswered, not only the slice, and the start is handed the same live reading', async () => {
+    const app = shell();
+    const join = await openVoiceChannel();
+    const release = app.holdStart();
+    await app.user.click(join);
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    const answers = holdWrites(app);
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.deafen') }));
+    expect(writes(app)).toEqual(['deafened']);
+    // The start read `self` before the press; its live getter sees the press at once.
+    expect(startOpts(app).self).toBe(null);
+    expect(startOpts(app).selfNow?.()).toBe('deafened');
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.state.deafened).toBe(true));
+    expect(selfLog(app)).toEqual(['muted:true', 'deafened:true']);
+    answers.all();
+  });
+
+  it('a setting less private than the session never opens it: unmute or undeafen pressed while the join is pending', async () => {
+    const app = shell({ settings: { [SETTINGS.voiceSelf]: 'muted' } });
+    const join = await openVoiceChannel();
+    const release = app.holdStart();
+    await app.user.click(join);
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    // The start read "muted"; the press clears the setting while the start still runs.
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    expect(writes(app)).toEqual([null]);
+    expect(startOpts(app).self).toBe('muted');
+    expect(startOpts(app).selfNow?.()).toBe(null);
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(inPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-pressed', 'true'));
+    expect(app.session.state.muted).toBe(true);
+    expect(selfLog(app)).toEqual([]);
+  });
+
+  it('an undeafen pressed while the join is pending never undeafens the session', async () => {
+    const app = shell({ settings: { [SETTINGS.voiceSelf]: 'deafened' } });
+    const join = await openVoiceChannel();
+    const release = app.holdStart();
+    await app.user.click(join);
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.deafen') }));
+    expect(writes(app)).toEqual(['muted']);
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(inPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAttribute('aria-pressed', 'true'));
+    expect(app.session.state).toMatchObject({ muted: true, deafened: true });
+    expect(selfLog(app)).toEqual([]);
+  });
+
+  it('an answer clears only its own write: a deafen pressed after a mute is still read when the mute is answered', async () => {
+    const app = shell();
+    const join = await openVoiceChannel();
+    const release = app.holdStart();
+    await app.user.click(join);
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    const answers = holdWrites(app);
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.deafen') }));
+    expect(writes(app)).toEqual(['muted', 'deafened']);
+    // The mute is answered (the slice says muted); the deafen is not yet.
+    answers.next();
+    await waitFor(() => expect(app.client.get('settings')?.[SETTINGS.voiceSelf]).toBe('muted'));
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    await waitFor(() => expect(app.session.state.deafened).toBe(true));
+    expect(selfLog(app)).toEqual(['muted:true', 'deafened:true']);
+    answers.all();
+  });
+
+  it('an in-call mute whose write is refused is kept: the rejoin after a disconnect starts muted, and the panel says so', async () => {
+    const app = shell();
+    await joinVoice(app);
+    const inner = app.client.handler;
+    app.client.handler = (command: Command) => (command.m === 'setSetting' ? Promise.reject(new Error('E_INTERNAL')) : inner(command));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    expect(app.session.state.muted).toBe(true);
+    expect(app.client.get('settings')?.[SETTINGS.voiceSelf]).toBeUndefined();
+    app.client.handler = inner;
+    act(() => {
+      app.session.update({ phase: 'ended', error: 'E_DISCONNECTED' });
+      app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+        error: { code: 'E_DISCONNECTED', detail: '', status: 0, retryAfterMs: null } }));
+    });
+    // Between the loss and the rejoin the panel shows the kept mute, not the stale setting.
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(inPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(app.sessions).toHaveLength(2), { timeout: 4_000 });
+    expect(startOpts(app, 1).self).toBe('muted');
+    expect(app.session.state.muted).toBe(true);
+  });
+
   it('a refused setSetting leaves the panel showing what is stored, and the next press writes again', async () => {
     const app = shell();
     await screen.findByRole('main');

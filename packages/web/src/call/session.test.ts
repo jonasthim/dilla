@@ -1481,6 +1481,244 @@ describe('product walk M5: the own mute and deafen kept across a reload', () => 
   });
 });
 
+describe('web3.8 MUTE: a mute pressed while the start runs is in force from the first published frame', () => {
+  const open: PageCall[] = [];
+  afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });
+  const deferred = <T,>() => {
+    let resolve: (v: T) => void = () => undefined;
+    const promise = new Promise<T>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const micStream = () => {
+    const track = { kind: 'audio', stop: () => undefined } as { kind: string; stop: () => void; enabled?: boolean };
+    return { track, stream: { getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] } as unknown as MediaStream };
+  };
+  /** Records what the microphone looked like at the moment it was handed to the publish (`enabled`) and when the noise
+   *  processor was set on the published track (`mutedAtNoise`); `publish` and `noise` hold those steps when given. */
+  const watch = (f: ReturnType<typeof fakes>, hold: { publish?: Promise<void>; noise?: Promise<void> } = {}) => {
+    const seen: { enabled: boolean | undefined; mutedAtNoise: boolean | undefined; publishing: boolean } = {
+      enabled: undefined, mutedAtNoise: undefined, publishing: false,
+    };
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      seen.publishing = true;
+      seen.enabled = (track as unknown as { enabled?: boolean }).enabled !== false;
+      await hold.publish;
+      const pub = await real(track, o);
+      const t = pub.track;
+      t.setProcessor = vi.fn(async () => { seen.mutedAtNoise = t.muted; await hold.noise; });
+      return pub;
+    });
+    return seen;
+  };
+
+  it('a mute pressed during the microphone prompt: the track is published disabled, and the others are told', async () => {
+    const prompt = deferred<MediaStream>();
+    const f = fakes({ getUserMedia: () => prompt.promise });
+    const seen = watch(f);
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: null, selfNow: () => kept });
+    await flush();
+    kept = 'muted';
+    prompt.resolve(micStream().stream);
+    const call = await started;
+    open.push(call);
+    expect(seen.enabled).toBe(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+    expect(f.localTracks[0].muted).toBe(true);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+  });
+
+  it('a mute pressed while the room connects: the track is published disabled', async () => {
+    const f = fakes();
+    const seen = watch(f);
+    const connect = deferred<void>();
+    const join = f.deps.joinCall;
+    f.deps.joinCall = async (o: JoinCallOptions) => { await connect.promise; return join(o); };
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, selfNow: () => kept });
+    await flush();
+    kept = 'muted';
+    connect.resolve();
+    const call = await started;
+    open.push(call);
+    expect(seen.enabled).toBe(false);
+    expect(f.localTracks[0].muted).toBe(true);
+  });
+
+  it('a mute pressed during the publish closes the published track before the noise processor loads', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const publish = deferred<void>();
+    const seen = watch(f, { publish: publish.promise });
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', selfNow: () => kept });
+    await flush();
+    // The track went to the publish open: the person had not pressed anything yet.
+    expect(seen).toMatchObject({ publishing: true, enabled: true });
+    kept = 'muted';
+    publish.resolve();
+    const call = await started;
+    open.push(call);
+    expect(seen.mutedAtNoise).toBe(true);
+    expect(call.state).toMatchObject({ muted: true });
+    expect(f.localTracks[0].muted).toBe(true);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+  });
+
+  it('a mute pressed while the noise processor loads closes the microphone before the start resolves', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const noise = deferred<void>();
+    const seen = watch(f, { noise: noise.promise });
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', selfNow: () => kept });
+    await flush();
+    expect(seen.mutedAtNoise).toBe(false);
+    kept = 'muted';
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true });
+    expect(f.localTracks[0].muted).toBe(true);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+  });
+
+  it('a deafen pressed during the join, then an undeafen, leaves the microphone muted', async () => {
+    const prompt = deferred<MediaStream>();
+    const f = fakes({ getUserMedia: () => prompt.promise });
+    const seen = watch(f);
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, selfNow: () => kept });
+    await flush();
+    kept = 'deafened';
+    prompt.resolve(micStream().stream);
+    const call = await started;
+    open.push(call);
+    expect(seen.enabled).toBe(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+    expect(f.localTracks[0].muted).toBe(true);
+  });
+
+  it('a deafen pressed while the noise processor loads, then an undeafen, leaves the microphone muted', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const noise = deferred<void>();
+    watch(f, { noise: noise.promise });
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', selfNow: () => kept });
+    await flush();
+    kept = 'deafened';
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    const bob = f.addRemote(BOB_DEV);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    expect(bob.gains.microphone).toBe(0);
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 3 });
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+  });
+
+  it('only toward privacy: a setting less private than the start never opens it', async () => {
+    const f = fakes();
+    const seen = watch(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'deafened', selfNow: () => null });
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    expect(seen.enabled).toBe(false);
+    expect(f.localTracks[0].muted).toBe(true);
+    const g = fakes();
+    const muted = await startPageCall(g.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'deafened', selfNow: () => 'muted' });
+    open.push(muted);
+    expect(muted.state).toMatchObject({ muted: true, deafened: true });
+    expect(g.localTracks[0].muted).toBe(true);
+  });
+
+  it('the capture track the noise start reopens is the one the mute closes', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn(), status: { effective: 'browser', browserNoise: 'off' } } as unknown as ReturnType<NonNullable<PageCallDeps['createNoiseProcessor']>>);
+    const fresh = { kind: 'audio', enabled: true, stop: vi.fn(), getSettings: () => ({ noiseSuppression: true }), getConstraints: () => ({}),
+      applyConstraints: async () => undefined } as unknown as MediaStreamTrack;
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      const raw = track as unknown as Record<string, unknown>;
+      raw.getSettings = () => ({ noiseSuppression: false, deviceId: 'chosen' }); raw.getConstraints = () => ({}); raw.applyConstraints = async () => undefined;
+      const pub = await real(track, o);
+      const t = pub.track as unknown as { mediaStreamTrack: unknown; restartTrack: () => Promise<void> };
+      t.mediaStreamTrack = track;
+      t.restartTrack = async () => { t.mediaStreamTrack = fresh; };
+      return pub;
+    });
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', self: 'muted' });
+    open.push(call);
+    expect(fresh.enabled).toBe(false);
+  });
+
+  /** As LiveKit's LocalTrack: the track it is handed is enabled (`enabled = !isMuted`, isMuted false) while it publishes. */
+  const liveKitEnables = (f: ReturnType<typeof fakes>) => {
+    const seen: { during?: boolean } = {};
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      await Promise.resolve();
+      (track as unknown as { enabled: boolean }).enabled = true;
+      seen.during = (track as unknown as { enabled: boolean }).enabled;
+      return real(track, o);
+    });
+    return seen;
+  };
+
+  it('LiveKit enabling the track during the publish never opens a muted microphone', async () => {
+    const f = fakes();
+    const seen = liveKitEnables(f);
+    const prompt = deferred<MediaStream>();
+    f.deps.media.getUserMedia = vi.fn(() => prompt.promise);
+    let kept: 'muted' | 'deafened' | null = null;
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, selfNow: () => kept });
+    await flush();
+    kept = 'muted';
+    const mic = micStream();
+    prompt.resolve(mic.stream);
+    const call = await started;
+    open.push(call);
+    expect(seen.during).toBe(false);
+    expect(mic.track.enabled).toBe(false);
+    // An unmute opens it again (the guard follows the session, it never holds a microphone the person opened).
+    call.setMuted(false);
+    expect(mic.track.enabled).toBe(true);
+    (mic.track as { enabled: boolean }).enabled = false;
+    (mic.track as { enabled: boolean }).enabled = true;
+    expect(mic.track.enabled).toBe(true);
+    call.setMuted(true);
+    (mic.track as { enabled: boolean }).enabled = true;
+    expect(mic.track.enabled).toBe(false);
+  });
+
+  it('LiveKit enabling the track during the publish never opens push to talk with the key up, and an open call stays open', async () => {
+    const f = fakes();
+    const seen = liveKitEnables(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, mode: 'ptt' });
+    open.push(call);
+    expect(seen.during).toBe(false);
+    const g = fakes();
+    const open2 = liveKitEnables(g);
+    const vad = await startPageCall(g.deps, { channelId: CH, vdec: 'vp8' }, opts);
+    open.push(vad);
+    expect(open2.during).toBe(true);
+    expect((g.room.localParticipant.publishTrack.mock.calls[0][0] as unknown as { enabled?: boolean }).enabled).toBe(true);
+  });
+
+  it('a getter that throws changes nothing and fails no start', async () => {
+    const f = fakes();
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, self: 'muted', selfNow: () => { throw new Error('gone'); } });
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true });
+  });
+});
+
 describe('re-review N-m1: a drop never takes the key that ends the hold', () => {
   const open: PageCall[] = [];
   afterEach(async () => { for (const c of open.splice(0)) await c.leave('user').catch(() => undefined); });

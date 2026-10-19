@@ -1,12 +1,13 @@
-// web3.8 WS6 (item 13, R25): mute pressed in the user panel before a call is the state the next join starts in. Alice presses
-// mute outside a call, then joins voice: her own tile and the user panel say muted from the first frame, and the microphone
-// track her peer connection publishes is disabled. What the others see (bob's tile for her, the voice_state self_mute bit)
-// is the second test.
+// web3.8 WS6 (item 13, R25) and MUTE: a mute pressed in the user panel is in force from the first frame the microphone
+// publishes. Pressed before a call, the next join starts muted; pressed while the join is still starting (the microphone
+// prompt held open until the click has landed), the track goes to the publish already disabled. In both, every audio
+// sender the page hands a peer connection carries a disabled track, and no audio goes out while she stays muted. What the
+// others see (bob's tile for her, the voice_state self_mute bit) is the last test.
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import type { Person } from './support/peer-browser';
 import {
-  VoicePeer, WAIT, POLL, callSlice, connected, copy, joinVoice, openVoice, onboard, self, slice, stage, tile,
+  VoicePeer, WAIT, POLL, callSlice, connected, copy, joinVoice, noiseOff, openVoice, onboard, self, slice, stage, tile,
 } from './support/voice';
 import type { VoiceState } from '../../packages/client-core/src/state/types';
 
@@ -14,25 +15,145 @@ watchContexts(test);
 
 const panelMute = (alice: Person) => alice.page.locator('.d-user-panel').getByRole('button', { name: copy('voice.mute'), exact: true });
 
-/** Every audio track alice hands to a peer connection from here on, kept on the page for the assertions. */
-async function recordSentAudio(alice: Person): Promise<void> {
+interface Watch { pcs: RTCPeerConnection[]; handed: { at: string; enabled: boolean }[]; mics: WeakSet<MediaStreamTrack>; opened: number }
+
+/**
+ * From here on: every peer connection the page makes, and every audio track handed to one (addTransceiver, addTrack, or a
+ * sender's replaceTrack, which LiveKit uses for the noise processor's output and a capture restart), with whether the
+ * track was enabled at the moment it was handed over; and `opened`, how often a microphone track the page captured
+ * actually turned enabled (LiveKit enables the track it publishes; the session must not let it while muted).
+ */
+async function watchAudio(alice: Person): Promise<void> {
   await alice.page.evaluate(() => {
-    const w = window as unknown as { __sent: MediaStreamTrack[] };
-    w.__sent = [];
-    const addTransceiver = RTCPeerConnection.prototype.addTransceiver;
-    RTCPeerConnection.prototype.addTransceiver = function (this: RTCPeerConnection, trackOrKind: MediaStreamTrack | string, init?: RTCRtpTransceiverInit) {
-      if (typeof trackOrKind !== 'string' && trackOrKind.kind === 'audio') w.__sent.push(trackOrKind);
+    const w = window as unknown as { __watch: Watch };
+    w.__watch = { pcs: [], handed: [], mics: new WeakSet(), opened: 0 };
+    const enabled = Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, 'enabled')!;
+    Object.defineProperty(MediaStreamTrack.prototype, 'enabled', {
+      ...enabled,
+      set(this: MediaStreamTrack, v: boolean) {
+        const was = enabled.get!.call(this) as boolean;
+        enabled.set!.call(this, v);
+        if (!was && (enabled.get!.call(this) as boolean) && w.__watch.mics.has(this)) w.__watch.opened += 1;
+      },
+    });
+    const md = navigator.mediaDevices;
+    const capture = md.getUserMedia.bind(md);
+    md.getUserMedia = async (c?: MediaStreamConstraints) => {
+      const stream = await capture(c);
+      for (const t of stream.getAudioTracks()) w.__watch.mics.add(t);
+      return stream;
+    };
+    const hand = (at: string, track: MediaStreamTrack | null | undefined) => {
+      if (track?.kind === 'audio') w.__watch.handed.push({ at, enabled: track.enabled });
+    };
+    const Native = window.RTCPeerConnection;
+    const proto = Native.prototype;
+    const addTransceiver = proto.addTransceiver;
+    proto.addTransceiver = function (this: RTCPeerConnection, trackOrKind: MediaStreamTrack | string, init?: RTCRtpTransceiverInit) {
+      if (typeof trackOrKind !== 'string') hand('addTransceiver', trackOrKind);
       return addTransceiver.call(this, trackOrKind as MediaStreamTrack, init);
-    } as typeof RTCPeerConnection.prototype.addTransceiver;
-    const addTrack = RTCPeerConnection.prototype.addTrack;
-    RTCPeerConnection.prototype.addTrack = function (this: RTCPeerConnection, track: MediaStreamTrack, ...streams: MediaStream[]) {
-      if (track.kind === 'audio') w.__sent.push(track);
+    } as typeof proto.addTransceiver;
+    const addTrack = proto.addTrack;
+    proto.addTrack = function (this: RTCPeerConnection, track: MediaStreamTrack, ...streams: MediaStream[]) {
+      hand('addTrack', track);
       return addTrack.call(this, track, ...streams);
     };
+    const replaceTrack = RTCRtpSender.prototype.replaceTrack;
+    RTCRtpSender.prototype.replaceTrack = function (this: RTCRtpSender, track: MediaStreamTrack | null) {
+      hand('replaceTrack', track);
+      return replaceTrack.call(this, track);
+    };
+    class Watched extends Native {
+      constructor(config?: RTCConfiguration) { super(config); w.__watch.pcs.push(this); }
+    }
+    window.RTCPeerConnection = Watched as typeof RTCPeerConnection;
   });
 }
 
-test('mute pressed in the user panel before joining: alice joins muted, on her tile, her panel and her microphone track', async ({ peerBrowser }) => {
+/** What alice's open peer connections send as audio now: each audio sender's track ('on', 'off', or 'none'), and the
+ *  outbound audio packets and bytes summed over every connection. */
+async function audioOut(alice: Person): Promise<{ senders: string[]; packets: number; bytes: number; energy: number }> {
+  return alice.page.evaluate(async () => {
+    const w = window as unknown as { __watch: Watch };
+    const senders: string[] = [];
+    let packets = 0;
+    let bytes = 0;
+    let energy = 0;
+    for (const pc of w.__watch.pcs) {
+      if (pc.connectionState === 'closed') continue;
+      for (const t of pc.getTransceivers()) {
+        if (t.receiver.track.kind !== 'audio' || t.currentDirection === 'recvonly' || t.direction === 'recvonly' || t.currentDirection === 'stopped') continue;
+        const track = t.sender.track;
+        senders.push(track === null ? 'none' : track.enabled && track.readyState === 'live' ? 'on' : 'off');
+      }
+      const stats = await pc.getStats();
+      stats.forEach((r: { type: string; kind?: string; packetsSent?: number; bytesSent?: number; totalAudioEnergy?: number }) => {
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') { packets += r.packetsSent ?? 0; bytes += r.bytesSent ?? 0; }
+        if (r.type === 'media-source' && r.kind === 'audio') energy += r.totalAudioEnergy ?? 0;
+      });
+    }
+    return { senders, packets, bytes, energy };
+  });
+}
+
+/**
+ * A muted microphone still lets Opus send its discontinuous-transmission frames: on chromium about ten a second of some
+ * twenty bytes each (a disabled track is silence, and silence is what DTX sends). A live one with the fake microphone's
+ * 1 kHz tone sends about 9 KB a second, with audio energy. So "nothing goes out" is: no audio energy ever reached her
+ * sender, and the bytes stay at DTX size.
+ */
+const MUTED_BYTES_PER_S = 1_000;
+const DTX_BYTES_PER_PACKET = 40;
+
+/** Every audio track she handed over was disabled when it was handed, each audio sender's track is disabled now, no audio
+ *  energy has ever reached a sender, and over a second only DTX frames go out. */
+async function sendsNoAudio(alice: Person): Promise<void> {
+  await expect.poll(async () => (await audioOut(alice)).senders.join(','), { ...POLL, message: 'her audio senders' }).toMatch(/^(off|none)(,(off|none))*$/);
+  const handed = await alice.page.evaluate(() => (window as unknown as { __watch: Watch }).__watch.handed);
+  expect(handed.length, 'an audio track was handed to a peer connection').toBeGreaterThan(0);
+  expect(handed.filter((h) => h.enabled), 'audio tracks handed over enabled').toEqual([]);
+  expect(await alice.page.evaluate(() => (window as unknown as { __watch: Watch }).__watch.opened), 'times a microphone track turned enabled').toBe(0);
+  const before = await audioOut(alice);
+  expect(before.energy, 'audio energy that ever reached her sender').toBe(0);
+  await alice.page.waitForTimeout(1_000);
+  const after = await audioOut(alice);
+  const bytes = after.bytes - before.bytes;
+  const packets = after.packets - before.packets;
+  expect(after.energy, 'audio energy over a second while muted').toBe(0);
+  expect(bytes, 'audio bytes over a second while muted').toBeLessThan(MUTED_BYTES_PER_S);
+  expect(packets === 0 ? 0 : bytes / packets, 'bytes per audio packet while muted (DTX frames only)').toBeLessThanOrEqual(DTX_BYTES_PER_PACKET);
+}
+
+/** The control for the measure above: once she unmutes, the tone goes out (energy and live-sized bytes). */
+async function sendsAudio(alice: Person): Promise<void> {
+  await expect.poll(async () => {
+    const a = await audioOut(alice);
+    await alice.page.waitForTimeout(500);
+    const b = await audioOut(alice);
+    return b.energy > a.energy && b.bytes - a.bytes > MUTED_BYTES_PER_S;
+  }, { ...POLL, message: 'her unmuted microphone sends the tone' }).toBe(true);
+}
+
+/** Holds the microphone prompt of the next call start open until `releaseMic`; `micAsked` counts the prompts held. */
+async function holdMic(alice: Person): Promise<void> {
+  await alice.page.evaluate(() => {
+    const w = window as unknown as { __micAsked: number; __releaseMic: () => void };
+    const md = navigator.mediaDevices;
+    const real = md.getUserMedia.bind(md);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    w.__micAsked = 0;
+    w.__releaseMic = () => release();
+    md.getUserMedia = async (c?: MediaStreamConstraints) => {
+      if (c?.audio !== undefined && c.audio !== false) { w.__micAsked += 1; await gate; }
+      return real(c);
+    };
+  });
+}
+const micAsked = (alice: Person) => alice.page.evaluate(() => (window as unknown as { __micAsked: number }).__micAsked);
+const releaseMic = (alice: Person) => alice.page.evaluate(() => { (window as unknown as { __releaseMic: () => void }).__releaseMic(); });
+
+test('mute pressed in the user panel before joining: alice joins muted, on her tile, her panel and every audio sender', async ({ peerBrowser }) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
@@ -49,7 +170,7 @@ test('mute pressed in the user panel before joining: alice joins muted, on her t
       await expect(mute).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
     });
 
-    await recordSentAudio(alice);
+    await watchAudio(alice);
     await joinVoice(bob.page, peer.communityName, peer.voiceName);
     await joinVoice(alice.page, peer.communityName, peer.voiceName);
 
@@ -60,11 +181,8 @@ test('mute pressed in the user panel before joining: alice joins muted, on her t
       await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'true');
     });
 
-    await test.step('the microphone track she published is disabled', async () => {
-      await expect.poll(() => alice.page.evaluate(() => {
-        const sent = (window as unknown as { __sent: MediaStreamTrack[] }).__sent;
-        return sent.length === 0 ? 'none' : sent.map((t) => (t.enabled ? 'on' : 'off')).join(',');
-      }), { ...POLL, message: 'the published audio tracks' }).toMatch(/^off(,off)*$/);
+    await test.step('no audio sender carries an enabled track, and no audio goes out', async () => {
+      await sendsNoAudio(alice);
     });
   } finally {
     await peerBrowser.close(bob);
@@ -73,36 +191,42 @@ test('mute pressed in the user panel before joining: alice joins muted, on her t
   }
 });
 
-// Fail closed (WS6 fix round 1): a mute pressed while the join is still starting is applied to the session when it attaches,
-// so the microphone she publishes is disabled although the start read the setting before the press.
-test('mute pressed while the join is pending: the call starts muted and the published mic is disabled', async ({ peerBrowser }) => {
+// Fail closed (WS6 fix round 1, MUTE): a mute pressed while the join is still starting. The microphone prompt is held open
+// until the click has landed, so the press is provably inside the start; the track then goes to the publish disabled.
+// Noise suppression is off here, so the sender carries the capture track itself and the unmuted control hears the tone
+// (the first test keeps the default, where the sender carries the noise processor's output).
+test('mute pressed while the join is pending: the call starts muted and no audio sender is ever enabled', async ({ peerBrowser }) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   try {
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await peer.seat(1);
-    await recordSentAudio(alice);
+    await noiseOff(alice.page);
+    await watchAudio(alice);
+    await holdMic(alice);
     await openVoice(alice.page, peer.communityName, peer.voiceName);
     await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
-    // The press lands in the window of the start (the join is a token, an SFU connect and a mic grant).
+    await expect.poll(() => micAsked(alice), { ...POLL, message: 'the start asked for the microphone' }).toBe(1);
     await panelMute(alice).click();
+    await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+    expect(await alice.page.evaluate(() => (window as unknown as { __watch: Watch }).__watch.pcs.length), 'no peer connection before the prompt answers').toBe(0);
+    await releaseMic(alice);
     await connected(alice.page);
     await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'true');
     await expect(stage(alice.page).locator('.d-call-tile[data-own] .d-call-tile__state[data-state="muted"]')).toBeVisible({ timeout: WAIT });
-    await expect.poll(() => alice.page.evaluate(() => {
-      const sent = (window as unknown as { __sent: MediaStreamTrack[] }).__sent;
-      return sent.length === 0 ? 'none' : sent.map((t) => (t.enabled ? 'on' : 'off')).join(',');
-    }), { ...POLL, message: 'the published audio tracks' }).toMatch(/^off(,off)*$/);
+    await sendsNoAudio(alice);
+    // The measure tells the two apart: unmuted, her tone goes out (noise suppression is off, so it is not removed).
+    await panelMute(alice).click();
+    await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+    await sendsAudio(alice);
   } finally {
     await peerBrowser.close(alice);
     await peer.close();
   }
 });
 
-// Red until the worker re-sends voice_self when its own voice_state lacks the self bits (the instance refuses a voice_self
-// that reaches it before the SFU lists the device, and nothing re-sends it): see WS6-report.md, concern 1.
-test.fixme('a join that starts muted shows bob the muted glyph, and the voice_state carries self_mute', async ({ peerBrowser }) => {
+test('a join that starts muted shows bob the muted glyph, and the voice_state carries self_mute', async ({ peerBrowser }) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');

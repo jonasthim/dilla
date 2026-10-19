@@ -1028,34 +1028,39 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     expect(v.voiceSelfSent).toHaveLength(1 + 3);
   });
 
-  it('a mute pressed while the join is starting is sent once the own voice_state says in_call', async () => {
+  // web3.8 MUTE: the worker never infers a voice_self from voice.self. The page's start reads the setting (and again before
+  // it publishes, and at connected); its attach reconcile sends the voice_self, and the re-send above delivers it. Page and
+  // worker therefore never disagree for a call.
+  it('a mute pressed while the join is starting sends nothing by itself: the page’s voice_self is what is sent and re-sent', async () => {
     const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
     const held = w.server.hold('POST calls');
     const id = w.send(JOIN(w));
     await held.reached;
-    // The page read voice.self (none) when the start began; the mute pressed now lands in the setting only.
     await w.call({ m: 'setSetting', key: 'voice.self', value: 'muted' });
     held.release();
     for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settle();
     expect(w.ret(id)).toMatchObject({ ok: true });
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
     expect(w.voiceSelfSent).toEqual([]);
-    w.gateway.push(voiceFrame(ME, VOICE, 1));
-    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }]);
-    // It is then held like any voice_self: sent again while the bits are missing, never once they match.
+    // The page's reconcile says muted; the instance has not taken it yet, so the next own voice_state brings it again.
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
     w.gateway.push(voiceFrame(ME, VOICE, 1));
     w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
-    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
-    expect(w.voiceSelfSent).toHaveLength(2);
-    // Deafen pressed during a join: sent as muted and deafened.
-    const v = await harness({ voiceChannel: true, callGroupBy: 'peer' });
-    const vh = v.server.hold('POST calls');
-    const vid = v.send(JOIN(v));
-    await vh.reached;
-    await v.call({ m: 'setSetting', key: 'voice.self', value: 'deafened' });
-    vh.release();
-    for (let i = 0; i < 40 && v.ret(vid) === undefined; i++) await settle();
-    v.gateway.push(voiceFrame(ME, VOICE, 1));
-    expect(v.voiceSelfSent).toEqual([{ callId: v.voice, flags: 3 }]);
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }, { callId: w.voice, flags: 1 }]);
+  });
+
+  it('a mute then an unmute around the in_call frame: nothing the page did not say reaches the others', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    const held = w.server.hold('POST calls');
+    const id = w.send(JOIN(w));
+    await held.reached;
+    await w.call({ m: 'setSetting', key: 'voice.self', value: 'muted' });
+    held.release();
+    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settle();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    await w.call({ m: 'setSetting', key: 'voice.self', value: null });
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([]);
   });
 
   it('a setting that did not change during the join sends nothing of its own', async () => {
@@ -1063,24 +1068,22 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     await w.call({ m: 'setSetting', key: 'voice.self', value: 'muted' });
     await w.call(JOIN(w));
     await settled(w);
-    // The page started muted and says so itself; the worker adds nothing for a setting the start already read.
+    // The page started muted and says so itself; the worker adds nothing for a setting.
     w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
     expect(w.voiceSelfSent).toEqual([]);
   });
 
-  it('an unmute pressed while the join is starting is not sent: the start muted stays (fail closed)', async () => {
-    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
-    await w.call({ m: 'setSetting', key: 'voice.self', value: 'muted' });
-    const held = w.server.hold('POST calls');
-    const id = w.send(JOIN(w));
-    await held.reached;
-    await w.call({ m: 'setSetting', key: 'voice.self', value: null });
-    held.release();
-    for (let i = 0; i < 40 && w.ret(id) === undefined; i++) await settle();
-    // The session started muted and says so.
-    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+  it('a voice_self made while offline is kept, and sent once the own voice_state after the reconnect lacks it', async () => {
+    const w = await joined();
     w.gateway.push(voiceFrame(ME, VOICE, 1));
-    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }, { callId: w.voice, flags: 1 }]);
+    w.offline();
+    await expect(w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 })).rejects.toMatchObject({ code: 'E_NOT_READY' });
+    expect(w.voiceSelfSent).toEqual([]);
+    w.online();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }]);
+    w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
+    expect(w.voiceSelfSent).toHaveLength(1);
   });
 });
 
