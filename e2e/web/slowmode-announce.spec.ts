@@ -166,14 +166,14 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
     const newsId = channelIdOf(page);
     expect(newsId).not.toBe('');
     await expect(channelRow(page2, 'news')).toBeVisible({ timeout: WAIT });
+    // The row can arrive before the MLS Welcome. Opening it during that gap can
+    // race the creator's commit and show E_COMMIT_INVALID instead of read-only mode.
+    await expect.poll(async () => (await portSlice<ChannelSummary[]>(page2, `channels:${serverId}`))
+      ?.find((c) => c.id === newsId)?.group, { timeout: WAIT }).toBe('active');
     await channelRow(page2, 'news').click();
     await expect(page2.getByText(copy('announce.readOnly', { name: 'news' }), { exact: true }).first()).toBeVisible({ timeout: WAIT });
     await expect(composerBox(page2, 'news')).toBeDisabled();
     await expectAccessible(page2, 'the announcement channel as a member');
-    // The channel row can arrive before the MLS Welcome. Wait until Björn holds the
-    // key, so the headline is a message sent after he joined the channel group.
-    await expect.poll(async () => (await portSlice<ChannelSummary[]>(page2, `channels:${serverId}`))
-      ?.find((c) => c.id === newsId)?.group, { timeout: WAIT }).toBe('active');
     await sendText(page, 'news', 'headline');
     const headline = messageRow(page2, 'news', 'headline');
     await expect(headline).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
