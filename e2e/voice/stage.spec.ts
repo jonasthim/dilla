@@ -181,6 +181,7 @@ test('a DM call box keeps compact tiles when the other person shares their scree
     expect(video?.height ?? 0, 'the shared screen’s video height').toBeGreaterThan(20);
     await expect(stage(bob.page).locator('[data-tiles="stage"]')).toHaveCount(0);
     await expect(stage(bob.page).locator('li[data-focused="true"]')).toHaveCount(0);
+    await expect(stage(bob.page).locator('.d-call-tile__fullscreen')).toHaveCount(0);
     for (const box of await tiles(bob.page).evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) {
       expect(box, 'a DM box tile’s height against 40 % of the pane').toBeLessThanOrEqual(mainHeight * 0.4);
       expect(box).toBeGreaterThan(20);

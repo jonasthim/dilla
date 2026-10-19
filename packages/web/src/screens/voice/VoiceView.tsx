@@ -310,7 +310,9 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   const held = !joined && joinHeld(v, channelId);
   const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
-  const tiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
+  const allTiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
+  // The DM call box is the compact grid: its tiles have no full-screen button (that is positioned for stage tiles).
+  const tiles = dm ? allTiles.map(t => ({ ...t, fullscreenLabel: undefined })) : allTiles;
   // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
   const [focusedId, setFocusedId] = useState<string | null>(null);
   useAutoFocus(tiles, liveScreenIds(v, channelId, tiles), joined, dm, focusedId, setFocusedId);

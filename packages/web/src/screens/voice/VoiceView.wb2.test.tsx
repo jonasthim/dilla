@@ -6,7 +6,7 @@ import { BOB, BOB_DEV, bobChanged, callState, DM, GENV, OWN_DEV, renderVoiceShel
 import { ME } from '../../test/fixtures.ts';
 import { RING_MS, UNANSWERED_LEAVE_MS } from './useCall.tsx';
 
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); Reflect.deleteProperty(document, 'fullscreenEnabled'); });
 
 const main = () => within(screen.getByRole('main'));
 const dockStatus = () => document.querySelector('.d-voice-dock [role="status"]');
@@ -111,12 +111,14 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
   });
 
   it('web3.8 WS7: the DM call box stays a compact grid: no stage mode, and a share takes no focus (it would collapse to 2 px)', async () => {
+    Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, value: true });
     const app = await calling({ ringing: [], declined: [], notRung: [] });
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: new MediaStream() }] }));
     await waitFor(() => expect(document.querySelector(`li[data-tile-id="${BOB_DEV}:screen"]`)).not.toBeNull());
     expect(document.querySelector('[data-tiles="stage"]')).toBeNull();
     expect(document.querySelector('[data-focused-stage]')).toBeNull();
     expect(document.querySelector('.d-call-tile__focus')).toBeNull();
+    expect(document.querySelector('.d-call-tile__fullscreen')).toBeNull(); // positioned for stage tiles only
     expect(document.querySelector('li[data-focused="true"]')).toBeNull();
   });
 
