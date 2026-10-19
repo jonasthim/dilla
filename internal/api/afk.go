@@ -39,7 +39,7 @@ type afkActivityBody struct {
 
 // An SFU admission starts the device's timer even if its browser never gets to send
 // the first activity report. A signalling resume keeps the original timer.
-func (h *Calls) trackAFKAdmission(ctx context.Context, row store.VoiceSessionRow, dev id.ID) {
+func (h *Calls) trackAFKAdmission(ctx context.Context, row store.VoiceSessionRow, dev id.ID, resume bool) {
 	ch, err := h.repo.GetChannel(ctx, row.ChannelID)
 	if err != nil || ch.CommunityID == nil || ch.Kind != ChannelVoice {
 		return
@@ -53,7 +53,7 @@ func (h *Calls) trackAFKAdmission(ctx context.Context, row store.VoiceSessionRow
 	if _, occupied := h.afkOccupied[dev]; occupied {
 		return
 	}
-	if current, exists := h.afkTracked[dev]; exists && current.channel == ch.ID {
+	if current, exists := h.afkTracked[dev]; resume && exists && current.channel == ch.ID {
 		return
 	}
 	if h.afkTracked == nil {

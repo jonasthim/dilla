@@ -1201,7 +1201,7 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID, resume 
 		return
 	}
 	h.noteAdmission(ctx, row, device, resume)
-	h.trackAFKAdmission(ctx, row, device)
+	h.trackAFKAdmission(ctx, row, device, resume)
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,

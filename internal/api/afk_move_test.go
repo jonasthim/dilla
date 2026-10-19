@@ -68,6 +68,30 @@ func TestAFKAdmissionStartsTimerWithoutBrowserActivity(t *testing.T) {
 	}
 }
 
+func TestAFKFreshAdmissionRestartsTimer(t *testing.T) {
+	b := newMembershipCallEnvWithoutLoop(t)
+	afk := id.New()
+	if err := b.e.Repo.CreateChannel(t.Context(), store.ChannelRow{ID: afk, CommunityID: &b.cid, Kind: 1, Name: "AFK", SettingsJSON: []byte("{}"), HostPolicyVersion: 1, Created: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.e.Repo.SetCommunityAFK(t.Context(), b.cid, store.CommunityAFK{ChannelID: &afk, TimeoutSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	b.calls.Admitted(t.Context(), b.room, b.memberDev, false)
+	b.e.Clk.Advance(50 * time.Second)
+	b.calls.Admitted(t.Context(), b.room, b.memberDev, false)
+	b.e.Clk.Advance(20 * time.Second)
+	b.calls.SweepAFK(t.Context())
+	if removedDevice(b.stub, b.room, b.memberDev) {
+		t.Fatal("fresh voice admission inherited an old inactivity timer")
+	}
+	b.e.Clk.Advance(41 * time.Second)
+	b.calls.SweepAFK(t.Context())
+	if !removedDevice(b.stub, b.room, b.memberDev) {
+		t.Fatal("fresh admission timer did not expire")
+	}
+}
+
 func TestAFKActivityResetsOnlyItsOwnDeviceTimer(t *testing.T) {
 	b := newMembershipCallEnvWithoutLoop(t)
 	afk := id.New()
