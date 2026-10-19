@@ -269,6 +269,13 @@ export class Gateway {
       this.emit({ type: 'revoked' });
       return;
     }
+    // C2 review finding 1: the instance refused this client's wire (E_VERSION, close 4006). As with a hello without
+    // WIRE, the refusal stands until the page is reloaded: no reconnect, no new ticket.
+    if (event.code === CLIENT_CLOSE.version) {
+      this.goIdle();
+      this.setStatus('idle', CLIENT_CLOSE.version);
+      return;
+    }
     this.fail(event.code);
   }
 

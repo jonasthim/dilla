@@ -310,6 +310,23 @@ describe('wire version 2 (web3.8 C2)', () => {
     expect(tickets.n).toBe(1);
   });
 
+  // C2 review finding 1: a tab open across the upgrade meets the instance's own refusal, close 4006 after identify.
+  it('a server close 4006 publishes offline with reason version and mints no second ticket', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { w, tickets } = socketWorld(minted);
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
+    const socket = Sock.all[0];
+    socket.open();
+    socket.receive(HELLO);
+    socket.serverClose(4006);
+    await until(() => w.connection()?.reason === 'version');
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(Sock.all).toHaveLength(1);
+    expect(tickets.n).toBe(1);
+  });
+
   it('control: a hello offering wire 2 gets an identify with 2 and goes online', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { w } = socketWorld(minted);
