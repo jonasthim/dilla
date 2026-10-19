@@ -35,8 +35,8 @@ export function UserPanel({ name, username, muted, deafened, shortcuts, labels, 
       {/* A pointer target only (R24): the gear is the keyboard path, so the block is no role and no tab stop. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div className="d-user-panel__who" onClick={() => onOpenSelf()}>
-        <span className="d-user-panel__name">{name}</span>
-        <span className="d-user-panel__username">@{username}</span>
+        <span className="d-user-panel__name" title={name}>{name}</span>
+        <span className="d-user-panel__username" title={`@${username}`}>@{username}</span>
       </div>
       <VoiceToolbar label={labels.region} controls={controls} className="d-user-panel__controls" />
       <button type="button" className="d-user-panel__settings" aria-label={labels.settings} title={labels.settings} onClick={() => onSettings()}>

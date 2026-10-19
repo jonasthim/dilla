@@ -19,6 +19,12 @@ const panel = (over: Partial<UserPanelProps> = {}): UserPanelProps => ({
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('UserPanel', () => {
+  it('gives the truncated name and @username a title with the full text', () => {
+    render(<UserPanel {...panel({ name: 'Ada Lovelace', username: 'ada' })} />);
+    expect(screen.getByText('Ada Lovelace')).toHaveAttribute('title', 'Ada Lovelace');
+    expect(screen.getByText('@ada')).toHaveAttribute('title', '@ada');
+  });
+
   it('is a plain div with no role and no name; its toolbar carries the region name', () => {
     const { container } = render(<UserPanel {...panel()} />);
     const root = container.firstElementChild!;

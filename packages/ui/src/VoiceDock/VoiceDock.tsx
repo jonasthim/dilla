@@ -93,7 +93,8 @@ export function VoiceDock({
   if (onShare !== undefined && labels.share !== undefined) {
     controls.push({ id: 'share', label: labels.share, on: sharing, inert: busy || !canShare, why: why.share, ...VOICE_ICONS.share, onAction: onShare });
   }
-  controls.push({ id: 'leave', label: labels.leave, danger: true, ...VOICE_ICONS.leave, onAction: onLeave });
+  // The divider sets leave apart from mute and deafen; with neither before it (the user panel owns them) it would be orphaned.
+  controls.push({ id: 'leave', label: labels.leave, danger: true, ...VOICE_ICONS.leave, apart: onMute !== undefined || onDeafen !== undefined, onAction: onLeave });
   return (
     <div className="d-voice-dock" data-phase={phase}>
       <p className="d-voice-dock__where">

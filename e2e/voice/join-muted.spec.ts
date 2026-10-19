@@ -6,7 +6,7 @@ import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import type { Person } from './support/peer-browser';
 import {
-  VoicePeer, WAIT, POLL, callSlice, copy, joinVoice, onboard, self, slice, stage, tile,
+  VoicePeer, WAIT, POLL, callSlice, connected, copy, joinVoice, openVoice, onboard, self, slice, stage, tile,
 } from './support/voice';
 import type { VoiceState } from '../../packages/client-core/src/state/types';
 
@@ -68,6 +68,33 @@ test('mute pressed in the user panel before joining: alice joins muted, on her t
     });
   } finally {
     await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
+    await peer.close();
+  }
+});
+
+// Fail closed (WS6 fix round 1): a mute pressed while the join is still starting is applied to the session when it attaches,
+// so the microphone she publishes is disabled although the start read the setting before the press.
+test('mute pressed while the join is pending: the call starts muted and the published mic is disabled', async ({ peerBrowser }) => {
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice');
+  try {
+    await peer.setup();
+    await onboard(alice, peer, 'alice');
+    await peer.seat(1);
+    await recordSentAudio(alice);
+    await openVoice(alice.page, peer.communityName, peer.voiceName);
+    await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
+    // The press lands in the window of the start (the join is a token, an SFU connect and a mic grant).
+    await panelMute(alice).click();
+    await connected(alice.page);
+    await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'true');
+    await expect(stage(alice.page).locator('.d-call-tile[data-own] .d-call-tile__state[data-state="muted"]')).toBeVisible({ timeout: WAIT });
+    await expect.poll(() => alice.page.evaluate(() => {
+      const sent = (window as unknown as { __sent: MediaStreamTrack[] }).__sent;
+      return sent.length === 0 ? 'none' : sent.map((t) => (t.enabled ? 'on' : 'off')).join(',');
+    }), { ...POLL, message: 'the published audio tracks' }).toMatch(/^off(,off)*$/);
+  } finally {
     await peerBrowser.close(alice);
     await peer.close();
   }

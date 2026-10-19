@@ -17,6 +17,14 @@ const dock: VoiceDockProps = {
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('VoiceDock', () => {
+  it('draws the divider before leave only when mute or deafen stand before it', () => {
+    const { container, rerender } = render(<VoiceDock {...dock} />);
+    expect(container.querySelector('.d-voice-toolbar__divider')).not.toBeNull();
+    rerender(<VoiceDock {...dock} onMute={undefined} onDeafen={undefined} onCamera={() => {}} onShare={() => {}}
+      labels={{ ...dock.labels, camera: 'camera', share: 'share screen' }} />);
+    expect(container.querySelector('.d-voice-toolbar__divider')).toBeNull();
+  });
+
   it('VoiceDock is one toolbar with roving focus and a status region', async () => {
     render(<VoiceDock {...dock} announcement="Microphone muted." />);
     const bar = screen.getByRole('toolbar', { name: 'voice controls' });

@@ -152,6 +152,8 @@ export interface UseCallOptions {
   recoverEnded?(channelId: string): boolean;
   /** The desktop shell shows the user panel, so Control/⌘+Shift+M and D also work outside a call (web3.8, pre-flight C-10). */
   selfShortcuts?: boolean;
+  /** The shell's own polite announcer: outside a call there is no dock status region to say a mute or deafen. */
+  announce?(text: string): void;
 }
 
 /** The mute and deafen shortcut letters (WB a11y m1: matched on the letter the key types, so AZERTY's M is M). */
@@ -478,7 +480,9 @@ export function useCall(o: UseCallOptions): CallView {
     const mine = { seq: ++writeSeq.current, value };
     written.current = mine;
     const done = () => { if (written.current === mine) written.current = null; };
-    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(done, done);
+    const key = value === 'deafened' ? 'voice.announce.deafened' : current === 'deafened' && value === 'muted' ? 'voice.announce.undeafened'
+      : value === 'muted' ? 'voice.announce.muted' : 'voice.announce.unmuted';
+    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(() => { done(); live.current.announce?.(t(key)); }, done);
   }, [client]);
   const selfMute = useCallback(() => {
     if (sessionRef.current !== null) { toggleMute(); return; }

@@ -151,6 +151,46 @@ describe('the desktop user panel', () => {
   });
 });
 
+describe('the R25 unmute row and the announcements outside a call', () => {
+  const mute = () => inPanel().getByRole('button', { name: t('voice.mute') });
+  const said = () => screen.getByTestId('shell-announcer');
+
+  it('mute, then mute again, writes muted then none and ends unpressed (button)', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    await app.user.click(mute());
+    await waitFor(() => expect(mute()).toHaveAttribute('aria-pressed', 'true'));
+    await app.user.click(mute());
+    expect(writes(app)).toEqual(['muted', null]);
+    await waitFor(() => expect(mute()).toHaveAttribute('aria-pressed', 'false'));
+  });
+
+  it('mute, then mute again, writes muted then none and ends unpressed (Ctrl+Shift+M)', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
+    await waitFor(() => expect(mute()).toHaveAttribute('aria-pressed', 'true'));
+    await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
+    expect(writes(app)).toEqual(['muted', null]);
+    await waitFor(() => expect(mute()).toHaveAttribute('aria-pressed', 'false'));
+  });
+
+  it('announces mute and deafen through the shell announcer, from the button and from the shortcut', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    await app.user.click(mute());
+    await waitFor(() => expect(said()).toHaveTextContent(t('voice.announce.muted')));
+    await app.user.click(mute());
+    await waitFor(() => expect(said()).toHaveTextContent(t('voice.announce.unmuted')));
+    await app.user.keyboard('{Control>}{Shift>}D{/Shift}{/Control}');
+    await waitFor(() => expect(said()).toHaveTextContent(t('voice.announce.deafened')));
+    await app.user.keyboard('{Control>}{Shift>}D{/Shift}{/Control}');
+    await waitFor(() => expect(said()).toHaveTextContent(t('voice.announce.undeafened')));
+    await app.user.keyboard('{Control>}{Shift>}M{/Shift}{/Control}');
+    await waitFor(() => expect(said()).toHaveTextContent(t('voice.announce.unmuted')));
+  });
+});
+
 describe('the shortcuts outside a call (C-10)', () => {
   it('Ctrl+Shift+M and Ctrl+Shift+D make the same writes as the buttons on desktop', async () => {
     const app = shell();

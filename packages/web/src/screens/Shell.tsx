@@ -423,7 +423,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const recoverEnded = useCallback((id: string) => Date.now() < upgradeRejoinUntil.current
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
-    stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded, selfShortcuts: !phone });
+    stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded, selfShortcuts: !phone, announce });
   const afkSelf = selfAFKCommunity === communityId && communityId !== null;
   const leaveVoiceCall = call.leave;
   const currentCallChannel = call.channelId;
