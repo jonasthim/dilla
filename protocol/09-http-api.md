@@ -418,10 +418,13 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   - a category never takes overwrites at creation (`400`);
   - the creator must still see the channel with the overwrites applied (`400` otherwise). The one
     exception to the rank rule makes this possible for a non-owner: a kind `1` entry naming the
-    creator themself, allowing only `view_channel` and denying none, is allowed; any other entry
-    on oneself takes the rank rule (`403`). Such an entry is an ordinary member overwrite
-    afterwards: it keeps the channel visible to its holder after a demotion, and goes with the
-    membership like every member overwrite (§ Roles).
+    creator themself, allowing `view_channel`, `send_messages` or both and denying none, is
+    allowed, provided the creator holds every bit it allows (`403` otherwise). Any other entry on
+    oneself, one that allows another bit or denies any, takes the rank rule (`403`). The exception
+    exists only at creation: a later overwrite `PUT` on oneself takes the rank rule as always.
+    Such an entry is an ordinary member overwrite afterwards: it keeps the channel visible to its
+    holder, and their right to post in it, after a demotion, until someone who outranks them
+    removes it, and it goes with the membership like every member overwrite (§ Roles).
 
   The create's audit records `channel.create` and one `channel.overwrite.put` per entry, and
   `community_changed` (`02`) is sent once.
@@ -430,11 +433,10 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   a text channel whose overwrites deny `send_messages` to `@everyone` and allow it to each role
   chosen to post, and labels any text channel whose `@everyone` overwrite denies `send_messages`
   as one. The instance enforces it like any other overwrite (§ Readable channels, and `02` § Upload
-  class for an end-to-end encrypted one). Because an entry on oneself may only allow
-  `view_channel` and a role entry takes the rank rule, a creator who is neither the owner nor an
-  administrator keeps the right to post only through a chosen role they hold below their own
-  highest role. Once the member list is loaded, the client refuses the create without one; before
-  that it sends the create and the instance decides.
+  class for an end-to-end encrypted one). A creator who is neither the owner nor an administrator
+  keeps the right to post through a kind `1` entry on themself allowing `send_messages`, sent in
+  the create (the exception above), since the `@everyone` deny would otherwise take it and an
+  entry for their own role takes the rank rule.
 
 - A channel whose visibility is `invite` or `discoverable` is **server-readable**. Creating one
   with `mode = 0` is not an error: the instance stores `mode = 1` and answers it, and the client
