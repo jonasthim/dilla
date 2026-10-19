@@ -128,7 +128,7 @@ export function railLabel(item: { name: string; unread: number; mentions: number
   return t('shell.rail.itemLabel', { name: item.name, unread: item.unread, mentions: item.mentions });
 }
 
-/** The status bar's devices chunk: the account's devices not removed, unknown until the list is loaded (Q12). */
+/** The devices fact (You tab, Settings → Diagnostics): the account's devices not removed, unknown until the list is loaded (Q12). */
 export function devicesChunk(devices: readonly DeviceSummary[] | undefined): string {
   if (devices === undefined) return t('shell.status.unknown');
   return String(devices.filter(d => d.revokedAt === null).length);

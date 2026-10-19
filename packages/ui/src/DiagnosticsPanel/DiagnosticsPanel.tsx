@@ -2,7 +2,7 @@ import { Button } from '../Button/Button.tsx';
 import './DiagnosticsPanel.css';
 
 export type DiagnosticsPanelProps = {
-  data: { connection: string; generation: string | null; instance: string; devices: number; errors: readonly { code: string; at: number }[] };
+  data: { connection: string; generation: string | null; instance: string; devices: number | string; errors: readonly { code: string; at: number }[] };
   labels: { title: string; copy: string; fields: { connection: string; generation: string; instance: string; devices: string }; empty?: string };
   /** The visible form of an error's time (ms since the epoch); the `<time>` element carries the ISO form. Default HH:MM:SS UTC. */
   formatTime?(at: number): string;
