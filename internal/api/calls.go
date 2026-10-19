@@ -406,11 +406,13 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	// A manager choosing this channel as the silent destination holds the same
-	// lock across its live-call check and settings write.
-	configLock := h.afkChannelLock(ch.ID)
-	configLock.Lock()
-	defer configLock.Unlock()
+	// Only community voice channels can become AFK destinations. Keep their call
+	// creation ordered with the manager's live-call check and settings write.
+	if ch.CommunityID != nil && ch.Kind == ChannelVoice {
+		configLock := h.afkChannelLock(ch.ID)
+		configLock.Lock()
+		defer configLock.Unlock()
+	}
 	if err := h.refuseAFK(r.Context(), ch, s.DeviceID); err != nil {
 		server.WriteError(w, err)
 		return
