@@ -67,7 +67,7 @@ jobs:
           echo "noise_mode=$(node scripts/release-noise-mode.mjs "$tag")" >> "$GITHUB_OUTPUT"
 
   web-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [tag]
     timeout-minutes: 15
     # The same build as ci.yml's web-build, clang 23 pin included: the dist is what the binaries embed.

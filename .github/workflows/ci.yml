@@ -89,7 +89,7 @@ jobs:
           path: target/ui-screens/web-3/**
           if-no-files-found: error
   rust-wasm-node:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
@@ -210,7 +210,7 @@ jobs:
       - run: cargo run -p dilla-testkit --bin dilla-testkit --locked -- vectors
 
   browser-spike:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
@@ -260,7 +260,7 @@ jobs:
       - run: npm run test:e2e:matrix -w @dilla/e2e
 
   browser-media:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # SP-27's cold container run was unavailable; the controller retains the 25-minute budget.
     timeout-minutes: 25
     needs: [rust-native, rust-wasi]
@@ -339,7 +339,7 @@ jobs:
           if-no-files-found: error
 
   web-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # C9: the web client is built once here and handed to chromium-web, firefox-web, webkit-web, go-release and image, so every
     # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
     # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).

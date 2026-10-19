@@ -20,6 +20,13 @@ test('workflow steps execute only commit-pinned GitHub actions', () => {
   }
 });
 
+test('clang 23 build jobs stay on the Ubuntu 24.04 image they install packages for', () => {
+  for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build']) {
+    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n    runs-on: ubuntu-24\\.04$`, 'm'));
+  }
+  assert.match(REAL_RELEASE, /^  web-build:\n    runs-on: ubuntu-24\.04$/m);
+});
+
 test('the CI checker rejects a third-party action even when pinned', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
