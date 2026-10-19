@@ -42,6 +42,7 @@ import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
+import { browser } from '../browser.ts';
 
 export interface ShellUpdateDeps {
   currentEntry: string;
@@ -1302,7 +1303,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         </Banner>
       ) : null}
       {offline && linkReason === 'version' ? (
-        <Banner tone="warn">{t('shell.banner.clientTooOld')}</Banner>
+        <Banner tone="warn" action={{ label: t('reload.action'), onAction: () => browser.reload() }}>{t('shell.banner.clientTooOld')}</Banner>
       ) : null}
       {removalNotices.map(r => (
         <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {

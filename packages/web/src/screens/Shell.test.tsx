@@ -9,6 +9,7 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 import { formatTime } from '../strings/index.ts';
 import { en } from '../strings/en.ts';
 import { joinErrorState } from '../router.ts';
+import { browser } from '../browser.ts';
 import { Shell } from './Shell.tsx';
 import type { ShellUpdateDeps } from './Shell.tsx';
 
@@ -1257,6 +1258,18 @@ describe('connection', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(document.querySelector('.d-link-banner')).toHaveTextContent('Offline. Reconnecting…');
     expect(screen.queryByText(TOO_OLD)).toBeNull();
+  });
+
+  it('offers a reload button on the newer-client banner, and only there', async () => {
+    const reload = vi.spyOn(browser, 'reload').mockImplementation(() => undefined);
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    expect(screen.queryByRole('button', { name: en['reload.action'] })).toBeNull();
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'version' }));
+    await user.click(within(screen.getByRole('alert')).getByRole('button', { name: en['reload.action'] }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    act(() => fake.set('connection', { status: 'offline', generation: '7' }));
+    expect(screen.queryByRole('button', { name: en['reload.action'] })).toBeNull();
+    reload.mockRestore();
   });
 });
 
