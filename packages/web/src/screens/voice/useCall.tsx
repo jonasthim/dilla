@@ -122,6 +122,15 @@ export interface CallView {
   closeUnsupported: () => void;
   toggleMute: () => void;
   toggleDeafen: () => void;
+  /**
+   * The user panel's mute and deafen (web3.8, R25). In a call they are `toggleMute`/`toggleDeafen`; outside one they write the
+   * device-local `voice.self` setting, which the next join starts in.
+   */
+  selfMute: () => void;
+  selfDeafen: () => void;
+  /** The own state the user panel shows: the session's in a call, else the `voice.self` setting (deafened counts as muted). */
+  selfMuted: boolean;
+  selfDeafened: boolean;
   toggleCamera: () => void;
   toggleShare: () => void;
   setVolume: (userId: string, volume: number) => void;
@@ -141,6 +150,8 @@ export interface UseCallOptions {
   stageShown(channelId: string): boolean;
   /** A community voice room closed during a known app upgrade may be opened again. */
   recoverEnded?(channelId: string): boolean;
+  /** The desktop shell shows the user panel, so Control/⌘+Shift+M and D also work outside a call (web3.8, pre-flight C-10). */
+  selfShortcuts?: boolean;
 }
 
 /** The mute and deafen shortcut letters (WB a11y m1: matched on the letter the key types, so AZERTY's M is M). */
@@ -456,6 +467,21 @@ export function useCall(o: UseCallOptions): CallView {
     keepSelf(s);
     announce(t(on ? 'voice.announce.deafened' : 'voice.announce.undeafened'));
   }, [announce, keepSelf]);
+  /** R25: outside a call the own mute and deafen are the device-local `voice.self` setting, which the next join starts in. */
+  const writeSelf = useCallback((pick: (current: string | undefined) => 'muted' | 'deafened' | null) => {
+    const value = pick((client.get('settings') ?? {})[SETTINGS.voiceSelf]);
+    client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).catch(() => undefined);
+  }, [client]);
+  const selfMute = useCallback(() => {
+    if (sessionRef.current !== null) { toggleMute(); return; }
+    // null -> muted -> null; from deafened, unmuting also undeafens (setMuted(false) in the session).
+    writeSelf(current => (current === 'muted' || current === 'deafened' ? null : 'muted'));
+  }, [toggleMute, writeSelf]);
+  const selfDeafen = useCallback(() => {
+    if (sessionRef.current !== null) { toggleDeafen(); return; }
+    // null or muted -> deafened; from deafened back to muted, never to an open microphone.
+    writeSelf(current => (current === 'deafened' ? 'muted' : 'deafened'));
+  }, [toggleDeafen, writeSelf]);
   const shareRefused = useCallback((e: unknown) => {
     const id = channelRef.current;
     const code = errorOf(e).code;
@@ -635,22 +661,26 @@ export function useCall(o: UseCallOptions): CallView {
     return () => clearTimeout(timer);
   }, [endText, channelId]);
 
-  // Control/⌘+Shift+M and Control/⌘+Shift+D while in voice (decision 1); no single-key shortcut, and none during an IME
+  // Control/⌘+Shift+M and Control/⌘+Shift+D while in voice, and on the desktop shell outside a call too (decision 1; the user panel advertises them); no single-key shortcut, and none during an IME
   // composition. Either modifier works on every platform, as the Control/⌘+K entry does.
+  const selfShortcuts = o.selfShortcuts === true;
   useEffect(() => {
-    if (session === null) return;
+    if (session === null && !selfShortcuts) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229) return;
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
       // WB a11y m1: the letter the key types (AZERTY's M is code Semicolon; Dvorak's physical M types another letter), as
       // Control/⌘+K matches e.key; the physical key only when the key types no letter at all.
       const letter = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : e.code === 'KeyM' ? KEY_M : e.code === 'KeyD' ? KEY_D : '';
-      if (letter === KEY_M) { e.preventDefault(); toggleMute(); }
-      else if (letter === KEY_D) { e.preventDefault(); toggleDeafen(); }
+      if (letter === KEY_M) { e.preventDefault(); selfMute(); }
+      else if (letter === KEY_D) { e.preventDefault(); selfDeafen(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [session, toggleMute, toggleDeafen]);
+  }, [session, selfShortcuts, selfMute, selfDeafen]);
+  const kept = o.settings[SETTINGS.voiceSelf];
+  const selfMuted = state !== null && session !== null ? state.muted : kept === 'muted' || kept === 'deafened';
+  const selfDeafened = state !== null && session !== null ? state.deafened : kept === 'deafened';
 
   // The input mode follows Settings → Voice during a call (review I2): the session switches first (push to talk closes the
   // microphone at once), the dock says which mode is in force, and the key binds only to the mode the session applied.
@@ -713,6 +743,6 @@ export function useCall(o: UseCallOptions): CallView {
     notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, toggleCamera, toggleShare, setVolume, startAudio,
+    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, startAudio,
   };
 }

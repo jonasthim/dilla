@@ -116,7 +116,7 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
       await heard(bob.page, a.device);
 
       // Alice's microphone goes quiet, so the only sound of hers bob can hear is the share's.
-      await alice.page.getByRole('toolbar', { name: copy('voice.controls.voice'), exact: true }).getByRole('button', { name: copy('voice.mute'), exact: true }).click();
+      await alice.page.locator('.d-user-panel').getByRole('button', { name: copy('voice.mute'), exact: true }).click();
       await expect(stateWord(seen, 'muted')).toBeVisible({ timeout: WAIT });
       // Positive control for `audible` below: once the mute has reached the frames, bob's page plays nothing of alice's.
       await framesPass(alice.page, await sentCount(alice.page), 25);

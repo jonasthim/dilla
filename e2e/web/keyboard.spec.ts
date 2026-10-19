@@ -118,9 +118,10 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
     page.getByRole('link', { name: copy(COPY.skipLink), exact: true }),   // 0 skip link
     rail,                                                                   // 1 community rail
     channelsNav(page),                                                      // 2 channel list
-    page.locator(CLASS.channelHeader),                                      // 3 channel header
-    logRegion(page, channel),                                               // 4 message log
-    page.locator(CLASS.composer),                                           // 5 composer
+    page.locator('.d-user-panel'),                                          // 3 user panel (web3.8, item 13)
+    page.locator(CLASS.channelHeader),                                      // 4 channel header
+    logRegion(page, channel),                                               // 5 message log
+    page.locator(CLASS.composer),                                           // 6 composer
   ];
   // web3.8 (R4): the desktop has no status bar, so the lap ends at the composer.
   await expect(page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true })).toHaveCount(0);
@@ -138,11 +139,12 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  // 14 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
-  // list and the header (web3.8, item 10); the lap ends at the composer (web3.8, R4: no status bar).
+  // 16 Tabs: the channel header carries a search button (walk 1); the sidebar splitter is its own stop between the channel
+  // list and the user panel (web3.8, item 10), and the panel is two stops (its mute and deafen toolbar, then the gear; the
+  // name block is none, R24) before the header; the lap ends at the composer (web3.8, R4: no status bar).
   const splitter = page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
   let splitterAt = -1;
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 16; i++) {
     await press('Tab');
     if (await splitter.evaluate(el => el === document.activeElement)) splitterAt = i;
     seen.push(await regionOfFocus());
@@ -151,7 +153,9 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   expect(splitterAt, 'the sidebar splitter is a tab stop').toBeGreaterThan(0);
   expect(seen[splitterAt + 1], 'the splitter sits outside every region').toBe(-1);
   expect(seen.slice(0, splitterAt + 1), 'the splitter comes after the channel list').toContain(2);
-  expect(seen[splitterAt + 2], 'the stop after the splitter is in the channel header').toBe(3);
+  expect(seen[splitterAt + 2], 'the stop after the splitter is the user panel\'s toolbar').toBe(3);
+  expect(seen[splitterAt + 3], 'the gear is the panel\'s second stop').toBe(3);
+  expect(seen[splitterAt + 4], 'the stop after the panel is in the channel header').toBe(4);
   const start = seen.indexOf(0);
   expect(start, `the skip link is a tab stop (regions seen: ${seen.join(' ')})`).toBeGreaterThanOrEqual(0);
   const lap: number[] = [];
@@ -166,12 +170,13 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   expect(lap, `focus order ${lap.join(' > ')}`).toEqual([...lap].sort((a, b) => a - b));
   expect(new Set(lap).size, `each region entered once: ${lap.join(' > ')}`).toBe(lap.length);
-  for (const required of [0, 1, 2, 4, 5]) expect(lap).toContain(required);
+  for (const required of [0, 1, 2, 3, 5, 6]) expect(lap).toContain(required);
   // Flow 07 (web3.8): each server action is its own stop before the tabs. This person joined the peer's server, so they
   // are a member, not its owner: "server settings" and "leave server" are their two actions ("invite link" lives under
   // settings → Invites, and the "+" is the owner's). The splitter sits outside the channel list, so it is not counted here.
   expect(stops.get(2), 'the sidebar is four tab stops: the member\'s "server settings" and "leave server", the tabs and the rows').toBe(4);
   expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
+  expect(stops.get(3), 'the user panel is two tab stops: mute and deafen as one toolbar, and the gear').toBe(2);
 
   // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.
   const settings = await openSettings(page, 'diagnostics');

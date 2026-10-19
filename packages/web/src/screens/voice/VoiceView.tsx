@@ -389,8 +389,8 @@ export function callPhase(v: Pick<VoiceContext, 'call' | 'slice'>): VoiceDockPro
 }
 
 /**
- * The dock above the user panel while this device is in voice (flow 06): where, the input meter, then mute, deafen,
- * camera, share screen and leave (the stage's controls, under the stage's rules: camera and share are aria-disabled
+ * The call panel above the user panel while this device is in voice (flow 06): where, the input meter, then
+ * camera, share screen and leave (no mute or deafen: the user panel owns them, R3; the stage's controls, under the stage's rules: camera and share are aria-disabled
  * while paused, while joining, and share without screen capture), and the one polite status region. While the call is paused and its stage is not on screen, the pause banner and its
  * action stand above the dock.
  */
@@ -429,7 +429,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
       ) : null}
       <VoiceDock phase={phase} where={where} muted={call.state?.muted ?? false} deafened={call.state?.deafened ?? false}
         camera={call.state?.camera ?? false} sharing={call.state?.sharing ?? false} canCamera={!paused}
-        canShare={!paused && canCapture()} busy={call.session === null} paused={paused} shortcuts={VOICE_SHORTCUT_TEXT}
+        canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
         announcement={call.announcement}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'), connected: en['voice.dock.connected'],
           reconnecting: t('voice.dock.reconnecting'), paused: en['voice.dock.paused'], mute: t('voice.mute'),
@@ -439,7 +439,7 @@ export function Dock({ v, where, stageShown }: { v: VoiceContext; where: string;
           {call.state?.mode === 'ptt' ? <PttLine v={v} /> : null}
           <HearingLine audio={call.state?.audio} silent={call.state?.deafened === true || call.state?.paused === true} />
         </>}
-        onMute={call.toggleMute} onDeafen={call.toggleDeafen} onCamera={call.toggleCamera} onShare={call.toggleShare}
+        onCamera={call.toggleCamera} onShare={call.toggleShare}
         onLeave={call.leave} />
     </div>
   );

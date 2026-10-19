@@ -79,7 +79,7 @@ describe('a fresh instance (flow 07)', () => {
   it('ends the rail with join and new server, both captioned', () => {
     setup('/');
     const buttons = within(rail()).getAllByRole('button');
-    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['join a server', 'new server', 'settings']);
+    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['join a server', 'new server']);
     expect(within(buttons[0]).getByText('join')).toBeInTheDocument();
     expect(within(buttons[1]).getByText('new')).toBeInTheDocument();
   });

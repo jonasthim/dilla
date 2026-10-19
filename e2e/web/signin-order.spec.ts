@@ -8,7 +8,8 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectHeading, expectShell, keyField, keySubmit,
-  keyText, newAccount, nextButton, railNav, readRecoveryKey, submitButton, test, type Account,
+  keyText, newAccount, nextButton, readRecoveryKey, submitButton, test, type Account,
+  settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -44,7 +45,7 @@ const stepLine = (page: Page, n: number) => page.getByText(copy(SIGNIN.step, { n
 
 /** Settings → Sign-in on the first browser: the section reads the account's factors again each time it opens. */
 async function backupCodesLeft(page: Page, count: number): Promise<void> {
-  await railNav(page).getByRole('button', { name: copy('shell.rail.settings'), exact: true }).click();
+  await settingsGear(page).click();
   const dialog = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })

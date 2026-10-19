@@ -253,6 +253,8 @@ async function kickFromServer(controlUrl, dataDir, name, actor, target) {
 // The browser side: the onboarding and shell, driven by the copy of packages/web/src/strings/en.ts.
 
 const byText = (page, role, key, vars) => page.getByRole(role, { name: t(key, vars), exact: true });
+/** The gear in the user panel at the bottom left (web3.8): the rail has no settings button. */
+const gear = (page) => page.locator('.d-user-panel').getByRole('button', { name: t('panel.settings'), exact: true });
 const composer = (page, channel) => page.getByRole('textbox', { name: t('shell.composer.label', { channel }), exact: true });
 const row = (page, channel, text) => page.getByRole('log', { name: t('shell.log.label', { channel }), exact: true })
   .locator('.d-message-row').filter({ hasText: text });
@@ -563,13 +565,13 @@ async function main(argv) {
     // #general opens with the focus in its composer; Ada's browser is the first in it and so creates its group.
     await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
     await ada.getByRole('button', { name: t('voice.open', { name: 'general' }), exact: true }).waitFor({ timeout: WAIT });
-    // The rail up close: the server's tile, then "join a server" and "new server", then settings, beside the server's
-    // name and its actions; cut off below the settings tile.
+    // The rail up close: the server's tile, then "join a server" and "new server", beside the server's name and its
+    // actions; cut off below the "new server" tile (the settings gear lives in the user panel since web3.8).
     await settle(ada);
     const railFile = path.join(o.outDir, 'create-rail.png');
-    const settingsBox = await byText(ada, 'button', 'shell.rail.settings').boundingBox();
-    if (settingsBox === null) throw new Error('the rail has no settings tile on screen');
-    await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(settingsBox.y + settingsBox.height + 12) } });
+    const newBox = await byText(ada, 'button', 'create.rail.newLabel').boundingBox();
+    if (newBox === null) throw new Error('the rail has no new server tile on screen');
+    await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(newBox.y + newBox.height + 12) } });
     written.push(railFile);
 
     // "new channel" (the "+" in the channel list's header, for the owner): #loot, then the voice channel "harbour".
@@ -808,13 +810,13 @@ async function main(argv) {
     await byText(second, 'navigation', 'shell.rail.label').waitFor({ timeout: WAIT });
 
     // Mira's original browser shows both signed-in devices and the notification opt-in.
-    await byText(mira, 'button', 'shell.rail.settings').click();
+    await gear(mira).click();
     await byText(mira, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await mira.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
     await settle(mira);
     await shoot('settings-devices');
     // The sign-out dialog of the second browser, opened and closed again without sending anything.
-    await byText(second, 'button', 'shell.rail.settings').click();
+    await gear(second).click();
     await byText(second, 'heading', 'devices.title').waitFor({ timeout: WAIT });
     await second.locator('.d-device-row').nth(1).waitFor({ timeout: WAIT });
     await byText(second, 'button', 'devices.signOut').click();
@@ -971,7 +973,7 @@ async function main(argv) {
       if (owned === null) await page.setViewportSize(DESKTOP);
     };
     const openSettings = async (section) => {
-      await byText(mira, 'button', 'shell.rail.settings').click();
+      await gear(mira).click();
       await byText(mira, 'navigation', 'settings.nav.label').getByRole('button', { name: t(`settings.nav.${section}`), exact: true }).click();
     };
     const closeSettings = () => byText(mira, 'button', 'settings.close').click();

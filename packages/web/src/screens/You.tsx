@@ -4,7 +4,7 @@ import { useCore } from '../core/context.tsx';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import type { SettingsSection } from '../router.ts';
 import { t } from '../strings/index.ts';
-import { devicesChunk, mergeMembers } from './shell-model.ts';
+import { devicesChunk, mergeMembers, selfName } from './shell-model.ts';
 import { NAV } from './Settings.tsx';
 import { SignOutAction } from './settings/SignOut.tsx';
 import { PresencePicker } from './PresencePicker.tsx';
@@ -26,8 +26,7 @@ export function You(props: { onOpenSettings(section: SettingsSection): void }): 
   const communities = useSlice('communities');
   const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
   const self = account?.user ?? null;
-  const display = self === null ? undefined : mergeMembers(memberLists).find(m => m.userId === self.id)?.display;
-  const name = display === undefined || display === '' ? self?.username ?? t('shell.status.unknown') : display;
+  const name = selfName(self, mergeMembers(memberLists));
   // The device list, once per mount, for the devices fact; a refusal leaves the fact unknown.
   useEffect(() => {
     client.call({ m: 'refreshDevices' }).catch(() => undefined);

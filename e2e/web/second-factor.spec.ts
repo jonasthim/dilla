@@ -7,7 +7,8 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectHeading, expectShell, finishWithKey,
-  keyField, keySubmit, keyText, newAccount, nextButton, railNav, readRecoveryKey, signInToKeyStep, submitButton, test, type Account,
+  keyField, keySubmit, keyText, newAccount, nextButton, readRecoveryKey, signInToKeyStep, submitButton, test, type Account,
+  settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -61,9 +62,9 @@ function secret(account: Account): string {
   return account.totpSecret;
 }
 
-/** Settings → Sign-in: the rail's settings button, then the section from the settings navigation. */
+/** Settings → Sign-in: the user panel's gear, then the section from the settings navigation. */
 async function openSignIn(page: Page): Promise<Locator> {
-  await railNav(page).getByRole('button', { name: copy('shell.rail.settings'), exact: true }).click();
+  await settingsGear(page).click();
   const dialog = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })

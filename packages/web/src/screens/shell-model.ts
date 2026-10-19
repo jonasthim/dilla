@@ -211,6 +211,16 @@ export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefin
 }
 
 /**
+ * The own name as the user panel and the You tab show it: the display name in the merged member lists, else the username,
+ * else the unknown-account word.
+ */
+export function selfName(self: { id: string; username: string } | null, members: readonly MemberSummary[]): string {
+  if (self === null) return t('shell.status.unknown');
+  const display = members.find(m => m.userId === self.id)?.display;
+  return display === undefined || display === '' ? self.username : display;
+}
+
+/**
  * A body as text and mention pills. `mentionsMe` is the row's mention flag from the core, which alone decides whether an
  * @everyone, @here or a token of one of my roles counted (the sender's right, the role's "anyone can mention"). Such a pill
  * is tinted as naming me only when it is set; otherwise it is a plain broadcast or role pill (W2a review 10). The core

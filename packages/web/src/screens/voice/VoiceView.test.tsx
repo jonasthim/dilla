@@ -732,6 +732,7 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
 // test reads one, steps across (offStage, onStage), and reads the other. The call stays up across the step.
 describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', () => {
   const dock = () => within(screen.getByRole('toolbar', { name: 'voice controls' }));
+  const userPanel = () => within(screen.getByRole('toolbar', { name: t('panel.region') }));
   const stage = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
   // jsdom has no getDisplayMedia; the stage and the dock both read it, so give them one.
   const withCapture = () => {
@@ -739,12 +740,12 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
   };
   afterEach(() => { Reflect.deleteProperty(navigator, 'mediaDevices'); });
 
-  it('the dock holds mute, deafen, camera, share screen and leave, and its camera and share are the stage’s toggles', async () => {
+  it('the dock holds camera, share screen and leave, and its camera and share are the stage’s toggles', async () => {
     withCapture();
     const app = await inVoice();
     await offStage();
     expect(dock().getAllByRole('button').map(b => b.getAttribute('aria-label')))
-      .toEqual([t('voice.mute'), t('voice.deafen'), t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
+      .toEqual([t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
     await app.user.click(dock().getByRole('button', { name: t('voice.cameraOn') }));
     await waitFor(() => expect(app.session.state.camera).toBe(true));
     expect(dock().getByRole('button', { name: t('voice.cameraOn') })).toHaveAttribute('aria-pressed', 'true');
@@ -781,10 +782,11 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     }
     expect(app.session.state.camera).toBe(false);
     expect(app.session.state.sharing).toBe(false);
-    for (const name of [t('voice.mute'), t('voice.deafen'), t('voice.leave')]) expect(dock().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
+    for (const name of [t('voice.mute'), t('voice.deafen')]) expect(userPanel().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
   });
 
-  it('while joining, the dock’s camera and share are aria-disabled; mute, deafen and leave stay live', async () => {
+  it('while joining, the dock’s camera and share are aria-disabled; the user panel’s mute and deafen and the dock’s leave stay live', async () => {
     withCapture();
     const app = renderVoiceShell();
     const release = app.holdStart();
@@ -792,7 +794,8 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
     await offStage();
     for (const name of [t('voice.cameraOn'), t('voice.shareOn')]) expect(dock().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
-    for (const name of [t('voice.mute'), t('voice.deafen'), t('voice.leave')]) expect(dock().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    expect(dock().getByRole('button', { name: t('voice.leave') })).not.toHaveAttribute('aria-disabled');
+    for (const name of [t('voice.mute'), t('voice.deafen')]) expect(userPanel().getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
     release();
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
@@ -800,14 +803,17 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     expect(dock().getByRole('button', { name: t('voice.shareOn') })).not.toHaveAttribute('aria-disabled');
   });
 
-  it('the dock’s mute and deafen are described by their shortcut and carry it; the stage’s tip shows it and they carry none', async () => {
+  it('only the user panel’s mute and deafen carry aria-keyshortcuts and are described by their shortcut; the stage’s tip shows it and they carry none', async () => {
     await inVoice();
     expect(stage().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
     expect(stage().getByRole('button', { name: t('voice.deafen') })).not.toHaveAttribute('aria-keyshortcuts');
-    expect(dock().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
-    expect(dock().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
+    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
+    expect(userPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
     await offStage();
-    expect(dock().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(dock().queryByRole('button', { name: t('voice.mute') })).toBeNull();
+    expect([...document.querySelectorAll('[aria-keyshortcuts]')].filter(e => e.getAttribute('aria-keyshortcuts')!.includes('Shift+M')))
+      .toHaveLength(1);
   });
 
   // Jonas, 2026-10-15: a disabled camera or share says why (voice.why.*), in the dock and on the stage; the name stays.

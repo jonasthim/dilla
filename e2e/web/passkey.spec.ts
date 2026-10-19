@@ -7,7 +7,8 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   COPY, SIGNIN, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, keyField, keySubmit, keyText,
-  newAccount, nextButton, railNav, readRecoveryKey, submitButton, test,
+  newAccount, nextButton, readRecoveryKey, submitButton, test,
+  settingsGear,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -47,9 +48,9 @@ const button = (scope: Page | Locator, key: string, vars?: Record<string, string
 const dialogOf = (page: Page, key: string, vars?: Record<string, string | number>) =>
   page.getByRole('dialog', { name: copy(key, vars), exact: true });
 
-/** Settings → Sign-in: the rail's settings button, then the section from the settings navigation. */
+/** Settings → Sign-in: the user panel's gear, then the section from the settings navigation. */
 async function openSignIn(page: Page): Promise<Locator> {
-  await railNav(page).getByRole('button', { name: copy('shell.rail.settings'), exact: true }).click();
+  await settingsGear(page).click();
   const dialog = page.getByRole('dialog', { name: copy('settings.title'), exact: true });
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })

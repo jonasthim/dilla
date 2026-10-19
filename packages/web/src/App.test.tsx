@@ -572,20 +572,22 @@ describe('App settings and notifications', () => {
     fake.set('dms', [{ id: DM, kind: 3, members: [], name: 'bob', group: 'active' }] satisfies DmSummary[]);
     fake.set('settings', {});
   }
-  it('opens settings over the shell and returns focus to the rail’s settings button on Escape', async () => {
+  it('opens settings over the shell and returns focus to the user panel’s gear on Escape', async () => {
     const user = userEvent.setup();
     const fake = new FakeClient();
     ready(fake);
     window.history.replaceState(null, '', `/c/${C}`);
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     const rail = screen.getByRole('navigation', { name: 'servers' });
-    await user.click(within(rail).getByRole('button', { name: 'settings' }));
+    expect(within(rail).queryByRole('button', { name: 'settings' })).toBeNull();
+    const gear = () => screen.getByRole('button', { name: 'user settings' });
+    await user.click(gear());
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'servers' })).toBe(rail);
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
     expect(window.location.pathname).toBe(`/c/${C}`);
-    expect(within(rail).getByRole('button', { name: 'settings' })).toHaveFocus();
+    expect(gear()).toHaveFocus();
   });
   it('shows a desktop notification for a new notice and opens its DM on click', () => {
     class Note {

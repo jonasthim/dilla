@@ -665,9 +665,13 @@ export async function signIn(page: Page, account: Account, instanceName: string,
 
 export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
-/** The rail's settings button, then the section from the settings navigation; resolves with the dialog. */
+/** The desktop user panel (the bottom left, with mute and deafen). */
+export function userPanel(page: Page): Locator { return page.locator('.d-user-panel'); }
+/** The gear that opens Settings: the user panel's, since web3.8 the rail has no settings button. */
+export function settingsGear(page: Page): Locator { return userPanel(page).getByRole('button', { name: copy('panel.settings'), exact: true }); }
+/** The gear, then the section from the settings navigation; resolves with the dialog. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
-  await railNav(page).getByRole('button', { name: copy('shell.rail.settings'), exact: true }).click();
+  await settingsGear(page).click();
   const dialog = settingsDialog(page);
   await expect(dialog).toBeVisible({ timeout: WAIT });
   await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true })

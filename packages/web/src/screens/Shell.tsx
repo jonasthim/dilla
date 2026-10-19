@@ -24,7 +24,7 @@ import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
-  nameBook, orderChannels, participantView, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
+  nameBook, orderChannels, participantView, railLabel, rowBadge, selfName, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
 import { callPhase, DmCall, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
@@ -38,6 +38,7 @@ import { Activity } from './Activity.tsx';
 import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
 import { PresencePicker } from './PresencePicker.tsx';
+import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
@@ -52,12 +53,11 @@ export interface ShellUpdateDeps {
 }
 
 /**
- * Focuses the rail's settings button (task 17 names it by `aria-label`), where focus returns when Settings closes;
- * does nothing when there is none.
+ * Focuses the user panel's settings gear (web3.8, R24), where focus returns when Settings closes; does nothing when
+ * there is none (a phone has no user panel).
  */
-export function focusRailSettings(): void {
-  document.querySelector<HTMLButtonElement>(
-    'nav[aria-label="' + t('shell.rail.label') + '"] button[aria-label="' + t('shell.rail.settings') + '"]')?.focus();
+export function focusUserSettings(): void {
+  document.querySelector<HTMLButtonElement>('.d-user-panel button[aria-label="' + t('panel.settings') + '"]')?.focus();
 }
 
 /** The icon of the channel list's new-channel button. */
@@ -423,7 +423,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const recoverEnded = useCallback((id: string) => Date.now() < upgradeRejoinUntil.current
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
-    stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded });
+    stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded, selfShortcuts: !phone });
   const afkSelf = selfAFKCommunity === communityId && communityId !== null;
   const leaveVoiceCall = call.leave;
   const currentCallChannel = call.channelId;
@@ -1064,8 +1064,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           }}>{t('shell.dms.new')}</Button>;
           return phone ? <div className="dw-phone-footer">{newDm}</div> : newDm;
         })() : undefined} />
-      {phone ? null : <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
-        stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />}
       {phone ? null : <div className="dw-account-area"><PresencePicker /></div>}
     </div>);
   }
@@ -1641,9 +1639,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           onSelect={id => navigate({ name: 'channel', communityId: id, channelId: null })}
           joinLabel={t('shell.rail.join')} joinCaption={t('create.rail.join')} onJoin={() => setJoinOpen(true)}
           createLabel={t('create.rail.newLabel')} createCaption={t('create.rail.new')} onCreate={() => setCreateOpen(true)}
-          settingsLabel={t('shell.rail.settings')} onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })}
           itemLabel={railLabel} />}
         sidebar={sidebar}
+        bottom={phone || self === null ? undefined : <>
+          <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
+            stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
+          <UserPanel name={selfName(self, allMembers)} username={self.username} call={call}
+            onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })} />
+        </>}
         ring={rings !== undefined && rings.length > 0 ? ringFlow : undefined}
         header={<>
           {/* Outlives the dock: "You left {where}.", and a block or removal said while the stage is not on screen. */}
