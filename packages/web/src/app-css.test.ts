@@ -31,6 +31,12 @@ describe('the desktop stage toolbar is pinned (web3.8, VOICE-W)', () => {
   });
 });
 
+describe('a focused tile control clears the pinned toolbar (WCAG 2.4.11)', () => {
+  it('the stage scrolls a focused control above the toolbar', () => {
+    expect(rule(css, '.dw-voice-stage')).toMatch(/scroll-padding-bottom:\s*4\.5rem/);
+  });
+});
+
 describe('the voice section rows (WB a11y m4 ruling)', () => {
   it('paints the hover and current highlight on the item across both columns, not on the row button', () => {
     expect(rule(css, '.dw-voice-section__item::before')).toMatch(/grid-column:\s*1 \/ -1/);

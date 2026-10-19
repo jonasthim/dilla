@@ -916,6 +916,14 @@ describe('screen share without getDisplayMedia', () => {
     expect(stage.getByRole('button', { name: t('voice.cameraOn') })).toBeInTheDocument();
   });
 
+  it('on a phone the stage’s mute and deafen carry aria-keyshortcuts', async () => {
+    asPhone(true);
+    await inVoice();
+    const bar = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
+    expect(bar().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
+    expect(bar().getByRole('button', { name: t('voice.deafen') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+D Meta+Shift+D');
+  });
+
   it('on desktop the share button stays, aria-disabled', async () => {
     asPhone(false);
     await inVoice();
