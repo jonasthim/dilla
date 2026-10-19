@@ -3171,8 +3171,9 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
   });
 
   // C3 fix I2: the page sends markRead only when the unread count changes, and a held row counts as nothing, so the
-  // worker re-applies a held-back markRead itself: when a held row of that group is released, and on one timer per
-  // group at the moment its oldest young held row reaches HELD_READ_HOLD_MS. It never reads past the head it was asked.
+  // worker re-applies a held-back markRead itself on one timer per group, at the moment its oldest young held row
+  // reaches HELD_READ_HOLD_MS. It never reads past the head it was asked. Fix round 2 (C1): a release drops the held-back
+  // read and its timer instead; the released row is unread, and the page marks it (the release raises the count).
   it('a readable row above a long-held row loses its badge at age-out, with no new message and no reopen (R8, I2)', async () => {
     const elapsed = { t: 5_000 };
     const w = world({ monotonic: () => elapsed.t });
@@ -3212,34 +3213,91 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     }
   });
 
-  it('a release re-applies the held-back markRead up to the head it was asked, not past a later row (R8, I2)', async () => {
-    const elapsed = { t: 5_000 };
+  /** A ready world with row 7 held live and row 8 readable (head 8), and the page's markRead held back at 6. */
+  async function heldBack(elapsed: { t: number }): Promise<World> {
     const w = world({ monotonic: () => elapsed.t });
     await toReady(w);
-    const ch = toHex(CHANNEL);
     w.state.groups = [{ ...textGroup(2), nextSeq: 9n }];
     w.state.rows = [strangerRow(6), heldRow(7)];
     w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
     w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8)];
+    w.state.activity = [act(GROUP, 1, 0)];
     w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n]));
-    w.call(962, { m: 'markRead', channelId: ch });
-    await vi.waitFor(() => expect(w.ret(962)).toMatchObject({ ok: true }));
+    w.call(962, { m: 'markRead', channelId: toHex(CHANNEL) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.ret(962)).toMatchObject({ ok: true });
     expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 6n, NOW_S);
-    // Row 9 arrives after the markRead; the page has not read it.
-    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }];
-    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8), strangerRow(9)];
-    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([9n]));
-    const marks = w.core.markRead.mock.calls.length;
-    // The trust refresh releases row 7: the marker goes to 8 with no markRead from the page.
-    w.state.rows = [strangerRow(6), strangerRow(7), strangerRow(8), strangerRow(9)];
+    return w;
+  }
+  const heldReadCount = (w: World): number => (w.controller as unknown as { heldReads: Map<string, unknown> }).heldReads.size;
+  const release = (w: World): void => {
+    w.state.rows = [strangerRow(6), strangerRow(7), strangerRow(8)];
+    w.state.activity = [act(GROUP, 2, 0)];
     w.core.trustGeneration.mockReturnValue(1n);
     w.sync.deps!.onTrustChanged();
-    expect(w.core.markRead).toHaveBeenCalledTimes(marks + 1);
-    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 8n, NOW_S);
-    // Nothing is left to re-apply: a later trust change marks nothing more.
-    w.core.trustGeneration.mockReturnValue(2n);
-    w.sync.deps!.onTrustChanged();
-    expect(w.core.markRead).toHaveBeenCalledTimes(marks + 1);
+  };
+
+  it('a release marks nothing: the released row stays unread, and no held-back read or timer is left (R8, C1)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await heldBack({ t: 5_000 });
+      expect(vi.getTimerCount()).toBe(1);
+      const marks = w.core.markRead.mock.calls.length;
+      release(w);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks);
+      expect(w.badges()).toEqual({ [toHex(CHANNEL)]: { unread: 2, mentions: 0 } });
+      expect(heldReadCount(w)).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a row released before its age-out leaves nothing for the timer to do (R8, C1)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const elapsed = { t: 5_000 };
+      const w = await heldBack(elapsed);
+      elapsed.t += 30_000;
+      await vi.advanceTimersByTimeAsync(30_000);
+      release(w);
+      const marks = w.core.markRead.mock.calls.length;
+      elapsed.t += HELD_READ_HOLD_MS;
+      await vi.advanceTimersByTimeAsync(HELD_READ_HOLD_MS);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks);
+      expect(w.badges()).toEqual({ [toHex(CHANNEL)]: { unread: 2, mentions: 0 } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forgetting the account (a sign-out wipe) drops the held-back reads (C3 m5)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await heldBack({ t: 5_000 });
+      expect(heldReadCount(w)).toBe(1);
+      w.call(963, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(963)).toMatchObject({ ok: true }));
+      expect(w.account()?.phase).toBe('cleared');
+      expect(heldReadCount(w)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a revocation drops the held-back reads (C3 m6)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = await heldBack({ t: 5_000 });
+      expect(heldReadCount(w)).toBe(1);
+      vi.mocked(w.parts.refreshOwnDeviceList!).mockResolvedValueOnce({ version: 1n, listed: false });
+      w.call(964, { m: 'refreshDevices' });
+      await vi.waitFor(() => expect(w.ret(964)).toMatchObject({ ok: true }));
+      expect(w.account()?.phase).toBe('revoked');
+      expect(heldReadCount(w)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('an unexpected Welcome reloads the DMs, coalesced, and expects the new DM group', async () => {

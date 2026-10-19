@@ -1473,6 +1473,7 @@ export class Controller {
     if (this.wiping || this.storeCleared) return;
     if (this.revoked()) return;
     this.clearReauthTimer();
+    this.clearHeldReads();
     this.typingOff();
     this.calls.reset();
     this.sync?.stop();
@@ -2604,10 +2605,15 @@ export class Controller {
       const senderName = this.nameOf(toHex(found.row.senderUser as Id));
       drafts.push(noticeOf({ row: found.row, channelId, communityId, dm, mention: found.row.mention, senderName, threadRoot: found.threadRoot }));
     }
-    const released = kept.length < this.heldLive.length;
+    // Fix round 2 (C1): a group that lost a held row drops its held-back read and timer, and re-applies nothing. The
+    // released row is unread, as a live arrival would be (R8); the release raises the count, so the page marks an open,
+    // visible channel itself.
+    const keptRows = new Set(kept.map((h) => `${toHex(h.groupId)}:${h.seq.toString()}`));
+    for (const held of this.heldLive) {
+      if (keptRows.has(`${toHex(held.groupId)}:${held.seq.toString()}`)) continue;
+      this.dropHeldRead(toHex(held.groupId));
+    }
     this.heldLive = kept;
-    // Fix I2: a release lets a held-back read go further (at most one entry per group).
-    if (released) for (const hex of [...this.heldReads.keys()]) this.reapplyRead(hex);
     if (drafts.length === 0) return;
     this.noticesState = appendNotices(this.noticesState, drafts);
     this.slices.set('notices', this.noticesState);
@@ -2778,8 +2784,9 @@ export class Controller {
   /** web3.8 R8: marks `target` read, but stops one below the oldest row of this group held live less than
    *  HELD_READ_HOLD_MS ago, so a row released later is unread, as a live arrival would be. A row held longer no longer
    *  holds it. Fix I2: the page sends markRead only when the unread count changes, and a held row counts as nothing, so
-   *  a held-back read is remembered (one entry and at most one timer per group) and applied again, never past `target`:
-   *  on a release (noticeReleased) and when the oldest young held row it stopped at reaches HELD_READ_HOLD_MS. */
+   *  a held-back read is remembered (one entry and at most one timer per group) and applied again, never past `target`,
+   *  when the oldest young held row it stopped at reaches HELD_READ_HOLD_MS while still held. A release drops it
+   *  instead (fix round 2, C1: noticeReleased), so the released row stays unread. */
   private applyRead(core: CorePort, g: Id, target: bigint): void {
     const hex = toHex(g);
     const now = this.elapsed();
@@ -2802,13 +2809,15 @@ export class Controller {
     this.publishBadges();
   }
 
-  /** Fix I2: applies a remembered held-back read again; a group gone or left drops it. */
+  /** Fix I2: the age-out timer applies a remembered held-back read again, only while a row of that group at or below its
+   *  target is still held live; a group gone or left, or one with no such row, drops it. */
   private reapplyRead(hex: string): void {
     const read = this.heldReads.get(hex);
     if (read === undefined) return;
     this.heldReads.delete(hex);
     const core = this.core;
     if (core === null) return;
+    if (!this.heldLive.some((h) => toHex(h.groupId) === hex && h.seq <= read.target)) return;
     try {
       const row = core.groupRow(read.groupId);
       if (row === null || row.state === 4) return;
@@ -2816,7 +2825,15 @@ export class Controller {
     } catch { /* the page's next markRead marks it */ }
   }
 
-  /** Fix I2: drops every remembered held-back read and its timer (a reset, a sign-out). */
+  /** Fix round 2 (C1): drops one group's held-back read and its timer. */
+  private dropHeldRead(hex: string): void {
+    const read = this.heldReads.get(hex);
+    if (read === undefined) return;
+    this.deps.clearTimeout(read.timer);
+    this.heldReads.delete(hex);
+  }
+
+  /** Fix I2: drops every remembered held-back read and its timer (a reset, a sign-out, a revocation). */
   private clearHeldReads(): void {
     for (const read of this.heldReads.values()) this.deps.clearTimeout(read.timer);
     this.heldReads.clear();
