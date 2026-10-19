@@ -225,14 +225,14 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   // Web3.8 (R18): the pane widths the person chose, kept in this browser. The ui never re-clamps what is stored; it clamps
   // what it shows, and only a drag or a key reports a new width.
   const [paneWidths, setPaneWidths] = useState(readPaneWidths);
+  const paneRef = useRef(paneWidths);
   const onPaneResize = useCallback((pane: 'sidebar' | 'aside', px: number | null) => {
-    setPaneWidths(prev => {
-      const next = { ...prev };
-      if (px === null) delete next[pane];
-      else next[pane] = px;
-      writePaneWidths(next);
-      return next;
-    });
+    const next = { ...paneRef.current };
+    if (px === null) delete next[pane];
+    else next[pane] = px;
+    paneRef.current = next;
+    setPaneWidths(next);
+    writePaneWidths(next);
   }, []);
   // Flow 08: the member pane (a toggle in the channel header; open at 64rem or wider, not remembered) and the server settings
   // dialog (the server it is open for, and its tab).

@@ -1432,6 +1432,9 @@ describe('sidebar actions and pane widths (web3.8)', () => {
     const { user, view } = setup(`/c/${A}/${GEN}`);
     const sep = screen.getByRole('separator', { name: en['pane.resize.sidebar'] });
     const before = Number(sep.getAttribute('aria-valuenow'));
+    // Nothing is stored until a drag or a key reports a width: not on mount, not before the first key.
+    // eslint-disable-next-line no-restricted-properties -- the test reads the one key the shell writes
+    expect(window.localStorage.getItem('dilla.paneWidths')).toBeNull();
     act(() => sep.focus());
     await user.keyboard('{ArrowRight}');
     const after = Number(sep.getAttribute('aria-valuenow'));
@@ -1441,6 +1444,14 @@ describe('sidebar actions and pane widths (web3.8)', () => {
     view.unmount();
     setup(`/c/${A}/${GEN}`);
     expect(screen.getByRole('separator', { name: en['pane.resize.sidebar'] })).toHaveAttribute('aria-valuenow', String(after));
+  });
+
+  it('a remount with no change writes nothing', () => {
+    const { view } = setup(`/c/${A}/${GEN}`);
+    view.unmount();
+    setup(`/c/${A}/${GEN}`);
+    // eslint-disable-next-line no-restricted-properties -- the test reads the one key the shell writes
+    expect(window.localStorage.getItem('dilla.paneWidths')).toBeNull();
   });
 });
 

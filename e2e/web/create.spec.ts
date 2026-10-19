@@ -248,6 +248,18 @@ test('from an empty instance: start a server, invite a friend through a link, re
       expect(b.right, `${b.name} ends inside its row`).toBeLessThanOrEqual(fit.group.right + 0.5);
       expect(b.clipped, `${b.name} shows its whole label`).toBe(false);
     }
+    // The list's "+" fits inside the sidebar too, unclipped (it replaced the old header buttons).
+    const plusFit = await newChannelButton(page).evaluate(b => {
+      const r = b.getBoundingClientRect();
+      const sidebar = b.closest('.d-app-shell__sidebar')?.getBoundingClientRect();
+      return { left: r.left, right: r.right, width: r.width, clipped: b.scrollWidth > b.clientWidth + 1,
+        sidebar: sidebar === undefined ? null : { left: sidebar.left, right: sidebar.right } };
+    });
+    expect(plusFit.sidebar, 'the "+" is inside the sidebar').not.toBeNull();
+    expect(plusFit.left).toBeGreaterThanOrEqual((plusFit.sidebar?.left ?? 0) - 0.5);
+    expect(plusFit.right).toBeLessThanOrEqual((plusFit.sidebar?.right ?? 0) + 0.5);
+    expect(plusFit.width).toBeGreaterThanOrEqual(24);
+    expect(plusFit.clipped, 'the "+" shows its whole icon').toBe(false);
     const nameField = newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true });
     await newChannelButton(page).click();
     await nameField.fill(SECOND_CHANNEL);
