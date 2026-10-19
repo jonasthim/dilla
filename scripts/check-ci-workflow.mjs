@@ -600,6 +600,13 @@ function splitJobs(text) {
 }
 
 function checkActionReference(line, file, number, problems) {
+  // The line-oriented checker supports block-style steps only. GitHub also
+  // accepts flow-style YAML, so refuse it explicitly instead of silently
+  // skipping a `uses` value hidden inside `{ ... }`.
+  if (/^\s*-\s*\{[^#\n]*\buses\s*:/.test(line)) {
+    problems.push(`${file}:${number}: flow-style action steps are unsupported; use a block-style step`);
+    return;
+  }
   const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
   if (!match) return;
   const action = match[1];

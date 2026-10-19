@@ -110,15 +110,23 @@ func TestTheImageIsDistrolessDebian13PinnedByDigest(t *testing.T) {
 func TestTheWorkflowBuildsMultiArchWithoutQEMU(t *testing.T) {
 	wf := read(t, "../.github/workflows/ci.yml")
 	for _, want := range []string{
-		"docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7",
-		"docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4",
-		// The repository's house style, on every job of the existing workflow.
-		"actions/checkout@v7",
-		"platforms: linux/amd64,linux/arm64",
+		"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7",
+		"bash scripts/build-ci-image.sh",
 		"if-no-files-found: error",
 	} {
 		if !strings.Contains(wf, want) {
 			t.Errorf("the workflow is missing %q", want)
+		}
+	}
+	build := read(t, "../scripts/build-ci-image.sh")
+	for _, want := range []string{
+		"--platform linux/amd64,linux/arm64",
+		"--provenance=mode=max",
+		"--sbom=true",
+		"--push",
+	} {
+		if !strings.Contains(build, want) {
+			t.Errorf("the image build script is missing %q", want)
 		}
 	}
 	if strings.Contains(wf, "setup-qemu-action") {

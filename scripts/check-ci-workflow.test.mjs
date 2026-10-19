@@ -36,6 +36,14 @@ test('the CI checker rejects a movable GitHub action tag', () => {
   assert.ok(problems.some((problem) => problem.includes('40-hex commit')), problems.join('\n'));
 });
 
+test('the CI checker rejects a flow-style action step', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(
+    '      - run: npm test\n',
+    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n      - run: npm test\n',
+  )));
+  assert.ok(problems.some((problem) => problem.includes('flow-style action')), problems.join('\n'));
+});
+
 test('Rust CI and release setup use the pinned rustup toolchain without third-party helper actions', () => {
   const toolchain = readFileSync(join(REPO_ROOT, 'rust-toolchain.toml'), 'utf8');
   assert.match(toolchain, /channel = "1\.98\.1"/);
@@ -1592,6 +1600,14 @@ test('a movable GitHub action tag is rejected in release', () => {
     'actions/checkout@v7',
   ));
   assertReported(problems, '40-hex commit SHA');
+});
+
+test('a flow-style action step is rejected in release', () => {
+  const problems = releaseProblems((t) => t.replace(
+    '      - run: rustup show active-toolchain',
+    '      - { uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n      - run: rustup show active-toolchain',
+  ));
+  assertReported(problems, 'flow-style action');
 });
 
 test('every release action is owned by GitHub and pinned to a commit', () => {
