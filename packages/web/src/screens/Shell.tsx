@@ -1303,7 +1303,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         </Banner>
       ) : null}
       {offline && linkReason === 'version' ? (
-        <Banner tone="warn" action={{ label: t('reload.action'), onAction: () => browser.reload() }}>{t('shell.banner.clientTooOld')}</Banner>
+        <Banner tone="warn" action={{ label: t('reload.action'), onAction: () => {
+          // The update effect checkpoints the draft, route and files, then reloads; with no update flow or storage it is a plain reload.
+          if (update === undefined || updateScope === null) browser.reload();
+          else setUpdateEntry(update.currentEntry);
+        } }}>{t('shell.banner.clientTooOld')}</Banner>
       ) : null}
       {removalNotices.map(r => (
         <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {

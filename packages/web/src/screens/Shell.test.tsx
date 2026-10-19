@@ -1273,6 +1273,36 @@ describe('connection', () => {
   });
 });
 
+describe('the newer-client reload keeps unsent work', () => {
+  function wired() {
+    const save = vi.fn<(...args: [unknown, unknown, readonly File[]]) => Promise<void>>().mockResolvedValue();
+    const reload = vi.fn();
+    const update: ShellUpdateDeps = { currentEntry: '/assets/old.js', watch: () => () => undefined,
+      store: { save, load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload };
+    const ctx = setup(`/c/${A}/${GEN}`, { update, before: client => client.set(`timeline:${GEN}`, timeline()) });
+    ctx.fake.handler = command => command.m === 'checkpointFiles' ? Promise.resolve([]) : Promise.resolve(null);
+    return { ...ctx, save, reload };
+  }
+
+  it('checkpoints the typed draft, then reloads', async () => {
+    const { fake, user, save, reload } = wired();
+    await user.type(composer(), 'keep me');
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'version' }));
+    await user.click(screen.getByRole('button', { name: en['reload.action'] }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0]?.[1]).toMatchObject({ conversationId: GEN, draft: { channelId: GEN, text: 'keep me' } });
+  });
+
+  it('control: with no draft it is a plain reload of an empty checkpoint', async () => {
+    const { fake, user, save, reload } = wired();
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'version' }));
+    await user.click(screen.getByRole('button', { name: en['reload.action'] }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(JSON.stringify(save.mock.calls[0]?.[1])).not.toContain('keep me');
+  });
+});
+
 describe('keyboard', () => {
   it('moves between channels with Alt+Arrow, clamped at both ends', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);
