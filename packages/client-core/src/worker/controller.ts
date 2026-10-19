@@ -35,6 +35,7 @@ import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
   type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type ThreadState, type TimelineItem, type TrayItem,
   type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
+  type PresenceChoice, type PresenceStatus,
 } from '../state/types';
 import { SyncEngine, type SyncDeps } from '../sync/engine';
 import { LEAF_VERDICTS, SyncError } from '../sync/errors';
@@ -225,6 +226,13 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'forgetBrowser',
   'markRead',
   'setSetting',
+  'setPresenceChoice',
+  'presenceActivity',
+  'getAFKSettings',
+  'setAFK',
+  'afkActivity',
+  'afkMove',
+  'afkLeave',
   'openDm',
   'editMessage',
   'deleteMessage',
@@ -233,6 +241,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'loadPins',
   'closePins',
   'attachFiles',
+  'checkpointFiles',
   'discardAttachment',
   'openAttachment',
   'refreshTrust',
@@ -320,6 +329,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   loadPins: ['channelId'],
   closePins: ['channelId'],
   attachFiles: ['channelId'],
+  checkpointFiles: ['channelId'],
   discardAttachment: ['channelId'],
   openAttachment: ['channelId'],
   verifyContact: ['userId'],
@@ -329,6 +339,11 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   callJoin: ['channelId'],
   callDecline: ['callId'],
   renameCommunity: ['communityId'],
+  getAFKSettings: ['communityId'],
+  setAFK: ['communityId'],
+  afkActivity: ['communityId', 'channelId'],
+  afkMove: ['communityId', 'channelId'],
+  afkLeave: ['communityId'],
   deleteCommunity: ['communityId'],
   leaveCommunity: ['communityId'],
   transferOwnership: ['communityId', 'userId'],
@@ -388,6 +403,13 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'regenerateBackupCodes',
     'markRead',
     'setSetting',
+    'setPresenceChoice',
+    'presenceActivity',
+    'getAFKSettings',
+    'setAFK',
+    'afkActivity',
+    'afkMove',
+    'afkLeave',
     'openDm',
     'editMessage',
     'deleteMessage',
@@ -399,6 +421,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'closeThread',
     'loadThreads',
     'attachFiles',
+    'checkpointFiles',
     'discardAttachment',
     'openAttachment',
     'refreshTrust',
@@ -563,6 +586,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'revokeDevice' && command.recoveryKey !== null && typeof command.recoveryKey !== 'string') {
     return 'the recovery key is not a string or null';
   }
+  if (m === 'setPresenceChoice' && !['online', 'idle', 'dnd', 'invisible'].includes(command.choice as string)) return 'invalid presence choice';
   if (m === 'setSetting') {
     if (typeof command.key !== 'string') return 'key is not a string';
     if (command.value !== null && typeof command.value !== 'string') return 'value is not a string or null';
@@ -1007,6 +1031,17 @@ export class Controller {
       case 'forgetBrowser': return this.forgetBrowser();
       case 'markRead': return this.markRead(command.channelId);
       case 'setSetting': return this.setSetting(command.key, command.value);
+      case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
+      case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
+      case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
+        .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
+          timeoutSeconds: settings.timeoutSeconds }));
+      case 'setAFK': return this.setAFK(command.communityId, command.channelId, command.timeoutSeconds);
+      case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId)).then(() => null);
+      case 'afkMove': return this.routes.moveToAFK(fromHex(command.communityId), fromHex(command.channelId))
+        .then(() => this.loadAFK(command.communityId)).then(() => null);
+      case 'afkLeave': return this.routes.leaveAFK(fromHex(command.communityId))
+        .then(() => this.loadAFK(command.communityId)).then(() => null);
       case 'openDm': return this.openDm(command.userId);
       case 'editMessage': return this.editMessage(command.channelId, command.msgId, command.text);
       case 'deleteMessage': return this.deleteMessage(command.channelId, command.msgId);
@@ -1018,6 +1053,7 @@ export class Controller {
       case 'loadPins': return this.loadPins(command.channelId);
       case 'closePins': return this.closePins(command.channelId);
       case 'attachFiles': return this.attachFiles(command.channelId, command.files);
+      case 'checkpointFiles': return Promise.resolve(this.trays.get(command.channelId)?.files() ?? []);
       case 'discardAttachment': return this.discardAttachment(command.channelId, command.trayId);
       case 'openAttachment': return this.openAttachment(command.channelId, command.seq, command.index, command.thumb);
       case 'refreshTrust': return this.refreshTrust();
@@ -1457,9 +1493,15 @@ export class Controller {
         ? { status, generation, reason: 'version' }
         : { status, generation };
       this.slices.set('connection', this.connectionState);
+      if (status === 'offline') for (const community of this.slices.get('communities') ?? []) {
+        this.clearPresence(community.id);
+        this.clearAFK(community.id);
+      }
       this.stopTypingIfUnviewable();
     } else if (e.type === 'ready') {
       this.onReady(e.info);
+    } else if (e.type === 'frame' && e.frame.op === Op.presence) {
+      this.incomingPresence(e.frame.payload);
     } else if (e.type === 'frame' && e.frame.op === Op.typing) {
       this.incomingTypingFrame(e.frame.payload);
     } else if (e.type === 'frame' && (e.frame.op === Op.voiceState || e.frame.op === Op.callRing)) {
@@ -1477,6 +1519,11 @@ export class Controller {
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
+    for (const community of this.slices.get('communities') ?? []) {
+      this.clearPresence(community.id);
+      this.clearAFK(community.id);
+    }
+    void this.barrier.track(this.refreshPresenceChoice());
     // Pre-flight ruling (a): what this ready catches up was not delivered live.
     if (this.phase === 'ready') this.noticeFloor = this.serverNowS();
     const core = this.core;
@@ -2043,6 +2090,8 @@ export class Controller {
     }
     this.slices.set(`channels:${communityId}`, []);
     this.slices.set(`members:${communityId}`, []);
+    this.clearPresence(communityId);
+    this.clearAFK(communityId);
     this.admin.forget(communityId);
     // web3.5 C4: a server joined again is sent its views again, once its member list and access are read again.
     this.membersRead.delete(communityId);
@@ -2195,6 +2244,10 @@ export class Controller {
     this.publishChannels(communityId);
     // C4 fix round 1: the role view is pushed once, after the access read below, not from the member list as well.
     if (members !== null) this.publishMembers(communityId, members, false);
+    this.clearPresence(communityId);
+    void this.barrier.track(this.loadPresence(communityId));
+    this.clearAFK(communityId);
+    void this.barrier.track(this.loadAFK(communityId));
     this.updateExpected();
     this.publishBadges();
     this.publishDms();                               // a DM's name comes from the member lists
@@ -2605,6 +2658,112 @@ export class Controller {
     return Promise.resolve(null);
   }
 
+  private static readonly PRESENCE_CHOICES: readonly PresenceChoice[] = ['online', 'idle', 'dnd', 'invisible'];
+  private readonly afkReadSeq = new Map<string, number>();
+
+  private clearAFK(communityId: string): void {
+    this.afkReadSeq.set(communityId, (this.afkReadSeq.get(communityId) ?? 0) + 1);
+    this.slices.set(`afk:${communityId}`, null);
+  }
+
+  private async loadAFK(communityId: string): Promise<void> {
+    const seq = (this.afkReadSeq.get(communityId) ?? 0) + 1;
+    this.afkReadSeq.set(communityId, seq);
+    try {
+      const row = await this.routes.getAFK(fromHex(communityId));
+      if (!this.listed(communityId) || this.afkReadSeq.get(communityId) !== seq) return;
+      this.slices.set(`afk:${communityId}`, { channelId: row.channelId === null ? null : toHex(row.channelId),
+        timeoutSeconds: row.timeoutSeconds, occupants: row.occupants.map(p => ({ userId: toHex(p.userId), deviceId: toHex(p.deviceId) })) });
+    } catch { /* reconnect or the next community_changed retries the snapshot */ }
+  }
+
+  private async setAFK(communityId: string, channelId: string | null, timeoutSeconds: number): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    if (channelId !== null && !ID.test(channelId)) throw new Refusal('E_BAD_INPUT', 'invalid AFK channel');
+    if (![60, 300, 900, 1800, 3600].includes(timeoutSeconds)) throw new Refusal('E_BAD_INPUT', 'invalid AFK timeout');
+    await this.routes.setAFKSettings(fromHex(communityId), channelId === null ? null : fromHex(channelId), timeoutSeconds);
+    await this.loadAFK(communityId);
+    return null;
+  }
+  private static readonly PRESENCE_STATUSES: readonly PresenceStatus[] = ['offline', 'online', 'idle', 'dnd'];
+  private presenceSeq = new Map<string, number>();
+  private presenceLoads = new Map<string, { seq: number; updates: Record<string, PresenceStatus>; promise: Promise<void> }>();
+  private presenceChoiceReadSeq = 0;
+  private presenceChoiceWriteSeq = 0;
+  private presenceChoiceAppliedRead = 0;
+
+  private clearPresence(communityId: string): void {
+    this.presenceSeq.set(communityId, (this.presenceSeq.get(communityId) ?? 0) + 1);
+    this.presenceLoads.delete(communityId);
+    this.slices.set(`presence:${communityId}`, null);
+  }
+
+  private async refreshPresenceChoice(): Promise<void> {
+    const seq = ++this.presenceChoiceReadSeq;
+    const write = this.presenceChoiceWriteSeq;
+    try {
+      const me = await this.routes.getAccountMe();
+      if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
+      const choice = Controller.PRESENCE_CHOICES[(me.presenceChoice ?? 1) - 1] ?? 'online';
+      this.presenceChoiceAppliedRead = seq;
+      this.setAccount({ presenceChoice: choice });
+    } catch { /* the next ready retries */ }
+  }
+
+  private async setPresenceChoice(choice: PresenceChoice): Promise<null> {
+    const write = ++this.presenceChoiceWriteSeq;
+    ++this.presenceChoiceReadSeq;
+    const appliedRead = this.presenceChoiceAppliedRead;
+    await this.routes.setPresenceChoice(Controller.PRESENCE_CHOICES.indexOf(choice) + 1);
+    if (this.presenceChoiceWriteSeq === write && this.presenceChoiceAppliedRead === appliedRead) this.setAccount({ presenceChoice: choice });
+    return null;
+  }
+
+  private loadPresence(communityId: string): Promise<void> {
+    const seq = this.presenceSeq.get(communityId) ?? 0;
+    const current = this.presenceLoads.get(communityId);
+    if (current?.seq === seq) return current.promise;
+    const pending = { seq, updates: {} as Record<string, PresenceStatus>, promise: Promise.resolve() };
+    const work = (async () => {
+      let failed = false;
+      try {
+        const rows = await this.routes.getPresenceSnapshot(fromHex(communityId));
+        if (!this.listed(communityId) || this.connectionState.status !== 'online' || this.presenceSeq.get(communityId) !== seq) return;
+        const statuses: Record<string, PresenceStatus> = {};
+        for (const row of rows) statuses[toHex(row.userId)] = Controller.PRESENCE_STATUSES[row.status] ?? 'offline';
+        this.slices.set(`presence:${communityId}`, { ...statuses, ...pending.updates });
+      } catch { failed = true; }
+      finally {
+        if (this.presenceLoads.get(communityId) === pending) this.presenceLoads.delete(communityId);
+        if (failed) this.deps.setTimeout(() => {
+          if (this.listed(communityId) && this.connectionState.status === 'online' && this.presenceSeq.get(communityId) === seq
+            && this.slices.get(`presence:${communityId}`) === null) void this.barrier.track(this.loadPresence(communityId));
+        }, 10_000);
+      }
+    })();
+    pending.promise = work;
+    this.presenceLoads.set(communityId, pending);
+    return work;
+  }
+
+  private incomingPresence(payload: readonly unknown[]): void {
+    const [rawUser, rawStatus] = payload;
+    if (!(rawUser instanceof Uint8Array) || rawUser.length !== 16 || typeof rawStatus !== 'bigint' || rawStatus < 0n || rawStatus > 3n) return;
+    const user = toHex(rawUser);
+    const status = Controller.PRESENCE_STATUSES[Number(rawStatus)];
+    for (const community of this.slices.get('communities') ?? []) {
+      if (!this.slices.get(`members:${community.id}`)?.some(m => m.userId === user)) continue;
+      const current = this.slices.get(`presence:${community.id}`);
+      if (current === undefined || current === null) {
+        void this.barrier.track(this.loadPresence(community.id));
+        const pending = this.presenceLoads.get(community.id);
+        if (pending !== undefined) pending.updates[user] = status;
+      }
+      else this.slices.set(`presence:${community.id}`, { ...current, [user]: status });
+    }
+    if (this.accountState.user?.id === user) void this.barrier.track(this.refreshPresenceChoice());
+  }
+
   // ---- settings (requirement 27) ----
 
   private setSetting(key: string, value: string | null): Promise<null> {
@@ -2885,6 +3044,8 @@ export class Controller {
     for (const communityId of communities) {
       this.slices.set(`channels:${communityId}`, []);
       this.slices.set(`members:${communityId}`, []);
+      this.clearPresence(communityId);
+      this.clearAFK(communityId);
     }
     for (const channelId of timelines) {
       this.slices.set(`timeline:${channelId}`, { channelId, group: 'none', items: [], hasEarlier: false });

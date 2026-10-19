@@ -4,7 +4,7 @@ on:
     branches: [main]
   pull_request:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
@@ -12,8 +12,8 @@ jobs:
   node:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -34,8 +34,8 @@ jobs:
   ui:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -61,7 +61,7 @@ jobs:
       # web-2b stories (Conversation/MessageToolbar, Conversation/AttachmentCard, Screens/Conversation).
       - name: Screenshots of the web-1, web-2a and web-2b components and screens in the three themes
         run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-screens
           path: target/ui-screens/web-2b
@@ -71,7 +71,7 @@ jobs:
       # 360×740 browser viewport. Each prefix matches only web-2c stories, so a missing or renamed story fails here.
       - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--
       - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish-- --viewport=360x740
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-screens-web-2c
           path: |
@@ -83,20 +83,20 @@ jobs:
       # artifact from target/ui-screens/web-3. Each prefix matches only web-3 stories, so a missing family fails here.
       - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop voice- media-mediaplayer-- screens-voice--
       - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone voice- media-mediaplayer-- screens-voice-- --viewport=360x740
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-screens-web-3
           path: target/ui-screens/web-3/**
           if-no-files-found: error
   rust-wasm-node:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: clang 23 for the wasm C build
         run: |
           test "$(lsb_release -cs)" = noble
@@ -109,25 +109,25 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
+          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          targets: wasm32-unknown-unknown
-          components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: rust-wasm32-unknown-unknown
-      - uses: actions/setup-node@v7
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
-        with:
-          tool: wasm-bindgen@0.2.128,wasm-pack@0.15.0
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - name: wasm-bindgen-cli must equal the Cargo.lock crate version
         run: |
           want=$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name=="wasm-bindgen") | .version')
@@ -149,18 +149,20 @@ jobs:
   rust-native:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: rust-native
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-testkit
           path: target/release/dilla-testkit
@@ -169,15 +171,17 @@ jobs:
   rust-wasi:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          targets: wasm32-wasip1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: rust-wasm32-wasip1
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
@@ -186,8 +190,8 @@ jobs:
   vectors:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -195,14 +199,18 @@ jobs:
       - run: npm run vectors
       - run: git diff --exit-code -- protocol/vectors
       - run: test -z "$(git status --porcelain -- protocol/vectors)"
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          shared-key: rust-native
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - run: cargo run -p dilla-testkit --bin dilla-testkit --locked -- vectors
 
   browser-spike:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
@@ -210,7 +218,7 @@ jobs:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: clang 23 for the wasm C build
         run: |
           test "$(lsb_release -cs)" = noble
@@ -223,24 +231,25 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
+          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: rust-wasm32-unknown-unknown
-      - uses: actions/setup-node@v7
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
-        with:
-          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
       # Deviation A2-6: the persistence matrix asserts Firefox private-browsing and WebKit
@@ -251,7 +260,7 @@ jobs:
       - run: npm run test:e2e:matrix -w @dilla/e2e
 
   browser-media:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # SP-27's cold container run was unavailable; the controller retains the 25-minute budget.
     timeout-minutes: 25
     needs: [rust-native, rust-wasi]
@@ -261,7 +270,7 @@ jobs:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: clang 23 for the wasm C build
         run: |
           test "$(lsb_release -cs)" = noble
@@ -274,35 +283,36 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
+          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: rust-wasm32-unknown-unknown
-      - uses: actions/setup-node@v7
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
-        with:
-          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
@@ -321,7 +331,7 @@ jobs:
         env:
           DILLA_MEDIA_SFU_AV1: '1'
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-media-results
@@ -329,7 +339,7 @@ jobs:
           if-no-files-found: error
 
   web-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # C9: the web client is built once here and handed to chromium-web, firefox-web, webkit-web, go-release and image, so every
     # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
     # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
@@ -340,7 +350,7 @@ jobs:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: clang 23 for the wasm C build
         run: |
           test "$(lsb_release -cs)" = noble
@@ -353,28 +363,29 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm-23.list
           sudo apt-get update
           apt-cache policy clang-23 llvm-23
-          v='1:23.1.4~++20261014053933+0cd28174a1f6-1~exp1~20261014053943.82'
+          v='1:23.1.4~++20261018124056+71c76755a8ff-1~exp1~20261018124211.83'
           sudo apt-get install -y --no-install-recommends "clang-23=$v" "llvm-23=$v" "libllvm23=$v" "libclang-cpp23=$v" "libclang1-23=$v" "libclang-common-23-dev=$v" "llvm-23-linker-tools=$v" "llvm-23-runtime=$v"
           for p in clang-23 llvm-23 libllvm23 libclang-cpp23 libclang1-23 libclang-common-23-dev llvm-23-linker-tools llvm-23-runtime; do test "$(dpkg-query -W -f='${Version}' "$p")" = "$v"; done
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: rust-wasm32-unknown-unknown
-      - uses: actions/setup-node@v7
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
-        with:
-          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
@@ -382,16 +393,17 @@ jobs:
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
       - run: npm run build -w @dilla/web
+      - run: npm run test:noise-release
       # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.
       - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core
       - run: go test -tags webdist ./internal/web/...
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-web-dist
           path: packages/web/dist/
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist/
@@ -408,33 +420,33 @@ jobs:
     timeout-minutes: 38
     needs: [rust-native, rust-wasi, web-build]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
       - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: packages/web/dist
       - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
@@ -451,7 +463,7 @@ jobs:
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-web-results-chromium
@@ -469,33 +481,33 @@ jobs:
     timeout-minutes: 38
     needs: [rust-native, rust-wasi, web-build]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
       - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: packages/web/dist
       - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
@@ -513,7 +525,7 @@ jobs:
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-web-results-firefox
@@ -529,33 +541,33 @@ jobs:
     timeout-minutes: 30
     needs: [rust-native, rust-wasi, web-build]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
       - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: packages/web/dist
       - name: Fetch the core-worker harness built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
@@ -565,7 +577,7 @@ jobs:
         env:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per engine.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-web-results-webkit
@@ -575,16 +587,14 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@a2627de80e5819949c7e1c83ed99b29085fc9bc4 # 1.98.1
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
-        with:
-          tool: cargo-deny@0.20.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show active-toolchain
+      - run: bash scripts/install-ci-tool.sh cargo-deny
       - run: cargo deny --all-features check advisories bans licenses sources
 
   go:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # rust-wasi (Plan A's CI task) builds and uploads the dilla-core-wasi
     # artifact this job downloads. Without `needs:` GitHub starts the jobs in
     # parallel, download-artifact finds nothing in the run, and the job is red on
@@ -593,13 +603,13 @@ jobs:
     # tests skip, which keeps this job inside a 4-vCPU runner's budget.
     needs: [rust-wasi]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
@@ -609,9 +619,11 @@ jobs:
         run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       # Every package but internal/ds, which go-ds runs: together they are ./... (the checker pins
       # both lines). internal/ds under -race took ~7.5 min of a 4-core machine's ~8 min alone and
-      # pushed this job past its 25 minutes on the runner (run 36697379567).
+      # pushed this job past its 25 minutes on the runner (run 36697379567). The API package
+      # alone reached its former 15-minute package timeout while still advancing under -race
+      # on run 39143866608, so it has a 20-minute package budget within this 30-minute job.
       - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
-        run: go test -race -shuffle=on -timeout 15m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
+        run: go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)
         env:
           GORACE: halt_on_error=1
       # I8: these five video publishing tests are gated out of -race due to the pinned LiveKit race.
@@ -630,13 +642,13 @@ jobs:
     # the reconcile asked its ACL once per group); the runner is roughly three times slower.
     needs: [rust-wasi]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
@@ -654,18 +666,18 @@ jobs:
     # timeout of its own.
     needs: [rust-wasi, rust-native]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: Fetch the testkit binary built by the rust-native job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
@@ -682,8 +694,8 @@ jobs:
   go-fts5-arm64:
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -696,20 +708,19 @@ jobs:
   go-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with:
-          version: v2.14.0
+      - run: bash scripts/install-ci-tool.sh golangci-lint
+      - run: golangci-lint run ./...
 
   go-vuln:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -720,10 +731,8 @@ jobs:
   go-sqlc:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5
-        with:
-          sqlc-version: '1.31.1'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: bash scripts/install-ci-tool.sh sqlc
       - run: sqlc diff
       - run: git diff --exit-code
       - run: test -z "$(git status --porcelain)"
@@ -745,12 +754,12 @@ jobs:
           --health-cmd "pg_isready -U dilla" --health-interval 5s
           --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
@@ -768,14 +777,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: [web-build]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - run: rm -rf internal/web/dist
       - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: internal/web/dist
@@ -793,7 +802,7 @@ jobs:
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
       - name: linux/arm64
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dillad-binaries
           path: dist/
@@ -809,15 +818,15 @@ jobs:
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - run: rm -rf internal/web/dist
       - name: Fetch the web client into the image's build context
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: internal/web/dist
@@ -825,36 +834,12 @@ jobs:
         run: |
           test -f internal/web/dist/index.html
           if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # A pull request only builds: the login is skipped there, so a fork's
       # read-only token never reaches it.
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: github.event_name != 'pull_request'
-        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-      # metadata-action's defaults tag `latest` only on a tag event, so a push to main would publish
-      # `:main` alone while Compose and the deploy README pull `:latest`. latest follows the default
-      # branch; the branch, PR, commit and (on a v* tag) version tags are the defaults kept.
-      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository }}/dillad
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha
-            type=semver,pattern={{version}}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
-          build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
-            COMMIT=${{ github.sha }}
+      - name: Log in to GHCR for a main-branch push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build both architectures and publish only from main
+        run: bash scripts/build-ci-image.sh

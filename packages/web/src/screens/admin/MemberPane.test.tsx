@@ -20,6 +20,7 @@ function setup(acc: CommunityAccess | undefined = access()) {
   const fake = new FakeClient();
   fake.set('communities', [{ id: CID, name: 'Midgard', owner: OWNER }]);
   fake.set(`members:${CID}`, [m(OWNER, 'olof'), m(ME, 'ada', [MOD.id]), m(BOB, 'bob'), m(CAL, 'carol', [MOD.id])]);
+  fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' });
   fake.set(`roles:${CID}`, [MOD]);
   if (acc) fake.set(`permissions:${CID}`, acc);
   const announce = vi.fn();
@@ -35,6 +36,23 @@ async function pick(user: ReturnType<typeof userEvent.setup>, who: string, item:
 }
 
 describe('MemberPane', () => {
+  it('waits for presence, then places offline members at the bottom with a spoken label', () => {
+    const { fake } = setup();
+    act(() => fake.set(`presence:${CID}`, null));
+    expect(screen.getByRole('status')).toHaveTextContent('Loading members');
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'offline', [ME]: 'online', [BOB]: 'dnd', [CAL]: 'idle' }));
+    expect(screen.getByRole('heading', { name: 'Offline — 1' })).toBeInTheDocument();
+    expect(screen.getByText('Do Not Disturb')).toBeInTheDocument();
+  });
+  it('keeps keyboard focus on a member action when presence moves its row', () => {
+    const { fake } = setup();
+    const before = screen.getByRole('button', { name: 'actions for bob' });
+    act(() => before.focus());
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'offline', [CAL]: 'online' }));
+    const after = screen.getByRole('button', { name: 'actions for bob' });
+    expect(after).not.toBe(before);
+    expect(after).toHaveFocus();
+  });
   it('lists groups with the owner and you tags', async () => {
     const { view } = setup();
     expect(screen.getByRole('heading', { name: 'mods — 2' })).toBeInTheDocument();
@@ -226,6 +244,16 @@ describe('BanFlow', () => {
 });
 
 describe('role assignment focus', () => {
+  it('returns focus when the member list reloads while the dialog closes', async () => {
+    const { user, fake } = setup(access({ manageRoles: true, top: 6 }));
+    await pick(user, 'bob', 'roles');
+    act(() => fake.set(`presence:${CID}`, null));
+    expect(screen.getByRole('status')).toHaveTextContent('Loading members');
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    act(() => fake.set(`presence:${CID}`, { [OWNER]: 'online', [ME]: 'online', [BOB]: 'online', [CAL]: 'online' }));
+    expect(screen.getByRole('button', { name: 'actions for bob' })).toHaveFocus();
+  });
   it('Done after a grant that moves the member into a hoisted group returns focus to his re-mounted menu trigger', async () => {
     const { user, fake } = setup(access({ manageRoles: true, top: 6 }));
     fake.handler = c => {

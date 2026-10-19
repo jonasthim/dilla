@@ -35,7 +35,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"SetGeneration",
 		}},
 		{"Accounts", reflect.TypeOf((*store.Accounts)(nil)).Elem(), []string{
-			"CreateUser", "GetUser", "GetUserByUsername", "ListUsers", "SetUserDisabled",
+			"CreateUser", "GetUser", "GetUserByUsername", "ListUsers", "SetUserDisabled", "GetPresenceChoice", "ListPresenceChoices", "SetPresenceChoice",
 			"TombstoneUser",
 			// dilla web3.6 S1: the owed second factor and its boot reconcile.
 			"MarkFactorOwedWithoutFactor", "SetFactorOwed",
@@ -170,6 +170,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			// /v1/channels/{id}/calls joins through (task 16), reached through the
 			// embedded VoiceSessions.
 			"GetVoiceSession", "ListLiveVoiceSessions",
+			"GetCommunityAFK", "SetCommunityAFK",
 			// Fix wave C3, reached through the embedded ChannelMembers: a kick, ban or
 			// leave drops the user's rows for the community's channels.
 			"DeleteCommunityChannelMembers",
@@ -199,10 +200,10 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		// Communities is the slice of Structure Plan 2 task 1's tables support; it
 		// is what Repository embeds until the rest of Structure exists (P2-D23).
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
-			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity",
+			"CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
 			"GetMember", "GetRole", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
 			"ListMembersOfCommunity",
-			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SetCommunityOwner",
+			"ListRoles", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "SetCommunityAFK", "SetCommunityOwner",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
 		}},
 		{"ReadableSearch", reflect.TypeOf((*store.ReadableSearch)(nil)).Elem(), []string{

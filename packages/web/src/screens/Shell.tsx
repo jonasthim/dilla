@@ -15,7 +15,7 @@ import { phoneNow, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, us
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
 import { CreateChannelFlow, CreateServerFlow, InviteFlow } from './Create.tsx';
-import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction } from './conversation/Conversation.tsx';
+import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
 import { ThreadView } from './conversation/ThreadView.tsx';
@@ -37,6 +37,18 @@ import { useSounds } from './voice/useSounds.tsx';
 import { Activity } from './Activity.tsx';
 import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
+import { PresencePicker } from './PresencePicker.tsx';
+import type { watchUpdates } from '../update.ts';
+import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
+import { updateTabId } from '../update-checkpoint.ts';
+import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
+
+export interface ShellUpdateDeps {
+  currentEntry: string;
+  watch: typeof watchUpdates;
+  store: ReturnType<typeof createUpdateCheckpointStore>;
+  reload(): void;
+}
 
 /**
  * Focuses the rail's settings button (task 17 names it by `aria-label`), where focus returns when Settings closes;
@@ -108,13 +120,26 @@ type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'anno
 /** What the aside shows instead of the member list (web3.7): a channel's thread, or the list of its threads. */
 type Side = { channelId: string; view: 'list' } | { channelId: string; view: 'thread'; rootMsgId: string };
 
+function restoredConversationUi(value: unknown): ConversationUi | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const ui = value as Partial<ConversationUi>;
+  const message = (row: unknown): row is { msgId: string } => typeof row === 'object' && row !== null
+    && typeof (row as { msgId?: unknown }).msgId === 'string' && HEX32.test((row as { msgId: string }).msgId);
+  if (ui.reply !== null && (!message(ui.reply) || typeof ui.reply.author !== 'string' || typeof ui.reply.excerpt !== 'string')) return null;
+  if (ui.editing !== null && (!message(ui.editing) || typeof ui.editing.value !== 'string')) return null;
+  if (typeof ui.pinsOpen !== 'boolean' || (ui.jump !== null && (!message(ui.jump) || typeof ui.jump.n !== 'number'))
+    || (ui.notice !== null && ui.notice !== 'shell.message.replyNotLoaded')
+    || (ui.trayError !== null && typeof ui.trayError !== 'string')) return null;
+  return ui as ConversationUi;
+}
+
 /**
  * The signed-in shell: the server rail, the selected server's channels and the direct messages, the open
  * channel's or DM's timeline and composer, the banners and the status bar. The route is the selection (L-TS-13);
  * under a settings route the shell shows the route Settings was opened over and never navigates (L-TS-27). The
  * worker loads a server's lists on selectCommunity and opens a channel's or DM's group on openChannel.
  */
-export function Shell(): React.JSX.Element {
+export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Element {
   const client = useCore();
   const phone = usePhoneLayout();
   useVisualViewportHeight(phone);
@@ -174,6 +199,9 @@ export function Shell(): React.JSX.Element {
   // An empty id names a slice that never exists, so it reads undefined.
   const channels = useSlice(`channels:${communityId ?? ''}`);
   const members = useSlice(`members:${communityId ?? ''}`);
+  const afk = useSlice(`afk:${communityId ?? ''}`);
+  const afkLists = useSlices((communities ?? []).map(c => `afk:${c.id}` as const));
+  const selfAFKCommunity = (communities ?? []).find((c, i) => afkLists[i]?.occupants.some(p => p.deviceId === account?.deviceId))?.id ?? null;
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
   const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
   const allMembers = useMemo(() => mergeMembers(memberLists), [memberLists]);
@@ -214,6 +242,7 @@ export function Shell(): React.JSX.Element {
   // web3.7: one aside. A thread or the thread list of the open channel takes the member list's place; the members' own state is kept
   // under it, so closing the thread gives back what was there. The toggle shows the members and ends the thread.
   const [side, setSide] = useState<Side | null>(null);
+  const [threadDraft, setThreadDraft] = useState<{ channelId: string; rootMsgId: string; text: string } | null>(null);
   useEffect(() => { setSide(current => (current !== null && current.channelId !== channelId ? null : current)); }, [channelId]);
   const toggleMembers = () => {
     const narrowNow = typeof window.matchMedia !== 'function' || !window.matchMedia('(min-width: 64rem)').matches;
@@ -378,8 +407,60 @@ export function Shell(): React.JSX.Element {
   // Product walk M8: {where} of a call names a DM's call as "the call with {name}", a voice channel by its name.
   const callWhere = useCallback((id: string) => (dms?.some(d => d.id === id) === true ? t('call.where', { name: whereOf(id) }) : whereOf(id)),
     [dms, whereOf]);
+  const upgradeRejoinUntil = useRef(0);
+  const recoverEnded = useCallback((id: string) => Date.now() < upgradeRejoinUntil.current
+    && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
-    stageShown: id => id === (voiceChannel?.id ?? dm?.id) });
+    stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded });
+  const afkSelf = selfAFKCommunity === communityId && communityId !== null;
+  const leaveVoiceCall = call.leave;
+  const currentCallChannel = call.channelId;
+  useEffect(() => {
+    if (selfAFKCommunity !== null && currentCallChannel !== null) leaveVoiceCall();
+  }, [selfAFKCommunity, currentCallChannel, leaveVoiceCall]);
+  // The clock lives on the server. This device reports only real input or microphone speech;
+  // listening, another tab and another device do not refresh this call's AFK timer.
+  const afkTrackingKey = useRef<string | null>(null);
+  const afkLastReport = useRef(0);
+  useEffect(() => {
+    const channel = call.channelId;
+    const home = (communities ?? []).findIndex((c, i) => railSlices[i]?.some(ch => ch.id === channel && ch.kind === 1));
+    const callCommunityId = home < 0 ? null : communities?.[home]?.id ?? null;
+    const callAFK = home < 0 ? null : afkLists[home];
+    if (callCommunityId === null || channel === null || call.session === null || callAFK?.channelId === null || callAFK?.channelId === undefined
+      || channel === callAFK.channelId) {
+      if (channel === null || call.session === null) afkTrackingKey.current = null;
+      return;
+    }
+    const activity = (fromMic = false) => {
+      if ((!fromMic && document.visibilityState !== 'visible') || Date.now() - afkLastReport.current < 5_000) return;
+      afkLastReport.current = Date.now();
+      void client.call({ m: 'afkActivity', communityId: callCommunityId, channelId: channel }).catch(() => undefined);
+    };
+    const speech = () => { if (call.state?.speaking) activity(true); };
+    const userActivity = () => activity();
+    const key = `${callCommunityId}:${channel}:${callAFK.channelId}`;
+    if (afkTrackingKey.current !== key) {
+      afkTrackingKey.current = key;
+      afkLastReport.current = 0;
+      activity(true);
+    }
+    speech();
+    const timer = window.setInterval(speech, 5_000);
+    window.addEventListener('pointermove', userActivity);
+    window.addEventListener('pointerdown', userActivity);
+    window.addEventListener('keydown', userActivity);
+    window.addEventListener('touchstart', userActivity);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('pointermove', userActivity);
+      window.removeEventListener('pointerdown', userActivity);
+      window.removeEventListener('keydown', userActivity);
+      window.removeEventListener('touchstart', userActivity);
+    };
+  }, [client, communities, railSlices, afkLists, call.channelId, call.session, call.state?.speaking]);
+  const callRestoreRef = useRef(call.restore);
+  callRestoreRef.current = call.restore;
   useLayoutEffect(() => {
     if (leftFrom === null) return;
     const name = whereOf(leftFrom.id);
@@ -796,18 +877,26 @@ export function Shell(): React.JSX.Element {
       action={{ label: t('shell.openFailed.action'), onAction: () => { refocus.current = 'log'; openChannel(id); } }} />
   );
 
-  useSounds({ rings, room: call.channelId === null ? undefined : voiceSlice?.[call.channelId], inCall: call.channelId,
+  useSounds({ rings, room: call.channelId === null ? undefined : voiceSlice?.[call.channelId], inCall: call.channelId, presenceChoice: account?.presenceChoice,
     deafened: call.state?.deafened ?? false, settings: settings ?? {}, selfId: self?.id ?? null,
     ringCommunity: id => (railSlices.flat() as ChannelSummary[]).find(c => c.id === id)?.communityId });
   // A ring is answered in its DM: the DM opens and its call is joined (leaving the current voice first, useCall's join).
-  const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}}
+  const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}} presenceChoice={account?.presenceChoice}
     inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
     onOpen={id => navigate({ name: 'dm', channelId: id })}
-    onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
+    onAnswer={id => { navigate({ name: 'dm', channelId: id });
+      if (selfAFKCommunity !== null) void client.call({ m: 'afkLeave', communityId: selfAFKCommunity }).then(() => call.join(id)).catch(report);
+      else call.join(id);
+    }} />;
   const voiceCtx: VoiceContext = {
     call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
+    onJoinVoice: id => {
+      if (selfAFKCommunity !== null) {
+        void client.call({ m: 'afkLeave', communityId: selfAFKCommunity }).then(() => call.join(id)).catch(report);
+      } else call.join(id);
+    },
   };
 
   // Flow 07: with no server, the one way in is to start one or to join one.
@@ -822,7 +911,17 @@ export function Shell(): React.JSX.Element {
       {log(t('shell.dm.log', { name: dm.name }))}
     </>;
   } else if (voiceChannel !== null) {
-    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
+    main = afk === null || afk === undefined ? <p aria-busy="true">{t('voice.afk.loading')}</p> :
+      afk.channelId === voiceChannel.id && communityId !== null ?
+      <section className="dw-afk-view" aria-label={t('voice.afk.title')}>
+        <h1>{voiceChannel.name}</h1>
+        <p>{t('voice.afk.silent')}</p>
+        <p>{t('voice.afk.count', { n: afk.occupants.length })}</p>
+        {afkSelf ? <Button variant="ghost" onClick={() => { void client.call({ m: 'afkLeave', communityId }).catch(report); }}>{t('voice.afk.leave')}</Button>
+          : call.channelId !== null && channels?.some(c => c.id === call.channelId && c.kind === 1) ?
+            <Button variant="accent" onClick={() => { void client.call({ m: 'afkMove', communityId, channelId: call.channelId! })
+              .then(() => call.leave()).catch(report); }}>{t('voice.afk.move')}</Button> : null}
+      </section> : <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
   } else if (communities !== undefined && communities.length === 0 && communityId === null) {
     main = noServerState;
   } else if (community !== null && channels !== undefined && ordered.length === 0) {
@@ -849,8 +948,13 @@ export function Shell(): React.JSX.Element {
   // The voice channels sit under their own heading with their people (flow 06), not among the text rows.
   const speakingNow = speakingDevices(call.state, account?.deviceId ?? null);
   const voiceRows = ordered.filter(isVoice).map(c => ({ id: c.id, name: c.name, readable: false, current: c.id === channelId,
-    joined: call.channelId === c.id, room: voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
-    held: removedFromServer({ slice: callSlice }, c.id) }));
+    joined: call.channelId === c.id || (afk?.channelId === c.id && afkSelf),
+    room: afk?.channelId === c.id ? { callId: '', participants: afk.occupants.map(p => {
+      const member = members?.find(m => m.userId === p.userId);
+      return { userId: p.userId, deviceId: p.deviceId, name: member?.display || member?.username || p.userId.slice(0, 8),
+        flags: 0, own: p.deviceId === account?.deviceId, web: false, bot: false };
+    }) } : voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
+    held: afk === null || afk === undefined || afk.channelId === c.id || removedFromServer({ slice: callSlice }, c.id) }));
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];
@@ -946,9 +1050,10 @@ export function Shell(): React.JSX.Element {
           return phone ? <div className="dw-phone-footer">{newDm}</div> : newDm;
         })()
           : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
-            onJoin={id => { openVoice(id); call.join(id); }} /> : undefined} />
+            onJoin={id => { openVoice(id); voiceCtx.onJoinVoice?.(id); }} /> : undefined} />
       {phone ? null : <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
         stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />}
+      {phone ? null : <div className="dw-account-area"><PresencePicker /></div>}
     </div>);
   }
 
@@ -1324,8 +1429,185 @@ export function Shell(): React.JSX.Element {
     target.tabIndex = row === null ? -1 : target.tabIndex;
     target.focus();
   }, [paneKey, phone, phonePane, phoneTab, dms, ordered]);
+  const [updateEntry, setUpdateEntry] = useState<string | null>(null);
+  const [threadEditing, setThreadEditing] = useState(false);
+  const recentUpdateCall = call.recentlyEnded !== null && Date.now() - call.recentlyEnded.at < 15_000
+    && (railSlices.flat() as ChannelSummary[]).some(c => c.id === call.recentlyEnded?.channelId && c.kind === 1)
+    ? call.recentlyEnded : null;
+  // These dialogs own form drafts in their own components. Apply the update after the person finishes the form.
+  const updateBlocked = overlay || joinOpen || pickerOpen || createOpen || channelOpen || inviteOpen
+    || editChannelId !== null || adminFor !== null || ui.editing !== null || threadEditing;
+  const updateVoiceActive = useRef(false);
+  updateVoiceActive.current = call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null;
+  const [updateError, setUpdateError] = useState(false);
+  const [updateRetry, setUpdateRetry] = useState(0);
+  const [restoreError, setRestoreError] = useState(false);
+  const [restoreRetry, setRestoreRetry] = useState(0);
+  const [restoreDone, setRestoreDone] = useState(props.update === undefined);
+  const restoreApplied = useRef(false);
+  const [pendingUi, setPendingUi] = useState<{ channelId: string; ui: ConversationUi } | null>(null);
+  const [pendingView, setPendingView] = useState<ViewPlace | null>(null);
+  const viewLoadEarlier = useRef(false);
+  const viewLoadAttempts = useRef(0);
+  const [pendingCamera, setPendingCamera] = useState<string | null>(null);
+  const [sharingStopped, setSharingStopped] = useState(false);
+  useEffect(() => { if (call.recoverySharing) setSharingStopped(true); }, [call.recoverySharing]);
+  const updating = useRef(false);
+  const update = props.update;
+  const updateScope = useMemo(() => {
+    if (update === undefined || account?.instance?.id === undefined || account.user?.id === undefined) return null;
+    try {
+      // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
+      const tab = updateTabId(sessionStorage, crypto);
+      return { instance: account.instance.id, user: account.user.id, tab };
+    }
+    catch { return null; }
+  }, [update, account?.instance?.id, account?.user?.id]);
+  useEffect(() => {
+    if (update === undefined || updateScope === null) { setRestoreDone(true); return; }
+    let active = true;
+    void update.store.load(updateScope).then(async restored => {
+      if (!active) return;
+      if (restored !== null && !restoreApplied.current && typeof restored.state === 'object' && restored.state !== null) {
+        const saved = restored.state as { draft?: { channelId?: unknown; text?: unknown }; call?: { channelId?: unknown; camera?: unknown; sharing?: unknown } | null;
+          conversationId?: unknown;
+          side?: Side | null; threadDraft?: { channelId?: unknown; rootMsgId?: unknown; text?: unknown } | null;
+          membersOpen?: unknown; tab?: unknown; ui?: unknown; view?: unknown;
+          search?: { open?: unknown; query?: unknown; scope?: unknown; id?: unknown } };
+        if (saved.draft !== undefined && (saved.draft.channelId === null || typeof saved.draft.channelId === 'string')
+          && typeof saved.draft.text === 'string') {
+          setDraft({ channelId: saved.draft.channelId, text: saved.draft.text });
+        }
+        if (saved.side?.channelId === channelId && (saved.side.view === 'list'
+          || (saved.side.view === 'thread' && typeof saved.side.rootMsgId === 'string' && HEX32.test(saved.side.rootMsgId)))) setSide(saved.side);
+        if (channelId !== null && saved.threadDraft !== null && saved.threadDraft?.channelId === channelId
+          && typeof saved.threadDraft.rootMsgId === 'string' && HEX32.test(saved.threadDraft.rootMsgId)
+          && typeof saved.threadDraft.text === 'string') {
+          setThreadDraft({ channelId, rootMsgId: saved.threadDraft.rootMsgId, text: saved.threadDraft.text });
+        }
+        if (typeof saved.membersOpen === 'boolean') setMembersOpen(saved.membersOpen);
+        if (saved.tab === 'channels' || saved.tab === 'dms') setTab(saved.tab);
+        const view = validViewPlace(saved.view);
+        if (view !== null) setPendingView(view);
+        if (saved.search?.open === true && typeof saved.search.query === 'string' && saved.search.query.length <= 2_000
+          && (saved.search.scope === 'all' || saved.search.scope === 'community' || saved.search.scope === 'channel')) {
+          const scope = saved.search.scope;
+          const id = typeof saved.search.id === 'string' && HEX32.test(saved.search.id) ? saved.search.id : null;
+          setSearchScope(scope);
+          setSearchQuery(saved.search.query);
+          setSearchOpen(true);
+          if (saved.search.query.trim() !== '' && (scope === 'all' || id !== null)) {
+            setSearchBusy(true);
+            void client.call({ m: 'search', scope, id, query: saved.search.query, cursor: null })
+              .catch(() => undefined).finally(() => setSearchBusy(false));
+          }
+        }
+        const owner = typeof saved.conversationId === 'string' && HEX32.test(saved.conversationId) ? saved.conversationId : null;
+        const restoredUi = restoredConversationUi(saved.ui);
+        if (restoredUi !== null && owner !== null) {
+          setPendingUi({ channelId: owner, ui: restoredUi });
+        }
+        if (saved.call !== null && typeof saved.call?.channelId === 'string' && HEX32.test(saved.call.channelId)) {
+          upgradeRejoinUntil.current = Date.now() + 120_000;
+          if (saved.call.camera === true) setPendingCamera(saved.call.channelId);
+          if (saved.call.sharing === true) setSharingStopped(true);
+          callRestoreRef.current(saved.call.channelId, saved.call.camera === true, saved.call.sharing === true);
+        }
+        if (restored.files.length > 0 && owner !== null) {
+          await client.call({ m: 'attachFiles', channelId: owner, files: restored.files });
+        }
+        restoreApplied.current = true;
+      }
+      if (restored !== null) await update.store.remove(updateScope);
+      setRestoreDone(true);
+    }).catch(() => { if (active) setRestoreError(true); });
+    return () => { active = false; };
+  }, [update, updateScope, client, channelId, restoreRetry]);
+  useEffect(() => {
+    if (pendingUi === null || pendingUi.channelId !== targetId) return;
+    rawDispatch({ type: 'restore', ui: pendingUi.ui });
+    setPendingUi(null);
+  }, [pendingUi, targetId, rawDispatch]);
+  useEffect(() => {
+    if (pendingView === null) return;
+    const apply = () => {
+      const main = pendingView.main;
+      const missingMain = main?.anchor !== undefined && document.querySelector(`.d-app-shell__main .d-message-row[data-seq="${main.anchor.seq}"]`) === null;
+      const canLoad = missingMain && targetId !== null && viewLoadAttempts.current < 100
+        && client.get(`timeline:${targetId}`)?.hasEarlier === true;
+      if (canLoad && !viewLoadEarlier.current) {
+        viewLoadEarlier.current = true;
+        viewLoadAttempts.current++;
+        void client.call({ m: 'loadEarlier', channelId: targetId }).catch(() => undefined).finally(() => { viewLoadEarlier.current = false; });
+      }
+      if (canLoad || viewLoadEarlier.current) return;
+      if (restoreViewPlace(pendingView, true)) setPendingView(null);
+    };
+    apply();
+    const timer = setInterval(apply, 150);
+    return () => clearInterval(timer);
+  }, [pendingView, targetId, client]);
+  useEffect(() => {
+    if (pendingCamera === null || call.channelId !== pendingCamera || call.session === null || call.state?.phase !== 'connected') return;
+    setPendingCamera(null);
+    if (!call.state.camera) call.toggleCamera();
+  }, [pendingCamera, call]);
+  useEffect(() => {
+    if (update === undefined || !restoreDone) return;
+    return update.watch({ currentEntry: update.currentEntry, fetch: window.fetch.bind(window), intervalMs: 30_000,
+      voiceIntervalMs: 3_000,
+      changed: entry => { upgradeRejoinUntil.current = Date.now() + 120_000; setUpdateEntry(entry); },
+      shouldCheck: () => updateVoiceActive.current });
+  }, [update, restoreDone]);
+  useEffect(() => {
+    if (updateEntry === null || update === undefined || updateScope === null || !restoreDone || updating.current || updateBlocked
+      || updateError) return;
+    updating.current = true;
+    const lock = document.querySelector<HTMLElement>('.d-root');
+    if (lock !== null) lock.inert = true;
+    void (async () => {
+      try {
+        const files = targetId === null ? [] : await client.call({ m: 'checkpointFiles', channelId: targetId }) as File[];
+        const resumeId = call.channelId ?? call.recoveryChannelId ?? recentUpdateCall?.channelId ?? null;
+        await update.store.save(updateScope, { conversationId: targetId, draft, side, threadDraft, membersOpen, ui, tab, view: captureViewPlace(),
+          search: { open: searchOpen, query: searchQuery, scope: searchScope, id: searchId },
+          call: resumeId === null ? null
+            : { channelId: resumeId,
+              camera: call.state?.camera ?? (call.recoveryChannelId !== null ? call.recoveryCamera : recentUpdateCall?.camera ?? false),
+              sharing: call.state?.sharing ?? (call.recoveryChannelId !== null ? call.recoverySharing : recentUpdateCall?.sharing ?? false) } }, files);
+        if (call.session !== null) await call.session.leave('user');
+        update.reload();
+      } catch {
+        updating.current = false;
+        setUpdateError(true);
+      } finally {
+        if (lock !== null) lock.inert = false;
+      }
+    })();
+  }, [updateEntry, updateRetry, update, updateScope, restoreDone, updateBlocked, updateError, targetId, client, draft, side, threadDraft, membersOpen, ui, tab,
+    searchOpen, searchQuery, searchScope, searchId, call, recentUpdateCall]);
+  const updateNoStorage = updateEntry !== null && updateScope === null;
+  const updateNotice = updateNoStorage || (updateEntry !== null && updateBlocked) || updateError || restoreError || sharingStopped
+    || call.recoveryChannelId !== null;
   return (
     <>
+      {updateNotice ? <div className="dw-update-notice" role="status">
+          {updateNoStorage ? <Banner tone="warn" action={{ label: t('update.reloadNow'), onAction: () => update?.reload() }}>
+            {t('update.noStorage')}</Banner> : null}
+          {updateEntry !== null && updateScope !== null && updateBlocked ? <Banner tone="info">{t('update.finishDialog')}</Banner> : null}
+          {updateError ? <Banner tone="warn" action={{ label: t('update.retry'), onAction: () => {
+            setUpdateError(false);
+            setUpdateRetry(n => n + 1);
+          } }}>{t('update.failed')}</Banner> : null}
+          {restoreError ? <Banner tone="warn" action={{ label: t('update.retry'), onAction: () => {
+            setRestoreError(false);
+            setRestoreRetry(n => n + 1);
+          } }}>{t('update.restoreFailed')}</Banner> : null}
+          {sharingStopped ? <Banner tone="info" action={{ label: t('shell.banner.dismiss'), onAction: () => setSharingStopped(false) }}>
+            {t('update.sharingStopped')}</Banner> : null}
+          {call.recoveryChannelId !== null ? <Banner tone="info" action={{ label: t('voice.leave'), onAction: () => call.leave() }}>
+            {t('update.rejoiningVoice')}</Banner> : null}
+        </div> : null}
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
       <AppShell
         skipLabel={t('shell.skip')}
@@ -1364,7 +1646,10 @@ export function Shell(): React.JSX.Element {
         </> : banner}
         aside={sideNow?.view === 'thread' && channel !== null
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
-            onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current} />
+            onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}
+            initialDraft={threadDraft?.channelId === channel.id && threadDraft.rootMsgId === sideNow.rootMsgId ? threadDraft.text : ''}
+            onEditingChange={setThreadEditing}
+            onDraftChange={text => setThreadDraft({ channelId: channel.id, rootMsgId: sideNow.rootMsgId, text })} />
           : sideNow?.view === 'list' && channel !== null
             ? <ThreadPane title={t('thread.list')} closeLabel={t(phone ? 'nav.back' : 'dialog.close')} onClose={closeSide} phone={phone} root={null} composer={null}>
               <ThreadList channelId={channel.id} channelName={channel.name} communityId={communityId} onOpen={openThread} heading={false} />

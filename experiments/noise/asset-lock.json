@@ -1,0 +1,39 @@
+{
+  "sources": {
+    "deepfilter": {
+      "url": "https://github.com/Rikorose/DeepFilterNet.git",
+      "revision": "d375b2d8309e0935d165700c91da9de862a99c31"
+    },
+    "hush": {
+      "url": "https://github.com/pulp-vision/Hush.git",
+      "revision": "9f6414e91461a8f4bdf9840c0cdcdcb7da986339"
+    }
+  },
+  "gtcrn": "@sapphi-red/gtcrn-wasm@0.0.3",
+  "rnnoise": "@jitsi/rnnoise-wasm@0.2.1",
+  "patchSha256": "a4308bf3c7c2eee02ccc44be707d7ebf45f538f9b365bf9348925098b4890aeb",
+  "toolchain": {
+    "node": "v24.15.0",
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "wasmPack": "wasm-pack 0.15.0"
+  },
+  "sha256": {
+    "deepfilter-model.bin": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+    "df.mjs": "e970ed95c62b97fbbba0cf8a35a5ba2b0f16e2c0d633c2dbf102e473ac39e15b",
+    "df_bg.wasm": "91ccea2cbeb482942947f357d01065fef246c3deebced27ee8e268d20ea3e0a4",
+    "hush-model.tar.gz": "45632ccaa82b71bb743d6caa7c78e983fe2f2790a3af7f6ec48e6ed7ba085df6",
+    "libweya_nc.so": "c4a5915c92e9500a49e6cd14804e6e88319277de2ef7d4d5cf6c0ac4456f3bbf",
+    "package/LICENSE": "ada7bc11ad5af42b0aab8d2e0ea7b028de3a9cd230a97f20bf57c90280a86a89",
+    "package/README.md": "3de8e2eea750997cafee1ec5cd1083cc9519dec5f60636c07fca401c038553be",
+    "package/dist/gtcrn.wasm": "01a5286ddaa1ce6d0dd5510bd9241f3bf0cc727a05d5767ae6881d85d9983719",
+    "package/dist/index.cjs": "42cacbef2eed481028a5ae4fc78469e538d472c25a23e97a4bf9b0131f812763",
+    "package/dist/index.cjs.map": "424e4e800e57fcd12f753ceb6526a360e08337ea61a56e654b04dcd4f227f8df",
+    "package/dist/index.d.cts": "ce0f30f8456588cb076ede949560ab04361b79e34af59050bc34325ed38f6519",
+    "package/dist/index.d.ts": "baedfc1ba47965137743408a755ec438f86baeba1c754358631dcd835e72b883",
+    "package/dist/index.js": "472878b0fb37c4b7baa2dd8ea11355f4febc1fa0d96bb7a49e1774207edf2f3a",
+    "package/dist/index.js.map": "14067320a553f8bb38da90edea8905c06ce01936555510f564705c74d6177631",
+    "package/package.json": "47cdbb00a89e551c3e98f6229d1d3e4b76820a3c4e76ecd3499e36aee12d9847",
+    "rnnoise.wasm": "4f513a50613de74378331237886138eab52fa2650e8b1a41eb587d932d9b8850",
+    "sapphi-red-gtcrn-wasm-0.0.3.tgz": "d0dd19d7494d687834657a8d16914849fc38bf6863532c9213d24642470ff7f2"
+  }
+}

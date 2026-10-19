@@ -7,6 +7,7 @@ import type { Sounds } from '../../call/sounds.ts';
 import { VoiceDepsContext } from './useCall.tsx';
 
 export interface UseSoundsOptions {
+  presenceChoice?: string;
   rings: readonly Ring[] | undefined;
   /** The voice slice's entry of the call this device is in, and that call's channel (null outside a call). */
   room: VoiceCall | undefined;
@@ -48,7 +49,7 @@ export function useSounds(o: UseSoundsOptions): void {
   // The ring.
   const ringing = useRef(false);
   // The DM mute is re-read here: muting a DM while it rings stops the sound at once (review m3).
-  const wantRing = o.inCall === null && ringAudible(o.rings, o.settings, o.ringCommunity)
+  const wantRing = o.presenceChoice !== undefined && o.presenceChoice !== 'dnd' && o.inCall === null && ringAudible(o.rings, o.settings, o.ringCommunity)
     && o.settings[SETTINGS.soundRing] !== 'off' && activated();
   useEffect(() => {
     if (wantRing === ringing.current) return;

@@ -22,6 +22,7 @@ export interface ConversationUi {
   trayError: string | null;
 }
 export type ConversationAction =
+  | { type: 'restore'; ui: ConversationUi }
   | { type: 'reply'; reply: ConversationUi['reply'] } | { type: 'replySent'; msgId: string }
   | { type: 'edit'; msgId: string; value: string } | { type: 'editChange'; value: string } | { type: 'editDone' }
   | { type: 'pins'; open: boolean } | { type: 'jump'; msgId: string }
@@ -29,6 +30,7 @@ export type ConversationAction =
 export const INITIAL_UI: ConversationUi = { reply: null, editing: null, pinsOpen: false, jump: null, notice: null, trayError: null };
 export function conversationReducer(s: ConversationUi, a: ConversationAction): ConversationUi {
   switch (a.type) {
+    case 'restore': return a.ui;
     case 'reply': return { ...s, reply: a.reply };
     case 'replySent': return s.reply?.msgId === a.msgId ? { ...s, reply: null } : s;
     case 'edit': return { ...s, editing: { msgId: a.msgId, value: a.value } };

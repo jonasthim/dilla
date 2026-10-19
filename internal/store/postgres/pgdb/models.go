@@ -107,6 +107,12 @@ type Communities struct {
 	DeletedAt            sql.NullInt64
 }
 
+type CommunityAfk struct {
+	CommunityID    id.ID
+	ChannelID      *id.ID
+	TimeoutSeconds int64
+}
+
 type DeviceCursors struct {
 	DeviceID  id.ID
 	GroupID   id.ID
@@ -423,6 +429,11 @@ type TotpSecrets struct {
 	ConfirmedAt sql.NullInt64
 	LastCounter int64
 	Created     int64
+}
+
+type UserPresence struct {
+	UserID id.ID
+	Choice int16
 }
 
 type Users struct {

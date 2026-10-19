@@ -52,8 +52,13 @@ test('a server invite, a name and a written-down key make an account that lands 
   const bodyText = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ''));
   expect(bodyText).not.toContain(groups.slice(0, 3).join(''));
   expect(page.url()).not.toContain(keyText.slice(0, 12));
-  expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length, cookie: document.cookie })))
-    .toEqual({ local: 0, session: 0, cookie: '' });
+  const webStorage = await page.evaluate(() => ({ local: localStorage.length, cookie: document.cookie,
+    session: Array.from({ length: sessionStorage.length }, (_, index) => {
+      const name = sessionStorage.key(index)!;
+      return [name, sessionStorage.getItem(name)];
+    }) }));
+  expect(webStorage).toEqual({ local: 0, cookie: '',
+    session: [['dilla.update.tab', expect.stringMatching(/^[0-9a-f]{32}$/)]] });
   expect(await context.cookies()).toEqual([]);
 
   // The device KEK is wrapped by a non-extractable WebCrypto key (C7, L-TS-05).

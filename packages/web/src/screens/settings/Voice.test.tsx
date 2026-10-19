@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
-import { FakeClient } from '../../test/fake-client.ts';
+import { callState, FakeClient } from '../../test/fake-client.ts';
 import { account } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { Voice } from './Voice.tsx';
@@ -51,7 +51,7 @@ describe('Settings → Voice', () => {
     await user.keyboard('{Escape}');
     expect(settingCalls(fake)).toHaveLength(2);
     expect(screen.queryByText(/Press the key to use/)).toBeNull();
-    await user.click(screen.getByRole('switch', { name: 'noise suppression' }));
+    await user.click(screen.getByRole('radio', { name: 'Off' }));
     expect(settingCalls(fake).at(-1)).toEqual(['voice.noise', 'off']);
   });
 
@@ -96,9 +96,13 @@ describe('Settings → Voice', () => {
     });
     const stream = { getTracks: () => [{ stop: stopped }] } as unknown as MediaStream;
     const mic = { deviceId: 'mic-1', kind: 'audioinput', label: 'Desk mic', groupId: 'g' } as MediaDeviceInfo;
-    const { view, getUserMedia } = setup({ 'voice.input': 'mic-1' }, { permission: 'granted', devices: [mic], getUserMedia: () => Promise.resolve(stream) });
+    const { fake, view, getUserMedia } = setup({ 'voice.input': 'mic-1' }, { permission: 'granted', devices: [mic], getUserMedia: () => Promise.resolve(stream) });
     await waitFor(() => expect(screen.getByRole('meter', { name: 'input level' })).toHaveAttribute('aria-valuenow', '12'), { timeout: 2000 });
     expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'mic-1' } } });
+    act(() => fake.publish('call', callState({ phase: 'in' })));
+    expect(screen.queryByRole('meter', { name: 'input level' })).toBeNull();
+    expect(screen.getByText('The input meter is paused during calls and microphone tests.')).toBeVisible();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
     view.unmount();
     expect(stopped).toHaveBeenCalled();
     expect(closed).toBe(true);
@@ -134,4 +138,12 @@ describe('Settings → Voice: the output device (web3.3 fix round 1, I1)', () =>
       if (!had) delete proto.setSinkId;
     }
   });
+});
+
+it('keeps legacy On on Lightweight and offers Automatic explicitly', async () => {
+  const {fake,user}=setup({'voice.noise':'on'});
+  expect(screen.getByRole('radio',{name:'Lightweight'})).toHaveAttribute('aria-checked','true');
+  expect(settingCalls(fake)).toHaveLength(0);
+  await user.click(screen.getByRole('radio',{name:'Automatic'}));
+  expect(settingCalls(fake).at(-1)).toEqual(['voice.noise','automatic']);
 });

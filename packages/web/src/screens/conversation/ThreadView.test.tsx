@@ -21,7 +21,7 @@ function thread(over: Partial<ThreadState> = {}): ThreadState {
   };
 }
 
-function setup(over: { thread?: ThreadState | null; phone?: boolean } = {}) {
+function setup(over: { thread?: ThreadState | null; phone?: boolean; initialDraft?: string; onDraftChange?: (text: string) => void } = {}) {
   window.history.replaceState(null, '', `/c/${A}/${GEN}`);
   const fake = new FakeClient();
   fake.set('account', account());
@@ -31,13 +31,21 @@ function setup(over: { thread?: ThreadState | null; phone?: boolean } = {}) {
   const announce = vi.fn();
   const user = userEvent.setup();
   const view = render(<div className="d-root"><CoreProvider client={fake}>
-    <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={over.phone ?? false} onClose={onClose} announce={announce} />
+    <ThreadView channelId={GEN} rootMsgId={ROOT} channelName="general" phone={over.phone ?? false} onClose={onClose} announce={announce}
+      initialDraft={over.initialDraft} onDraftChange={over.onDraftChange} />
   </CoreProvider></div>);
   return { fake, user, view, onClose, announce };
 }
 const box = () => screen.getByRole('textbox', { name: en['thread.composer'] });
 
 describe('ThreadView (web3.7)', () => {
+  it('restores a thread draft and reports later edits for update recovery', async () => {
+    const onDraftChange = vi.fn();
+    const { user } = setup({ initialDraft: 'before refresh', onDraftChange });
+    expect(box()).toHaveValue('before refresh');
+    await user.type(box(), '!');
+    expect(onDraftChange).toHaveBeenLastCalledWith('before refresh!');
+  });
   it('opens the thread on mount and closes it on unmount, in that order', () => {
     const { fake, view } = setup();
     expect(fake.calls).toEqual([{ m: 'openThread', channelId: GEN, rootMsgId: ROOT }]);

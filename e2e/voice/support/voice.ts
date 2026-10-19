@@ -263,9 +263,9 @@ export async function openVoiceSettings(page: Page): Promise<Locator> {
 /** Settings → Voice → noise suppression off (the fake microphone's steady tone is what RNNoise removes), then closes. */
 export async function noiseOff(page: Page): Promise<void> {
   const dialog = await openVoiceSettings(page);
-  const toggle = dialog.getByRole('switch', { name: copy('settings.voice.noise'), exact: true });
+  const toggle = dialog.getByRole('radiogroup', { name: copy('settings.voice.noise'), exact: true }).getByRole('radio', { name: copy('settings.voice.off'), exact: true });
   await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-checked', 'false', { timeout: WAIT });
+  await expect(toggle).toHaveAttribute('aria-checked', 'true', { timeout: WAIT });
   await closeSettings(page);
 }
 

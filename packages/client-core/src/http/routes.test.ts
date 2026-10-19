@@ -91,6 +91,22 @@ interface Case {
 
 const CASES: Case[] = [
   {
+    name: 'AFK snapshot includes silent occupants', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [[USER, DEVICE]]]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, occupants: [{ userId: USER, deviceId: DEVICE }] },
+  },
+  {
+    name: 'AFK activity names the actual voice room', call: r => r.sendAFKActivity(COMMUNITY, CHANNEL),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/afk/activity`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([CHANNEL]), reply: () => noContent(), expected: undefined,
+  },
+  {
+    name: 'AFK setting writes an existing channel and timeout', call: r => r.setAFKSettings(COMMUNITY, CHANNEL, 60),
+    method: 'PUT', path: `/v1/communities/${hex(COMMUNITY)}/afk/settings`, bucket: 'write', idempotent: true, auth: true,
+    sent: encode([CHANNEL, 60]), reply: () => noContent(), expected: undefined,
+  },
+  {
     // S2 review (M5): the session's bearer goes along whenever there is one, so instance.discovery = "session" (E, F)
     // answers an owed client too; before sign-in token() is null and nothing is sent (below).
     name: 'getInstance reads elements 3 to 8 and 10, with the session bearer', call: (r) => r.getInstance(),
@@ -300,8 +316,8 @@ const CASES: Case[] = [
   {
     name: 'getAccountMe ignores an appended element', call: (r) => r.getAccountMe(),
     method: 'GET', path: '/v1/accounts/me', bucket: 'read', idempotent: true, auth: true, sent: null,
-    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 'appended later']),
-    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n },
+    reply: () => cborReply(200, [USER, 'jonas', 'Jonas', 0, 1, 1_700_000_000, 3, 'appended later']),
+    expected: { userId: USER, username: 'jonas', display: 'Jonas', kind: 0, flags: 1n, presenceChoice: 3 },
   },
   {
     name: 'getLimits reads elements 0, 4, 5, 7 and 8', call: (r) => r.getLimits(),

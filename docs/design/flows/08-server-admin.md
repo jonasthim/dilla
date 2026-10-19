@@ -24,6 +24,7 @@
 | overview: busy | the save says its busy label | `admin.overview.saving` | none |
 | overview: saved | the saved note | `admin.overview.saved` | `admin.overview.saved` in the status region |
 | overview: error | the field's error | `admin.overview.error.empty`, `admin.overview.error.long`, `admin.overview.error.refused`, `admin.overview.error.forbidden`, `admin.overview.error.conflict`, `admin.overview.error.other` | the error (`role="alert"`) |
+| AFK settings | choose a voice destination and inactivity timeout; saving updates all members | `admin.afk.title`, `admin.afk.hint`, `admin.afk.channel`, `admin.afk.disabled`, `admin.afk.timeout`, `admin.afk.minutes`, `admin.afk.save`, `admin.afk.saved`, `admin.afk.error`, `admin.afk.loadError`, `admin.afk.restricted` | `admin.afk.saved` through the shell announcer; errors use `role="alert"` |
 | channels: list | channels grouped by category, with edit, move and delete per row and a new category button | `admin.channels.title`, `admin.channels.newCategory`, `admin.channels.edit`, `admin.channels.editLabel`, `admin.channels.up`, `admin.channels.upLabel`, `admin.channels.down`, `admin.channels.downLabel`, `admin.channels.delete`, `admin.channels.deleteLabel`, `admin.channels.noCategory` | none |
 | channels: moved | the list in its new order | `admin.channels.moved`, `admin.channels.error.move` | `admin.channels.moved`; a failed move is the error (`role="alert"`) |
 | channels: new category | dialog with a name field; focus in the field | `admin.category.title`, `admin.category.name`, `admin.category.hint`, `admin.category.submit`, `admin.category.busy`, `admin.category.error.empty`, `admin.category.error.other` | dialog title; the error (`role="alert"`) |
@@ -98,7 +99,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 
 *Members:*
 - `members.toggle='members'`, `members.region='members of {server}'`, `members.group='{name} — {count}'`
-- `members.groupMembers='members'`, `members.owner='owner'`, `members.you='you'`, `members.bot='bot'`
+- `members.groupMembers='members'`, `members.groupOffline='Offline'`, `members.owner='owner'`, `members.you='you'`, `members.bot='bot'`
 - `members.actions='actions for {name}'`, `members.menu.message='message'`, `members.menu.compare='compare safety numbers'`
 - `members.menu.kick='kick'`, `members.menu.ban='ban'`, `members.loading='Loading members…'`
 - `members.empty='No one else is in this server yet.'`, `members.close='close members'`
@@ -136,6 +137,10 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.overview.error.forbidden='You cannot rename this server.'`
 - `admin.overview.error.conflict='Someone else changed the server at the same time. Check the name and save again.'`
 - `admin.overview.error.other='Could not save ({code}). Try again.'`
+- `admin.afk.title='AFK channel'`, `admin.afk.hint='Idle people in voice move here after the timeout. AFK is silent in both directions. They return by joining another voice channel.'`
+- `admin.afk.channel='AFK destination'`, `admin.afk.disabled='Off'`, `admin.afk.timeout='Move after'`, `admin.afk.minutes='{n} minutes'`
+- `admin.afk.save='Save AFK settings'`, `admin.afk.saved='AFK settings saved.'`, `admin.afk.error='Could not save AFK settings ({code}). Try again.'`
+- `admin.afk.loadError='Could not load AFK settings. Reopen server settings to try again.'`, `admin.afk.restricted='Current AFK destination (restricted)'`
 
 *Channels:*
 - `admin.channels.title='Channels'`, `admin.channels.newCategory='new category'`, `admin.channels.edit='edit'`

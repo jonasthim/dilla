@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
-  A, BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
+  A, BOB, BOB_DEV, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
+import { ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
@@ -34,6 +35,127 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 }
 
 describe('voice in the shell', () => {
+  it('shows the silent AFK room and its occupants without offering a media join', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
+    const region = await main().findByRole('region', { name: t('voice.afk.title') });
+    expect(region).toHaveTextContent('1 in AFK');
+    expect(within(region).queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(screen.getAllByText('bob').length).toBeGreaterThan(0);
+  });
+
+  it('closes its media session when this device is moved to AFK', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+      occupants: [{ userId: ME.id, deviceId: OWN_DEV }] });
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
+    expect(app.session.state.phase).toBe('ended');
+  });
+
+  it('reports actual input while a voice call remains open on another page', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    expect(app.client.callsOf('afkActivity')).toHaveLength(1);
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
+    expect(app.client.callsOf('afkActivity')).toHaveLength(1);
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
+    go(`/dm/${DM}`);
+    fireEvent.pointerMove(window);
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(2));
+    expect(app.client.callsOf('afkActivity')[1]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV });
+    dateNow.mockRestore();
+  });
+
+  it('reports a short microphone utterance before the next polling interval', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    expect(app.client.callsOf('afkActivity')).toHaveLength(1);
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
+    act(() => app.session.update({ speaking: true }));
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(2));
+    act(() => app.session.update({ speaking: false }));
+    dateNow.mockRestore();
+  });
+
+  it('retries a restored call after a transient start failure', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const app = renderVoiceShell({ update: { currentEntry: '/assets/new.js', watch: () => () => undefined,
+      store: { save: () => Promise.resolve(), load: async () => { await gate; return { state: { call: { channelId: GENV, camera: true, sharing: false } }, files: [] }; },
+        remove: () => Promise.resolve() }, reload: vi.fn() } });
+    let attempts = 0;
+    app.client.handler = command => {
+      if (command.m === 'callJoin' && ++attempts === 1) return Promise.reject(Object.assign(new Error('temporary'), { code: 'E_DISCONNECTED' }));
+      if (command.m === 'callJoin') app.client.set('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+      return Promise.resolve(null);
+    };
+    release();
+    await waitFor(() => expect(attempts).toBe(2), { timeout: 4_000 });
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    expect(app.session.setCamera).toHaveBeenCalledWith(true);
+  });
+  it('rejoins after a lost media connection and keeps the call available', async () => {
+    const app = await inVoice();
+    act(() => {
+      app.session.update({ camera: true, sharing: true });
+      app.session.update({ phase: 'ended', error: 'E_DISCONNECTED' });
+      app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+        error: { code: 'E_DISCONNECTED', detail: '', status: 0, retryAfterMs: null } }));
+    });
+    await waitFor(() => expect(app.sessions).toHaveLength(2), { timeout: 4_000 });
+    expect(app.client.callsOf('callJoin')).toHaveLength(2);
+    expect(app.session.setCamera).toHaveBeenCalledWith(true);
+    expect(screen.getByText(t('update.sharingStopped'))).toBeInTheDocument();
+  });
+  it('lets the person cancel a pending automatic voice rejoin', async () => {
+    const app = await inVoice();
+    act(() => app.session.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await app.user.click(screen.getByRole('button', { name: 'leave' }));
+    await new Promise(resolve => setTimeout(resolve, 1_200));
+    expect(app.sessions).toHaveLength(1);
+  });
+  it('stops automatic rejoin when the call refuses the device permanently', async () => {
+    const app = await inVoice();
+    app.client.handler = command => command.m === 'callJoin'
+      ? Promise.reject(Object.assign(new Error('E_FORBIDDEN'), { code: 'E_FORBIDDEN' }))
+      : Promise.resolve(null);
+    act(() => app.session.update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(2), { timeout: 4_000 });
+    await waitFor(() => expect(screen.queryByText(t('update.rejoiningVoice'))).toBeNull());
+    await new Promise(resolve => setTimeout(resolve, 2_100));
+    expect(app.client.callsOf('callJoin')).toHaveLength(2);
+  });
+  it('keeps a just-ended room for the update refresh to rejoin', async () => {
+    let changed!: (entry: string) => void;
+    const save = vi.fn<(...args: [unknown, unknown, readonly File[]]) => Promise<void>>().mockResolvedValue();
+    const reload = vi.fn();
+    const app = await inVoice({ update: { currentEntry: '/assets/old.js',
+      watch: options => { changed = entry => options.changed(entry); return () => undefined; },
+      store: { save, load: () => Promise.resolve(null), remove: () => Promise.resolve() }, reload } });
+    act(() => app.session.update({ phase: 'ended', error: 'E_CALL_ENDED' }));
+    act(() => changed('/assets/new.js'));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(save.mock.calls[0]?.[1]).toMatchObject({ call: { channelId: GENV } });
+  });
+  it('reopens a community voice room closed while an update is in progress', async () => {
+    let changed!: (entry: string) => void;
+    const app = await inVoice({ update: { currentEntry: '/assets/old.js',
+      watch: options => { changed = entry => options.changed(entry); return () => undefined; },
+      store: { save: () => new Promise<void>(() => undefined), load: () => Promise.resolve(null), remove: () => Promise.resolve() },
+      reload: vi.fn() } });
+    act(() => changed('/assets/new.js'));
+    act(() => {
+      app.session.update({ phase: 'ended', error: 'E_CALL_ENDED' });
+      app.client.publish('call', callState({ phase: 'removed', channelId: GENV,
+        error: { code: 'E_CALL_ENDED', detail: '', status: 0, retryAfterMs: null } }));
+    });
+    await waitFor(() => expect(app.sessions).toHaveLength(2), { timeout: 4_000 });
+    expect(app.client.callsOf('callJoin')).toHaveLength(2);
+  });
   it('Control+Shift+M toggles mute only while in voice; a bare "m" does nothing', async () => {
     const app = await inVoice();
     await app.user.keyboard('m');

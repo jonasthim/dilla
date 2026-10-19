@@ -84,10 +84,9 @@ modes (exactly one):
     --domain NAME        the public DNS name of the instance (instance.domain)
     --public-ip IP       the address clients reach the instance on (instance.public_ip)
     --agree-tos          accept the ACME CA's subscriber agreement (tls.agreed)
-  --upgrade              replace the binary and the core of an installed instance,
-                         restart it and run doctor; never touches the config or the data,
-                         and puts the previous binary and core back if the restart fails,
-                         first migrating the database back down if the new binary migrated it
+  --upgrade              replace the binary and core, restart the API and media services,
+                         and run doctor; migrates livekit.mode from in_process to sidecar
+                         once, saving dilla.toml.prev; rolls back a failed API restart
 
 options:
   --version TAG          the release to install, e.g. v0.1.0 (default: the tag this copy
@@ -292,7 +291,7 @@ valid_domain() {
 }
 
 if [ "$UPGRADE" -eq 1 ]; then
-	[ -z "$SET_MODE_FLAGS" ] || die "--upgrade replaces only the binary and the core and never touches the config; drop$SET_MODE_FLAGS"
+	[ -z "$SET_MODE_FLAGS" ] || die "--upgrade keeps the installed network settings; drop$SET_MODE_FLAGS"
 else
 	[ -n "$MODE" ] || {
 		usage
@@ -363,6 +362,7 @@ ROOT="${DILLA_INSTALL_ROOT:-}"
 ROOT="${ROOT%/}"
 BIN_DIR="$ROOT/usr/local/bin"
 UNIT_PATH="$ROOT/etc/systemd/system/dilla.service"
+MEDIA_UNIT_PATH="$ROOT/etc/systemd/system/dilla-media.service"
 CONF_DIR="$ROOT/etc/dilla"
 CONF="$CONF_DIR/dilla.toml"
 DATA_DIR="$ROOT/var/lib/dillad"
@@ -473,6 +473,78 @@ put() { # SRC DEST MODE
 	mv -f "$2.new" "$2"
 }
 
+write_media_unit() {
+	cat >"$WORK/dilla-media.service" <<'UNIT'
+[Unit]
+Description=dilla media SFU
+Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dillad media --config=%E/dilla/dilla.toml
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=78
+TimeoutStartSec=30s
+TimeoutStopSec=25s
+User=dillad
+Group=dillad
+StateDirectory=dillad
+StateDirectoryMode=0700
+ConfigurationDirectory=dilla
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+	put "$WORK/dilla-media.service" "$MEDIA_UNIT_PATH" 0644
+}
+
+livekit_mode() {
+	awk '
+		/^[[:space:]]*\[livekit\][[:space:]]*$/ { inside = 1; next }
+		inside && /^[[:space:]]*\[/ { exit }
+		inside && /^[[:space:]]*mode[[:space:]]*=/ {
+			line = $0
+			sub(/^[^=]*=[[:space:]]*/, "", line)
+			sub(/[[:space:]]*#.*/, "", line)
+			gsub(/["\047[:space:]]/, "", line)
+			print line
+			exit
+		}
+	' "$CONF"
+}
+
+set_livekit_mode() { # MODE
+	awk -v mode="$1" '
+		/^[[:space:]]*\[livekit\][[:space:]]*$/ { inside = 1 }
+		inside && /^[[:space:]]*\[/ && $0 !~ /^[[:space:]]*\[livekit\][[:space:]]*$/ { inside = 0 }
+		inside && /^[[:space:]]*mode[[:space:]]*=/ {
+			sub(/mode[[:space:]]*=.*/, "mode = \047" mode "\047")
+			found = 1
+		}
+		{ print }
+		END { if (!found) exit 3 }
+	' "$CONF" >"$WORK/dilla-sidecar.toml" || die "dilla.toml has no livekit.mode; cannot migrate it to a media sidecar"
+	cp -p "$CONF" "$CONF.new"
+	cat "$WORK/dilla-sidecar.toml" >"$CONF.new"
+	mv -f "$CONF.new" "$CONF"
+}
+
 run_doctor() {
 	DOCTOR_RC=0
 	DOCTOR_OUT="$(runuser -u dillad -- "$BIN_DIR/dillad" doctor --config="$CONF" 2>&1)" || DOCTOR_RC=$?
@@ -530,6 +602,9 @@ rollback_stuck() {
 		log "The database is at schema $SCHEMA_AFTER and the previous binary refuses anything above $SCHEMA_BEFORE, so do not put it back as it is. Either:"
 	fi
 	log "  1. fix what stopped the new release (journalctl -o cat -u dilla) and run: systemctl start dilla"
+	if [ "${LIVEKIT_MODE_BEFORE:-}" = in_process ]; then
+		log "     If returning to the previous binary, first stop dilla-media and restore $CONF.prev to $CONF."
+	fi
 	log "  2. or stop dilla, take the database back with the NEW binary, then put the previous pair back:"
 	log "       runuser -u dillad -- $BIN_DIR/dillad migrate down --to=$SCHEMA_BEFORE --i-know-what-i-am-doing --config=$CONF"
 	log "       cp -p $BIN_DIR/dillad.prev $BIN_DIR/dillad; cp -p $BIN_DIR/$CORE_NAME.prev $BIN_DIR/$CORE_NAME; systemctl start dilla"
@@ -541,6 +616,11 @@ rollback_stuck() {
 # ---------------------------------------------------------------- upgrade ----
 if [ "$UPGRADE" -eq 1 ]; then
 	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME"
+	LIVEKIT_MODE_BEFORE="$(livekit_mode)"
+	case "$LIVEKIT_MODE_BEFORE" in
+	in_process | sidecar) ;;
+	*) die "livekit.mode is $LIVEKIT_MODE_BEFORE; the upgrade supports in_process or sidecar" ;;
+	esac
 	# The schema the previous binary runs on. The new binary migrates the database when it
 	# starts, and a dillad refuses a database newer than its own migrations, so a rollback must
 	# first take the database back to this version, with the new binary (the only one that knows
@@ -550,8 +630,25 @@ if [ "$UPGRADE" -eq 1 ]; then
 	# The previous pair stays beside the new one, for the rollback below and by hand.
 	cp -p "$BIN_DIR/dillad" "$BIN_DIR/dillad.prev"
 	cp -p "$BIN_DIR/$CORE_NAME" "$BIN_DIR/$CORE_NAME.prev"
+	cp -p "$CONF" "$CONF.prev"
 	put "$WORK/$BIN_NAME" "$BIN_DIR/dillad" 0755
 	put "$WORK/$CORE_NAME" "$BIN_DIR/$CORE_NAME" 0644
+	write_media_unit
+	systemctl daemon-reload >&2 || die "systemd could not load dilla-media.service"
+	if [ "$LIVEKIT_MODE_BEFORE" = in_process ]; then
+		log "moving the SFU into dilla-media.service"
+		systemctl stop dilla >&2 || die "could not stop the previous in-process SFU"
+		set_livekit_mode sidecar
+	fi
+	if ! systemctl enable --now dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
+		log "error: dilla-media did not start; restoring the previous binary and config"
+		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || systemctl disable --now dilla-media >&2 || :
+		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || cp -p "$CONF.prev" "$CONF"
+		put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
+		put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
+		[ "$LIVEKIT_MODE_BEFORE" = sidecar ] || systemctl start dilla >&2 || :
+		die "the media service did not start; read journalctl -o cat -u dilla-media"
+	fi
 	log "restarting dilla"
 	if ! systemctl restart dilla >&2; then
 		log "error: dilla did not restart with the new binary"
@@ -575,6 +672,10 @@ if [ "$UPGRADE" -eq 1 ]; then
 				rollback_stuck "migrate down --to=$SCHEMA_BEFORE failed"
 		fi
 		log "putting the previous binary and core back"
+		if [ "$LIVEKIT_MODE_BEFORE" = in_process ]; then
+			systemctl disable --now dilla-media >&2 || :
+			cp -p "$CONF.prev" "$CONF"
+		fi
 		put "$BIN_DIR/dillad.prev" "$BIN_DIR/dillad" 0755
 		put "$BIN_DIR/$CORE_NAME.prev" "$BIN_DIR/$CORE_NAME" 0644
 		if systemctl restart dilla >&2; then
@@ -583,8 +684,12 @@ if [ "$UPGRADE" -eq 1 ]; then
 		die "the upgrade failed and was rolled back, but dilla did not start with the previous binary either; read its log with: journalctl -o cat -u dilla"
 	fi
 	doctor_and_report || exit 1
-	log "upgrade done; the previous binary and core are kept as $BIN_DIR/dillad.prev and $CORE_NAME.prev"
-	log "an upgrade does not rewrite /etc/systemd/system/dilla.service; compare it with the release's deploy/dilla.service"
+	log "restarting the sidecar SFU on the new binary; connected calls rejoin"
+	if ! systemctl restart dilla-media >&2 || ! runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2; then
+		die "the API upgraded, but dilla-media did not become ready; read journalctl -o cat -u dilla-media"
+	fi
+	log "upgrade done; the previous binary, core and config are kept as $BIN_DIR/dillad.prev, $CORE_NAME.prev and $CONF.prev"
+	log "dilla.service was not rewritten; compare it with the release's deploy/dilla.service"
 	exit 0
 fi
 
@@ -600,8 +705,8 @@ cat >"$WORK/dilla.service" <<'UNIT'
 [Unit]
 Description=dilla server (dillad)
 Documentation=https://github.com/jonasthim/dilla/blob/main/docs/deploy/README.md
-After=network-online.target
-Wants=network-online.target
+After=network-online.target dilla-media.service
+Wants=network-online.target dilla-media.service
 
 [Service]
 Type=notify
@@ -657,6 +762,9 @@ WantedBy=multi-user.target
 UNIT
 put "$WORK/dilla.service" "$UNIT_PATH" 0644
 
+# deploy/dilla-media.service, verbatim.
+write_media_unit
+
 if getent passwd dillad >/dev/null 2>&1; then
 	log "the dillad user exists"
 else
@@ -697,6 +805,7 @@ toml_set() {
 }
 
 toml_set livekit udp_port "$UDP_PORT"
+toml_set livekit mode "'sidecar'"
 [ -z "$NODE_IP" ] || toml_set livekit node_ip "'$NODE_IP'"
 if [ "$MODE" = behind-proxy ]; then
 	log "configuring tls.mode = behind_proxy on $LISTEN"
@@ -735,7 +844,9 @@ fi
 
 log "starting the service"
 STATUS=0
-if systemctl daemon-reload >&2 && systemctl enable --now dilla >&2; then
+if systemctl daemon-reload >&2 && systemctl enable --now dilla-media >&2 &&
+	runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2 &&
+	systemctl enable --now dilla >&2; then
 	doctor_and_report || STATUS=1
 else
 	STATUS=1

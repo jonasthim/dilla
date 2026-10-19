@@ -1,10 +1,69 @@
 # Deploying dillad
 
 dillad is one static binary (`dillad`) plus one file beside it, `dilla_core_wasi.wasm`, the MLS
-core it runs inside wazero. Everything else an instance needs, the TLS certificate, the TURN relay
-and the LiveKit SFU, runs inside the same process. This page covers the ways to run it (a
-container image, a systemd unit, set up by hand or by the install script, and a Proxmox LXC
-helper), the TLS modes, and the backup and restore runbook.
+core it runs inside wazero. Set `livekit.mode = 'sidecar'` and run `dillad media` as a second
+process: the API can restart while the SFU keeps existing rooms. The API owns the `/rtc` join
+gate, webhook receiver, TLS and TURN relay. Replacing the media process ends its rooms;
+the updated client reopens community voice during the upgrade window. This page covers Compose,
+systemd, the install script,
+and the Proxmox LXC helper.
+
+### Open tabs during an upgrade
+
+For upgrades already running the media sidecar, the normal path is:
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant Rollout as Upgrade process
+    participant API as dillad API and web
+    participant Media as dillad media
+    participant Tab as Open browser tab
+    participant Store as Browser IndexedDB
+
+    Operator->>Rollout: Upgrade to a new release
+    Rollout->>API: Replace binary and web assets, then restart
+    Note over Media: Existing rooms survive the API restart
+    Rollout->>Media: Restart after API checks
+    Note over Media: A media restart closes its rooms
+    loop On load, on visibility or network return, and while active
+        Tab->>API: GET /app-version.json (no-store)
+        API-->>Tab: Current JavaScript entry path
+    end
+    alt Entry differs from the tab's loaded entry
+        Note over Tab: Wait for an open modal form to close
+        Tab->>Store: Save encrypted view, drafts, files, and call choice
+        Tab->>API: Reload the page
+        API-->>Tab: Serve the new web build
+        Tab->>Store: Read checkpoint
+        Store-->>Tab: Return encrypted checkpoint
+        Tab->>Tab: Decrypt and restore view, drafts, files, and call choice
+        Tab->>Store: Delete checkpoint
+        opt Previously in community voice
+            Tab->>API: Reconnect and request call admission
+            API-->>Tab: Allow the call join
+            Tab->>Media: Establish a new media connection
+        end
+    else Entry is unchanged
+        Note over Tab: Keep the current page
+    end
+```
+
+Once a browser has loaded a release with the update watcher, it checks `/app-version.json` when
+the page opens or becomes visible, every 30 seconds while visible, and every 3 seconds during a
+voice call even if the tab is hidden. A changed entry triggers a per-tab encrypted checkpoint of
+the current view, drafts, selected attachments and call choice, followed by a reload and restore.
+An open modal form delays the reload until it closes. A browser without working checkpoint storage
+offers a manual reload instead. Screen sharing needs another click after rejoining because the
+browser requires a user gesture. A tab loaded before this watcher exists cannot update itself;
+tell those members to reload once after the first deployment.
+
+The media sidecar keeps the SFU room alive during an API restart, but the API's signalling and TURN
+connections reset. The browser attempts to rejoin voice after a lost connection. Restarting the
+media process closes its rooms. During the two minutes after an app update is detected or restored,
+the browser also reopens a community voice room that closes with `E_CALL_ENDED`. A DM call that
+ends stays ended. Outside that window, and on tabs from before this feature, a person must choose
+Join again. A network or browser permission refusal can also require a manual join.
 
 `dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
 directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay, the
@@ -207,15 +266,16 @@ What it fixes, and the keys that change it:
   open `chrome://webrtc-internals` during a call and confirm a remote `host` candidate on
   `node_ip:7882` and a connected pair, then repeat with the browser forced to the relay
   (`iceTransportPolicy: "relay"`, or UDP to 7882 blocked) and confirm the call still connects.
-- **Logs and metrics.** LiveKit's and pion's logs appear in dillad's own log (pion's only at
+- **Logs and metrics.** LiveKit's and pion's logs appear in the media process log (pion's only at
   ERROR) with a fixed set of fields — no SDP, no addresses, ids cut to eight characters — at most
   20 lines in a burst and 5 a second per message, with one "LiveKit log lines suppressed" line
-  every 10 seconds counting the rest. LiveKit's `livekit_*` metrics appear on dillad's `/metrics`
-  beside `dilla_*`, without protocol version, country or other client-written values; the SDK label
-  keeps only LiveKit's enum names.
-- **If LiveKit stops.** The in-process SFU cannot be restarted inside a running dillad: the
-  `livekit` readiness gate turns red and dillad exits with status 69 (`EX_UNAVAILABLE`), and the
-  systemd unit or the container's restart policy starts it again.
+  every 10 seconds counting the rest. In the older `in_process` mode, LiveKit's `livekit_*`
+  metrics appear on dillad's `/metrics` beside `dilla_*`, without protocol version, country or
+  other client-written values. The sidecar keeps its metrics in its own process; its registry is
+  not exposed on the API's `/metrics` endpoint.
+- **If LiveKit stops.** In sidecar mode, the API's `livekit` readiness gate turns red until the
+  `media` process returns. The API stays up. In the older `in_process` mode, dillad exits with
+  status 69 (`EX_UNAVAILABLE`) and its supervisor restarts the whole process.
 
 ## 2. Compose
 
@@ -238,11 +298,27 @@ docker run --rm -v "$PWD/data:/var/lib/dilla" ghcr.io/jonasthim/dilla/dillad:lat
 
 # compose.yaml mounts ./dilla.toml; init wrote it into the data directory, owned 65532.
 sudo mv ./data/dilla.toml ./dilla.toml
+# init defaults to the all-in-one mode. Compose runs media as a separate process.
+sudo sed -i "s/mode = 'in_process'/mode = 'sidecar'/" ./dilla.toml
 
 docker compose up -d
-docker compose ps        # "healthy" after the first check; the check runs `dillad doctor --quiet`
-docker compose logs -f dillad
+docker compose ps
+docker compose logs -f dillad media
 ```
+
+`netns` owns the published ports and stays running while the API and media containers are
+replaced. After pinning the next image version or digest in `compose.yaml`, upgrade in order:
+
+```sh
+docker compose pull
+docker compose up -d --no-deps dillad
+# Wait for /readyz and check the API log before moving active rooms.
+docker compose up -d --no-deps media
+```
+
+Keep `netns` on its existing container during this sequence. Recreating it tears down the shared
+network namespace, including current calls. `media` and `dillad` share only that namespace and
+the instance configuration; the media process does not open the database.
 
 The traps, in the order people meet them:
 
@@ -296,12 +372,14 @@ The `DILLA_WEB_DIST` test checks those exact bytes before either release binary 
 certificate issuance and a migration. It runs as the `dillad` user with only
 `CAP_NET_BIND_SERVICE`, keeps its state in `/var/lib/dillad` (mode 0700) and reads
 `/etc/dilla/dilla.toml`.
+`deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service.
 
 ```sh
 sudo install -m 0755 dillad-linux-amd64 /usr/local/bin/dillad
 # Beside the binary: dillad looks for the wasi core in the directory its own executable is in.
 sudo install -m 0644 dilla_core_wasi.wasm /usr/local/bin/dilla_core_wasi.wasm
 sudo install -m 0644 deploy/dilla.service /etc/systemd/system/dilla.service
+sudo install -m 0644 deploy/dilla-media.service /etc/systemd/system/dilla-media.service
 sudo useradd --system --user-group --no-create-home --home-dir /var/lib/dillad --shell /usr/sbin/nologin dillad
 
 sudo /usr/local/bin/dillad init --data-dir=/var/lib/dillad \
@@ -309,10 +387,12 @@ sudo /usr/local/bin/dillad init --data-dir=/var/lib/dillad \
 # init wrote /var/lib/dillad/dilla.toml; the unit reads /etc/dilla/dilla.toml.
 sudo install -d -m 0755 /etc/dilla
 sudo install -m 0640 -o root -g dillad /var/lib/dillad/dilla.toml /etc/dilla/dilla.toml
+sudo sed -i "s/mode = 'in_process'/mode = 'sidecar'/" /etc/dilla/dilla.toml
 sudo rm /var/lib/dillad/dilla.toml
 sudo chown -R dillad:dillad /var/lib/dillad
 
 sudo systemctl daemon-reload
+sudo systemctl enable --now dilla-media
 sudo systemctl enable --now dilla
 sudo -u dillad /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml
 journalctl -o cat -u dilla | jq .
@@ -332,7 +412,7 @@ Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 ### Install script
 
 `deploy/install.sh` does everything in this section on a Debian 13 machine, LXC container or VM, as
-root, with no Docker: it runs the static `dillad` binary as the systemd service above. Every
+root, with no Docker: it runs the static `dillad` binary as the two systemd services above. Every
 release attaches it beside `dillad-linux-amd64`, `dillad-linux-arm64`, `dilla_core_wasi.wasm` and
 `SHA256SUMS`, with the release's own tag stamped into it. So the `install.sh` of a release installs
 that release, and there is no "latest". Download it from the release you want, read it, then run it
@@ -417,11 +497,15 @@ sh install.sh --upgrade
 
 Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 without output when they are valid.
 
-It checks the new binary and core against `SHA256SUMS` the same way, replaces only those two
-files, restarts `dilla` and runs doctor. The previous pair stays beside them as `dillad.prev` and
-`dilla_core_wasi.wasm.prev`. It never runs init and never touches `dilla.toml`, and it refuses mode
-flags. It does not rewrite `/etc/systemd/system/dilla.service` either: when a release changes
-`deploy/dilla.service`, install the new unit yourself and run `systemctl daemon-reload`.
+It checks the new binary and core against `SHA256SUMS`, restarts the API while the sidecar SFU
+stays up, runs doctor, then restarts the media service. The previous pair stays as `dillad.prev`
+and `dilla_core_wasi.wasm.prev`. For a first upgrade from `in_process`, it saves `dilla.toml.prev`,
+stops the old combined process, changes `livekit.mode` to `sidecar`, and starts the two services.
+That one-time migration briefly interrupts calls. Later API restarts leave the SFU running;
+media restarts end their rooms; updated community voice clients try to rejoin during the upgrade
+window. The installer writes
+`dilla-media.service`; it leaves an existing `dilla.service` untouched, so compare that unit with
+the release copy after an upgrade.
 
 Before it replaces anything, it reads the database's schema version with the installed binary
 (`dillad migrate status`) and refuses the upgrade if it cannot. If the restart fails, it rolls

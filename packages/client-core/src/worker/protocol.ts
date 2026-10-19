@@ -61,6 +61,13 @@ export type Command =
   | { m: 'signOutRevoke'; recoveryKey: string }                  // ready: this device → store wiped → cleared
   | { m: 'forgetBrowser' }                                       // ready (and revoked, pre-flight ruling d): sessions deleted, store wiped → cleared
   | { m: 'markRead'; channelId: string }                         // ready
+  | { m: 'setPresenceChoice'; choice: 'online' | 'idle' | 'dnd' | 'invisible' }
+  | { m: 'presenceActivity' }
+  | { m: 'getAFKSettings'; communityId: string }
+  | { m: 'setAFK'; communityId: string; channelId: string | null; timeoutSeconds: number }
+  | { m: 'afkActivity'; communityId: string; channelId: string }
+  | { m: 'afkMove'; communityId: string; channelId: string }
+  | { m: 'afkLeave'; communityId: string }
   | { m: 'setSetting'; key: string; value: string | null }       // ready; null deletes; key must match L-TS-25, value its allowed set
   | { m: 'openDm'; userId: string }                              // ready → { channelId }
   | { m: 'editMessage'; channelId: string; msgId: string; text: string }                  // ready → null (type 1)
@@ -70,6 +77,7 @@ export type Command =
   | { m: 'loadPins'; channelId: string }                                                  // ready → null; slice pins:<channel>
   | { m: 'closePins'; channelId: string }                                                 // ready → null
   | { m: 'attachFiles'; channelId: string; files: readonly File[] }                       // ready → { trayIds }; slice tray:<channel>
+  | { m: 'checkpointFiles'; channelId: string }                                          // ready → File[] selected in this channel
   | { m: 'discardAttachment'; channelId: string; trayId: string }                         // ready → null
   | { m: 'openAttachment'; channelId: string; seq: string; index: number; thumb: boolean } // ready → { blob, name, mime }
   | { m: 'refreshTrust' } // ready: bounded signed-list refresh

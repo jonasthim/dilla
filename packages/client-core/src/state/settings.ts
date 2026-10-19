@@ -27,7 +27,7 @@ export const SETTINGS = {
   voiceOutput: 'voice.output',
   voiceMode: 'voice.mode',                                   // 'vad' (default) | 'ptt'
   voicePttKey: 'voice.pttKey',                               // a KeyboardEvent.code; absent = no key (decision 2)
-  voiceNoise: 'voice.noise',                                 // 'on' (default) | 'off'
+  voiceNoise: 'voice.noise',                                 // legacy 'on' (default), 'lightweight' | 'automatic' | 'off'
   voiceVolume: (hex: string) => `voice.volume.${hex}`,       // per user: '0'..'200' in steps of 10; absent = '100'
   // Product walk M5: this browser's own mute and deafen, kept across a reload: 'muted' | 'deafened'; absent = neither.
   voiceSelf: 'voice.self',
@@ -81,7 +81,8 @@ export function isSettingValue(key: string, value: string): boolean {
   if (key === SETTINGS.voiceMode) return value === 'vad' || value === 'ptt';
   if (key === SETTINGS.voiceSelf) return value === 'muted' || value === 'deafened';
   if (key === SETTINGS.voicePttKey) return PTT_KEY.test(value);
-  if (key === SETTINGS.voiceNoise || key === SETTINGS.soundVoice || key === SETTINGS.soundRing) return ON_OFF.includes(value);
+  if (key === SETTINGS.voiceNoise) return ['on', 'off', 'automatic', 'lightweight'].includes(value);
+  if (key === SETTINGS.soundVoice || key === SETTINGS.soundRing) return ON_OFF.includes(value);
   if (key.startsWith(VOICE_VOLUME)) return VOLUME.test(value);
   if (key.startsWith(NOTIFY_CHANNEL) || key.startsWith(NOTIFY_COMMUNITY)) return MODES.includes(value);
   return value === '1';

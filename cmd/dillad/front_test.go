@@ -400,11 +400,24 @@ func TestTheTURNListenerTakesPROXYHeadersOnlyFromTrustedProxies(t *testing.T) {
 
 func TestServeRefusesAnUnknownLiveKitMode(t *testing.T) {
 	cfgPath := bootstrapServeConfig(t)
-	rewriteConfig(t, cfgPath, func(c *config.Config) {
-		c.LiveKit.Enabled = true
-		c.LiveKit.Mode = "external"
-	})
-	_, _, err := run(t, "serve", "--config="+cfgPath)
+	c, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.LiveKit.Enabled = true
+	c.LiveKit.Mode = "external"
+	f, err := os.Create(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.WriteConfig(f); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = run(t, "serve", "--config="+cfgPath)
 	if err == nil || !strings.Contains(err.Error(), "livekit.mode") {
 		t.Fatalf("serve with livekit.mode = external: %v", err)
 	}

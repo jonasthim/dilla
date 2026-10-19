@@ -91,6 +91,78 @@ func (c *Communities) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/communities/{id}/join", c.join)
 	mux.HandleFunc("POST /v1/communities/{id}/leave", c.leave)
 	mux.HandleFunc("POST /v1/communities/{id}/owner", c.transfer)
+	mux.HandleFunc("GET /v1/communities/{id}/afk/settings", c.afkSettings)
+	mux.HandleFunc("PUT /v1/communities/{id}/afk/settings", c.putAFKSettings)
+}
+
+type afkSettingsBody struct {
+	_              struct{} `cbor:",toarray"`
+	ChannelID      *id.ID
+	TimeoutSeconds uint64
+}
+
+func (c *Communities) afkSettings(w http.ResponseWriter, r *http.Request) {
+	row, _, err := c.managerOnly(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	config, err := c.repo.GetCommunityAFK(r.Context(), row.ID)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := server.EncodeBody(w, http.StatusOK, afkSettingsBody{ChannelID: config.ChannelID, TimeoutSeconds: config.TimeoutSeconds}); err != nil {
+		c.log.ErrorContext(r.Context(), "encoding AFK settings failed", "err", err)
+	}
+}
+
+func (c *Communities) putAFKSettings(w http.ResponseWriter, r *http.Request) {
+	row, _, err := c.managerOnly(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	var req afkSettingsBody
+	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	switch req.TimeoutSeconds {
+	case 60, 300, 900, 1800, 3600:
+	default:
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "AFK timeout must be 1, 5, 15, 30 or 60 minutes"))
+		return
+	}
+	if req.ChannelID != nil {
+		ch, err := c.repo.GetChannel(r.Context(), *req.ChannelID)
+		if err != nil || ch.CommunityID == nil || *ch.CommunityID != row.ID || ch.Kind != ChannelVoice {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "AFK destination must be a voice channel in this community"))
+			return
+		}
+		if c.calls != nil {
+			configLock := c.calls.afkChannelLock(ch.ID)
+			configLock.Lock()
+			defer configLock.Unlock()
+		}
+		if c.calls != nil {
+			_, live, err := c.calls.liveCallOf(r.Context(), ch, nil)
+			if err != nil {
+				server.WriteError(w, err)
+				return
+			}
+			if live {
+				server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the AFK destination has a live call"))
+				return
+			}
+		}
+	}
+	if err := c.repo.SetCommunityAFK(r.Context(), row.ID, store.CommunityAFK{ChannelID: req.ChannelID, TimeoutSeconds: req.TimeoutSeconds}); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	c.notify.Changed(afterCommit(r), row.ID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // maxCommunityNameBytes bounds the one free-text field a community owner controls.

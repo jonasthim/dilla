@@ -96,7 +96,7 @@ describe('voice and sound settings (L-TS-54)', () => {
       [SETTINGS.voiceOutput, ['f00d', 'x'.repeat(128)], ['', 'x'.repeat(129), 'é']],
       [SETTINGS.voiceMode, ['vad', 'ptt'], ['', 'VAD', 'push']],
       [SETTINGS.voicePttKey, ['KeyV', 'F13', 'Space', 'a' + '1'.repeat(31)], ['', '1Key', 'Key V', 'a' + '1'.repeat(32)]],
-      [SETTINGS.voiceNoise, ['on', 'off'], ['1', 'true']],
+      [SETTINGS.voiceNoise, ['on', 'off', 'automatic', 'lightweight'], ['1', 'true']],
       [SETTINGS.voiceVolume(ID), ['0', '10', '100', '110', '200'], ['05', '15', '210', '-10', '100.0', '']],
       [SETTINGS.soundVoice, ['on', 'off'], ['0', '1']],
       [SETTINGS.soundRing, ['on', 'off'], ['0', 'quiet']],

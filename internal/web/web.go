@@ -35,6 +35,7 @@ var contentTypes = map[string]string{
 	".js":    "text/javascript; charset=utf-8",
 	".css":   "text/css; charset=utf-8",
 	".wasm":  "application/wasm",
+	".bin":   "application/octet-stream",
 	".json":  "application/json",
 	".woff2": "font/woff2",
 	".woff":  "font/woff",
@@ -48,6 +49,7 @@ var reservedPrefixes = []string{"/v1/", "/gateway", "/rtc", "/i/", "/healthz", "
 var dnsHost = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$`)
 var ipv6Host = regexp.MustCompile(`^\[[0-9A-Fa-f:.]{2,45}\](:[0-9]{1,5})?$`)
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var entryScript = regexp.MustCompile(`<script\s+type="module"[^>]*\ssrc="(/assets/[A-Za-z0-9_./-]+\.js)"`)
 
 // Embedded is the committed placeholder, or the real build when CI copied it in before go build.
 func Embedded() fs.FS {
@@ -65,7 +67,10 @@ type file struct {
 }
 
 // Handler serves one verified client tree; it is safe for concurrent use and immutable after New.
-type Handler struct{ files map[string]file }
+type Handler struct {
+	files   map[string]file
+	version []byte
+}
 
 type manifestEntry struct {
 	Path   string `json:"path"`
@@ -178,6 +183,16 @@ func New(fsys fs.FS) (*Handler, error) {
 			return nil, fmt.Errorf("web: %s is listed in the manifest but missing", entry.Path)
 		}
 	}
+	entry := ""
+	if match := entryScript.FindSubmatch(h.files["index.html"].data); match != nil {
+		entry = string(match[1])
+		if _, ok := h.files[strings.TrimPrefix(entry, "/")]; !ok {
+			return nil, fmt.Errorf("web: index.html references missing entry %s", entry)
+		}
+	}
+	h.version, _ = json.Marshal(struct {
+		Entry string `json:"entry"`
+	}{entry})
 	return h, nil
 }
 
@@ -202,6 +217,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := clean(r.URL.Path)
 	if reserved(p) || strings.Contains(r.URL.Path, "..") || strings.ContainsRune(r.URL.Path, 0) {
 		http.NotFound(w, r)
+		return
+	}
+	if p == "/app-version.json" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Length", strconv.Itoa(len(h.version)))
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(h.version)
+		}
 		return
 	}
 	name := strings.TrimPrefix(p, "/")

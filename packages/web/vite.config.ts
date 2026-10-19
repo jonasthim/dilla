@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { noiseBuild } from '../../scripts/noise-build.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -59,7 +60,7 @@ function stripRnnoiseInlineWasm(): Plugin {
 
 export default defineConfig({
   base: '/',
-  plugins: [react(), oneCoreWasm(), stripRnnoiseInlineWasm()],
+  plugins: [noiseBuild(), react(), oneCoreWasm(), stripRnnoiseInlineWasm()],
   resolve: {
     // @dilla/media ships TypeScript sources and no package entry; tsconfig.json maps the same path for tsc.
     alias: [{ find: /^@dilla\/media$/, replacement: resolve(packages, 'media/src/index.ts') }],

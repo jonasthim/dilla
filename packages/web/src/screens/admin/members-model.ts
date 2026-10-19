@@ -1,5 +1,5 @@
 // Flow 08: the member list's pure rules. Grouping, tags and the per-member menu are decided here so the pane stays plain.
-import { canModerate, topOf, type CommunityAccess, type MemberSummary, type RoleSummary } from '@dilla/client-core';
+import { canModerate, topOf, type CommunityAccess, type MemberSummary, type RoleSummary, type PresenceStatus } from '@dilla/client-core';
 
 export type MemberTag = 'owner' | 'you' | 'bot';
 export interface MemberRow { userId: string; name: string; tags: MemberTag[]; /** The colour of the member's highest coloured role (any role, hoisted or not); null when none has one. */ color: number | null }
@@ -21,11 +21,13 @@ function colourOf(member: MemberSummary, roles: readonly RoleSummary[]): number 
  * Groups by each member's highest hoisted role (position, highest first); everyone else goes in the last, role-less
  * group. Names sort with localeCompare. Each row is tagged owner, you or bot.
  */
-export function memberGroups(members: readonly MemberSummary[], roles: readonly RoleSummary[], ownerId: string, selfId: string): MemberGroup[] {
+export function memberGroups(members: readonly MemberSummary[], roles: readonly RoleSummary[], ownerId: string, selfId: string,
+  presence?: Readonly<Record<string, PresenceStatus>>): MemberGroup[] {
   const hoisted = roles.filter(r => r.hoist).sort((a, b) => b.position - a.position);
   const byId = new Map(hoisted.map(r => [r.id, r]));
   const buckets = new Map<string, MemberRow[]>();
   const plain: MemberRow[] = [];
+  const offline: MemberRow[] = [];
   for (const m of members) {
     let best: RoleSummary | null = null;
     for (const id of m.roleIds) {
@@ -37,7 +39,8 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
     if (m.userId === selfId) tags.push('you');
     if (m.kind === 1) tags.push('bot');
     const row: MemberRow = { userId: m.userId, name: memberName(m), tags, color: colourOf(m, roles) };
-    if (best === null) plain.push(row);
+    if (presence !== undefined && (presence[m.userId] ?? 'offline') === 'offline') offline.push(row);
+    else if (best === null) plain.push(row);
     else {
       const list = buckets.get(best.id) ?? [];
       list.push(row);
@@ -48,6 +51,7 @@ export function memberGroups(members: readonly MemberSummary[], roles: readonly 
   const groups: MemberGroup[] = hoisted.filter(r => buckets.has(r.id))
     .map(r => ({ id: r.id, role: r, members: (buckets.get(r.id) ?? []).sort(byName) }));
   groups.push({ id: 'members', role: null, members: plain.sort(byName) });
+  if (presence !== undefined) groups.push({ id: 'offline', role: null, members: offline.sort(byName) });
   return groups;
 }
 

@@ -243,6 +243,15 @@ type Calls struct {
 	// named points of endCall.
 	startHook func(stage string)
 	endHook   func(stage string)
+
+	// AFK state is per device: activity in another tab or device cannot reset its voice timer.
+	afkConfigMu    sync.Mutex
+	afkConfigLocks map[id.ID]*sync.Mutex
+	afkMu          sync.Mutex
+	afkTracked     map[id.ID]afkTracked
+	afkOccupied    map[id.ID]afkOccupant
+	afkOnline      interface{ Online(id.ID) bool }
+	afkNotify      *StructureNotifier
 }
 
 // WithRinger sets the DM call ring and returns h.
@@ -327,6 +336,7 @@ func (h *Calls) WithCounters(c CallCounters) *Calls {
 }
 
 func (h *Calls) Register(mux *server.Mux) {
+	h.registerAFK(mux)
 	mux.HandleFunc("POST /v1/channels/{id}/calls", h.start)
 	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
 	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
@@ -393,6 +403,17 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 	begun := h.clk.Now()
 	s, ch, bits, err := h.channel(r)
 	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	// Only community voice channels can become AFK destinations. Keep their call
+	// creation ordered with the manager's live-call check and settings write.
+	if ch.CommunityID != nil && ch.Kind == ChannelVoice {
+		configLock := h.afkChannelLock(ch.ID)
+		configLock.Lock()
+		defer configLock.Unlock()
+	}
+	if err := h.refuseAFK(r.Context(), ch, s.DeviceID); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -1114,6 +1135,13 @@ func (h *Calls) AdmitRoom(ctx context.Context, room string, device id.ID) (*live
 	if row.Ended != nil || row.LivekitRoom != room {
 		return nil, notLeaf
 	}
+	if ch, err := h.repo.GetChannel(ctx, row.ChannelID); err == nil {
+		if err := h.refuseAFK(ctx, ch, device); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
 	if err := h.requireLeafOfCall(ctx, row, device); err != nil {
 		var se *server.Error
 		if errors.As(err, &se) {
@@ -1182,6 +1210,7 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID, resume 
 		return
 	}
 	h.noteAdmission(ctx, row, device, resume)
+	h.trackAFKAdmission(ctx, row, device, resume)
 }
 
 // barred reports whether dv may take part in no call at all: the device is revoked or quarantined,

@@ -36,17 +36,80 @@ type presence struct {
 	signalBudget map[id.ID]*rate.Limiter
 	signalSeen   map[id.ID]time.Time
 	signalSweep  time.Time
-	status       map[id.ID]presenceState
+	active       map[id.ID]deviceActivity
 }
 
-type presenceState struct {
-	status  uint64
-	since   time.Time
-	message string
+const presenceIdleAfter = 10 * time.Minute
+
+type deviceActivity struct {
+	user id.ID
+	at   time.Time
 }
 
 func newPresence(clk clock.Clock) *presence {
-	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, recentTyping: map[[2]id.ID]time.Time{}, cooldown: map[[2]id.ID]time.Time{}, signalBudget: map[id.ID]*rate.Limiter{}, signalSeen: map[id.ID]time.Time{}, status: map[id.ID]presenceState{}}
+	return &presence{clk: clk, typing: map[[2]id.ID]typingState{}, recentTyping: map[[2]id.ID]time.Time{}, cooldown: map[[2]id.ID]time.Time{}, signalBudget: map[id.ID]*rate.Limiter{}, signalSeen: map[id.ID]time.Time{}, active: map[id.ID]deviceActivity{}}
+}
+
+func (p *presence) activity(device, user id.ID) {
+	p.mu.Lock()
+	p.active[device] = deviceActivity{user: user, at: p.clk.Now()}
+	p.mu.Unlock()
+}
+
+func (p *presence) clearActivity(device id.ID) {
+	p.mu.Lock()
+	delete(p.active, device)
+	p.mu.Unlock()
+}
+
+func (p *presence) expireActivity(now time.Time) []id.ID {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	users := map[id.ID]struct{}{}
+	for device, state := range p.active {
+		if now.Sub(state.at) >= presenceIdleAfter {
+			delete(p.active, device)
+			users[state.user] = struct{}{}
+		}
+	}
+	out := make([]id.ID, 0, len(users))
+	for user := range users {
+		out = append(out, user)
+	}
+	return out
+}
+
+// Activity refreshes one live device's activity clock. It cannot make a disconnected device online.
+func (g *Gateway) Activity(device id.ID) {
+	conns := g.reg.connsOfDevice(device)
+	if len(conns) == 0 {
+		return
+	}
+	user := conns[0].userID
+	g.presence.activity(device, user)
+	if g.opts.OnPresenceChanged != nil {
+		g.opts.OnPresenceChanged(user)
+	}
+}
+
+// PresenceStatus derives the visible status from the account choice and live active devices.
+// 0 offline, 1 online, 2 idle, 3 do not disturb. Invisible is always seen as offline.
+func (g *Gateway) PresenceStatus(user id.ID, choice uint8) uint8 {
+	if choice == 4 || len(g.reg.connsOfUser(user)) == 0 {
+		return 0
+	}
+	if choice == 2 || choice == 3 {
+		return choice
+	}
+	g.presence.mu.Lock()
+	defer g.presence.mu.Unlock()
+	now := g.opts.Clock.Now()
+	for _, c := range g.reg.connsOfUser(user) {
+		if state, ok := g.presence.active[c.deviceID]; ok && now.Sub(state.at) < presenceIdleAfter {
+			return 1
+		}
+	}
+	return 2
 }
 
 // chargeSignal bounds all ephemeral work and fan-out across a user's sockets.
@@ -182,13 +245,4 @@ func (g *Gateway) IsTyping(channelID, userID, deviceID id.ID) bool {
 		return false
 	}
 	return state.user == userID
-}
-
-// SetPresence records a user's status. Presence is per user, not per device: a user is online
-// while any of their devices is.
-func (g *Gateway) SetPresence(userID id.ID, status uint64, message string) {
-	p := g.presence
-	p.mu.Lock()
-	p.status[userID] = presenceState{status: status, since: p.clk.Now(), message: message}
-	p.mu.Unlock()
 }

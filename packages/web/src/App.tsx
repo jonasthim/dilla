@@ -17,6 +17,8 @@ import { SignIn } from './screens/SignIn.tsx';
 import { OtherTab } from './screens/OtherTab.tsx';
 import { requestHandover } from './handover.ts';
 import { flushSync } from 'react-dom';
+import type { ShellUpdateDeps } from './screens/Shell.tsx';
+import { updateTabId, type CheckpointScope } from './update-checkpoint.ts';
 
 export type Screen = 'boot' | 'onboarding' | 'signin' | 'shell' | 'factor';
 
@@ -38,9 +40,26 @@ function defaultReload(href: string): void {
   window.location.replace(href);
 }
 
-export function App(props: { fatal: UiError | null; reload?: (href: string) => void }): React.JSX.Element {
+export function App(props: { fatal: UiError | null; reload?: (href: string) => void; update?: ShellUpdateDeps }): React.JSX.Element {
   const client = useCore();
   const account = useSlice('account');
+  const checkpointOwner = useRef<CheckpointScope | null>(null);
+  useEffect(() => {
+    if (props.update === undefined) return;
+    const previous = checkpointOwner.current;
+    const current = account?.phase === 'ready' && account.instance?.id && account.user?.id
+      ? (() => {
+        try {
+          // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
+          const tab = updateTabId(sessionStorage, crypto);
+          return { instance: account.instance.id, user: account.user.id, tab };
+        } catch { return null; }
+      })() : null;
+    if (previous !== null && (current === null || previous.instance !== current.instance || previous.user !== current.user)) {
+      void props.update.store.remove(previous).catch(() => undefined);
+    }
+    checkpointOwner.current = current;
+  }, [account?.phase, account?.instance?.id, account?.user?.id, props.update]);
   const diagnostics = useSlice('diagnostics');
   const settings = useSlice('settings');
   const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused' | 'confirm'>('other-tab');
@@ -71,6 +90,28 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   const reloaded = useRef(false);
   const reload = props.reload;
   const phase = account?.phase;
+  // One active tab refreshes its device's activity at most once a minute. Hidden tabs send no
+  // keepalive; the server derives Idle after ten minutes without activity on every live device.
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    let last = 0;
+    const activity = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - last < 60_000) return;
+      last = Date.now();
+      void client.call({ m: 'presenceActivity' }).catch(() => undefined);
+    };
+    window.addEventListener('pointerdown', activity);
+    window.addEventListener('pointermove', activity);
+    window.addEventListener('keydown', activity);
+    document.addEventListener('visibilitychange', activity);
+    activity();
+    return () => {
+      window.removeEventListener('pointerdown', activity);
+      window.removeEventListener('pointermove', activity);
+      window.removeEventListener('keydown', activity);
+      document.removeEventListener('visibilitychange', activity);
+    };
+  }, [client, phase]);
   // Walk M9: the forced screen holds dilla as the shell does, so a tab that asks for it ("Use this tab") is answered there too.
   const holdsDilla = phase === 'ready' || (phase === 'factor-setup' && account?.factorSetup?.origin === 'required');
   useEffect(() => {
@@ -231,7 +272,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
       case 'factor': return <ForcedFactor />;
       case 'boot': return <Boot fatal={null} />;
       // Settings opens over the shell, which stays mounted and shows the route Settings was opened from (L-TS-27).
-      case 'shell': return <><Shell />{route.name === 'settings' ? <Settings /> : null}</>;
+      case 'shell': return <><Shell update={props.update} />{route.name === 'settings' ? <Settings /> : null}</>;
     }
   }
 }

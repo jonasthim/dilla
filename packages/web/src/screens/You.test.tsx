@@ -27,6 +27,14 @@ function setup(onOpenSettings = vi.fn()) {
 }
 
 describe('You', () => {
+  it('offers a keyboard accessible account status choice', async () => {
+    const { fake, user, view } = setup();
+    const picker = screen.getByRole('combobox', { name: 'Your status' });
+    expect(picker).toHaveValue('online');
+    await user.selectOptions(picker, 'dnd');
+    expect(fake.callsOf('setPresenceChoice')).toEqual([{ m: 'setPresenceChoice', choice: 'dnd' }]);
+    await expectNoAxeViolations(view.container);
+  });
   it('heads the page and names the account', () => {
     setup();
     expect(screen.getByRole('heading', { level: 1, name: t('you.title') })).toBeInTheDocument();

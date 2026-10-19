@@ -49,7 +49,9 @@ before it ("every route below is `E`").
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/accounts` | — | `[code(tstr), username(tstr), display(tstr), umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64), password(tstr\|null), device(array)]` where `device = [device_id(bstr16), dsk_pub(bstr32), tier(uint), signer_tier(uint), credential(bstr)]` | `[user_id(bstr16), device_id(bstr16), token(tstr), expires(uint)]` |
-| `GET /v1/accounts/me` | E, F | — | `[user_id, username, display, kind, flags, created]` |
+| `GET /v1/accounts/me` | E, F | — | `[user_id, username, display, kind, flags, created, presence_choice]` |
+| `PATCH /v1/accounts/me/presence` | E | `[choice(uint)]` | `204`; choice: 1 Online, 2 Idle, 3 Do Not Disturb, 4 Invisible |
+| `POST /v1/accounts/me/presence/activity` | E | — | `204`; refreshes this live device's activity time |
 | `PATCH /v1/accounts/me` | E | `[display(tstr\|null), status_msg(tstr\|null)]` | `204` |
 | `DELETE /v1/accounts/me` | E (step-up) | `[]` | `204` — credential purge, Removes from every group, tombstone keeping `username` |
 | `POST /v1/devices` | E | `[device_id, dsk_pub, tier, signer_tier, credential, nonce(bstr32), sig(bstr64)]` | `[device_id]`; `403 E_FORBIDDEN` when `sig` does not prove possession of `dsk_pub` (`02` § Device sessions item 7) and, `device cap reached`, at 8 live devices; `429 E_RATE_LIMITED` with `retry_after_ms` past 3 live rows created in the hour; it never evicts; `409 E_INVALID_REQUEST` when `device_id` exists or a live device of the user holds `dsk_pub` |
@@ -319,6 +321,7 @@ community answers `404` to everyone.
 | `PATCH /v1/communities/{id}` | `[name(tstr\|null), policy(bstr\|null), min_account_age_seconds(uint\|null), require_mod_2fa(uint\|null)]` | `[policy_version(uint)]` |
 | `DELETE /v1/communities/{id}` | — | `204` |
 | `GET /v1/communities/{id}/members?after=` | — | `[[user_id, joined, nick, [role_id], username(tstr), display(tstr), kind(uint)]]`, at most 200 per page, ordered by `user_id`; `after` is the last `user_id` of the previous page |
+| `GET /v1/communities/{id}/presence` | — | `[[user_id, status]]` for all current members; membership required; status 0 Offline, 1 Online, 2 Idle, 3 Do Not Disturb |
 | `GET /v1/communities/{id}/permissions` | — | `[bits(uint), top(uint)]`: the caller's community-wide permissions (§ Permissions; no channel overwrite applied) and the position of the caller's highest role, `0` for `@everyone` alone and `2147483648` for the owner |
 | `DELETE /v1/communities/{id}/members/{user_id}` | — | `204` |
 | `POST /v1/communities/{id}/join` | `[invite(tstr\|null)]` | `[community_id]` |
@@ -836,6 +839,25 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `GET /v1/channels/{id}/call` | — | `200 [group_id(bstr16\|null), call_id(bstr16\|null), participants([[user_id(bstr16), device_id(bstr16), flags(uint)]])]`; `400 E_INVALID_REQUEST` for a text channel or a category | `view_channel`, or a participant of the DM or group DM |
 | `GET /v1/communities/{id}/calls` | — | `200 [[channel_id(bstr16), call_id(bstr16), participants]]`, the live calls of the voice channels the caller may view, sorted by `channel_id`, unpaginated; `404 E_NOT_FOUND` for a non-member | membership |
 | `POST /v1/calls/{call_id}/decline` | `[expires_ts(uint)]` | `204`, also when the user was no longer ringing or `expires_ts` names no ring; `400 E_INVALID_REQUEST` for a call of a community voice channel or a malformed body; `404 E_NOT_FOUND` for an unknown or ended call | a participant of the call's DM or group DM |
+| `GET /v1/communities/{id}/afk/settings` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint)]`, default `[null, 300]`; unfiltered administrator view | `manage_community` |
+| `PUT /v1/communities/{id}/afk/settings` | `[channel_id(bstr16\|null), timeout_seconds(uint)]` | `204`; timeout is one of `60, 300, 900, 1800, 3600`; destination is an existing voice channel in this community with no live call; `400 E_INVALID_REQUEST` otherwise | `manage_community` |
+| `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), occupants([[user_id(bstr16), device_id(bstr16)]])]`; an inaccessible or removed destination is returned as `null` with no occupants | community membership; occupants only when the caller may view and connect to the destination |
+| `POST /v1/communities/{id}/afk/activity` | `[channel_id(bstr16)]` | `204`; records this authenticated device's activity in that live community voice call | community membership |
+| `POST /v1/communities/{id}/afk` | `[source_channel_id(bstr16)]` | `204`; moves this authenticated device from a live community voice call to silent AFK; `400 E_INVALID_REQUEST` if the destination is disabled or inaccessible or this device is absent from the source call | community membership and destination `view_channel` and `connect` |
+| `DELETE /v1/communities/{id}/afk` | — | `204`, also when this device was not in AFK | community membership |
+
+- **AFK lifecycle.** A community can designate one existing voice channel as AFK. The instance
+  keeps a server-side activity time for each device in community voice. Browser keyboard, pointer
+  and touch input, and microphone speech report activity; listening alone does not. Every retry
+  tick moves a device that exceeded the chosen timeout, even when its browser timers are suspended.
+  The instance removes the device from the original SFU room and revokes its relay before listing
+  it as an AFK occupant. AFK has no media call or media keys: microphone, camera, screen and remote
+  audio are all absent. The call's normal leave path removes its MLS leaf. A pending or completed
+  AFK move blocks both a new call token and a replayed `/rtc` admission for that device. The person
+  leaves AFK or joins another voice room manually. An actual gateway disconnect, loss of membership
+  or destination access, deletion or disabling clears its occupancy. AFK settings and occupancy
+  changes send `community_changed` (`02`); clients reload the AFK snapshot on initial load and
+  reconnect. The snapshot, rather than a gateway event payload, decides what each caller may see.
 
 - **Discovery and snapshot.** `GET /v1/channels/{id}/call` tells a client which call group to join
   or register and who is in the channel's call. `group_id` is the live call's group; with no live

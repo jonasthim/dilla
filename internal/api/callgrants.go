@@ -809,6 +809,7 @@ func (h *Calls) StartRetries(every time.Duration) (stop func()) {
 			case <-tick.C:
 				h.processQueue(ctx)
 				h.RetryPending(ctx)
+				h.SweepAFK(ctx)
 				if time.Since(lastSweep) >= sweepEvery {
 					h.SweepRooms(ctx)
 					lastSweep = time.Now()

@@ -116,6 +116,7 @@ type Querier interface {
 	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
 	GetCommunity(ctx context.Context, arg GetCommunityParams) (Communities, error)
+	GetCommunityAFK(ctx context.Context, arg GetCommunityAFKParams) (GetCommunityAFKRow, error)
 	GetCursor(ctx context.Context, arg GetCursorParams) (DeviceCursors, error)
 	GetDevice(ctx context.Context, arg GetDeviceParams) (Devices, error)
 	GetDeviceList(ctx context.Context, arg GetDeviceListParams) (DeviceLists, error)
@@ -384,6 +385,7 @@ type Querier interface {
 	RedeemInvite(ctx context.Context, arg RedeemInviteParams) (Invites, error)
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
+	SetCommunityAFK(ctx context.Context, arg SetCommunityAFKParams) error
 	// POST /v1/communities/{id}/owner (dilla-web-3-4 S5): the hand-over, under LockCommunity.
 	SetCommunityOwner(ctx context.Context, arg SetCommunityOwnerParams) error
 	SetFactorOwed(ctx context.Context, arg SetFactorOwedParams) (int64, error)

@@ -44,3 +44,37 @@ func TestEphemeralFramesAreNeverReplayed(t *testing.T) {
 		t.Fatalf("the ring holds %d frames after an ephemeral one, want %d", got, ringBefore)
 	}
 }
+
+func TestPresenceUsesAnyActiveDeviceAndManualChoices(t *testing.T) {
+	h := newHarness(t)
+	user, first, second := id.New(), id.New(), id.New()
+	a := h.connectUser(t, first, user)
+	_ = h.connectUser(t, second, user)
+	if got := h.gw.PresenceStatus(user, 1); got != 1 {
+		t.Fatalf("connected = %d, want online", got)
+	}
+	h.clk.Advance(9 * time.Minute)
+	h.gw.Activity(second)
+	h.clk.Advance(2 * time.Minute)
+	if got := h.gw.PresenceStatus(user, 1); got != 1 {
+		t.Fatalf("active second device = %d, want online", got)
+	}
+	if got := h.gw.PresenceStatus(user, 2); got != 2 {
+		t.Fatalf("manual idle = %d", got)
+	}
+	if got := h.gw.PresenceStatus(user, 3); got != 3 {
+		t.Fatalf("dnd = %d", got)
+	}
+	if got := h.gw.PresenceStatus(user, 4); got != 0 {
+		t.Fatalf("invisible = %d", got)
+	}
+	h.clk.Advance(10 * time.Minute)
+	if got := h.gw.PresenceStatus(user, 1); got != 2 {
+		t.Fatalf("inactive devices = %d, want idle", got)
+	}
+	h.gw.removeLive(a)
+	h.gw.removeLive(h.gw.reg.connsOfDevice(second)[0])
+	if got := h.gw.PresenceStatus(user, 1); got != 0 {
+		t.Fatalf("disconnected = %d", got)
+	}
+}
