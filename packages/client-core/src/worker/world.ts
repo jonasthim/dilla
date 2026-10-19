@@ -8,7 +8,7 @@ import { CoreError, type ActivityRow, type ApplyResult, type AttachmentDescripto
 import { Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
 import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { OWNER_TOP, Routes, type AFKSnapshot, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
+import { OWNER_TOP, Routes, type AFKSettings, type AFKSnapshot, type BanRow, type Factors, type InviteRow, type Instance, type NewOverwrite, type NewRole, type OverwriteRow, type RolePatch, type RoleRow } from '../http/routes';
 import type { AccountState, BadgeState, ChannelSummary, ConnectionState, NoticesState, TimelineState } from '../state/types';
 import type { SyncDeps, SyncEngine } from '../sync/engine';
 import { Controller, type ControllerDeps, type ControllerParts } from './controller';
@@ -326,6 +326,7 @@ export function world(opts: {
       ...state.newChannels.filter((c) => toHex(c.communityId) === toHex(id)).map((c) => c.row),
     ]); }),
     getAFK: vi.fn((_id: Uint8Array): Promise<AFKSnapshot> => Promise.resolve({ channelId: null, timeoutSeconds: 300, occupants: [] })),
+    getAFKSettings: vi.fn((_id: Uint8Array): Promise<AFKSettings> => Promise.resolve({ channelId: null, timeoutSeconds: 300 })),
     setAFKSettings: vi.fn(() => Promise.resolve()),
     sendAFKActivity: vi.fn(() => Promise.resolve()),
     moveToAFK: vi.fn(() => Promise.resolve()),

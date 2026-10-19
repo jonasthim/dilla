@@ -14,6 +14,14 @@ import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
 
 describe('Controller', () => {
+  it('returns full AFK settings through the authenticated settings route', async () => {
+    const w = world();
+    await toReady(w);
+    w.routes.getAFKSettings.mockResolvedValue({ channelId: CHANNEL, timeoutSeconds: 900 });
+    w.call(993, { m: 'getAFKSettings', communityId: toHex(COMMUNITY) });
+    await vi.waitFor(() => expect(w.ret(993)).toEqual({ t: 'ret', id: 993, ok: true,
+      value: { channelId: toHex(CHANNEL), timeoutSeconds: 900 } }));
+  });
   it('loads AFK occupants on ready and refreshes them after a community change and reconnect', async () => {
     const w = world();
     await toReady(w);

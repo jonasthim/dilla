@@ -224,6 +224,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'setSetting',
   'setPresenceChoice',
   'presenceActivity',
+  'getAFKSettings',
   'setAFK',
   'afkActivity',
   'afkMove',
@@ -334,6 +335,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   callJoin: ['channelId'],
   callDecline: ['callId'],
   renameCommunity: ['communityId'],
+  getAFKSettings: ['communityId'],
   setAFK: ['communityId'],
   afkActivity: ['communityId', 'channelId'],
   afkMove: ['communityId', 'channelId'],
@@ -399,6 +401,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'setSetting',
     'setPresenceChoice',
     'presenceActivity',
+    'getAFKSettings',
     'setAFK',
     'afkActivity',
     'afkMove',
@@ -1023,6 +1026,9 @@ export class Controller {
       case 'setSetting': return this.setSetting(command.key, command.value);
       case 'setPresenceChoice': return this.setPresenceChoice(command.choice);
       case 'presenceActivity': return this.routes.sendPresenceActivity().then(() => null);
+      case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
+        .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
+          timeoutSeconds: settings.timeoutSeconds }));
       case 'setAFK': return this.setAFK(command.communityId, command.channelId, command.timeoutSeconds);
       case 'afkActivity': return this.routes.sendAFKActivity(fromHex(command.communityId), fromHex(command.channelId)).then(() => null);
       case 'afkMove': return this.routes.moveToAFK(fromHex(command.communityId), fromHex(command.channelId))

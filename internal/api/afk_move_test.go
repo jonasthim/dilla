@@ -25,6 +25,7 @@ func TestAFKTimeoutCutsMediaAndBlocksRejoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	activity := "/v1/communities/" + b.cid.String() + "/afk/activity"
+	b.calls.Admitted(t.Context(), b.room, b.memberDev, false)
 	if code, body := b.e.Do(http.MethodPost, activity, b.memberTok, []any{b.ch[:]}); code != http.StatusNoContent {
 		t.Fatalf("activity = %d: %x", code, body)
 	}
@@ -92,6 +93,48 @@ func TestAFKFreshAdmissionRestartsTimer(t *testing.T) {
 	}
 }
 
+func TestAFKEnableKeepsExistingAdmissionTimer(t *testing.T) {
+	b := newMembershipCallEnvWithoutLoop(t)
+	afk := id.New()
+	if err := b.e.Repo.CreateChannel(t.Context(), store.ChannelRow{ID: afk, CommunityID: &b.cid, Kind: 1, Name: "AFK", SettingsJSON: []byte("{}"), HostPolicyVersion: 1, Created: 1}); err != nil {
+		t.Fatal(err)
+	}
+	b.calls.Admitted(t.Context(), b.room, b.memberDev, false)
+	b.calls.SweepAFK(t.Context()) // disabled settings must retain this live admission
+	b.e.Clk.Advance(61 * time.Second)
+	if err := b.e.Repo.SetCommunityAFK(t.Context(), b.cid, store.CommunityAFK{ChannelID: &afk, TimeoutSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	b.calls.SweepAFK(t.Context())
+	if !removedDevice(b.stub, b.room, b.memberDev) {
+		t.Fatal("existing idle device was not moved after AFK was enabled")
+	}
+}
+
+func TestAFKOccupantCannotStartDMCall(t *testing.T) {
+	b := newMembershipCallEnvWithoutLoop(t)
+	afk := id.New()
+	if err := b.e.Repo.CreateChannel(t.Context(), store.ChannelRow{ID: afk, CommunityID: &b.cid, Kind: 1, Name: "AFK", SettingsJSON: []byte("{}"), HostPolicyVersion: 1, Created: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.e.Repo.SetCommunityAFK(t.Context(), b.cid, store.CommunityAFK{ChannelID: &afk, TimeoutSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := b.e.Do(http.MethodPost, "/v1/communities/"+b.cid.String()+"/afk", b.memberTok, []any{b.ch[:]}); code != http.StatusNoContent {
+		t.Fatalf("move = %d: %x", code, body)
+	}
+	dm := id.New()
+	if err := b.e.Repo.CreateChannel(t.Context(), store.ChannelRow{ID: dm, Kind: 3, Name: "DM", SettingsJSON: []byte("{}"), HostPolicyVersion: 1, Created: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.e.Repo.PutChannelMember(t.Context(), dm, b.member, 1); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := b.e.Do(http.MethodPost, "/v1/channels/"+dm.String()+"/calls", b.memberTok, []any{}); code != http.StatusForbidden {
+		t.Fatalf("AFK occupant started DM call: %d", code)
+	}
+}
+
 func TestAFKActivityResetsOnlyItsOwnDeviceTimer(t *testing.T) {
 	b := newMembershipCallEnvWithoutLoop(t)
 	afk := id.New()
@@ -102,6 +145,7 @@ func TestAFKActivityResetsOnlyItsOwnDeviceTimer(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + b.cid.String() + "/afk/activity"
+	b.calls.Admitted(t.Context(), b.room, b.memberDev, false)
 	if code, _ := b.e.Do(http.MethodPost, path, b.memberTok, []any{b.ch[:]}); code != 204 {
 		t.Fatal(code)
 	}

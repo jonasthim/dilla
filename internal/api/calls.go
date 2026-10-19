@@ -245,11 +245,13 @@ type Calls struct {
 	endHook   func(stage string)
 
 	// AFK state is per device: activity in another tab or device cannot reset its voice timer.
-	afkMu       sync.Mutex
-	afkTracked  map[id.ID]afkTracked
-	afkOccupied map[id.ID]afkOccupant
-	afkOnline   interface{ Online(id.ID) bool }
-	afkNotify   *StructureNotifier
+	afkConfigMu    sync.Mutex
+	afkConfigLocks map[id.ID]*sync.Mutex
+	afkMu          sync.Mutex
+	afkTracked     map[id.ID]afkTracked
+	afkOccupied    map[id.ID]afkOccupant
+	afkOnline      interface{ Online(id.ID) bool }
+	afkNotify      *StructureNotifier
 }
 
 // WithRinger sets the DM call ring and returns h.
@@ -404,6 +406,11 @@ func (h *Calls) start(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// A manager choosing this channel as the silent destination holds the same
+	// lock across its live-call check and settings write.
+	configLock := h.afkChannelLock(ch.ID)
+	configLock.Lock()
+	defer configLock.Unlock()
 	if err := h.refuseAFK(r.Context(), ch, s.DeviceID); err != nil {
 		server.WriteError(w, err)
 		return

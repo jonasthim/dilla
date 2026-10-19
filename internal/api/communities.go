@@ -102,7 +102,7 @@ type afkSettingsBody struct {
 }
 
 func (c *Communities) afkSettings(w http.ResponseWriter, r *http.Request) {
-	row, _, err := c.memberOnly(r)
+	row, _, err := c.managerOnly(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -139,6 +139,11 @@ func (c *Communities) putAFKSettings(w http.ResponseWriter, r *http.Request) {
 		if err != nil || ch.CommunityID == nil || *ch.CommunityID != row.ID || ch.Kind != ChannelVoice {
 			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "AFK destination must be a voice channel in this community"))
 			return
+		}
+		if c.calls != nil {
+			configLock := c.calls.afkChannelLock(ch.ID)
+			configLock.Lock()
+			defer configLock.Unlock()
 		}
 		if c.calls != nil {
 			_, live, err := c.calls.liveCallOf(r.Context(), ch, nil)

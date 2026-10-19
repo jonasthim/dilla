@@ -421,6 +421,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   // The clock lives on the server. This device reports only real input or microphone speech;
   // listening, another tab and another device do not refresh this call's AFK timer.
   const afkTrackingKey = useRef<string | null>(null);
+  const afkLastReport = useRef(0);
   useEffect(() => {
     const channel = call.channelId;
     const home = (communities ?? []).findIndex((c, i) => railSlices[i]?.some(ch => ch.id === channel && ch.kind === 1));
@@ -431,19 +432,20 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       if (channel === null || call.session === null) afkTrackingKey.current = null;
       return;
     }
-    let last = 0;
     const activity = (fromMic = false) => {
-      if ((!fromMic && document.visibilityState !== 'visible') || Date.now() - last < 5_000) return;
-      last = Date.now();
+      if ((!fromMic && document.visibilityState !== 'visible') || Date.now() - afkLastReport.current < 5_000) return;
+      afkLastReport.current = Date.now();
       void client.call({ m: 'afkActivity', communityId: callCommunityId, channelId: channel }).catch(() => undefined);
     };
-    const speech = () => { if (call.state?.speaking) { last = 0; activity(true); } };
+    const speech = () => { if (call.state?.speaking) activity(true); };
     const userActivity = () => activity();
     const key = `${callCommunityId}:${channel}:${callAFK.channelId}`;
     if (afkTrackingKey.current !== key) {
       afkTrackingKey.current = key;
-      activity();
+      afkLastReport.current = 0;
+      activity(true);
     }
+    speech();
     const timer = window.setInterval(speech, 5_000);
     window.addEventListener('pointermove', userActivity);
     window.addEventListener('pointerdown', userActivity);

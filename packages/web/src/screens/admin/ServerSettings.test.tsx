@@ -102,6 +102,19 @@ describe('the overview section', () => {
     if (to !== '') await user.type(field(), to);
     await user.click(screen.getByRole('button', { name: en['admin.overview.save'] }));
   };
+  it('loads unfiltered AFK settings for a manager who cannot view the destination', async () => {
+    const { fake, user } = setup({ ...NONE, manageCommunity: true });
+    const hidden = 'fe'.repeat(16);
+    fake.handler = command => Promise.resolve(command.m === 'getAFKSettings'
+      ? { channelId: hidden, timeoutSeconds: 900 } : null);
+    fake.publish(`afk:${SERVER}`, { channelId: null, timeoutSeconds: 900, occupants: [] });
+    const destination = screen.getByRole('combobox', { name: en['admin.afk.channel'] });
+    await waitFor(() => expect(destination).toHaveValue(hidden));
+    expect(screen.getByRole('option', { name: en['admin.afk.restricted'] })).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole('combobox', { name: en['admin.afk.timeout'] }), '1800');
+    await user.click(screen.getByRole('button', { name: en['admin.afk.save'] }));
+    expect(fake.callsOf('setAFK')).toEqual([{ m: 'setAFK', communityId: SERVER, channelId: hidden, timeoutSeconds: 1800 }]);
+  });
   it('renames the server with the trimmed name and announces it', async () => {
     const { fake, user, announce } = setup(FULL);
     await rename(user, '  Midgard ');

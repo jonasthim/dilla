@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/id"
@@ -15,6 +16,7 @@ import (
 
 type afkTracked struct {
 	community, channel, user id.ID
+	room                     string
 	lastActive               time.Time
 }
 type afkOccupant struct {
@@ -37,6 +39,18 @@ type afkActivityBody struct {
 	ChannelID id.ID
 }
 
+func (h *Calls) afkChannelLock(channel id.ID) *sync.Mutex {
+	h.afkConfigMu.Lock()
+	defer h.afkConfigMu.Unlock()
+	if h.afkConfigLocks == nil {
+		h.afkConfigLocks = make(map[id.ID]*sync.Mutex)
+	}
+	if h.afkConfigLocks[channel] == nil {
+		h.afkConfigLocks[channel] = new(sync.Mutex)
+	}
+	return h.afkConfigLocks[channel]
+}
+
 // An SFU admission starts the device's timer even if its browser never gets to send
 // the first activity report. A signalling resume keeps the original timer.
 func (h *Calls) trackAFKAdmission(ctx context.Context, row store.VoiceSessionRow, dev id.ID, resume bool) {
@@ -53,13 +67,14 @@ func (h *Calls) trackAFKAdmission(ctx context.Context, row store.VoiceSessionRow
 	if _, occupied := h.afkOccupied[dev]; occupied {
 		return
 	}
-	if current, exists := h.afkTracked[dev]; resume && exists && current.channel == ch.ID {
+	if current, exists := h.afkTracked[dev]; resume && exists && current.room == row.LivekitRoom {
 		return
 	}
 	if h.afkTracked == nil {
 		h.afkTracked = make(map[id.ID]afkTracked)
 	}
-	h.afkTracked[dev] = afkTracked{community: *ch.CommunityID, channel: ch.ID, user: dv.UserID, lastActive: h.clk.Now()}
+	h.afkTracked[dev] = afkTracked{community: *ch.CommunityID, channel: ch.ID, user: dv.UserID,
+		room: row.LivekitRoom, lastActive: h.clk.Now()}
 }
 
 // WithAFKLive binds occupancy to a live gateway connection. A suspended but still connected
@@ -122,6 +137,12 @@ func (h *Calls) afkDestination(ctx context.Context, cid, user id.ID) (store.Comm
 }
 
 func (h *Calls) refuseAFK(ctx context.Context, ch store.ChannelRow, device id.ID) error {
+	h.afkMu.Lock()
+	_, occupied := h.afkOccupied[device]
+	h.afkMu.Unlock()
+	if occupied {
+		return server.Errorf(server.CodeForbidden, "leave AFK before joining voice")
+	}
 	if ch.CommunityID == nil {
 		return nil
 	}
@@ -131,12 +152,6 @@ func (h *Calls) refuseAFK(ctx context.Context, ch store.ChannelRow, device id.ID
 	}
 	if cfg.ChannelID != nil && *cfg.ChannelID == ch.ID {
 		return server.Errorf(server.CodeForbidden, "AFK is a silent channel")
-	}
-	h.afkMu.Lock()
-	_, occupied := h.afkOccupied[device]
-	h.afkMu.Unlock()
-	if occupied {
-		return server.Errorf(server.CodeForbidden, "leave AFK before joining voice")
 	}
 	return nil
 }
@@ -203,11 +218,10 @@ func (h *Calls) afkActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.afkMu.Lock()
-	if _, afk := h.afkOccupied[dev]; !afk {
-		if h.afkTracked == nil {
-			h.afkTracked = make(map[id.ID]afkTracked)
-		}
-		h.afkTracked[dev] = afkTracked{community: cid, channel: ch.ID, user: user, lastActive: h.clk.Now()}
+	if tracked, ok := h.afkTracked[dev]; ok && tracked.community == cid && tracked.channel == ch.ID &&
+		tracked.user == user && tracked.room == row.LivekitRoom {
+		tracked.lastActive = h.clk.Now()
+		h.afkTracked[dev] = tracked
 	}
 	h.afkMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
@@ -278,6 +292,9 @@ func (h *Calls) moveAFK(ctx context.Context, dev id.ID, tracked afkTracked, expe
 	}
 	if !live || h.sfu == nil {
 		return server.Errorf(server.CodeInvalidRequest, "device is not in a live call")
+	}
+	if expected != nil && tracked.room != row.LivekitRoom {
+		return server.Errorf(server.CodeInvalidRequest, "call changed since AFK timer started")
 	}
 	checkCtx, cancel := sfuCtx(ctx)
 	parts, err := h.sfu.Participants(checkCtx, row.LivekitRoom)
@@ -359,11 +376,14 @@ func (h *Calls) SweepAFK(ctx context.Context) {
 	}
 	for dev, p := range tracked {
 		cfg, err := h.afkDestination(ctx, p.community, p.user)
-		if err != nil || cfg.ChannelID == nil {
+		if err != nil {
 			h.afkMu.Lock()
 			delete(h.afkTracked, dev)
 			h.afkMu.Unlock()
 			continue
+		}
+		if cfg.ChannelID == nil {
+			continue // an active admission may outlive a disabled destination
 		}
 		if h.clk.Since(p.lastActive) < afkTimeout(cfg.TimeoutSeconds) {
 			continue

@@ -69,6 +69,18 @@ describe('voice in the shell', () => {
     dateNow.mockRestore();
   });
 
+  it('reports a short microphone utterance before the next polling interval', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    expect(app.client.callsOf('afkActivity')).toHaveLength(1);
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
+    act(() => app.session.update({ speaking: true }));
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(2));
+    act(() => app.session.update({ speaking: false }));
+    dateNow.mockRestore();
+  });
+
   it('retries a restored call after a transient start failure', async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });

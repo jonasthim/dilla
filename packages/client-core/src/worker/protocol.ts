@@ -60,6 +60,7 @@ export type Command =
   | { m: 'markRead'; channelId: string }                         // ready
   | { m: 'setPresenceChoice'; choice: 'online' | 'idle' | 'dnd' | 'invisible' }
   | { m: 'presenceActivity' }
+  | { m: 'getAFKSettings'; communityId: string }
   | { m: 'setAFK'; communityId: string; channelId: string | null; timeoutSeconds: number }
   | { m: 'afkActivity'; communityId: string; channelId: string }
   | { m: 'afkMove'; communityId: string; channelId: string }

@@ -43,9 +43,12 @@ func TestAFKSettingsRequireManagerAndVoiceInSameCommunity(t *testing.T) {
 	if code, body := e.Do(http.MethodPut, path, token, []any{voice[:], uint64(60)}); code != http.StatusNoContent {
 		t.Fatalf("owner PUT = %d: %x", code, body)
 	}
-	code, body := e.Do(http.MethodGet, path, otherToken, nil)
+	if code, _ := e.Do(http.MethodGet, path, otherToken, nil); code != http.StatusForbidden {
+		t.Fatalf("member GET = %d", code)
+	}
+	code, body := e.Do(http.MethodGet, path, token, nil)
 	if code != http.StatusOK {
-		t.Fatalf("member GET = %d: %x", code, body)
+		t.Fatalf("manager GET = %d: %x", code, body)
 	}
 	var got []cbor.RawMessage
 	if err := cbor.Unmarshal(body, &got); err != nil {
@@ -65,7 +68,7 @@ func TestAFKSettingsRequireManagerAndVoiceInSameCommunity(t *testing.T) {
 	if code, body := e.Do(http.MethodDelete, "/v1/channels/"+voice.String(), token, nil); code != http.StatusNoContent {
 		t.Fatalf("delete AFK channel = %d: %x", code, body)
 	}
-	code, body = e.Do(http.MethodGet, path, otherToken, nil)
+	code, body = e.Do(http.MethodGet, path, token, nil)
 	if code != http.StatusOK {
 		t.Fatalf("settings after delete = %d: %x", code, body)
 	}

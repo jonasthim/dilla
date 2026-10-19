@@ -33,6 +33,8 @@ export const admin = {
   'admin.afk.save': 'Save AFK settings',
   'admin.afk.saved': 'AFK settings saved.',
   'admin.afk.error': 'Could not save AFK settings ({code}). Try again.',
+  'admin.afk.loadError': 'Could not load AFK settings. Reopen server settings to try again.',
+  'admin.afk.restricted': 'Current AFK destination (restricted)',
   'admin.channels.title': 'Channels',
   'admin.channels.newCategory': 'new category',
   'admin.channels.edit': 'edit',

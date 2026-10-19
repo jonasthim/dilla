@@ -38,7 +38,8 @@ export function refusal(init: { code: string; detail?: string; status?: number; 
 /** An in-memory CoreClient: tests set slices and script the answers of calls. */
 export class FakeClient implements CoreClient {
   readonly calls: Command[] = [];
-  handler: (command: Command) => Promise<unknown> = () => Promise.resolve(null);
+  handler: (command: Command) => Promise<unknown> = command => Promise.resolve(command.m === 'getAFKSettings'
+    ? { channelId: null, timeoutSeconds: 300 } : null);
   private readonly values = new Map<string, unknown>();
   private readonly listeners = new Map<string, Set<() => void>>();
 
