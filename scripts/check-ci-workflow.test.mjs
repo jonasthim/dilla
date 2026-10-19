@@ -12,6 +12,45 @@ const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
+test('workflow steps execute only commit-pinned GitHub actions', () => {
+  for (const workflow of [REAL_CI, REAL_RELEASE]) {
+    for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
+      assert.match(match[1], /^actions\/[\w-]+@[0-9a-f]{40}$/);
+    }
+  }
+});
+
+test('clang 23 build jobs stay on the Ubuntu 24.04 image they install packages for', () => {
+  for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build']) {
+    assert.match(REAL_CI, new RegExp(`^  ${job}:\\n    runs-on: ubuntu-24\\.04$`, 'm'));
+  }
+  assert.match(REAL_RELEASE, /^  web-build:\n    runs-on: ubuntu-24\.04$/m);
+});
+
+test('the CI checker rejects a third-party action even when pinned', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+    'taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2',
+  )));
+  assert.ok(problems.some((problem) => problem.includes('GitHub-owned action')), problems.join('\n'));
+});
+
+test('the CI checker rejects a movable GitHub action tag', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+    'actions/checkout@v7',
+  )));
+  assert.ok(problems.some((problem) => problem.includes('40-hex commit')), problems.join('\n'));
+});
+
+test('the CI checker rejects a flow-style action step', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(
+    '      - run: npm test\n',
+    '      - { name: unsafe, uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n      - run: npm test\n',
+  )));
+  assert.ok(problems.some((problem) => problem.includes('flow-style action')), problems.join('\n'));
+});
+
 test('Rust CI and release setup use the pinned rustup toolchain without third-party helper actions', () => {
   const toolchain = readFileSync(join(REPO_ROOT, 'rust-toolchain.toml'), 'utf8');
   assert.match(toolchain, /channel = "1\.98\.1"/);
@@ -48,14 +87,14 @@ jobs:
     steps:
       - run: npm test -w packages/ui
       - run: node packages/ui/scripts/shoot-stories.mjs 6016 target/ui-screens/web-2b form- ceremony- shell- conversation- settings- screens- primitives-channelrow-- conversation-messagetoolbar-- conversation-attachmentcard-- screens-conversation--
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-screens
           path: target/ui-screens/web-2b
           if-no-files-found: error
       - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/desktop trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish--
       - run: node packages/ui/scripts/shoot-stories.mjs 6027 target/ui-screens/web-2c/phone trust-safetycompare-- trust-trustalert-- search-searchpalette-- status-typingindicator-- settings-diagnosticspanel-- shell-tabhand-over-- screens-trustandpolish-- --viewport=360x740
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-screens-web-2c
           path: |
@@ -64,7 +103,7 @@ jobs:
           if-no-files-found: error
       - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/desktop voice- media-mediaplayer-- screens-voice--
       - run: node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone voice- media-mediaplayer-- screens-voice-- --viewport=360x740
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-screens-web-3
           path: target/ui-screens/web-3/**
@@ -76,7 +115,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-testkit
           path: target/release/dilla-testkit
@@ -85,6 +124,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: rustup show active-toolchain
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked
       - run: cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
@@ -99,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
@@ -114,18 +155,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm run test:e2e:matrix -w @dilla/e2e
   deny:
     runs-on: ubuntu-latest
     steps:
+      - run: bash scripts/install-ci-tool.sh cargo-deny
       - run: cargo deny --all-features check advisories bans licenses sources
   go:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [rust-wasi]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
@@ -140,14 +184,16 @@ jobs:
     timeout-minutes: 25
     needs: [rust-native, rust-wasi]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: node packages/media/scripts/extract-rnnoise-wasm.mjs
@@ -160,7 +206,7 @@ jobs:
         env:
           DILLA_MEDIA_SFU_AV1: '1'
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-media-results
@@ -171,6 +217,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm run typecheck -w @dilla/client-core
@@ -179,12 +227,12 @@ jobs:
       - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core
       - run: go test -tags webdist ./internal/web/...
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-web-dist
           path: packages/web/dist/
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist/
@@ -195,19 +243,19 @@ jobs:
     timeout-minutes: ${BROWSER_WEB_JOBS['chromium-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: packages/web/dist
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
@@ -221,7 +269,7 @@ jobs:
       - run: npm run test:e2e:voice:chromium -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-web-results-chromium
@@ -233,19 +281,19 @@ jobs:
     timeout-minutes: ${BROWSER_WEB_JOBS['firefox-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: packages/web/dist
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
@@ -260,7 +308,7 @@ jobs:
       - run: npm run test:e2e:voice:firefox -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-web-results-firefox
@@ -272,19 +320,19 @@ jobs:
     timeout-minutes: ${BROWSER_WEB_JOBS['webkit-web'].timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: packages/web/dist
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist
@@ -292,7 +340,7 @@ jobs:
       - run: npm run test:e2e:web:webkit -w @dilla/e2e
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: browser-web-results-webkit
@@ -304,7 +352,7 @@ jobs:
     timeout-minutes: 25
     needs: [rust-wasi]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
@@ -315,11 +363,11 @@ jobs:
     timeout-minutes: 30
     needs: [rust-wasi, rust-native]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-testkit
           path: artifacts
@@ -336,9 +384,8 @@ jobs:
   go-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with:
-          version: v2.14.0
+      - run: bash scripts/install-ci-tool.sh golangci-lint
+      - run: golangci-lint run ./...
 
   go-vuln:
     runs-on: ubuntu-latest
@@ -349,9 +396,7 @@ jobs:
   go-sqlc:
     runs-on: ubuntu-latest
     steps:
-      - uses: sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5
-        with:
-          sqlc-version: '1.31.1'
+      - run: bash scripts/install-ci-tool.sh sqlc
       - run: sqlc diff
       - run: git diff --exit-code
 
@@ -374,7 +419,7 @@ jobs:
     steps:
       - run: rm -rf internal/web/dist
       - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: internal/web/dist
@@ -386,7 +431,7 @@ jobs:
         env:
           DILLA_WEB_DIST: \${{ github.workspace }}/internal/web/dist
       - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/dillad-linux-amd64 ./cmd/dillad
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dillad-binaries
           path: dist/
@@ -398,14 +443,14 @@ jobs:
     permissions: { contents: read, packages: write }
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - run: rm -rf internal/web/dist
       - name: Fetch the web client into the image's build context
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: internal/web/dist
@@ -413,21 +458,10 @@ jobs:
         run: |
           test -f internal/web/dist/index.html
           if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        id: meta
-        with:
-          images: ghcr.io/\${{ github.repository }}/dillad
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=branch
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          provenance: mode=max
-          sbom: true
+      - name: Log in to GHCR for a main-branch push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - run: bash scripts/build-ci-image.sh
 `;
 
 // The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
@@ -441,7 +475,7 @@ function withWasmClang(text) {
     const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (key) job = key[1];
     if (WASM_JOBS.includes(job) && line === '    steps:') {
-      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@v7', WASM_CLANG_STEP);
+      out.push(WASM_CLANG_ENV_BLOCK, line, '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', WASM_CLANG_STEP);
       continue;
     }
     out.push(line);
@@ -678,7 +712,7 @@ for (const [job, needle] of [
   ['rust-wasm-node', 'npm run check:schema -w @dilla/media'],
   ['go-harness', 'go test -race -shuffle=on -timeout 25m ./internal/testkit/...'],
   ['go-harness', 'name: dilla-testkit'],
-  ['go-lint', 'version: v2.14.0'],
+  ['go-lint', 'golangci-lint run ./...'],
   ['go-vuln', '-scan package -tags dillapins ./internal/deps'],
   ['go-sqlc', 'sqlc diff'],
   ['go-postgres', 'postgres:18.6-alpine3.24'],
@@ -702,9 +736,9 @@ for (const [job, needle] of [
 
 test('a go job with download-artifact@v4 instead of v8 is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replaceAll('actions/download-artifact@v8', 'actions/download-artifact@v4')),
+    fixture(GOOD.replaceAll('actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8', 'actions/download-artifact@v4')),
   );
-  assert.ok(problems.some((p) => p.includes('download-artifact@v8')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('download-artifact@v4')), problems.join('\n'));
 });
 
 // Ruling L: the Go half of the tree is gated by this checker too, so a workflow that simply never
@@ -772,20 +806,13 @@ test('a workflow without the image job is reported', () => {
 });
 
 for (const needle of [
-  'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1',
-  'docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0',
-  'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0',
-  'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0',
-  'platforms: linux/amd64,linux/arm64',
-  'actions/checkout@v7',
-  'actions/download-artifact@v8',
+  'docker login ghcr.io',
+  "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
+  'bash scripts/build-ci-image.sh',
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+  'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
   'path: internal/mlswasi/testdata',
-  'provenance: mode=max',
-  'sbom: true',
   'timeout-minutes: 30',
-  // I16 (fix wave): metadata-action generates `latest` only for tag events, so without this line a
-  // push to main publishes `:main` alone and Compose's `:latest` pull fails with "manifest unknown".
-  'type=raw,value=latest,enable={{is_default_branch}}',
 ]) {
   test(`an image job that lost "${needle}" is reported`, () => {
     const start = GOOD.indexOf('  image:\n');
@@ -799,7 +826,7 @@ for (const needle of [
 
 test('setup-qemu-action anywhere in the workflow is reported', () => {
   const problems = checkWorkflow(
-    fixture(GOOD.replace('      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n', '      - uses: docker/setup-qemu-action@v4\n      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1\n')),
+    fixture(GOOD.replace('      - run: bash scripts/build-ci-image.sh\n', '      - uses: docker/setup-qemu-action@v4\n      - run: bash scripts/build-ci-image.sh\n')),
   );
   assert.ok(problems.some((p) => p.includes('setup-qemu-action')), problems.join('\n'));
 });
@@ -819,7 +846,7 @@ test('an image job that does not wait for go-lint is reported', () => {
 // The rule that covers a job added tomorrow: no job is named in REQUIRED_STEPS, yet its upload-artifact
 // step is still held to the fail-closed setting.
 test('an upload-artifact step in any job without if-no-files-found: error is reported', () => {
-  const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
+  const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
   const problems = checkWorkflow(fixture(GOOD + extra));
   assert.deepEqual(
     problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')),
@@ -1199,7 +1226,7 @@ test('an image job that does not wait for web-build is reported', () => {
 test('an image job without the dilla-web-dist download step is reported by name', () => {
   const step =
     '      - name: Fetch the web client into the image\'s build context\n' +
-    '        uses: actions/download-artifact@v8\n' +
+    '        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8\n' +
     '        with:\n' +
     '          name: dilla-web-dist\n' +
     '          path: internal/web/dist\n';
@@ -1327,7 +1354,7 @@ function editJob(job, edit) {
 }
 
 const STEP_RULE = (job) =>
-  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`;
+  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`;
 const ENV_RULE = (job) =>
   `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`;
 
@@ -1463,7 +1490,7 @@ test('a wasm job added tomorrow without the pinned clang 23 is reported', () => 
     '  wasm-extra:\n' +
     '    runs-on: ubuntu-latest\n' +
     '    steps:\n' +
-    '      - uses: actions/checkout@v7\n' +
+    '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n' +
     '      - run: cargo build -p dilla-core --target wasm32-unknown-unknown --locked\n';
   const problems = checkWorkflow(fixture(GOOD.replace('  deny:\n', `${extra}  deny:\n`)));
   assert.ok(problems.includes(ENV_RULE('wasm-extra')), problems.join('\n'));
@@ -1529,7 +1556,7 @@ test('a dispatch input expanded inside a script is reported', () => {
 });
 
 test('an action at a version ci.yml does not use is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@v7', '  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@main')), 'actions/checkout@main');
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', '  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@main')), 'actions/checkout@main');
 });
 
 test('a tag job that no longer checks the ref is reported', () => {
@@ -1566,20 +1593,34 @@ for (const action of ['actions/cache', 'actions/cache/restore']) {
   });
 }
 
-test('a third-party action pinned by tag in the release workflow is reported', () => {
-  const problems = releaseProblems((t) => t.replace(/taiki-e\/install-action@[0-9a-f]{40} # v2/, 'taiki-e/install-action@' + 'v2'));
-  assertReported(problems, 'taiki-e/install-action@' + 'v2 is a third-party action not pinned');
+test('a third-party action pinned by SHA is still rejected in release', () => {
+  const problems = releaseProblems((t) => t.replace(
+    '      - run: rustup show active-toolchain',
+    '      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2\n      - run: rustup show active-toolchain',
+  ));
+  assertReported(problems, 'not a GitHub-owned action');
 });
 
-test('a third-party action pinned by SHA but without its tag comment is reported', () => {
-  const problems = releaseProblems((t) => t.replace(/(taiki-e\/install-action@[0-9a-f]{40}) # v2/, '$1'));
-  assertReported(problems, 'not pinned to a 40-hex commit SHA');
+test('a movable GitHub action tag is rejected in release', () => {
+  const problems = releaseProblems((t) => t.replace(
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+    'actions/checkout@v7',
+  ));
+  assertReported(problems, '40-hex commit SHA');
 });
 
-test('every third-party action in release.yml is pinned to a commit', () => {
-  const thirdParty = REAL_RELEASE.split('\n').filter((l) => /uses:/.test(l) && !/uses:\s*actions\//.test(l));
-  assert.ok(thirdParty.length > 0);
-  for (const line of thirdParty) assert.match(line, /@[0-9a-f]{40} # \S+$/, line);
+test('a flow-style action step is rejected in release', () => {
+  const problems = releaseProblems((t) => t.replace(
+    '      - run: rustup show active-toolchain',
+    '      - { uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 }\n      - run: rustup show active-toolchain',
+  ));
+  assertReported(problems, 'flow-style action');
+});
+
+test('every release action is owned by GitHub and pinned to a commit', () => {
+  const actions = REAL_RELEASE.split('\n').filter((line) => /uses:/.test(line));
+  assert.ok(actions.length > 0);
+  for (const line of actions) assert.match(line, /uses:\s*actions\/[\w-]+@[0-9a-f]{40} # \S+$/, line);
 });
 
 test('a release that attaches an unstamped install.sh is reported', () => {

@@ -14,7 +14,7 @@ import {
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { holdUploads, installWorkerPort, portCall, portSlice } from './support/worker-port';
-import type { AccountState, SearchState, TimelineState } from '../../packages/client-core/src/state/types';
+import type { AccountState, ChannelSummary, SearchState, TimelineState } from '../../packages/client-core/src/state/types';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { rmSync } from 'node:fs';
 
@@ -83,7 +83,9 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
   await expect(start).toBeHidden({ timeout: WAIT });
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
   const generalId = channelIdOf(page);
+  const serverId = new URL(page.url()).pathname.split('/')[2] ?? '';
   expect(generalId).not.toBe('');
+  expect(serverId).toMatch(/^[0-9a-f]{32}$/);
   await expectComposerReady(page, 'general');
 
   await button(page, 'invite.open').click();
@@ -163,13 +165,16 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
     await expectComposerReady(page, 'news');
     const newsId = channelIdOf(page);
     expect(newsId).not.toBe('');
-    await sendText(page, 'news', 'headline');
-
     await expect(channelRow(page2, 'news')).toBeVisible({ timeout: WAIT });
     await channelRow(page2, 'news').click();
     await expect(page2.getByText(copy('announce.readOnly', { name: 'news' }), { exact: true }).first()).toBeVisible({ timeout: WAIT });
     await expect(composerBox(page2, 'news')).toBeDisabled();
     await expectAccessible(page2, 'the announcement channel as a member');
+    // The channel row can arrive before the MLS Welcome. Wait until Björn holds the
+    // key, so the headline is a message sent after he joined the channel group.
+    await expect.poll(async () => (await portSlice<ChannelSummary[]>(page2, `channels:${serverId}`))
+      ?.find((c) => c.id === newsId)?.group, { timeout: WAIT }).toBe('active');
+    await sendText(page, 'news', 'headline');
     const headline = messageRow(page2, 'news', 'headline');
     await expect(headline).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
     await rowAction(headline, 'react');

@@ -7,9 +7,9 @@ name: release
 # default: there is no "latest" (GitHub never serves a prerelease as latest, and every hyphenated tag
 # is a prerelease here).
 #
-# Only a tag on a commit of main is released: main is what ci.yml gates. Third-party actions are
-# pinned to commits and no job restores a build cache, because the release job publishes what
-# install.sh runs as root.
+# Only a tag on a commit of main is released: main is what ci.yml gates. Workflow actions are
+# GitHub-owned and pinned to commits; other tool archives have checked-in SHA-256 pins. No job
+# restores a build cache, because the release job publishes what install.sh runs as root.
 #
 # workflow_dispatch builds the release for an existing tag that has none yet (say, after a failed
 # run): choose the tag itself as the ref in "Use workflow from" and type the same tag; the tag job
@@ -39,7 +39,7 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
       noise_mode: ${{ steps.tag.outputs.noise_mode }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: The release tag is the ref the workflow runs on, on a commit of main
@@ -67,7 +67,7 @@ jobs:
           echo "noise_mode=$(node scripts/release-noise-mode.mjs "$tag")" >> "$GITHUB_OUTPUT"
 
   web-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [tag]
     timeout-minutes: 15
     # The same build as ci.yml's web-build, clang 23 pin included: the dist is what the binaries embed.
@@ -75,7 +75,7 @@ jobs:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: clang 23 for the wasm C build
         run: |
           test "$(lsb_release -cs)" = noble
@@ -94,16 +94,15 @@ jobs:
           /usr/bin/clang-23 --version
           /usr/bin/llvm-ar-23 --version
       - run: rustup show active-toolchain
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
-        with:
-          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.128
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
@@ -115,7 +114,7 @@ jobs:
           DILLA_NOISE_MODE: ${{ needs.tag.outputs.noise_mode }}
       - run: npm run test:noise-release
       - run: go test -tags webdist ./internal/web/...
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-web-dist
           path: packages/web/dist/
@@ -125,10 +124,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [tag]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup show active-toolchain
       - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
@@ -138,14 +137,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: [tag, web-build]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: false
       - run: rm -rf internal/web/dist
       - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
           path: internal/web/dist
@@ -177,7 +176,7 @@ jobs:
           test -n "$VERSION"
           test "$(dist/dillad-linux-amd64 version | cut -d' ' -f1-2)" = "dillad $VERSION"
           grep -qaF -- "$VERSION" dist/dillad-linux-arm64
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dillad-binaries
           path: dist/
@@ -189,14 +188,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Fetch the binaries
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dillad-binaries
           path: release
       - name: Fetch the wasi core
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
           path: release
