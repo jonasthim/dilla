@@ -44,6 +44,8 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
+/** web3.8 (R2): the wire version this client identifies with; a hello that does not offer it closes 4006 (protocol/07). */
+const WIRE = 2n;
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & { versions: bigint[][] };
 
@@ -199,13 +201,14 @@ export class Gateway {
       let hello: HelloInfo;
       try { hello = readHello(frame.payload); }
       catch { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
-      if (hello.versions.some((versions) => !versions.includes(1n))) {
+      const versions = hello.versions;
+      if (!versions[0].includes(WIRE) || !versions[1].includes(1n) || !versions[2].includes(1n)) {
         this.teardown(CLIENT_CLOSE.version, false);
         this.setStatus('idle', CLIENT_CLOSE.version);
         return;
       }
       this.hello = hello;
-      this.send(encodeFrame(Op.identify, 1, null, ['', 1, 1, 1, 0]));
+      this.send(encodeFrame(Op.identify, 1, null, ['', WIRE, 1, 1, 0]));
       this.phase = 'ready-wait';
       this.arm('handshakeTimer', GATEWAY.helloTimeoutMs, () => this.teardown(CLIENT_CLOSE.helloTimeout, true));
       return;

@@ -31,7 +31,7 @@ const USER = new Uint8Array(16).fill(0x09);
 const GROUP = new Uint8Array(16).fill(0x07);
 
 function hello(over: { wire?: number[]; heartbeatMs?: number; maxFrameBytes?: number } = {}): Uint8Array {
-  return encodeFrame(Op.hello, 0, null, [over.wire ?? [1], [1], [1], over.heartbeatMs ?? 30000,
+  return encodeFrame(Op.hello, 0, null, [over.wire ?? [2], [1], [1], over.heartbeatMs ?? 30000,
     over.maxFrameBytes ?? 131584, INSTANCE, 1, 300, 300]);
 }
 
@@ -203,7 +203,7 @@ describe('Gateway connect', () => {
     s.open();
     expect(s.sent).toHaveLength(0);
     s.receive(hello());
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 1, 1, 1, 0])]);
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
     s.receive(ready());
     expect(h.gw.status).toBe('ready');
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
@@ -217,13 +217,15 @@ describe('Gateway connect', () => {
     expect(statuses(h.events)).toEqual(['connecting:null', 'ready:null']);
   });
 
-  it('refuses a hello without version 1 and stays down', async () => {
+  // web3.8 (R2): the instance advertises wire 2 alone; a hello that offers only wire 1 is an instance this client cannot
+  // speak to, so it closes 4006 and stays down until the page is reloaded.
+  it('refuses a hello without wire version 2 and stays down', async () => {
     const h = harness();
     h.gw.start();
     await flush();
     const s = h.last();
     s.open();
-    s.receive(hello({ wire: [2] }));
+    s.receive(hello({ wire: [1] }));
     expect(s.closedWith?.code).toBe(4006);
     expect(s.sent).toHaveLength(0);
     expect(h.gw.status).toBe('idle');
@@ -233,6 +235,26 @@ describe('Gateway connect', () => {
     await flush();
     expect(FakeSocket.instances).toHaveLength(1);
     expect(h.minted()).toBe(1);
+  });
+
+  it('identifies with wire version 2 when the hello offers 1 and 2, and refuses one without e2ee or media version 1', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello({ wire: [1, 2] }));
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    for (const bad of [[[2], [2], [1]], [[2], [1], [2]]]) {
+      const g = harness();
+      g.gw.start();
+      await flush();
+      const t = g.last();
+      t.open();
+      t.receive(encodeFrame(Op.hello, 0, null, [...bad, 30000, 131584, INSTANCE, 1, 300, 300]));
+      expect(t.closedWith?.code).toBe(4006);
+      expect(t.sent).toHaveLength(0);
+    }
   });
 
   it('gives up on a socket that sends no hello, and on one that sends no ready', async () => {
@@ -559,7 +581,7 @@ describe('Gateway reconnect', () => {
     h.gw.commitAck(GROUP, 3n);
     const ops = [...s1.sentFrames(), ...s2.sentFrames()].map((f) => f.op);
     expect(ops).toEqual([Op.identify, Op.heartbeat, Op.identify, Op.commitAck]);
-    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 1, 1, 1, 0]));
+    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0]));
     expect(s2.protocols).toEqual(['dilla.v1', 'dilla.ticket.t2']);
   });
 });

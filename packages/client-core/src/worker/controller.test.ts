@@ -2227,13 +2227,13 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.enrol.totp.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_UNAUTHENTICATED')));
     await toKeyStep(w);
     expect(w.account()?.phase).toBe('signin-totp');
-    w.call(4, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(4, { m: 'signInTotp', code: '123456' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_UNAUTHENTICATED', detail: '', status: 401, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });
     expect(w.account()).toMatchObject({ phase: 'signin-login', signIn: { username: 'web' }, error: want });
     expect(w.enrol.register).not.toHaveBeenCalled();
-    w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(5, { m: 'signInTotp', code: '123456' });
     await vi.waitFor(() => expect(w.ret(5)).toBeDefined());
     expect(w.ret(5)).toMatchObject({ ok: false, error: { code: 'E_NOT_READY', detail: '' } });
     expect(w.enrol.totp).toHaveBeenCalledTimes(1);
@@ -2244,7 +2244,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.enrol.login.mockImplementationOnce(() => { w.calls.push('enrol.login'); return Promise.resolve({ needs: 1 as const }); });
     w.enrol.totp.mockImplementationOnce(() => Promise.reject(new Error('E_NO_ASSERTION')));
     await toKeyStep(w);
-    w.call(4, { m: 'signInTotp', code: '123456', recoveryKey: RECOVERY_KEY });
+    w.call(4, { m: 'signInTotp', code: '123456' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     const want = { code: 'E_NO_ASSERTION', detail: '', status: 0, retryAfterMs: null };
     expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: false, error: want });

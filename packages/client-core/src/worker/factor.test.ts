@@ -179,7 +179,8 @@ class Sock {
   constructor(readonly url: string, readonly protocols: string[]) { Sock.all.push(this); }
   addEventListener(type: string, fn: (event: unknown) => void): void { this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]); }
   removeEventListener(): void {}
-  send(): void {}
+  readonly sent: Uint8Array[] = [];
+  send(data: Uint8Array): void { this.sent.push(new Uint8Array(data)); }
   close(code?: number): void {
     if (this.readyState === 3) return;
     this.readyState = 3;
@@ -191,7 +192,7 @@ class Sock {
   private emit(type: string, event: unknown): void { for (const fn of this.listeners.get(type) ?? []) fn(event); }
 }
 
-const HELLO = encodeFrame(Op.hello, 0, null, [[1], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
+const HELLO = encodeFrame(Op.hello, 0, null, [[2], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
 const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 1, 1, 1, 32, []]);
 
 /** A world on the real Gateway, whose tickets go through the real HttpClient to `ticket` (the n-th request, 1-based). */
@@ -290,6 +291,40 @@ describe('the global E_FACTOR_REQUIRED hook (web3.6 C2)', () => {
   });
 });
 
+// web3.8 (R2): an instance whose hello offers only wire 1 is one this client cannot speak to. The real gateway closes
+// 4006 without an identify and the worker publishes reason 'version' (the reload banner), with no reconnect.
+describe('wire version 2 (web3.8 C2)', () => {
+  it('a hello offering only wire 1 leaves the connection offline with reason version and sends nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { w, tickets } = socketWorld(minted);
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
+    const socket = Sock.all[0];
+    socket.open();
+    socket.receive(encodeFrame(Op.hello, 0, null, [[1], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]));
+    await until(() => w.connection()?.reason === 'version');
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
+    expect(socket.sent).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(Sock.all).toHaveLength(1);
+    expect(tickets.n).toBe(1);
+  });
+
+  it('control: a hello offering wire 2 gets an identify with 2 and goes online', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { w } = socketWorld(minted);
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
+    const socket = Sock.all[0];
+    socket.open();
+    socket.receive(HELLO);
+    expect(socket.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    socket.receive(READY);
+    await until(() => w.connection()?.status === 'online');
+    expect(w.connection()?.reason).toBeUndefined();
+  });
+});
+
 describe('passkey and backup-code sign-in (web3.6 C2)', () => {
   it('a login owing needs 2 goes to signin-passkey; a passkey that did not verify the user goes on to the code step', async () => {
     const w = world({ phase: 0 });
@@ -343,7 +378,7 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     const w = world({ phase: 0 });
     await toLoginStep(w);
     w.enrol.passkey.mockImplementationOnce(() => Promise.reject(refusal(401, 'E_PASSKEY_UNKNOWN')));
-    w.call(3, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r', recoveryKey: RECOVERY_KEY });
+    w.call(3, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'r' });
     expect(await answered(w, 3)).toMatchObject({ ok: false, error: { code: 'E_PASSKEY_UNKNOWN', status: 401 } });
     expect(w.account()).toMatchObject({ phase: 'signin-login', error: { code: 'E_PASSKEY_UNKNOWN' } });
   });
@@ -385,9 +420,9 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
       { m: 'signInBackupCode', code: 'A'.repeat(25), recoveryKey: RECOVERY_KEY },
       { m: 'signInBackupCode', code: 'A'.repeat(25) + '1', recoveryKey: RECOVERY_KEY },
       { m: 'signInBackupCode', code: 'A'.repeat(26), recoveryKey: '' },
-      { m: 'signInPasskey', ceremonyId: 'CE'.repeat(16), response: 'r', recoveryKey: RECOVERY_KEY },
-      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '', recoveryKey: RECOVERY_KEY },
-      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_537), recoveryKey: RECOVERY_KEY },
+      { m: 'signInPasskey', ceremonyId: 'CE'.repeat(16), response: 'r' },
+      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: '' },
+      { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_537) },
       { m: 'factorSetupDone', invite: 7 },
     ];
     bad.forEach((command, i) => w.call(10 + i, command));
