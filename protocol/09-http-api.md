@@ -422,9 +422,11 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
     allowed, provided the creator holds every bit it allows (`403` otherwise). Any other entry on
     oneself, one that allows another bit or denies any, takes the rank rule (`403`). The exception
     exists only at creation: a later overwrite `PUT` on oneself takes the rank rule as always.
-    Such an entry is an ordinary member overwrite afterwards: it keeps the channel visible to its
-    holder, and their right to post in it, after a demotion, until someone who outranks them
-    removes it, and it goes with the membership like every member overwrite (§ Roles).
+    Such an entry is an ordinary member overwrite afterwards. After a demotion it keeps only the
+    bits it allows (seeing the channel, posting in it) for its holder, and only while they still
+    hold `view_channel` community-wide (without it they hold no bit at all, § Permissions), until
+    someone who outranks them removes it; and it goes with the membership like every member
+    overwrite (§ Roles).
 
   The create's audit records `channel.create` and one `channel.overwrite.put` per entry, and
   `community_changed` (`02`) is sent once.

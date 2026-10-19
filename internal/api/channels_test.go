@@ -965,12 +965,15 @@ func TestCreatorWithoutSendCannotAllowIt(t *testing.T) {
 		[]any{nil, nil, nil, uint64(api.PermViewChannel), nil, nil, nil}); status != http.StatusNoContent {
 		t.Fatalf("PATCH @everyone = %d (%x)", status, body)
 	}
+	// The self entry alone: no other entry carries send, so only checkBits on the self entry can
+	// refuse it.
 	if status, body := createWith(f.e, f.cid, tok, "refused", 0,
-		[]any{ow(0, f.everyone, 0, api.PermSendMessages), ow(1, quiet, api.PermSendMessages, 0)}); status != http.StatusForbidden {
+		[]any{ow(1, quiet, api.PermSendMessages, 0)}); status != http.StatusForbidden {
 		t.Fatalf("self send without holding send = %d (%x), want 403", status, body)
 	}
+	// Control: the same entry allowing view, a bit they hold.
 	if status, body := createWith(f.e, f.cid, tok, "ok", 0,
-		[]any{ow(0, f.everyone, 0, api.PermViewChannel), ow(1, quiet, api.PermViewChannel, 0)}); status != http.StatusCreated {
+		[]any{ow(1, quiet, api.PermViewChannel, 0)}); status != http.StatusCreated {
 		t.Fatalf("control self view = %d (%x), want 201", status, body)
 	}
 }
@@ -1038,6 +1041,62 @@ func TestAPrivateCreateRechecksUnderTheLock(t *testing.T) {
 	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
 	if status, body := createWith(e, cid, modTok, "sen", 0,
 		[]any{ow(0, roles[0].ID, 0, api.PermViewChannel), ow(1, mod, api.PermViewChannel, 0)}); status != http.StatusCreated {
+		t.Fatalf("the same create undisturbed = %d (%x), want 201", status, body)
+	}
+}
+
+// web3.8 S2 (R5): the exemption's checkBits is taken again inside the transaction. A creator whose
+// role loses only send_messages between the create's checks and its transaction cannot allow
+// themself send: 403, and nothing is written. The control is the same create undisturbed.
+func TestCreatorSelfSendRecheckedUnderTheLock(t *testing.T) {
+	e := newEnv(t)
+	log := slog.New(slog.DiscardHandler)
+	hooked := &beforeTx{Repository: e.Repo}
+	api.NewCommunities(e.Repo, e.DS, e.Clk, log).Register(e.Mux)
+	api.NewChannels(hooked, e.DS, e.Clk, 10, log).Register(e.Mux)
+	api.NewRoles(e.Repo, e.Clk, "dilla.example", log).Register(e.Mux)
+	_, ownerTok := e.NewUser("owner")
+	cid := createCommunity(t, e, ownerTok)
+	mod, modTok := joinAs(t, e, cid, "mod")
+	roles, err := e.Repo.ListRoles(t.Context(), cid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	// @everyone grants send by default; the mod's role is then their only source of it.
+	if status, body := e.Do(http.MethodPatch, "/v1/roles/"+roles[0].ID.String(), ownerTok,
+		[]any{nil, nil, nil, uint64(api.PermViewChannel), nil, nil, nil}); status != http.StatusNoContent {
+		t.Fatalf("PATCH @everyone = %d (%x)", status, body)
+	}
+	modRole := createRole(t, e, cid, ownerTok, "mod", 5,
+		api.PermViewChannel|api.PermSendMessages|api.PermManageChannels|api.PermManageRoles)
+	grant(t, e, cid, ownerTok, mod, modRole, http.StatusNoContent)
+	setSend := func(on bool) {
+		r, err := e.Repo.GetRole(t.Context(), modRole)
+		if err != nil {
+			t.Errorf("GetRole: %v", err)
+			return
+		}
+		if on {
+			r.Allow |= uint64(api.PermSendMessages)
+		} else {
+			r.Allow &^= uint64(api.PermSendMessages)
+		}
+		if err := e.Repo.PutRole(t.Context(), r); err != nil {
+			t.Errorf("PutRole: %v", err)
+		}
+	}
+	hooked.arm(func() { setSend(false) })
+	self := []any{ow(1, mod, api.PermSendMessages, 0)}
+	if status, body := createWith(e, cid, modTok, "news", 0, self); status != http.StatusForbidden {
+		t.Fatalf("self send after losing send before the transaction = %d (%x), want 403", status, body)
+	}
+	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(chans) != 0 {
+		t.Fatalf("a refused create wrote %+v", chans)
+	}
+	// Control: send restored and nothing in between, so the 403 above could only come from the
+	// check inside the transaction.
+	setSend(true)
+	if status, body := createWith(e, cid, modTok, "news", 0, self); status != http.StatusCreated {
 		t.Fatalf("the same create undisturbed = %d (%x), want 201", status, body)
 	}
 }
