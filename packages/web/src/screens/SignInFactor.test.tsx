@@ -202,6 +202,60 @@ describe('the code step (flow 10 state 16)', () => {
     expect(h1()).toHaveTextContent('Your second factor');
   });
 
+  // Fix round 1 (review Important 2): on the backup path the code is spent before the key is checked against the account,
+  // so a wrong key lands at signin-key; the retry must send signInKey, never the spent code again.
+  it('a wrong key after a backup code is retried with signInKey alone', async () => {
+    let wrong = true;
+    const script: Script = (c, f) => {
+      if (c.m === 'signInBackupCode' && wrong) {
+        wrong = false;
+        move(f, { phase: 'enrolling' });
+        move(f, { phase: 'signin-key', signIn: { username: 'ada', factor: null } });
+        return Promise.reject(refusal({ code: 'E_RECOVERY_KEY' }));
+      }
+      return worker()(c, f);
+    };
+    const { fake, user } = setup('signin-login', script);
+    await login(user);
+    await user.click(button(en['factorSignin.useBackup']));
+    await user.type(field('Backup code'), `${BACKUP}{Enter}`);
+    const typo = GROUPED.replace('7K2M', '7K2N');
+    await user.click(field('Recovery key'));
+    await user.paste(typo);
+    await user.click(button('Add this browser'));
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(field('Recovery key')).toHaveValue(typo);
+    expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining(en['signin.error.wrongKey']));
+    await user.clear(field('Recovery key'));
+    await user.paste(GROUPED);
+    await user.click(button('Add this browser'));
+    expect(fake.calls.filter(c => c.m === 'signInBackupCode' || c.m === 'signInKey')).toEqual([
+      { m: 'signInBackupCode', code: BACKUP, recoveryKey: typo },
+      { m: 'signInKey', recoveryKey: GROUPED },
+    ]);
+    expect(h1()).toHaveTextContent('You’re in');
+  });
+
+  // Fix round 1 (review Minor 3): a factor step shown before a refusal does not count for the next attempt (R7).
+  it('after a refused code, a passkey on the login step makes the key step 2 again', async () => {
+    const script: Script = (c, f) => {
+      if (c.m === 'signInTotp') {
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null } });
+        return Promise.reject(refusal({ code: 'E_UNAUTHENTICATED', status: 401 }));
+      }
+      return worker({ needs: 1, passkeyNeeds: 0 })(c, f);
+    };
+    const { user } = setup('signin-login', script);
+    await login(user);
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    await user.type(field('Code'), '000000{Enter}');
+    expect(h1()).toHaveTextContent('Sign in to dilla.test');
+    get.mockResolvedValue(assertion());
+    await user.click(button(en['factorSignin.usePasskey']));
+    await waitFor(() => { expect(h1()).toHaveTextContent('Your recovery key'); });
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+  });
+
   it('Back leaves the backup-code form for the code form', async () => {
     const { user } = setup('signin-login', worker());
     await login(user);

@@ -53,8 +53,7 @@ function signInRefusal(e: UiError, command: SignInCommand, instance: string): Re
     return { banner: { tone: 'danger', key: 'factorSignin.passkey.unknown', vars: { instance } }, focus: 'passkey' };
   }
   if ((e.code === 'E_UNAUTHENTICATED' || e.code === 'E_NO_ASSERTION') && command === 'backup') {
-    // The worker moved the phase to signin-login: the assertion is spent. The password is cleared; the key text stays
-    // in page memory for the next key step.
+    // The worker moved the phase to signin-login: the assertion is spent. The password and the typed key are cleared.
     return { banner: { tone: 'warn', key: 'factorSignin.backup.failed', vars: {} }, focus: 'password' };
   }
   if ((e.code === 'E_UNAUTHENTICATED' || e.code === 'E_NO_ASSERTION') && command === 'totp') {
@@ -165,6 +164,9 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     if (phase === 'signin-totp' || phase === 'signin-passkey') setFactorShown(true);
     else if (phase === 'signin-login' || phase === 'needs-signup') setFactorShown(false);
   }, [phase]);
+  // The typed key belongs to one person's attempt: back at the login, whoever signs in next starts with an empty field.
+  // A refusal at the key step itself (a wrong key) keeps the text for the same person's retry.
+  useEffect(() => { if (phase === 'signin-login') setKey(''); }, [phase]);
 
   // OnboardingFrame focuses its heading when the title changes; this effect runs after the frame's (child effects
   // first), so a field request after a step change lands on the field.
@@ -439,7 +441,7 @@ export function SignIn(props: { onFinish(): void }): React.JSX.Element {
     </>, <>
       <p>{t('signin.login.body', { instance: name })}</p>
       <TextField id={FIELD_ID.username} label={t('signin.login.username')} value={username}
-        onChange={change('username', setUsername)} error={errorText('username')}
+        onChange={change('username', (value) => { setUsername(value); setKey(''); })} error={errorText('username')}
         required autoComplete="username" spellCheck={false} maxLength={32} />
       <TextField id={FIELD_ID.password} type="password" label={t('signin.login.password')} value={password}
         onChange={change('password', setPassword)} error={errorText('password')} required autoComplete="current-password" />

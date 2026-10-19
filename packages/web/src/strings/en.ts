@@ -168,7 +168,7 @@ export const en = {
   'signin.totp.body': 'Enter the six-digit code from your authenticator app.',
   'signin.totp.code': 'Code',
   'signin.key.title': 'Your recovery key',
-  'signin.key.body': 'Type or paste the 52-character recovery key you wrote down when the account was created. It is not a backup code: backup codes have 26 characters and go in the step before this one. Spaces and hyphens do not matter.',
+  'signin.key.body': 'Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.',
   'signin.key.label': 'Recovery key',
   'signin.key.hint': '{n} of 52 characters',
   'signin.key.submit': 'Add this browser',

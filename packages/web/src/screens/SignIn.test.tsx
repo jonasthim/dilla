@@ -40,7 +40,7 @@ const password = () => screen.getByLabelText('Password');
 
 
 const BACKUP = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const KEY_BODY = 'Type or paste the 52-character recovery key you wrote down when the account was created. It is not a backup code: backup codes have 26 characters and go in the step before this one. Spaces and hyphens do not matter.';
+const KEY_BODY = 'Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.';
 const EXPIRED = 'Adding this browser took longer than 5 minutes, so the sign-in ran out. Sign in again.';
 const EXPIRED_ERROR = { code: 'E_SIGNIN_EXPIRED', detail: '', status: 0, retryAfterMs: null };
 const readyMe = { phase: 'ready', user: ME, deviceId: 'dd'.repeat(16), signIn: null } as const;
@@ -444,6 +444,53 @@ describe('refusals', () => {
     await user.click(button('Continue'));
     expect(h1()).toHaveTextContent('Your second factor');
     expect(fake.callsOf('signInLogin').at(-1)).toEqual({ m: 'signInLogin', username: 'ada', password: 'correct horse' });
+  });
+
+  // Fix round 1 (review Important 1): the key typed for one person never reaches the next person's key step on this tab.
+  it('a second person on the same tab meets an empty key field after the first one\'s sign-in ran out', async () => {
+    let first = true;
+    const { fake, user } = setup('signin-login', (c, f) => {
+      if (c.m === 'signInKey' && first) {
+        first = false;
+        move(f, { phase: 'enrolling' });
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: EXPIRED_ERROR });
+        return Promise.reject(refusal({ code: 'E_SIGNIN_EXPIRED' }));
+      }
+      return worker()(c, f);
+    });
+    await login(user);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(screen.getByRole('alert')).toHaveTextContent(EXPIRED);
+    await user.clear(field('Username'));
+    await user.type(field('Username'), 'bob');
+    await user.type(password(), 'battery staple');
+    await user.click(button('Continue'));
+    expect(fake.callsOf('signInLogin').at(-1)).toEqual({ m: 'signInLogin', username: 'bob', password: 'battery staple' });
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(field('Recovery key')).toHaveValue('');
+    expect(field('Recovery key')).toHaveAccessibleDescription(expect.stringContaining('0 of 52 characters'));
+  });
+
+  it('back at the login, the key field starts empty even for the same username', async () => {
+    let first = true;
+    const { user } = setup('signin-login', (c, f) => {
+      if (c.m === 'signInKey' && first) {
+        first = false;
+        move(f, { phase: 'enrolling' });
+        move(f, { phase: 'signin-login', signIn: { username: 'ada', factor: null }, error: EXPIRED_ERROR });
+        return Promise.reject(refusal({ code: 'E_SIGNIN_EXPIRED' }));
+      }
+      return worker()(c, f);
+    });
+    await login(user);
+    await pasteKey(user);
+    await user.click(button('Add this browser'));
+    expect(field('Username')).toHaveValue(' Ada ');
+    await user.type(password(), 'correct horse');
+    await user.click(button('Continue'));
+    expect(h1()).toHaveTextContent('Your recovery key');
+    expect(field('Recovery key')).toHaveValue('');
   });
 
   it('an account with nothing to recover, found by the key step, offers only Cancel', async () => {

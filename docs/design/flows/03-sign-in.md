@@ -856,7 +856,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.totp.body` | `Enter the six-digit code from your authenticator app.` | paragraph, step 2 |
 | `signin.totp.code` | `Code` | field label, step 2 |
 | `signin.key.title` | `Your recovery key` | step heading, step 3 (2 when no factor step was shown) |
-| `signin.key.body` | `Type or paste the 52-character recovery key you wrote down when the account was created. It is not a backup code: backup codes have 26 characters and go in the step before this one. Spaces and hyphens do not matter.` | paragraph, step 3 (2 when no factor step was shown) (or step 2 when no factor) |
+| `signin.key.body` | `Type or paste the 52-character recovery key you wrote down when you created the account. Spaces and hyphens do not matter. Backup codes are not your recovery key: they stand in for the app code.` | paragraph, step 3 (2 when no factor step was shown) (or step 2 when no factor) |
 | `signin.key.label` | `Recovery key` | field label, step 3 (2 when no factor step was shown) |
 | `signin.key.hint` | `{n} of 52 characters` | hint under the key field (its description, not live), step 3 (2 when no factor step was shown) and the two key dialogs |
 | `signin.key.submit` | `Add this browser` | button, forward on the key step (3, or 2 when no factor step was shown): it registers this browser, then enrols |
