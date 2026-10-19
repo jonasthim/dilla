@@ -255,6 +255,19 @@ export async function advanceClock(seconds: number): Promise<void> {
   expect(res.status, await res.text()).toBe(204);
 }
 
+/**
+ * Holds back (`on`) or restores the `participant_left` webhook on its way from LiveKit to the instance
+ * (POST /debug/sfu/withhold). A departure withheld while it is on is lost for good: turn it off before the
+ * departure that must be seen.
+ */
+export async function withholdLeft(on: boolean): Promise<void> {
+  const control = process.env.DILLA_TESTKIT_CONTROL;
+  const res = await fetch(`${control}/debug/sfu/withhold`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event: 'participant_left', on }),
+  });
+  expect(res.status, await res.text()).toBe(204);
+}
+
 /** Settings → Voice; resolves with the dialog. */
 export async function openVoiceSettings(page: Page): Promise<Locator> {
   return openSettings(page, 'voice' as SettingsSection);

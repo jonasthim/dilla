@@ -129,7 +129,31 @@ func (s harnessSFU) Rooms(ctx context.Context) ([]string, error) {
 	return slices.DeleteFunc(rooms, s.debug.has), nil
 }
 
-// mountSFU adds the two SFU routes to the control listener. They are test-only and never on the
+// withheld reports whether the webhook receiver drops event instead of delivering it.
+func (h *Host) withheld(event string) bool {
+	set, _ := h.withhold.Load().(map[string]struct{})
+	_, held := set[event]
+	return held
+}
+
+// setWithheld turns the holding back of one webhook event on or off; the set is replaced whole.
+func (h *Host) setWithheld(event string, on bool) {
+	h.withholdMu.Lock()
+	defer h.withholdMu.Unlock()
+	old, _ := h.withhold.Load().(map[string]struct{})
+	next := make(map[string]struct{}, len(old)+1)
+	for e := range old {
+		next[e] = struct{}{}
+	}
+	if on {
+		next[event] = struct{}{}
+	} else {
+		delete(next, event)
+	}
+	h.withhold.Store(next)
+}
+
+// mountSFU adds the SFU routes to the control listener. They are test-only and never on the
 // public mux: GET /debug/sfu names the SFU's signalling URLs, and POST /debug/sfu/token mints a raw
 // LiveKit token with every grant for any room and identity, which is exactly what a browser test
 // needs to connect to LiveKit directly — the SFU-as-adversary case dillad's /rtc gate cannot
@@ -141,6 +165,28 @@ func (h *Host) mountSFU(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, map[string]string{"url": h.sfu.URL(), "http_url": h.sfu.HTTPURL()})
+	})
+	// POST /debug/sfu/withhold {"event":"participant_left","on":true} drops that webhook event before
+	// it reaches the instance (so a test can hold a departure back, as a lost webhook would); on:false
+	// restores delivery. Events already dropped stay lost.
+	mux.HandleFunc("POST /debug/sfu/withhold", func(w http.ResponseWriter, r *http.Request) {
+		if h.sfu == nil {
+			http.Error(w, "this host runs no SFU (start it with -sfu)", http.StatusNotFound)
+			return
+		}
+		var body struct {
+			Event string `json:"event"`
+			On    bool   `json:"on"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		if body.Event == "" {
+			http.Error(w, "event is required", http.StatusBadRequest)
+			return
+		}
+		h.setWithheld(body.Event, body.On)
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /debug/sfu/token", func(w http.ResponseWriter, r *http.Request) {
 		if h.sfu == nil {

@@ -211,6 +211,10 @@ type Host struct {
 	hook        *http.Server
 	hookHandler http.Handler
 	current     atomic.Pointer[dillad.Server]
+	// withhold is the set of webhook event names (a map[string]struct{}, replaced whole) the receiver
+	// drops instead of delivering: POST /debug/sfu/withhold, on the control listener only.
+	withhold   atomic.Value
+	withholdMu sync.Mutex
 
 	// channels outlives a Restore, as the channels table outlives a restart.
 	channels *ChannelModes
@@ -429,6 +433,9 @@ func (h *Host) startSFU(ctx context.Context) error {
 	h.sfu = s
 	h.webhookURL = cfg.WebhookURL
 	h.hookHandler = sfu.NewWebhookHandler(cfg.APIKey, secret, func(ctx context.Context, ev *livekit.WebhookEvent) {
+		if h.withheld(ev.GetEvent()) {
+			return
+		}
 		if srv := h.current.Load(); srv != nil {
 			srv.CallEvents().Handle(ctx, ev)
 		}
