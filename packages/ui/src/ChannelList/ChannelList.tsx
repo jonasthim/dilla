@@ -32,11 +32,11 @@ export interface ChannelListProps {
   listAction?: ReactNode;
   /**
    * With it, every voice channel is a VoiceChannelRow in its place among the others: its people (by channel id; absent
-   * is nobody) under the row. `labels.join` is `voice.join`; with `onJoin` and `labels.join` a row that is neither `joined` nor `held`
+   * is nobody) under the row. `labels.join` (required) is `voice.join`; with `onJoin` a row that is neither `joined` nor `held`
    * shows a join button while it is hovered or focused, which follows the row's tab index.
    */
   voice?: {
-    labels: VoiceChannelRowProps['labels'] & { join?: string };
+    labels: VoiceChannelRowProps['labels'] & { join: string };
     rooms: Readonly<Record<string, { joined: boolean; held?: boolean; participants: readonly VoiceParticipantView[] }>>;
     onJoin?(id: string): void;
   };
@@ -54,7 +54,7 @@ function VoiceItem({ id, name, current, readable, room, voice, onOpen }: {
     <li className="d-channel-list__voice" data-joined={joined ? 'true' : undefined}>
       <VoiceChannelRow name={name} current={current} joined={joined} participants={room?.participants ?? []}
         readable={readable} labels={voice.labels} onOpen={onOpen} />
-      {voice.onJoin === undefined || voice.labels.join === undefined || joined || room?.held === true ? null : (
+      {voice.onJoin === undefined || joined || room?.held === true ? null : (
         <>
           <span id={nameId} hidden>{name}</span>
           <Button variant="ghost" size="sm" className="d-channel-list__join" tabIndex={-1} aria-describedby={nameId}

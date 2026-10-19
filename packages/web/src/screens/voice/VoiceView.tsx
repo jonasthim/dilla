@@ -1,11 +1,11 @@
 // The shell's voice surfaces (web-3 task 9, flow 06): the voice view of a voice channel route, the DM call strip and
 // its stage, the sidebar's voice section and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
 import { SETTINGS } from '@dilla/client-core';
 import {
-  ActiveVoice, AudioMeter, Button, CallControls, CallStage, isPushToTalkKey, VoiceChannelRow, VoiceDock,
+  AudioMeter, Button, CallControls, CallStage, isPushToTalkKey, VoiceDock,
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
@@ -340,22 +340,6 @@ export function DmCall({ v, channelId, name }: { v: VoiceContext; channelId: str
 }
 
 
-/** One stop for the rows: the stop row and its join button are tab stops, every other row and join is not. */
-function place(rows: readonly HTMLButtonElement[], stop: number): void {
-  rows.forEach((row, i) => {
-    row.tabIndex = i === stop ? 0 : -1;
-    const join = row.parentElement?.querySelector<HTMLButtonElement>('.dw-voice-section__join');
-    if (join) join.tabIndex = row.tabIndex;
-  });
-}
-
-/** One voice row of the sidebar with its people, and `voice.join` on focus or hover (flow 06 § States, idle). `speaking`:
- *  the devices the call this device is in hears speaking (product walk M3); empty for any other row. */
-interface VoiceRowItem { id: string; name: string; readable: boolean; current: boolean; joined: boolean; room: VoiceCall | undefined;
-  speaking: ReadonlySet<string>;
-  /** No join for this row (product walk I8: the channel is gone for this device). */
-  held: boolean }
-
 /** Product walk M3: the devices of this device's call that are speaking now, its own included. */
 export function speakingDevices(state: CallView['state'], ownDevice: string | null): ReadonlySet<string> {
   const out = new Set<string>();
@@ -364,94 +348,8 @@ export function speakingDevices(state: CallView['state'], ownDevice: string | nu
   return out;
 }
 
-/**
- * The sidebar's voice channels under the `voice.heading.channels` heading: one roving tab stop over the rows, the people
- * of each live voice under its row, and a `join voice` button that shows while the row is hovered or focused. The stop
- * row's join is the next tab stop after it (task-9 ruling: keyboard reachable); arrows move both together.
- */
-export function VoiceSection({ rows, onOpen, onJoin }: { rows: readonly VoiceRowItem[]; onOpen: (id: string) => void; onJoin: (id: string) => void }) {
-  const list = useRef<HTMLUListElement>(null);
-  const items = () => Array.from(list.current?.querySelectorAll<HTMLButtonElement>(':scope > li > .d-voice-row') ?? []);
-  // Roving focus over the rows (one tab stop, arrows move it), as the channel list's: native listeners on the list.
-  useLayoutEffect(() => {
-    const ul = list.current;
-    if (ul === null) return;
-    const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-      const all = items();
-      const target: EventTarget | null = e.target;
-      const from = target instanceof HTMLButtonElement ? all.indexOf(target) : -1;
-      if (from < 0) return;
-      const to = e.key === 'ArrowDown' ? Math.min(from + 1, all.length - 1) : e.key === 'ArrowUp' ? Math.max(from - 1, 0)
-        : e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1 : null;
-      if (to === null) return;
-      e.preventDefault();
-      place(all, to);
-      all[to].focus();
-    };
-    const onFocus = (e: FocusEvent) => {
-      const target: EventTarget | null = e.target;
-      const all = items();
-      const i = target instanceof HTMLButtonElement ? all.indexOf(target) : -1;
-      if (i >= 0) place(all, i);
-    };
-    ul.addEventListener('keydown', onKeyDown);
-    ul.addEventListener('focusin', onFocus);
-    return () => { ul.removeEventListener('keydown', onKeyDown); ul.removeEventListener('focusin', onFocus); };
-  }, [rows.length]);
-  useLayoutEffect(() => {
-    const all = items();
-    if (all.length === 0) return;
-    const stop = all.findIndex(b => b.tabIndex === 0);
-    const current = all.findIndex(b => b.getAttribute('aria-current') === 'page');
-    const keep = stop >= 0 && all.filter(b => b.tabIndex === 0).length === 1 ? stop : current >= 0 ? current : 0;
-    place(all, keep);
-  });
-  if (rows.length === 0) return null;
-  const labels = rowLabels();
-  return (
-    <section className="dw-voice-section" aria-labelledby="dw-voice-heading">
-      <h2 id="dw-voice-heading" className="dw-voice-section__heading d-label">{t('voice.heading.channels')}</h2>
-      {/* role="list": Safari drops a list's semantics under list-style: none. */}
-      {/* eslint-disable-next-line jsx-a11y/no-redundant-roles */}
-      <ul role="list" ref={list} className="dw-voice-section__list">
-        {rows.map(r => <VoiceSectionItem key={r.id} r={r} labels={labels} onOpen={onOpen} onJoin={onJoin} />)}
-      </ul>
-    </section>
-  );
-}
-
-/** One row of the voice section with its join button, which has its own place in the row's line (WB a11y m4: it never
- *  covers the row's count or focus ring) and is described by the channel's name, so a list of buttons tells them apart. */
-function VoiceSectionItem({ r, labels, onOpen, onJoin }: { r: VoiceRowItem; labels: ReturnType<typeof rowLabels>; onOpen: (id: string) => void; onJoin: (id: string) => void }) {
-  const nameId = useId();
-  return (
-    <li className="dw-voice-section__item" data-joined={r.joined ? 'true' : undefined}>
-      <VoiceChannelRow name={r.name} current={r.current} joined={r.joined} readable={r.readable}
-        participants={(r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId)))} labels={labels} onOpen={() => onOpen(r.id)} />
-      {r.joined || r.held ? null : (
-        <>
-          <span id={nameId} hidden>{r.name}</span>
-          <button type="button" className="d-btn dw-voice-section__join" data-variant="ghost" data-size="sm" tabIndex={-1}
-            aria-describedby={nameId} onClick={() => onJoin(r.id)}><span className="d-btn__label">{t('voice.join')}</span></button>
-        </>
-      )}
-    </li>
-  );
-}
-
-function rowLabels() {
+export function rowLabels() {
   return { open: en['voice.open'], count: en['voice.count'], canHear: t('voice.bot.canHear'), state: voiceStateLabels() };
-}
-
-/** `active voice`: the community's live voice channels above the channel rows. */
-export function ActiveVoiceList({ rows, onOpen }: { rows: readonly VoiceRowItem[]; onOpen: (id: string) => void }): ReactNode {
-  const live = rows.filter(r => (r.room?.participants.length ?? 0) > 0);
-  return (
-    <ActiveVoice channels={live.map(r => ({ id: r.id, name: r.name, current: r.current, joined: r.joined,
-      participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) }))}
-      labels={{ heading: t('voice.heading.active'), ...rowLabels() }} onOpen={onOpen} />
-  );
 }
 
 /** web3.4 V2: how many of the remote audio tracks this device is sent it plays ("hearing 1 of 2": one held back, as for a

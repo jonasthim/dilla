@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, audible, audioRunning, heard, joinVoice, keyPath, noiseOff, onboard, openVoice, self, snapshotDevices, tile,
+  VoicePeer, WAIT, audible, audioRunning, heard, joinVoice, keyPath, noiseOff, onboard, openVoice, self, snapshotDevices, tile, voiceRow,
 } from './support/voice';
 
 watchContexts(test);
@@ -81,11 +81,11 @@ test('two browsers join one voice channel, see each other ok and hear each other
     expect(history.indexOf('bob:connecting'), history.join(' ')).toBeGreaterThanOrEqual(0);
     expect(history.indexOf('bob:connecting')).toBeLessThan(history.indexOf('bob:ok'));
 
-    // `active voice` lists the live voice with both people in it, on both sides.
+    // The voice row in the one channel list has both people nested under it, on both sides.
     for (const p of [alice.page, bob.page]) {
-      const active = p.locator('.d-active-voice');
-      await expect(active).toContainText('alice', { timeout: WAIT });
-      await expect(active).toContainText('bob', { timeout: WAIT });
+      const people = voiceRow(p, peer.voiceName).locator('xpath=ancestor::li[1]').locator('.d-voice-row__person');
+      await expect(people.filter({ hasText: 'alice' })).toHaveCount(1, { timeout: WAIT });
+      await expect(people.filter({ hasText: 'bob' })).toHaveCount(1, { timeout: WAIT });
     }
 
     // The key path: both pages received their join keys as `callKeys` pushes (the recorder sees the core worker), and

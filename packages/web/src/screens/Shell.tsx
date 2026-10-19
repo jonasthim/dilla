@@ -24,10 +24,10 @@ import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
   badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
-  nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
+  nameBook, orderChannels, participantView, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
-import { ActiveVoiceList, callPhase, DmCall, Dock, removedFromServer, speakingDevices, VoiceSection, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
+import { callPhase, DmCall, Dock, removedFromServer, rowLabels, speakingDevices, VoiceView, type VoiceContext } from './voice/VoiceView.tsx';
 import { RingFlow } from './voice/Ring.tsx';
 import { useAnnouncer } from './announcer.ts';
 import { MemberPane } from './admin/MemberPane.tsx';
@@ -962,6 +962,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         flags: 0, own: p.deviceId === account?.deviceId, web: false, bot: false };
     }) } : voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
     held: afk === null || afk === undefined || afk.channelId === c.id || removedFromServer({ slice: callSlice }, c.id) }));
+  // A voice channel this client cannot join (a readable one, `kind` voice but not `isVoice`) has no join and nobody under it.
+  const voiceRooms: Record<string, { joined: boolean; held: boolean; participants: ReturnType<typeof participantView>[] }> = {};
+  for (const r of channelRows) if (r.kind === 'voice') voiceRooms[r.id] = { joined: false, held: true, participants: [] };
+  for (const r of voiceRows) {
+    voiceRooms[r.id] = { joined: r.joined, held: r.held,
+      participants: (r.room?.participants ?? []).map(p => participantView(p, 'ok', r.speaking.has(p.deviceId))) };
+  }
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];
@@ -1028,20 +1035,21 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         // Web3.8 (item 11): the new-channel "+" sits at the right of the list's own header, for a person who can manage
         // channels, on the channels tab and the phone's servers list, never on the DMs tab.
         listAction={voiceHere && canManageChannels ? (
-          <Button variant="ghost" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}
-            style={phone ? { minWidth: '2.75rem', minHeight: '2.75rem', justifyContent: 'center' } : undefined}>
+          <Button variant="ghost" className="dw-channel-add" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
             <Icon name={PLUS} size={16} /></Button>
         ) : undefined}
         // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one.
         titleKind={phone && onDms ? 'plain' : 'server'}
-        tabs={phone ? (voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : undefined) : <>
+        tabs={phone ? undefined : <>
           <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={id => setTab(id === 'dms' ? 'dms' : 'channels')} tabs={[
             { id: 'channels', label: t('shell.tabs.channels'), count: channelCounts.unread, mentions: channelCounts.mentions },
             { id: 'dms', label: t('shell.tabs.dms'), count: dmCounts.unread, mentions: dmCounts.mentions },
           ]} />
-          {voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : null}
         </>}
-        channels={onDms ? dmRows : channelRows.filter(row => !voiceRows.some(v => v.id === row.id))}
+        channels={onDms ? dmRows : channelRows}
+        // Web3.8 (item 12): the voice channels stand in position among the text rows, their people nested under them.
+        voice={onDms ? undefined : { labels: { ...rowLabels(), join: t('voice.join') }, rooms: voiceRooms,
+          onJoin: id => { openVoice(id); voiceCtx.onJoinVoice?.(id); } }}
         activeId={onDms ? dmId : channelId}
         onSelect={id => navigate(onDms || serverId === null ? { name: 'dm', channelId: id } : { name: 'channel', communityId: serverId, channelId: id })}
         emptyLabel={onDms ? t('shell.dms.empty') : channels === undefined ? t('shell.channels.loading') : t('shell.channels.empty')}
@@ -1055,9 +1063,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
             setPickerOpen(true);
           }}>{t('shell.dms.new')}</Button>;
           return phone ? <div className="dw-phone-footer">{newDm}</div> : newDm;
-        })()
-          : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
-            onJoin={id => { openVoice(id); voiceCtx.onJoinVoice?.(id); }} /> : undefined} />
+        })() : undefined} />
       {phone ? null : <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
         stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />}
       {phone ? null : <div className="dw-account-area"><PresencePicker /></div>}
@@ -1431,11 +1437,11 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       return;
     }
     const opened = openedId.current;
-    // The list's rows are in the order of their ids; the row is found by position, never by its text.
-    const rowIds = phoneTab === 'dms' ? (dms ?? []).map(d => d.id) : ordered.filter(c => !isVoice(c)).map(c => c.id);
+    // The list's rows (voice rows among them, web3.8) are in the order of their ids; the row is found by position, never by its text.
+    const rowIds = phoneTab === 'dms' ? (dms ?? []).map(d => d.id) : ordered.map(c => c.id);
     const at = opened === null ? -1 : rowIds.indexOf(opened);
     const row = openSettings.current !== null ? document.querySelector<HTMLElement>(`[data-settings-section="${openSettings.current}"]`)
-      : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list button')[at] ?? null;
+      : at < 0 ? null : document.querySelectorAll<HTMLElement>('.d-app-shell__sidebar .d-channel-list__list > li > :first-child')[at] ?? null;
     openedId.current = null;
     openSettings.current = null;
     const target = row ?? document.querySelector<HTMLElement>('.d-app-shell__sidebar h1, .d-app-shell__sidebar .d-empty-state h2');

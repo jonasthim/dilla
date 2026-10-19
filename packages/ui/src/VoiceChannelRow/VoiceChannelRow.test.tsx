@@ -11,8 +11,8 @@ const person = (name: string, more: Partial<VoiceParticipantView> = {}): VoicePa
   deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok', speaking: false, muted: false, deafened: false,
   video: false, screen: false, web: true, bot: false, ...more,
 });
-const labels: VoiceChannelRowProps['labels'] = {
-  open: 'voice {name}', count: '{n} in voice', canHear: 'can hear',
+const labels: VoiceChannelRowProps['labels'] & { join: string } = {
+  open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
   state: {
     speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
     connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',

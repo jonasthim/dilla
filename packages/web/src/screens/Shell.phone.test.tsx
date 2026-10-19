@@ -597,3 +597,16 @@ describe('the desktop keeps its shell', () => {
     expect(document.querySelector('.d-link-banner')).toBeEmptyDOMElement();
   });
 });
+
+describe('the phone shell: one channel list (web3.8 item 12)', () => {
+  it('lists the voice channels in the one list on the servers tab, with no active voice', async () => {
+    phone({ path: `/c/${A}` });
+    const nav = await screen.findByRole('navigation', { name: t('shell.channels.label') });
+    expect(within(nav).getByRole('button', { name: 'voice general' })).toBeInTheDocument();
+    expect(within(nav).getByRole('button', { name: /^lobby/ })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'active voice' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'voice' })).toBeNull();
+    expect(document.querySelector('.d-active-voice, .dw-voice-section')).toBeNull();
+    expect(nav.querySelectorAll('ul[role="list"]:not(.d-voice-row__people)').length).toBe(1);
+  });
+});

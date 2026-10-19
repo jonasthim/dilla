@@ -281,12 +281,13 @@ describe('voice in the shell', () => {
     expect(await screen.findByText(t('voice.micDenied'))).toBeInTheDocument();
   });
 
-  it('lists who is in voice under the rows, with the active voice heading and the voice heading', async () => {
+  it('lists who is in voice under their voice row in the one list, with no voice headings', async () => {
     renderVoiceShell({ voice: { [GENV]: { callId: GENV, participants: [
       { userId: BOB, deviceId: '29'.repeat(16), name: 'bob', flags: 1 | 2, own: false, web: true, bot: false },
     ] } } });
-    expect(await screen.findByRole('heading', { name: 'active voice' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'voice' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'voice general' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'active voice' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'voice' })).toBeNull();
     expect(screen.getAllByText('bob').length).toBeGreaterThan(0);
     expect(screen.getAllByRole('img', { name: 'muted' }).length).toBeGreaterThan(0);
   });
@@ -564,7 +565,7 @@ describe('review round 1', () => {
     screen.getByRole('button', { name: 'voice general' }).focus();
     await app.user.tab();
     expect(document.activeElement).toHaveAccessibleName('join voice');
-    expect(document.activeElement?.closest('.dw-voice-section__item')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
+    expect(document.activeElement?.closest('.d-channel-list__voice')).toContainElement(screen.getByRole('button', { name: 'voice general' }));
   });
 
   // Product walk M4: the SFU's own speaking (the session's state.speaking), no longer the meter level.

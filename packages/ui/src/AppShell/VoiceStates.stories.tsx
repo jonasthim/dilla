@@ -10,8 +10,6 @@ import { Composer } from '../Composer/Composer.tsx';
 import { Button } from '../Button/Button.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
 import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
-import { ActiveVoice } from '../ActiveVoice/ActiveVoice.tsx';
-import { VoiceChannelRow } from '../VoiceChannelRow/VoiceChannelRow.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
@@ -82,7 +80,6 @@ const ring = (busy: boolean) => (
 function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paused?: boolean; tab?: 'channels' | 'dms'; composer?: ReactNode;
   ring?: ReactNode; dock?: ReactNode }) {
   const tab = p.tab ?? 'channels';
-  const live = [{ id: 'harbour', name: 'harbour', current: tab === 'channels', joined: p.joined === true, participants: [ADA, BO, HELPER] }];
   return (
     <div style={{ ['--d-shell-h' as string]: 'calc(100dvh - 32px)' }}>
       <AppShell skipLabel={t('shell.skip')} ring={p.ring}
@@ -90,27 +87,17 @@ function Screen(p: { main: ReactNode; header?: ReactNode; joined?: boolean; paus
           joinLabel={t('shell.rail.join')} onJoin={noop} settingsLabel={t('shell.rail.settings')} onSettings={noop} />}
         sidebar={<div className="dw-sidebar">
           <ChannelList title="Midgard" label={t(tab === 'dms' ? 'shell.dms.label' : 'shell.channels.label')}
-            tabs={<>
-              <SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={noop}
-                tabs={[{ id: 'channels', label: t('shell.tabs.channels'), count: 0 }, { id: 'dms', label: t('shell.tabs.dms'), count: 0 }]} />
-              {tab === 'channels' ? <ActiveVoice channels={live} labels={{ heading: t('voice.heading.active'), ...ROW_LABELS }} onOpen={noop} /> : null}
-            </>}
+            tabs={<SidebarTabs label={t('shell.tabs.label')} activeId={tab} onSelect={noop}
+              tabs={[{ id: 'channels', label: t('shell.tabs.channels'), count: 0 }, { id: 'dms', label: t('shell.tabs.dms'), count: 0 }]} />}
             channels={tab === 'dms' ? [{ id: 'bob', name: 'bob', kind: 'dm' as const, readable: false }]
-              : [{ id: 'general', name: 'general', kind: 'text' as const, readable: false }, { id: 'build', name: 'build', kind: 'text' as const, readable: false }]}
-            activeId={tab === 'dms' ? 'bob' : null} onSelect={noop} emptyLabel={t('shell.channels.empty')}
-            footer={tab === 'channels' ? (
-              <section className="dw-voice-section" aria-labelledby="story-voice-heading">
-                <h2 id="story-voice-heading" className="dw-voice-section__heading d-label">{t('voice.heading.channels')}</h2>
-                <ul className="dw-voice-section__list">
-                  <li className="dw-voice-section__item">
-                    <VoiceChannelRow name="harbour" current joined={p.joined === true} participants={[ADA, BO, HELPER]} labels={ROW_LABELS} onOpen={noop} />
-                  </li>
-                  <li className="dw-voice-section__item">
-                    <VoiceChannelRow name="workshop" current={false} joined={false} participants={[]} labels={ROW_LABELS} onOpen={noop} />
-                  </li>
-                </ul>
-              </section>
-            ) : <Button variant="ghost">{t('shell.dms.new')}</Button>} />
+              : [{ id: 'general', name: 'general', kind: 'text' as const, readable: false },
+                { id: 'harbour', name: 'harbour', kind: 'voice' as const, readable: false },
+                { id: 'build', name: 'build', kind: 'text' as const, readable: false },
+                { id: 'workshop', name: 'workshop', kind: 'voice' as const, readable: false }]}
+            voice={tab === 'dms' ? undefined : { labels: { ...ROW_LABELS, join: t('voice.join') }, onJoin: noop, rooms: {
+              harbour: { joined: p.joined === true, participants: [ADA, BO, HELPER] }, workshop: { joined: false, participants: [] } } }}
+            activeId={tab === 'dms' ? 'bob' : 'harbour'} onSelect={noop} emptyLabel={t('shell.channels.empty')}
+            footer={tab === 'channels' ? undefined : <Button variant="ghost">{t('shell.dms.new')}</Button>} />
           {p.joined === true ? p.dock ?? dock(p.paused === true ? 'paused' : 'connected') : null}
         </div>}
         header={p.header ?? null}

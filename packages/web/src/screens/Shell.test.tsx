@@ -660,9 +660,9 @@ describe('selection', () => {
     const at = (s: string) => text.indexOf(s);
     expect(at('general')).toBeLessThan(at('random'));
     expect(at('random')).toBeLessThan(at('lobby'));
-    // web-3: a voice channel sits under the voice heading after the text rows (flow 06).
-    expect(at('lobby')).toBeLessThan(at('lounge'));
-    expect(within(list).getByRole('heading', { name: 'voice' })).toBeInTheDocument();
+    // web3.8 (item 12): a voice channel stands in its position among the text rows, under no heading.
+    expect(at('lounge')).toBeLessThan(at('general'));
+    expect(within(list).queryByRole('heading', { name: 'voice' })).toBeNull();
     expect(within(list).getByRole('img', { name: 'Readable by this server' })).toBeInTheDocument();
   });
   it('switches channels and servers, closing what it leaves', async () => {
@@ -1349,12 +1349,8 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'channels' }));
     await user.tab();
     expect(screen.getByRole('tabpanel', { name: 'channels' })).toContainElement(document.activeElement as HTMLElement);
-    // web-3: the voice rows are their own roving stop under the voice heading.
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'voice lounge' }));
-    // Its join is the next stop (task-9 ruling: keyboard reachable).
-    await user.tab();
-    expect(document.activeElement).toHaveAccessibleName('join voice');
+    // Web3.8 (item 12): the voice rows are in the one roving list; its one stop is the active row, so no second stop follows.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^general/ }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Your status' }));
     // web3.8: the sidebar splitter is its own stop between the channel list and the header.

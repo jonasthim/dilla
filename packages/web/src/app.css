@@ -20,8 +20,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* A long chosen name wraps inside its row and never widens the dialog; the button stays whole (product walk I2). */
 .dw-dm-picker__name { min-width: 0; overflow-wrap: anywhere; }
 .dw-dm-picker__row > .d-btn { flex-shrink: 0; }
-/* Flow 07: the owner's "+ channel" action; the glyph is decoration, the button is named "new channel". */
-.dw-new-channel .d-btn__label::before { content: "+ " / ""; color: var(--accent); }
 /* The conversation log fills the pane; the drop overlay is positioned against it. */
 .dw-conversation { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .dw-conversation > .d-message-log { flex: 1 1 auto; }
@@ -64,25 +62,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-voice-dock__mode .d-btn { min-height: 2.5rem; }
 /* The phone toggle of a DM call (flow 06): only below 48rem. */
 .dw-dm-call__bar { display: none; }
-/* The voice channels under their heading, with join voice while a row is hovered or holds focus. */
-.dw-voice-section { margin: -0.5rem calc(-1 * var(--row-pad-x)) -0.75rem; padding: 0.5rem 0.5rem 0.25rem; }
-.dw-voice-section__heading { margin: 0 0 0.25rem; padding: 0 8px; }
-.dw-voice-section__list { list-style: none; margin: 0; padding: 0; }
-/* WB a11y m4: the row's join has its own column of the row's line, so it never covers the count or the focus ring. */
-.dw-voice-section__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 0.25rem; }
-.dw-voice-section__item > .d-voice-row { grid-column: 1; grid-row: 1; min-width: 0; }
-.dw-voice-section__item > .d-voice-row__people { grid-column: 1 / -1; }
-.dw-voice-section__join { grid-column: 2; grid-row: 1; align-self: center; min-height: 24px; position: relative; z-index: 1; opacity: 0; transition: opacity var(--duration-fast); }
-/* Walk 26: shown (and clickable, above the row) on hover and focus-within; always shown where there is no hover, so touch finds it. */
-.dw-voice-section__item:hover .dw-voice-section__join, .dw-voice-section__item:focus-within .dw-voice-section__join { opacity: 1; }
-@media (hover: none) { .dw-voice-section__join { opacity: 1; } }
-/* WB a11y m4 ruling (2026-10-14): the join keeps its own column (nothing reflows on hover), and the row's hover, current
-   and accent-bar highlight is painted on the item's first line across both columns, so it runs the sidebar's full width
-   with the join inside it, as the text rows' does. The row's own focus ring stays on the row button. */
-.dw-voice-section__item::before { content: ""; grid-column: 1 / -1; grid-row: 1; align-self: stretch; margin: var(--row-gap) 0; border-radius: var(--r-md); pointer-events: none; transition: background var(--duration-fast); }
-.dw-voice-section__item:hover::before { background: var(--surface-2); }
-.dw-voice-section__item:has(> .d-voice-row[aria-current="page"])::before { background: var(--surface-hi); box-shadow: inset 3px 0 0 var(--accent); }
-.dw-voice-section__item > .d-voice-row:hover, .dw-voice-section__item > .d-voice-row[aria-current="page"] { background: transparent; box-shadow: none; }
 /* The voice view fills the main pane; a DM's call stage sits above the log at 40 % of it, the log and composer below. */
 .dw-voice-stage { height: 100%; min-height: 0; overflow-y: auto; scroll-padding-bottom: 4.5rem; /* the pinned toolbar: button + 2 x 0.5rem */ }
 /* web3.8: on desktop the stage fills its pane and its toolbar is pinned to the bottom centre of it (the dock keeps its own). */
@@ -105,7 +84,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 .dw-call-strip[data-empty] { padding: 0; border-bottom: 0; }
 .dw-call-strip__notice:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 @container d-shell (max-width: 47.99rem) {
-  .dw-voice-section__join, .dw-call-strip .d-btn { min-height: 2.75rem; }
+  .d-channel-list__join, .dw-call-strip .d-btn { min-height: 2.75rem; }
   /* Phone DM call (flow 06 § 360×740): the stage fills the pane; `messages` swaps it for the log and composer. */
   .dw-dm-call__bar { display: flex; justify-content: flex-end; padding: 0.25rem var(--row-pad-x); }
   .dw-dm-call { flex: 1 1 auto; max-height: none; }
@@ -137,7 +116,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 }
 /* web3.8 (R9, pre-flight C-7): the container rules above cannot see the viewport, and a landscape phone's shell is wide, so each
    phone rule has a twin keyed on the shell's own data-layout, with identical declarations; layout.test.ts pins the pairs. */
-[data-layout="phone"] .dw-voice-section__join, [data-layout="phone"] .dw-call-strip .d-btn { min-height: 2.75rem; }
+[data-layout="phone"] .d-channel-list__join, [data-layout="phone"] .dw-call-strip .d-btn { min-height: 2.75rem; }
+/* Web3.8 (item 11): the channel list's "+" is a 44 px target on a phone. */
+[data-layout="phone"] .dw-channel-add { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; }
 [data-layout="phone"] .dw-dm-call__bar { display: flex; justify-content: flex-end; padding: 0.25rem var(--row-pad-x); }
 [data-layout="phone"] .dw-dm-call { flex: 1 1 auto; max-height: none; }
 [data-layout="phone"] .d-app-shell__content:has(> .dw-dm-call[data-view="stage"]) > .dw-conversation { display: none; }

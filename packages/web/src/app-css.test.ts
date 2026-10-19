@@ -37,11 +37,13 @@ describe('a focused tile control clears the pinned toolbar (WCAG 2.4.11)', () =>
   });
 });
 
-describe('the voice section rows (WB a11y m4 ruling)', () => {
-  it('paints the hover and current highlight on the item across both columns, not on the row button', () => {
-    expect(rule(css, '.dw-voice-section__item::before')).toMatch(/grid-column:\s*1 \/ -1/);
-    expect(css).toMatch(/\.dw-voice-section__item:has\(> \.d-voice-row\[aria-current="page"\]\)::before \{[^}]*inset 3px 0 0 var\(--accent\)/);
-    expect(css).toMatch(/\.dw-voice-section__item > \.d-voice-row\[aria-current="page"\] \{ background: transparent; box-shadow: none; \}/);
+describe('the one channel list (web3.8 item 12)', () => {
+  it('has no voice-section rules left, and the join and the "+" are 44 px targets on a phone', () => {
+    expect(css).not.toContain('dw-voice-section');
+    expect(css).not.toContain('dw-new-channel');
+    expect(css).toMatch(/\[data-layout="phone"\] \.d-channel-list__join, \[data-layout="phone"\] \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
+    expect(css).toMatch(/@container d-shell \(max-width: 47\.99rem\) \{\s*\.d-channel-list__join, \.dw-call-strip \.d-btn \{ min-height: 2\.75rem; \}/);
+    expect(rule(css, '[data-layout="phone"] .dw-channel-add')).toMatch(/min-width:\s*2\.75rem;\s*min-height:\s*2\.75rem/);
   });
 });
 
