@@ -6,7 +6,7 @@
 import { expect, type BrowserContext, type Locator, type Page, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions } from '@playwright/test';
 import { mkdirSync, rmSync } from 'node:fs';
 import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, channelRow, newChannelButton, completeFactorStep, composerBox, copy, expectAccessible, expectComposerReady,
   expectHeading, expectShell, nextButton, newAccount, railNav, readRecoveryKey, sendText, keyField, submitButton, test,
   messageRow, signIn, type Account,
 } from './support/app';
@@ -299,9 +299,11 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expectTapTargets(tabBar(page).getByRole('link'), 'the tab bar');
       const menu = page.getByRole('button', { name: copy('nav.server.menu'), exact: true });
       await expectTapTargets(menu, 'the server menu trigger');
-      // The owner's menu: new channel, invite, server settings (and "leave" only for a member).
+      // web3.8 (item 11): the owner's menu holds search and server settings (and "leave" only for a member); "new channel"
+      // is the "+" in the list header, and the invite link lives under server settings → Invites.
+      await expectTapTargets(newChannelButton(page), 'the new channel "+"');
       await menu.click();
-      await expect(page.getByRole('menuitem')).toHaveText([copy('search.open'), copy('create.channel.open'), copy('invite.open'), copy('admin.open')]);
+      await expect(page.getByRole('menuitem')).toHaveText([copy('search.open'), copy('admin.open')]);
       await expectTapTargets(page.getByRole('menuitem'), 'the server menu items');
       await page.keyboard.press('Escape');
       await expect(page.getByRole('menuitem')).toHaveCount(0);

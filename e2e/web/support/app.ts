@@ -585,6 +585,42 @@ export function namedRow(scope: Locator, name: string): Locator {
 export function railItem(page: Page, community: string): Locator { return namedRow(railNav(page), community); }
 export function channelRow(page: Page, channel: string): Locator { return namedRow(channelsNav(page), channel); }
 
+/** The "+" at the right of the channel list's own header (web3.8, item 11): "new channel" for a person who manages channels. */
+export function newChannelButton(page: Page): Locator {
+  return channelsNav(page).getByRole('button', { name: copy('create.channel.open'), exact: true });
+}
+
+/**
+ * Server settings → Invites → "Make link" (web3.8, item 11: the sidebar's "invite link" moved here). Returns the invite
+ * dialog, open on its link field; the settings dialog stays open behind it. Desktop: the header's "server settings" button.
+ */
+export async function openInviteDialog(page: Page, server: string): Promise<Locator> {
+  await page.getByRole('button', { name: copy('admin.open'), exact: true }).click();
+  const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+  const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
+  // Until the permissions are read the dialog shows no tab; the nav fills in when they arrive.
+  await expect(nav).toBeVisible({ timeout: WAIT });
+  const tab = nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true });
+  if ((await tab.getAttribute('aria-current')) !== 'page') await tab.click();
+  await settings.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: copy('invite.title', { server }), exact: true });
+  await expect(dialog.getByRole('textbox', { name: copy('invite.link'), exact: true })).toBeVisible({ timeout: WAIT });
+  return dialog;
+}
+
+/** Makes an invite link under server settings → Invites, reads it from the dialog's field, and closes both dialogs. */
+export async function makeInviteLink(page: Page, server: string): Promise<string> {
+  const dialog = await openInviteDialog(page, server);
+  const field = dialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
+  await expect.poll(() => field.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
+  const link = await field.inputValue();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: copy('admin.title'), exact: true })).toBeHidden();
+  return link;
+}
+
 /** The recovery key as written down: its 13 groups joined by `separator`. */
 export function keyText(account: Account, separator = ' '): string { return account.recoveryKey.join(separator); }
 /** A well-formed key that is not this account's: the first character replaced by another character of the alphabet. */

@@ -1339,10 +1339,8 @@ describe('keyboard', () => {
     expect(document.activeElement).toBe(screen.getByRole('link', { name: 'skip to messages' }));
     await user.tab();
     expect(screen.getByRole('navigation', { name: 'servers' })).toContainElement(document.activeElement as HTMLElement);
-    // Flow 07: the server's actions stand under its name, before the tabs (a member who does not own it: the invite only).
-    await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'invite link' }));
-    // Flow 08: server settings, and leave for a member who does not own the server.
+    // Flow 07 (web3.8): the server's actions stand under its name, before the tabs: server settings, and leave for a member
+    // who does not own the server (the invite link lives under settings → Invites).
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'server settings' }));
     await user.tab();
@@ -1359,6 +1357,9 @@ describe('keyboard', () => {
     expect(document.activeElement).toHaveAccessibleName('join voice');
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Your status' }));
+    // web3.8: the sidebar splitter is its own stop between the channel list and the header.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('separator', { name: en['pane.resize.sidebar'] }));
     await user.tab();
     const header = document.querySelector<HTMLElement>('.d-channel-header');
     if (header === null) throw new Error('no header');
@@ -1391,6 +1392,57 @@ describe('keyboard', () => {
 const DM = '9a'.repeat(16);
 const DMS: DmSummary[] = [{ id: DM, kind: 3, members: [ME.id, PEER], name: 'bob', group: 'active' }];
 const withDms = (fake: FakeClient) => fake.set('dms', DMS);
+
+describe('sidebar actions and pane widths (web3.8)', () => {
+  const OWNED = [{ id: A, name: 'Midgard', owner: ME.id }];
+  const clean = () => {
+    // eslint-disable-next-line no-restricted-properties -- the test clears the one key the shell writes
+    window.localStorage.clear();
+  };
+  beforeEach(clean);
+  afterEach(clean);
+
+  it('the owner sees "+" in the list header and no invite or "+ channel" button in the server header', () => {
+    setup(`/c/${A}/${GEN}`, { communities: OWNED });
+    const header = screen.getByRole('group', { name: en['create.actions'] });
+    expect(within(header).queryByRole('button', { name: en['invite.open'] })).toBeNull();
+    expect(within(header).queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
+    const plus = within(screen.getByRole('tabpanel', { name: 'channels' })).getByRole('button', { name: en['create.channel.open'] });
+    expect(plus).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: en['invite.open'] })).toBeNull();
+  });
+
+  it('a member without manage channels sees no "+"; the DMs tab has none either', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`);
+    expect(screen.queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    expect(screen.queryByRole('button', { name: en['create.channel.open'] })).toBeNull();
+  });
+
+  it('"server settings" for a member with only create invite opens Invites (R20)', async () => {
+    const { fake, user } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false,
+      banMembers: false, createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    const dialog = await screen.findByRole('dialog', { name: /settings/i });
+    expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
+  });
+
+  it('ArrowRight on the sidebar separator writes dilla.paneWidths, and a remount reads it back', async () => {
+    const { user, view } = setup(`/c/${A}/${GEN}`);
+    const sep = screen.getByRole('separator', { name: en['pane.resize.sidebar'] });
+    const before = Number(sep.getAttribute('aria-valuenow'));
+    act(() => sep.focus());
+    await user.keyboard('{ArrowRight}');
+    const after = Number(sep.getAttribute('aria-valuenow'));
+    expect(after).toBeGreaterThan(before);
+    // eslint-disable-next-line no-restricted-properties -- the test reads the one key the shell writes
+    expect(JSON.parse(window.localStorage.getItem('dilla.paneWidths') ?? 'null')).toEqual({ sidebar: after });
+    view.unmount();
+    setup(`/c/${A}/${GEN}`);
+    expect(screen.getByRole('separator', { name: en['pane.resize.sidebar'] })).toHaveAttribute('aria-valuenow', String(after));
+  });
+});
 
 describe('direct messages', () => {
   it('is one list: the server name, then the tabs, then the active tab’s rows', async () => {

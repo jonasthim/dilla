@@ -1,0 +1,137 @@
+// web3.8, WS4 (item 11): the sidebar's actions moved. From an empty host, Ada (the owner) starts "Midgard Crew" and makes a
+// channel through the "+" in the channel list's header; Björn (a member with the default @everyone: create invite, no manage
+// channels) has no "+", opens server settings, lands on Invites, makes a link and copies it. At 390x844 the server menu lists
+// neither invite nor new channel, and the list header has the "+" for Ada only.
+import { expect, type Page } from '@playwright/test';
+import {
+  TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, expectAccessible, expectComposerReady, makeInviteLink, newAccount, newChannelButton,
+  railItem, railNav, signUp, test,
+} from './support/app';
+import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { launchSecond, secondProfileDir } from './support/second-harness';
+import { arr, decode } from '../../packages/client-core/src/cbor/index';
+
+const EMPTY: HostConfig = { port: 8523, control: 8524, webRoot: 'packages/web/dist' };
+const SERVER = 'Midgard Crew';
+const OWNER = 'Ada';
+const FRIEND = 'Björn';
+
+let host: StartedHost | null = null;
+let instance = '';
+
+test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
+test.use({ baseURL: `http://127.0.0.1:${String(EMPTY.port)}` });
+
+test.beforeAll(async () => {
+  host = await startTestHost(EMPTY);
+  const res = await fetch(`${host.url}/v1/instance`, { headers: { accept: 'application/cbor' } });
+  expect(res.status, 'GET /v1/instance').toBe(200);
+  const name = arr(decode(new Uint8Array(await res.arrayBuffer())))[5];
+  if (typeof name !== 'string' || name === '') throw new Error('GET /v1/instance: element 5 is not the instance name');
+  instance = name;
+});
+test.afterAll(async () => { await host?.stop(); });
+
+const button = (page: Page, key: string) => page.getByRole('button', { name: copy(key), exact: true });
+/** The phone's server menu opened: its items' names, then closed again. */
+async function serverMenuItems(page: Page): Promise<string[]> {
+  const menu = button(page, 'nav.server.menu');
+  await menu.click();
+  const names = await page.getByRole('menuitem').allTextContents();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menuitem')).toHaveCount(0);
+  return names;
+}
+
+test('the owner adds a channel with the "+"; a member makes a link under server settings → Invites; a phone has neither in its menu', async ({
+  page, playwright, browserName, launchOptions, headless, channel, viewport,
+}, testInfo) => {
+  const h = host;
+  if (h === null) throw new Error('the empty test host did not start');
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // 1. Ada starts the server and adds a channel through the "+" in the list header. The server header holds no invite
+  //    link and no "+ channel" any more.
+  await signUp(page, h.invite.split(',')[0], instance, OWNER, h.control);
+  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
+  await expectComposerReady(page, 'general');
+  await expect(button(page, 'invite.open')).toHaveCount(0);
+  await expect(page.getByRole('group', { name: copy('create.actions'), exact: true }).getByRole('button', { name: copy('create.channel.open'), exact: true })).toHaveCount(0);
+  const plus = newChannelButton(page);
+  await expect(plus).toBeVisible({ timeout: WAIT });
+  await plus.click();
+  const made = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
+  await made.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('plans');
+  await page.keyboard.press('Enter');
+  await expect(made).toBeHidden({ timeout: WAIT });
+  await expectComposerReady(page, 'plans');
+  await expect(composerBox(page, 'plans')).toBeVisible();
+
+  // 2. Björn joins through a link Ada makes under server settings → Invites (the helper is that path).
+  const link = await makeInviteLink(page, SERVER);
+  const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
+  const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
+  try {
+    const page2 = second.pages()[0] ?? (await second.newPage());
+    await page2.setViewportSize({ width: 1280, height: 800 });
+    await page2.goto(new URL(link).pathname);
+    await page2.getByRole('link', { name: 'Open dilla in this browser', exact: true }).click();
+    await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
+    await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
+    await railItem(page2, SERVER).click();
+    await expect(page2).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
+
+    // Björn has no "+", and the sidebar has no invite link; "server settings" opens on Invites.
+    await expect(button(page2, 'admin.open')).toBeVisible({ timeout: WAIT });
+    await expect(newChannelButton(page2)).toHaveCount(0);
+    await expect(button(page2, 'invite.open')).toHaveCount(0);
+    await button(page2, 'admin.open').click();
+    const settings = page2.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    const nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
+    await expect(nav).toBeVisible({ timeout: WAIT });
+    await expect(nav.getByRole('button', { name: copy('admin.nav.invites'), exact: true })).toHaveAttribute('aria-current', 'page');
+    await expectAccessible(page2, 'server settings, Invites, for a member');
+
+    // He makes a link and copies it; in Chromium the clipboard is read back and compared to the URL the dialog shows.
+    if (browserName === 'chromium') await second.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: h.url });
+    await settings.getByRole('button', { name: copy('admin.invites.create'), exact: true }).click();
+    const dialog = page2.getByRole('dialog', { name: copy('invite.title', { server: SERVER }), exact: true });
+    const field = dialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
+    await expect(field).toBeVisible({ timeout: WAIT });
+    await expect.poll(() => field.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
+    const shown = await field.inputValue();
+    await dialog.getByRole('button', { name: copy('invite.copy'), exact: true }).click();
+    await expect(dialog.getByRole('status')).toHaveText(copy('invite.copied'), { timeout: WAIT });
+    if (browserName === 'chromium') {
+      expect(await page2.evaluate(() => navigator.clipboard.readText()), 'the clipboard holds the shown URL').toBe(shown);
+    }
+    await page2.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await page2.keyboard.press('Escape');
+    await expect(settings).toBeHidden();
+
+    // 3. At 390x844: the server menu lists neither invite nor new channel; the list header has the "+" for Ada only.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page2.setViewportSize({ width: 390, height: 844 });
+    for (const p of [page, page2]) {
+      const backButton = button(p, 'nav.back');
+      await expect(backButton).toBeVisible({ timeout: WAIT });
+      await backButton.click();
+      await expect(button(p, 'nav.server.menu')).toBeVisible({ timeout: WAIT });
+    }
+    expect(await serverMenuItems(page)).toEqual([copy('search.open'), copy('admin.open')]);
+    expect(await serverMenuItems(page2)).toEqual([copy('search.open'), copy('admin.open'), copy('admin.leave.open')]);
+    await expect(newChannelButton(page)).toBeVisible();
+    await expect(newChannelButton(page2)).toHaveCount(0);
+
+    // 4. Accessible: the owner's phone list with its "+".
+    await expectAccessible(page, 'the phone servers list with the new channel "+"');
+  } finally {
+    await second.close();
+  }
+});

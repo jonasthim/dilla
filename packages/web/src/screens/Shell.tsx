@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
-  ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, LinkBanner, PhoneHeader,
+  ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, Icon, LinkBanner, PhoneHeader,
   SidebarTabs, TabBar, UnsupportedVoice,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
@@ -11,10 +11,10 @@ import { useSlice, useSlices } from '../core/use-slice.ts';
 import { useChannelBits } from '../core/use-channel-bits.ts';
 import { useDocumentVisible } from '../core/use-visible.ts';
 import { baseRoute, goBack, pushedFrom, readJoinError, routeOf, routePath, tabOf, useRoute, type Route } from '../router.ts';
-import { phoneNow, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
+import { phoneNow, readPaneWidths, rememberedTab, rememberTab, usePhoneLayout, writePaneWidths, usePhoneSheet, useVisualViewportHeight, type PhoneTab } from '../layout.ts';
 import { en, t, type StringKey } from '../strings/index.ts';
 import { JoinCommunity } from './JoinCommunity.tsx';
-import { CreateChannelFlow, CreateServerFlow, InviteFlow } from './Create.tsx';
+import { CreateChannelFlow, CreateServerFlow } from './Create.tsx';
 import { Conversation, focusComposer, focusLog, useConversationUi, type ConversationAction, type ConversationUi } from './conversation/Conversation.tsx';
 import { ComposerArea, type OutgoingMessage } from './conversation/ComposerArea.tsx';
 import { PinsButton } from './conversation/Pins.tsx';
@@ -60,6 +60,8 @@ export function focusRailSettings(): void {
     'nav[aria-label="' + t('shell.rail.label') + '"] button[aria-label="' + t('shell.rail.settings') + '"]')?.focus();
 }
 
+/** The icon of the channel list's new-channel button. */
+const PLUS = 'plus';
 const CATEGORY = 2;
 // The codes a send is refused with when the core's send gate holds the group (L-CORE-40, sec ruling 2).
 const TRUST_BLOCKS: ReadonlySet<string> = new Set<TrustBlock>(['E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
@@ -217,10 +219,21 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const [loadingEarlier, setLoadingEarlier] = useState<string | null>(null);
   // The composer is controlled: the text of the channel or DM it was typed in.
   const [draft, setDraft] = useState<{ channelId: string | null; text: string }>({ channelId: null, text: '' });
-  // Flow 07: start a server, add a channel, copy an invite link.
+  // Flow 07: start a server, add a channel. (The invite link lives under server settings → Invites.)
   const [createOpen, setCreateOpen] = useState(false);
   const [channelOpen, setChannelOpen] = useState(false);
-  const [inviteOpen, setInviteOpen] = useState(false);
+  // Web3.8 (R18): the pane widths the person chose, kept in this browser. The ui never re-clamps what is stored; it clamps
+  // what it shows, and only a drag or a key reports a new width.
+  const [paneWidths, setPaneWidths] = useState(readPaneWidths);
+  const onPaneResize = useCallback((pane: 'sidebar' | 'aside', px: number | null) => {
+    setPaneWidths(prev => {
+      const next = { ...prev };
+      if (px === null) delete next[pane];
+      else next[pane] = px;
+      writePaneWidths(next);
+      return next;
+    });
+  }, []);
   // Flow 08: the member pane (a toggle in the channel header; open at 64rem or wider, not remembered) and the server settings
   // dialog (the server it is open for, and its tab).
   const [membersOpen, setMembersOpen] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 64rem)').matches);
@@ -284,7 +297,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
   const removals = useSlice('removals');
   const [dismissedRemovals, setDismissedRemovals] = useState<ReadonlySet<number>>(() => new Set());
   const seenRemovals = useRef<ReadonlySet<number>>(new Set());
-  const createFlowOpen = createOpen || channelOpen || inviteOpen;
+  const createFlowOpen = createOpen || channelOpen;
   // The text channel a create just opened: its composer takes focus once it is on screen (after the dialog handed focus back).
   // `from` is the conversation open when the wish was made: the shell may still show it for a render or two.
   const pendingFocus = useRef<{ id: string; from: string | null } | null>(null);
@@ -360,7 +373,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     setAdminFor(open => (open !== null && gone.has(open) ? null : open));
     if (communityId !== null && gone.has(communityId)) {
       setChannelOpen(false);
-      setInviteOpen(false);
     }
   }, [removals, communityId]);
   const conversationMembers = channel !== null ? members ?? [] : dm !== null ? allMembers.filter(m => dm.members.includes(m.userId)) : [];
@@ -997,22 +1009,15 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       <ActionMenu label={t('nav.server.menu')} icon="ellipsis-vertical" open={serverMenuOpen} onOpenChange={setServerMenuOpen}
         items={[
           { id: 'search', label: t('search.open') },
-          ...(canManageChannels ? [{ id: 'channel', label: t('create.channel.open') }] : []),
-          { id: 'invite', label: t('invite.open') },
           { id: 'admin', label: t('admin.open') },
           ...(!owner ? [{ id: 'leave', label: t('admin.leave.open'), danger: true }] : []),
         ]}
         onSelect={id => {
           if (id === 'search') startSearch('all');
-          else if (id === 'channel') setChannelOpen(true);
-          else if (id === 'invite') setInviteOpen(true);
           else openAdmin(id === 'leave' ? 'danger' : 'overview');
         }} />
     );
     const actions = voiceHere && !phone ? <>
-      {canManageChannels ? <Button className="dw-new-channel" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}>
-        {t('create.channel.button')}</Button> : null}
-      <Button onClick={() => setInviteOpen(true)}>{t('invite.open')}</Button>
       <Button data-admin-open="" onClick={() => openAdmin('overview')}>{t('admin.open')}</Button>
       {!owner ? <Button onClick={() => openAdmin('danger')}>{t('admin.leave.open')}</Button> : null}
     </> : undefined;
@@ -1020,6 +1025,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       <ChannelList label={t(onDms ? 'shell.dms.label' : 'shell.channels.label')}
         title={phone && onDms ? t('shell.dms.label') : community?.name ?? account?.instance?.name ?? t('shell.status.unknown')}
         actions={actions} actionsLabel={t('create.actions')} headerAction={phoneServerMenu}
+        // Web3.8 (item 11): the new-channel "+" sits at the right of the list's own header, for a person who can manage
+        // channels, on the channels tab and the phone's servers list, never on the DMs tab.
+        listAction={voiceHere && canManageChannels ? (
+          <Button variant="ghost" aria-label={t('create.channel.open')} onClick={() => setChannelOpen(true)}
+            style={phone ? { minWidth: '2.75rem', minHeight: '2.75rem', justifyContent: 'center' } : undefined}>
+            <Icon name={PLUS} size={16} /></Button>
+        ) : undefined}
         // Walk 9: only the server name keeps the display serif; the phone's DM list heading is the plain mono one.
         titleKind={phone && onDms ? 'plain' : 'server'}
         tabs={phone ? (voiceHere ? <ActiveVoiceList rows={voiceRows} onOpen={openVoice} /> : undefined) : <>
@@ -1437,7 +1449,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === call.recentlyEnded?.channelId && c.kind === 1)
     ? call.recentlyEnded : null;
   // These dialogs own form drafts in their own components. Apply the update after the person finishes the form.
-  const updateBlocked = overlay || joinOpen || pickerOpen || createOpen || channelOpen || inviteOpen
+  const updateBlocked = overlay || joinOpen || pickerOpen || createOpen || channelOpen
     || editChannelId !== null || adminFor !== null || ui.editing !== null || threadEditing;
   const updateVoiceActive = useRef(false);
   updateVoiceActive.current = call.channelId !== null || call.recoveryChannelId !== null || recentUpdateCall !== null;
@@ -1616,6 +1628,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
       <p className="d-sr-only" role="status" aria-live="polite" data-testid="shell-announcer">{announcement}</p>
       <AppShell
         skipLabel={t('shell.skip')}
+        {...(phone ? {} : { paneWidths, onPaneResize, resizeLabels: { sidebar: t('pane.resize.sidebar'), aside: t('pane.resize.aside') } })}
         layout={phone ? 'phone' : 'desktop'} phonePane={phone ? phonePane : undefined} tabBar={tabBar} callBar={callBar} covered={phone && (overlay || adminFor !== null)}
         page={phone ? <>{adminPage}{props.page}</> : undefined}
         rail={phone && phoneTab !== 'servers' ? null : <CommunityRail label={t('shell.rail.label')} items={railItems} activeId={communityId}
@@ -1691,8 +1704,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           setChannelOpen(false);
           if (community !== null) navigate({ name: 'channel', communityId: community.id, channelId: id });
         }} />
-      <InviteFlow open={inviteOpen} community={community} onClose={() => setInviteOpen(false)}
-        onMoreOptions={() => { if (community !== null) openAdminFor(community.id, 'invites'); }} />
       <ChannelEditFlow channel={editing} categories={(channels ?? []).filter(c => c.kind === CATEGORY)} announce={announce} onClose={() => setEditChannelId(null)} />
       {phone ? null : <>{adminPage}{props.page}</>}
     </>

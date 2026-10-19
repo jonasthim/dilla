@@ -572,9 +572,10 @@ async function main(argv) {
     await ada.screenshot({ path: railFile, clip: { x: 0, y: 0, width: 300, height: Math.ceil(settingsBox.y + settingsBox.height + 12) } });
     written.push(railFile);
 
-    // "new channel" (the owner's server action): #loot, then the voice channel "harbour".
+    // "new channel" (the "+" in the channel list's header, for the owner): #loot, then the voice channel "harbour".
     const addChannel = async (kind, name, shotName) => {
-      await byText(ada, 'button', 'create.channel.open').click();
+      await ada.getByRole('navigation', { name: t('shell.channels.label'), exact: true })
+        .getByRole('button', { name: t('create.channel.open'), exact: true }).click();
       const dialog = byText(ada, 'dialog', 'create.channel.title', { server: SERVER });
       const field = dialog.getByRole('textbox', { name: t('create.channel.name'), exact: true });
       await field.and(ada.locator(':focus')).waitFor({ timeout: WAIT });
@@ -594,8 +595,13 @@ async function main(argv) {
     await ada.getByRole('button', { name: 'general', exact: true }).click();
     await composer(ada, 'general').and(ada.locator(':enabled')).waitFor({ timeout: WAIT });
 
-    // "invite link": the dialog makes the link and copies it; the link is read from its field, never the clipboard.
-    await byText(ada, 'button', 'invite.open').click();
+    // Server settings → Invites → "Make link": the dialog makes the link and copies it; the link is read from its field,
+    // never the clipboard.
+    await byText(ada, 'button', 'admin.open').click();
+    const settingsDialog = byText(ada, 'dialog', 'admin.title');
+    await settingsDialog.getByRole('navigation', { name: t('admin.nav'), exact: true })
+      .getByRole('button', { name: t('admin.nav.invites'), exact: true }).click();
+    await settingsDialog.getByRole('button', { name: t('admin.invites.create'), exact: true }).click();
     const inviteDialog = byText(ada, 'dialog', 'invite.title', { server: SERVER });
     const linkField = inviteDialog.getByRole('textbox', { name: t('invite.link'), exact: true });
     await linkField.waitFor({ timeout: WAIT });
@@ -607,6 +613,8 @@ async function main(argv) {
     await shootBoth('create-invite');
     await ada.keyboard.press('Escape');
     await inviteDialog.waitFor({ state: 'hidden', timeout: WAIT });
+    await ada.keyboard.press('Escape');
+    await settingsDialog.waitFor({ state: 'hidden', timeout: WAIT });
     const missing = CREATE_SHOTS.filter((name) => !written.includes(path.join(o.outDir, `${name}.png`)));
     if (missing.length > 0) throw new Error(`create-flow images not shot: ${missing.join(', ')}`);
 

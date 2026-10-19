@@ -184,13 +184,25 @@ describe('a fresh instance (flow 07)', () => {
 });
 
 describe('a server’s actions (flow 07)', () => {
-  it('the owner sees new channel and invite link beside the server name; another member only the invite link', () => {
+  it('the header holds server settings (and leave, for a member); the owner has the "+" in the list header, a member none', () => {
     const { view } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
     const group = screen.getByRole('group', { name: 'server actions' });
-    expect(within(group).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['new channel', 'invite link', 'server settings']);
+    expect(within(group).getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['server settings']);
+    const panel = screen.getByRole('tabpanel');
+    expect(within(panel).getByRole('button', { name: 'new channel' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
     view.unmount();
     setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
-    expect(within(screen.getByRole('group', { name: 'server actions' })).getAllByRole('button').map(b => b.textContent)).toEqual(['invite link', 'server settings', 'leave server']);
+    expect(within(screen.getByRole('group', { name: 'server actions' })).getAllByRole('button').map(b => b.textContent)).toEqual(['server settings', 'leave server']);
+    expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
+  });
+
+  it('the "+" is not on the direct messages tab', async () => {
+    const { user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: ME.id }] });
+    expect(screen.getByRole('button', { name: 'new channel' })).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'direct messages' }));
+    expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
   });
 
   // Product walk M1: in a channel this browser just made, nothing was sent before it joined, so the empty log says only
@@ -239,9 +251,12 @@ describe('a server’s actions (flow 07)', () => {
     expect(screen.getByRole('textbox', { name: 'message #random' })).not.toHaveFocus();
   });
 
-  it('copies an invite link and says so; the link shows in the dialog', async () => {
+  it('server settings → Invites copies an invite link and says so; the link shows in the dialog', async () => {
     const { fake, user } = setup(`/c/${A}/${GEN}`, { communities: [{ id: A, name: 'Midgard', owner: OTHER_OWNER }] });
-    await user.click(screen.getByRole('button', { name: 'invite link' }));
+    act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
+      createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    await user.click(await screen.findByRole('button', { name: 'Make link' }));
     const dialog = screen.getByRole('dialog', { name: 'Invite people to Midgard' });
     await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Invite link copied.'));
     expect(within(dialog).getByRole('textbox', { name: 'Invite link' })).toHaveValue('https://dilla.test/i/7KQ2');

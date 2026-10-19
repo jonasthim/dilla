@@ -1,0 +1,93 @@
+// web3.8, WS4 (item 10): the resizable panes. From an empty host, Ada starts "Midgard Crew"; the sidebar splitter moves with
+// the mouse and with the keyboard, the width is kept across a reload (localStorage `dilla.paneWidths`, read and written only
+// in layout.ts), Enter resets it, Home and End go to the limits, and the aside has a splitter only while it is a column.
+import { expect, type Page } from '@playwright/test';
+import { TEST_TIMEOUT, WAIT, copy, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
+import { startTestHost, type HostConfig, type StartedHost } from './support/host';
+import { arr, decode } from '../../packages/client-core/src/cbor/index';
+
+const EMPTY: HostConfig = { port: 8521, control: 8522, webRoot: 'packages/web/dist' };
+const SERVER = 'Midgard Crew';
+
+let host: StartedHost | null = null;
+let instance = '';
+
+test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
+test.use({ baseURL: `http://127.0.0.1:${String(EMPTY.port)}` });
+
+test.beforeAll(async () => {
+  host = await startTestHost(EMPTY);
+  const res = await fetch(`${host.url}/v1/instance`, { headers: { accept: 'application/cbor' } });
+  expect(res.status, 'GET /v1/instance').toBe(200);
+  const name = arr(decode(new Uint8Array(await res.arrayBuffer())))[5];
+  if (typeof name !== 'string' || name === '') throw new Error('GET /v1/instance: element 5 is not the instance name');
+  instance = name;
+});
+test.afterAll(async () => { await host?.stop(); });
+
+const sidebarSplitter = (page: Page) => page.getByRole('separator', { name: copy('pane.resize.sidebar'), exact: true });
+const asideSplitter = (page: Page) => page.getByRole('separator', { name: copy('pane.resize.aside'), exact: true });
+const sidebarWidth = (page: Page) => page.locator('.d-app-shell__sidebar').evaluate(el => el.getBoundingClientRect().width);
+
+test('the sidebar splitter drags and takes keys, the width survives a reload, and the aside splitter exists only as a column', async ({ page }) => {
+  const h = host;
+  if (h === null) throw new Error('the empty test host did not start');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await signUp(page, h.invite.split(',')[0], instance, 'Ada', h.control);
+  await railNav(page).getByRole('button', { name: copy('create.rail.newLabel'), exact: true }).click();
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill(SERVER);
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
+  await expectComposerReady(page, 'general');
+
+  const splitter = sidebarSplitter(page);
+  await expect(splitter).toBeVisible({ timeout: WAIT });
+
+  // 1. A drag of +80 px with the mouse makes the sidebar 80 ±1 px wider.
+  const before = await sidebarWidth(page);
+  const box = await splitter.boundingBox();
+  if (box === null) throw new Error('the sidebar splitter has no box');
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 40, y, { steps: 5 });
+  await page.mouse.move(x + 80, y, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after the drag' }).toBeGreaterThanOrEqual(before + 79);
+  expect(await sidebarWidth(page)).toBeLessThanOrEqual(before + 81);
+  const dragged = await sidebarWidth(page);
+
+  // 2. A reload keeps the width.
+  await page.reload();
+  await expect(sidebarSplitter(page)).toBeVisible({ timeout: WAIT });
+  await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after a reload' }).toBeGreaterThanOrEqual(dragged - 1);
+  expect(await sidebarWidth(page)).toBeLessThanOrEqual(dragged + 1);
+
+  // 3. The keyboard: Enter resets to 240, ArrowRight moves by 1rem (16 px), Home goes to the minimum, End to the maximum.
+  const keys = sidebarSplitter(page);
+  await keys.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => sidebarWidth(page), { message: 'Enter resets to the default' }).toBeCloseTo(240, 0);
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(() => sidebarWidth(page), { message: 'two ArrowRights' }).toBeCloseTo(272, 0);
+  await page.keyboard.press('Home');
+  await expect.poll(() => sidebarWidth(page), { message: 'Home' }).toBeCloseTo(192, 0);
+  await page.keyboard.press('End');
+  const max = await keys.getAttribute('aria-valuemax');
+  await expect(keys).toHaveAttribute('aria-valuenow', max ?? '');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => sidebarWidth(page), { message: 'Enter again' }).toBeCloseTo(240, 0);
+
+  // 4. With the members aside open at 1280 px the aside has a splitter; at 900 px it is an overlay and has none.
+  await expect(asideSplitter(page)).toBeVisible();
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(asideSplitter(page)).toHaveCount(0);
+  await expect(sidebarSplitter(page)).toBeVisible();
+
+  // 5. Accessible.
+  await expectAccessible(page, 'the panes with their splitters');
+});

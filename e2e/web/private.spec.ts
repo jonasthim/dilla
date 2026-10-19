@@ -6,7 +6,7 @@
 // Every dialog's focus return is asserted with toBeFocused(), which jsdom cannot prove through portals and the inert drawer.
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  CLASS, TEST_TIMEOUT, WAIT, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
+  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, messageRow, sendText, signUp, tag, test, openSettings as openAppSettings, closeSettings as closeAppSettings, composerBox,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -144,14 +144,8 @@ test('private channels run from an empty instance: create, gain, lose, make priv
   await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}\/[0-9a-f]{32}$/, { timeout: WAIT });
   await expectComposerReady(page, 'general');
 
-  await button(page, 'invite.open').click();
-  const inviteDialog = dialogOf(page, 'invite.title', { server: SERVER });
-  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
-  await expect(linkField).toBeVisible({ timeout: WAIT });
-  await expect.poll(() => linkField.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
-  const link = await linkField.inputValue();
-  await page.keyboard.press('Escape');
-  await expect(inviteDialog).toBeHidden();
+  // web3.8 (item 11): the link is made under server settings → Invites.
+  const link = await makeInviteLink(page, SERVER);
 
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
@@ -170,7 +164,7 @@ test('private channels run from an empty instance: create, gain, lose, make priv
 
     // 2. Ada makes the text channel "staff-room", private, opened to Staff. Björn's list lacks it (a public "lounge" made
     //    after it shows that his list had caught up). Ada posts "before".
-    const newChannel = button(page, 'create.channel.open');
+    const newChannel = newChannelButton(page);
     await newChannel.click();
     const made = dialogOf(page, 'create.channel.title', { server: SERVER });
     await expect(made).toBeVisible({ timeout: WAIT });

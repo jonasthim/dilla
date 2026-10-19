@@ -165,12 +165,11 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(within(dialog).getByRole('button', { name: 'leave server', current: 'page' })).toBeInTheDocument();
   });
 
-  it('more options on the invite link opens server settings on the invites tab', async () => {
+  it('server settings opens on the invites tab for a member who holds only create invite (R20)', async () => {
     const { fake, user } = setup();
-    fake.handler = command => Promise.resolve(command.m === 'createInvite' ? { url: 'https://dilla.test/i/7KQ2', code: '7KQ2', expires: 1_900_000_000 } : null);
     act(() => { fake.publish(`permissions:${A}`, access()); });
-    await user.click(screen.getByRole('button', { name: 'invite link' }));
-    await user.click(await screen.findByRole('button', { name: 'more options' }));
+    expect(screen.queryByRole('button', { name: 'invite link' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
     const dialog = await screen.findByRole('dialog', { name: /settings/i });
     expect(within(dialog).getByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
   });
@@ -228,10 +227,11 @@ describe('Shell, server admin and member list (flow 08)', () => {
     expect(screen.queryByText('You are no longer in Midgard.')).toBeNull();
   });
 
-  it('a removal closes the invite and channel flows of that server even before the list changes', async () => {
+  it('a removal closes the invites settings of that server even before the list changes', async () => {
     const { fake, user } = setup();
-    await user.click(screen.getByRole('button', { name: 'invite link' }));
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    act(() => { fake.publish(`permissions:${A}`, access()); });
+    await user.click(screen.getByRole('button', { name: 'server settings' }));
+    expect(await screen.findByRole('button', { name: 'invites', current: 'page' })).toBeInTheDocument();
     act(() => { fake.publish('removals', [{ id: 7, communityId: A, name: 'Midgard' }]); });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('You are no longer in Midgard.')).toBeInTheDocument();

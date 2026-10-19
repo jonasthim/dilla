@@ -6,7 +6,7 @@
 // Every dialog's focus return is asserted with toBeFocused(), which jsdom cannot prove through portals and the inert drawer.
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
-  CLASS, TEST_TIMEOUT, WAIT, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
+  CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
@@ -106,7 +106,7 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
   await expectComposerReady(page, 'general');
 
   // A second text channel, so that Björn can stand outside #general while Ada writes there (its row then badges).
-  await button(page, 'create.channel.open').click();
+  await newChannelButton(page).click();
   const made = dialogOf(page, 'create.channel.title', { server: SERVER });
   await made.getByRole('textbox', { name: copy('create.channel.name'), exact: true }).fill('side');
   await page.keyboard.press('Enter');
@@ -114,15 +114,9 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
   await expect(channelRow(page, 'side')).toBeVisible({ timeout: WAIT });
   await openChannel(page, SERVER, 'general');
 
-  await button(page, 'invite.open').click();
-  const inviteDialog = dialogOf(page, 'invite.title', { server: SERVER });
-  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
-  await expect(linkField).toBeVisible({ timeout: WAIT });
-  await expect.poll(() => linkField.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
-  const link = await linkField.inputValue();
-  await page.keyboard.press('Escape');
-  await expect(inviteDialog).toBeHidden();
-  await expect(button(page, 'invite.open')).toBeFocused();
+  // web3.8 (item 11): the link is made under server settings → Invites.
+  const link = await makeInviteLink(page, SERVER);
+  await expect(button(page, 'admin.open')).toBeFocused();
 
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);

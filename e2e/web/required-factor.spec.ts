@@ -6,7 +6,7 @@
 // accessible name, with the copy keys of flow 10 through copy().
 import { expect, type Page, type LaunchOptions, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions, type TestInfo, type ViewportSize } from '@playwright/test';
 import {
-  COPY, SIGNIN, TEST_TIMEOUT, WAIT, completeFactorStep, copy, expectAccessible, expectComposerReady, expectHeading, expectShell, splash,
+  COPY, SIGNIN, TEST_TIMEOUT, WAIT, makeInviteLink, completeFactorStep, copy, expectAccessible, expectComposerReady, expectHeading, expectShell, splash,
   keyField, keySubmit, keyText, newAccount, nextButton, openChannel, railItem, railNav, readRecoveryKey, sendText, signInToKeyStep,
   signUp, submitButton, test, type Account, type Guard,
 } from './support/app';
@@ -105,11 +105,8 @@ async function cleoReopens(
   await page.keyboard.press('Enter');
   await expect(start).toBeHidden({ timeout: WAIT });
   await expectComposerReady(page, 'general');
-  await page.getByRole('button', { name: copy('invite.open'), exact: true }).click();
-  const inviteDialog = page.getByRole('dialog', { name: copy('invite.title', { server: SERVER }), exact: true });
-  const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
-  await expect.poll(() => linkField.inputValue(), { timeout: WAIT }).toMatch(/^https?:\/\/[^/\s]+\/i\/[^/\s]+$/);
-  const link = await linkField.inputValue();
+  // web3.8 (item 11): the link is made under server settings → Invites.
+  const link = await makeInviteLink(page, SERVER);
 
   // 1. Cleo signs up through that invite and closes the page on the factor choice.
   const dir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);

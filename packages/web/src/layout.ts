@@ -89,6 +89,29 @@ export function rememberedTab(tab: PhoneTab): string | null {
   try { return sessionStorage.getItem(TAB_KEY + tab); } catch { return null; }
 }
 
+const PANE_KEY = 'dilla.paneWidths';
+
+export type PaneWidths = { sidebar?: number; aside?: number };
+
+const width = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+
+/** The pane widths this browser kept (R18): finite positive numbers only; anything else, or blocked storage, is `{}`. */
+export function readPaneWidths(): PaneWidths {
+  try {
+    // eslint-disable-next-line no-restricted-globals -- a pane width is a per-viewer convenience, not a key, token or state worth protecting
+    const raw: unknown = JSON.parse(localStorage.getItem(PANE_KEY) ?? 'null');
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+    const o = raw as Record<string, unknown>;
+    return { ...(width(o.sidebar) ? { sidebar: o.sidebar } : {}), ...(width(o.aside) ? { aside: o.aside } : {}) };
+  } catch { return {}; }
+}
+
+/** Keeps the pane widths for this browser. A blocked localStorage keeps nothing. */
+export function writePaneWidths(w: PaneWidths): void {
+  // eslint-disable-next-line no-restricted-globals -- a pane width is a per-viewer convenience, not a key, token or state worth protecting
+  try { localStorage.setItem(PANE_KEY, JSON.stringify(w)); } catch { /* blocked storage: the widths are not kept */ }
+}
+
 /** The history-state key of an open sheet (R13). */
 const SHEET = 'phoneSheet';
 const sheetOf = (state: unknown): unknown =>

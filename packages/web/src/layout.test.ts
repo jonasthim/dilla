@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PHONE_QUERY, rememberedTab, rememberTab, usePhoneLayout, usePhoneSheet, useVisualViewportHeight } from './layout.ts';
+import { PHONE_QUERY, readPaneWidths, rememberedTab, rememberTab, writePaneWidths, usePhoneLayout, usePhoneSheet, useVisualViewportHeight } from './layout.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -224,6 +224,46 @@ describe('tab memory', () => {
     const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
     expect(rememberedTab('you')).toBeNull();
     expect(() => rememberTab('you', '/you')).not.toThrow();
+    get.mockRestore();
+    set.mockRestore();
+  });
+});
+
+describe('pane widths (R18)', () => {
+  afterEach(() => {
+    // eslint-disable-next-line no-restricted-properties -- the pane test clears the one key it writes
+    window.localStorage.clear();
+  });
+
+  it('round-trips through localStorage under dilla.paneWidths', () => {
+    expect(readPaneWidths()).toEqual({});
+    writePaneWidths({ sidebar: 288, aside: 264 });
+    expect(readPaneWidths()).toEqual({ sidebar: 288, aside: 264 });
+    // eslint-disable-next-line no-restricted-properties -- the pane test reads the one key it writes
+    expect(JSON.parse(window.localStorage.getItem('dilla.paneWidths') ?? 'null')).toEqual({ sidebar: 288, aside: 264 });
+    writePaneWidths({ aside: 300 });
+    expect(readPaneWidths()).toEqual({ aside: 300 });
+  });
+
+  it('returns {} for a malformed value, a non-object, or non-positive and non-finite widths', () => {
+    for (const bad of ['{nope', '[1,2]', '7', 'null', '"x"']) {
+      // eslint-disable-next-line no-restricted-properties -- the pane test seeds the one key it reads
+      window.localStorage.setItem('dilla.paneWidths', bad);
+      expect(readPaneWidths(), bad).toEqual({});
+    }
+    // eslint-disable-next-line no-restricted-properties -- the pane test seeds the one key it reads
+    window.localStorage.setItem('dilla.paneWidths', JSON.stringify({ sidebar: -4, aside: '300' }));
+    expect(readPaneWidths()).toEqual({});
+    // eslint-disable-next-line no-restricted-properties -- the pane test seeds the one key it reads
+    window.localStorage.setItem('dilla.paneWidths', JSON.stringify({ sidebar: 0, aside: 250, extra: 1 }));
+    expect(readPaneWidths()).toEqual({ aside: 250 });
+  });
+
+  it('returns {} without throwing when localStorage throws', () => {
+    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    expect(readPaneWidths()).toEqual({});
+    expect(() => writePaneWidths({ sidebar: 280 })).not.toThrow();
     get.mockRestore();
     set.mockRestore();
   });

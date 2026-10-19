@@ -48,16 +48,18 @@ describe('the phone shell: the servers list', () => {
     expect(document.querySelector('.dw-voice-dock')).toBeNull();
   });
 
-  it('holds the server actions in one menu, and the new-channel action only for a person who may', async () => {
+  it('holds search, settings and leave in the server menu (no invite, no new channel); the list header has the "+" only for a person who may', async () => {
     const { user, client } = phone({ path: `/c/${A}` });
     await user.click(await screen.findByRole('button', { name: t('nav.server.menu') }));
     const names = () => screen.getAllByRole('menuitem').map(i => i.textContent);
-    expect(names()).toEqual([t('search.open'), t('invite.open'), t('admin.open'), t('admin.leave.open')]);
+    expect(names()).toEqual([t('search.open'), t('admin.open'), t('admin.leave.open')]);
     await user.keyboard('{Escape}');
+    expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
     manage(client);
     await user.click(screen.getByRole('button', { name: t('nav.server.menu') }));
-    expect(names()).toEqual([t('search.open'), t('create.channel.open'), t('invite.open'), t('admin.open'), t('admin.leave.open')]);
-    expect(screen.queryByRole('button', { name: t('create.channel.open') })).toBeNull();
+    expect(names()).toEqual([t('search.open'), t('admin.open'), t('admin.leave.open')]);
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('button', { name: t('create.channel.open') })).toBeInTheDocument();
   });
 
   it('labels the rail’s join and new buttons with visible captions (walk 24)', async () => {

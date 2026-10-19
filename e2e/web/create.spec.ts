@@ -8,7 +8,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import {
   TEST_TIMEOUT, WAIT, completeSignUp, composerBox, copy, dmsNav, expectAccessible, expectComposerReady, channelRow,
-  messageRow, newAccount, openChannel, railItem, railNav, sendText, sidebarTab, signUp, tag, test,
+  messageRow, newAccount, newChannelButton, openChannel, openInviteDialog, railItem, railNav, sendText, sidebarTab, signUp, tag, test,
 } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
@@ -105,8 +105,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
   // not copied by itself at all (flow 07, "invite: answer slow"): the status stays empty and the link waits in the field
   // with an enabled "copy link". So the dialog must end in one of three states: copied, blocked, or (after the second in
   // which a copy by itself would have spoken) the link with an enabled "copy link" and nothing said.
-  await button(page, 'invite.open').click();
-  const inviteDialog = page.getByRole('dialog', { name: copy('invite.title', { server: SERVER }), exact: true });
+  // web3.8 (item 11): the link is made under server settings → Invites.
+  const inviteDialog = await openInviteDialog(page, SERVER);
   const linkField = inviteDialog.getByRole('textbox', { name: copy('invite.link'), exact: true });
   const copyLink = button(inviteDialog, 'invite.copy');
   const inviteStatus = inviteDialog.getByRole('status');
@@ -126,6 +126,8 @@ test('from an empty instance: start a server, invite a friend through a link, re
   await expectAccessible(page, 'the invite link');
   await page.keyboard.press('Escape');
   await expect(inviteDialog).toBeHidden();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: copy('admin.title'), exact: true })).toBeHidden();
 
   // 4. The second person, in a browser of their own, through that link: the instance's invite page, its "open dilla"
   // link, then the sign-up, which lands them in the server. The link names the instance's public domain; this host
@@ -185,7 +187,7 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await railItem(page2, SERVER).click();
     await expect(channelRow(page2, 'general')).toBeVisible({ timeout: WAIT });
     await sidebarTab(page, 'channels').click();
-    await button(page, 'create.channel.open').click();
+    await newChannelButton(page).click();
     const newChannel = page.getByRole('dialog', { name: copy('create.channel.title', { server: SERVER }), exact: true });
     await expect(newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true })).toBeFocused();
     const kind = newChannel.getByRole('radiogroup', { name: copy('create.channel.kind'), exact: true });
@@ -209,18 +211,21 @@ test('from an empty instance: start a server, invite a friend through a link, re
     await sendText(page2, SECOND_CHANNEL, answer);
     await expect(messageRow(page, SECOND_CHANNEL, answer)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
 
-    // 8. The second person is a member, not the owner: "invite link" yes, "new channel" no.
-    await expect(button(page2, 'invite.open')).toBeVisible();
-    await expect(button(page2, 'create.channel.open')).toHaveCount(0);
+    // 8. The second person is a member, not the owner: "server settings" yes (it opens on Invites), the list's "+" and the
+    // sidebar's old "invite link" no.
+    await expect(button(page2, 'admin.open')).toBeVisible();
+    await expect(newChannelButton(page2)).toHaveCount(0);
+    await expect(button(page2, 'invite.open')).toHaveCount(0);
 
-    // 9. The whole-branch walk. The owner's actions (new channel, invite link, server settings; web3.4 final fix B1) are
+    // 9. The whole-branch walk. The owner's actions (server settings in the header, the "+" in the channel list; web3.8) are
     // all visible and none is clipped: each fits inside its row and the group fits the 240 px sidebar (flow 07); a name
     // the server already has for that kind is refused before any request (walk M2); a channel the owner just made says
     // only "nothing here yet." (walk M1); and a long name never widens the page (walk I2): at 1280 "pinned" stays on
     // screen, at 360 the page is no wider than the viewport.
     const actionGroup = page.getByRole('group', { name: copy('create.actions'), exact: true });
     const actionButtons = actionGroup.getByRole('button');
-    await expect(actionButtons).toHaveCount(3);
+    await expect(actionButtons).toHaveCount(1);
+    await expect(newChannelButton(page)).toBeVisible();
     for (const b of await actionButtons.all()) await expect(b).toBeVisible();
     const fit = await actionGroup.evaluate(group => {
       const box = group.getBoundingClientRect();
@@ -244,12 +249,12 @@ test('from an empty instance: start a server, invite a friend through a link, re
       expect(b.clipped, `${b.name} shows its whole label`).toBe(false);
     }
     const nameField = newChannel.getByRole('textbox', { name: copy('create.channel.name'), exact: true });
-    await button(page, 'create.channel.open').click();
+    await newChannelButton(page).click();
     await nameField.fill(SECOND_CHANNEL);
     await nameField.press('Enter');
     await expect(newChannel.getByRole('alert')).toHaveText(copy('create.channel.error.takenText', { name: SECOND_CHANNEL }));
     for (const [typed, slug] of [[LONG_TYPED, LONG_SLUG], [HUNDRED_BYTES, HUNDRED_BYTES]] as const) {
-      if (!(await newChannel.isVisible())) await button(page, 'create.channel.open').click();
+      if (!(await newChannel.isVisible())) await newChannelButton(page).click();
       await nameField.fill(typed);
       await nameField.press('Enter');
       await expect(newChannel).toBeHidden({ timeout: WAIT });
