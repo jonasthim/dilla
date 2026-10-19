@@ -26,7 +26,11 @@ describe('the phone layout of voice (360 px)', () => {
 describe('the desktop stage toolbar is pinned (web3.8, VOICE-W)', () => {
   const stage = '.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage)';
   it('fills the stage and sticks the toolbar to its bottom', () => {
-    expect(rule(css, `${stage} .d-call-stage`)).toMatch(/min-height:\s*100%;\s*box-sizing:\s*border-box/);
+    // web3.8 WS7: the stage is as tall as its pane (not a minimum), so the tiles fill what the toolbar leaves.
+    expect(rule(css, `${stage} .d-call-stage`)).toMatch(/height:\s*100%;\s*min-height:\s*0;\s*box-sizing:\s*border-box/);
+    expect(rule(css, `${stage}`)).toMatch(/overflow:\s*hidden/);
+    expect(rule(css, `${stage} .d-call-stage__tiles[data-tiles="stage"]`)).toMatch(/flex:\s*1 1 auto;\s*min-height:\s*0/);
+    expect(rule(css, '.dw-voice-stage')).toMatch(/height:\s*100%/);
     expect(rule(css, `${stage} .d-call-stage__controls`)).toMatch(/position:\s*sticky;\s*bottom:\s*0;\s*margin-top:\s*auto;\s*padding-block:\s*0\.5rem;\s*background:\s*var\(--bg\)/);
   });
 });

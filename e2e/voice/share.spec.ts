@@ -8,7 +8,7 @@ import type { Locator } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  AUDIBLE_RMS, VoicePeer, WAIT, audible, audibleLevel, copy, dock, framesPass, heard, joinVoice, onboard, self, sentCount, tile,
+  AUDIBLE_RMS, VoicePeer, WAIT, audible, audibleLevel, copy, dock, framesPass, heard, joinVoice, onboard, screenTile, self, sentCount, tile,
 } from './support/voice';
 import { chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
 
@@ -38,13 +38,16 @@ test('a screen share and a camera reach the other browser verified, and stop', a
       const share = controls.getByRole('button', { name: copy('voice.shareOn'), exact: true });
       await share.click();
       await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+      // web3.8: the screen is a tile of its own; alice's person tile (an avatar, she shares no camera) keeps the glyph.
+      const shared = screenTile(bob.page, 'alice');
       await expect(word('screen')).toBeVisible({ timeout: WAIT });
+      await expect(seen).toHaveAttribute('data-source', 'avatar');
       // Only a verified stream is shown (L-UI-61…69): the tile renders the video once bob verified alice's frames.
-      await expect(seen).toHaveAttribute('data-media', 'true', { timeout: WAIT });
-      await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: WAIT }).toBeGreaterThan(0);
+      await expect(shared).toHaveAttribute('data-media', 'true', { timeout: WAIT });
+      await expect.poll(() => shared.locator('video.d-call-tile__video').evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: WAIT }).toBeGreaterThan(0);
       await share.click();
       await expect(word('screen')).toHaveCount(0, { timeout: WAIT });
-      await expect(seen).not.toHaveAttribute('data-media', 'true', { timeout: WAIT });
+      await expect(shared).toHaveCount(0, { timeout: WAIT });
     });
 
     await test.step('camera on, then off', async () => {
@@ -127,7 +130,7 @@ test('a shared tab’s sound is heard by the other browser', async ({ peerBrowse
       await share.click();
       await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
       await expect(stateWord(seen, 'screen')).toBeVisible({ timeout: WAIT });
-      await expect(seen).toHaveAttribute('data-media', 'true', { timeout: WAIT });
+      await expect(screenTile(bob.page, 'alice')).toHaveAttribute('data-media', 'true', { timeout: WAIT });
       await audible(bob.page);
       await share.click();
       await expect(stateWord(seen, 'screen')).toHaveCount(0, { timeout: WAIT });

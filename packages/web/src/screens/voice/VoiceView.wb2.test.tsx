@@ -79,18 +79,19 @@ async function inHarbour(o: Parameters<typeof renderVoiceShell>[0] = {}) {
 const tileOf = (name: string) => main().getAllByRole('listitem').find(li => within(li).queryByText(name, { exact: true }) !== null)!;
 
 describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)', () => {
-  it('I2: a person with camera and screen on shows the screen as the tile and the camera as an inset', async () => {
+  it('I2: a person with camera and screen on gives a tile for each, with no inset (web3.8 R27)', async () => {
     const app = await inHarbour();
     const screenStream = new MediaStream();
     const cam = new MediaStream();
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: cam, screen: screenStream }] }));
-    const tile = await waitFor(() => { const t = tileOf('bob'); expect(t.querySelectorAll('video')).toHaveLength(2); return t; });
-    const [big, inset] = [...tile.querySelectorAll('video')];
-    expect(big.srcObject).toBe(screenStream);
-    expect(inset.srcObject).toBe(cam);
+    const video = (id: string) => document.querySelector<HTMLVideoElement>(`li[data-tile-id="${BOB_DEV}:${id}"] video`);
+    await waitFor(() => { expect(video('screen')).not.toBeNull(); expect(video('camera')).not.toBeNull(); });
+    expect(video('screen')!.srcObject).toBe(screenStream);
+    expect(video('camera')!.srcObject).toBe(cam);
+    expect(tileOf('bob').querySelectorAll('video')).toHaveLength(1);
   });
 
-  it('I3: your own tile shows your camera mirrored, and your screen', async () => {
+  it('I3: your own camera tile is mirrored, and your screen has a tile of its own, not mirrored', async () => {
     const app = await inHarbour();
     const cam = new MediaStream();
     act(() => app.session.update({ camera: true, localCamera: cam }));
@@ -99,11 +100,14 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     expect(own.querySelector('video')).toHaveAttribute('data-mirror', 'true');
     const screenStream = new MediaStream();
     act(() => app.session.update({ sharing: true, localScreen: screenStream }));
-    await waitFor(() => expect(own.querySelectorAll('video')).toHaveLength(2));
-    const [big, inset] = [...own.querySelectorAll('video')];
-    expect(big.srcObject).toBe(screenStream);
-    expect(big).not.toHaveAttribute('data-mirror');
-    expect(inset).toHaveAttribute('data-mirror', 'true');
+    const screenTile = await waitFor(() => {
+      const t = document.querySelector('.d-call-tile[data-own="true"][data-source="screen"]')!;
+      expect(t.querySelector('video')).not.toBeNull();
+      return t;
+    });
+    expect(screenTile.querySelector('video')!.srcObject).toBe(screenStream);
+    expect(screenTile.querySelector('video')).not.toHaveAttribute('data-mirror');
+    expect(own.querySelector('video')).toHaveAttribute('data-mirror', 'true');
   });
 
   it('M4: your own tile says speaking when the SFU hears you, whatever the meter level', async () => {

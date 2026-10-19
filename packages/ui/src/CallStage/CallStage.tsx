@@ -182,7 +182,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
             const id = idOf(t);
             const focused = focusedHere && id === focusedId;
             return (
-              <CallTile key={id} {...t} media={hideMedia ? null : t.media} inset={hideMedia ? null : t.inset ?? null}
+              <CallTile key={id} {...t} media={hideMedia ? null : t.media}
                 focused={focused} onFocusTile={onFocus ? () => { onFocus(focused ? null : id); } : undefined} />
             );
           })}

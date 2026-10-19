@@ -65,7 +65,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* The voice view fills the main pane; a DM's call stage sits above the log at 40 % of it, the log and composer below. */
 .dw-voice-stage { height: 100%; min-height: 0; overflow-y: auto; scroll-padding-bottom: 4.5rem; /* the pinned toolbar: button + 2 x 0.5rem */ }
 /* web3.8: on desktop the stage fills its pane and its toolbar is pinned to the bottom centre of it (the dock keeps its own). */
-.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage { min-height: 100%; box-sizing: border-box; }
+.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) { overflow: hidden; }
+.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage { height: 100%; min-height: 0; box-sizing: border-box; }
+/* web3.8 WS7: the grid or the focused tile fills what the heading, the notice and the toolbar leave. */
+.d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage__tiles[data-tiles="stage"] { flex: 1 1 auto; min-height: 0; }
 .d-app-shell:not([data-layout="phone"]) .dw-voice-stage:not(.dw-dm-call .dw-voice-stage) .d-call-stage__controls { position: sticky; bottom: 0; margin-top: auto; padding-block: 0.5rem; background: var(--bg); }
 .dw-afk-view { display: flex; flex-direction: column; align-items: flex-start; gap: var(--group-gap); padding: var(--space-6); }
 .d-app-shell__content:has(> .dw-dm-call, > .dw-call-strip) { display: flex; flex-direction: column; }

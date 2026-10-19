@@ -42,44 +42,67 @@ function tileLabels(name: string): CallTileProps['labels'] {
   return { state: voiceStateLabels(), volume: t('voice.volume', { name }), volumeValue: en['voice.volumeValue'] };
 }
 
-/** The tiles of the call this device is in: the session's tiles (others) and the own one first. */
+/** The id of a tile in the stage (R27): one keyed list, `${deviceId}:${source}`. */
+const tileId = (deviceId: string, source: 'camera' | 'screen' | 'avatar') => `${deviceId}:${source}`;
+
+type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fullscreenLabel' | 'mirror'>;
+
+/**
+ * One device's tiles (R27, pre-flight C-9): a person tile (`camera` with a verified stream, else `avatar`) that keeps the
+ * volume, the state glyphs and, for the own camera, the mirror, plus a `screen` tile while it shares (no volume, never
+ * mirrored). A screen-only sharer therefore keeps an avatar tile.
+ */
+function deviceTiles(base: TileBase, o: {
+  camera: MediaStream | null; screen: MediaStream | null; sharing: boolean; mirrorCamera: boolean; name: string;
+}): CallTileProps[] {
+  const { view } = base;
+  const fullscreenLabel = t('stage.fullscreen');
+  const camera = o.camera !== null && view.state !== 'unverified';
+  const out: CallTileProps[] = [{
+    ...base, media: camera ? o.camera : null, source: camera ? 'camera' : 'avatar', id: tileId(view.deviceId, camera ? 'camera' : 'avatar'),
+    title: o.name, fullscreenLabel, mirror: camera && o.mirrorCamera,
+  }];
+  if (o.screen !== null || o.sharing) {
+    out.push({ ...base, media: o.screen, source: 'screen', id: tileId(view.deviceId, 'screen'), title: t('stage.screen', { name: o.name }),
+      fullscreenLabel, mirror: false });
+  }
+  return out;
+}
+
+/** The tiles of the call this device is in: the own device first, then the others', each device's tiles together. */
 function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   const { call } = v;
   const state = call.state;
   const room = v.voice?.[channelId];
   // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
   // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
-  const camera = state?.localCamera ?? null;
-  const screen = state?.localScreen ?? null;
-  const own = v.self === null ? [] : [{
+  const own = v.self === null ? [] : deviceTiles({
     view: {
       deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: userName(v.self.id, v.members, v.trust), state: 'ok' as const,
       speaking: state?.speaking ?? false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
       screen: state?.sharing ?? false, web: false, bot: false,
     },
-    own: true, volume: 100, media: screen ?? camera, inset: screen !== null ? camera : null,
-    mirror: camera === null ? null : screen !== null ? 'inset' as const : 'media' as const,
-    labels: tileLabels(v.self.username), onVolume: () => undefined,
-  }];
-  const others = (state?.tiles ?? []).map(tile => {
+    own: true, volume: 100, labels: tileLabels(v.self.username), onVolume: () => undefined,
+  }, { camera: state?.localCamera ?? null, screen: state?.localScreen ?? null, sharing: state?.sharing ?? false, mirrorCamera: true,
+    name: v.self.username });
+  const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
     const view = p !== undefined ? participantView(p, tile.state, tile.speaking)
       : { deviceId: tile.deviceId, userId: tile.userId, name, state: tile.state, speaking: tile.speaking, muted: false, deafened: false,
         video: tile.video !== null, screen: tile.screen !== null, web: false, bot: false };
-    // Product walk I2: the screen is the tile and the camera its inset when both are on.
-    return { view, own: false, volume: volumeOf(v.settings, tile.userId), media: tile.screen ?? tile.video,
-      inset: tile.screen !== null ? tile.video : null, labels: tileLabels(name),
-      onVolume: (n: number) => call.setVolume(tile.userId, n) };
+    return deviceTiles({ view, own: false, volume: volumeOf(v.settings, tile.userId), labels: tileLabels(name),
+      onVolume: (n: number) => call.setVolume(tile.userId, n) },
+    { camera: tile.video, screen: tile.screen, sharing: false, mirrorCamera: false, name });
   });
   return [...own, ...others];
 }
 
-/** The people of a live call this device is not in, as tiles without media. */
+/** The people of a live call this device is not in, as avatar tiles without media. */
 function roomTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   return (v.voice?.[channelId]?.participants ?? []).map(p => ({
     view: participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
-    onVolume: (n: number) => v.call.setVolume(p.userId, n),
+    onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'avatar'), title: p.name,
   }));
 }
 
@@ -229,6 +252,29 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   );
 }
 
+/**
+ * R26: the one rule that focuses a tile by itself. A new screen tile of another person takes focus while no tile is
+ * focused; an id the stage already offered in this call is never offered again (a tile the person unfocused stays
+ * unfocused for the same share; when the share ends its id is forgotten, so a later share is new); the own screen never
+ * does. Focus is dropped when the focused tile goes away, and everything is forgotten on leave.
+ */
+function useAutoFocus(tiles: readonly CallTileProps[], joined: boolean, focusedId: string | null, setFocusedId: (id: string | null) => void) {
+  const offered = useRef(new Set<string>());
+  const idsKey = tiles.map(t => t.id ?? t.view.deviceId).join('\n');
+  const screensKey = tiles.filter(t => t.source === 'screen' && !t.own).map(t => t.id ?? t.view.deviceId).join('\n');
+  useEffect(() => {
+    if (!joined) { offered.current.clear(); setFocusedId(null); return; }
+    const now = screensKey === '' ? [] : screensKey.split('\n');
+    for (const id of [...offered.current]) if (!now.includes(id)) offered.current.delete(id);
+    const fresh = now.filter(id => !offered.current.has(id));
+    for (const id of fresh) offered.current.add(id);
+    if (focusedId === null && fresh.length > 0) setFocusedId(fresh[0]);
+  }, [joined, screensKey, focusedId, setFocusedId]);
+  useEffect(() => {
+    if (focusedId !== null && !idsKey.split('\n').includes(focusedId)) setFocusedId(null);
+  }, [idsKey, focusedId, setFocusedId]);
+}
+
 const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') });
 
 /**
@@ -250,10 +296,14 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
   useEffect(() => { if (paused && pauseFocusPending) markPauseFocused(); }, [paused, pauseFocusPending, markPauseFocused]);
   const held = !joined && joinHeld(v, channelId);
   const docState = !joined && notice?.kind === 'blocked' ? 'voice-blocked' : 'voice-stage';
+  const tiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
+  // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  useAutoFocus(tiles, joined, focusedId, setFocusedId);
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
-      <CallStage title={title} tiles={joined ? callTiles(v, channelId) : roomTiles(v, channelId)} code={code} notice={notice}
+      <CallStage title={title} tiles={tiles} focusedId={focusedId} onFocus={setFocusedId} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
         controls={joined ? <Controls v={v} paused={paused} dm={dm} />
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}

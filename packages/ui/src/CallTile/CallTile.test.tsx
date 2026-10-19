@@ -103,25 +103,19 @@ describe('CallTile', () => {
     expect(screen.getByRole('slider', { name: 'volume for ada' })).toHaveAttribute('aria-valuetext', '120 procent');
   });
 
-  it('product walk I2: a screen and a camera show together, the screen as the tile and the camera as an inset', () => {
-    const screenStream = new MediaStream();
-    const cam = new MediaStream();
-    const { container } = render(<CallTile view={{ ...view, video: true, screen: true }} {...rest} media={screenStream} inset={cam} />);
-    const [main, inset] = [...container.querySelectorAll('video')];
-    expect(main.srcObject).toBe(screenStream);
-    expect(inset.srcObject).toBe(cam);
-    expect(inset).toHaveClass('d-call-tile__inset');
-    expect(inset.muted).toBe(true);
+  it('web3.8: a tile has no inset; a camera and a screen are two tiles (R27)', () => {
+    const legacy = { inset: new MediaStream() } as Record<string, unknown>;
+    const { container } = render(<CallTile view={{ ...view, video: true, screen: true }} {...rest} media={new MediaStream()} {...legacy} />);
+    expect(container.querySelectorAll('video')).toHaveLength(1);
+    expect(container.querySelector('.d-call-tile__inset')).toBeNull();
   });
 
   it('product walk I3: the own camera is mirrored, the own screen is not', () => {
     const cam = new MediaStream();
-    const { container, rerender } = render(<CallTile view={{ ...view, video: true }} {...rest} own media={cam} mirror="media" />);
+    const { container, rerender } = render(<CallTile view={{ ...view, video: true }} {...rest} own media={cam} mirror />);
     expect(container.querySelector('video')).toHaveAttribute('data-mirror', 'true');
-    rerender(<CallTile view={{ ...view, video: true, screen: true }} {...rest} own media={new MediaStream()} inset={cam} mirror="inset" />);
-    const [main, inset] = [...container.querySelectorAll('video')];
-    expect(main).not.toHaveAttribute('data-mirror');
-    expect(inset).toHaveAttribute('data-mirror', 'true');
+    rerender(<CallTile view={{ ...view, video: true, screen: true }} {...rest} own source="screen" media={new MediaStream()} mirror={false} />);
+    expect(container.querySelector('video')).not.toHaveAttribute('data-mirror');
   });
 
   it('product walk M6: the volume shows its value and marks 100 %', () => {
@@ -139,17 +133,16 @@ describe('CallTile', () => {
     expect((await axe(container, { rules: { 'color-contrast': { enabled: false } } })).violations).toEqual([]);
   });
 
-  it('given only today\'s props (inset, mirror media) it renders as before: its own li, no focus button, no full-screen button', () => {
+  it('given no onFocusTile it has its own li, no focus button and no full-screen button', () => {
     Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, value: true });
-    const { container } = render(<CallTile view={{ ...view, video: true, screen: true }} {...rest} media={new MediaStream()} inset={new MediaStream()} mirror="media" />);
+    const { container } = render(<CallTile view={{ ...view, video: true, screen: true }} {...rest} media={new MediaStream()} mirror />);
     Reflect.deleteProperty(document, 'fullscreenEnabled');
     const li = container.firstElementChild!;
     expect(li.tagName).toBe('LI');
     expect(li).toHaveClass('d-call-stage__tile');
     expect(li).toHaveAttribute('data-source', 'camera');
-    expect(container.querySelectorAll('video')).toHaveLength(2);
+    expect(container.querySelectorAll('video')).toHaveLength(1);
     expect(container.querySelector('video')).toHaveAttribute('data-mirror', 'true');
-    expect(container.querySelector('.d-call-tile__inset')).not.toBeNull();
     expect(container.querySelector('.d-call-tile__focus')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
   });

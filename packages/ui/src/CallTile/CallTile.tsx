@@ -25,16 +25,11 @@ export interface CallTileProps {
   own: boolean;
   /** 0..200, the per-person volume in percent. */
   volume: number;
-  /** The camera or screen stream to show, or null. Never attached while the stream is unverified. With both on, the
-   *  screen (product walk I2: it is usually why someone shares). */
+  /** The stream of this tile's source (a camera or a screen; one tile per source), or null. Never attached while the
+   *  stream is unverified. */
   media: MediaStream | null;
-  /** The camera while `media` is the screen: a small inset over it (product walk I2); null or absent otherwise. */
-  inset?: MediaStream | null;
-  /**
-   * The own camera's self-view is mirrored, as a mirror shows a face (product walk I3). `true` mirrors `media`; the
-   * `'media' | 'inset'` union is deprecated with `inset` (pre-flight C-2) and goes in WS7.
-   */
-  mirror?: boolean | 'media' | 'inset' | null;
+  /** The own camera's self-view is mirrored, as a mirror shows a face (product walk I3). A screen is never mirrored. */
+  mirror?: boolean;
   /** The tile's key in the stage (R27): `${deviceId}:${source}`; defaults to `view.deviceId`. */
   id?: string;
   /** What the tile shows: a person's camera (default), a shared screen, or an avatar without media. */
@@ -114,7 +109,7 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
  * With `onFocusTile` the media and caption sit in a focus `<button aria-pressed>`, and the full-screen button and the
  * range are its siblings, never inside it (R28). Focus only flips `data-focused`: nothing is re-parented (R27).
  */
-export function CallTile({ view, own, volume, media, inset = null, mirror = null, labels, onVolume, id, source = 'camera', title,
+export function CallTile({ view, own, volume, media, mirror = false, labels, onVolume, id, source = 'camera', title,
   fullscreenLabel, focused = false, onFocusTile }: CallTileProps) {
   const ticks = useId();
   const statesId = useId();
@@ -128,7 +123,6 @@ export function CallTile({ view, own, volume, media, inset = null, mirror = null
   const name = title ?? view.name;
   const isScreen = source === 'screen';
   const showMedia = media !== null && view.state !== 'unverified' && source !== 'avatar';
-  const showInset = showMedia && inset !== null;
   const words = isScreen ? [] : voiceStateWords(view, labels.state);
   const canFullscreen = fullscreenLabel !== undefined && document.fullscreenEnabled === true;
   const toggleFullscreen = () => {
@@ -141,8 +135,7 @@ export function CallTile({ view, own, volume, media, inset = null, mirror = null
     <>
       {showMedia ? (
         <div className="d-call-tile__media">
-          <StreamVideo stream={media} className="d-call-tile__video" mirror={mirror === true || mirror === 'media'} />
-          {showInset ? <StreamVideo stream={inset} className="d-call-tile__inset" mirror={mirror === 'inset'} /> : null}
+          <StreamVideo stream={media} className="d-call-tile__video" mirror={mirror} />
         </div>
       ) : onFocusTile ? <div className="d-call-tile__avatar"><Avatar name={name} size="lg" /></div> : null}
       <span className="d-call-tile__caption">

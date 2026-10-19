@@ -938,3 +938,108 @@ describe('screen share without getDisplayMedia', () => {
     expect(share).toHaveAttribute('aria-disabled', 'true');
   });
 });
+
+// web3.8 WS7: one tile per source (camera, screen, avatar), and R26's one auto-focus rule.
+describe('the stage has one tile per source (web3.8 WS7)', () => {
+  if (typeof globalThis.MediaStream === 'undefined') {
+    (globalThis as { MediaStream?: unknown }).MediaStream = class MediaStream {};
+  }
+  const room = (flags: number) => ({ [GENV]: { callId: GENV, participants: [
+    { userId: BOB, deviceId: BOB_DEV, name: 'bob', flags, own: false, web: false, bot: false },
+    { userId: 'carl', deviceId: 'c1', name: 'carl', flags: 0, own: false, web: false, bot: false },
+    { userId: ME.id, deviceId: OWN_DEV, name: 'me', flags: 0, own: true, web: true, bot: false },
+  ] } });
+  const FLAG_MUTE = 1 << 1;
+  const FLAG_SCREEN = 1 << 4;
+  const ids = () => [...document.querySelectorAll<HTMLElement>('li.d-call-stage__tile')].map(e => e.dataset.tileId);
+  const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
+  const focusedIds = () => [...document.querySelectorAll<HTMLElement>('li.d-call-stage__tile[data-focused="true"]')].map(e => e.dataset.tileId);
+  const tile = (deviceId: string, userId: string, video: MediaStream | null, screen: MediaStream | null) =>
+    ({ deviceId, userId, state: 'ok' as const, speaking: false, video, screen });
+
+  it('a participant with a camera and a screen gives two tiles, "bob" and "bob’s screen", with no inset', async () => {
+    const app = await inVoice({ voice: room(0) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), new MediaStream())] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    expect(ids()).toContain(`${BOB_DEV}:camera`);
+    expect(within(li(`${BOB_DEV}:camera`)).getByRole('button', { name: 'bob' })).toBeInTheDocument();
+    expect(within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) })).toBeInTheDocument();
+    expect(document.querySelector('.d-call-tile__inset')).toBeNull();
+  });
+
+  it('a participant who shares only a screen keeps an avatar tile with the volume and the muted glyph', async () => {
+    const app = await inVoice({ voice: room(FLAG_MUTE | FLAG_SCREEN) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    const person = li(`${BOB_DEV}:avatar`);
+    expect(person).toHaveAttribute('data-source', 'avatar');
+    expect(within(person).getByRole('img', { name: 'muted' })).toBeInTheDocument();
+    expect(within(person).getByRole('slider')).toBeInTheDocument();
+    expect(within(li(`${BOB_DEV}:screen`)).queryByRole('slider')).toBeNull();
+    expect(within(li(`${BOB_DEV}:screen`)).queryByRole('img', { name: 'muted' })).toBeNull();
+  });
+
+  it('an audio-only participant gives one avatar tile', async () => {
+    const app = await inVoice({ voice: room(0) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:avatar`));
+    expect(ids().filter(i => i?.startsWith(BOB_DEV))).toEqual([`${BOB_DEV}:avatar`]);
+  });
+
+  it('the people of a call this device has not joined are avatar tiles', async () => {
+    renderVoiceShell({ voice: room(0) });
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:avatar`));
+    expect(ids()).toContain('c1:avatar');
+  });
+
+  it('the own camera tile is mirrored and the own screen tile is not', async () => {
+    const app = await inVoice({ voice: room(0) });
+    const cam = new MediaStream();
+    const scr = new MediaStream();
+    act(() => app.session.update({ camera: true, localCamera: cam, sharing: true, localScreen: scr }));
+    await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
+    expect(li(`${OWN_DEV}:camera`).querySelector('video')).toHaveAttribute('data-mirror', 'true');
+    expect(li(`${OWN_DEV}:camera`).querySelector('video')!.srcObject).toBe(cam);
+    expect(li(`${OWN_DEV}:screen`).querySelector('video')).not.toHaveAttribute('data-mirror');
+    expect(li(`${OWN_DEV}:screen`).querySelector('video')!.srcObject).toBe(scr);
+  });
+
+  describe('R26: auto-focus', () => {
+    it('another person’s new screen takes the focus, and the own share does not', async () => {
+      const app = await inVoice({ voice: room(0) });
+      act(() => app.session.update({ sharing: true, localScreen: new MediaStream() }));
+      await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
+      expect(focusedIds()).toEqual([]);
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+    });
+
+    it('after Escape the same share does not take the focus again, and a second share does not steal it', async () => {
+      const app = await inVoice({ voice: room(0) });
+      const bobScreen = new MediaStream();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen), tile('c1', 'carl', null, new MediaStream())] }));
+      await waitFor(() => expect(ids()).toContain('c1:screen'));
+      expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]);
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), bobScreen), tile('c1', 'carl', null, new MediaStream())] }));
+      await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:camera`));
+      expect(focusedIds()).toEqual([]);
+    });
+
+    it('the focused tile leaving returns the stage to the grid, and a new share focuses again', async () => {
+      const app = await inVoice({ voice: room(0) });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+      await waitFor(() => expect(ids()).not.toContain(`${BOB_DEV}:screen`));
+      expect(focusedIds()).toEqual([]);
+      expect(document.querySelector('[data-focused-stage]')).toBeNull();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+    });
+  });
+});
