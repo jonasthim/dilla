@@ -36,7 +36,7 @@ export interface AccountState {
 /** Page-bound errors have a stable code and no detail. `store` is set only on E_STORE_NEWER: the app schema of the
  *  store in this browser and the highest this build supports (C4x, web3.6). */
 export interface WorkerError { code: string; detail: string; status: number; retryAfterMs: number | null;
-  /** A stable key for a local refusal the page maps to copy ('announce.noHeldRole'); never the detail text. */
+  /** A stable key for a local refusal the page maps to copy (none since web3.8 R5 removed the last); never the detail text. */
   reason?: string;
   store?: { found: number; supported: number }; }
 export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; generation: string | null;

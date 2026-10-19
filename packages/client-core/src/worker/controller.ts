@@ -707,6 +707,9 @@ export class Controller {
   private noticeFloor: bigint | null = null;
   /** CI1: live rows the core held for their sender's trust, oldest first, at most HELD_LIVE_MAX (noticeReleased). */
   private heldLive: HeldLive[] = [];
+  /** R8 fix I2: a markRead a young held row stopped short, by group (hex): the target the page asked for, re-applied on
+   *  a release and by the group's one timer at the held row's age-out. */
+  private readonly heldReads = new Map<string, { groupId: Id; target: bigint; timer: number }>();
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
   /** This browser's clock (ms) when that ticket's answer arrived: the instance clock advances from ticketTime by what
@@ -2583,7 +2586,7 @@ export class Controller {
     const me = this.me;
     const floor = this.noticeFloor;
     if (this.heldLive.length === 0) return;
-    if (core === null || me === null || floor === null) { this.heldLive = []; return; }
+    if (core === null || me === null || floor === null) { this.heldLive = []; this.clearHeldReads(); return; }
     const channelOf = this.channelMap(core.groups());
     const ownUser = toHex(me.userId);
     const drafts: NoticeDraft[] = [];
@@ -2601,7 +2604,10 @@ export class Controller {
       const senderName = this.nameOf(toHex(found.row.senderUser as Id));
       drafts.push(noticeOf({ row: found.row, channelId, communityId, dm, mention: found.row.mention, senderName, threadRoot: found.threadRoot }));
     }
+    const released = kept.length < this.heldLive.length;
     this.heldLive = kept;
+    // Fix I2: a release lets a held-back read go further (at most one entry per group).
+    if (released) for (const hex of [...this.heldReads.keys()]) this.reapplyRead(hex);
     if (drafts.length === 0) return;
     this.noticesState = appendNotices(this.noticesState, drafts);
     this.slices.set('notices', this.noticesState);
@@ -2659,16 +2665,7 @@ export class Controller {
     // web3.7: there is no read state per thread, so reading the channel marks its thread replies read too; they are not in
     // the main timeline, so the marker goes to the group's head (the core clamps it there as well).
     const head = row.nextSeq - 1n;
-    let marker = head > newest ? head : newest;
-    // web3.8 R8: it stops one below the oldest row of this group held live less than HELD_READ_HOLD_MS ago, so a row
-    // released later is unread, as a live arrival would be. A row held longer no longer holds it.
-    const now = this.elapsed();
-    const hex = toHex(g);
-    for (const held of this.heldLive) {
-      if (now - held.heldAt < HELD_READ_HOLD_MS && toHex(held.groupId) === hex && held.seq - 1n < marker) marker = held.seq - 1n;
-    }
-    core.markRead(g, marker, this.nowS());
-    this.publishBadges();
+    this.applyRead(core, g, head > newest ? head : newest);
     return Promise.resolve(null);
   }
 
@@ -2776,6 +2773,53 @@ export class Controller {
       else this.slices.set(`presence:${community.id}`, { ...current, [user]: status });
     }
     if (this.accountState.user?.id === user) void this.barrier.track(this.refreshPresenceChoice());
+  }
+
+  /** web3.8 R8: marks `target` read, but stops one below the oldest row of this group held live less than
+   *  HELD_READ_HOLD_MS ago, so a row released later is unread, as a live arrival would be. A row held longer no longer
+   *  holds it. Fix I2: the page sends markRead only when the unread count changes, and a held row counts as nothing, so
+   *  a held-back read is remembered (one entry and at most one timer per group) and applied again, never past `target`:
+   *  on a release (noticeReleased) and when the oldest young held row it stopped at reaches HELD_READ_HOLD_MS. */
+  private applyRead(core: CorePort, g: Id, target: bigint): void {
+    const hex = toHex(g);
+    const now = this.elapsed();
+    let marker = target;
+    let wait: number | null = null;
+    for (const held of this.heldLive) {
+      if (toHex(held.groupId) !== hex || held.seq > target) continue;
+      const age = now - held.heldAt;
+      if (age >= HELD_READ_HOLD_MS) continue;
+      if (held.seq - 1n < marker) marker = held.seq - 1n;
+      if (wait === null || HELD_READ_HOLD_MS - age < wait) wait = HELD_READ_HOLD_MS - age;
+    }
+    const before = this.heldReads.get(hex);
+    if (before !== undefined) { this.deps.clearTimeout(before.timer); this.heldReads.delete(hex); }
+    core.markRead(g, marker, this.nowS());
+    if (marker < target && wait !== null) {
+      const timer = this.deps.setTimeout(() => { this.reapplyRead(hex); }, wait);
+      this.heldReads.set(hex, { groupId: g, target, timer });
+    }
+    this.publishBadges();
+  }
+
+  /** Fix I2: applies a remembered held-back read again; a group gone or left drops it. */
+  private reapplyRead(hex: string): void {
+    const read = this.heldReads.get(hex);
+    if (read === undefined) return;
+    this.heldReads.delete(hex);
+    const core = this.core;
+    if (core === null) return;
+    try {
+      const row = core.groupRow(read.groupId);
+      if (row === null || row.state === 4) return;
+      this.applyRead(core, read.groupId, read.target);
+    } catch { /* the page's next markRead marks it */ }
+  }
+
+  /** Fix I2: drops every remembered held-back read and its timer (a reset, a sign-out). */
+  private clearHeldReads(): void {
+    for (const read of this.heldReads.values()) this.deps.clearTimeout(read.timer);
+    this.heldReads.clear();
   }
 
   // ---- settings (requirement 27) ----
@@ -3037,7 +3081,7 @@ export class Controller {
     this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
-    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.ticketTime = null;
+    this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.clearHeldReads(); this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     // CB2 fix round 1: the next account in this tab must not see this one's wait.
@@ -3503,8 +3547,12 @@ export class Controller {
     const leaves = core.pendingLeaves();
     this.noteChangedLeaves(leaves);
     let keyChanged = false;
-    // web3.8 C3: an own leaf whose ingest changed the own list (a device of this account joined) refreshes the device
-    // count below, once per pass.
+    // web3.8 C3: an own leaf whose ingest lands a newer own list (a device of this account joined) refreshes the device
+    // count below, once per pass. Fix I1: the core never answers `changed` for the own user (a new own device keeps the
+    // key; a new key throws E_UMK_CHANGED), so the version is compared with the own list's at the pass start. A core with
+    // no own list to read (refreshDevices would read it too) triggers nothing, and never fails the pass.
+    let ownVersion: bigint | null = null;
+    try { ownVersion = core.ownDeviceList().version; } catch { /* no re-read this pass */ }
     let ownChanged = false;
     // A user the core no longer reports in any active group has no history left to wait for.
     const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
@@ -3537,7 +3585,7 @@ export class Controller {
         const signed = historyByUser.get(user);
         if (signed === null || signed === undefined) continue;
         const { head, history } = signed;
-        let verdict: { changed: boolean; quarantined: number };
+        let verdict: { version: bigint; changed: boolean; quarantined: number };
         const own = this.me !== null && toHex(this.me.userId) === user;
         try { verdict = core.deviceListIngest(leaf.groupId, leaf.leafIndex, leaf.userId, history, signedHeadList(head), this.nowS()); }
         catch (e) {
@@ -3550,7 +3598,7 @@ export class Controller {
         }
         // The quarantine count is not read: what it counts the core stores, and trust_state's `blocked` reports it.
         if (verdict.changed) keyChanged = true;
-        if (own && verdict.changed) ownChanged = true;
+        if (own && ownVersion !== null && verdict.version > ownVersion) ownChanged = true;
         this.unlistedUsers.delete(user);
         if (own) this.ownRefusedLeaves.delete(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
         unknownUsers.delete(user);

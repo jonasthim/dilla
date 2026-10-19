@@ -565,6 +565,8 @@ it('keeps an own leaf the core refused against the own signed list on the accoun
 
 // web3.8 C3 (walk #8): a device of the own user that joins changes the own list; the device count follows it without a
 // visit to Settings. One read per trust pass, however many own leaves changed in it.
+// C3 fix I1: the core never answers `changed` for the own user (a new own device keeps the same key, and a new key
+// throws E_UMK_CHANGED), so the trigger is an ingest whose version is newer than the own list's at the pass start (1).
 describe('the device count follows an own leaf the trust pass ingests', () => {
   const THIRD = new Uint8Array(16).fill(0x0d);
   async function ownWorld(): Promise<World> {
@@ -583,10 +585,10 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
   const slicesAfter = (w: World, from: number): string[] =>
     w.posted.slice(from).filter((m): m is SliceMessage => m.t === 'slice').map((m) => m.name);
 
-  it('an own leaf ingested as changed reads the devices once more and republishes devices and diagnostics', async () => {
+  it('an own leaf ingested at a newer list version reads the devices once more and republishes devices and diagnostics', async () => {
     const w = await ownWorld();
     w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
-    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 });
+    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 });
     const reads = w.routes.listDevices.mock.calls.length;
     const from = w.posted.length;
     w.call(9820, { m: 'refreshTrust' });
@@ -597,15 +599,15 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
     expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(3);
   });
 
-  it('two own leaves changed in one pass make one read', async () => {
+  it('two own leaves at a newer version in one pass make one read', async () => {
     const w = await ownWorld();
     w.core.pendingLeaves.mockReturnValue([
       { groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
       { groupId: DM_GROUP, leafIndex: 2, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
     ]);
     w.core.deviceListIngest
-      .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 })
-      .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 });
+      .mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 })
+      .mockReturnValueOnce({ version: 3n, changed: false, quarantined: 0 });
     const reads = w.routes.listDevices.mock.calls.length;
     w.call(9821, { m: 'refreshTrust' });
     await vi.waitFor(() => expect(w.ret(9821)).toMatchObject({ ok: true }));
@@ -613,20 +615,50 @@ describe('the device count follows an own leaf the trust pass ingests', () => {
     expect(w.routes.listDevices).toHaveBeenCalledTimes(reads + 1);
   });
 
-  it('control: an own leaf that changed nothing, or a contact\'s changed leaf, reads no devices', async () => {
+  it('control: an own leaf at the version already held, or a contact\'s newer list, reads no devices', async () => {
     const w = await ownWorld();
     w.core.pendingLeaves.mockReturnValue([
       { groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
       { groupId: GROUP, leafIndex: 4, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' },
     ]);
     w.core.deviceListIngest
-      .mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 })
-      .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 });
+      .mockReturnValueOnce({ version: 1n, changed: false, quarantined: 0 })
+      .mockReturnValueOnce({ version: 5n, changed: true, quarantined: 0 });
     const reads = w.routes.listDevices.mock.calls.length;
     w.call(9822, { m: 'refreshTrust' });
     await vi.waitFor(() => expect(w.ret(9822)).toMatchObject({ ok: true }));
     expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
     expect(w.routes.listDevices).toHaveBeenCalledTimes(reads);
+  });
+
+  it('a core with no own list to read still runs the pass, ingests the leaf and reads no devices', async () => {
+    const w = await ownWorld();
+    Object.defineProperty(w.state, 'ownList', { get: () => { throw new CoreError('E_CORE_STATE', ''); } });
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9825, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9825)).toMatchObject({ ok: true }));
+    expect(w.core.deviceListIngest).toHaveBeenCalledTimes(1);
+    expect(w.core.revalidatePending).toHaveBeenCalledWith(GROUP, 3, 256);
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads);
+  });
+
+  // C3 fix m1: a failed device read neither fails the pass nor clears the count.
+  it('a device read that fails keeps the last count, and the trust pass still answers ok', async () => {
+    const w = await ownWorld();
+    w.call(9823, { m: 'refreshDevices' });
+    await vi.waitFor(() => expect(w.ret(9823)).toMatchObject({ ok: true }));
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(3);
+    w.routes.listDevices.mockRejectedValueOnce(refusal(503, 'E_UNAVAILABLE'));
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9824, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9824)).toMatchObject({ ok: true }));
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads + 1);
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(3);
+    expect(w.last<DeviceSummary[]>('devices')).toHaveLength(3);
   });
 });
 
@@ -3136,6 +3168,78 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     w.call(955, { m: 'markRead', channelId: toHex(DM_CHANNEL) });
     await vi.waitFor(() => expect(w.ret(955)).toMatchObject({ ok: true }));
     expect(w.core.markRead).toHaveBeenLastCalledWith(DM_GROUP, 2n, NOW_S);
+  });
+
+  // C3 fix I2: the page sends markRead only when the unread count changes, and a held row counts as nothing, so the
+  // worker re-applies a held-back markRead itself: when a held row of that group is released, and on one timer per
+  // group at the moment its oldest young held row reaches HELD_READ_HOLD_MS. It never reads past the head it was asked.
+  it('a readable row above a long-held row loses its badge at age-out, with no new message and no reopen (R8, I2)', async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 9n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8)];
+    w.state.activity = [act(GROUP, 1, 0)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n]));
+    expect(w.badges()).toEqual({ [ch]: { unread: 1, mentions: 0 } });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      w.call(960, { m: 'markRead', channelId: ch });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(w.ret(960)).toEqual({ t: 'ret', id: 960, ok: true, value: null });
+      expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 6n, NOW_S);
+      // A second markRead while still held keeps one timer for the group.
+      w.call(961, { m: 'markRead', channelId: ch });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(1);
+      const marks = w.core.markRead.mock.calls.length;
+      w.core.markRead.mockImplementation(() => { w.state.activity = [act(GROUP, 0, 0)]; });
+      elapsed.t += HELD_READ_HOLD_MS - 1;
+      await vi.advanceTimersByTimeAsync(HELD_READ_HOLD_MS - 1);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks);
+      expect(w.badges()).toEqual({ [ch]: { unread: 1, mentions: 0 } });
+      elapsed.t += 1;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(w.core.markRead).toHaveBeenCalledTimes(marks + 1);
+      expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 8n, NOW_S);
+      expect(w.badges()).toEqual({ [ch]: { unread: 0, mentions: 0 } });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a release re-applies the held-back markRead up to the head it was asked, not past a later row (R8, I2)', async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 9n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n]));
+    w.call(962, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(962)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 6n, NOW_S);
+    // Row 9 arrives after the markRead; the page has not read it.
+    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }];
+    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8), strangerRow(9)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([9n]));
+    const marks = w.core.markRead.mock.calls.length;
+    // The trust refresh releases row 7: the marker goes to 8 with no markRead from the page.
+    w.state.rows = [strangerRow(6), strangerRow(7), strangerRow(8), strangerRow(9)];
+    w.core.trustGeneration.mockReturnValue(1n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.core.markRead).toHaveBeenCalledTimes(marks + 1);
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 8n, NOW_S);
+    // Nothing is left to re-apply: a later trust change marks nothing more.
+    w.core.trustGeneration.mockReturnValue(2n);
+    w.sync.deps!.onTrustChanged();
+    expect(w.core.markRead).toHaveBeenCalledTimes(marks + 1);
   });
 
   it('an unexpected Welcome reloads the DMs, coalesced, and expects the new DM group', async () => {
