@@ -140,6 +140,8 @@ const REQUIRED_STEPS = {
     'if-no-files-found: error',
   ],
   'rust-wasm-node': [
+    'bash scripts/install-ci-tool.sh wasm-bindgen',
+    'bash scripts/install-ci-tool.sh wasm-pack',
     'cargo test -p dilla-core-wasm --target wasm32-unknown-unknown --locked',
     // Ruling 40/task 26: lint wasm-only modules and typecheck the browser wrapper.
     'cargo clippy -p dilla-core-wasm --target wasm32-unknown-unknown --lib --locked -- -D warnings',
@@ -162,7 +164,7 @@ const REQUIRED_STEPS = {
   // an empty directory — an enforced rule rather than prose.
   'rust-wasi': [
     'cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked',
-    'actions/upload-artifact@v7',
+    'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7',
     'name: dilla-core-wasi',
     'path: target/wasm32-wasip1/release/dilla_core_wasi.wasm',
     'if-no-files-found: error',
@@ -189,12 +191,16 @@ const REQUIRED_STEPS = {
   // Only the matrix run: it already includes the chromium project, so also running `test:e2e` would
   // execute the 10-hand-over test twice per CI run for no added signal.
   'browser-spike': [
+    'bash scripts/install-ci-tool.sh wasm-bindgen',
+    'bash scripts/install-ci-tool.sh wasm-pack',
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg',
     'npm run test:e2e:matrix -w @dilla/e2e',
     'timeout-minutes: 20',
   ],
   'browser-media': [
-    'actions/upload-artifact@v7',
+    'bash scripts/install-ci-tool.sh wasm-bindgen',
+    'bash scripts/install-ci-tool.sh wasm-pack',
+    'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7',
     'if: failure()',
     'name: browser-media-results',
     'path: e2e/test-results',
@@ -215,6 +221,8 @@ const REQUIRED_STEPS = {
   ],
   // Task 26/C9: the release and both browser suites consume these same build artifacts.
   'web-build': [
+    'bash scripts/install-ci-tool.sh wasm-bindgen',
+    'bash scripts/install-ci-tool.sh wasm-pack',
     'timeout-minutes: 15',
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
     'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
@@ -241,7 +249,7 @@ const REQUIRED_STEPS = {
   // `go test`.
   go: [
     'timeout-minutes: 30',
-    'actions/download-artifact@v8',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'CGO_ENABLED=0 go build -tags dillapins ./internal/deps',
     'go test -race -shuffle=on -timeout 20m $(go list ./... | grep -vx github.com/jonasthim/dilla/internal/ds)',
@@ -251,7 +259,7 @@ const REQUIRED_STEPS = {
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
     'timeout-minutes: 25',
-    'actions/download-artifact@v8',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'go test -race -shuffle=on -timeout 20m ./internal/ds/...',
@@ -259,7 +267,7 @@ const REQUIRED_STEPS = {
   // The harness job: both hand-offs, the binary, and a run that FAILS without it.
   'go-harness': [
     'timeout-minutes: 30',
-    'actions/download-artifact@v8',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'path: internal/mlswasi/testdata',
     'name: dilla-core-wasi',
     'name: dilla-testkit',
@@ -276,12 +284,13 @@ const REQUIRED_STEPS = {
   'go-fts5-arm64': ['runs-on: ubuntu-24.04-arm', 'go test ./internal/store/sqlite/...'],
   // The five W2-W5 gates. Each entry is a string the job carries and no other step of that job
   // already contains, so a silently gutted job is caught.
-  'go-lint': ['golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9', 'version: v2.14.0'],
+  'go-lint': ['bash scripts/install-ci-tool.sh golangci-lint', 'golangci-lint run ./...'],
+  deny: ['bash scripts/install-ci-tool.sh cargo-deny', 'cargo deny --all-features check advisories bans licenses sources'],
   'go-vuln': [
     'golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...',
     '-scan package -tags dillapins ./internal/deps',
   ],
-  'go-sqlc': ['sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5', "sqlc-version: '1.31.1'", 'sqlc diff', 'git diff --exit-code'],
+  'go-sqlc': ['bash scripts/install-ci-tool.sh sqlc', 'sqlc diff', 'git diff --exit-code'],
   'go-postgres': [
     'postgres:18.6-alpine3.24',
     '--locale-provider=builtin --builtin-locale=C.UTF-8',
@@ -292,32 +301,24 @@ const REQUIRED_STEPS = {
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
-  // Task 18. The pins are the versions P2-11 resolved against the registries and the marketplace
-  // release lists; `actions/checkout@v7` and `runs-on: ubuntu-latest` are the house style of every
-  // other job. The download of rust-wasi's artifact is load-bearing: dillad loads the wasi core from
+  // The image keeps the checked client and wasi core in its build context. The download of
+  // rust-wasi's artifact is load-bearing: dillad loads the wasi core from
   // beside its binary and the Dockerfile copies it out of the build context, so without the download
   // the build fails (fail-closed) rather than shipping an image that cannot start.
   image: [
     'runs-on: ubuntu-latest',
-    'actions/checkout@v7',
-    'actions/download-artifact@v8',
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     // Task 26/C9: the image embeds the same checked client.
     'name: dilla-web-dist',
     'path: internal/web/dist',
     'content="placeholder"',
-    'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1',
-    'docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0',
-    'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0',
-    'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0',
-    'platforms: linux/amd64,linux/arm64',
-    'provenance: mode=max',
-    'sbom: true',
+    'docker login ghcr.io',
+    "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    'bash scripts/build-ci-image.sh',
     'timeout-minutes: 30',
-    // I16 (fix wave): Compose and the deploy README pull `:latest`, and metadata-action generates it
-    // only for tag events unless it is asked for on the default branch.
-    'type=raw,value=latest,enable={{is_default_branch}}',
   ],
 };
 
@@ -513,8 +514,8 @@ function assertWasmJobsUseClang23(text, jobs, problems, file = 'ci.yml') {
       for (let i = envAt + 1; i < envAt + envLines.length; i++) allowedEnvLines.add(`${name}:${i}`);
     }
     const steps = stepItems(lines);
-    if (lines.filter((l) => /^ {4}steps:/.test(l)).length !== 1 || steps[0] !== '      - uses: actions/checkout@v7' || steps[1] !== WASM_CLANG_STEP) {
-      problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`);
+    if (lines.filter((l) => /^ {4}steps:/.test(l)).length !== 1 || steps[0] !== '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7' || steps[1] !== WASM_CLANG_STEP) {
+      problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its second step, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 step (WASM_CLANG_STEP)`);
     }
     if (steps.filter((s) => s === WASM_CLANG_STEP).length > 1) {
       problems.push(`${file}: job "${name}" carries the clang 23 step more than once`);
@@ -598,12 +599,24 @@ function splitJobs(text) {
   return Object.fromEntries(Object.entries(jobs).map(([k, v]) => [k, v.join('\n')]));
 }
 
+function checkActionReference(line, file, number, problems) {
+  const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
+  if (!match) return;
+  const action = match[1];
+  if (!action.startsWith('actions/')) {
+    problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
+  } else if (!/^actions\/[\w-]+@[0-9a-f]{40}$/.test(action)) {
+    problems.push(`${file}:${number}: ${action} must use a 40-hex commit SHA`);
+  }
+}
+
 export function checkWorkflow(root) {
   const path = join(root, '.github', 'workflows', 'ci.yml');
   const text = readFileSync(path, 'utf8');
   const problems = [];
 
   text.split('\n').forEach((line, i) => {
+    checkActionReference(line, 'ci.yml', i + 1, problems);
     for (const { re, what } of FORBIDDEN) {
       if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
@@ -665,7 +678,7 @@ export function checkWorkflow(root) {
     }
   }
 
-  // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@v8`
+  // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8`
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`
   // says so, and whichever plan lands second has to add the edge. Nobody owned that rule, so it lives
   // here. The job is required above; the guard keeps this block from piling a second, confusing
@@ -679,14 +692,14 @@ export function checkWorkflow(root) {
       problems.push('ci.yml: job "go" requires the testkit but does not download it; the harness is go-harness\'s');
     }
     // gap-31 §4 item 2 / NV-14 (resolved): the current majors deliberately pair
-    // `actions/upload-artifact@v7` (this file's `rust-wasi` job) with `actions/download-artifact@v8`.
+    // `actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7` (this file's `rust-wasi` job) with `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8`.
     // Nobody else owns this half of the hand-off either — a `go` job written from facts/plan-B.md's
     // now-stale deviation B15 text (`download-artifact@v4`) would pair v7 with v4, the untested
     // combination B15 was created to avoid, and neither this checker nor Plan B's own Go test would
     // catch it unless this rule lives here.
-    if (!jobs.go.includes('actions/download-artifact@v8')) {
+    if (!jobs.go.includes('actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8')) {
       problems.push(
-        'ci.yml: job "go" must use actions/download-artifact@v8 to pair with rust-wasi\'s actions/upload-artifact@v7 (gap-31 §4 item 2)',
+        'ci.yml: job "go" must use actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8 to pair with rust-wasi\'s actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7 (gap-31 §4 item 2)',
       );
     }
     assertRaceGatedTestsRunWithoutRace(root, jobs.go, problems);
@@ -741,8 +754,8 @@ export function checkWorkflow(root) {
     }
   }
 
-  // Task 26: downloading and refusing the placeholder must precede the release build.
-  for (const [job, build] of [['go-release', 'go build'], ['image', 'docker/build-push-action@']]) {
+  // Task 26: downloading and refusing the placeholder must precede each build.
+  for (const [job, build] of [['go-release', 'go build'], ['image', 'bash scripts/build-ci-image.sh']]) {
     if (!(job in jobs)) continue;
     const body = jobs[job];
     const fetchAt = body.indexOf('name: dilla-web-dist');
@@ -775,6 +788,8 @@ const RELEASE_STEPS = {
     'echo "version=${tag#v}" >> "$GITHUB_OUTPUT"',
   ],
   'web-build': [
+    'bash scripts/install-ci-tool.sh wasm-bindgen',
+    'bash scripts/install-ci-tool.sh wasm-pack',
     'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
     'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
     'npm run build -w @dilla/web',
@@ -814,6 +829,7 @@ export function checkReleaseWorkflow(root) {
   const lines = text.split('\n');
 
   lines.forEach((line, i) => {
+    checkActionReference(line, file, i + 1, problems);
     for (const { re, what } of FORBIDDEN) {
       if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — a release is fail-closed (R22)`);
     }
@@ -824,11 +840,6 @@ export function checkReleaseWorkflow(root) {
     const uses = /^\s*(?:- )?uses:\s*(\S+)/.exec(line);
     if (uses && !new RegExp(`uses:\\s*${uses[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'm').test(ci)) {
       problems.push(`${file}:${i + 1}: ${uses[1]} is not an action ci.yml uses at that version; pin actions as ci.yml does`);
-    }
-    // The release job publishes what install.sh runs as root: a third-party action is pinned to a
-    // commit, never to a tag its owner can move (install-release security scan, 2026-10-14).
-    if (uses && !uses[1].startsWith('actions/') && !/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}\s+#\s+\S+\s*$/.test(line.trim().replace(/^- /, '').replace(/^uses:\s*/, ''))) {
-      problems.push(`${file}:${i + 1}: ${uses[1]} is a third-party action not pinned to a 40-hex commit SHA with a "# <tag>" comment`);
     }
   });
   if (!/^ {2}push:\n {4}tags: \['v\*'\]$/m.test(text)) problems.push(`${file}: must run on a push of tags 'v*'`);
@@ -843,7 +854,7 @@ export function checkReleaseWorkflow(root) {
       problems.push(`${file}:${i + 1}: a build cache in the release workflow; release builds start clean`);
     }
   });
-  for (const m of text.matchAll(/uses: actions\/setup-go@\S+\n((?: {8,}\S.*\n)*)/g)) {
+  for (const m of text.matchAll(/uses: actions\/setup-go@[^\n]+\n((?: {8,}\S.*\n)*)/g)) {
     if (!/^ {10}cache: false$/m.test(m[1])) problems.push(`${file}: actions/setup-go caches by default; set cache: false in the release workflow`);
   }
 

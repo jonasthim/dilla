@@ -22,7 +22,7 @@
     "check:copy": "node scripts/check-ui-copy.mjs",
     "test:copy-check": "node --test scripts/check-ui-copy.test.mjs",
     "check:ci": "node scripts/check-ci-workflow.mjs",
-    "test:ci-check": "node --test scripts/check-ci-workflow.test.mjs",
+    "test:ci-check": "node --test scripts/check-ci-workflow.test.mjs scripts/install-ci-tool.test.mjs scripts/build-ci-image.test.mjs",
     "test:manifest-writer": "node --test scripts/write-manifest.test.mjs",
     "test:wasm-size-check": "node --test scripts/check-wasm-size.test.mjs",
     "test:install": "bash deploy/install_test.sh",
