@@ -11,7 +11,7 @@ import { toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
 import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
-import { HELD_LIVE_MAX } from './controller';
+import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
@@ -561,6 +561,73 @@ it('keeps an own leaf the core refused against the own signed list on the accoun
   w.call(9804, { m: 'refreshTrust' });
   await vi.waitFor(() => expect(w.ret(9804)).toMatchObject({ ok: true }));
   expect(w.account()?.ownTrust).toBeNull();
+});
+
+// web3.8 C3 (walk #8): a device of the own user that joins changes the own list; the device count follows it without a
+// visit to Settings. One read per trust pass, however many own leaves changed in it.
+describe('the device count follows an own leaf the trust pass ingests', () => {
+  const THIRD = new Uint8Array(16).fill(0x0d);
+  async function ownWorld(): Promise<World> {
+    const w = world();
+    await toReady(w);
+    await settle();
+    w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]),
+      raw: encode([1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]) });
+    w.routes.listDevices.mockResolvedValue([
+      { id: DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_700_000_000n },
+      { id: OTHER_DEVICE, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_999_000n },
+      { id: THIRD, tier: 1, signerTier: 1, verifiedAt: null, revokedAt: null, lastSeen: 1_699_998_000n },
+    ]);
+    return w;
+  }
+  const slicesAfter = (w: World, from: number): string[] =>
+    w.posted.slice(from).filter((m): m is SliceMessage => m.t === 'slice').map((m) => m.name);
+
+  it('an own leaf ingested as changed reads the devices once more and republishes devices and diagnostics', async () => {
+    const w = await ownWorld();
+    w.core.pendingLeaves.mockReturnValue([{ groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' }]);
+    w.core.deviceListIngest.mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    const from = w.posted.length;
+    w.call(9820, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9820)).toMatchObject({ ok: true }));
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads + 1);
+    expect(slicesAfter(w, from)).toEqual(expect.arrayContaining(['devices', 'diagnostics']));
+    expect(w.last<DeviceSummary[]>('devices')?.map((d) => d.id)).toEqual([toHex(DEVICE), toHex(OTHER_DEVICE), toHex(THIRD)]);
+    expect(w.last<DiagnosticsState>('diagnostics')?.devices).toBe(3);
+  });
+
+  it('two own leaves changed in one pass make one read', async () => {
+    const w = await ownWorld();
+    w.core.pendingLeaves.mockReturnValue([
+      { groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
+      { groupId: DM_GROUP, leafIndex: 2, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
+    ]);
+    w.core.deviceListIngest
+      .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 })
+      .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9821, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9821)).toMatchObject({ ok: true }));
+    expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads + 1);
+  });
+
+  it('control: an own leaf that changed nothing, or a contact\'s changed leaf, reads no devices', async () => {
+    const w = await ownWorld();
+    w.core.pendingLeaves.mockReturnValue([
+      { groupId: GROUP, leafIndex: 3, userId: USER, cachedVersion: 1n, reason: 'ready-refresh' },
+      { groupId: GROUP, leafIndex: 4, userId: STRANGER, cachedVersion: 1n, reason: 'ready-refresh' },
+    ]);
+    w.core.deviceListIngest
+      .mockReturnValueOnce({ version: 2n, changed: false, quarantined: 0 })
+      .mockReturnValueOnce({ version: 2n, changed: true, quarantined: 0 });
+    const reads = w.routes.listDevices.mock.calls.length;
+    w.call(9822, { m: 'refreshTrust' });
+    await vi.waitFor(() => expect(w.ret(9822)).toMatchObject({ ok: true }));
+    expect(w.core.deviceListIngest).toHaveBeenCalledTimes(2);
+    expect(w.routes.listDevices).toHaveBeenCalledTimes(reads);
+  });
 });
 
 // The trust patch (89923a6) answers `changed` only for the ingest that starts a key change; a later ingest of the same
@@ -2157,8 +2224,7 @@ describe('Controller sign-in (L-TS-23)', () => {
     w.call(4, { m: 'signInTotp', code: '12345' });
     await vi.waitFor(() => expect(w.ret(4)).toBeDefined());
     expect(w.ret(4)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', detail: '' } });
-    // Pre-flight C-3: a key sent with the code (the page until SIGNIN-W) is accepted and ignored, blank or not.
-    w.call(5, { m: 'signInTotp', code: '123456', recoveryKey: '' });
+    w.call(5, { m: 'signInTotp', code: '123456' });
     await vi.waitFor(() => expect(w.ret(5)).toEqual({ t: 'ret', id: 5, ok: true, value: null }));
     expect(w.enrol.totp).toHaveBeenCalledWith('123456');
     expect(w.account()?.phase).toBe('signin-key');
@@ -2555,14 +2621,7 @@ describe('Controller sign-in order (web3.8 C1, R6)', () => {
     expect(w.enrol.register).not.toHaveBeenCalled();
     expect(w.account()).toMatchObject({ phase: 'signin-key', signIn: { username: 'web', factor: null }, error: null });
     expect(phasesOf(w)).not.toContain('enrolling');
-    // Pre-flight C-3: the page still sends a key with the login until SIGNIN-W; it is accepted and ignored.
-    const v = world({ phase: 0 });
-    await toLoginStep(v);
-    v.call(3, { ...LOGIN, recoveryKey: ' ' });
-    await vi.waitFor(() => expect(v.ret(3)).toEqual({ t: 'ret', id: 3, ok: true, value: { needs: 0 } }));
-    expect(v.core.recoveryKeyCheck).not.toHaveBeenCalled();
-    expect(v.enrol.register).not.toHaveBeenCalled();
-    expect(v.account()?.phase).toBe('signin-key');
+    expect(w.core.recoveryKeyCheck).not.toHaveBeenCalled();
   });
 
   it('signInTotp holds the assertion and never registers', async () => {
@@ -3009,6 +3068,74 @@ describe('Controller ready (L-TS-23, L-TS-24)', () => {
     w.core.trustGeneration.mockReturnValue(2n);
     w.sync.deps!.onTrustChanged();
     expect(w.notices()?.items.map((n) => n.body)).toEqual(['from a stranger 2']);
+  });
+
+  // web3.8 R8: the marker is the group head, but stops one below the oldest live-held row of that group that arrived
+  // less than HELD_READ_HOLD_MS ago, so a row released later is unread, as a live arrival would be.
+  const heldRow = (seq: number): TimelineRow => ({ ...strangerRow(seq), status: 1, reason: 'E_DEVICE_LIST_STALE', senderUser: null, msgId: null, type: null, body: '' });
+
+  it('markRead stops one below a live-held row, and reaches the head once the row is released (R8)', async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    w.state.rows = [strangerRow(6), heldRow(7), strangerRow(8), heldRow(9)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n, 9n]));
+    elapsed.t += HELD_READ_HOLD_MS - 1;
+    w.call(950, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(950)).toEqual({ t: 'ret', id: 950, ok: true, value: null }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 6n, NOW_S);
+
+    // The trust refresh releases both rows: the next markRead goes to the head.
+    w.state.rows = [strangerRow(6), strangerRow(7), strangerRow(8), strangerRow(9)];
+    w.core.trustGeneration.mockReturnValue(1n);
+    w.sync.deps!.onTrustChanged();
+    w.call(951, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(951)).toEqual({ t: 'ret', id: 951, ok: true, value: null }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 9n, NOW_S);
+  });
+
+  it(`a row held ${String(HELD_READ_HOLD_MS)} ms or longer no longer holds the marker (R8)`, async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    await toReady(w);
+    const ch = toHex(CHANNEL);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }];
+    w.state.rows = [strangerRow(6), heldRow(7)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([7n]));
+    // A second row held later, still young, holds the marker on its own once the first has aged out.
+    elapsed.t += 30_000;
+    w.state.rows = [strangerRow(6), heldRow(7), heldRow(8)];
+    w.sync.deps!.onGroupChanged(GROUP, appliedSeqs([8n]));
+    elapsed.t += HELD_READ_HOLD_MS - 30_000;
+    w.call(952, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(952)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 7n, NOW_S);
+    elapsed.t += 30_000;
+    w.call(953, { m: 'markRead', channelId: ch });
+    await vi.waitFor(() => expect(w.ret(953)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 9n, NOW_S);
+  });
+
+  it('a row held in another group does not hold this group\'s marker (R8)', async () => {
+    const elapsed = { t: 5_000 };
+    const w = world({ monotonic: () => elapsed.t });
+    w.state.dms = [{ channelId: DM_CHANNEL, kind: 3, members: [USER, STRANGER] }];
+    await toReady(w);
+    w.state.groups = [{ ...textGroup(2), nextSeq: 10n }, { ...textGroup(2), groupId: DM_GROUP, communityId: null, targetId: DM_CHANNEL, nextSeq: 10n }];
+    w.state.rows = [heldRow(3)];
+    w.sync.deps!.onGroupChanged(DM_GROUP, appliedSeqs([3n]));
+    w.state.rows = [strangerRow(9)];
+    w.call(954, { m: 'markRead', channelId: toHex(CHANNEL) });
+    await vi.waitFor(() => expect(w.ret(954)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(GROUP, 9n, NOW_S);
+    // Control: the DM's own marker is held.
+    w.call(955, { m: 'markRead', channelId: toHex(DM_CHANNEL) });
+    await vi.waitFor(() => expect(w.ret(955)).toMatchObject({ ok: true }));
+    expect(w.core.markRead).toHaveBeenLastCalledWith(DM_GROUP, 2n, NOW_S);
   });
 
   it('an unexpected Welcome reloads the DMs, coalesced, and expects the new DM group', async () => {

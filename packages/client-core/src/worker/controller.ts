@@ -145,8 +145,9 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
   return { code, detail: '', status, retryAfterMs: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 86_400_000 ? retry : null,
     ...(e instanceof Refusal && e.reason !== undefined && REFUSAL_REASONS.has(e.reason) ? { reason: e.reason } : {}) };
 }
-/** The stable reasons a local refusal may carry to the page. */
-const REFUSAL_REASONS = new Set(['announce.noHeldRole']);
+/** The stable reasons a local refusal may carry to the page. None since web3.8 R5 removed 'announce.noHeldRole' (an
+ *  announcement's creator gets her own send entry, so no create is refused for the roles she holds). */
+const REFUSAL_REASONS: ReadonlySet<string> = new Set<string>();
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
   const store = error.code === 'E_STORE_NEWER' && error.store !== undefined
@@ -636,7 +637,12 @@ export const REMOVALS_MAX = 8;
  *  the worker remembers for their notice. */
 const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
 export const HELD_LIVE_MAX = 64;
+/** web3.8 R8: how long (elapsed ms) a live-held row keeps markRead one below it; one held longer stops holding the
+ *  marker, so no badge sticks. */
+export const HELD_READ_HOLD_MS = 60_000;
 const heldForTrust = (row: TimelineRow): boolean => row.status === 1 && HELD_REASONS.has(row.reason);
+/** A live row the core holds for its sender's trust, and when it was held (elapsed ms, R8). */
+type HeldLive = { groupId: Id; seq: bigint; heldAt: number };
 
 export class Controller {
   private readonly parts: ControllerParts;
@@ -700,7 +706,7 @@ export class Controller {
    *  gateway ready) were caught up, not delivered live; they badge but raise no notice. null before ready. */
   private noticeFloor: bigint | null = null;
   /** CI1: live rows the core held for their sender's trust, oldest first, at most HELD_LIVE_MAX (noticeReleased). */
-  private heldLive: { groupId: Id; seq: bigint }[] = [];
+  private heldLive: HeldLive[] = [];
   /** The instance clock when the last gateway ticket was minted (the connection that reports the next ready). */
   private ticketTime: bigint | null = null;
   /** This browser's clock (ms) when that ticket's answer arrived: the instance clock advances from ticketTime by what
@@ -2566,7 +2572,7 @@ export class Controller {
   private holdLive(groupId: Id, seq: bigint): void {
     const hex = toHex(groupId);
     if (this.heldLive.some((h) => h.seq === seq && toHex(h.groupId) === hex)) return;
-    this.heldLive.push({ groupId, seq });
+    this.heldLive.push({ groupId, seq, heldAt: this.elapsed() });
     if (this.heldLive.length > HELD_LIVE_MAX) this.heldLive.splice(0, this.heldLive.length - HELD_LIVE_MAX);
   }
 
@@ -2581,7 +2587,7 @@ export class Controller {
     const channelOf = this.channelMap(core.groups());
     const ownUser = toHex(me.userId);
     const drafts: NoticeDraft[] = [];
-    const kept: { groupId: Id; seq: bigint }[] = [];
+    const kept: HeldLive[] = [];
     for (const held of this.heldLive) {
       const channelId = channelOf.get(toHex(held.groupId));
       if (channelId === undefined) continue;
@@ -2653,7 +2659,15 @@ export class Controller {
     // web3.7: there is no read state per thread, so reading the channel marks its thread replies read too; they are not in
     // the main timeline, so the marker goes to the group's head (the core clamps it there as well).
     const head = row.nextSeq - 1n;
-    core.markRead(g, head > newest ? head : newest, this.nowS());
+    let marker = head > newest ? head : newest;
+    // web3.8 R8: it stops one below the oldest row of this group held live less than HELD_READ_HOLD_MS ago, so a row
+    // released later is unread, as a live arrival would be. A row held longer no longer holds it.
+    const now = this.elapsed();
+    const hex = toHex(g);
+    for (const held of this.heldLive) {
+      if (now - held.heldAt < HELD_READ_HOLD_MS && toHex(held.groupId) === hex && held.seq - 1n < marker) marker = held.seq - 1n;
+    }
+    core.markRead(g, marker, this.nowS());
     this.publishBadges();
     return Promise.resolve(null);
   }
@@ -3489,6 +3503,9 @@ export class Controller {
     const leaves = core.pendingLeaves();
     this.noteChangedLeaves(leaves);
     let keyChanged = false;
+    // web3.8 C3: an own leaf whose ingest changed the own list (a device of this account joined) refreshes the device
+    // count below, once per pass.
+    let ownChanged = false;
     // A user the core no longer reports in any active group has no history left to wait for.
     const present = new Set(leaves.map((leaf) => toHex(leaf.userId)));
     for (const user of this.historyFailedUsers) if (!present.has(user)) this.historyFailedUsers.delete(user);
@@ -3533,6 +3550,7 @@ export class Controller {
         }
         // The quarantine count is not read: what it counts the core stores, and trust_state's `blocked` reports it.
         if (verdict.changed) keyChanged = true;
+        if (own && verdict.changed) ownChanged = true;
         this.unlistedUsers.delete(user);
         if (own) this.ownRefusedLeaves.delete(`${toHex(leaf.groupId)}:${leaf.leafIndex}`);
         unknownUsers.delete(user);
@@ -3543,6 +3561,10 @@ export class Controller {
     if (keyChanged) this.noteChangedLeaves(core.pendingLeaves());
     this.pendingUsers = new Set([...this.historyFailedUsers, ...unknownUsers]);
     this.publishTrust();
+    // The devices and diagnostics slices follow (refreshDevices); a failed read keeps the last count until the next one.
+    if (ownChanged && this.phase === 'ready') {
+      try { await this.refreshDevices(); } catch { /* the next read refreshes it */ }
+    }
     return null;
   }
 

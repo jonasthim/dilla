@@ -267,7 +267,10 @@ describe('roles: overwrites and private channels', () => {
 describe('roles: announcement channels', () => {
   const create = (extra: Record<string, unknown>) => ({ m: 'createChannel', communityId: CID, kind: 'announcement', name: 'news', ...extra });
   const member = (): Promise<World> => ready({ owner: false, top: 5, bits: 0xffn | BigInt(PERM.manageChannels), roleIds: [A] });
-  it('a non-owner who holds a ticked role sends @everyone denied and each role allowed once, with no self entry', async () => {
+  // web3.8 R5: a creator who is neither owner nor administrator always gets her own send entry (the instance exempts it
+  // from the rank rule at create), so she can post in the channel she made whatever roles she ticks or holds.
+  const SELF_SEND = { kind: 1, targetId: USER, allow: PERM.sendMessages, deny: 0 };
+  it('a non-owner sends @everyone denied, each role allowed once, and her own send entry last', async () => {
     const m = await member();
     expect(await run(m, create({ announce: { roleIds: [HEX.a, HEX.b, HEX.everyone, HEX.a] } }))).toMatchObject({ ok: true });
     expect(m.routes.createChannel).toHaveBeenCalledTimes(1);
@@ -276,30 +279,38 @@ describe('roles: announcement channels', () => {
       { kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages },
       { kind: 0, targetId: A, allow: PERM.sendMessages, deny: 0 },
       { kind: 0, targetId: B, allow: PERM.sendMessages, deny: 0 },
+      SELF_SEND,
     ]);
   });
-  it('a non-owner who holds none of the ticked roles is refused locally, with no request', async () => {
+  it('a non-owner who holds none of the ticked roles, or ticks none, is not refused: her own entry lets her post', async () => {
     const m = await member();
-    expect(await run(m, create({ announce: { roleIds: [HEX.b] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', reason: 'announce.noHeldRole' } });
-    expect(await run(m, create({ announce: { roleIds: [HEX.everyone] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
-    expect(await run(m, create({}))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
-    expect(m.routes.createChannel).not.toHaveBeenCalled();
+    expect(await run(m, create({ announce: { roleIds: [HEX.b] } }))).toMatchObject({ ok: true });
+    expect(await run(m, create({ announce: { roleIds: [HEX.everyone] } }))).toMatchObject({ ok: true });
+    expect(await run(m, create({}))).toMatchObject({ ok: true });
+    const sent = m.routes.createChannel.mock.calls.map((c) => c[1].overwrites);
+    expect(sent).toEqual([
+      [{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }, { kind: 0, targetId: B, allow: PERM.sendMessages, deny: 0 }, SELF_SEND],
+      [{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }, SELF_SEND],
+      [{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }, SELF_SEND],
+    ]);
   });
-  it('a held role at the creator\'s own top is refused locally; one below it is sent', async () => {
+  it('a held role at the creator\'s own top is not refused; the create carries her own entry', async () => {
     const at = await ready({ owner: false, top: 1, bits: 0xffn | BigInt(PERM.manageChannels), roleIds: [A] });
-    expect(await run(at, create({ announce: { roleIds: [HEX.a] } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT', reason: 'announce.noHeldRole' } });
-    expect(at.routes.createChannel).not.toHaveBeenCalled();
-    const below = await ready({ owner: false, top: 2, bits: 0xffn | BigInt(PERM.manageChannels), roleIds: [A] });
-    expect(await run(below, create({ announce: { roleIds: [HEX.a] } }))).toMatchObject({ ok: true });
-    expect(below.routes.createChannel).toHaveBeenCalledTimes(1);
+    expect(await run(at, create({ announce: { roleIds: [HEX.a] } }))).toMatchObject({ ok: true });
+    expect(at.routes.createChannel.mock.calls[0]?.[1].overwrites?.at(-1)).toEqual(SELF_SEND);
   });
-  it('with her own roles not loaded nothing is refused locally; the instance answers', async () => {
+  it('with her own roles not loaded (members: unset) the create still carries her own entry', async () => {
     const m = await ready({ owner: false, top: 5, bits: 0xffn | BigInt(PERM.manageChannels) });
     // The member list is dropped from the slice store, as before its first read.
     const held = (m.controller as unknown as { slices: { held: Map<string, unknown> } }).slices.held;
     expect(held.delete(`members:${CID}`)).toBe(true);
     expect(await run(m, create({ announce: { roleIds: [HEX.b] } }))).toMatchObject({ ok: true });
     expect(m.routes.createChannel).toHaveBeenCalledTimes(1);
+    expect(m.routes.createChannel.mock.calls[0]?.[1].overwrites).toEqual([
+      { kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages },
+      { kind: 0, targetId: B, allow: PERM.sendMessages, deny: 0 },
+      SELF_SEND,
+    ]);
   });
   it('the owner may tick no role', async () => {
     const o = await ready();
@@ -311,11 +322,24 @@ describe('roles: announcement channels', () => {
       { kind: 0, targetId: A, allow: PERM.sendMessages, deny: 0 },
     ]);
   });
+  it('an administrator who is not the owner adds no self entry', async () => {
+    const a = await ready({ owner: false, top: 5, bits: 0xffn | BigInt(PERM.manageChannels) | BigInt(PERM.administrator) });
+    expect(await run(a, create({}))).toMatchObject({ ok: true });
+    expect(a.routes.createChannel.mock.calls[0]?.[1].overwrites).toEqual([{ kind: 0, targetId: EVERYONE, allow: 0, deny: PERM.sendMessages }]);
+  });
   it('more roles than one create can carry is refused', async () => {
     const o = await ready();
     const many = Array.from({ length: 100 }, (_, i) => toHex(id16(0x80 + i)));
     expect(await run(o, create({ announce: { roleIds: many } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
     expect(o.routes.createChannel).not.toHaveBeenCalled();
+  });
+  it('a non-owner\'s own entry counts toward the cap: 99 roles (101 entries) are refused, 98 (100) are sent', async () => {
+    const m = await member();
+    const many = (n: number): string[] => Array.from({ length: n }, (_, i) => toHex(id16(0x80 + i)));
+    expect(await run(m, create({ announce: { roleIds: many(99) } }))).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
+    expect(m.routes.createChannel).not.toHaveBeenCalled();
+    expect(await run(m, create({ announce: { roleIds: many(98) } }))).toMatchObject({ ok: true });
+    expect(m.routes.createChannel.mock.calls[0]?.[1].overwrites).toHaveLength(100);
   });
   it('refuses announce on a text channel, private on an announcement, and announce roleIds that are not ids', async () => {
     const w = await ready();

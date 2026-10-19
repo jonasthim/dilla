@@ -446,8 +446,8 @@ describe('passkey and backup-code sign-in (web3.6 C2)', () => {
     for (let i = 0; i < bad.length; i++) expect(await answered(w, 10 + i)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } });
     expect(w.enrol.backupCode).not.toHaveBeenCalled();
     expect(w.enrol.passkey).not.toHaveBeenCalled();
-    // Control: 64 KiB of response is accepted, and (pre-flight C-3) a blank key with it is ignored, not refused.
-    w.call(30, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_536), recoveryKey: ' ' });
+    // Control: 64 KiB of response is accepted.
+    w.call(30, { m: 'signInPasskey', ceremonyId: CEREMONY_HEX, response: 'x'.repeat(65_536) });
     expect(await answered(w, 30)).toMatchObject({ ok: true });
   });
 
