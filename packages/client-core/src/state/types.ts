@@ -196,13 +196,17 @@ export interface FactorsState { owed: boolean; totp: { confirmedAt: number } | n
 /** CB2: a channel's slow-mode wait for this account, published by the worker for a channel with slow mode on. until: ms
  *  since the epoch when the next post may go (0 = none); queued: a post of this device waits for it in the outbox. */
 export interface SlowState { until: number; queued: boolean }
+/** Silent AFK occupants in one community; null means the initial snapshot is still loading. */
+export interface AFKState { channelId: string | null; timeoutSeconds: number; occupants: { userId: string; deviceId: string }[] }
 export type SliceName = 'account' | 'connection' | 'communities' | `channels:${string}` | `members:${string}` | `presence:${string}` | `timeline:${string}`
+  | `afk:${string}`
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
   | `slow:${string}` | `thread:${string}` | `threads:${string}`;
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
+  [k: `afk:${string}`]: AFKState | null;
   [k: `pins:${string}`]: PinnedItem[]; [k: `tray:${string}`]: TrayItem[];
   [k: `typing:${string}`]: TypingState[];
   [k: `permissions:${string}`]: CommunityAccess; [k: `roles:${string}`]: RoleSummary[];

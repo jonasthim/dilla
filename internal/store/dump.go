@@ -67,6 +67,7 @@ var DumpTables = []string{
 	// self-reference (parent_id) is checked at the end of the one COPY statement
 	// that replays the table, so the rows' order within it does not matter.
 	"channels",
+	"community_afk",
 	// 006f_voice.sql, appended by Plan 2 task 16 (fix wave C5). Its only parent is channels. A
 	// dump that left it out restored no call history, and LoadPostgres could not TRUNCATE
 	// channels at all while this child table was missing from the list, so every Postgres

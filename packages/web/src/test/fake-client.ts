@@ -237,6 +237,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
   fake.set('connection', { status: 'online', generation: '1' });
   fake.set('communities', [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }]);
   fake.set(`channels:${A}`, CHANNELS);
+  fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, occupants: [] });
   fake.set(`members:${A}`, MEMBERS);
   fake.set('dms', DMS);
   fake.set('settings', o.settings ?? {});

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Button, TextField } from '@dilla/ui';
+import { Button, Select, TextField } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
+import { useSlice } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { SERVER_NAME_MAX_BYTES, nameProblem } from '../Create.tsx';
 import { forbidden, refused, statusIs, useRun, type SectionProps } from './shared.ts';
@@ -15,6 +16,17 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
   // A refusal found before asking the server, and how many refusals of either kind were shown.
   const [local, setLocal] = useState<{ message: string; n: number } | null>(null);
   const action = useRun();
+  const afk = useSlice(`afk:${communityId}`);
+  const channels = useSlice(`channels:${communityId}`);
+  const [afkChannel, setAFKChannel] = useState('');
+  const [afkTimeout, setAFKTimeout] = useState(300);
+  const [afkDirty, setAFKDirty] = useState(false);
+  const afkAction = useRun();
+  useEffect(() => {
+    if (afk === undefined || afk === null || afkDirty) return;
+    setAFKChannel(afk.channelId ?? '');
+    setAFKTimeout(afk.timeoutSeconds);
+  }, [afk, afkDirty]);
   // A rename made elsewhere reaches the field only if nothing is being typed (the field still holds the name last shown).
   const shownName = useRef(serverName);
   useEffect(() => {
@@ -61,6 +73,25 @@ export function OverviewSection({ communityId, serverName, announce }: SectionPr
           {saved ? <p>{t('admin.overview.saved')}</p> : null}
         </div>
       </form>
+      <div className="dw-admin-form" aria-busy={afk === null}>
+        <h3>{t('admin.afk.title')}</h3>
+        <p>{t('admin.afk.hint')}</p>
+        <Select label={t('admin.afk.channel')} value={afkChannel} disabled={afk === null || afk === undefined || afkAction.busy}
+          options={[{ value: '', label: t('admin.afk.disabled') }, ...(channels ?? []).filter(ch => ch.kind === 1)
+            .map(ch => ({ value: ch.id, label: ch.name }))]}
+          onChange={value => { setAFKChannel(value); setAFKDirty(true); afkAction.reset(); }} />
+        <Select label={t('admin.afk.timeout')} value={String(afkTimeout)} disabled={afk === null || afk === undefined || afkAction.busy}
+          options={[1, 5, 15, 30, 60].map(n => ({ value: String(n * 60), label: t('admin.afk.minutes', { n }) }))}
+          onChange={value => { setAFKTimeout(Number(value)); setAFKDirty(true); afkAction.reset(); }} />
+        <div className="dw-settings-actions">
+          <Button variant="accent" disabled={!afkDirty || afkAction.busy || afk === null || afk === undefined}
+            onClick={() => { void afkAction.run(() => client.call({ m: 'setAFK', communityId, channelId: afkChannel || null,
+              timeoutSeconds: afkTimeout }), e => t('admin.afk.error', { code: e.code })).then(ok => {
+              if (ok) { setAFKDirty(false); announce(t('admin.afk.saved')); }
+            }); }}>{t('admin.afk.save')}</Button>
+          {afkAction.error ? <p role="alert">{afkAction.error}</p> : null}
+        </div>
+      </div>
     </section>
   );
 }

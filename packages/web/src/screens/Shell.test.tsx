@@ -55,6 +55,7 @@ function setup(path: string, opts: { channels?: boolean; communities?: { id: str
   fake.set('connection', { status: 'online', generation: '7' });
   fake.set('communities', opts.communities ?? [{ id: A, name: 'Midgard', owner: 'ee'.repeat(16) }, { id: B, name: 'Valhalla', owner: 'ee'.repeat(16) }]);
   if (opts.channels !== false) fake.set(`channels:${A}`, CHANNELS);
+  fake.set(`afk:${A}`, { channelId: null, timeoutSeconds: 300, occupants: [] });
   fake.set(`members:${A}`, MEMBERS);
   opts.before?.(fake);
   const user = userEvent.setup();

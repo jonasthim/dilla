@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
-  A, BOB, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
+  A, BOB, BOB_DEV, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
+import { ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { PHONE_QUERY } from '../../layout.ts';
 import { isApplePlatform, voiceShortcutText } from './shortcuts.ts';
@@ -34,6 +35,40 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 }
 
 describe('voice in the shell', () => {
+  it('shows the silent AFK room and its occupants without offering a media join', async () => {
+    const app = renderVoiceShell({ path: `/c/${A}/${MUSIC}` });
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
+    const region = await main().findByRole('region', { name: t('voice.afk.title') });
+    expect(region).toHaveTextContent('1 in AFK');
+    expect(within(region).queryByRole('button', { name: 'join voice' })).toBeNull();
+    expect(screen.getAllByText('bob').length).toBeGreaterThan(0);
+  });
+
+  it('closes its media session when this device is moved to AFK', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+      occupants: [{ userId: ME.id, deviceId: OWN_DEV }] });
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
+    expect(app.session.state.phase).toBe('ended');
+  });
+
+  it('reports actual input while a voice call remains open on another page', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, occupants: [] });
+    expect(app.client.callsOf('afkActivity')).toHaveLength(1);
+    app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300,
+      occupants: [{ userId: BOB, deviceId: BOB_DEV }] });
+    expect(app.client.callsOf('afkActivity')).toHaveLength(1);
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 6_000);
+    go(`/dm/${DM}`);
+    fireEvent.pointerMove(window);
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(2));
+    expect(app.client.callsOf('afkActivity')[1]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV });
+    dateNow.mockRestore();
+  });
+
   it('retries a restored call after a transient start failure', async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });

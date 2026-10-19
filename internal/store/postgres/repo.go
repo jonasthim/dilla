@@ -2095,6 +2095,21 @@ func (r *Repo) GetCommunity(ctx context.Context, communityID id.ID) (store.Commu
 	}, nil
 }
 
+func (r *Repo) GetCommunityAFK(ctx context.Context, communityID id.ID) (store.CommunityAFK, error) {
+	row, err := r.r.GetCommunityAFK(ctx, pgdb.GetCommunityAFKParams{CommunityID: communityID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.CommunityAFK{TimeoutSeconds: 300}, nil
+	}
+	if err != nil {
+		return store.CommunityAFK{}, wrap(err)
+	}
+	return store.CommunityAFK{ChannelID: row.ChannelID, TimeoutSeconds: uint64(row.TimeoutSeconds)}, nil
+}
+
+func (r *Repo) SetCommunityAFK(ctx context.Context, communityID id.ID, config store.CommunityAFK) error {
+	return wrap(r.w.SetCommunityAFK(ctx, pgdb.SetCommunityAFKParams{CommunityID: communityID, ChannelID: config.ChannelID, TimeoutSeconds: int64(config.TimeoutSeconds)}))
+}
+
 func (r *Repo) ListCommunities(ctx context.Context, after id.ID, limit int32) ([]store.CommunityRow, error) {
 	rows, err := r.r.ListCommunities(ctx, pgdb.ListCommunitiesParams{ID: after, MaxRows: int64(limit)})
 	if err != nil {

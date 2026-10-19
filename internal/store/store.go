@@ -399,6 +399,8 @@ type ChannelMembers interface {
 // Communities is the part of Structure whose tables are 00004_structure.sql:
 // communities, members, roles and member_roles (Plan 2 task 1).
 type Communities interface {
+	GetCommunityAFK(ctx context.Context, communityID id.ID) (CommunityAFK, error)
+	SetCommunityAFK(ctx context.Context, communityID id.ID, config CommunityAFK) error
 	CreateCommunity(ctx context.Context, c CommunityRow) error
 	// GetCommunity answers ErrNotFound for a soft-deleted community too.
 	GetCommunity(ctx context.Context, communityID id.ID) (CommunityRow, error)

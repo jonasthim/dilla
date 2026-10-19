@@ -839,6 +839,25 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `GET /v1/channels/{id}/call` | — | `200 [group_id(bstr16\|null), call_id(bstr16\|null), participants([[user_id(bstr16), device_id(bstr16), flags(uint)]])]`; `400 E_INVALID_REQUEST` for a text channel or a category | `view_channel`, or a participant of the DM or group DM |
 | `GET /v1/communities/{id}/calls` | — | `200 [[channel_id(bstr16), call_id(bstr16), participants]]`, the live calls of the voice channels the caller may view, sorted by `channel_id`, unpaginated; `404 E_NOT_FOUND` for a non-member | membership |
 | `POST /v1/calls/{call_id}/decline` | `[expires_ts(uint)]` | `204`, also when the user was no longer ringing or `expires_ts` names no ring; `400 E_INVALID_REQUEST` for a call of a community voice channel or a malformed body; `404 E_NOT_FOUND` for an unknown or ended call | a participant of the call's DM or group DM |
+| `GET /v1/communities/{id}/afk/settings` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint)]`, default `[null, 300]` | community membership |
+| `PUT /v1/communities/{id}/afk/settings` | `[channel_id(bstr16\|null), timeout_seconds(uint)]` | `204`; timeout is one of `60, 300, 900, 1800, 3600`; destination is an existing voice channel in this community with no live call; `400 E_INVALID_REQUEST` otherwise | `manage_community` |
+| `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), occupants([[user_id(bstr16), device_id(bstr16)]])]`; an inaccessible or removed destination is returned as `null` with no occupants | community membership; occupants only when the caller may view and connect to the destination |
+| `POST /v1/communities/{id}/afk/activity` | `[channel_id(bstr16)]` | `204`; records this authenticated device's activity in that live community voice call | community membership |
+| `POST /v1/communities/{id}/afk` | `[source_channel_id(bstr16)]` | `204`; moves this authenticated device from a live community voice call to silent AFK; `400 E_INVALID_REQUEST` if the destination is disabled or inaccessible or this device is absent from the source call | community membership and destination `view_channel` and `connect` |
+| `DELETE /v1/communities/{id}/afk` | — | `204`, also when this device was not in AFK | community membership |
+
+- **AFK lifecycle.** A community can designate one existing voice channel as AFK. The instance
+  keeps a server-side activity time for each device in community voice. Browser keyboard, pointer
+  and touch input, and microphone speech report activity; listening alone does not. Every retry
+  tick moves a device that exceeded the chosen timeout, even when its browser timers are suspended.
+  The instance removes the device from the original SFU room and revokes its relay before listing
+  it as an AFK occupant. AFK has no media call or media keys: microphone, camera, screen and remote
+  audio are all absent. The call's normal leave path removes its MLS leaf. A pending or completed
+  AFK move blocks both a new call token and a replayed `/rtc` admission for that device. The person
+  leaves AFK or joins another voice room manually. An actual gateway disconnect, loss of membership
+  or destination access, deletion or disabling clears its occupancy. AFK settings and occupancy
+  changes send `community_changed` (`02`); clients reload the AFK snapshot on initial load and
+  reconnect. The snapshot, rather than a gateway event payload, decides what each caller may see.
 
 - **Discovery and snapshot.** `GET /v1/channels/{id}/call` tells a client which call group to join
   or register and who is in the channel's call. `group_id` is the live call's group; with no live

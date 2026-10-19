@@ -199,6 +199,9 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   // An empty id names a slice that never exists, so it reads undefined.
   const channels = useSlice(`channels:${communityId ?? ''}`);
   const members = useSlice(`members:${communityId ?? ''}`);
+  const afk = useSlice(`afk:${communityId ?? ''}`);
+  const afkLists = useSlices((communities ?? []).map(c => `afk:${c.id}` as const));
+  const selfAFKCommunity = (communities ?? []).find((c, i) => afkLists[i]?.occupants.some(p => p.deviceId === account?.deviceId))?.id ?? null;
   const railSlices = useSlices((communities ?? []).map(c => `channels:${c.id}` as const));
   const memberLists = useSlices((communities ?? []).map(c => `members:${c.id}` as const));
   const allMembers = useMemo(() => mergeMembers(memberLists), [memberLists]);
@@ -409,6 +412,51 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     && (railSlices.flat() as ChannelSummary[]).some(c => c.id === id && c.kind === 1), [railSlices]);
   const call = useCall({ client, call: callSlice, settings: settings ?? {}, whereOf: callWhere, onLeft: id => setLeftFrom({ id }),
     stageShown: id => id === (voiceChannel?.id ?? dm?.id), recoverEnded });
+  const afkSelf = selfAFKCommunity === communityId && communityId !== null;
+  const leaveVoiceCall = call.leave;
+  const currentCallChannel = call.channelId;
+  useEffect(() => {
+    if (selfAFKCommunity !== null && currentCallChannel !== null) leaveVoiceCall();
+  }, [selfAFKCommunity, currentCallChannel, leaveVoiceCall]);
+  // The clock lives on the server. This device reports only real input or microphone speech;
+  // listening, another tab and another device do not refresh this call's AFK timer.
+  const afkTrackingKey = useRef<string | null>(null);
+  useEffect(() => {
+    const channel = call.channelId;
+    const home = (communities ?? []).findIndex((c, i) => railSlices[i]?.some(ch => ch.id === channel && ch.kind === 1));
+    const callCommunityId = home < 0 ? null : communities?.[home]?.id ?? null;
+    const callAFK = home < 0 ? null : afkLists[home];
+    if (callCommunityId === null || channel === null || call.session === null || callAFK?.channelId === null || callAFK?.channelId === undefined
+      || channel === callAFK.channelId) {
+      if (channel === null || call.session === null) afkTrackingKey.current = null;
+      return;
+    }
+    let last = 0;
+    const activity = (fromMic = false) => {
+      if ((!fromMic && document.visibilityState !== 'visible') || Date.now() - last < 5_000) return;
+      last = Date.now();
+      void client.call({ m: 'afkActivity', communityId: callCommunityId, channelId: channel }).catch(() => undefined);
+    };
+    const speech = () => { if (call.state?.speaking) { last = 0; activity(true); } };
+    const userActivity = () => activity();
+    const key = `${callCommunityId}:${channel}:${callAFK.channelId}`;
+    if (afkTrackingKey.current !== key) {
+      afkTrackingKey.current = key;
+      activity();
+    }
+    const timer = window.setInterval(speech, 5_000);
+    window.addEventListener('pointermove', userActivity);
+    window.addEventListener('pointerdown', userActivity);
+    window.addEventListener('keydown', userActivity);
+    window.addEventListener('touchstart', userActivity);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('pointermove', userActivity);
+      window.removeEventListener('pointerdown', userActivity);
+      window.removeEventListener('keydown', userActivity);
+      window.removeEventListener('touchstart', userActivity);
+    };
+  }, [client, communities, railSlices, afkLists, call.channelId, call.session, call.state?.speaking]);
   const callRestoreRef = useRef(call.restore);
   callRestoreRef.current = call.restore;
   useLayoutEffect(() => {
@@ -834,11 +882,19 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const ringFlow = <RingFlow client={client} rings={rings} dms={dms} settings={settings ?? {}} presenceChoice={account?.presenceChoice}
     inCallWhere={call.channelId === null ? null : callWhere(call.channelId)}
     onOpen={id => navigate({ name: 'dm', channelId: id })}
-    onAnswer={id => { navigate({ name: 'dm', channelId: id }); call.join(id); }} />;
+    onAnswer={id => { navigate({ name: 'dm', channelId: id });
+      if (selfAFKCommunity !== null) void client.call({ m: 'afkLeave', communityId: selfAFKCommunity }).then(() => call.join(id)).catch(report);
+      else call.join(id);
+    }} />;
   const voiceCtx: VoiceContext = {
     call, slice: callSlice, voice: voiceSlice, members: allMembers, trust, sendBlocks, settings: settings ?? {}, self, ownDevice: account?.deviceId ?? null,
     onCompare: userId => navigate({ name: 'settings', section: 'privacy', from: null, compare: userId }),
     onVoiceSettings: () => navigate({ name: 'settings', section: 'voice', from: null }),
+    onJoinVoice: id => {
+      if (selfAFKCommunity !== null) {
+        void client.call({ m: 'afkLeave', communityId: selfAFKCommunity }).then(() => call.join(id)).catch(report);
+      } else call.join(id);
+    },
   };
 
   // Flow 07: with no server, the one way in is to start one or to join one.
@@ -853,7 +909,17 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
       {log(t('shell.dm.log', { name: dm.name }))}
     </>;
   } else if (voiceChannel !== null) {
-    main = <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
+    main = afk === null || afk === undefined ? <p aria-busy="true">{t('voice.afk.loading')}</p> :
+      afk.channelId === voiceChannel.id && communityId !== null ?
+      <section className="dw-afk-view" aria-label={t('voice.afk.title')}>
+        <h1>{voiceChannel.name}</h1>
+        <p>{t('voice.afk.silent')}</p>
+        <p>{t('voice.afk.count', { n: afk.occupants.length })}</p>
+        {afkSelf ? <Button variant="ghost" onClick={() => { void client.call({ m: 'afkLeave', communityId }).catch(report); }}>{t('voice.afk.leave')}</Button>
+          : call.channelId !== null && channels?.some(c => c.id === call.channelId && c.kind === 1) ?
+            <Button variant="accent" onClick={() => { void client.call({ m: 'afkMove', communityId, channelId: call.channelId! })
+              .then(() => call.leave()).catch(report); }}>{t('voice.afk.move')}</Button> : null}
+      </section> : <VoiceView v={voiceCtx} channelId={voiceChannel.id} name={voiceChannel.name} />;
   } else if (communities !== undefined && communities.length === 0 && communityId === null) {
     main = noServerState;
   } else if (community !== null && channels !== undefined && ordered.length === 0) {
@@ -880,8 +946,13 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   // The voice channels sit under their own heading with their people (flow 06), not among the text rows.
   const speakingNow = speakingDevices(call.state, account?.deviceId ?? null);
   const voiceRows = ordered.filter(isVoice).map(c => ({ id: c.id, name: c.name, readable: false, current: c.id === channelId,
-    joined: call.channelId === c.id, room: voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
-    held: removedFromServer({ slice: callSlice }, c.id) }));
+    joined: call.channelId === c.id || (afk?.channelId === c.id && afkSelf),
+    room: afk?.channelId === c.id ? { callId: '', participants: afk.occupants.map(p => {
+      const member = members?.find(m => m.userId === p.userId);
+      return { userId: p.userId, deviceId: p.deviceId, name: member?.display || member?.username || p.userId.slice(0, 8),
+        flags: 0, own: p.deviceId === account?.deviceId, web: false, bot: false };
+    }) } : voiceSlice?.[c.id], speaking: call.channelId === c.id ? speakingNow : NOBODY,
+    held: afk === null || afk === undefined || afk.channelId === c.id || removedFromServer({ slice: callSlice }, c.id) }));
   const openVoice = (id: string) => { if (communityId !== null) navigate({ name: 'channel', communityId, channelId: id }); };
   const railItems = (communities ?? []).map((c, i) => {
     const list: readonly ChannelSummary[] = railSlices[i] ?? [];
@@ -977,7 +1048,7 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
           return phone ? <div className="dw-phone-footer">{newDm}</div> : newDm;
         })()
           : voiceHere && voiceRows.length > 0 ? <VoiceSection rows={voiceRows} onOpen={openVoice}
-            onJoin={id => { openVoice(id); call.join(id); }} /> : undefined} />
+            onJoin={id => { openVoice(id); voiceCtx.onJoinVoice?.(id); }} /> : undefined} />
       {phone ? null : <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
         stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />}
       {phone ? null : <div className="dw-account-area"><PresencePicker /></div>}

@@ -269,7 +269,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // task 16 added 006f_voice.sql's voice_sessions; dilla-web-3.1 added 014_invite_signups.sql's
 // invite_signups; dilla web3.7 SB1 added 016_message_class.sql's slowmode_marks.
 var wantTables = []string{
-	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
