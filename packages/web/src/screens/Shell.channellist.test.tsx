@@ -68,7 +68,7 @@ describe('one channel list (web3.8 item 12)', () => {
     act(() => app.client.publish('badges', { [VV]: { unread: 4, mentions: 0 }, [TB]: { unread: 2, mentions: 0 } }));
     const lounge = await within(list()).findByRole('button', { name: 'voice lounge' });
     expect(lounge).toHaveAccessibleName('voice lounge');
-    expect(lounge.closest('li')!.querySelector('.d-badge')).toBeNull();
+    expect(lounge.closest('li')!.querySelector('.d-pill')).toBeNull();
     // The control: the text row beside it does show its count.
     expect(within(list()).getByRole('button', { name: /^beta/ })).toHaveAccessibleName(/2/);
   });

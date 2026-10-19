@@ -1,5 +1,5 @@
 // The shell's voice surfaces (web-3 task 9, flow 06): the voice view of a voice channel route, the DM call strip and
-// its stage, the sidebar's voice section and the dock. Everything here is presentational over useCall's CallView and the
+// its stage, the voice rows' nested people in the channel list (ChannelList renders them) and the dock. Everything here is presentational over useCall's CallView and the
 // worker's `call` and `voice` slices; nothing here holds media or keys.
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { CallState, MemberSummary, SendBlocksState, TrustSummary, VoiceCall } from '@dilla/client-core';
