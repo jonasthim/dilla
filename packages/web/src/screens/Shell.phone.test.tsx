@@ -311,6 +311,69 @@ describe('the phone shell: tabs', () => {
     expect(here()).toBe(`/c/${A}`);
   });
 
+  describe('the system forward button (N5, R-c)', () => {
+    /** history.back() that lands on the DMs list, as it does when the person went forward onto this view. */
+    const backToDms = () => {
+      let pop: () => void = () => undefined;
+      const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
+        pop = () => {
+          window.history.replaceState(null, '', '/dm');
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        };
+      });
+      return { back, pop: () => pop() };
+    };
+
+    it('lands the current tab on its own list when back would land on another view', async () => {
+      const { user } = phone({ path: '/dm' });
+      await screen.findByRole('navigation', { name: t('shell.dms.label') });
+      goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
+      await screen.findByRole('textbox', { name: 'message #lobby' });
+      const { back, pop } = backToDms();
+      await user.click(tab('servers'));
+      expect(back).toHaveBeenCalledTimes(1);
+      act(() => pop());
+      await waitFor(() => expect(here()).toBe(`/c/${A}`));
+    });
+
+    it('control: back that lands on the tab list is left alone', async () => {
+      const { user } = phone({ path: `/c/${A}` });
+      await screen.findByRole('navigation', { name: t('shell.channels.label') });
+      goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
+      await screen.findByRole('textbox', { name: 'message #lobby' });
+      const back = vi.spyOn(window.history, 'back').mockImplementation(() => {
+        window.history.replaceState(null, '', `/c/${A}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      });
+      const replace = vi.spyOn(window.history, 'replaceState');
+      await user.click(tab('servers'));
+      expect(back).toHaveBeenCalledTimes(1);
+      expect(replace).toHaveBeenCalledTimes(1); // the mock's own
+      expect(here()).toBe(`/c/${A}`);
+    });
+
+    it('a second tap before the pop removes the first tap’s popstate listener, and the shell going away removes the last', async () => {
+      const { user, view } = phone({ path: '/dm' });
+      await screen.findByRole('navigation', { name: t('shell.dms.label') });
+      goto(`/c/${A}/${TEXT}`, { phoneBack: true, phoneFrom: `/c/${A}` });
+      await screen.findByRole('textbox', { name: 'message #lobby' });
+      backToDms();
+      const added = vi.spyOn(window, 'addEventListener');
+      const removed = vi.spyOn(window, 'removeEventListener');
+      const popstate = (spy: typeof added) => spy.mock.calls.filter(c => c[0] === 'popstate').length;
+      await user.click(tab('servers'));
+      const afterFirst = { added: popstate(added), removed: popstate(removed) };
+      expect(afterFirst.added).toBeGreaterThan(0);
+      await user.click(tab('servers'));
+      // The second tap adds its own listener and first removes the one the first tap left.
+      expect(popstate(added)).toBeGreaterThan(afterFirst.added);
+      expect(popstate(removed)).toBeGreaterThan(afterFirst.removed);
+      const beforeUnmount = popstate(removed);
+      view.unmount();
+      expect(popstate(removed)).toBeGreaterThan(beforeUnmount);
+    });
+  });
+
   it('a DM opened from the servers list: the DMs tab lands on /dm', async () => {
     const { user } = phone({ path: `/c/${A}` });
     await screen.findByRole('navigation', { name: t('shell.channels.label') });

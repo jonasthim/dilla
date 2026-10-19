@@ -223,7 +223,7 @@ describe('goBack', () => {
 
     it('goes to the expected route when back landed somewhere else (a forward entry)', () => {
       window.history.replaceState({ [PHONE_BACK]: true }, '', `/c/${C}/${CH}`);
-      const back = backTo('/dms');
+      const back = backTo('/dm');
       const navigate = vi.fn();
       goBack({ name: 'dms' }, navigate, expected);
       expect(navigate).toHaveBeenCalledTimes(1);
@@ -245,7 +245,7 @@ describe('goBack', () => {
       const back = backTo(routePath(expected));
       const navigate = vi.fn();
       goBack({ name: 'dms' }, navigate, expected);
-      window.history.replaceState(null, '', '/dms');
+      window.history.replaceState(null, '', '/dm');
       window.dispatchEvent(new PopStateEvent('popstate'));
       expect(navigate).not.toHaveBeenCalled();
       back.mockRestore();

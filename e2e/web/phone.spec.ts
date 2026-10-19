@@ -414,6 +414,27 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       // WebKit can report an offline fetch after this step ends. Clear the known browser wording after closing the context.
     });
 
+    // web3.8: Settings is in the shell's page slot, so the link banner stays the hit target above it (it was covered when
+    // Settings rendered after the shell).
+    await test.step('the link banner is the hit target over phone Settings', async () => {
+      await tab(page, 'nav.tab.you').tap();
+      await page.locator('[data-settings-section="privacy"]').tap();
+      await expect(page).toHaveURL(/\/settings\/privacy$/, { timeout: WAIT });
+      await context.setOffline(true);
+      const text = page.getByText(copy('nav.link.offline'), { exact: true });
+      await expect(text).toBeVisible({ timeout: WAIT });
+      const box = (await text.boundingBox())!;
+      const hit = await page.evaluate(({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return { inBanner: el?.closest('.d-link-banner') != null, inSettings: el?.closest('.d-settings-frame') != null };
+      }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+      expect(hit, 'the banner, not Settings, is under the point').toEqual({ inBanner: true, inSettings: false });
+      await context.setOffline(false);
+      await expect(text).toBeHidden({ timeout: WAIT });
+      await tab(page, 'nav.tab.servers').tap();
+      await expect(channelRow(page, 'general')).toBeVisible({ timeout: WAIT });
+    });
+
     // A deep link or a first load moves no focus.
     await test.step('a reload on a channel moves no focus', async () => {
       await channelRow(page, 'general').tap();
@@ -537,21 +558,31 @@ test('a landscape phone (844 x 390) gets the phone layout', async ({ playwright,
       await expectTapTargets(chip, 'the thread chip of a message at 844 x 390');
     });
 
-    // A call needs a live SFU, which this host does not run: the probe puts the DM call's own elements in the shell and reads
-    // what the data-layout twins of the container rules do to them (the same technique as the call bar probe in test 1).
-    await test.step('a DM call uses the phone layout and its buttons are 44 px', async () => {
+    // A call needs a live SFU, which this host does not run, so this step does not measure a real call's controls. It puts
+    // the elements the twinned rules select (the DM call pane, the voice-section join, a call-strip button) in the shell and
+    // reads what the data-layout twins do to them (the same technique as the call bar probe in test 1).
+    await test.step('the DM call pane fills the layout, and the voice-section join and call-strip buttons are 44 px', async () => {
       const probe = await page.evaluate(() => {
         const content = document.querySelector('.d-app-shell__content')!;
         const call = document.createElement('div');
         call.className = 'dw-dm-call';
         call.innerHTML = '<button type="button" class="d-btn dw-voice-section__join" data-size="sm"></button>';
-        content.append(call);
-        const out = { maxHeight: getComputedStyle(call).maxHeight, join: call.querySelector('button')!.getBoundingClientRect().height };
+        const strip = document.createElement('div');
+        strip.className = 'dw-call-strip';
+        strip.innerHTML = '<button type="button" class="d-btn" data-size="sm"></button>';
+        content.append(call, strip);
+        const out = {
+          maxHeight: getComputedStyle(call).maxHeight,
+          join: call.querySelector('button')!.getBoundingClientRect().height,
+          strip: strip.querySelector('button')!.getBoundingClientRect().height,
+        };
         call.remove();
+        strip.remove();
         return out;
       });
       expect(probe.maxHeight, 'the phone DM call fills the pane (the desktop one is capped at 40%)').toBe('none');
       expect(probe.join, 'the join button is a 44 px target').toBeGreaterThanOrEqual(44);
+      expect(probe.strip, 'a call-strip button is a 44 px target').toBeGreaterThanOrEqual(44);
     });
   } finally {
     await guard.collectWorkers();
