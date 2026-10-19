@@ -85,9 +85,9 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     const cam = new MediaStream();
     act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: cam, screen: screenStream }] }));
     const video = (id: string) => document.querySelector<HTMLVideoElement>(`li[data-tile-id="${BOB_DEV}:${id}"] video`);
-    await waitFor(() => { expect(video('screen')).not.toBeNull(); expect(video('camera')).not.toBeNull(); });
+    await waitFor(() => { expect(video('screen')).not.toBeNull(); expect(video('person')).not.toBeNull(); });
     expect(video('screen')!.srcObject).toBe(screenStream);
-    expect(video('camera')!.srcObject).toBe(cam);
+    expect(video('person')!.srcObject).toBe(cam);
     expect(tileOf('bob').querySelectorAll('video')).toHaveLength(1);
   });
 
@@ -108,6 +108,16 @@ describe('the stage shows what is sent and shared (product walk I2, I3, M4, M13)
     expect(screenTile.querySelector('video')!.srcObject).toBe(screenStream);
     expect(screenTile.querySelector('video')).not.toHaveAttribute('data-mirror');
     expect(own.querySelector('video')).toHaveAttribute('data-mirror', 'true');
+  });
+
+  it('web3.8 WS7: the DM call box stays a compact grid: no stage mode, and a share takes no focus (it would collapse to 2 px)', async () => {
+    const app = await calling({ ringing: [], declined: [], notRung: [] });
+    act(() => app.session.update({ tiles: [{ deviceId: BOB_DEV, userId: BOB, state: 'ok', speaking: false, video: null, screen: new MediaStream() }] }));
+    await waitFor(() => expect(document.querySelector(`li[data-tile-id="${BOB_DEV}:screen"]`)).not.toBeNull());
+    expect(document.querySelector('[data-tiles="stage"]')).toBeNull();
+    expect(document.querySelector('[data-focused-stage]')).toBeNull();
+    expect(document.querySelector('.d-call-tile__focus')).toBeNull();
+    expect(document.querySelector('li[data-focused="true"]')).toBeNull();
   });
 
   it('M4: your own tile says speaking when the SFU hears you, whatever the meter level', async () => {

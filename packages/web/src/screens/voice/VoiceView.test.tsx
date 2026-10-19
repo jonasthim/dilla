@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { t } from '../../strings/index.ts';
 import {
-  A, BOB, BOB_DEV, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
+  A, BOB, BOB_DEV, MEMBERS, OWN_DEV, bobChanged, callState, DM, GENV, MUSIC, renderVoiceShell, TEXT, type VoiceHarnessOptions,
 } from '../../test/fake-client.ts';
 import { ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
@@ -961,8 +961,8 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     const app = await inVoice({ voice: room(0) });
     act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), new MediaStream())] }));
     await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
-    expect(ids()).toContain(`${BOB_DEV}:camera`);
-    expect(within(li(`${BOB_DEV}:camera`)).getByRole('button', { name: 'bob' })).toBeInTheDocument();
+    expect(ids()).toContain(`${BOB_DEV}:person`);
+    expect(within(li(`${BOB_DEV}:person`)).getByRole('button', { name: 'bob' })).toBeInTheDocument();
     expect(within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) })).toBeInTheDocument();
     expect(document.querySelector('.d-call-tile__inset')).toBeNull();
   });
@@ -971,7 +971,7 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     const app = await inVoice({ voice: room(FLAG_MUTE | FLAG_SCREEN) });
     act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
     await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
-    const person = li(`${BOB_DEV}:avatar`);
+    const person = li(`${BOB_DEV}:person`);
     expect(person).toHaveAttribute('data-source', 'avatar');
     expect(within(person).getByRole('img', { name: 'muted' })).toBeInTheDocument();
     expect(within(person).getByRole('slider')).toBeInTheDocument();
@@ -982,14 +982,14 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
   it('an audio-only participant gives one avatar tile', async () => {
     const app = await inVoice({ voice: room(0) });
     act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
-    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:avatar`));
-    expect(ids().filter(i => i?.startsWith(BOB_DEV))).toEqual([`${BOB_DEV}:avatar`]);
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
+    expect(ids().filter(i => i?.startsWith(BOB_DEV))).toEqual([`${BOB_DEV}:person`]);
   });
 
   it('the people of a call this device has not joined are avatar tiles', async () => {
     renderVoiceShell({ voice: room(0) });
-    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:avatar`));
-    expect(ids()).toContain('c1:avatar');
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
+    expect(ids()).toContain('c1:person');
   });
 
   it('the own camera tile is mirrored and the own screen tile is not', async () => {
@@ -998,10 +998,33 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     const scr = new MediaStream();
     act(() => app.session.update({ camera: true, localCamera: cam, sharing: true, localScreen: scr }));
     await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
-    expect(li(`${OWN_DEV}:camera`).querySelector('video')).toHaveAttribute('data-mirror', 'true');
-    expect(li(`${OWN_DEV}:camera`).querySelector('video')!.srcObject).toBe(cam);
+    expect(li(`${OWN_DEV}:person`).querySelector('video')).toHaveAttribute('data-mirror', 'true');
+    expect(li(`${OWN_DEV}:person`).querySelector('video')!.srcObject).toBe(cam);
     expect(li(`${OWN_DEV}:screen`).querySelector('video')).not.toHaveAttribute('data-mirror');
     expect(li(`${OWN_DEV}:screen`).querySelector('video')!.srcObject).toBe(scr);
+  });
+
+  it('the person tile keeps its id when the camera goes on and off, so a focused person stays focused', async () => {
+    const app = await inVoice({ voice: room(0) });
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
+    await app.user.click(within(li(`${BOB_DEV}:person`)).getByRole('button', { name: 'bob' }));
+    expect(focusedIds()).toEqual([`${BOB_DEV}:person`]);
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), null)] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).toHaveAttribute('data-source', 'camera'));
+    expect(focusedIds()).toEqual([`${BOB_DEV}:person`]);
+    act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:person`)).toHaveAttribute('data-source', 'avatar'));
+    expect(focusedIds()).toEqual([`${BOB_DEV}:person`]);
+  });
+
+  it('the own tile and its screen are named by the display name, as the user panel shows it', async () => {
+    const app = await inVoice({ voice: room(0) });
+    app.client.publish(`members:${A}`, MEMBERS.map(m => m.userId === ME.id ? { ...m, display: 'Ada L' } : m));
+    act(() => app.session.update({ sharing: true, localScreen: new MediaStream() }));
+    await waitFor(() => expect(ids()).toContain(`${OWN_DEV}:screen`));
+    expect(within(li(`${OWN_DEV}:person`)).getByRole('button', { name: 'Ada L' })).toBeInTheDocument();
+    expect(within(li(`${OWN_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'Ada L' }) })).toBeInTheDocument();
   });
 
   describe('R26: auto-focus', () => {
@@ -1026,8 +1049,64 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
       await app.user.keyboard('{Escape}');
       await waitFor(() => expect(focusedIds()).toEqual([]));
       act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, new MediaStream(), bobScreen), tile('c1', 'carl', null, new MediaStream())] }));
-      await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:camera`));
+      await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:person`));
       expect(focusedIds()).toEqual([]);
+    });
+
+    it('a pause and a resume, which withhold every remote stream, do not focus an unfocused share again', async () => {
+      const app = await inVoice({ voice: room(FLAG_SCREEN) });
+      const bobScreen = new MediaStream();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] })); // paused: the room still says bob shares
+      await waitFor(() => expect(ids()).not.toContain(`${BOB_DEV}:screen`));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] })); // resumed
+      await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+      expect(focusedIds()).toEqual([]);
+    });
+
+    it('a share that really ended (the room flag is gone) and restarted may focus again', async () => {
+      const app = await inVoice({ voice: room(FLAG_SCREEN) });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      app.client.publish('voice', room(0));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));
+      await waitFor(() => expect(ids()).not.toContain(`${BOB_DEV}:screen`));
+      app.client.publish('voice', room(FLAG_SCREEN));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+    });
+
+    it('when the focused share ends, another person’s new share takes the focus', async () => {
+      const app = await inVoice({ voice: room(0) });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null), tile('c1', 'carl', null, new MediaStream())] }));
+      await waitFor(() => expect(focusedIds()).toEqual(['c1:screen']));
+    });
+
+    it('leaving and joining again starts with a clean set: the same share focuses again', async () => {
+      const app = await inVoice({ voice: room(FLAG_SCREEN) });
+      const bobScreen = new MediaStream();
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
+      within(li(`${BOB_DEV}:screen`)).getByRole('button', { name: t('stage.screen', { name: 'bob' }) }).focus();
+      await app.user.keyboard('{Escape}');
+      await waitFor(() => expect(focusedIds()).toEqual([]));
+      await app.user.click(main().getByRole('button', { name: 'leave' }));
+      await main().findByRole('button', { name: 'join voice' });
+      await app.user.click(main().getByRole('button', { name: 'join voice' }));
+      await waitFor(() => expect(app.sessions).toHaveLength(2));
+      app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+      await main().findByRole('toolbar', { name: 'voice channel controls' });
+      act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, bobScreen)] }));
+      await waitFor(() => expect(focusedIds()).toEqual([`${BOB_DEV}:screen`]));
     });
 
     it('the focused tile leaving returns the stage to the grid, and a new share focuses again', async () => {

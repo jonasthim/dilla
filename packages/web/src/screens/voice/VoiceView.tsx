@@ -9,7 +9,7 @@ import {
   type CallStageNotice, type CallTileProps, type VoiceDockProps,
 } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
-import { micNoticeKey, participantView, userName, voiceStateLabels } from '../shell-model.ts';
+import { micNoticeKey, participantView, selfName, userName, voiceStateLabels } from '../shell-model.ts';
 import { outgoingText, type CallView } from './useCall.tsx';
 import { usePhoneLayout } from '../../layout.ts';
 import { voiceShortcutText } from './shortcuts.ts';
@@ -43,12 +43,13 @@ function tileLabels(name: string): CallTileProps['labels'] {
 }
 
 /** The id of a tile in the stage (R27): one keyed list, `${deviceId}:${source}`. */
-const tileId = (deviceId: string, source: 'camera' | 'screen' | 'avatar') => `${deviceId}:${source}`;
+const tileId = (deviceId: string, kind: 'person' | 'screen') => `${deviceId}:${kind}`;
 
 type TileBase = Omit<CallTileProps, 'media' | 'id' | 'source' | 'title' | 'fullscreenLabel' | 'mirror'>;
 
 /**
- * One device's tiles (R27, pre-flight C-9): a person tile (`camera` with a verified stream, else `avatar`) that keeps the
+ * One device's tiles (R27, pre-flight C-9): a person tile (its `source` is `camera` with a verified stream, else `avatar`, but its id is `:person` either way, so
+ * turning a camera on or off keeps a focus on it) that keeps the
  * volume, the state glyphs and, for the own camera, the mirror, plus a `screen` tile while it shares (no volume, never
  * mirrored). A screen-only sharer therefore keeps an avatar tile.
  */
@@ -59,7 +60,7 @@ function deviceTiles(base: TileBase, o: {
   const fullscreenLabel = t('stage.fullscreen');
   const camera = o.camera !== null && view.state !== 'unverified';
   const out: CallTileProps[] = [{
-    ...base, media: camera ? o.camera : null, source: camera ? 'camera' : 'avatar', id: tileId(view.deviceId, camera ? 'camera' : 'avatar'),
+    ...base, media: camera ? o.camera : null, source: camera ? 'camera' : 'avatar', id: tileId(view.deviceId, 'person'),
     title: o.name, fullscreenLabel, mirror: camera && o.mirrorCamera,
   }];
   if (o.screen !== null || o.sharing) {
@@ -76,15 +77,16 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   const room = v.voice?.[channelId];
   // Product walk I3: the own tile is a self-view of what this device sends (the camera mirrored); M4: it is speaking when
   // the SFU hears this device, as the others' tiles are; M13: no tile carries the client tag (the page knows only its own).
+  const ownName = selfName(v.self, v.members);
   const own = v.self === null ? [] : deviceTiles({
     view: {
-      deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: userName(v.self.id, v.members, v.trust), state: 'ok' as const,
+      deviceId: v.ownDevice ?? 'own', userId: v.self.id, name: ownName, state: 'ok' as const,
       speaking: state?.speaking ?? false, muted: state?.muted ?? false, deafened: state?.deafened ?? false, video: state?.camera ?? false,
       screen: state?.sharing ?? false, web: false, bot: false,
     },
-    own: true, volume: 100, labels: tileLabels(v.self.username), onVolume: () => undefined,
+    own: true, volume: 100, labels: tileLabels(ownName), onVolume: () => undefined,
   }, { camera: state?.localCamera ?? null, screen: state?.localScreen ?? null, sharing: state?.sharing ?? false, mirrorCamera: true,
-    name: v.self.username });
+    name: ownName });
   const others = (state?.tiles ?? []).flatMap(tile => {
     const p = room?.participants.find(r => r.deviceId === tile.deviceId);
     const name = p?.name ?? userName(tile.userId, v.members, v.trust);
@@ -102,7 +104,7 @@ function callTiles(v: VoiceContext, channelId: string): CallTileProps[] {
 function roomTiles(v: VoiceContext, channelId: string): CallTileProps[] {
   return (v.voice?.[channelId]?.participants ?? []).map(p => ({
     view: participantView(p), own: p.own, volume: volumeOf(v.settings, p.userId), media: null, labels: tileLabels(p.name),
-    onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'avatar'), title: p.name,
+    onVolume: (n: number) => v.call.setVolume(p.userId, n), source: 'avatar' as const, id: tileId(p.deviceId, 'person'), title: p.name,
   }));
 }
 
@@ -252,27 +254,39 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   );
 }
 
+/** The screen tiles of other people that are really being shared: the room says so, or their stream is on the stage. */
+function liveScreenIds(v: VoiceContext, channelId: string, tiles: readonly CallTileProps[]): string[] {
+  const ids = new Set(tiles.filter(t => t.source === 'screen' && !t.own).map(t => t.id ?? t.view.deviceId));
+  for (const p of v.voice?.[channelId]?.participants ?? []) if (!p.own && participantView(p).screen) ids.add(tileId(p.deviceId, 'screen'));
+  return [...ids];
+}
+
 /**
  * R26: the one rule that focuses a tile by itself. A new screen tile of another person takes focus while no tile is
- * focused; an id the stage already offered in this call is never offered again (a tile the person unfocused stays
- * unfocused for the same share; when the share ends its id is forgotten, so a later share is new); the own screen never
- * does. Focus is dropped when the focused tile goes away, and everything is forgotten on leave.
+ * focused; an id the stage already offered in this call is never offered again until leave (a tile the person unfocused
+ * stays unfocused, also across a pause that withholds every remote stream); the own screen never does. An id is forgotten
+ * early only when its person's room flag says the share really ended, so a restarted share may focus again. Focus is
+ * dropped when the focused tile goes away. The DM call box has no focus (`dm`): it stays the compact grid.
  */
-function useAutoFocus(tiles: readonly CallTileProps[], joined: boolean, focusedId: string | null, setFocusedId: (id: string | null) => void) {
+function useAutoFocus(tiles: readonly CallTileProps[], live: readonly string[], joined: boolean, dm: boolean, focusedId: string | null,
+  setFocusedId: (id: string | null) => void) {
   const offered = useRef(new Set<string>());
   const idsKey = tiles.map(t => t.id ?? t.view.deviceId).join('\n');
   const screensKey = tiles.filter(t => t.source === 'screen' && !t.own).map(t => t.id ?? t.view.deviceId).join('\n');
+  const liveKey = live.join('\n');
   useEffect(() => {
+    if (dm) return;
     if (!joined) { offered.current.clear(); setFocusedId(null); return; }
+    const liveNow = liveKey === '' ? [] : liveKey.split('\n');
+    for (const id of [...offered.current]) if (!liveNow.includes(id)) offered.current.delete(id);
     const now = screensKey === '' ? [] : screensKey.split('\n');
-    for (const id of [...offered.current]) if (!now.includes(id)) offered.current.delete(id);
     const fresh = now.filter(id => !offered.current.has(id));
     for (const id of fresh) offered.current.add(id);
-    if (focusedId === null && fresh.length > 0) setFocusedId(fresh[0]);
-  }, [joined, screensKey, focusedId, setFocusedId]);
-  useEffect(() => {
-    if (focusedId !== null && !idsKey.split('\n').includes(focusedId)) setFocusedId(null);
-  }, [idsKey, focusedId, setFocusedId]);
+    // The focused tile going away drops the focus first, so a share that arrives in the same update can take it.
+    const kept = focusedId !== null && idsKey.split('\n').includes(focusedId) ? focusedId : null;
+    if (kept === null && fresh.length > 0) setFocusedId(fresh[0]);
+    else if (kept !== focusedId) setFocusedId(null);
+  }, [dm, joined, idsKey, screensKey, liveKey, focusedId, setFocusedId]);
 }
 
 const STAGE_LABELS = () => ({ code: t('voice.code'), codeHelp: t('voice.codeHelp'), empty: t('voice.empty'), tiles: t('voice.tiles') });
@@ -299,11 +313,11 @@ function Stage({ v, channelId, title, outgoing, dm }: { v: VoiceContext; channel
   const tiles = joined ? callTiles(v, channelId) : roomTiles(v, channelId);
   // The state setter is stable, so the stage's pause effect does not re-run on every render (U4 review, M5).
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  useAutoFocus(tiles, joined, focusedId, setFocusedId);
+  useAutoFocus(tiles, liveScreenIds(v, channelId, tiles), joined, dm, focusedId, setFocusedId);
   return (
     <div ref={ref} className="dw-voice-stage" data-doc-state={docState}
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
-      <CallStage title={title} tiles={tiles} focusedId={focusedId} onFocus={setFocusedId} code={code} notice={notice}
+      <CallStage title={title} tiles={tiles} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={joined ? outgoing : null}
         controls={joined ? <Controls v={v} paused={paused} dm={dm} />
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}

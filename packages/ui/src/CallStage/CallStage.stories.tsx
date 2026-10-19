@@ -211,9 +211,13 @@ function expectFocused(root: HTMLElement, story: string): void {
   for (const volume of Array.from(root.querySelectorAll<HTMLElement>('li[data-focused="false"] .d-call-tile__volume'))) {
     if (getComputedStyle(volume).display !== 'none') throw new Error(`${story}: a filmstrip tile shows its volume`);
   }
-  // Centred in their columns: the filmstrip tiles are evenly spaced, and the first sits half a free column from the edge.
+  // The strip tiles sit together (neighbours less than twice the grid gap apart) and, when they fit, are centred as a group.
+  const gap = 0.75 * rem;
   const gaps = strip.slice(1).map((r, i) => r.left - strip[i].right);
-  if (gaps.length > 1 && Math.max(...gaps) - Math.min(...gaps) > 2) throw new Error(`${story}: the filmstrip is ragged (gaps ${gaps.join(', ')})`);
+  if (gaps.some(g => g >= 2 * gap)) throw new Error(`${story}: the filmstrip is spread out (gaps ${gaps.join(', ')}, grid gap ${String(gap)})`);
+  const before = strip[0].left - area.left;
+  const after = area.right - strip[strip.length - 1].right;
+  if (before > 1 && after > 1 && Math.abs(before - after) > 2) throw new Error(`${story}: the filmstrip is not centred (${String(before)} against ${String(after)})`);
   // The focused tile starts at the area's left edge (scrolled or not) and its full-screen button is on screen.
   if (Math.abs(big.left - area.left) > 1) throw new Error(`${story}: the focused tile starts at ${String(big.left)}, not at the area's ${String(area.left)}`);
   const fs = root.querySelector<HTMLElement>('li[data-focused="true"] .d-call-tile__fullscreen');
@@ -246,6 +250,13 @@ const focusedStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
   render: args => <StageDemo {...args} initialFocus="d-ada:screen" />,
   play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectFocused(canvasElement, 'Focused'); },
 });
+/** Two strip tiles under a focused screen: they sit together, centred as a group, not spread over equal shares. */
+export const FocusedFew: Story = {
+  args: { tiles: [person('ada', { video: true }), shared('ada'), person('you', { video: true }, true)], code: null },
+  decorators: [stageBox],
+  render: args => <StageDemo {...args} initialFocus="d-ada:screen" />,
+  play: async ({ canvasElement }) => { await nextFrame(); await nextFrame(); expectFocused(canvasElement, 'FocusedFew'); },
+};
 /** Nine tiles with a person focused: the filmstrip overflows and scrolls, and the focused tile stays at the left edge. */
 const focusedNineStory = (theme: 'mesh' | 'light' | 'high-contrast'): Story => ({
   args: { tiles: people(9), code: null }, globals: { theme }, decorators: [stageBox],

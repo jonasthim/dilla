@@ -13,7 +13,9 @@ import { join } from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
-import { VoicePeer, WAIT, copy, joinVoice, onboard, screenTile, self, heard, stage, tile } from './support/voice';
+import {
+  VoicePeer, WAIT, connected, copy, dmPair, heard, joinVoice, onboard, rings, screenTile, self, stage, stripButton, tile,
+} from './support/voice';
 import { expectAccessible } from '../web/support/app';
 import { REPO_ROOT } from '../web/support/host';
 import { writeFixtures } from '../media/support/fixtures';
@@ -146,6 +148,45 @@ test('the stage shows a tile per camera and screen, focuses a shared screen, and
   } finally {
     await peerBrowser.close(dana);
     await peerBrowser.close(carl);
+    await peerBrowser.close(bob);
+    await peerBrowser.close(alice);
+    await peer.close();
+  }
+});
+
+// The DM call box is not the channel stage: it keeps its compact grid (no stage mode, no focus), so a shared screen shows
+// at the box's normal tile size. Without that it was a 2 px high green line in the 40 % box (WS7 review, critical 1).
+test('a DM call box keeps compact tiles when the other person shares their screen', async ({ peerBrowser, browserName }) => {
+  test.skip(browserName !== 'chromium', 'DEV-63 / NV-10: screen capture is proven on Chromium only');
+  const peer = peerBrowser.track(await VoicePeer.start());
+  const alice = await peerBrowser.open('alice', { viewport: VIEWPORT });
+  const bob = await peerBrowser.open('bob', { viewport: VIEWPORT });
+  try {
+    await dmPair(alice, bob, peer);
+    await stripButton(alice.page, 'call.start').click();
+    await connected(alice.page);
+    await rings(bob.page).getByRole('button', { name: copy('call.ring.answer'), exact: true }).click();
+    await connected(bob.page);
+    await expect(tile(bob.page, 'alice')).toHaveAttribute('data-voice-state', 'ok', { timeout: WAIT });
+    const share = stage(alice.page).getByRole('button', { name: copy('voice.shareOn'), exact: true });
+    await share.click();
+    await expect(share).toHaveAttribute('aria-pressed', 'true', { timeout: WAIT });
+
+    const shared = screenTile(bob.page, 'alice');
+    await expect(shared).toHaveAttribute('data-media', 'true', { timeout: WAIT });
+    await expect.poll(() => videoWidthOf(shared), { timeout: WAIT }).toBeGreaterThan(0);
+    const mainHeight = (await bob.page.getByRole('main').boundingBox())?.height ?? 0;
+    expect(mainHeight).toBeGreaterThan(0);
+    const video = await shared.locator('video').first().boundingBox();
+    expect(video?.height ?? 0, 'the shared screen’s video height').toBeGreaterThan(20);
+    await expect(stage(bob.page).locator('[data-tiles="stage"]')).toHaveCount(0);
+    await expect(stage(bob.page).locator('li[data-focused="true"]')).toHaveCount(0);
+    for (const box of await tiles(bob.page).evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) {
+      expect(box, 'a DM box tile’s height against 40 % of the pane').toBeLessThanOrEqual(mainHeight * 0.4);
+      expect(box).toBeGreaterThan(20);
+    }
+    await bob.page.screenshot({ path: join(SHOTS, 'dm-share.png') });
+  } finally {
     await peerBrowser.close(bob);
     await peerBrowser.close(alice);
     await peer.close();
