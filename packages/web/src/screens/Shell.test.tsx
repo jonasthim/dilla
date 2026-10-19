@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ChannelSummary, DeviceSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
+import type { ChannelSummary, DmSummary, MemberSummary, TimelineItem, TimelineState } from '@dilla/client-core';
 import { CoreProvider } from '../core/context.tsx';
 import { FakeClient, refusal } from '../test/fake-client.ts';
 import { account, ME, timelineItem } from '../test/fixtures.ts';
@@ -236,19 +236,22 @@ it('opens search from a visible control in the channel header (walk 1)', async (
   await user.type(input, 'lamp');
   await waitFor(() => expect(fake.callsOf('search')).toContainEqual({ m: 'search', scope: 'channel', id: GEN, query: 'lamp', cursor: null }));
 });
-// Walk 7: the browser's own offline event shows the banner at once; the gateway status stays online.
-it('shows the offline banner when the browser goes offline, and removes it when it returns', async () => {
+// Walk 7: the browser's own offline event shows the link banner at once; the gateway status stays online.
+it('shows the link banner when the browser goes offline, and empties it when it returns', async () => {
   const { fake } = setup(`/c/${A}/${GEN}`);
   await screen.findByRole('heading', { level: 2, name: 'general' });
   expect(fake.get('connection')?.status).toBe('online');
-  expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
+  const line = () => document.querySelector('.d-link-banner');
+  expect(line()).toBeEmptyDOMElement();
   const online = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
-  act(() => { window.dispatchEvent(new Event('offline')); });
-  expect(screen.getByText(en['shell.banner.offline'])).toBeInTheDocument();
-  online.mockReturnValue(true);
-  act(() => { window.dispatchEvent(new Event('online')); });
-  expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
-  online.mockRestore();
+  try {
+    act(() => { window.dispatchEvent(new Event('offline')); });
+    expect(line()).toHaveTextContent(en['nav.link.offline']);
+    expect(screen.queryByText(en['shell.banner.offline'])).toBeNull();
+    online.mockReturnValue(true);
+    act(() => { window.dispatchEvent(new Event('online')); });
+    expect(line()).toBeEmptyDOMElement();
+  } finally { online.mockRestore(); }
 });
 it('persists a chosen search scope through the worker setting', async () => {
   const { fake, user } = setup(`/c/${A}/${GEN}`);
@@ -1223,25 +1226,25 @@ describe('the own account’s identity', () => {
 });
 
 describe('connection', () => {
-  it('shows the offline banner and the status bar facts', () => {
+  it('shows the link banner in the banner slot, with no status bar', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);
-    const bar = screen.getByRole('region', { name: 'connection' });
-    expect(bar).toHaveTextContent('dilla.test');
-    expect(bar).toHaveTextContent('online');
-    expect(bar).toHaveTextContent('7');
+    const line = () => document.querySelector('.d-link-banner');
+    expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
+    expect(line()).toHaveAttribute('role', 'status');
+    expect(line()).toBeEmptyDOMElement();
     expect(screen.queryByRole('alert')).toBeNull();
     act(() => fake.set('connection', { status: 'connecting', generation: null }));
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(bar).toHaveTextContent('connecting');
-    expect(bar).toHaveTextContent('–');
+    expect(line()).toHaveTextContent('Connecting to dilla.test…');
     act(() => fake.set('connection', { status: 'offline', generation: '7' }));
-    expect(screen.getByRole('alert')).toHaveTextContent('Connection lost. Reconnecting…');
-    expect(bar).toHaveTextContent('offline');
-    act(() => fake.set('connection', { status: 'online', generation: '8' }));
     expect(screen.queryByRole('alert')).toBeNull();
+    expect(line()).toHaveTextContent('Offline. Reconnecting…');
+    expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
+    act(() => fake.set('connection', { status: 'online', generation: '8' }));
+    expect(line()).toBeEmptyDOMElement();
   });
 
-  it('shows the newer-client banner, not the offline one, while the server refuses the client version', () => {
+  it('shows the newer-client banner, not the link banner, while the server refuses the client version', () => {
     const OFFLINE = 'Connection lost. Reconnecting…';
     const TOO_OLD = 'This server needs a newer client. Reload the page.';
     const { fake } = setup(`/c/${A}/${GEN}`);
@@ -1249,10 +1252,10 @@ describe('connection', () => {
     expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(screen.getByRole('alert')).toHaveTextContent(TOO_OLD);
     expect(screen.queryByText(OFFLINE)).toBeNull();
-    expect(screen.getByRole('region', { name: 'connection' })).toHaveTextContent('offline');
+    expect(document.querySelector('.d-link-banner')).toBeNull();
     act(() => fake.set('connection', { status: 'offline', generation: '7' }));
-    expect(screen.getAllByRole('alert')).toHaveLength(1);
-    expect(screen.getByRole('alert')).toHaveTextContent(OFFLINE);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.querySelector('.d-link-banner')).toHaveTextContent('Offline. Reconnecting…');
     expect(screen.queryByText(TOO_OLD)).toBeNull();
   });
 });
@@ -1576,15 +1579,10 @@ describe('reading', () => {
 });
 
 describe('devices and settings', () => {
-  const dev = (id: string, revokedAt: number | null): DeviceSummary =>
-    ({ id, tier: 1, signerTier: 1, lastSeen: NOW, revokedAt, listed: true, own: id === 'cc'.repeat(16) });
-  it('asks for the device list once and shows how many devices the account has', () => {
+  it('no longer asks for the device list on mount: Diagnostics and You do', () => {
     const { fake } = setup(`/c/${A}/${GEN}`);
-    expect(fake.callsOf('refreshDevices')).toEqual([{ m: 'refreshDevices' }]);
-    const chunk = () => within(screen.getByRole('region', { name: 'connection' })).getByText('devices').closest('.d-chunk');
-    expect(chunk()).toHaveTextContent('–');
-    act(() => fake.set('devices', [dev('cc'.repeat(16), null), dev('d1'.repeat(16), null), dev('e2'.repeat(16), NOW)]));
-    expect(chunk()).toHaveTextContent('2');
+    expect(fake.callsOf('refreshDevices')).toEqual([]);
+    expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
   });
   it('opens settings from the rail, remembering the channel', async () => {
     const { user } = setup(`/c/${A}/${GEN}`);

@@ -259,7 +259,7 @@ const row = (page, channel, text) => page.getByRole('log', { name: t('shell.log.
 
 /** Fonts loaded, animations ended, no hover and no focus ring left over from the pointer or a filled field. */
 async function settle(page, { keepFocus = false } = {}) {
-  // Park the pointer outside the page: a corner inside it would hover the phone's "you" tab or the status bar.
+  // Park the pointer outside the page: a corner inside it would hover the phone's "you" tab.
   await page.mouse.move(-10, -10);
   await page.evaluate(async (keep) => {
     if (!keep && document.activeElement instanceof HTMLElement) document.activeElement.blur();

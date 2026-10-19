@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import { nextCode } from './support/totp';
 import {
   CLASS, COPY, TEST_TIMEOUT, WAIT, channelsNav, composerBox, copy, expectComposerReady, expectShell,
-  heading, instanceInvite, logRegion, messageRow, nextButton, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
+  closeSettings, heading, instanceInvite, logRegion, messageRow, nextButton, openSettings, railItem, railNav, submitButton, tabTo, tag, test, newAccount, escapeRegExp,
 } from './support/app';
 
 test.describe.configure({ timeout: TEST_TIMEOUT });
@@ -121,8 +121,9 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
     page.locator(CLASS.channelHeader),                                      // 3 channel header
     logRegion(page, channel),                                               // 4 message log
     page.locator(CLASS.composer),                                           // 5 composer
-    page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true }), // 6 status bar
   ];
+  // web3.8 (R4): the desktop has no status bar, so the lap ends at the composer.
+  await expect(page.getByRole('region', { name: copy(COPY.statusBarLabel), exact: true })).toHaveCount(0);
   const regionOfFocus = async (): Promise<number> => {
     for (let i = 0; i < regions.length; i++) {
       const inside = await regions[i].evaluateAll((els) =>
@@ -137,7 +138,7 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   }
   await expect(skip).toBeFocused();
   const seen: number[] = [0];
-  // 14 Tabs: the channel header now carries a search button (walk 1), one stop more than before.
+  // 14 Tabs: the channel header carries a search button (walk 1); the lap ends at the composer (web3.8, R4: no status bar).
   for (let i = 0; i < 14; i++) {
     await press('Tab');
     seen.push(await regionOfFocus());
@@ -162,4 +163,15 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
   // three actions (an owner has "+ channel", "invite link" and "server settings").
   expect(stops.get(2), 'the sidebar is five tab stops: the member\'s "invite link", "server settings" and "leave server", the tabs and the rows').toBe(5);
   expect(stops.get(1), 'the rail is one tab stop, its join button included').toBe(1);
+
+  // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.
+  const settings = await openSettings(page, 'diagnostics');
+  const facts = settings.locator('dl');
+  for (const [key, value] of [['diagnostics.connection', /^online$/], ['diagnostics.generation', /^\S+$/],
+    ['diagnostics.instance', new RegExp(`^${escapeRegExp(instanceName)}$`)], ['diagnostics.devices', /^[0-9]+$/]] as const) {
+    const term = facts.locator('dt', { hasText: new RegExp(`^${escapeRegExp(copy(key))}$`) });
+    await expect(term).toBeVisible({ timeout: WAIT });
+    await expect(term.locator('xpath=following-sibling::dd[1]')).toHaveText(value, { timeout: WAIT });
+  }
+  await closeSettings(page);
 });

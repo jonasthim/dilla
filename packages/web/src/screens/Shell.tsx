@@ -3,7 +3,7 @@ import { PERM } from '@dilla/client-core';
 import type { ChannelGroupState, ChannelSummary, SendBlock, TrustBlock, TrustSummary } from '@dilla/client-core';
 import {
   ActionMenu, AppShell, ThreadPane, Banner, Button, CallBar, ChannelHeader, ChannelList, CommunityRail, Dialog, EmptyState, LinkBanner, PhoneHeader,
-  SidebarTabs, StatusBar, StatusChunk, TabBar, UnsupportedVoice,
+  SidebarTabs, TabBar, UnsupportedVoice,
 } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
@@ -23,7 +23,7 @@ import { ThreadList } from './conversation/ThreadList.tsx';
 import { Search, type SearchHitView } from './Search.tsx';
 import { TrustAlert, TypingIndicator } from '@dilla/ui';
 import {
-  badgeLabel, composerBlock, defaultChannel, devicesChunk, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
+  badgeLabel, composerBlock, defaultChannel, dmCandidates, isUnsupported, isVoice, mentionCandidates, mentionMembers, mergeMembers,
   nameBook, orderChannels, railLabel, rowBadge, stepChannel, sumBadges, unsupportedBody,
 } from './shell-model.ts';
 import { useCall } from './voice/useCall.tsx';
@@ -135,7 +135,7 @@ function restoredConversationUi(value: unknown): ConversationUi | null {
 
 /**
  * The signed-in shell: the server rail, the selected server's channels and the direct messages, the open
- * channel's or DM's timeline and composer, the banners and the status bar. The route is the selection (L-TS-13);
+ * channel's or DM's timeline and composer and the banners. The route is the selection (L-TS-13);
  * under a settings route the shell shows the route Settings was opened over and never navigates (L-TS-27). The
  * worker loads a server's lists on selectCommunity and opens a channel's or DM's group on openChannel.
  */
@@ -166,7 +166,6 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   const dms = useSlice('dms');
   const badges = useSlice('badges');
   const settings = useSlice('settings');
-  const devices = useSlice('devices');
   const search = useSlice('search');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -667,11 +666,6 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
     marked.current = mark;
     client.call({ m: 'markRead', channelId: openId }).catch(report);
   }, [openId, timelineLoaded, visible, badge?.unread, badge?.mentions, lastKey, client, report]);
-
-  // (7) The account's device list, once per mount, for the status bar (Q12); a refusal leaves the chunk unknown.
-  useEffect(() => {
-    client.call({ m: 'refreshDevices' }).catch(() => undefined);
-  }, [client]);
 
   // The sidebar tab: DMs on a DM route, channels otherwise; it follows the route between the two, and a tab click
   // changes it without navigating. State adjusted during render, React's pattern for derived state.
@@ -1291,14 +1285,13 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
   // says it is offline the link is offline; the gateway status still governs everything else (reconnecting, a version refusal).
   const status = !browserOnline ? 'offline' : connection?.status ?? 'connecting';
   const linkReason = connection?.status === 'offline' ? connection.reason : undefined;
-  const tone = status === 'online' ? 'ok' : status === 'connecting' ? 'warn' : 'danger';
   const offline = status === 'offline';
   // BACKUPS-RECOVERY-04: persistent, with no dismiss: it stands while the worker reports the mismatch.
   const rootMismatch = account?.rootMismatch === true;
   // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
   const ownTrust = account?.ownTrust ?? null;
   const removalNotices = (removals ?? []).filter(r => !dismissedRemovals.has(r.id));
-  const banner = offline || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
+  const banner = (offline && linkReason === 'version') || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -1308,8 +1301,8 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
           {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
         </Banner>
       ) : null}
-      {offline && (!phone || linkReason === 'version') ? (
-        <Banner tone="warn">{t(linkReason === 'version' ? 'shell.banner.clientTooOld' : 'shell.banner.offline')}</Banner>
+      {offline && linkReason === 'version' ? (
+        <Banner tone="warn">{t('shell.banner.clientTooOld')}</Banner>
       ) : null}
       {removalNotices.map(r => (
         <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {
@@ -1631,19 +1624,11 @@ export function Shell(props: { update?: ShellUpdateDeps } = {}): React.JSX.Eleme
             labels={{ one: en['typing.one'], many: t('typing.many') }} /> : null}
           {composer}
         </>}
-        statusBar={
-          <StatusBar position="bottom" label={t('shell.status.label')}>
-            <StatusChunk label={t('shell.status.node')}>{account?.instance?.name ?? t('shell.status.unknown')}</StatusChunk>
-            <StatusChunk label={t('shell.status.link')} tone={tone}>{t(`shell.status.${status}`)}</StatusChunk>
-            <StatusChunk label={t('shell.status.gen')}>{connection?.generation ?? t('shell.status.unknown')}</StatusChunk>
-            <StatusChunk label={t('shell.status.devices')}>{devicesChunk(devices)}</StatusChunk>
-          </StatusBar>
-        }
-        banner={phone ? <>
+        banner={<>
           {linkReason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
-        </> : banner}
+        </>}
         aside={sideNow?.view === 'thread' && channel !== null
           ? <ThreadView key={sideNow.rootMsgId} channelId={channel.id} rootMsgId={sideNow.rootMsgId} channelName={channel.name} phone={phone}
             onClose={closeSide} announce={announce} returnFocus={() => sideReturn.current}

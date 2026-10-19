@@ -503,7 +503,8 @@ describe('the desktop keeps its shell', () => {
     renderVoiceShell({ path: `/c/${A}/${TEXT}` });
     await screen.findByRole('log');
     expect(document.querySelector('[data-layout="phone"]')).toBeNull();
-    expect(document.querySelector('.d-link-banner')).toBeNull();
-    expect(screen.getByRole('region', { name: t('shell.status.label') })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: t('shell.status.label') })).toBeNull();
+    expect(document.querySelector('.d-link-banner')).toHaveAttribute('role', 'status');
+    expect(document.querySelector('.d-link-banner')).toBeEmptyDOMElement();
   });
 });
