@@ -415,7 +415,7 @@ jobs:
       - run: go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
-      - run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere' ./internal/api/...
+      - run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 
@@ -696,6 +696,24 @@ test('a node job without the css checker steps is reported', () => {
 test('a go-postgres job that stopped running the api AFK tests is reported', () => {
   const problems = checkWorkflow(fixture(GOOD.replace(/      - run: go test -race -shuffle=on -timeout 20m -run 'AFK[^\n]*\n        env:\n[^\n]*\n/, '')));
   assert.ok(problems.some((p) => p.includes('"go-postgres"') && p.includes('./internal/api/...')), problems.join('\n'));
+});
+
+function withAPITests(body) {
+  const dir = fixture(GOOD);
+  mkdirSync(join(dir, 'internal', 'api'), { recursive: true });
+  writeFileSync(join(dir, 'internal', 'api', 'afk_x_test.go'), body);
+  return dir;
+}
+
+test('an AFK test the go-postgres -run regex misses is reported', () => {
+  const problems = checkWorkflow(withAPITests('package api\n\nfunc TestAFKFine(t *testing.T) {}\nfunc TestSomethingUnmatched(t *testing.T) {}\n'));
+  assert.ok(problems.some((p) => p.includes('TestSomethingUnmatched') && p.includes('afk_x_test.go')), problems.join('\n'));
+  assert.ok(!problems.some((p) => p.includes('TestAFKFine')), problems.join('\n'));
+});
+
+test('AFK tests the go-postgres -run regex matches pass', () => {
+  const dir = withAPITests('package api\n\nfunc TestAFKFine(t *testing.T) {}\nfunc TestTheBuiltInCarriesTheMarker(t *testing.T) {}\n');
+  assert.deepEqual(checkWorkflow(dir), []);
 });
 
 test('a workflow without the go-ds job is reported', () => {

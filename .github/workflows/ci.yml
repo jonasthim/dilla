@@ -778,7 +778,7 @@ jobs:
       # web3.9: the AFK backfill and the channel-parent rules have Postgres legs in internal/api; -run keeps the rest of
       # that package (SQLite only, in the go job) out of this one.
       - name: The AFK and channel-parent tests against Postgres
-        run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere' ./internal/api/...
+        run: go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...
         env:
           DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
 

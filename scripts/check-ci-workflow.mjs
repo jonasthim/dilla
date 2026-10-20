@@ -300,7 +300,7 @@ const REQUIRED_STEPS = {
     // among them, with an explicit -timeout that fits the job's budget.
     'go test -race -shuffle=on -timeout 20m ./internal/store/... ./internal/ops/...',
     // web3.9: the AFK backfill and the channel-parent rules have Postgres legs in internal/api.
-    "go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere' ./internal/api/...",
+    "go test -race -shuffle=on -timeout 20m -run 'AFK|Afk|HiddenCategory|HiddenParent|ParentAnywhere|Marker|ConcurrentEnsures|ReadsThePointer' ./internal/api/...",
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
   'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
@@ -366,6 +366,35 @@ export function raceGatedTests(root) {
   };
   walk('');
   return found;
+}
+
+/**
+ * web3.9: go-postgres runs internal/api through a -run regex, and `go test` passes when a regex matches nothing,
+ * so a test it misses is silently not run on Postgres. Every Test* in internal/api's afk*_test.go and
+ * channels_parent_test.go must match that regex.
+ */
+function assertPostgresAPITestsMatchRun(root, pgJob, problems) {
+  const regex = /-run '([^']*)'[^\n]*\.\/internal\/api\/\.\.\./.exec(pgJob)?.[1];
+  if (regex === undefined) return; // the missing line is reported by REQUIRED_STEPS
+  let re;
+  try {
+    re = new RegExp(regex);
+  } catch {
+    problems.push('ci.yml: job "go-postgres"\'s internal/api -run regex is not a valid expression');
+    return;
+  }
+  const dir = join(root, 'internal', 'api');
+  let files;
+  try {
+    files = readdirSync(dir).filter((f) => /^(afk.*|channels_parent)_test\.go$/.test(f));
+  } catch {
+    return;
+  }
+  for (const f of files) {
+    for (const m of readFileSync(join(dir, f), 'utf8').matchAll(/^func (Test\w+)\(/gm)) {
+      if (!re.test(m[1])) problems.push(`ci.yml: job "go-postgres"'s internal/api -run does not match ${m[1]} (internal/api/${f})`);
+    }
+  }
 }
 
 /**
@@ -714,6 +743,8 @@ export function checkWorkflow(root) {
     }
     assertRaceGatedTestsRunWithoutRace(root, jobs.go, problems);
   }
+
+  if ('go-postgres' in jobs) assertPostgresAPITestsMatchRun(root, jobs['go-postgres'], problems);
 
   if ('go-ds' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-ds'])) {
     problems.push('ci.yml: job "go-ds" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
