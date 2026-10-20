@@ -8,6 +8,7 @@ import { MessageLog } from '../MessageLog/MessageLog.tsx';
 import { MessageRow } from '../MessageRow/MessageRow.tsx';
 import { Composer } from '../Composer/Composer.tsx';
 import { Button } from '../Button/Button.tsx';
+import { IconButton } from '../IconButton/IconButton.tsx';
 import { StatusBar, StatusChunk } from '../StatusBar/StatusBar.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
@@ -163,8 +164,8 @@ export const DmCallRinging: Story = {
     </div><div className="dw-conversation">{dmLog}</div></>} />,
 };
 export const DmIncomingRing: Story = {
-  render: () => <Screen tab="dms" ring={ring(false)} header={<ChannelHeader kind="dm" name="bob" />} composer={composer}
-    main={<><div className="dw-call-strip"><Button className="dw-call-strip__start">{t('call.start')}</Button></div>{dmLog}</>} />,
+  render: () => <Screen tab="dms" ring={ring(false)} header={<ChannelHeader kind="dm" name="bob" actions={<IconButton icon="phone" label={t('call.start')} />} />} composer={composer}
+    main={dmLog} />,
 };
 
 // WB a11y m8: the rest of flow 06's states as screens.

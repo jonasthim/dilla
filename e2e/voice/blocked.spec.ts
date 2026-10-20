@@ -249,8 +249,8 @@ test('DM: a blocked DM call leaves the DM composer enabled', async ({ peerBrowse
     await expect(dmComposer(alice.page)).toBeEnabled({ timeout: WAIT });
 
     await peer.callJoin(dm.channel_id);
-    // The peer holds the call group but is in no room: no live call, so the strip offers `call`.
-    await alice.page.locator('.dw-call-strip').getByRole('button', { name: copy('call.start'), exact: true }).click();
+    // The peer holds the call group but is in no room: no live call, so the header offers `call`.
+    await alice.page.locator('.d-channel-header').getByRole('button', { name: copy('call.start'), exact: true }).click();
     await connected(alice.page);
     await peer.waitForCallMembers(dm.channel_id, (d) => d.includes(a.device), 'lists alice');
     await peer.forgeDevice();

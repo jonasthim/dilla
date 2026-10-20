@@ -238,9 +238,9 @@ export async function openDm(page: Page, dmId: string, name: string): Promise<vo
   await expect(page).toHaveURL(new RegExp(`/dm/${dmId}$`), { timeout: WAIT });
   await expect(dmComposer(page)).toBeEnabled({ timeout: WAIT });
 }
-/** The DM call strip's `call` (no live call) or `join call` button. */
+/** The DM header's `call` (no live call) or `join call` icon button (web3.9 N1). */
 export function stripButton(page: Page, key: 'call.start' | 'call.join'): Locator {
-  return page.locator('.dw-call-strip').getByRole('button', { name: copy(key), exact: true });
+  return page.locator('.d-channel-header, .d-phone-header').getByRole('button', { name: copy(key), exact: true });
 }
 /** The incoming rings on screen (L-UI-70), each with `data-ring` `incoming` or `busy`. */
 export function rings(page: Page): Locator { return page.locator('.d-ring-banner__ring'); }

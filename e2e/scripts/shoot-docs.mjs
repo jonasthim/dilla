@@ -1011,7 +1011,7 @@ async function main(argv) {
 
     // web-3 (L-DOC-24). Ada calls Mira from their DM: Mira's banner rings (30 s from its arrival, time enough for both
     // shots); she declines, and Ada, alone in the call, leaves, which ends it.
-    await pages.ada.locator('.dw-call-strip').getByRole('button', { name: t('call.start'), exact: true }).click();
+    await pages.ada.locator('.d-channel-header').getByRole('button', { name: t('call.start'), exact: true }).click();
     await connected(pages.ada);
     const ring = mira.locator('.d-ring-banner__ring');
     await ring.getByRole('button', { name: t('call.ring.answer'), exact: true }).waitFor({ timeout: WAIT });
