@@ -1,6 +1,6 @@
 # Flow 07 — start a server, add a channel, invite people
 
-This flow makes a fresh instance usable from the web client alone (v0.1.0-web3.1). The first person signs up with the bootstrap invite and lands in an empty shell. From there they start a server, which comes with `#general` and a voice channel called general. They copy an invite link and send it to a friend, who signs up through it and lands in the same server. The flow extends Flow 04's shell order: skip link → rail (servers, then **join**, then **new**, then settings) → sidebar (server name, **server actions**, tabs, rows) → header → log → composer → status bar.
+This flow makes a fresh instance usable from the web client alone (v0.1.0-web3.1). The first person signs up with the bootstrap invite and lands in an empty shell. From there they start a server, which comes with `#general` and a voice channel called general. They copy an invite link and send it to a friend, who signs up through it and lands in the same server. The flow extends Flow 04's shell order: skip link → rail (servers, then **join**, then **new**, then settings) → sidebar (server name, tabs, rows, with the "+" at the top of the channel list) → header → log → composer. Since web3.8 the desktop has no status bar, and the sidebar has no server-action buttons: the invite link is made under **server settings → invites**, and a channel is added with the "+" in the channel list (WS4).
 
 Chrome labels use lower case and dialog copy uses sentence case; nothing ends in an exclamation mark. *Server* names a community. Every visible phrase below comes from the Copy section. `{name}` is a name the person typed, `{server}` the server's name and `{code}` a refusal code. Nothing in this flow says how messages are protected. A new text channel is one the server cannot read, as every channel the web client creates; its group is registered by the first device that opens it, and a voice channel's call group by its first call.
 
@@ -19,7 +19,7 @@ Chrome labels use lower case and dialog copy uses sentence case; nothing ends in
 | start a server: closed while its channels are added | the server's create carries on; a starter that fails after the close is kept by `communityId` for the page session, and the next open of Start a server (or the dialog, if it was opened again meanwhile, once that create ends) shows its banner, as in "channels failed", once: closing again without the retry drops it, and the channel list is where to add it then | the server exists; a `createChannel` was refused after the close | the banner |
 | start a server: channels failed | the server is listed and selected behind the dialog; the field gives way to a warn banner that names what is missing: `create.server.partialText` (#general), `create.server.partialVoice` (the voice general) or `create.server.partial` (both); focus moves to the submit, which says `create.server.retry`, reads the server's channels again (a create whose answer was lost may have made its channel; a listed starter counts as made) and adds only the channels still missing (the banner stays while it runs; a failed read sends no create and names its code); closing keeps the server as it is (never a silent rollback) | the server exists; a `createChannel` was refused | the banner (`role="alert"`) |
 | start a server: done | the dialog closes; the server is selected and `#general` opens; focus moves to its composer | `communities` lists the server (owner: this account) before `createCommunity` answers; each channel is listed before `createChannel` answers | none |
-| server actions | under the server's name: `create.channel.button` (named `create.channel.open`) for the owner, `invite.open` for every member, in a group named `create.actions` | the owner is `communities[].owner`; the instance serves no role bits, so ownership is the one permission fact (the owner holds ManageChannels; `@everyone` holds CreateInvite by default) | none |
+| the "+" and the invite link (web3.8) | a "+" (`create.channel.open`, 'new channel') at the top of the channel list on the channels tab and the phone servers list, only for a person who may manage channels (never on the direct messages tab); no "invite link" button: the link is made in **server settings → invites** (`admin.nav.invites`, then `admin.invites.create`), which opens at the first section the person may see, so a member who holds only create invites lands on Invites; the sidebar's `create.actions` group holds server settings (`admin.open`) and, for a non-owner, leave server | the owner is `communities[].owner`; the owner holds ManageChannels; `@everyone` holds CreateInvite by default | none |
 | new channel: idle | dialog `create.channel.title` with the kind group `create.channel.kind` (`create.channel.text`, `create.channel.voice`; selection follows the arrows) and the field `create.channel.name`; focus in the field; the hint says how the name will show (`create.channel.hintText` or `create.channel.hintVoice`, `create.channel.hint` while empty) | none | dialog title |
 | new channel: creating | the submit says `create.channel.busy` and is `aria-disabled`; a second Enter or click sends nothing; as for a server, a reopened dialog says `create.channel.busy` until an earlier create ends, and that create neither changes the dialog nor opens its channel | `createChannel` | `create.channel.busy` in the dialog's visually hidden status region |
 | new channel: taken | the field's error: `create.channel.error.takenText` or `create.channel.error.takenVoice`, when the server's list already holds a channel of the chosen kind whose name is the one shown in the hint (a text name as its slug); focus stays in the field | none: nothing is sent (dillad keeps no uniqueness on channel names) | the error |
@@ -39,18 +39,18 @@ A text channel's name is stored as a lower-case slug: runs of spaces become one 
 ```text
 ┌────┬───────────────────────────┬─────────────────────────────────────────────────────────────────────────┐
 │ MC │ Midgard Crew              │ # general                                                               │
-│    │ [+ channel] [invite link] │                                                                         │
+│    │ [server settings]         │                                                                         │
 │┄┄┄┄│───────────────────────────│                                                                         │
 │ ⇥  │ channels · direct messages│                                                                         │
-│join│ # general                 │                                                                         │
-│ +  │ voice                     │                                                                         │
+│join│ channels               [+]│                                                                         │
+│ +  │ # general                 │                                                                         │
 │new │ ◉ general                 │                                                                         │
 │────│                           │ message #general                                                        │
-│ ⚙  │                           │                                                                         │
+│    │ ada                  🎤 🎧 ⚙│                                                                         │
 └────┴───────────────────────────┴─────────────────────────────────────────────────────────────────────────┘
 ```
 
-The two action tiles end the server list. Each is a dashed square with a caption under it: **join** in the edge colour and **new** in the accent, because starting a server is how a fresh instance begins. The server actions sit on one row under the server's name, above the tabs. The dialogs are the Mesh dialog of Flow 04 (mono, accent border, `esc` close on the left of the footer, the accent action on the right).
+The two action tiles end the server list. Each is a dashed square with a caption under it: **join** in the edge colour and **new** in the accent, because starting a server is how a fresh instance begins. The rail has no settings tile: settings is the gear in the user panel at the bottom left. The "+" sits at the right of the channel list's heading; **server settings** is the only action under the server's name, and the invite link is made there, under Invites. The dialogs are the Mesh dialog of Flow 04 (mono, accent border, `esc` close on the left of the footer, the accent action on the right).
 
 ```text
 ┌ Start a server ─────────────────────────────────────┐   ┌ Invite people to Midgard Crew ──────────────────────┐
@@ -66,7 +66,7 @@ The two action tiles end the server list. Each is a dashed square with a caption
 
 ## 360×740
 
-The rail stays a 60 px column, and the captions fit under its 40 px tiles. The sidebar stacks above the main pane, and the server actions sit under the name. They are compact buttons (28 px tall, 6 px sides), so both fit on one row in the 240 px sidebar at 1280 too; they wrap only when a larger text size leaves no room. A long name never widens the page, at either width: the channel header cuts it with an ellipsis and keeps its closing bracket and its actions (**pinned**) on screen, the composer's label line cuts it the same way, and the rows, the server title and the voice dock already do. A dialog is at most `100vw − 32px` wide. The invite field and its copy button wrap onto two lines, and the field keeps the whole link: it scrolls, never an ellipsis.
+The rail stays a 60 px column, and the captions fit under its 40 px tiles. The sidebar stacks above the main pane, and the "+" sits in the channel list heading (at least 44 px on a phone). A long name never widens the page, at either width: the channel header cuts it with an ellipsis and keeps its closing bracket and its actions (**pinned**) on screen, the composer's label line cuts it the same way, and the rows, the server title and the voice dock already do. A dialog is at most `100vw − 32px` wide. The invite field and its copy button wrap onto two lines, and the field keeps the whole link: it scrolls, never an ellipsis.
 
 ## Keyboard map
 
@@ -77,7 +77,7 @@ The rail stays a 60 px column, and the captions fit under its 40 px tiles. The s
 | a create dialog's field | Enter | submits; while busy, nothing more is sent |
 | the kind group | Left/Right or Up/Down | moves and selects (wraps); one tab stop |
 | any create dialog | Escape | closes; focus returns to what opened it |
-| the server actions | Tab | each action is its own stop, before the tabs |
+| the "+" | Tab | one stop, in the channel list's heading |
 | the invite field | focus | selects the whole link |
 
 ## Focus rules
@@ -108,7 +108,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 
 *Rail and server actions:*
 - `create.rail.join='join'`, `create.rail.new='new'`, `create.rail.newLabel='new server'`
-- `create.actions='server actions'`, `create.channel.button='channel'`, `create.channel.open='new channel'`, `invite.open='invite link'`
+- `create.actions='server actions'`, `create.channel.button='channel'`, `create.channel.open='new channel'` (the "+" in the channel list, web3.8), `invite.open='invite link'` (kept in `en.ts`; no longer a sidebar button, the link is made under server settings → invites)
 
 *Start a server:*
 - `create.server.title='Start a server'`

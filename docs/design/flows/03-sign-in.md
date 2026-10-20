@@ -142,7 +142,7 @@ Onboarding step 2 with the entry (the rest of onboarding is unchanged):
 +----------------------------------------------------------------------------------------------+
 ```
 
-Step 2, login:
+Step 1, login:
 
 ```
 +----------------------------------------------------------------------------------------------+
@@ -150,7 +150,7 @@ Step 2, login:
 +----------------------------------------------------------------------------------------------+
 |                                                                                              |
 |                      Sign in to dilla.thim.dev                            <h1>, has focus    |
-|                      Step 2 of 4                                                             |
+|                      Step 1 of 4                                                             |
 |                                                                                              |
 |                      Use the username and password of your account on dilla.thim.dev.        |
 |                                                                                              |
@@ -163,12 +163,11 @@ Step 2, login:
 |                      | ••••••••••                                       |                    |
 |                      +--------------------------------------------------+                    |
 |                      --------------------------------------------------                      |
-|                                           [ Cancel ]    [ Continue ]                         |
-|                         (ghost button)                                                       |
+|                           [ Create a new account instead ]  [ Continue ]                     |
 +----------------------------------------------------------------------------------------------+
 ```
 
-Step 3, second factor:
+Step 2, second factor:
 
 ```
 +----------------------------------------------------------------------------------------------+
@@ -176,7 +175,7 @@ Step 3, second factor:
 +----------------------------------------------------------------------------------------------+
 |                                                                                              |
 |                      Your second factor                                   <h1>, has focus    |
-|                      Step 3 of 4                                                             |
+|                      Step 2 of 4                                                             |
 |                                                                                              |
 |                      Enter the six-digit code from your authenticator app.                   |
 |                                                                                              |
@@ -192,7 +191,7 @@ Step 3, second factor:
 +----------------------------------------------------------------------------------------------+
 ```
 
-Step 2 where the instance offers passkeys and the browser can use them (the ghost button sits under the password field):
+Step 1 where the instance offers passkeys and the browser can use them (the ghost button sits under the password field):
 
 ```
 |                      Password                                                                |
@@ -201,14 +200,14 @@ Step 2 where the instance offers passkeys and the browser can use them (the ghos
 |                      +--------------------------------------------------+                    |
 |                      [ Sign in with a passkey ]                           (ghost button)     |
 |                      --------------------------------------------------                      |
-|                                               [ Cancel ]    [ Continue ]                     |
+|                           [ Create a new account instead ]  [ Continue ]                     |
 ```
 
-Step 3, code form after a passkey that did not check the person (the note sits above the code field):
+Step 2, code form after a passkey that did not check the person (the note sits above the code field):
 
 ```
 |                      Your second factor                                   <h1>, has focus    |
-|                      Step 3 of 4                                                             |
+|                      Step 2 of 4                                                             |
 |                      This passkey did not check that it is you, so dilla.thim.dev also       |
 |                      asks for your code.                                                     |
 |                      Enter the six-digit code from your authenticator app.                   |
@@ -216,14 +215,14 @@ Step 3, code form after a passkey that did not check the person (the note sits a
 |                      +--------------------------------------------------+                    |
 ```
 
-Step 3, passkey screen (an account with a passkey and no app; no code field):
+Step 2, passkey screen (an account with a passkey and no app; no code field):
 
 ```
 +----------------------------------------------------------------------------------------------+
 | [D] DILLA_                                                                                   |
 +----------------------------------------------------------------------------------------------+
 |                      Use your passkey                                     <h1>, has focus    |
-|                      Step 3 of 4                                                             |
+|                      Step 2 of 4                                                             |
 |                      This account signs in with a passkey. Your browser asks for it when     |
 |                      you continue.                                                           |
 |                      [ Use a backup code instead ]                        (ghost button)     |
@@ -232,14 +231,14 @@ Step 3, passkey screen (an account with a passkey and no app; no code field):
 +----------------------------------------------------------------------------------------------+
 ```
 
-Step 3, backup code:
+Step 2, backup code (held in the page; the key step sends it):
 
 ```
 +----------------------------------------------------------------------------------------------+
 | [D] DILLA_                                                                                   |
 +----------------------------------------------------------------------------------------------+
 |                      Use a backup code                                    <h1>, has focus    |
-|                      Step 3 of 4                                                             |
+|                      Step 2 of 4                                                             |
 |                      Type one of the backup codes you saved when you added your second       |
 |                      factor. Each code works once.                                           |
 |                      Backup code                                                             |
@@ -251,7 +250,7 @@ Step 3, backup code:
 +----------------------------------------------------------------------------------------------+
 ```
 
-Step 1, recovery key. The field shows what was typed or pasted, as it was typed; the line under it
+Step 3, recovery key (step 2 when no factor step was shown). The field shows what was typed or pasted, as it was typed; the line under it
 counts the characters that remain after spaces, tabs, line breaks and the three dash characters are
 dropped (`normaliseRecoveryKey`, the same rule the core applies):
 
@@ -261,10 +260,11 @@ dropped (`normaliseRecoveryKey`, the same rule the core applies):
 +----------------------------------------------------------------------------------------------+
 |                                                                                              |
 |                      Your recovery key                                    <h1>, has focus    |
-|                      Step 1 of 4                                                             |
+|                      Step 3 of 4                                                             |
 |                                                                                              |
-|                      Type or paste the recovery key you wrote down when the account was      |
-|                      created. Spaces and hyphens do not matter.                              |
+|                      Type or paste the 52-character recovery key you wrote down when you     |
+|                      created the account. Spaces and hyphens do not matter. Backup codes     |
+|                      are not your recovery key: they stand in for the app code.              |
 |                                                                                              |
 |                      Recovery key                                                            |
 |                      +--------------------------------------------------+                    |
@@ -272,12 +272,11 @@ dropped (`normaliseRecoveryKey`, the same rule the core applies):
 |                      +--------------------------------------------------+                    |
 |                      52 of 52 characters                                  (its description)  |
 |                      --------------------------------------------------                      |
-|                           [ Create a new account instead ]  [ Continue ]                     |
+|                                               [ Cancel ]    [ Add this browser ]             |
 +----------------------------------------------------------------------------------------------+
 ```
 
-Until the count is 52, the forward button (`Continue` before the login, `Add this browser` on a registered
-enrolment) is blocked (`aria-disabled="true"`, never the native `disabled`) and the line
+Until the count is 52, the forward button (`Add this browser`) is blocked (`aria-disabled="true"`, never the native `disabled`) and the line
 `signin.error.keyLength` stands under it as its description:
 
 ```
@@ -287,8 +286,8 @@ enrolment) is blocked (`aria-disabled="true"`, never the native `disabled`) and 
 |                      +--------------------------------------------------+                    |
 |                      12 of 52 characters                                  (its description)  |
 |                      --------------------------------------------------                      |
-|                           [ Create a new account instead ]  [ Continue ]                     |
-|                                                      aria-disabled                           |
+|                                               [ Cancel ]    [ Add this browser ]             |
+|                                                             aria-disabled                    |
 |                                                      A recovery key has 52 characters.       |
 ```
 
@@ -320,7 +319,7 @@ field keeps one line and scrolls inside itself.
 | [D] DILLA_                           |   | [D] DILLA_                           |
 +--------------------------------------+   +--------------------------------------+
 |  Sign in to dilla.thim.dev           |   |  Your second factor                  |
-|  Step 2 of 4                         |   |  Step 3 of 4                         |
+|  Step 1 of 4                         |   |  Step 2 of 4                         |
 |  Use the username and password of    |   |  Enter the six-digit code from your  |
 |  your account on dilla.thim.dev.     |   |  authenticator app.                  |
 |  Username                            |   |  Code                                |
@@ -332,7 +331,7 @@ field keeps one line and scrolls inside itself.
 |  | ••••••••••                     |  |   +--------------------------------------+
 |  +--------------------------------+  |
 |  ------------------------------      |
-|  [ Cancel ]                          |
+|  [ Create a new account instead ]    |
 |                     [ Continue ]     |
 +--------------------------------------+
 
@@ -340,19 +339,21 @@ field keeps one line and scrolls inside itself.
 | [D] DILLA_                           |   | [D] DILLA_                           |
 +--------------------------------------+   +--------------------------------------+
 |  Your recovery key                   |   |  You’re in                           |
-|  Step 1 of 4                         |   |  Step 4 of 4                         |
-|  Type or paste the recovery key you  |   |  This browser is now a device of ada |
-|  wrote down when the account was     |   |  on dilla.thim.dev. Messages sent    |
-|  created. Spaces and hyphens do not  |   |  before now are not shown here.      |
-|  matter.                             |   |  ------------------------------      |
-|  Recovery key                        |   |                    [ Open dilla ]    |
-|  +--------------------------------+  |   +--------------------------------------+
+|  Step 3 of 4                         |   |  Step 4 of 4                         |
+|  Type or paste the 52-character      |   |  This browser is now a device of ada |
+|  recovery key you wrote down when    |   |  on dilla.thim.dev. Messages sent    |
+|  you created the account. Spaces and |   |  before now are not shown here.      |
+|  hyphens do not matter. Backup codes |   |  ------------------------------      |
+|  are not your recovery key: they     |   |                    [ Open dilla ]    |
+|  stand in for the app code.          |   +--------------------------------------+
+|  Recovery key                        |
+|  +--------------------------------+  |
 |  | 7K3M QW9D X2RT 0PNA HV5C J8ZE M|  |
 |  +--------------------------------+  |
 |  52 of 52 characters                 |
 |  ------------------------------      |
-|  [ Create a new account instead ]    |
-|            [ Continue ]              |
+|  [ Cancel ]                          |
+|          [ Add this browser ]        |
 +--------------------------------------+
 ```
 
@@ -360,10 +361,10 @@ field keeps one line and scrolls inside itself.
 
 Working. While `signInLogin` or `signInTotp` runs, the forward button reads `signin.login.working` and
 both footer buttons are blocked (`aria-disabled="true"`, so they stay focusable and focus stays on the
-pressed button); once the enrolment runs inside it (phase `enrolling`), the step's status line
-`signin.key.working` (`role="status"`) fills. While `signInKey` runs on a registered enrolment, both
-buttons of step 1 are blocked, the forward button keeps its label, and the same status line stands above
-the footer:
+pressed button). Neither registers this browser, so neither shows the status line. While `signInKey` runs (the
+registration, the fetch, the enrolment and the list `PUT`, phase `enrolling`), both buttons of the key step are
+blocked, the forward button keeps its label, and the status line `signin.key.working` (`role="status"`) stands
+above the footer:
 
 ```
 |                      52 of 52 characters                                                     |
@@ -373,20 +374,28 @@ the footer:
 |                                        aria-disabled aria-disabled                           |
 ```
 
-Passkey and backup code. `Sign in with a passkey` on step 2 sends `signInPasskeyBegin`, hands the instance's
+Passkey and backup code. `Sign in with a passkey` on step 1 sends `signInPasskeyBegin`, hands the instance's
 options to the browser (`navigator.credentials.get`, user verification required) and sends `signInPasskey`
-with the ceremony, the answer and the key the page holds; a passkey that checked the person enrols the browser
-at once (step 4), one that did not leaves `signin-totp` with the note above. A backup code sends
-`signInBackupCode` with the code (hyphens and spaces dropped) and the key; the done step then adds
-`factorSignin.left.one` or `factorSignin.left.other` from the `factors` slice. Refusals are read by status and
-code: `401 E_PASSKEY_UNKNOWN` shows `factorSignin.passkey.unknown`; a cancelled ceremony and any other passkey
-refusal show `factorSignin.passkey.failed`, with focus back on the button that started the ceremony; a refused
-backup code (`401 E_UNAUTHENTICATED`) returns to step 2 with `factorSignin.backup.failed`, the password field
-empty and the recovery key kept.
+with the ceremony and the answer, and no key; a passkey that checked the person holds the settled assertion
+and goes on to the key step (step 2 here, since no factor step was shown), one that did not leaves
+`signin-totp` with the note above. A backup code is checked for its form at step 2 and held in the page, and
+nothing is sent: the key step sends `signInBackupCode` with the code (hyphens and spaces dropped) and the key,
+so a code is never spent early; the done step then adds `factorSignin.left.one` or `factorSignin.left.other`
+from the `factors` slice. Refusals are read by status and code: `401 E_PASSKEY_UNKNOWN` shows
+`factorSignin.passkey.unknown`; a cancelled ceremony and any other passkey refusal show
+`factorSignin.passkey.failed`, with focus back on the button that started the ceremony; a refused backup code
+(`401 E_UNAUTHENTICATED`, arriving from the key step) returns to step 1 with `factorSignin.backup.failed`, the
+password field and the key field empty.
+
+Expired assertion. The assertion that the factor settled lives five minutes. When it ran out while the key was
+being read off paper, the key step's command is refused with a 401 from the registration, or from the backup
+code on its path; the server checks the assertion before the code, so a backup code is not spent. The worker
+maps either to the client-local `E_SIGNIN_EXPIRED` and returns the phase to `signin-login`; the page shows
+step 1 with the warn banner `enrol.expired` and focus on the password field, and the person signs in again.
 
 Key step, a backup code typed. The hint under the field, the submit stays disabled. The hint text is `signIn.key.isBackupCode`.
 
-Empty fields: a submit of step 2 or 3 with an empty `Username`, `Password` or `Code` sends nothing; every
+Empty fields: a submit of step 1 or 2 with an empty `Username`, `Password` or `Code` sends nothing; every
 empty field shows the field error `signin.error.required` (`role="alert"`) and focus moves to the first
 of them. Typing in a field clears its error:
 
@@ -414,13 +423,13 @@ Wrong username or password: the password field is emptied and shows the field er
 
 Wrong code (`E_UNAUTHENTICATED` or `E_NO_ASSERTION` from `signInTotp`): the instance spent the login when
 it checked the code, so the code step cannot succeed again (ruling 39). The worker returns the phase to
-`signin-login` and the page shows step 2: the username keeps its text, the password field is empty and
+`signin-login` and the page shows step 1: the username keeps its text, the password field is empty and
 takes focus (after the frame focused the new step's heading), and the warn banner
 `signin.error.totpFailed` stands first in the step's body:
 
 ```
 |                      Sign in to dilla.thim.dev                                               |
-|                      Step 2 of 4                                                             |
+|                      Step 1 of 4                                                             |
 |                      +------------------------------------------------------------------+    |
 |                      | ▲ That code did not work. Sign in again with a fresh code.       |    |
 |                      +------------------------------------------------------------------+    |
@@ -454,7 +463,7 @@ is the only way on:
 
 ```
 |                      Your recovery key                                    <h1>, has focus    |
-|                      Step 1 of 4                                                             |
+|                      Step 3 of 4                                                             |
 |                      +------------------------------------------------------------------+    |
 |                      | ✕ This account has no recovery data on dilla.thim.dev. It was    |    |
 |                      |   created before recovery existed, and its browser has not been  |    |
@@ -479,18 +488,18 @@ read): the same view, with the danger banner `signin.error.noBackupState` in pla
 |                                                            [ Cancel ]                        |
 ```
 
-Device cap (`E_FORBIDDEN` 403 from the registration inside `signInLogin` or `signInTotp`): the instance refuses a new
+Device cap (`E_FORBIDDEN` 403 from the registration inside `signInKey`): the instance refuses a new
 browser only when every device it counts for the account is in the account's device list (a device that
 signed in but never joined the list is replaced instead). The worker returns the phase to `signin-login`,
-so the refusal is shown on step 2, with the username and the held key kept; `Continue` signs in again once
-a device was removed. The banner is the first child of step 2's body, under the step line; the buttons are
-enabled again. From step 2 focus stays on the pressed button and the banner announces itself
-(`role="alert"`); from step 3 the step changes and focus moves to step 2's heading. The device-cap banner
-(danger), on step 2:
+so the refusal is shown on step 1, with the username kept and the key field emptied; `Continue` signs in again
+once a device was removed. The banner is the first child of step 1's body, under the step line; the buttons are
+enabled again. From step 1 focus stays on the pressed button and the banner announces itself
+(`role="alert"`); from the key step the step changes and focus moves to step 1's heading. The device-cap banner
+(danger), on step 1:
 
 ```
 |                      Sign in to dilla.thim.dev                                               |
-|                      Step 2 of 4                                                             |
+|                      Step 1 of 4                                                             |
 |                      +------------------------------------------------------------------+    |
 |                      | ✕ This account already has as many devices as dilla.thim.dev     |    |
 |                      |   allows. Remove one in Settings on another device first.        |    |
@@ -498,16 +507,16 @@ enabled again. From step 2 focus stays on the pressed button and the banner anno
 |                      Use the username and password of your account on dilla.thim.dev.        |
 ```
 
-Too many attempts (`E_RATE_LIMITED` 429 from `signInLogin` or `signInTotp`: the login, the second-factor
-route or the registration): the instance limits logins from one network, and registration attempts from one network or
+Too many attempts (`E_RATE_LIMITED` 429 from `signInLogin`, `signInTotp` or `signInKey`: the login, the
+second-factor route or the registration): the instance limits logins from one network, and registration attempts from one network or
 one device, and answers with a wait. The
 page cannot tell these limits apart and does not need to: every one is a short wait, shown by one warn
-banner, `signin.error.tooMany`, on step 2 (the worker leaves or returns the phase at `signin-login`), with
+banner, `signin.error.tooMany`, on step 1 (the worker leaves or returns the phase at `signin-login`), with
 the username kept and the same focus rules as the device cap:
 
 ```
 |                      Sign in to dilla.thim.dev                                               |
-|                      Step 2 of 4                                                             |
+|                      Step 1 of 4                                                             |
 |                      +------------------------------------------------------------------+    |
 |                      | ▲ Too many sign-in attempts. Try again in 40 s.                  |    |
 |                      +------------------------------------------------------------------+    |
@@ -516,20 +525,19 @@ the username kept and the same focus rules as the device cap:
 
 Network failure and other refusals: a `Banner` is the first child of the body of the step `account.phase`
 names after the refusal, under the step line; the buttons are enabled again. When the step does not
-change, focus stays where it was and the banner announces itself (`role="alert"`); when a refusal of step 3
-returns the phase to `signin-login`, focus moves to step 2's heading.
+change, focus stays where it was and the banner announces itself (`role="alert"`); when a refusal of the key
+step returns the phase to `signin-login`, focus moves to step 1's heading.
 
-Someone else is signing in (`E_SIGNIN_EVICTED`, from the enrolment inside `signInLogin`, `signInTotp` or
-`signInKey`): another sign-in to the account, with
+Someone else is signing in (`E_SIGNIN_EVICTED`, from the enrolment inside `signInKey`): another sign-in to the account, with
 its password, replaced this browser's row at the instance before the new device list named it (a 401 on
 the fetch, on the list `PUT` or on the session after it). Before the core wrote the enrolment, the worker
-drops it and returns the phase to `signin-login`: step 2 shows the danger banner `signin.error.evicted`. After the core wrote it, the worker clears this browser's data as for `E_LIST_RACE`
+drops it and returns the phase to `signin-login`: step 1 shows the danger banner `signin.error.evicted`. After the core wrote it, the worker clears this browser's data as for `E_LIST_RACE`
 and the page reloads to `/welcome?signin=evicted`, where onboarding step 1 shows the same banner. Either
 way the page never shows the revoked splash for it:
 
 ```
 |                      Sign in to dilla.thim.dev                            <h1>, has focus    |
-|                      Step 2 of 4                                                             |
+|                      Step 1 of 4                                                             |
 |                      +------------------------------------------------------------------+    |
 |                      | ✕ Someone else is signing in to this account. Change your        |    |
 |                      |   password from a device you still have, or ask the operator.    |    |
@@ -538,11 +546,11 @@ way the page never shows the revoked splash for it:
 ```
 
 The devices changed while signing in (`E_LIST_RACE`, from `signInKey`): another device published a new
-device list between the login and the key. The worker clears this browser's data and the phase becomes
+device list between the registration and the list `PUT`. The worker clears this browser's data and the phase becomes
 `cleared`; the page shows the boot splash and reloads to `/welcome?signin=race`, so the person sees
 onboarding step 1 (the connect step), its heading focused, with the warn banner `signin.error.listRace`
 first in its body. The enrolment record is gone with the data, so the person signs in again from the
-start and enters the key after the next login. The query is dropped on the first navigation away from
+start and enters the key last, after the next login and factor. The query is dropped on the first navigation away from
 the connect step:
 
 ```
@@ -567,57 +575,60 @@ Closed instance (`instance.registrationMode` 2, `instance.passwordSignup` true):
 ```
 
 Refusals of the sign-in commands, switched on `code` and `status` only (never on `detail`), each
-clearing the working state. The step shown is the one `account.phase` names after the refusal: step 2
-after a refused login, second factor or registration (`signInLogin`, `signInTotp`, the registration
-inside `signInLogin` or `signInTotp`), step 1 after a key the core refused, a refused fetch of the recovery
-data or a refused enrolment:
+clearing the working state. The step shown is the one `account.phase` names after the refusal: step 1
+after a refused login, second factor, registration or expired assertion (`signInLogin`, `signInTotp`,
+`signInPasskey`, `signInBackupCode`, and the registration inside `signInKey`), and the key step (3, or 2 when
+no factor step was shown) after a key the core refused, a refused fetch of the recovery data or a refused
+enrolment:
 
 | `code` | `status` | from | goes to | shown |
 |---|---|---|---|---|
-| `E_UNAUTHENTICATED` | 401 | `signInLogin` | step 2, password emptied, focus on the password field | field error `signin.error.loginFailed` |
-| `E_UNAUTHENTICATED` | 401 | `signInTotp` | step 2 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
-| `E_NO_ASSERTION` | 0 | `signInTotp` | step 2 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
-| `E_UNAUTHENTICATED` | 401 | `signInBackupCode` | step 2 (phase `signin-login`), username kept, password empty, key kept, focus on the password field | warn banner `factorSignin.backup.failed` |
+| `E_UNAUTHENTICATED` | 401 | `signInLogin` | step 1, password emptied, focus on the password field | field error `signin.error.loginFailed` |
+| `E_UNAUTHENTICATED` | 401 | `signInTotp` | step 1 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
+| `E_NO_ASSERTION` | 0 | `signInTotp` | step 1 (phase `signin-login`), username kept, password empty, focus on the password field | warn banner `signin.error.totpFailed` |
+| `E_UNAUTHENTICATED` | 401 | `signInBackupCode` (from the key step) | step 1 (phase `signin-login`), username kept, password and key empty, focus on the password field | warn banner `factorSignin.backup.failed` |
 | `E_NO_ASSERTION` | any | `signInBackupCode` | as the row above | warn banner `factorSignin.backup.failed` |
 | `E_PASSKEY_UNKNOWN` | 401 | `signInPasskey` | stays on the step that started it, focus on the passkey button | danger banner `factorSignin.passkey.unknown` with `{instance}` |
 | any other code below 500 (`E_UNAUTHENTICATED`, …), or a ceremony the browser cancelled or could not run | 4xx, or none | `signInPasskey`, `signInPasskeyBegin` and `navigator.credentials.get` | stays on the step that started it, focus on the passkey button | danger banner `factorSignin.passkey.failed` |
-| `E_FORBIDDEN` | 403 | `signInLogin`, `signInTotp` (the registration) | step 2 (phase `signin-login`), username kept | danger banner `signin.error.deviceCap` |
-| `E_RATE_LIMITED` | 429 | `signInLogin`, `signInTotp`, `signInPasskey`, `signInBackupCode` (the login, the second-factor route or the registration) | step 2 (phase `signin-login`), username kept | warn banner `signin.error.tooMany` with `seconds = Math.ceil(retryAfterMs / 1000)`; `onboarding.error.rateLimitedNoWait` (flow 01) when `retryAfterMs` is `null` |
-| `E_NO_BACKUP` | 0 | the reload into step 1 (the fetch) | step 1 without the field | danger banner `signin.error.noBackup`; `Cancel` only |
-| `E_NO_BACKUP` | 0 | `signInLogin`, `signInTotp`, `signInKey` (the fetch or the backup state) | step 1 without the field | danger banner `signin.error.noBackupState`; `Cancel` only |
-| `E_RECOVERY_KEY` | 0 | `signInLogin`, `signInTotp`, `signInKey` (the key's form, before the login is sent, or the root object after the registration) | step 1, value kept, focus on the field | field error `signin.error.wrongKey` |
-| `E_SIGNIN_EVICTED` | 0 | `signInLogin`, `signInTotp`, `signInKey` (a 401 on the fetch, the list `PUT` or the session after it) | step 2 (phase `signin-login`), or after a written enrolment phase `cleared` and the reload to `/welcome?signin=evicted`, onboarding step 1 | danger banner `signin.error.evicted` |
-| `E_LIST_RACE` | 0 | `signInKey` | phase `cleared`: the boot splash, then the reload to `/welcome?signin=race`, onboarding step 1 | warn banner `signin.error.listRace` on the connect step |
+| `E_FORBIDDEN` | 403 | `signInKey`, `signInBackupCode` (the registration) | step 1 (phase `signin-login`), username kept | danger banner `signin.error.deviceCap` |
+| `E_RATE_LIMITED` | 429 | `signInLogin`, `signInTotp`, `signInPasskey`, `signInKey`, `signInBackupCode` (the login, the second-factor route or the registration) | step 1 (phase `signin-login`), username kept | warn banner `signin.error.tooMany` with `seconds = Math.ceil(retryAfterMs / 1000)`; `onboarding.error.rateLimitedNoWait` (flow 01) when `retryAfterMs` is `null` |
+| `E_NO_BACKUP` | 0 | the reload into the key step (the fetch) | the key step without the field | danger banner `signin.error.noBackup`; `Cancel` only |
+| `E_NO_BACKUP` | 0 | `signInKey`, `signInBackupCode` (the fetch or the backup state) | the key step without the field | danger banner `signin.error.noBackupState`; `Cancel` only |
+| `E_RECOVERY_KEY` | 0 | `signInKey`, `signInBackupCode` (the key's form, before anything is registered, or the root object after the registration) | the key step, value kept, focus on the field | field error `signin.error.wrongKey` |
+| `E_SIGNIN_EVICTED` | 0 | `signInKey`, `signInBackupCode` (a 401 on the fetch, the list `PUT` or the session after it) | step 1 (phase `signin-login`), or after a written enrolment phase `cleared` and the reload to `/welcome?signin=evicted`, onboarding step 1 | danger banner `signin.error.evicted` |
+| `E_SIGNIN_EXPIRED` | 0 | `signInKey` (a 401 from the registration), `signInBackupCode` (a 401 from `enrol.backupCode`) | step 1 (phase `signin-login`), username kept, password and key empty, focus on the password field | warn banner `enrol.expired`; no backup code is spent |
+| `E_LIST_RACE` | 0 | `signInKey`, `signInBackupCode` | phase `cleared`: the boot splash, then the reload to `/welcome?signin=race`, onboarding step 1 | warn banner `signin.error.listRace` on the connect step |
 | `E_NETWORK`, or any code with `status` ≥ 500 | — | any, including `signInPasskey` and `signInBackupCode` | the step `account.phase` names | danger banner `signin.error.network` |
 | anything else | below 500 | any | the step `account.phase` names | danger banner `signin.error.other` with `{code}` |
 
-A `401` from the registration inside `signInKey` (a login older than the instance's five-minute
-assertion, an account that never published a device list, or a fault of the instance) returns the phase to
-`signin-login` and shows `signin.error.other` with its code on step 2; the person signs in again.
+A `401` from the registration inside `signInKey` is the five-minute assertion running out
+(`E_SIGNIN_EXPIRED`, `enrol.expired`, in the table above); the same `401` from an account that never published a
+device list, or from a fault of the instance, shows `signin.error.other` with its code on step 1. Either returns the
+phase to `signin-login`, and the person signs in again.
 
 ## Focus and announcements
 
 | event | focus | announced |
 |---|---|---|
-| a step appears (forward, back to step 1 or 2, the done step) | that step's `<h1>` (`OnboardingFrame` focuses its heading whenever the title changes) | the heading, by the focus move |
+| a step appears (forward, back to step 1, the done step) | that step's `<h1>` (`OnboardingFrame` focuses its heading whenever the title changes) | the heading, by the focus move |
 | a field error after a refusal, or `signin.error.required` on a submit | that field (the first empty one for `signin.error.required`) | the error, by its `role="alert"` paragraph; the field's description is hint then error |
-| a refused second factor (step 3 → step 2) | step 2's `<h1>`, then the empty password field | the banner `signin.error.totpFailed` (`role="alert"`), then the field |
-| a refused backup code (step 3 → step 2) | step 2's `<h1>`, then the empty password field | the banner `factorSignin.backup.failed` (`role="alert"`), then the field |
-| a cancelled or refused passkey ceremony (step 2 or the passkey screen) | the button that started it | the banner `factorSignin.passkey.failed` or `factorSignin.passkey.unknown` (`role="alert"`) |
+| a refused second factor (step 2 → step 1) | step 1's `<h1>`, then the empty password field | the banner `signin.error.totpFailed` (`role="alert"`), then the field |
+| a refused backup code (key step → step 1) | step 1's `<h1>`, then the empty password field | the banner `factorSignin.backup.failed` (`role="alert"`), then the field |
+| a cancelled or refused passkey ceremony (step 1 or the passkey screen) | the button that started it | the banner `factorSignin.passkey.failed` or `factorSignin.passkey.unknown` (`role="alert"`) |
 | the backup-code form opens | its field | the heading, then the field |
 | `signin-passkey` in a browser that cannot run passkeys | the backup-code form's `<h1>`: it opens directly, with `Cancel` where `Back` would be and `factorSignin.passkey.unusable` above the body | the heading |
 | `devices.forget` on the set-up view (origin `signin`, the only way out) | Cancel, Escape and close return focus to it; the confirm opens on Cancel | the dialog; a refused wipe is a `role="alert"` in it and focus goes to Cancel |
 | the set-up copies a key or codes (step 3, origin `signin`) | unchanged | `factor.totp.keyCopied` or `factor.codes.copied`, by the polite region that exists while the set-up is shown |
 | a banner on the step that is shown | unchanged | the banner (`role="alert"`) |
-| a banner on a step the refusal returns to (any other refusal of step 3: the device cap, too many attempts, the network) | step 2's `<h1>` | the heading, then the banner |
+| a banner on a step the refusal returns to (a refusal of the key step: the device cap, too many attempts, the expiry, the network) | step 1's `<h1>` | the heading, then the banner |
 | the reload after `E_LIST_RACE` | onboarding step 1's `<h1>` | the heading, then the banner `signin.error.listRace` |
-| `E_SIGNIN_EVICTED` (back to step 2, or the reload) | step 2's `<h1>`, or onboarding step 1's `<h1>` after the reload | the heading, then the banner `signin.error.evicted` |
+| `E_SIGNIN_EVICTED` (back to step 1, or the reload) | step 1's `<h1>`, or onboarding step 1's `<h1>` after the reload | the heading, then the banner `signin.error.evicted` |
 | a command starts | unchanged (the pressed button becomes `aria-disabled` and keeps focus) | the button's new label is not announced; once the enrolment runs, `signin.key.working` in the step's status line (`role="status"`) |
 | the key count changes | unchanged | nothing: the count `signin.key.hint` is the field's description, read when the field takes focus; it is not a live region, so typing is not interrupted |
 | the count reaches 52 | unchanged | `Add this browser` loses the description `signin.error.keyLength` |
 
-Tab order inside each step: the fields in visual order, then the footer: on step 1 before the login
-`Create a new account instead`, then `Continue`; on steps 2 and 3, and on step 1 of a registered enrolment,
+Tab order inside each step: the fields in visual order, then the footer: on step 1 (the login)
+`Create a new account instead`, then `Continue`; on the second factor and on the key step,
 `Cancel`, then the forward button. On onboarding step 1: the
 invite field, `Use an existing account`, `Continue`. On the closed frame: `Use an existing account`.
 There are no single-key shortcuts.
@@ -635,13 +646,14 @@ and judged by the instance, which answers the same way for every wrong pair.
 
 ## Reload and interruption
 
-- Reload on step 1, 2 or 3 before the enrolment started: the worker holds no device record (the
-  registration runs only inside the command that carries the key) and the page holds the key only in its
-  memory, which the reload clears; the page opens at onboarding step 1. The assertion, if one was issued,
-  is forgotten and expires at the instance.
+- Reload on the login, the second factor or the key step before the enrolment started: the worker holds no
+  device record (the registration runs only inside the command that carries the key) and the page holds the
+  password, the code and the key only in its memory, which the reload clears; the page opens at onboarding
+  step 1. The assertion, if one was issued, is forgotten and expires at the instance. A held backup code is
+  lost with the page and was never spent.
 - Reload while the enrolment runs before the instance accepted the new device list, or after a wrong
   key: the store holds the enrolment record with the account's user id; the worker fetches the
-  recovery data again and the page opens at step 1 with an empty field (L-TS-23: boot in phase 3 with a
+  recovery data again and the page opens at the key step with an empty field (L-TS-23: boot in phase 3 with a
   user id). The next `Add this browser` does not register again.
 - Reload while registering, before the instance named the account's user: the worker clears the
   enrolment record and the page opens at onboarding step 1.
@@ -873,7 +885,7 @@ while a command runs, when they do nothing. Focus then returns to the button tha
 | `signin.error.wrongKey` | `This is not the recovery key of this account. Check every character.` | field error, recovery key, the key step |
 | `signin.error.keyLength` | `A recovery key has 52 characters.` | description of the blocked forward button while the count is not 52, and the field's error on such a submit, the key step and the two key dialogs |
 | `signin.error.deviceCap` | `This account already has as many devices as {instance} allows. Remove one in Settings on another device first.` | danger banner, step 1, after `E_FORBIDDEN` from the registration |
-| `signin.error.evicted` | `Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.` | danger banner, step 2 or onboarding step 1 after the reload to `/welcome?signin=evicted`, after `E_SIGNIN_EVICTED` |
+| `signin.error.evicted` | `Someone else is signing in to this account. Change your password from a device you still have, or ask the operator.` | danger banner, step 1 or onboarding step 1 after the reload to `/welcome?signin=evicted`, after `E_SIGNIN_EVICTED` |
 | `signin.error.tooMany` | `Too many sign-in attempts. Try again in {seconds} s.` | warn banner, step 1, after `E_RATE_LIMITED` from the login, the second-factor route or the registration |
 | `signin.error.listRace` | `The account’s devices changed while you were signing in. Sign in again.` | warn banner, onboarding step 1 (the connect step) after the reload to `/welcome?signin=race` that follows `E_LIST_RACE` |
 | `signin.error.network` | `The connection dropped. Check it and try again.` | danger banner, any step |

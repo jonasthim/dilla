@@ -1,7 +1,8 @@
 # Voice, calls and media files
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
-camera and screen share, push to talk, sounds, and audio and video files in the web client (updated 2026-10-17).
+camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the web client (updated
+2026-10-17, web-3.8).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
@@ -10,50 +11,89 @@ talk: without one you can still listen.
 
 ## Join and leave a voice channel
 
-![Mira in the voice channel harbour of Midgard Crew: the tiles of Ada and Björn, Mira's own tile, the call controls
-and, closed, the call code](screenshots/voice-stage-desktop.png)
+![Mira in the voice channel harbour of Midgard Crew: the stage with a tile for each of the three people, the stage's
+own controls at the bottom centre, and at the bottom left the call panel above Mira's user panel](screenshots/voice-stage-desktop.png)
 
-A server's voice channels are listed under "voice" in the channel list. A new server starts with one called general,
-and its owner can add more with **new channel** ([Add a channel](getting-started.md#add-a-channel)); here Ada added
-"harbour". While people are in one, it also shows under
-"active voice" at the top of the list, with "{n} in voice" and one line per person and what they are doing
-("speaking", "muted", "deafened"). People who joined the server after you opened the page are shown by name too.
+A server's voice channels sit in the channel list among its text channels, in the server's order, each with a speaker
+icon ([One channel list](getting-started.md#one-channel-list)). A new server starts with one called general, and its
+owner can add more with the **+** at the top of the list ([Add a channel](getting-started.md#add-a-channel)); here Ada
+added "harbour". While people are in one, it shows how many are in it, and the people are listed under it, one line
+each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
+the server after you opened the page are shown by name too.
 
-Select a voice channel to open it. An empty one says "Nobody is in voice yet." Press **join voice**: the dock above
-your user panel says "connecting", then "in {where}", and the screen announces "You joined {where}." Each person in
-the call has a tile with their name and their state:
+Select a voice channel to open it. An empty one says "Nobody is in voice yet." Press **join voice**: the call panel
+above your user panel says "connecting", then "in {where}", and the screen announces "You joined {where}." Each person
+in the call has a tile with their name and their state.
+
+**leave**, in the call panel or on the stage's controls, leaves the call ("You left {where}."). If you were the only
+one left in the call, leaving ends it. If you join again right after leaving, the call panel can stay at "connecting"
+for up to 30 seconds while the instance finishes your earlier leave; a screen reader hears "Rejoining {where}. This
+can take up to 30 seconds." Leaving puts focus back on the voice channel's row in the list.
+
+### The participant icons
+
+On a tile, and on a person's line under the channel in the list, what they are doing is shown by small icons on one
+line after the name, in this order: muted (a crossed-out microphone), deafened (crossed-out headphones), camera,
+screen and speaking (a green dot). None has a visible word: each has its name, such as "muted", "deafened", "camera on",
+"sharing screen" or "speaking", as a tooltip when you point at it and for a screen reader. A person with none of them
+is quiet and unmuted.
+
+Three states keep their words, because they are about trust and what you can hear:
 
 | The tile says | What it means |
 |---|---|
 | "connecting" | They are joining; nothing of theirs is played yet |
 | "not heard yet" | They are in the call, and nothing from their device has been checked yet |
-| "speaking", "muted", "deafened" | You hear them, and this is what they are doing |
-| "camera on", "sharing screen" | Their camera or their screen shows in the tile; with both on, the screen fills the tile and the camera sits in its corner |
 | "unverified stream" | Something arrives in their name that is not one of the call's devices; nothing of it is shown or played |
 
-A tile with no state word is someone you hear who is quiet right now.
+The `web` and `bot` tags stay as words after the name.
 
-Each tile has "volume for {name}": it changes how loud that person is for you only, from 0 % to 200 %. The value shows
-beside it, and the mark in the middle is 100 %, the volume they arrive at. Your own tile has no volume; it says
-"speaking" when the others hear you.
+**Speaking lights within a beat.** Your browser reads the level of the audio it plays (and, for yourself, of your own
+microphone) and lights the dot as soon as someone speaks, without waiting for the instance to say so. Your own dot
+never lights while you are muted, deafened or paused, or while push to talk is up, and no dot lights for anyone while
+the call is paused for you. When a person's audio is not playing for you (you are deafened, or their volume for you is
+0 %), the dot follows the instance's own report instead, which is about a second behind.
 
-**leave**, in the dock or under the tiles, leaves the call ("You left {where}."). If you were the only one left in
-the call, leaving ends it. If you join again right after leaving, the dock can stay at "connecting" for up to 30
-seconds while the instance finishes your earlier leave; a screen reader hears "Rejoining {where}. This can take up to
-30 seconds."
+Each person's tile has "volume for {name}": it changes how loud that person is for you only, from 0 % to 200 %. The
+value shows beside it, and the mark in the middle is 100 %, the volume they arrive at. Your own tile has no volume.
 
-You can keep talking while you read: open any text channel and the dock stays above your user panel, with the input
-level and the same five buttons as under the tiles, **mute**, **deafen**, **camera**, **share screen** and **leave**, so
-you can turn your camera or a share on and off from any channel. While the call's own screen (the stage) is open the
-dock shows no buttons, because the stage has the same ones: there is always one set of call controls on screen, never two. The buttons are icons in one row, with **leave** set
-apart at the end after a thin line. Point at one, or reach it with Tab and the arrow keys, and its name shows above it,
-with its shortcut for **mute** and **deafen**; Escape hides the name again.
+### The call panel
 
-![Mira in #general while she stays in harbour: the dock "in harbour" with its meter and the icon buttons mute,
-deafen, camera, share screen and leave](screenshots/voice-dock-desktop.png)
+At the bottom left, above your user panel, the call panel shows where you are ("in {where}", with "connecting",
+"reconnecting" or "paused in {where}" when that is so), the level of your microphone, "hearing N of M", and three
+buttons: **camera**, **share screen** and **leave**. It has no mute or deafen: those are in the user panel under it,
+which is always there ([the user panel](getting-started.md#the-user-panel)). It stays on screen while you read other
+channels, so you can turn your camera or a share on and off, or leave, from anywhere. The buttons are icons; point at
+one, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name again.
+
+![Mira in #general while she stays in harbour: the channel list with the people nested under harbour, and the call
+panel with its meter, camera, share screen and leave above her user panel](screenshots/voice-dock-desktop.png)
+
+The stage has a toolbar of its own, pinned at the bottom centre of the stage: **mute**, **deafen**, **camera**,
+**share screen** and **leave**, with a thin line before **leave**. Its mute and deafen are the same ones as in the user
+panel, shown again where your hands are, and their tooltips show the shortcut.
+
+### The stage
+
+![Mira's stage at 1440 by 900: Ada's shared screen large, with Mira, Ada and Björn in a strip below](screenshots/voice-stage-focused-desktop.png)
+
+The stage has one tile for each camera or screen, filling the stage. A person has one tile for themself (their camera,
+or their initials without one), and, while they share, one more for the screen, named "{name}’s screen". With no one
+sharing it is a grid.
+
+- **Focus.** Click a tile to make it large; the others sit in a strip below it. Click it again, or press Escape, for
+  the grid. Each tile has a button that covers its picture, named by the tile and pressed while it is focused, so Tab
+  and Enter or Space do the same.
+- **A new screen share** from someone else comes to the front on its own, when no tile is focused. It happens once
+  for a share: if you unfocus it, it stays a tile. Your own screen never takes the focus.
+- **Full screen** for one tile: the button in its top right corner, or a double-click on the picture. Escape leaves
+  it.
+- Nothing restarts when you change the focus: the pictures keep playing.
+
+![The same stage in the grid: Mira, Ada, Ada's screen and Björn as four tiles](screenshots/voice-stage-grid-desktop.png)
 
 At phone width the tiles take the full width, one above the other, the call's buttons sit under them, and every
-control is at least 44 by 44 pixels. The dock is replaced by [the call bar](#on-a-phone).
+control is at least 44 by 44 pixels. The call panel is replaced by [the call bar](#on-a-phone).
 
 ![The voice channel at 360 pixels wide](screenshots/voice-stage-phone.png)
 
@@ -62,9 +102,11 @@ control is at least 44 by 44 pixels. The dock is replaced by [the call bar](#on-
 On a phone, while you are in a call, a call bar sits above the tab bar. It shows where the call is, and has three
 buttons, each at least 44 by 44 pixels: **open the call in {where}** (the wide one, which opens the call's screen),
 **mute** and **leave**. It stays on the servers, DMs, activity and you tabs and over a channel you are reading. It goes
-away on the call's own screen, which has all the call's controls, and when you leave. The other buttons of the dock
-(**deafen**, **camera** and **share screen**) are on the call's screen. The call bar's dot shows connecting,
-reconnecting or paused as the dock does.
+away on the call's own screen, which has all the call's controls, and when you leave. The other buttons of the call panel
+(**deafen**, **camera** and, where the browser can, **share screen**) are on the call's screen. The call bar's dot shows
+connecting, reconnecting or paused as the call panel does. A phone has no user panel, and a phone browser that cannot
+share a screen has no **share screen** button at all (iPhones and Android phones cannot; share from a desktop
+browser).
 
 ![The call bar on a phone](screenshots/phone-callbar.png)
 
@@ -73,22 +115,28 @@ someone joins. You do not have to do anything.
 
 ## Mute, deafen and push to talk
 
-**mute** turns your microphone off ("Microphone muted.") and, pressed again, on ("Microphone on."). **deafen** turns
-off everything you hear, and mutes you too ("Sound off."); pressed again, it turns it back on ("Sound on."). These
-buttons keep their names: while one is on its icon changes (a crossed-out microphone, crossed-out headphones) and is
-drawn in red with a line under it, and a screen reader says "pressed".
+There is one **mute** and one **deafen** at the bottom left, in the user panel, in a call and out of one. **mute**
+turns your microphone off ("Microphone muted.") and, pressed again, on ("Microphone on."). **deafen** turns off
+everything you hear, and mutes you too ("Sound off."); pressed again, it turns it back on ("Sound on."). These buttons
+keep their names: while one is on its icon changes (a crossed-out microphone, crossed-out headphones) and is drawn in
+red with a line under it, and a screen reader says "pressed". The stage's toolbar has a copy of each.
 
-This browser keeps your mute and deafen for your next call: if you were muted when you left, you join muted. If
-you join deafened, pressing **deafen** again turns your sound back on but leaves you muted; press **mute** to talk.
+**Mute is enforced from the first frame.** A call you join muted starts with the microphone closed, and a mute you
+press while the call is still starting takes effect at the press: nothing of you is sent before the call is up.
+
+Outside a call the two buttons set how your next call starts, and this browser keeps them: press **mute** and you join
+muted (pressed again, you do not); press **deafen** and you join deafened. If you were muted when you left a call, you
+join muted. If you join deafened, pressing **deafen** again turns your sound back on but leaves you muted; press
+**mute** to talk.
 
 Reloading the page, or closing it, leaves the call; the others see you leave. Press **join voice** (or **join call**)
 to come back.
 
 | Key | What it does |
 |---|---|
-| Control/⌘+Shift+M | Mutes or unmutes, from anywhere in the app while you are in a call |
-| Control/⌘+Shift+D | Deafens or undeafens, from anywhere in the app while you are in a call |
-| Arrow Left, Arrow Right, Home, End | Move between the buttons of the dock or the stage's controls |
+| Control/⌘+Shift+M | Mutes or unmutes, from anywhere in the app, in a call or out of one |
+| Control/⌘+Shift+D | Deafens or undeafens, from anywhere in the app, in a call or out of one |
+| Arrow Left, Arrow Right, Home, End | Move between the buttons of the call panel, the user panel or the stage's controls |
 
 Control or ⌘ works on every system. There are no single-key shortcuts. Settings → keyboard lists both, next to the
 search shortcuts.
@@ -103,7 +151,7 @@ search shortcuts.
    is not suggested.
 
 There is no key until you set one ("no key set"). Hold it to talk. It works only while the dilla tab is the active
-tab, never while you type in a text field. While push to talk is in force the dock says "hold {key} to talk" (for
+tab, never while you type in a text field. While push to talk is in force the call panel says "hold {key} to talk" (for
 example "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → voice.
 
 ![Settings → Voice: input device, output device, input mode (voice activity), noise suppression and the input
@@ -113,7 +161,7 @@ Settings → voice also holds:
 
 - **input device** and **output device**, or "system default". Choosing the output device works in Chrome and Edge,
   and the call follows it: change the output device during a call and the sound moves at once. If the browser
-  refuses, the dock says "The output device did not change. Call sound plays where it did before." Firefox plays call
+  refuses, the call panel says "The output device did not change. Call sound plays where it did before." Firefox plays call
   sound on the system default device. A browser that cannot choose where sound plays says "This
   browser plays voice on the system default device."
 - **noise suppression** has **Automatic**, **Lightweight** and **Off**. Lightweight uses RNNoise locally and remains the default, including existing On preferences. Automatic currently also uses Lightweight while enhanced suppression is evaluated. The screen shows the effective processor and explains fallback during a call. Off disables both application and browser noise suppression where supported; echo cancellation stays enabled. Browser suppression is disabled for neural processing, avoiding duplicate processing. Switching the setting during a call applies at once.
@@ -124,14 +172,14 @@ Settings → voice also holds:
 
 ## Camera and screen
 
-**camera** sends your camera to everyone in the call, and pressed again ends it; it and **share screen** are in the dock
-as well as under the tiles, and show in green while they are on. Your own tile shows what you send:
+**camera** sends your camera to everyone in the call, and pressed again ends it; it and **share screen** are in the
+call panel as well as on the stage's toolbar, and show in green while they are on. Your own tile shows what you send:
 your camera, mirrored as a mirror shows you (the others see it the right way round). **share screen** lets the browser
-ask which screen, window or tab to share, and pressed again ends it; your own tile shows your screen too. With the
-camera and a share both on, every tile shows the screen, with the camera in its corner. The only sound a share
-carries is a tab's, when you share a browser tab in a Chromium-based browser; a whole screen or window is shared
-without sound. If too many people already show a camera or a screen: "Too many people are sharing. Try again when
-someone stops."
+ask which screen, window or tab to share, and pressed again ends it. A share is its own tile, "{name}’s screen",
+beside the person's own tile, so with the camera and a share both on, a person has two tiles
+([The stage](#the-stage)). The only sound a share carries is a tab's, when you share a browser tab in a
+Chromium-based browser; a whole screen or window is shared without sound. If too many people already show a camera or
+a screen: "Too many people are sharing. Try again when someone stops."
 
 ## Calls in direct messages
 
@@ -140,7 +188,9 @@ there, and **join call** when someone is. Pressing **call** joins the call and r
 "ringing {name}" while it rings, "{name} declined." when someone declines, and "No answer." when every ring ended
 without an answer. If nobody answered, you leave the call by yourself 5 seconds later, and the strip keeps saying why.
 A call someone answered never ends by itself. There is no ringback tone. During the call the tiles sit above the conversation, which stays
-usable below them; at phone width, **messages** switches between the call and the conversation. In a direct message's call the dock and what is said name it
+usable below them, in the compact grid of the call box (no focus, strip or full-screen buttons: those are for the
+stage of a voice channel); at phone width, **messages** switches between the call and the conversation. In a direct
+message's call the call panel and what is said name it
 "the call with {name}": "in the call with {name}", "You joined the call with {name}."
 
 ![Ada is calling: the ring banner with answer and decline above Mira's #general](screenshots/call-ring-desktop.png)
@@ -169,6 +219,16 @@ opens, it just does not ring you, and the caller's strip says "{name} not rung: 
 leaves. Read it aloud: if every screen shows the same code, everyone is hearing the same set of devices." Enter or
 Space opens and closes it, Escape closes it. It is the one thing to compare during a call; comparing safety numbers
 with each person (Settings → privacy) is still how you know who they are.
+
+## AFK channels
+
+A server's owner, or anyone who manages the server, can choose a voice channel as the silent **AFK channel**, in server
+settings under overview ([Run your server](getting-started.md#run-your-server)), with a time of 1, 5, 15, 30 or 60
+minutes. A device in a voice channel that has had no keyboard, pointer, touch or microphone speech for that long is moved
+there by the server; quiet listening, or activity on another of your devices, does not count. The AFK channel shows
+"{n} in AFK" in the list, and the people in it are listed under it as in any voice channel. It is silent: "This channel
+is silent. Your microphone, camera, screen and incoming audio are off. Join another voice channel when you return."
+**Move to AFK** moves you there by hand, and **Leave AFK**, or joining another voice channel, brings you back.
 
 ## Sounds
 
@@ -209,7 +269,7 @@ verified them, **join voice** is offered again without a reload.
 
 If the identity of someone changes while you are in the call, the call pauses for you: "{name}’s identity changed, so
 this call is paused for you: nothing you say is sent and nothing is played. Compare safety numbers in Privacy to
-continue, or wait until {name} leaves." The dock says "paused in {where}" and **compare safety numbers** opens the
+continue, or wait until {name} leaves." The call panel says "paused in {where}" and **compare safety numbers** opens the
 comparison. Nothing you say is sent and nothing is played until you verify them or they leave; then "The call
 continues." The call goes on for the others.
 
@@ -245,18 +305,18 @@ checks every device again.
 | "You were removed from this server, so you left its voice." | The server's owner removed you while you were in its voice; there is nothing to join there any more |
 | "The connection to voice was lost. Join again to continue." | The connection dropped and did not come back; press **join voice** again |
 | "Voice ended for everyone." | The call was closed for everyone in it |
-| "reconnecting" in the dock | The connection dropped; the call comes back by itself |
+| "reconnecting" in the call panel | The connection dropped; the call comes back by itself |
 
 ### You see people speaking but hear nothing
 
-If the dock says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
-you press something on the page. The line and its button sit above the dock's buttons; one press
+If the call panel says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
+you press something on the page. The line and its button sit above the call panel's buttons; one press
 starts the call's sound and the line goes. Nothing else about the call changes. This happens when the browser did not
 let the call start its sound, for example when the browser or your system suspended audio, or a stricter autoplay
 setting in the browser held it back.
 
 If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
-volume. The dock also says "hearing {attached} of {expected}", for example "hearing 2 of 3": it counts audio streams,
+volume. The call panel also says "hearing {attached} of {expected}", for example "hearing 2 of 3": it counts audio streams,
 not people. {expected} is how many audio streams should reach you, and {attached} how many you hear (a shared
 screen's sound is its own). A person whose volume you set to 0 counts as not heard. When the two numbers differ for
 more than a moment, ask the missing person to leave and join again.
