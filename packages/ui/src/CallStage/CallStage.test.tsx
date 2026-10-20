@@ -150,7 +150,10 @@ describe('CallStage', () => {
     });
 
     it.each([
-      [1, 1200, 700, 1], [2, 1400, 600, 2], [2, 1200, 700, 1], [3, 1200, 700, 2], [2, 1024, 600, 2], [4, 1200, 700, 2], [9, 1600, 900, 3], [2, 400, 900, 1], [5, 1200, 300, 3],
+      [1, 1200, 700, 1], [2, 1400, 600, 2], [2, 1200, 700, 1], [3, 1200, 700, 2], [2, 1024, 600, 2],
+      // D2 boundary (NARROW_STAGE_PX 1100, NEAR_TIE 0.95): 1099x640 is a 97 % near tie, so two columns; 1100 is not narrow, so the old rule keeps one;
+      // 1099x660 is a 94.5 % gap, outside the tie.
+      [2, 1099, 640, 2], [2, 1100, 640, 1], [2, 1099, 660, 1], [2, 1099, 700, 1], [4, 1200, 700, 2], [9, 1600, 900, 3], [2, 400, 900, 1], [5, 1200, 300, 3],
     ])('stageColumns picks the column count that maximises the 16:9 tile: n=%i in %ix%i is %i', (n, w, h, cols) => {
       expect(stageColumns(n, w, h, 12)).toBe(cols);
     });

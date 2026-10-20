@@ -32,10 +32,11 @@ describe('VoiceDock (R26)', () => {
     expect(container.querySelector('.d-voice-dock__where')).toHaveTextContent('harbour');
   });
 
-  it('draws no meter even when one is passed', () => {
-    const { container } = render(<VoiceDock {...dock} meter={<div data-testid="meter" role="meter" />} />);
-    expect(screen.queryByTestId('meter')).toBeNull();
-    expect(container.querySelector('.d-voice-dock__meter, [role="meter"], .d-audio-meter')).toBeNull();
+  it('draws no meter unless a legacy caller passes one (deprecated, removed in WEB-DOCK)', () => {
+    const { container, rerender } = render(<VoiceDock {...dock} />);
+    expect(container.querySelector('.d-voice-dock__meter, .d-audio-meter')).toBeNull();
+    rerender(<VoiceDock {...dock} meter={<div data-testid="meter" />} />);
+    expect(screen.getByTestId('meter').parentElement).toHaveClass('d-voice-dock__meter');
   });
 
   it('the status is a button calling onStatus (it opens Diagnostics, R26)', async () => {
@@ -164,7 +165,6 @@ describe('VoiceDock (R26)', () => {
     expect(rule).toMatch(/border-top: 1px solid var\(--hairline\)/);
     expect(rule).toMatch(/padding: 0\.75rem/);
     expect(rule).not.toMatch(/border-radius|background|border: 1px/);
-    expect(css).not.toContain('__meter');
   });
 
   it('the controls are one flex row (CSS pin)', () => {

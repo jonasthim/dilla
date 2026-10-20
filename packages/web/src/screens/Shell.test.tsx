@@ -1355,7 +1355,10 @@ describe('keyboard', () => {
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /your status: Online$/ }));
     await user.tab();
-    expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
+    expect(document.activeElement).toBe(within(screen.getByRole('group', { name: 'your account' })).getByRole('button', { name: 'mute' }));
+    // web3.9 (E3): mute and deafen are two icon buttons, each its own stop, no longer one roving toolbar stop.
+    await user.tab();
+    expect(document.activeElement).toBe(within(screen.getByRole('group', { name: 'your account' })).getByRole('button', { name: 'deafen' }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'user settings' }));
     await user.tab();
@@ -1517,7 +1520,8 @@ describe('direct messages', () => {
     const { fake, user, view } = setup(`/dm/${DM}`, { before: withDms });
     expect(fake.callsOf('openChannel')).toEqual([{ m: 'openChannel', channelId: DM }]);
     expect(screen.getByRole('tab', { name: 'direct messages' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('heading', { level: 2, name: 'bob' })).toHaveTextContent('[ @ bob ]');
+    expect(screen.getByRole('heading', { level: 2, name: 'bob' })).toHaveTextContent('bob');
+    expect(document.querySelector('.d-channel-header__title')).toHaveTextContent('[ @ bob ]');
     act(() => fake.set(`timeline:${DM}`, timeline({ channelId: DM, items: [item({ key: 's1', body: 'hey' })] })));
     expect(screen.getByRole('log', { name: 'messages with bob' })).toHaveTextContent('hey');
     await expectNoAxeViolations(view.container);

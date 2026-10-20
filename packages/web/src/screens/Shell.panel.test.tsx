@@ -172,7 +172,7 @@ describe('the desktop user panel', () => {
   it('panel controls are named, and the panel sits in the bottom-left area', async () => {
     shell();
     await screen.findByRole('main');
-    expect(screen.getByRole('toolbar', { name: t('panel.region') })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: t('panel.region') })).toBeInTheDocument();
     expect(panel()!.closest('.d-app-shell__panel')).not.toBeNull();
   });
 });
@@ -254,7 +254,7 @@ describe('one set of shortcuts and the call panel (R3)', () => {
   it('the call panel has camera, share and leave and no mute, and sits above the user panel', async () => {
     const app = shell();
     await joinVoice(app);
-    const dock = screen.getByRole('toolbar', { name: 'voice controls' });
+    const dock = screen.getByRole('group', { name: 'voice controls' });
     expect(within(dock).getAllByRole('button').map(b => b.getAttribute('aria-label')))
       .toEqual([t('voice.cameraOn'), t('voice.shareOn'), t('voice.leave')]);
     const callPanel = document.querySelector('.dw-voice-dock')!;

@@ -16,7 +16,7 @@ const main = () => within(screen.getByRole('main'));
 const go = (path: string) => { window.history.pushState(null, '', path); window.dispatchEvent(new PopStateEvent('popstate')); };
 async function offStage() {
   go(`/c/${A}/${TEXT}`);
-  await screen.findByRole('toolbar', { name: 'voice controls' });
+  await screen.findByRole('group', { name: 'voice controls' });
 }
 async function onStage() {
   go(`/c/${A}/${GENV}`);
@@ -223,7 +223,7 @@ describe('voice in the shell', () => {
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('blocked'));
     expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
     expect(await screen.findByText(t('voice.blocked'))).toBeInTheDocument();
-    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull();
   });
 
   it('an unsupported browser shows the dialog instead of joining, and focus returns to join voice', async () => {
@@ -259,11 +259,11 @@ describe('voice in the shell', () => {
     expect(opts).toMatchObject({ mode: 'ptt', noise: 'off', input: '', output: '' });
     expect(app.module.bindPushToTalk).toHaveBeenCalledWith(expect.objectContaining({ code: 'F13' }));
     await waitFor(() => expect(main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')).toHaveFocus());
-    expect(screen.getByRole('toolbar', { name: 'voice controls' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'voice controls' })).toBeInTheDocument();
     expect(screen.getByText('in general')).toBeInTheDocument();
     await app.user.click(main().getByRole('button', { name: 'leave' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('user'));
-    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull());
     expect(screen.getByRole('button', { name: 'voice general' })).toHaveFocus();
   });
 
@@ -340,7 +340,7 @@ describe('the session follows the call slice', () => {
     const app = await inVoice();
     app.client.publish('call', callState({ phase: 'idle' }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
-    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull());
     app.view.unmount();
     const second = await inVoice();
     second.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
@@ -358,7 +358,7 @@ describe('the session follows the call slice', () => {
     release();
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
-    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull();
   });
   it('the latest slice wins when several arrive between two renders', async () => {
     const app = await inVoice();
@@ -374,7 +374,7 @@ describe('the session follows the call slice', () => {
     app.session.setPaused.mockImplementation(() => Promise.reject(new Error('E_INTERNAL')));
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
-    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull());
   });
   it('a setPaused that throws, or a leave that throws, never escapes and never keeps the session attached', async () => {
     const app = await inVoice();
@@ -382,7 +382,7 @@ describe('the session follows the call slice', () => {
     app.session.leave.mockImplementation(() => { throw new Error('E_INTERNAL'); });
     app.client.publish('call', callState({ phase: 'paused', channelId: GENV, callId: GENV, error: UMK, changedUser: BOB }));
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
-    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull());
   });
 });
 
@@ -404,7 +404,7 @@ describe('review round 1', () => {
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('blocked'));
     expect(app.session.setPaused).not.toHaveBeenCalledWith(false);
     expect(screen.queryByRole('toolbar', { name: 'voice channel controls' })).toBeNull();
-    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull();
   });
 
   it('I1: a removal leaves with "removed", shows voice.removed in the voice view and ends the dock', async () => {
@@ -413,7 +413,7 @@ describe('review round 1', () => {
     await waitFor(() => expect(app.session.leave).toHaveBeenCalledWith('removed'));
     expect(app.session.setPaused).not.toHaveBeenCalled();
     expect(await main().findByText(t('voice.removed'))).toBeInTheDocument();
-    expect(screen.queryByRole('toolbar', { name: 'voice controls' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'voice controls' })).toBeNull();
   });
 
   it('I2: switching the input mode in a call follows in the session; push to talk binds only once the session is in it', async () => {
@@ -482,7 +482,7 @@ describe('review round 1', () => {
   it('I6: a block off the stage is announced where it outlives the dock, and focus in the dock goes to the voice row', async () => {
     const app = await inVoice();
     await toLobby(app);
-    screen.getByRole('toolbar', { name: 'voice controls' }).querySelector('button')!.focus();
+    screen.getByRole('group', { name: 'voice controls' }).querySelector('button')!.focus();
     app.client.publish('call', callState({ phase: 'blocked', channelId: GENV, callId: GENV, error: { ...UMK, code: 'E_DEVICE_UNLISTED' } }));
     await waitFor(() => expect(lasting()).toHaveTextContent(t('voice.blocked')));
     expect(screen.getByRole('button', { name: 'voice general' })).toHaveFocus();
@@ -731,8 +731,8 @@ describe('web3.3 fix round 2: the call context is made in the press (Minor 1); t
 // web3.7: the dock holds the controls only while the stage is off screen, and the stage holds them while it is on, so each
 // test reads one, steps across (offStage, onStage), and reads the other. The call stays up across the step.
 describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', () => {
-  const dock = () => within(screen.getByRole('toolbar', { name: 'voice controls' }));
-  const userPanel = () => within(screen.getByRole('toolbar', { name: t('panel.region') }));
+  const dock = () => within(screen.getByRole('group', { name: 'voice controls' }));
+  const userPanel = () => within(screen.getByRole('group', { name: t('panel.region') }));
   const stage = () => within(main().getByRole('toolbar', { name: 'voice channel controls' }));
   // jsdom has no getDisplayMedia; the stage and the dock both read it, so give them one.
   const withCapture = () => {
@@ -807,8 +807,8 @@ describe('VI-2: camera and screen share in the voice dock (plan 2026-10-15)', ()
     await inVoice();
     expect(stage().getByRole('button', { name: t('voice.mute') })).not.toHaveAttribute('aria-keyshortcuts');
     expect(stage().getByRole('button', { name: t('voice.deafen') })).not.toHaveAttribute('aria-keyshortcuts');
-    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl+Shift+M');
-    expect(userPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl+Shift+D');
+    expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAccessibleDescription('Ctrl Shift M');
+    expect(userPanel().getByRole('button', { name: t('voice.deafen') })).toHaveAccessibleDescription('Ctrl Shift D');
     await offStage();
     expect(userPanel().getByRole('button', { name: t('voice.mute') })).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+M Meta+Shift+M');
     expect(dock().queryByRole('button', { name: t('voice.mute') })).toBeNull();
@@ -893,14 +893,14 @@ describe('web3.7: one set of call controls', () => {
     expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
   });
 
-  it('join focuses the stage’s first control, and ArrowRight in the dock toolbar leaves the stage’s focus alone', async () => {
+  it('join focuses the stage’s first control, and Tab inside the dock leaves the stage’s focus alone', async () => {
     const app = await inVoice();
     const first = () => main().getByRole('toolbar', { name: 'voice channel controls' }).querySelector('button')!;
     await waitFor(() => expect(first()).toHaveFocus());
-    const dockFirst = screen.getByRole('toolbar', { name: 'voice controls' }).querySelector('button')!;
+    const dockFirst = screen.getByRole('group', { name: 'voice controls' }).querySelector('button')!;
     dockFirst.focus();
-    await app.user.keyboard('{ArrowRight}');
-    expect(screen.getByRole('toolbar', { name: 'voice controls' }).contains(document.activeElement)).toBe(true);
+    await app.user.tab();
+    expect(screen.getByRole('group', { name: 'voice controls' }).contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(dockFirst);
     expect(main().getByRole('toolbar', { name: 'voice channel controls' }).contains(document.activeElement)).toBe(false);
   });

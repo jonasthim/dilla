@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { VoiceDock } from './VoiceDock.tsx';
 import { UserPanel } from '../UserPanel/UserPanel.tsx';
-import { AudioMeter } from '../AudioMeter/AudioMeter.tsx';
 import { nextFrame } from '../CallControls/CallControls.stories.tsx';
 
 /**
@@ -54,8 +53,6 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Connected: Story = { args: { announcement: 'You joined harbour.' } };
-/** A meter passed by an old caller is ignored: the dock draws none (the full meter lives in Settings → Voice). */
-export const IgnoresAMeter: Story = { args: { meter: <AudioMeter level={6} label="input level" /> } };
 export const Connecting: Story = { args: { phase: 'connecting' } };
 export const Reconnecting: Story = { args: { phase: 'reconnecting' } };
 /** Camera on and sharing: both glyphs swap (video, monitor-x) and are pressed toggles. */
