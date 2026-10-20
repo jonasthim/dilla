@@ -758,6 +758,13 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
      *  only after the replace resolved. False when nothing was handed over: the old capture stays, and nothing retries. */
     /** A capture's state read now (it changes across an await; a plain read would be narrowed). */
     const isEnded = (t: MediaStreamTrack): boolean => t.readyState === 'ended';
+    /** Fix round 2 (N1): the session's own restartTrack calls in flight. One queued behind the hand-over's replace stops
+     *  `next` itself and brings its own capture, so an ended `next` is then no reason to give the sender back. */
+    let restarting = 0;
+    const restartCapture = async (track: NonNullable<LocalPub['track']>, constraints: MediaTrackConstraints): Promise<void> => {
+      restarting += 1;
+      try { await track.restartTrack?.(constraints); } finally { restarting -= 1; }
+    };
     const handOver = async (track: NonNullable<LocalPub['track']>, constraints: MediaTrackConstraints): Promise<boolean> => {
       if (track.replaceTrack === undefined) return false;
       const old = micTrack;
@@ -777,7 +784,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       // Fix round 1 (M1): a new capture that ended during the replace gives the sender back the one the session holds,
       // which is still live and still guarded (applyMic), so LiveKit's `enabled = !isMuted` stays fail-closed.
       const held = micTrack;
-      if (isEnded(next) && held !== null && held !== next && !isEnded(held)) {
+      if (isEnded(next) && restarting === 0 && held !== null && held !== next && !isEnded(held)) {
         try { await track.replaceTrack(held, true); } catch { /* the sender keeps the ended track; the session's stays held */ }
         next.stop();
         return false;
@@ -802,7 +809,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
           // concurrentCapture); everywhere else, and with no answer, the stop-first restartTrack of web3.8.
           if (parked && track.replaceTrack !== undefined && deps.concurrentCapture === true) swapped = await handOver(track, constraints);
           else {
-            await track.restartTrack(constraints);
+            await restartCapture(track, constraints);
             if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
           }
           // A failed hand-over keeps the old capture and reports what it observed, as a failed restart does.
@@ -830,7 +837,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         processor = made;
         const status = (made as {status?:ProcessorStatus}).status;
         if (status?.effective === 'browser' && status.browserNoise !== 'on' && track.restartTrack && micTrack) {
-          await track.restartTrack({...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
+          await restartCapture(track, {...micTrack.getConstraints(),deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'},noiseSuppression:true,echoCancellation:true,autoGainControl:true,channelCount:1,sampleRate:48000});
           // web3.8 MUTE: the restart captures a new track; the mute and push to talk govern that one from here on.
           if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
           if (ended) { made.setCaptureAllowed?.(false); await made.destroy?.(); return; }

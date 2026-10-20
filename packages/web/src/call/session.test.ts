@@ -2153,6 +2153,51 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     expect(h.next.stop).toHaveBeenCalled();
   });
 
+  it('a restart queued behind the replace is not undone by a give-back', async () => {
+    const f = fakes();
+    const h = handingOver(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    const replace = deferred<void>();
+    h.holdReplace.promise = replace.promise;
+    // Y: the capture a noise toggle's restartTrack brings, queued behind the replace (LiveKit's trackChangeLock). As
+    // LiveKit's restart, it stops its current track first (by then `next`), then puts Y on the sender.
+    const y = Object.assign(Object.create({ enabled: true }) as { enabled: boolean }, {
+      kind: 'audio', stop: vi.fn(), getSettings: () => ({ noiseSuppression: false, deviceId: 'chosen' }), getConstraints: () => ({}),
+      applyConstraints: async () => undefined,
+    });
+    const lk = f.localTracks[0] as unknown as { mediaStreamTrack: unknown; restartTrack: () => Promise<void> };
+    lk.restartTrack = async () => {
+      h.restarts.n += 1;
+      await replace.promise;
+      const cur = lk.mediaStreamTrack as { stop: () => void; readyState?: string };
+      cur.readyState = 'ended';
+      cur.stop();
+      lk.mediaStreamTrack = y;
+    };
+    h.install();
+    await flush();
+    call.setMuted(false);
+    await flush();
+    expect(h.steps).toEqual(['getUserMedia', 'replaceTrack']);
+    // Noise on and off again: the off reopens the capture through restartTrack, which waits for the replace.
+    await call.setNoise('lightweight');
+    const off = call.setNoise('off');
+    await flush();
+    expect(h.restarts.n).toBe(1);
+    replace.resolve();
+    await off;
+    await flush();
+    // No give-back: Y stays on the sender and is the capture the session's mute governs.
+    expect(h.replaced).toEqual([h.next]);
+    expect(lk.mediaStreamTrack).toBe(y);
+    expect(h.old()!.stop).toHaveBeenCalled();
+    call.setMuted(true);
+    expect(y.enabled).toBe(false);
+    await call.leave('user');
+    expect(h.next.stop).toHaveBeenCalled();
+    expect(y.stop).toHaveBeenCalled();
+  });
+
   it('a capture that ends during the replace gives the sender back the old one', async () => {
     const f = fakes();
     const h = handingOver(f);
