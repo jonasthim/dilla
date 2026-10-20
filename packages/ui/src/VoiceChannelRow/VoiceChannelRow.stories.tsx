@@ -80,7 +80,7 @@ const meta = {
       open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
       state: {
         speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream',
-        connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot',
+        connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound',
       },
     },
     onOpen: () => {}, onJoin: () => {},

@@ -229,7 +229,7 @@ describe('ChannelList', () => {
 
 // web3.8 (U3, items 12 and 15): one list with the voice channels nested in place.
 describe('ChannelList, one list with voice rooms in place', () => {
-  const state = { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot' };
+  const state = { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' };
   const person = (name: string, more: Record<string, unknown> = {}) => ({
     deviceId: `d-${name}`, userId: `u-${name}`, name, state: 'ok' as const, speaking: false, muted: false, deafened: false, video: false, screen: false, web: true, bot: false, ...more,
   });
@@ -319,7 +319,7 @@ describe('ChannelList, categories', () => {
   const categories = [{ id: 'raids', name: 'raids', collapsed: true }, { id: 'lounge', name: 'lounge', collapsed: false }];
   const names = () => [...document.querySelectorAll('.d-channel-list__list > li')].map(li => li.querySelector('.d-chrow__name, .d-channel-list__cat-label, .d-voice-row__name')?.textContent);
   const voice = { labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice',
-    state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot' } },
+    state: { speaking: 'speaking', muted: 'muted', deafened: 'deafened', notHeard: 'not heard yet', unverified: 'unverified stream', connecting: 'connecting', video: 'camera on', screen: 'sharing screen', web: 'web', bot: 'bot', noSound: 'no sound' } },
     rooms: {} };
 
   it('renders the top-level rows first, then each category header with its children, a collapsed one keeping only its active, unread and joined rows', () => {

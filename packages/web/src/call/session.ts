@@ -23,7 +23,7 @@ import { gainOf, isVolume, type Volumes } from './volume.ts';
 
 export { isVoiceSupported, localDecodeList } from '@dilla/media';
 export { bindPushToTalk } from './ptt.ts';
-export { volumesFromSettings } from './volume.ts';
+export { streamVolumesFromSettings, volumesFromSettings } from './volume.ts';
 
 export type TileState = 'connecting' | 'not-heard' | 'ok' | 'unverified';
 export interface PageCallTile {
@@ -88,8 +88,8 @@ export interface PageCall {
   setDeafened(on: boolean): void;
   setCamera(on: boolean): Promise<void>;
   setSharing(on: boolean): Promise<void>;
-  /** 0..200 in steps of 10. */
-  setVolume(userId: string, volume: number): void;
+  /** 0..200 in steps of 10: the person's voice (default) or, with `'stream'`, their shared screen's sound (T5). */
+  setVolume(userId: string, volume: number, source?: 'voice' | 'stream'): void;
   /** RV-3: driven by the call slice’s phase 'paused'. */
   setPaused(on: boolean): Promise<void>;
   /** WB security I1: the hold after a refused rekey (phase paused, not a changed identity): every media key goes at
@@ -179,6 +179,9 @@ export interface PageCallOptions {
   noise: NoisePreference | 'on';
   /** user id → 0..200 (the voice.volume.<user> settings). */
   volumes: Volumes;
+  /** T5: user id → 0..200 (the voice.streamVolume.<user> settings), the volume of that person's shared screen sound.
+   *  0 is the stream mute. Absent = 100 for everyone. */
+  streamVolumes?: Volumes;
   /** WB client I1: aborting ends a start that has not connected yet, the microphone prompt included: callLeave is
    *  posted at once (the worker cancels its join), the microphone is stopped, and the start rejects with E_ABORTED. */
   signal?: AbortSignal;
@@ -563,6 +566,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     };
     let ended = false;
     const volumes: Volumes = { ...opts.volumes };
+    const streamVolumes: Volumes = { ...opts.streamVolumes };
     // Fix round 3 (m1): a call started deafened (voice.self) was muted before it, as far as anyone knows: an undeafen keeps
     // the microphone muted (privacy-safe), never opens it after a reload.
     let mutedBeforeDeafen = listenOnly || opts.self === 'deafened';
@@ -655,16 +659,18 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       lastSetAt = deps.now();
       set({ tiles: tiles(), level: level(), speaking: ownSpeaking() });
     };
-    const gainFor = (identity: string): number =>
-      gainOf(roster.get(identity)?.userId ?? '', volumes, { deafened: state.deafened, paused: state.paused });
+    /** T5: one gain path. A microphone follows the person's voice volume, a screen's sound their stream volume; deafen
+     *  and pause hold both at 0. */
+    const gainFor = (identity: string, kind: 'voice' | 'stream' = 'voice'): number =>
+      gainOf(roster.get(identity)?.userId ?? '', kind === 'voice' ? volumes : streamVolumes,
+        { deafened: state.deafened, paused: state.paused });
     /** The gains of every remote person; first, the held-back tracks whose gain rose above 0 are attached (fix round 1,
      *  I3), so each new gain node takes its gain at once. */
     const applyGains = (): void => {
       attachPending();
       for (const p of remotes()) {
-        const g = gainFor(p.identity);
-        p.setVolume(g, SOURCE.microphone);
-        p.setVolume(g, SOURCE.screenAudio);
+        p.setVolume(gainFor(p.identity, 'voice'), SOURCE.microphone);
+        p.setVolume(gainFor(p.identity, 'stream'), SOURCE.screenAudio);
       }
     };
     afterRoster = () => { if (!ended) { applyGains(); refresh(); } };
@@ -696,7 +702,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
      *  `pending` only once it is attached; no host yet, or an attach that throws, keeps it for the next applyGains. */
     const attachPending = (): void => {
       for (const [t, { identity, mic }] of [...pending]) {
-        if (!roster.has(identity) || gainFor(identity) <= 0) continue;
+        if (!roster.has(identity) || gainFor(identity, mic ? 'voice' : 'stream') <= 0) continue;
         if (attachAudio(t, identity, mic)) pending.delete(t);
       }
       countAudio();
@@ -973,7 +979,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     /** The settle of a share waiting for the SFU's permission (WB client m3): a leave settles it with false. */
     let waitingShare: ((ok: boolean) => void) | null = null;
     let camera: { track: MediaStreamTrack } | null = null;
-    let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void } | null = null;
+    let screen: { video: MediaStreamTrack; audio: MediaStreamTrack | null; onEnded: () => void; onAudioEnded: () => void } | null = null;
     const permitted = (what: keyof typeof PERMISSION): boolean => {
       const p = local.permissions;
       if (!p || p.canPublish === false) return false;
@@ -1026,6 +1032,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       screen = null;
       set({ sharing: false, localScreen: null, shareAudio: null });
       s.video.removeEventListener('ended', s.onEnded);
+      s.audio?.removeEventListener('ended', s.onAudioEnded);
       await local.unpublishTrack(s.video).catch(() => undefined);
       if (s.audio) await local.unpublishTrack(s.audio).catch(() => undefined);
       s.video.stop();
@@ -1117,7 +1124,17 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       // The browser’s own "stop sharing" ends the video track.
       const onEnded = (): void => { void setSharing(false).catch(() => undefined); };
       tracks.video.addEventListener('ended', onEnded);
-      screen = { video: tracks.video, audio: tracks.audio, onEnded };
+      // #37 m1: the share's own audio track ends while the video goes on (an audio device change, say): the share is silent
+      // from then on, so the viewers' mark and the sharer's notice follow. The dead publication is withdrawn.
+      const audioTrack = shareAudio !== 'none' ? tracks.audio : null;
+      const onAudioEnded = (): void => {
+        if (ended || screen === null || screen.audio !== audioTrack || audioTrack === null) return;
+        audioTrack.removeEventListener('ended', onAudioEnded);
+        set({ shareAudio: 'none' });
+        void local.unpublishTrack(audioTrack).catch(() => undefined).then(() => { if (!ended) refresh(); });
+      };
+      audioTrack?.addEventListener('ended', onAudioEnded);
+      screen = { video: tracks.video, audio: tracks.audio, onEnded, onAudioEnded };
       set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio });
     });
 
@@ -1360,9 +1377,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       },
       setCamera,
       setSharing,
-      setVolume(userId, volume) {
+      setVolume(userId, volume, source = 'voice') {
         if (!isVolume(volume)) throw new PageCallError('E_INVALID_REQUEST');
-        volumes[userId] = volume;
+        (source === 'stream' ? streamVolumes : volumes)[userId] = volume;
         if (!ended) applyGains();
       },
       async setPaused(on) {

@@ -295,6 +295,7 @@ export function renderVoiceShell(o: VoiceHarnessOptions = {}) {
     }),
     bindPushToTalk: vi.fn(() => () => undefined),
     volumesFromSettings: () => ({}),
+    streamVolumesFromSettings: () => ({}),
   };
   const callContexts: FakeCallContext[] = [];
   const startedWith: (FakeCallContext | null)[] = [];

@@ -1128,6 +1128,37 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
     expect(within(li(`${BOB_DEV}:screen`)).queryByRole('img', { name: 'muted' })).toBeNull();
   });
 
+  it('#37: a remote screen without sound shows the mark; with sound it does not; the own screen never does', async () => {
+    const app = await inVoice({ voice: room(FLAG_SCREEN) });
+    const screenTile = (over: Partial<ReturnType<typeof tile>>) => ({ ...tile(BOB_DEV, BOB, null, new MediaStream()), ...over });
+    act(() => app.session.update({ tiles: [screenTile({ screenAudio: false })], sharing: true, localScreen: new MediaStream() }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    expect(within(li(`${BOB_DEV}:screen`)).getByRole('img', { name: t('voice.state.noSound') })).toBeInTheDocument();
+    expect(li(`${OWN_DEV}:screen`).querySelector('[data-state="no-sound"]')).toBeNull();
+    expect(within(li(`${BOB_DEV}:screen`)).queryByRole('slider')).toBeNull();
+    act(() => app.session.update({ tiles: [screenTile({ screenAudio: true })] }));
+    await waitFor(() => expect(li(`${BOB_DEV}:screen`).querySelector('[data-state="no-sound"]')).toBeNull());
+    // The mark is about the stream, not the person: bob's person tile never says it.
+    expect(li(`${BOB_DEV}:person`).querySelector('[data-state="no-sound"]')).toBeNull();
+  });
+
+  it('#37 T5: a screen with sound has its own volume and mute; the mute sets the stream volume to 0, then restores it', async () => {
+    const app = await inVoice({ voice: room(FLAG_SCREEN), settings: { [`voice.streamVolume.${BOB}`]: '70' } });
+    act(() => app.session.update({ tiles: [{ ...tile(BOB_DEV, BOB, null, new MediaStream()), screenAudio: true }] }));
+    await waitFor(() => expect(ids()).toContain(`${BOB_DEV}:screen`));
+    const screenLi = within(li(`${BOB_DEV}:screen`));
+    expect(screenLi.getByRole('slider', { name: t('voice.streamVolume', { name: 'bob' }) })).toHaveValue('70');
+    expect(screenLi.queryByRole('img', { name: t('voice.state.noSound') })).toBeNull();
+    // the person's own voice range is a different range and a different key
+    expect(within(li(`${BOB_DEV}:person`)).getByRole('slider', { name: t('voice.volume', { name: 'bob' }) })).toHaveValue('100');
+    const mute = screenLi.getByRole('button', { name: t('voice.streamMute') });
+    expect(mute).toHaveAttribute('aria-pressed', 'false');
+    await app.user.click(mute);
+    expect(app.session.setVolume).toHaveBeenCalledWith(BOB, 0, 'stream');
+    expect(app.client.callsOf('setSetting')).toContainEqual({ m: 'setSetting', key: `voice.streamVolume.${BOB}`, value: '0' });
+    expect(app.client.callsOf('setSetting').some(c => c.key === `voice.volume.${BOB}`)).toBe(false);
+  });
+
   it('an audio-only participant gives one avatar tile', async () => {
     const app = await inVoice({ voice: room(0) });
     act(() => app.session.update({ tiles: [tile(BOB_DEV, BOB, null, null)] }));

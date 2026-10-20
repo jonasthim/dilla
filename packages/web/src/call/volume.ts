@@ -3,6 +3,7 @@
 // through RemoteParticipant.setVolume. Deafened or paused (RV-3), every gain is 0.
 
 const VOLUME_KEY = /^voice\.volume\.([0-9a-f]{32})$/;
+const STREAM_KEY = /^voice\.streamVolume\.([0-9a-f]{32})$/;
 const VOLUME_VALUE = /^(0|[1-9]0|1[0-9]0|200)$/;
 
 export type Volumes = Record<string, number>;
@@ -11,6 +12,8 @@ export function isVolume(v: number): boolean {
   return Number.isInteger(v) && v >= 0 && v <= 200 && v % 10 === 0;
 }
 
+/** `volumes` is the map of the source: the voice volumes for a microphone, the stream volumes for a screen's sound (T5: one
+ *  gain path for both, the caller picks the map). */
 export function gainOf(userId: string, volumes: Volumes, s: { deafened: boolean; paused: boolean }): number {
   if (s.deafened || s.paused) return 0;
   const v = volumes[userId];
@@ -19,9 +22,18 @@ export function gainOf(userId: string, volumes: Volumes, s: { deafened: boolean;
 
 /** The volumes the settings slice holds, keyed by user id; malformed entries are skipped. */
 export function volumesFromSettings(settings: Record<string, string>): Volumes {
+  return pick(settings, VOLUME_KEY);
+}
+
+/** T5: the stream volumes (`voice.streamVolume.<user>`), by user id. A stream volume of 0 is the stream mute. */
+export function streamVolumesFromSettings(settings: Record<string, string>): Volumes {
+  return pick(settings, STREAM_KEY);
+}
+
+function pick(settings: Record<string, string>, key: RegExp): Volumes {
   const out: Volumes = {};
-  for (const [key, value] of Object.entries(settings)) {
-    const m = VOLUME_KEY.exec(key);
+  for (const [k, value] of Object.entries(settings)) {
+    const m = key.exec(k);
     if (m && VOLUME_VALUE.test(value)) out[m[1]] = Number(value);
   }
   return out;

@@ -11,6 +11,8 @@ export type VoiceTileState = 'connecting' | 'not-heard' | 'ok' | 'unverified';
 export interface VoiceStateLabels {
   speaking: string; muted: string; deafened: string; notHeard: string; unverified: string; connecting: string;
   video: string; screen: string; web: string; bot: string;
+  /** A remote screen tile that carries no sound (#37, `voice.state.noSound`). */
+  noSound: string;
 }
 
 /** One device in voice, as the sidebar rows and the stage tiles show it (L-UI-60). */
@@ -36,6 +38,16 @@ export interface CallTileProps {
   source?: 'camera' | 'screen' | 'avatar';
   /** The tile's name, e.g. 'ada' or the filled `stage.screen`; defaults to `view.name`. It names the focus button. */
   title?: string;
+  /** #37: a `screen` tile whose share carries no sound shows the glyph-only `no sound` state in its caption. It is about the
+   *  stream, never about the viewer's own choice: a muted stream (see `stream`) does not show it. */
+  silent?: boolean;
+  /**
+   * #37 T5: the stream's own volume and mute, on a remote `screen` tile that carries sound. The range is the stream volume
+   * (0..200, as the person's voice range); the toggle is the stream at volume 0 (`aria-pressed` when it is 0), so there
+   * is one value behind both. `labels.volume` is the filled `voice.streamVolume`, `labels.mute` the fixed `voice.streamMute`
+   * (the label never swaps; the WAI-ARIA toggle pattern).
+   */
+  stream?: { volume: number; labels: { volume: string; mute: string }; onVolume(volume: number): void; onMute(): void };
   /** The name of the full-screen button. Without it the tile renders no full-screen button. */
   fullscreenLabel?: string;
   /** Injected by `CallStage`: this tile is the focused one. */
@@ -123,8 +135,9 @@ function StreamVideo({ stream, className, mirror }: { stream: MediaStream; class
  * range are its siblings, never inside it (R28). Focus only flips `data-focused`: nothing is re-parented (R27).
  */
 export function CallTile({ view, own, volume, media, mirror = false, labels, onVolume, id, source = 'camera', title,
-  fullscreenLabel, focused = false, orphan = false, onFocusTile }: CallTileProps) {
+  fullscreenLabel, focused = false, orphan = false, onFocusTile, silent = false, stream }: CallTileProps) {
   const ticks = useId();
+  const streamTicks = useId();
   const statesId = useId();
   const liRef = useRef<HTMLLIElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -137,7 +150,9 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   const isScreen = source === 'screen';
   const showMedia = media !== null && view.state !== 'unverified' && source !== 'avatar';
   // R25: speaking is the ring, not a dot; the word stays for assistive technology (sr-only below).
-  const words = isScreen ? [] : voiceStateWords(view, labels.state).filter(w => w.key !== 'speaking');
+  const noSound: VoiceStateWord[] = isScreen && silent
+    ? [{ key: 'no-sound', glyph: <Icon name="volume-x" size={14} />, text: labels.state.noSound, glyphOnly: true }] : [];
+  const words = isScreen ? noSound : voiceStateWords(view, labels.state).filter(w => w.key !== 'speaking');
   const speaking = !isScreen && view.speaking;
   const volumeText = labels.volumeValue.replaceAll('{n}', String(volume));
   // web3.8 FX m8: full screen only for a tile that shows media (never an avatar), and only where the document can do it.
@@ -181,19 +196,35 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
             onClick={toggleFullscreen}><Icon name={fullscreen ? 'minimize' : 'maximize'} size={16} /></button>
         ) : null}
         {own || isScreen ? null : (
-          <label className="d-call-tile__volume">
-            <span className="d-call-tile__volume-label">{labels.volume}</span>
-            {/* Product walk M6: the value shows beside the range, and 100 % (the middle of 0 to 200) is marked. */}
-            <span className="d-call-tile__volume-row">
-              <input type="range" min={0} max={200} step={10} value={volume} list={ticks}
-                aria-valuetext={volumeText} style={{ '--d-volume': `${volume / 2}%` } as React.CSSProperties}
-                onChange={e => onVolume(Number(e.target.value))} />
-              <span className="d-call-tile__volume-value" aria-hidden="true">{volumeText}</span>
-            </span>
-            <datalist id={ticks}><option value="100" /></datalist>
-          </label>
+          <VolumeRange label={labels.volume} valueText={volumeText} volume={volume} ticks={ticks} onVolume={onVolume} />
         )}
+        {isScreen && !own && stream !== undefined ? (
+          <div className="d-call-tile__stream">
+            <VolumeRange label={stream.labels.volume} valueText={labels.volumeValue.replaceAll('{n}', String(stream.volume))}
+              volume={stream.volume} ticks={streamTicks} onVolume={stream.onVolume} />
+            <button type="button" className="d-call-tile__mute" aria-pressed={stream.volume === 0} aria-label={stream.labels.mute}
+              onClick={stream.onMute}><Icon name={stream.volume === 0 ? 'volume-x' : 'volume-2'} size={16} /></button>
+          </div>
+        ) : null}
       </div>
     </li>
+  );
+}
+
+/** The native range of a volume (0..200 in steps of 10) with its value beside it and 100 % marked (product walk M6). */
+function VolumeRange({ label, valueText, volume, ticks, onVolume }: {
+  label: string; valueText: string; volume: number; ticks: string; onVolume(volume: number): void;
+}) {
+  return (
+    <label className="d-call-tile__volume">
+      <span className="d-call-tile__volume-label">{label}</span>
+      <span className="d-call-tile__volume-row">
+        <input type="range" min={0} max={200} step={10} value={volume} list={ticks}
+          aria-valuetext={valueText} style={{ '--d-volume': `${volume / 2}%` } as React.CSSProperties}
+          onChange={e => onVolume(Number(e.target.value))} />
+        <span className="d-call-tile__volume-value" aria-hidden="true">{valueText}</span>
+      </span>
+      <datalist id={ticks}><option value="100" /></datalist>
+    </label>
   );
 }

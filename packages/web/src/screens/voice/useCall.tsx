@@ -18,7 +18,7 @@ import { joinFailureKey } from '../shell-model.ts';
 
 /** What the shell needs of the lazy call module. */
 export type VoiceModule = Pick<CallModule, 'startPageCall' | 'isVoiceSupported' | 'localDecodeList' | 'bindPushToTalk' | 'browserDeps'
-  | 'volumesFromSettings'>;
+  | 'volumesFromSettings' | 'streamVolumesFromSettings'>;
 
 /** The shell's voice dependencies: the call module (loaded on the first join) and the sounds. Tests give doubles. */
 export interface VoiceDeps {
@@ -170,6 +170,10 @@ export interface CallView {
   toggleCamera: () => void;
   toggleShare: () => void;
   setVolume: (userId: string, volume: number) => void;
+  /** #37 T5: the volume of a person's shared screen sound; 0 is the stream mute. */
+  setStreamVolume: (userId: string, volume: number) => void;
+  /** #37 T5: mutes the stream (volume 0, the last volume kept) or brings it back to the last volume. */
+  toggleStreamMute: (userId: string, current: number) => void;
   /** web3.3: the "turn on audio" press while the browser holds call audio back (state.audioBlocked). */
   startAudio: () => void;
   /** web3.9 VOICE-AFK: the AFK move's join that failed (the dock's line offers it again); cleared by the next join or leave.
@@ -440,11 +444,18 @@ export function useCall(o: UseCallOptions): CallView {
     let sharingBeforeLoss = next.state.sharing;
     // Fix round 2 (Nit 3): a hold that arrives in the same tick as the join’s announcement joins it, never replaces it.
     const joined = t('voice.announce.joined', { where: live.current.whereOf(id) });
+    let sharedSilent = false;
     let joinTick = true;
     setTimeout(() => { joinTick = false; }, 0);
     unsubscribe.current = next.subscribe(() => {
       if (sessionRef.current !== next) return;
       setState(next.state);
+      // #37: a share that went out without sound tells its sharer once, in the stage's status region (D3, D4: only after
+      // the share started); the notice goes when the share gets sound again or stops.
+      const silentShare = next.state.shareAudio === 'none';
+      if (silentShare && !sharedSilent) setNotice({ channelId: id, key: 'voice.shareAudio.none' });
+      else if (!silentShare && sharedSilent) setNotice(n => (n?.key === 'voice.shareAudio.none' ? null : n));
+      sharedSilent = silentShare;
       if (next.state.phase !== 'ended') {
         cameraBeforeLoss = next.state.camera;
         sharingBeforeLoss = next.state.sharing;
@@ -572,6 +583,7 @@ export function useCall(o: UseCallOptions): CallView {
           mode: settings[SETTINGS.voiceMode] === 'ptt' ? 'ptt' : 'vad',
           noise: settings[SETTINGS.voiceNoise] === 'off' ? 'off' : settings[SETTINGS.voiceNoise] === 'automatic' ? 'automatic' : settings[SETTINGS.voiceNoise] === 'lightweight' ? 'lightweight' : 'on',
           volumes: mod.volumesFromSettings(settings),
+          streamVolumes: mod.streamVolumesFromSettings(settings),
           signal: abort.signal,
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
           self: selfNow(),
@@ -757,6 +769,15 @@ export function useCall(o: UseCallOptions): CallView {
     sessionRef.current?.setVolume(userId, volume);
     client.call({ m: 'setSetting', key: SETTINGS.voiceVolume(userId), value: String(volume) }).catch(() => undefined);
   }, [client]);
+  const setStreamVolume = useCallback((userId: string, volume: number) => {
+    sessionRef.current?.setVolume(userId, volume, 'stream');
+    client.call({ m: 'setSetting', key: SETTINGS.voiceStreamVolume(userId), value: String(volume) }).catch(() => undefined);
+  }, [client]);
+  // The stream mute is the stream volume at 0, so there is one value and one gain path; the volume before the mute is kept here.
+  const beforeStreamMute = useRef<Map<string, number>>(new Map());
+  const toggleStreamMute = useCallback((userId: string, now: number) => {
+    if (now > 0) { beforeStreamMute.current.set(userId, now); setStreamVolume(userId, 0); } else setStreamVolume(userId, beforeStreamMute.current.get(userId) ?? 100);
+  }, [setStreamVolume]);
   const startAudio = useCallback(() => {
     // The press is the user activation the browser asks for; a refusal leaves the line on offer (the session never throws).
     sessionRef.current?.startAudio().catch(() => undefined);
@@ -1053,7 +1074,7 @@ export function useCall(o: UseCallOptions): CallView {
     notice, blockedMidCall, unsupported, ringExpired,
     pauseFocusPending, markPauseFocused: () => setPauseFocusPending(false),
     takeStageFocus: () => { const want = stageFocus.current; stageFocus.current = false; return want; },
-    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, startAudio,
+    join: joinOnly, restore, leave, closeUnsupported, toggleMute, toggleDeafen, selfMute, selfDeafen, selfMuted, selfDeafened, toggleCamera, toggleShare, setVolume, setStreamVolume, toggleStreamMute, startAudio,
     afkFailed,
   };
 }

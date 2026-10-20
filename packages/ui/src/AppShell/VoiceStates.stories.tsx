@@ -30,7 +30,7 @@ const time = formatTime(1_790_000_000);
 const STATE = {
   speaking: t('voice.state.speaking'), muted: t('voice.state.muted'), deafened: t('voice.state.deafened'), notHeard: t('voice.state.notHeard'),
   unverified: t('voice.state.unverified'), connecting: t('voice.state.connecting'), video: t('voice.state.video'), screen: t('voice.state.screen'),
-  web: t('voice.tag.web'), bot: t('voice.tag.bot'),
+  web: t('voice.tag.web'), bot: t('voice.tag.bot'), noSound: t('voice.state.noSound'),
 };
 const ROW_LABELS = { open: en['voice.open'], count: en['voice.count'], canHear: t('voice.bot.canHear'), state: STATE };
 const person = (name: string, over: Partial<VoiceParticipantView> = {}): VoiceParticipantView => ({
