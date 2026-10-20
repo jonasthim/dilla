@@ -360,6 +360,25 @@ export const Grid5SpeakingAndChip: Story = {
     if (canvasElement.querySelector('.d-call-tile[data-speaking="true"]') === null) throw new Error('Grid5SpeakingAndChip: nobody speaks');
   },
 };
+/** Each element has its room: in a 2-column phone grid a long name beside the web tag, a mute glyph and a volume chip keeps its first 8 characters. */
+export const GridLongNames: Story = {
+  args: { tiles: ['Björn Ironside', 'Ragnhild Lothbrok', 'Ivar Ragnarsson', 'you'].map((n, i) => person(n, { video: i % 2 === 0, muted: true }, i === 3)).map((t, i) => (i < 3 ? { ...t, volume: 70 } : t)), code: null },
+  decorators: [stageBox], render: args => <StageDemo {...args} />,
+  play: async ({ canvasElement }) => {
+    await nextFrame(); await nextFrame();
+    for (const name of Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-call-tile__name'))) {
+      const probe = document.createElement('span');
+      probe.textContent = name.textContent.slice(0, 8);
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap';
+      name.append(probe);
+      const need = probe.getBoundingClientRect().width;
+      probe.remove();
+      if (name.scrollWidth > name.clientWidth + 1 && name.clientWidth + 1 < need) {
+        throw new Error(`GridLongNames: "${name.textContent}" shows ${String(name.clientWidth)} px, under its first 8 characters (${String(need)} px)`);
+      }
+    }
+  },
+};
 /** D3: the volume range is hidden until the pointer is over the tile or focus is inside it; the keyboard still reaches it. */
 export const VolumeOnHoverAndFocus: Story = {
   args: { tiles: people(2), code: null }, decorators: [stageBox],
