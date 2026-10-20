@@ -157,7 +157,9 @@ test('the core worker signs up, joins, reads and sends, survives a gateway resta
       await ok(page, { m: 'start' });
       await expect.poll(() => phaseOf(page), { timeout: WAIT }).toBe('ready');
       const again = (await slice<AccountState>(page, 'account'))!;
-      expect(again.user).toEqual({ id: userId, username });
+      // The display name lands from the cache or the presence push, whichever comes first.
+      expect(again.user).toMatchObject({ id: userId, username });
+      expect(again.user!.display ?? 'Web Harness').toBe('Web Harness');
       expect(again.deviceId).toBe(deviceId);
       await ok(page, { m: 'selectCommunity', communityId: s.community_id });
       await ok(page, { m: 'openChannel', channelId: s.channel_id });
