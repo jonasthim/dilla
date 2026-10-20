@@ -42,6 +42,8 @@ export interface MessageRowProps {
   msgId?: string | null;
   /** The row continues the author's run above it (the caller decides): the author and time are hidden, the time shows in the gutter on hover or focus. */
   grouped?: boolean;
+  /** The grouped row's gutter time, compact enough for the avatar column and its gap (the full `time` stays for screen readers). */
+  gutterTime?: string;
   /** `hover`: the device tag shows only while the row is hovered or holds focus. Default `always`. */
   deviceTag?: 'always' | 'hover';
   /** Phone only: the toolbar is rendered only while revealed. Off a phone the toolbar is always rendered. */
@@ -105,7 +107,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  */
 export function MessageRow({
   author, time, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments,
-  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, deviceTag, revealed, onReveal,
+  reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, gutterTime, deviceTag, revealed, onReveal,
 }: MessageRowProps) {
   const headId = useId();
   const tabIndex = active === true ? 0 : -1;
@@ -151,7 +153,7 @@ export function MessageRow({
       data-edited={editedLabel !== undefined ? 'true' : undefined} data-pinned={pinnedLabel !== undefined ? 'true' : undefined}
       data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}>
       {grouped === true
-        ? <span className="d-message-row__gutter" aria-hidden="true">{time}</span>
+        ? <span className="d-message-row__gutter" aria-hidden="true">{gutterTime ?? time}</span>
         : <span className="d-message-row__avatar" aria-hidden="true"><Avatar name={author} /></span>}
       <div className="d-message-row__main">
         <p className="d-message-row__head" id={headId}>

@@ -306,6 +306,11 @@ describe('MessageRow mention colour dot', () => {
       expect(container.querySelector('.d-message-row__avatar')).toBeNull();
       expect(container.querySelector('article')).toHaveAttribute('data-grouped', 'true');
     });
+    it('shows a given compact gutter time and keeps the full time for the screen reader', () => {
+      const { container } = render(<MessageRow author="ada" time="12:59 PM" gutterTime="12:59p" body={BODY} state="ok" grouped />);
+      expect(container.querySelector('.d-message-row__gutter')).toHaveTextContent('12:59p');
+      expect(container.querySelector('.d-message-row__head .d-message-row__time')).toHaveTextContent('12:59 PM');
+    });
     it('keeps the row named by its author and time for a screen reader', () => {
       render(<MessageRow author="ada" time="21:02" body={BODY} state="ok" grouped />);
       expect(screen.getByRole('article', { name: /ada.*21:02/ })).toBeInTheDocument();

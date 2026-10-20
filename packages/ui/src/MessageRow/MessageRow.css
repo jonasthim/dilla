@@ -61,7 +61,8 @@
 @media (prefers-reduced-motion: reduce) { .d-message-row__thread { transition: none; } }
 
 /* web3.9 (R29, G2): a grouped row shows its time in the avatar column on hover or focus; the head's author and time stay for a screen reader. */
-.d-message-row__gutter { align-self: start; justify-self: end; padding-top: 0.125rem; font-size: var(--text-xs); line-height: var(--line-height); color: var(--fg-3); white-space: nowrap; opacity: 0; }
+/* The time is compact ("12:59p", "23:59") at 11px with tabular figures, and the gutter is the avatar column plus its gap, centred, so it never leaves the row's left padding. */
+.d-message-row__gutter { align-self: start; justify-self: start; box-sizing: border-box; width: calc(var(--avatar-size) + 0.75rem); margin-right: -0.75rem; padding-top: 0.125rem; text-align: center; font-size: 0.6875rem; font-variant-numeric: tabular-nums; line-height: var(--line-height); color: var(--fg-3); white-space: nowrap; opacity: 0; }
 .d-message-row:hover .d-message-row__gutter, .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { opacity: 1; }
 .d-message-row[data-grouped="true"] { margin-top: 0; }
 /* The device tag on a web client shows only while the row is hovered or holds focus. Hidden, it is out of flow (no gap after the author) and visibility:hidden. */

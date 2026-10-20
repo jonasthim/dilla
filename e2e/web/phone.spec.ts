@@ -236,6 +236,25 @@ test('the phone shell: sign-up unzoomed, the tab bar, a pushed channel, the tabs
       await expect(actions).toBeVisible();
       await row.locator('.d-message-row__body').tap();
       await expect(actions).toHaveCount(0);
+      // I2: a grouped row's gutter time fits the avatar column and its gap, unclipped, at 390 and at 360.
+      await sendText(page, 'general', 'tack');
+      const grouped = messageRow(page, 'general', 'tack');
+      await expect(grouped).toHaveAttribute('data-grouped', 'true');
+      await grouped.locator('.d-message-row__body').tap();
+      for (const width of [390, 360]) {
+        await page.setViewportSize({ width, height: 844 });
+        const g = await grouped.locator('.d-message-row__gutter').evaluate(el => {
+          const box = el.getBoundingClientRect();
+          const main = el.parentElement!.querySelector('.d-message-row__main')!.getBoundingClientRect();
+          return { left: box.left, right: box.right, mainLeft: main.left, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, text: el.textContent };
+        });
+        expect(g.left, `the gutter time starts on screen at ${String(width)}: ${g.text}`).toBeGreaterThanOrEqual(0);
+        expect(g.right, `the gutter time ends before the text at ${String(width)}`).toBeLessThanOrEqual(g.mainLeft + 0.5);
+        expect(g.scrollWidth, `the gutter time is not clipped at ${String(width)}`).toBeLessThanOrEqual(g.clientWidth);
+      }
+      await page.setViewportSize({ width: 390, height: 844 });
+      await grouped.locator('.d-message-row__body').tap();
+      await expect(grouped.getByRole('toolbar')).toHaveCount(0);
       await expectAccessible(page, 'the channel view');
       await expectTapTargets(page.locator('.d-phone-header').locator('a, button'), 'the channel view header');
     });
