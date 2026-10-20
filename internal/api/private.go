@@ -40,6 +40,12 @@ func EligibleUsers(ctx context.Context, repo store.Repository, ch store.ChannelR
 		return nil, err
 	}
 	slices.SortFunc(roles, byPositionThenID)
+	// R35: every member is eligible for the built-in AFK channel; the pointer is read once.
+	afk, err := repo.GetCommunityAFK(ctx, *ch.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	isAFK := afk.ChannelID != nil && *afk.ChannelID == ch.ID
 	// @everyone is the role at position 0, identified here exactly as
 	// LoadSnapshot identifies it; Snapshot.Resolve keys on the id, never on the
 	// position (task 3, step 3).
@@ -61,7 +67,7 @@ func EligibleUsers(ctx context.Context, repo store.Repository, ch store.ChannelR
 				return nil, err
 			}
 			snap := Snapshot{Owner: com.Owner, Everyone: everyone, Roles: roles, Overwrite: overwrites,
-				Held: make(map[id.ID]bool, len(held))}
+				Held: make(map[id.ID]bool, len(held)), AFK: isAFK}
 			for _, r := range held {
 				snap.Held[r] = true
 			}

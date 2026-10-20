@@ -460,7 +460,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// session middleware and [limits.rate] meter as the routes above; then LiveKit's signalling
 	// paths when this process runs an SFU.
 	callRoutes = mountPlanTwo(mux, planTwo{
-		o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
+		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
 	})
 	if o.SFU != nil {

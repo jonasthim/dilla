@@ -455,6 +455,11 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "the call has ended"))
 		return
 	}
+	// R3: the AFK channel is listen-only, so it holds no sharing slot; refused before any lease.
+	if h.inAFK(r.Context(), row) {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "nobody shares in the AFK channel"))
+		return
+	}
 	if !bits.Has(PermVideo) && !bits.Has(PermScreenShare) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "missing permission"))
 		return
@@ -521,7 +526,7 @@ func (h *Calls) share(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pctx, cancel := sfuCtx(ctx)
-	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(bits, cur, s.DeviceID))
+	err = h.sfu.UpdatePermission(pctx, cur.LivekitRoom, s.DeviceID.String(), h.grantFor(ctx, bits, cur, s.DeviceID))
 	cancel()
 	if err != nil {
 		if errors.Is(err, sfu.ErrNoParticipant) {

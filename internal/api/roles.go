@@ -955,6 +955,17 @@ func (h *Roles) overwriteTarget(r *http.Request, repo store.Repository, deleting
 	if !o.have.Has(PermViewChannel) {
 		return overwritePath{}, server.Errorf(server.CodeNotFound, "no such object")
 	}
+	// R2: the built-in AFK channel takes no overwrite, so nobody can open it up or lock it down.
+	// Every member views it (R35), so this answers no one who could not already see it.
+	if o.ch.CommunityID != nil {
+		afk, err := repo.GetCommunityAFK(r.Context(), *o.ch.CommunityID)
+		if err != nil {
+			return overwritePath{}, err
+		}
+		if afk.ChannelID != nil && *afk.ChannelID == o.ch.ID {
+			return overwritePath{}, server.Errorf(server.CodeForbidden, "the AFK channel takes no permission overwrites")
+		}
+	}
 	if !o.have.Has(PermManageRoles) {
 		return overwritePath{}, server.Errorf(server.CodeForbidden, "missing permission")
 	}

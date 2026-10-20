@@ -634,7 +634,7 @@ func TestTheOverwritesListIsInFullOrder(t *testing.T) {
 		[]any{nil, nil, nil, nil, nil, uint64(10), nil}); status != http.StatusNoContent {
 		t.Fatalf("PATCH position = %d (%x)", status, body)
 	}
-	if stored, _ := e.Repo.ListChannels(t.Context(), cid); len(stored) != 2 || stored[0].ID != high {
+	if stored, _ := e.Repo.ListChannels(t.Context(), cid); len(withoutBuiltinAFK(stored)) != 2 || stored[0].ID != high {
 		t.Fatalf("the store does not read the higher id first: %+v", stored)
 	}
 	targets := []id.ID{everyone, roleA}

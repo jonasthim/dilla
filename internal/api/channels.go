@@ -814,6 +814,16 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		if err := c.lockManageable(r, tx, current); err != nil {
 			return err
 		}
+		// R2: the built-in AFK channel may be renamed and moved, and nothing else.
+		if req.Topic != nil || req.Mode != nil || req.Visibility != nil || req.SlowmodeSeconds != nil {
+			afk, err := tx.GetCommunityAFK(r.Context(), *current.CommunityID)
+			if err != nil {
+				return err
+			}
+			if afk.ChannelID != nil && *afk.ChannelID == current.ID {
+				return server.Errorf(server.CodeForbidden, "the AFK channel keeps its kind, mode, visibility, topic and slow mode")
+			}
+		}
 		row, err := tx.GetChannel(r.Context(), current.ID)
 		if err != nil {
 			return notFound(err)
@@ -1039,25 +1049,21 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		if err := c.lockManageable(r, tx, row); err != nil {
 			return err
 		}
+		// R2: the built-in AFK channel is never deleted. Read under the community row lock, so a
+		// delete racing anything that moves the pointer still sees the pointer as it stands.
+		afk, err := tx.GetCommunityAFK(r.Context(), *row.CommunityID)
+		if err != nil {
+			return err
+		}
+		if afk.ChannelID != nil && *afk.ChannelID == row.ID {
+			return server.Errorf(server.CodeForbidden, "the AFK channel cannot be deleted")
+		}
 		// Read the channel's open groups inside the transaction; close them after it.
-		var err error
 		if toClose, err = openChannelGroups(r.Context(), tx, []id.ID{row.ID}); err != nil {
 			return err
 		}
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
-		}
-		if row.CommunityID != nil {
-			cfg, err := tx.GetCommunityAFK(r.Context(), *row.CommunityID)
-			if err != nil {
-				return err
-			}
-			if cfg.ChannelID != nil && *cfg.ChannelID == row.ID {
-				cfg.ChannelID = nil
-				if err := tx.SetCommunityAFK(r.Context(), *row.CommunityID, cfg); err != nil {
-					return err
-				}
-			}
 		}
 		// A deleted category's channels stay, at the top level: the tombstone
 		// keeps its row, so ON DELETE SET NULL never fires, and a child left

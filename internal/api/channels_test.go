@@ -116,6 +116,7 @@ func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 	_, memberTok := e.NewUser("member")
 	joinCommunity(t, e, cid, memberTok)
 
+	afk, _ := afkPointer(t, e, cid)
 	list := func(tok string) []id.ID {
 		t.Helper()
 		status, body := e.Do(http.MethodGet, "/v1/communities/"+cid.String()+"/channels", tok, nil)
@@ -133,6 +134,9 @@ func TestAMemberListsTheCommunitysVisibleChannels(t *testing.T) {
 			}
 			var chID id.ID
 			mustUnmarshal(t, r[0], &chID)
+			if chID == afk {
+				continue // every community's built-in AFK channel (web3.9 R1)
+			}
 			out = append(out, chID)
 			if chID == general {
 				var kind, mode, vis, pos, slow, seq uint64
@@ -287,6 +291,7 @@ func TestAPositionChangeMovesTheChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChannels: %v", err)
 	}
+	rows = withoutBuiltinAFK(rows)
 	if len(rows) != 3 || rows[0].ID != ids[0] || rows[1].ID != ids[1] || rows[2].ID != ids[2] {
 		t.Fatalf("initial order = %+v, want positions 10, 20, 30", rows)
 	}
@@ -315,6 +320,7 @@ func TestEqualPositionsBreakOnID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChannels: %v", err)
 	}
+	rows = withoutBuiltinAFK(rows)
 	if len(rows) != 2 {
 		t.Fatalf("channels = %d", len(rows))
 	}
@@ -1034,7 +1040,7 @@ func TestAPrivateCreateRechecksUnderTheLock(t *testing.T) {
 	if status != http.StatusForbidden {
 		t.Fatalf("create by a mod demoted before the transaction = %d, want 403 (%x)", status, body)
 	}
-	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(chans) != 0 {
+	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(withoutBuiltinAFK(chans)) != 0 {
 		t.Fatalf("a refused create wrote %+v", chans)
 	}
 	// Control: the same create with no demotion in between passes every check before the
@@ -1091,7 +1097,7 @@ func TestCreatorSelfSendRecheckedUnderTheLock(t *testing.T) {
 	if status, body := createWith(e, cid, modTok, "news", 0, self); status != http.StatusForbidden {
 		t.Fatalf("self send after losing send before the transaction = %d (%x), want 403", status, body)
 	}
-	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(chans) != 0 {
+	if chans, _ := e.Repo.ListChannels(t.Context(), cid); len(withoutBuiltinAFK(chans)) != 0 {
 		t.Fatalf("a refused create wrote %+v", chans)
 	}
 	// Control: send restored and nothing in between, so the 403 above could only come from the

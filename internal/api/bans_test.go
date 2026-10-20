@@ -348,6 +348,9 @@ func TestEveryModerationActionWritesAnAuditRow(t *testing.T) {
 	}
 	var seen []string
 	for _, row := range rows {
+		if row.Actor == nil && row.Detail == "afk.builtin" {
+			continue // the system row of the community's built-in AFK channel (web3.9 R1)
+		}
 		if row.Actor == nil || *row.Actor != owner {
 			t.Fatalf("audit row %+v does not name the actor", row)
 		}

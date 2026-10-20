@@ -13,7 +13,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/fxamacker/cbor/v2"
+
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/clock"
 	"github.com/jonasthim/dilla/internal/id"
 	"github.com/jonasthim/dilla/internal/server"
@@ -117,48 +120,59 @@ func (c *Communities) afkSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// putAFKSettings is PUT /v1/communities/{id}/afk/settings (R2): `[timeout_seconds]`, or the web3.8
+// shape `[channel_id, timeout_seconds]` when channel_id is the built-in channel. The channel is never
+// chosen here: the timeout is written beside the pointer as it stands, under the community row lock.
 func (c *Communities) putAFKSettings(w http.ResponseWriter, r *http.Request) {
 	row, _, err := c.managerOnly(r)
 	if err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	var req afkSettingsBody
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
+	var body []cbor.RawMessage
+	if err := server.DecodeBody(w, r, maxCBORBody, &body); err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	switch req.TimeoutSeconds {
-	case 60, 300, 900, 1800, 3600:
+	var named *id.ID
+	var timeout uint64
+	switch len(body) {
+	case 1:
+		if err := cborx.Unmarshal(body[0], &timeout); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "timeout_seconds is a uint"))
+			return
+		}
+	case 2:
+		if err := cborx.Unmarshal(body[0], &named); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "channel_id is a 16-byte id"))
+			return
+		}
+		if err := cborx.Unmarshal(body[1], &timeout); err != nil {
+			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "timeout_seconds is a uint"))
+			return
+		}
 	default:
+		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the AFK channel is built in; send [timeout_seconds]"))
+		return
+	}
+	if !isAFKTimeout(timeout) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "AFK timeout must be 1, 5, 15, 30 or 60 minutes"))
 		return
 	}
-	if req.ChannelID != nil {
-		ch, err := c.repo.GetChannel(r.Context(), *req.ChannelID)
-		if err != nil || ch.CommunityID == nil || *ch.CommunityID != row.ID || ch.Kind != ChannelVoice {
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "AFK destination must be a voice channel in this community"))
-			return
+	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
+		if err := tx.LockCommunity(r.Context(), row.ID); err != nil {
+			return notFound(err)
 		}
-		if c.calls != nil {
-			configLock := c.calls.afkChannelLock(ch.ID)
-			configLock.Lock()
-			defer configLock.Unlock()
+		cfg, err := tx.GetCommunityAFK(r.Context(), row.ID)
+		if err != nil {
+			return err
 		}
-		if c.calls != nil {
-			_, live, err := c.calls.liveCallOf(r.Context(), ch, nil)
-			if err != nil {
-				server.WriteError(w, err)
-				return
-			}
-			if live {
-				server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the AFK destination has a live call"))
-				return
-			}
+		if len(body) == 2 && (named == nil || cfg.ChannelID == nil || *named != *cfg.ChannelID) {
+			return server.Errorf(server.CodeInvalidRequest, "the AFK channel is built in; send [timeout_seconds]")
 		}
-	}
-	if err := c.repo.SetCommunityAFK(r.Context(), row.ID, store.CommunityAFK{ChannelID: req.ChannelID, TimeoutSeconds: req.TimeoutSeconds}); err != nil {
-		server.WriteError(w, err)
+		return tx.SetCommunityAFK(r.Context(), row.ID, store.CommunityAFK{ChannelID: cfg.ChannelID, TimeoutSeconds: timeout})
+	}); err != nil {
+		c.fail(w, r, "put AFK settings", err)
 		return
 	}
 	c.notify.Changed(afterCommit(r), row.ID)
@@ -248,17 +262,19 @@ func (c *Communities) create(w http.ResponseWriter, r *http.Request) {
 
 	now := c.clk.Now().Unix()
 	out := createCommunityResp{CommunityID: id.New(), RoleEveryone: id.New(), PolicyVersion: 1}
+	communityRow := store.CommunityRow{
+		ID:                   out.CommunityID,
+		Owner:                s.UserID,
+		Name:                 req.Name,
+		PolicyJSON:           req.Policy,
+		PolicyVersion:        1,
+		MinAccountAgeSeconds: req.MinAccountAgeSeconds,
+		RequireMod2FA:        twofa,
+		Created:              now,
+	}
+	var afk store.ChannelRow
 	err = c.repo.Tx(r.Context(), func(tx store.Repository) error {
-		if err := tx.CreateCommunity(r.Context(), store.CommunityRow{
-			ID:                   out.CommunityID,
-			Owner:                s.UserID,
-			Name:                 req.Name,
-			PolicyJSON:           req.Policy,
-			PolicyVersion:        1,
-			MinAccountAgeSeconds: req.MinAccountAgeSeconds,
-			RequireMod2FA:        twofa,
-			Created:              now,
-		}); err != nil {
+		if err := tx.CreateCommunity(r.Context(), communityRow); err != nil {
 			return err
 		}
 		if err := tx.PutMember(r.Context(), store.MemberOfCommunityRow{
@@ -274,6 +290,11 @@ func (c *Communities) create(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			return err
 		}
+		// R1: every community is born with its built-in AFK channel.
+		var err error
+		if afk, err = createBuiltinAFK(r.Context(), tx, communityRow, afkDefaultTimeout, now); err != nil {
+			return err
+		}
 		return tx.Audit(r.Context(), store.AuditRow{
 			Actor: &s.UserID, Action: "community.create",
 			Target: out.CommunityID.String(), Detail: req.Name, At: now,
@@ -282,6 +303,9 @@ func (c *Communities) create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		c.fail(w, r, "create community", err)
 		return
+	}
+	if err := MaterialiseChannelMembers(afterCommit(r), c.repo, c.dsvc, afk, now); err != nil {
+		c.log.ErrorContext(r.Context(), "materialise channel members", "channel", afk.ID, "err", err)
 	}
 	if err := server.EncodeBody(w, http.StatusCreated, out); err != nil {
 		c.log.Error("encode create community", "err", err)
