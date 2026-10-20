@@ -223,37 +223,49 @@ func restoreBuiltinAFK(ctx context.Context, tx store.Repository, ch store.Channe
 // lowerStrayChannels moves every live channel of community cid other than the AFK channel afkID that sits
 // at AFKBuiltinPosition or above (R-AFK8: a rolled-back web3.8 numbers a new channel max(position) + 1)
 // down to max(position below 2^30) + 1, + 2, … in their current order (position, then channel_id), each
-// with a null-actor channel.update audit row whose detail names the position it left. The caller holds
-// the community row lock.
+// with a null-actor channel.update audit row whose detail names the position it left (afk.reserved:<old>).
+// When they do not fit there (I-1: a channel already at or near 2^30-1), every channel other than afkID is
+// renumbered densely 0..n-1 in that order instead, each one that moves with an afk.renumber:<old> row, so
+// the lowering itself never fails and the rest of the ensure still commits. The caller holds the
+// community row lock.
 func lowerStrayChannels(ctx context.Context, tx store.Repository, cid, afkID id.ID, now int64) error {
 	all, err := tx.ListChannels(ctx, cid) // ordered by position, then channel_id
 	if err != nil {
 		return err
 	}
 	var next uint64
-	var stray []store.ChannelRow
+	var ordinary, stray []store.ChannelRow
 	for _, c := range all {
 		switch {
 		case c.ID == afkID:
+			continue
 		case c.Position < AFKBuiltinPosition:
 			next = max(next, c.Position+1)
 		default:
 			stray = append(stray, c)
 		}
+		ordinary = append(ordinary, c)
 	}
+	if len(stray) == 0 {
+		return nil
+	}
+	moves, detail := stray, "afk.reserved:%d"
 	if next+uint64(len(stray)) > AFKBuiltinPosition {
-		return fmt.Errorf("afk: no room below %d for %d channels", AFKBuiltinPosition, len(stray))
+		moves, detail, next = ordinary, "afk.renumber:%d", 0
 	}
-	for _, c := range stray {
+	for _, c := range moves {
 		was := c.Position
 		c.Position = next
 		next++
+		if was == c.Position {
+			continue
+		}
 		if err := tx.UpdateChannel(ctx, c); err != nil {
 			return err
 		}
 		if err := tx.Audit(ctx, store.AuditRow{
 			Actor: nil, Action: "channel.update", Target: c.ID.String(),
-			Detail: fmt.Sprintf("afk.reserved:%d", was), At: now,
+			Detail: fmt.Sprintf(detail, was), At: now,
 		}); err != nil {
 			return err
 		}

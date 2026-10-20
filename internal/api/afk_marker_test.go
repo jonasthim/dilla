@@ -135,7 +135,7 @@ func seedAFKStoreCommunity(t *testing.T, repo store.Repository) (cid, owner id.I
 	t.Helper()
 	ctx := t.Context()
 	owner, cid = id.New(), id.New()
-	if err := repo.CreateUser(ctx, newAPITestUser(owner, "u", policyT0)); err != nil {
+	if err := repo.CreateUser(ctx, newAPITestUser(owner, "u"+owner.String()[:8], policyT0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.CreateCommunity(ctx, store.CommunityRow{ID: cid, Owner: owner, Name: "c",

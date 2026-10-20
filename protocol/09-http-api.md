@@ -462,7 +462,9 @@ answers `404 E_NOT_FOUND` exactly as an unknown or deleted one does. Creating a 
   built-in AFK channel (§ Voice): a `POST` or `PATCH` that puts any other channel there is `400
   E_INVALID_REQUEST`, a `PATCH` that names a position other than `2^30` for the AFK channel itself
   is `403 E_FORBIDDEN` `the AFK channel keeps its position`, and the next start moves any other
-  channel found there (one an older release created) below `2^30`, keeping their order.
+  channel found there (one an older release created) below `2^30`, keeping their order. When they do
+  not fit after the highest position below `2^30`, it renumbers every channel of the community
+  except the AFK channel `0..n-1` in that order instead.
 - `seq` is the channel's own sequence, which the server-readable message path advances.
 - `text_group_id` is the `group_id` of the channel's oldest open `text` group (`01` § Group kinds),
   an epoch-unknown one included (`02` invariant 11), for a channel that carries one: kind `0`, `3`
