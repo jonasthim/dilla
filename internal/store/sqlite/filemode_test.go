@@ -42,7 +42,9 @@ func TestOpenWriteFilesAreOwnerOnly(t *testing.T) {
 // Not parallel: it swaps the package's chmod.
 func TestOpenWriteSurvivesARefusedChmod(t *testing.T) {
 	old := chmodFile
-	chmodFile = func(string, os.FileMode) error { return &os.PathError{Op: "chmod", Path: "dilla.db", Err: syscall.EPERM} }
+	chmodFile = func(string, os.FileMode) error {
+		return &os.PathError{Op: "chmod", Path: "dilla.db", Err: syscall.EPERM}
+	}
 	t.Cleanup(func() { chmodFile = old })
 
 	path := filepath.Join(t.TempDir(), "dilla.db")
