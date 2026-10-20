@@ -748,4 +748,22 @@ describe('web3.9 WEB-AFK: a phone is exempt from the AFK move (R5)', () => {
     expect(app.client.callsOf('afkActivity')[1]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV });
     dateNow.mockRestore();
   });
+
+  it('final review M-1: a failed exempt report is retried after a backoff until it is accepted', async () => {
+    const app = phone({ path: `/c/${A}/${GENV}` });
+    let failures = 1;
+    const base = app.client.handler;
+    app.client.handler = command => command.m === 'afkActivity' && failures-- > 0
+      ? Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE' })) : base(command);
+    act(() => app.client.publish(`afk:${A}`, { channelId: MUSIC, timeoutSeconds: 300, pending: false }));
+    await app.user.click(await within(screen.getByRole('main')).findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    act(() => app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV })));
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(1));
+    await waitFor(() => expect(app.client.callsOf('afkActivity')).toHaveLength(2), { timeout: 3_000 });
+    expect(app.client.callsOf('afkActivity')[1]).toEqual({ m: 'afkActivity', communityId: A, channelId: GENV, exempt: true });
+    // Accepted: no further retry.
+    await new Promise(r => setTimeout(r, 2_500));
+    expect(app.client.callsOf('afkActivity')).toHaveLength(2);
+  }, 10_000);
 });
