@@ -7,7 +7,7 @@ import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import type { Person } from './support/peer-browser';
 import {
-  VoicePeer, WAIT, POLL, callSlice, connected, copy, joinVoice, noiseOff, openVoice, onboard, self, slice, stage, tile,
+  VoicePeer, WAIT, POLL, callSlice, connected, copy, joinVoice, noiseOff, openVoiceOnly, onboard, self, slice, stage, tile,
 } from './support/voice';
 import type { VoiceState } from '../../packages/client-core/src/state/types';
 
@@ -219,7 +219,7 @@ for (const noise of ['off', 'on'] as const) test(`mute pressed while the join is
     if (noise === 'off') await noiseOff(alice.page);
     await watchAudio(alice);
     await holdMic(alice);
-    await openVoice(alice.page, peer.communityName, peer.voiceName);
+    await openVoiceOnly(alice.page, peer.communityName, peer);
     await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect.poll(() => micAsked(alice), { ...POLL, message: 'the start asked for the microphone' }).toBe(1);
     await panelMute(alice).click();

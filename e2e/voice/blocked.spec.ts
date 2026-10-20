@@ -14,7 +14,7 @@ import { expect, mediaWorkers, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
   POLL, VoicePeer, WAIT, callSlice, changedSeen, connected, copy, dock, framesPass, heard, heardCount, introduce, joinVoice, noiseOff,
-  onboard, openVoice, peerName, self, sentCount, stage, tile,
+  onboard, openVoiceOnly, peerName, self, sentCount, stage, tile,
 } from './support/voice';
 import { dmComposer, dmsNav, homeTile, openSettings } from '../web/support/app';
 
@@ -71,7 +71,7 @@ test('(a) a changed contact in the call group refuses the join before any call w
     await peer.rotateUmk();
     await changedSeen(alice.page, s.user_id);
     await peer.callJoin(call);
-    await openVoice(alice.page, peer.communityName, peer.voiceName);
+    await openVoiceOnly(alice.page, peer.communityName, peer);
     const aliceWrites = callWrites(alice.context);
     await stage(alice.page).getByRole('button', { name: copy('voice.join'), exact: true }).click();
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked', { timeout: WAIT });

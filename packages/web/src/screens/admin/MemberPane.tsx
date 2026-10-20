@@ -18,9 +18,6 @@ export interface MemberPaneProps {
   announce(text: string): void;
 }
 
-/** A presence section's own name: the copy reads 'online — {n}', and the list draws the count, so only the word is kept. */
-const sectionName = (key: 'layout.members.online' | 'layout.members.offline') => t(key, { n: '' }).replace(/\s*—\s*$/, '');
-
 export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const { communityId, selfId } = props;
   const communities = useSlice('communities');
@@ -77,7 +74,7 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   const groups: MemberListGroup[] = memberGroups(list, roleList, ownerId, selfId, presence ?? undefined).map(g => ({
     id: g.id,
     kind: g.role !== null ? 'role' as const : g.id === 'offline' ? 'offline' as const : 'online' as const,
-    title: g.role?.name ?? sectionName(g.id === 'offline' ? 'layout.members.offline' : 'layout.members.online'),
+    title: g.role?.name ?? t(g.id === 'offline' ? 'layout.members.offline' : 'layout.members.online'),
     color: g.role?.color ?? null,
     members: g.members.map(row => {
       const summary = byId.get(row.userId);

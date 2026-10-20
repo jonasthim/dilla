@@ -60,6 +60,12 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
     'layout.add.create',
     'home.tab',
   ];
+  it('the presence sections are bare words: the member list draws the count', () => {
+    const table = en as Readonly<Record<string, string>>;
+    expect(table['layout.members.online']).toBe('online');
+    expect(table['layout.members.offline']).toBe('offline');
+    expect(pairs.find(([key]) => key === 'layout.members.online')?.[1]).toBe('online');
+  });
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
     expect(LOWER.length).toBe(15);

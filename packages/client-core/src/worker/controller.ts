@@ -510,6 +510,7 @@ function invalid(command: Record<string, unknown>): string | null {
   }
   if (m === 'createChannel') {
     if (command.kind !== 'text' && command.kind !== 'voice' && command.kind !== 'announcement') return 'kind is not text, voice or announcement';
+    if (command.parentId !== undefined && !(typeof command.parentId === 'string' && ID.test(command.parentId))) return 'parentId is not 32 lowercase hex';
     const problem = blank(command.name) ? 'is blank' : nameProblem(command.name, CHANNEL_NAME_MAX_BYTES);
     if (problem !== null) return `name ${problem}`;
     if (command.private !== undefined) {
@@ -1013,7 +1014,7 @@ export class Controller {
       case 'joinCommunity': return this.joinCommunity(command.invite);
       case 'selectCommunity': return this.selectCommunity(command.communityId);
       case 'createCommunity': return this.createCommunity(command.name);
-      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce);
+      case 'createChannel': return this.createChannel(command.communityId, command.kind, command.name, command.private, command.announce, command.parentId);
       case 'createInvite': return this.createInvite(command.communityId, command.maxUses, command.ttlSeconds);
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'openChannel': return this.openChannel(command.channelId);
@@ -2206,7 +2207,7 @@ export class Controller {
    *  created before the answer, then the server's lists are read again; a text channel's group is registered by the
    *  first device that opens it (sync/channel.ts), a voice channel's call group at its first call. */
   private async createChannel(communityId: string, kind: NewChannelKind | 'announcement', channelName: string, priv?: { roleIds: string[] },
-    announce?: { roleIds: string[] }): Promise<{ channelId: string }> {
+    announce?: { roleIds: string[] }, parentId?: string): Promise<{ channelId: string }> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     // R42: the built-in AFK channel sits at 2^30; the next position is taken from the other channels.
     const afkId = this.slices.get(`afk:${communityId}`)?.channelId ?? null;
@@ -2219,14 +2220,15 @@ export class Controller {
     const routeKind: NewChannelKind = kind === 'announcement' ? 'text' : kind;
     const overwrites = kind === 'announcement' ? await this.rolesCtl.announcementOverwrites(communityId, announce?.roleIds ?? [])
       : priv === undefined ? undefined : await this.rolesCtl.privateOverwrites(communityId, priv.roleIds);
-    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position })
-      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, overwrites }));
+    const parent = parentId === undefined ? {} : { parentId: fromHex(parentId) };
+    const created = overwrites === undefined ? await this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, ...parent })
+      : await this.rolesCtl.guarded(communityId, () => this.routes.createChannel(fromHex(communityId), { kind: routeKind, name: channelName, position, ...parent, overwrites }));
     // A list read that began before this create answers without the channel: loadCommunity reads again (structureRev).
     this.structureRev.set(communityId, (this.structureRev.get(communityId) ?? 0) + 1);
     const channelId = toHex(created.id);
     if (this.storeCleared || !this.listed(communityId)) return { channelId };
     this.channels.set(channelId, { communityId, row: {
-      id: created.id, kind: kind === 'voice' ? 1 : 0, mode: created.mode, visibility: created.visibility, parentId: null,
+      id: created.id, kind: kind === 'voice' ? 1 : 0, mode: created.mode, visibility: created.visibility, parentId: parentId === undefined ? null : fromHex(parentId),
       name: channelName, topic: '', position, slowmode: 0, seq: 0n, textGroupId: null,
     } });
     this.publishChannels(communityId);

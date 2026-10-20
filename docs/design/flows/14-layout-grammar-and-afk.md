@@ -63,8 +63,8 @@
 `afk.moved.join='join'`
 `layout.dock.connected='voice connected'`
 `layout.dock.where='{channel} · {server}'`
-`layout.members.online='online — {n}'`
-`layout.members.offline='offline — {n}'`
+`layout.members.online='online'`
+`layout.members.offline='offline'`
 `layout.log.older='viewing older messages'`
 `layout.log.jump='jump to present'`
 `layout.log.today='today'`

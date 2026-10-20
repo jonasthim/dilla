@@ -5065,6 +5065,23 @@ describe('Controller create flow (createCommunity, createChannel, createInvite)'
     expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'text', name: 'next', position: 1 });
   });
 
+  it('createChannel with a parentId creates in that category in one request, with no follow-up move', async () => {
+    const w = world();
+    await toReady(w);
+    const parent = toHex(new Uint8Array(16).fill(0x71));
+    w.call(84, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'plans', parentId: parent });
+    await vi.waitFor(() => expect(w.ret(84)).toMatchObject({ ok: true }));
+    expect(w.routes.createChannel).toHaveBeenCalledWith(COMMUNITY, { kind: 'text', name: 'plans', position: 1, parentId: new Uint8Array(16).fill(0x71) });
+  });
+
+  it('createChannel refuses a parentId that is not 32 lowercase hex, and passes none when it is absent', async () => {
+    const w = world();
+    await toReady(w);
+    w.call(85, { m: 'createChannel', communityId: toHex(COMMUNITY), kind: 'text', name: 'x', parentId: 'nope' });
+    await vi.waitFor(() => expect(w.ret(85)).toMatchObject({ ok: false, error: { code: 'E_BAD_INPUT' } }));
+    expect(w.routes.createChannel).not.toHaveBeenCalled();
+  });
+
   it('a listed channel carries its slow mode into the channels slice, and a created one starts at 0', async () => {
     const w = world();
     w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '',

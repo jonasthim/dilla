@@ -12,7 +12,7 @@ export type Command =
   // v0.1.0-web3.1, ready only. Names are checked as the instance checks them: 1..255 UTF-8 bytes for a server, 1..100 for a
   // channel, no control character, not blank. createChannel adds a top-level channel the server cannot read.
   | { m: 'createCommunity'; name: string }                                              // → { communityId }; listed before the ret
-  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice' | 'announcement'; name: string;
+  | { m: 'createChannel'; communityId: string; kind: 'text' | 'voice' | 'announcement'; name: string; parentId?: string;
       private?: { roleIds: string[] }; announce?: { roleIds: string[] } }   // → { channelId }; listed before the ret
   | { m: 'createInvite'; communityId: string; maxUses: number; ttlSeconds: number }     // → InviteCreatedResult
   | { m: 'selectCommunity'; communityId: string }

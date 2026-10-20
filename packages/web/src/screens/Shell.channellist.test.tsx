@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import type { ChannelSummary } from '@dilla/client-core';
-import { A, BOB, BOB_DEV, callState, OWN_DEV, renderVoiceShell } from '../test/fake-client.ts';
+import { A, BOB, BOB_DEV, callState, OWN_DEV, refusal, renderVoiceShell } from '../test/fake-client.ts';
 import { ME } from '../test/fixtures.ts';
 
 // Web3.8 (WS5, item 12): one channel list. The voice channels stand in position among the text channels, with their people
@@ -154,9 +154,19 @@ describe('categories (web3.9)', () => {
     manage(app);
     await app.user.click(screen.getByRole('button', { name: 'new channel in raids' }));
     await app.user.type(await screen.findByRole('textbox', { name: 'Channel name' }), 'Bosses{Enter}');
-    await waitFor(() => expect(app.client.callsOf('updateChannel')).toHaveLength(1));
-    expect(app.client.callsOf('createChannel')).toHaveLength(1);
-    expect(app.client.callsOf('updateChannel')[0]).toMatchObject({ channelId: '77'.repeat(16), name: null, topic: null, parent: CA, slowmode: null });
+    await waitFor(() => expect(app.client.callsOf('createChannel')).toHaveLength(1));
+    expect(app.client.callsOf('createChannel')[0]).toMatchObject({ communityId: A, kind: 'text', name: 'bosses', parentId: CA });
+    expect(app.client.callsOf('updateChannel')).toHaveLength(0);
+  });
+
+  it('a refused create under a category shows the existing create error and keeps the dialog', async () => {
+    const app = mountCategories();
+    app.client.handler = c => (c.m === 'createChannel' ? Promise.reject(refusal({ code: 'E_NOT_FOUND', status: 404 })) : Promise.resolve(null));
+    manage(app);
+    await app.user.click(screen.getByRole('button', { name: 'new channel in raids' }));
+    await app.user.type(await screen.findByRole('textbox', { name: 'Channel name' }), 'Bosses{Enter}');
+    expect(await screen.findByRole('alert')).toHaveTextContent('E_NOT_FOUND');
+    expect(screen.getByRole('dialog', { name: /New channel/ })).toBeInTheDocument();
   });
 
   it('the new-channel "+" sits in the sidebar head with no categories, and moves to the category headers with them', async () => {

@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
 import {
-  VoicePeer, WAIT, audible, audioRunning, heard, joinVoice, keyPath, noiseOff, onboard, openVoice, self, snapshotDevices, tile, voiceRow,
+  VoicePeer, WAIT, audible, audioRunning, heard, joinVoice, keyPath, noiseOff, onboard, openVoiceOnly, self, snapshotDevices, tile, voiceRow,
 } from './support/voice';
 
 watchContexts(test);
@@ -52,7 +52,7 @@ test('two browsers join one voice channel, see each other ok and hear each other
     await noiseOff(bob.page);
 
     await joinVoice(alice.page, peer.communityName, peer.voiceName);
-    await openVoice(bob.page, peer.communityName, peer.voiceName);
+    await openVoiceOnly(bob.page, peer.communityName, peer);
     // Bob sees alice in voice from dillad's voice_state before he joins (the presence the UI shows, media card 23).
     await expect.poll(() => snapshotDevices(bob.page, s.voice_channel_id), { timeout: WAIT }).toEqual([a.device]);
     await watchTiles(alice.page);

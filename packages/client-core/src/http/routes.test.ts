@@ -215,6 +215,14 @@ const CASES: Case[] = [
     expected: { id: CHANNEL, mode: 0, visibility: 0 },
   },
   {
+    name: 'createChannel inside a category sends the category as parent_id',
+    call: (r) => r.createChannel(COMMUNITY, { kind: 'text', name: 'plans', position: 2, parentId: CHANNEL }),
+    method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/channels`, bucket: 'write', idempotent: false, auth: true,
+    sent: encode([0, 0, 0, CHANNEL, 'plans', '', 2, 0]),
+    reply: () => cborReply(201, [CHANNEL, 0, 0]),
+    expected: { id: CHANNEL, mode: 0, visibility: 0 },
+  },
+  {
     name: 'createChannel of a voice channel is kind 1 at its position',
     call: (r) => r.createChannel(COMMUNITY, { kind: 'voice', name: 'general', position: 1 }),
     method: 'POST', path: `/v1/communities/${hex(COMMUNITY)}/channels`, bucket: 'write', idempotent: false, auth: true,

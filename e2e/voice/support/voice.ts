@@ -315,6 +315,21 @@ export async function openVoice(page: Page, community: string, name: string): Pr
   await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
 }
 
+/** Opens a voice channel's stage by its route and does not join (web3.9, R-L1): a click on the row would join on a desktop. The
+ *  community comes from the rail tile, the channel from the native peer's setup. */
+export async function openVoiceOnly(page: Page, community: string, peer: VoicePeer): Promise<void> {
+  const voiceId = (peer.setupDone as { voice_channel_id?: string | null }).voice_channel_id;
+  if (typeof voiceId !== 'string') throw new Error('the peer set up no voice channel');
+  await railItem(page, community).click();
+  await expect(page).toHaveURL(/\/c\/[0-9a-f]{32}/, { timeout: WAIT });
+  const communityId = new URL(page.url()).pathname.split('/')[2] ?? '';
+  await page.evaluate(([c, v]) => {
+    window.history.pushState(null, '', `/c/${c}/${v}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, [communityId, voiceId]);
+  await expect(page.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
+}
+
 /** The voice dock (flow 06), present while this device is in voice. */
 export function dock(page: Page): Locator { return page.locator('.dw-voice-dock'); }
 /** The call stage or voice view of the open route. */

@@ -386,12 +386,13 @@ export class Routes {
     return { id: bin(a[0], 16), roleEveryone: bin(a[1], 16), policyVersion: u64(a[2]) };
   }
   /** POST /v1/communities/{id}/channels: [kind, mode, visibility, parent_id, name, topic, position, slowmode_seconds] for a
-   *  top-level channel in mode 0 (the server cannot read it) and visibility 0, with no topic and no slow mode. */
+   *  channel in mode 0 (the server cannot read it) and visibility 0, with no topic and no slow mode; top level, or inside the
+   *  category `parentId` (the server answers 404 for one the caller cannot view). */
   async createChannel(communityId: Uint8Array,
-    channel: { kind: NewChannelKind; name: string; position: number; overwrites?: readonly NewOverwrite[] }): Promise<ChannelCreated> {
+    channel: { kind: NewChannelKind; name: string; position: number; parentId?: Uint8Array; overwrites?: readonly NewOverwrite[] }): Promise<ChannelCreated> {
     const kind = channel.kind === 'text' ? 0 : channel.kind === 'voice' ? 1 : -1;
     if (kind < 0) throw new RangeError('E_ROUTE_INPUT: kind must be text or voice');
-    const fields: CborInput[] = [kind, 0, 0, null, checkedName('name', channel.name, CHANNEL_NAME_MAX_BYTES), '',
+    const fields: CborInput[] = [kind, 0, 0, channel.parentId === undefined ? null : inputId('parentId', channel.parentId), checkedName('name', channel.name, CHANNEL_NAME_MAX_BYTES), '',
       between('position', channel.position, 0, CHANNEL_POSITION_MAX), 0];
     const overwrites = channel.overwrites ?? [];
     if (overwrites.length > OVERWRITES_PER_CREATE_MAX) throw new RangeError('E_ROUTE_INPUT: overwrites must be at most ' + String(OVERWRITES_PER_CREATE_MAX));
