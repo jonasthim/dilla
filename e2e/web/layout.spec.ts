@@ -340,8 +340,9 @@ test('the layout grammar holds at 1440, 1024, 390 and 360', async ({ page, playw
       await page.setViewportSize({ width: size.width, height: size.height });
       await test.step(`desktop ${size.tag}`, async () => { await attempt(`desktop ${size.tag}`, () => desktopGrammar(page, size, serverPath, voicePath)); });
     }
-    await test.step('search is a modal that traps focus', async () => { await page.setViewportSize({ width: 1440, height: 900 }); await attempt('search', () => searchModal(page)); });
-    await test.step('a collapsed category keeps its current and unread rows', async () => { await attempt('collapsed category', () => collapsedCategory(page)); });
+    // Each opens the server itself: the desktop pass ends on a DM where no voice stage follows it (WebKit has no call).
+    await test.step('search is a modal that traps focus', async () => { await page.setViewportSize({ width: 1440, height: 900 }); await attempt('search', () => searchModal(page, serverPath)); });
+    await test.step('a collapsed category keeps its current and unread rows', async () => { await attempt('collapsed category', () => collapsedCategory(page, serverPath)); });
 
     lap('desktop and search and collapse done');
     // 4. Phone: a touch phone where the engine has one (Chromium, WebKit), Ada's second device; Firefox has no mobile emulation,
@@ -455,7 +456,8 @@ async function openPath(page: Page, path: string): Promise<void> {
 // ---------------------------------------------------------------------------------------------------
 // Search (controller addition, UI-5).
 
-async function searchModal(page: Page): Promise<void> {
+async function searchModal(page: Page, serverPath: string): Promise<void> {
+  await openPath(page, serverPath);
   await channelRow(page, 'general').click();
   const opener = channelRow(page, 'general');
   await opener.focus();
@@ -503,9 +505,9 @@ async function searchModal(page: Page): Promise<void> {
 // ---------------------------------------------------------------------------------------------------
 // Collapsed categories (R23).
 
-async function collapsedCategory(page: Page): Promise<void> {
+async function collapsedCategory(page: Page, serverPath: string): Promise<void> {
   const head = (name: string) => nav(page).locator('.d-channel-list__cat-head').filter({ hasText: name });
-  await openPath(page, new URL(page.url()).pathname);
+  await openPath(page, serverPath);
   await channelRow(page, 'general').click();
   // Collapse "planning": #news is read and not current, so it folds away; #raid has Mira's unread message, so it stays.
   await head(PLAN).click();
