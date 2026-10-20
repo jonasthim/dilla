@@ -82,6 +82,16 @@ function regionHome(): HTMLElement | null {
 }
 
 describe('Settings → Sign-in rows', () => {
+  it('gives the password, app, passkeys and backup codes groups h3 headings under the h2, each naming its group', async () => {
+    setup();
+    await screen.findByRole('heading', { level: 2, name: en['factorSettings.title'] });
+    for (const key of ['factorSettings.password', 'factorSettings.totp', 'factorSettings.passkeys', 'factorSettings.codes'] as const) {
+      expect(screen.getByRole('heading', { level: 3, name: en[key] })).toBeInTheDocument();
+      expect(screen.getByRole('group', { name: en[key] })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(4);
+  });
+
   it('lists the password, the app, each passkey and the backup codes, and refreshes the factors once', async () => {
     const { fake } = setup();
     expect(await screen.findByRole('heading', { level: 2, name: en['factorSettings.title'] })).toBeInTheDocument();

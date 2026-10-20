@@ -30,12 +30,12 @@ type Notice = 'expired' | 'again';
  * One factor as a settings row (I2): its name and detail on the left, its action in the 16rem control column. An unavailable action is
  * aria-disabled rather than disabled, so it stays reachable and its visible reason is its description.
  */
-function FactorLine({ id, title, detail, action, actionLabel, actionAriaLabel, disabledReason }: {
-  id: string; title: string; detail?: string; action?: () => void; actionLabel?: string; actionAriaLabel?: string; disabledReason?: string;
+function FactorLine({ id, title, heading, detail, action, actionLabel, actionAriaLabel, disabledReason }: {
+  id: string; title: string; heading?: boolean; detail?: string; action?: () => void; actionLabel?: string; actionAriaLabel?: string; disabledReason?: string;
 }): React.JSX.Element {
   const blocked = action !== undefined && disabledReason !== undefined;
   return (
-    <SettingsRow id={id} label={title} hint={detail}>
+    <SettingsRow id={id} label={title} hint={detail} headingLevel={heading ? 3 : undefined}>
       {action && actionLabel ? (
         <>
           <Button aria-label={actionAriaLabel} aria-disabled={blocked ? 'true' : undefined}
@@ -210,13 +210,13 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
       {factors === undefined ? (loadError === null ? <p aria-busy="true">{t('factorSettings.loading')}</p> : null) : (
         <>
           <p>{t('factorSettings.body', { instance })}</p>
-          <FactorLine id="signin-password" title={t('factorSettings.password')}
+          <FactorLine id="signin-password" heading title={t('factorSettings.password')}
             detail={t(factors.hasPassword ? 'factorSettings.password.set' : 'factorSettings.password.none')} />
           {factors.totp === null ? (
-            <FactorLine id="signin-totp" title={t('factorSettings.totp')} detail={t('factorSettings.totp.off')}
+            <FactorLine id="signin-totp" heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.off')}
               action={() => { begin({ kind: 'totp' }); }} actionLabel={t('factorSettings.totp.add')} />
           ) : (
-            <FactorLine id="signin-totp" title={t('factorSettings.totp')} detail={t('factorSettings.totp.on', { date: formatDay(factors.totp.confirmedAt) })}
+            <FactorLine id="signin-totp" heading title={t('factorSettings.totp')} detail={t('factorSettings.totp.on', { date: formatDay(factors.totp.confirmedAt) })}
               action={() => { begin({ kind: 'remove', which: 'totp', credId: null, name: '' }); }}
               actionLabel={t('factorSettings.totp.remove')} actionAriaLabel={t('factorSettings.totp.removeLabel')} disabledReason={only} />
           )}
@@ -229,9 +229,9 @@ export function SignInFactors({ announce, live }: { announce: (text: string) => 
               actionLabel={t('factorSettings.passkeys.remove')} actionAriaLabel={t('factorSettings.passkeys.removeLabel', { name: k.name })}
               disabledReason={only} />
           ))}
-          <FactorLine id={PASSKEYS_ID} title={t('factorSettings.passkeys')} detail={passkeys.length === 0 ? t('factorSettings.passkeys.none') : undefined}
+          <FactorLine id={PASSKEYS_ID} heading title={t('factorSettings.passkeys')} detail={passkeys.length === 0 ? t('factorSettings.passkeys.none') : undefined}
             action={addPasskey} actionLabel={t('factorSettings.passkeys.add')} />
-          <FactorLine id="signin-codes" title={t('factorSettings.codes')}
+          <FactorLine id="signin-codes" heading title={t('factorSettings.codes')}
             detail={factors.backupCodesLeft === 0 ? t('factorSettings.codes.none') : factors.backupCodesLeft === 1
               ? t('factorSettings.codes.one') : t('factorSettings.codes.other', { count: factors.backupCodesLeft })}
             action={askCodes} actionLabel={t('factorSettings.codes.make')} />
