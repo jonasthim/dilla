@@ -1104,7 +1104,7 @@ describe('the stage has one tile per source (web3.8 WS7)', () => {
   const li = (id: string) => document.querySelector<HTMLElement>(`li.d-call-stage__tile[data-tile-id="${id}"]`)!;
   const focusedIds = () => [...document.querySelectorAll<HTMLElement>('li.d-call-stage__tile[data-focused="true"]')].map(e => e.dataset.tileId);
   const tile = (deviceId: string, userId: string, video: MediaStream | null, screen: MediaStream | null) =>
-    ({ deviceId, userId, state: 'ok' as const, speaking: false, video, screen });
+    ({ deviceId, userId, state: 'ok' as const, speaking: false, video, screen, screenAudio: false });
 
   it('a participant with a camera and a screen gives two tiles, "bob" and "bob’s screen", with no inset', async () => {
     const app = await inVoice({ voice: room(0) });
@@ -1294,7 +1294,7 @@ describe('the voice stage header (web3.9)', () => {
 // ring on the list row and on the tile and nothing else.
 describe('WEB-DOCK: the voice dock as Discord\'s, and speaking as a ring', () => {
   const dockEl = () => document.querySelector<HTMLElement>('.dw-voice-dock')!;
-  const remote = (speaking: boolean) => [{ deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking, video: null, screen: null }];
+  const remote = (speaking: boolean) => [{ deviceId: BOB_DEV, userId: BOB, state: 'ok' as const, speaking, video: null, screen: null, screenAudio: false }];
 
   it('has no meter, no level text and no line, and keeps the dock to its two lines and three buttons', async () => {
     const app = await inVoice({ settings: { 'voice.mode': 'ptt', 'voice.pttKey': 'Pause' } });

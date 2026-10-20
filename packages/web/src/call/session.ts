@@ -13,7 +13,7 @@ import {
   screenAudioOptions, SpeakerPolicy, VoiceGate, type CallCaps, type CallSession, type JoinCallOptions, type NoisePreference, type ProcessorStatus,
 } from '@dilla/media';
 import { reportProcessorStatus } from './processor-status.ts';
-import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia } from './devices.ts';
+import { acquireCamera, acquireMic, acquireScreen, type CaptureMedia, type DisplayMedia, type ScreenCapture, type ShareAudioKind } from './devices.ts';
 import { createKeyRelay, toEpochKeys } from './keys.ts';
 import {
   analyserMeter, LEVEL_PUBLISH_MS, SPEAK_TICK_MS, SpeakingDetector, type LevelMeter,
@@ -34,6 +34,9 @@ export interface PageCallTile {
   /** Only for an 'ok' tile and never while paused: unverified media is never shown. */
   video: MediaStream | null;
   screen: MediaStream | null;
+  /** #37: this device has a screen_share_audio publication (subscribed or not). Only for an 'ok' tile and never while
+   *  paused, as `screen`; false otherwise. It is about the stream, not the viewer's deafen or volume. */
+  screenAudio: boolean;
 }
 export interface PageCallState {
   phase: 'connecting' | 'connected' | 'reconnecting' | 'ended';
@@ -59,6 +62,9 @@ export interface PageCallState {
    *  (never a received stream), null while not sent. */
   localCamera: MediaStream | null;
   localScreen: MediaStream | null;
+  /** #37: the sound this device's share carries: a tab's, the system's, or none (the browser gave no audio, or the grant
+   *  did not allow it). null while not sharing. */
+  shareAudio: ShareAudioKind | null;
   /** Product walk M1: noise suppression in force; it follows Settings → Voice during the call. */
   noise: NoisePreference | 'on';
   /** web3.3: the browser holds call audio back (livekit’s canPlaybackAudio is false) until startAudio() is pressed. */
@@ -249,6 +255,8 @@ const EV = {
   participantDisconnected: 'participantDisconnected',
   trackSubscribed: 'trackSubscribed',
   trackUnsubscribed: 'trackUnsubscribed',
+  trackPublished: 'trackPublished',
+  trackUnpublished: 'trackUnpublished',
   activeSpeakers: 'activeSpeakersChanged',
   reconnecting: 'reconnecting',
   reconnected: 'reconnected',
@@ -542,7 +550,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let state: PageCallState = {
       phase: 'connecting', camera: false, sharing: false, paused: false,
       mic: 'ok', tiles: [], level: 0, error: null, mode: opts.mode, speaking: false, localCamera: null, localScreen: null,
-      noise: opts.noise, muted: listenOnly || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
+      shareAudio: null, noise: opts.noise, muted: listenOnly || opts.self === 'muted' || opts.self === 'deafened', deafened: opts.self === 'deafened',
       audioBlocked: false, audio: { attached: 0, expected: 0 }, listenOnly,
     };
     const viewOf = deps.viewOf ?? ((track: MediaStreamTrack) => (typeof MediaStream === 'undefined' ? null : new MediaStream([track])));
@@ -621,11 +629,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const show = tileState === 'ok' && !state.paused;
         const speaking = !state.paused && (remoteLocal(p.identity) ?? p.isSpeaking === true);
         out.push({ deviceId: p.identity, userId: r?.userId ?? '', state: tileState, speaking,
-          video: show ? streamOf(p, SOURCE.camera) : null, screen: show ? streamOf(p, SOURCE.screen) : null });
+          video: show ? streamOf(p, SOURCE.camera) : null, screen: show ? streamOf(p, SOURCE.screen) : null,
+          screenAudio: show && p.getTrackPublication(SOURCE.screenAudio) !== undefined });
       }
       for (const [deviceId, r] of roster) {
         if (r.leaf === selfLeaf || deviceId === local.identity || inRoom.has(deviceId)) continue;
-        out.push({ deviceId, userId: r.userId, state: 'connecting', speaking: false, video: null, screen: null });
+        out.push({ deviceId, userId: r.userId, state: 'connecting', speaking: false, video: null, screen: null, screenAudio: false });
       }
       return out;
     };
@@ -1015,7 +1024,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const s = screen;
       if (s === null) return;
       screen = null;
-      set({ sharing: false, localScreen: null });
+      set({ sharing: false, localScreen: null, shareAudio: null });
       s.video.removeEventListener('ended', s.onEnded);
       await local.unpublishTrack(s.video).catch(() => undefined);
       if (s.audio) await local.unpublishTrack(s.audio).catch(() => undefined);
@@ -1072,7 +1081,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       const getDisplayMedia = deps.media.getDisplayMedia?.bind(deps.media);
       if (!getDisplayMedia) throw new PageCallError('E_UNAVAILABLE');
       await ensureShare('screen');
-      let tracks: { video: MediaStreamTrack; audio: MediaStreamTrack | null };
+      let tracks: ScreenCapture;
       try {
         usable();
         tracks = await acquireScreen({ getDisplayMedia });
@@ -1080,11 +1089,15 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         await shareOffIfIdle();
         throw pageCallError(err);
       }
+      // #37: the sound the share carries, as published: none when the browser gave no audio or the grant did not allow it.
+      let shareAudio: ShareAudioKind = 'none';
       try {
         usable();
         await local.publishTrack(tracks.video, { source: SOURCE.screen });
-        if (tracks.audio !== null && permitted('screenAudio')) await local.publishTrack(tracks.audio, screenAudioOptions(caps));
-        else tracks.audio?.stop();
+        if (tracks.audio !== null && permitted('screenAudio')) {
+          await local.publishTrack(tracks.audio, screenAudioOptions(caps));
+          shareAudio = tracks.audioKind;
+        } else tracks.audio?.stop();
       } catch (err) {
         await local.unpublishTrack(tracks.video).catch(() => undefined);
         tracks.video.stop();
@@ -1104,8 +1117,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       // The browser’s own "stop sharing" ends the video track.
       const onEnded = (): void => { void setSharing(false).catch(() => undefined); };
       tracks.video.addEventListener('ended', onEnded);
-      screen = { ...tracks, onEnded };
-      set({ sharing: true, localScreen: viewOf(tracks.video) });
+      screen = { video: tracks.video, audio: tracks.audio, onEnded };
+      set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio });
     });
 
     // ---- self flags, sent only after callJoin (the PageCall exists only once it answered)
@@ -1181,9 +1194,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (!ended) onPeople();
     };
     const onPlayback = (): void => { if (!ended) set({ audioBlocked: playbackBlocked() }); };
+    // #37: a publication not subscribed yet (or gone) still turns a tile's screenAudio mark at once. Nothing is attached here.
+    const onPublications = (): void => refresh();
     const roomListeners: Array<[string, AnyListener]> = [
       [EV.participantConnected, onPeople], [EV.participantDisconnected, onLeft], [EV.trackSubscribed, onSubscribed],
       [EV.trackUnsubscribed, onUnsubscribed], [EV.activeSpeakers, onSpeakers], [EV.audioPlayback, onPlayback],
+      [EV.trackPublished, onPublications], [EV.trackUnpublished, onPublications],
     ];
     for (const [e, f] of roomListeners) events.on(e, f);
     ctx?.addEventListener('statechange', onPlayback);
@@ -1241,7 +1257,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
         const posted = post(reason);
         leaving = releaseAll().then(() => posted);
       }
-      set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0, speaking: false, localCamera: null, localScreen: null });
+      set({ phase: 'ended', camera: false, sharing: false, tiles: [], level: 0, speaking: false, localCamera: null, localScreen: null,
+        shareAudio: null });
       return leaving;
     };
 
