@@ -281,6 +281,29 @@ describe('CallStage', () => {
       expect(request).toHaveBeenCalledTimes(1);
     });
 
+    it('web3.8 FX m8: an avatar-only tile has no full-screen button and no double-click full screen; a tile with media has', async () => {
+      const request = vi.fn(() => Promise.resolve());
+      Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: request });
+      setFullscreen(true);
+      render(<CallStage {...base} tiles={[src('ada', 'camera', sA), src('bo', 'camera', null), src('cy', 'avatar', null)]}
+        focusedId={null} onFocus={() => {}} />);
+      expect(screen.getByRole('button', { name: 'full screen ada' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'full screen bo' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'full screen cy' })).toBeNull();
+      await userEvent.dblClick(focusBtn('bo'));
+      await userEvent.dblClick(focusBtn('cy'));
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('web3.8 FX: the stage list says when it holds more than two tiles (the phone lays those out in two columns)', () => {
+      const { container, rerender } = render(<CallStage {...base} tiles={[src('ada', 'camera', sA), src('bo', 'avatar', null)]}
+        focusedId={null} onFocus={() => {}} />);
+      expect(container.querySelector('ul')).not.toHaveAttribute('data-many');
+      rerender(<CallStage {...base} tiles={[src('ada', 'camera', sA), src('bo', 'avatar', null), src('cy', 'avatar', null)]}
+        focusedId={null} onFocus={() => {}} />);
+      expect(container.querySelector('ul')).toHaveAttribute('data-many', 'true');
+    });
+
     it('there is no full-screen button when the document cannot do full screen', () => {
       setFullscreen(false);
       render(<Harness />);

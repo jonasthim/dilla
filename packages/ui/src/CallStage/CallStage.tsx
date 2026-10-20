@@ -177,6 +177,7 @@ export function CallStage({ title, tiles: allTiles, focusedId = null, onFocus, c
         notice === null ? <p className="d-call-stage__empty">{labels.empty}</p> : null
       ) : (
         <ul ref={tilesRef} role="list" aria-label={labels.tiles} className="d-call-stage__tiles" data-tiles={stageMode ? 'stage' : undefined}
+          data-many={tiles.length > 2 ? 'true' : undefined}
           style={focusedLayout ? { '--d-strip-n': Math.max(1, tiles.length - 1) } as React.CSSProperties : undefined}>
           {tiles.map(t => {
             const id = idOf(t);

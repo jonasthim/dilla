@@ -50,7 +50,6 @@
 .d-call-tile__volume input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 0.75rem; height: 1rem; margin-top: -0.375rem; background: var(--fg); border: 1px solid var(--bg); border-radius: 0; }
 .d-call-tile__volume input::-moz-range-thumb { width: 0.75rem; height: 1rem; background: var(--fg); border: 1px solid var(--bg); border-radius: 0; }
 .d-call-tile__volume input:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
-@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) { .d-call-tile__volume input { min-height: 2.75rem; } .d-call-tile .d-call-tile__fullscreen { width: 2.75rem; height: 2.75rem; } }
 
 /* On the stage (U4, `data-stage`): the tile fills its 16:9 li. The focus button covers the media; the caption sits over its
    top left, the full-screen button over its top right and the volume over its bottom, all as siblings of the focus button
@@ -82,3 +81,17 @@
 }
 /* The range keeps its accessible name from the label; on the stage the label is not drawn. */
 .d-call-tile[data-stage] .d-call-tile__volume-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* The phone (flow 06): 44 px targets. web3.8 FX: the stage tile is a column in normal flow, so nothing covers the face: the media or the avatar (16:9), then
+   the caption, then the volume under it. The full-screen button (media tiles only) stays over the media's top right. */
+@media (max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem) {
+  .d-call-tile__volume input { min-height: 2.75rem; }
+  .d-call-tile .d-call-tile__fullscreen { width: 2.75rem; height: 2.75rem; }
+  .d-call-tile[data-stage] { display: flex; flex-direction: column; justify-content: flex-start; height: 100%; }
+  .d-call-tile[data-stage] .d-call-tile__focus { position: relative; inset: auto; display: flex; flex-direction: column; height: auto; }
+  .d-call-tile[data-stage] .d-call-tile__media, .d-call-tile[data-stage] .d-call-tile__avatar { position: relative; inset: auto; width: 100%; aspect-ratio: 16 / 9; }
+  .d-call-tile[data-stage] .d-call-tile__caption {
+    position: static; max-width: 100%; padding: 0.375rem 0.5rem 0.25rem; background: none; border-radius: 0;
+  }
+  .d-call-tile[data-stage] .d-call-tile__volume { position: static; width: auto; padding: 0 0.5rem 0.25rem; background: none; border-radius: 0; }
+}

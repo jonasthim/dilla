@@ -62,10 +62,16 @@
     align-content: start; overflow-x: hidden; overflow-y: auto;
   }
   .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"]::before { display: none; }
+  /* web3.8 FX: a phone tile is as tall as what it holds (its 16:9 media or avatar, the caption, the volume under it). */
   .d-call-stage__tile[data-stage], .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage],
   .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] {
-    grid-row: auto; grid-column: auto; position: relative; width: 100%; height: auto; aspect-ratio: 16 / 9; max-width: 100%;
+    grid-row: auto; grid-column: auto; position: relative; width: 100%; height: auto; aspect-ratio: auto; max-width: 100%;
   }
-  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] { order: -1; }
+  /* web3.8 FX: up to two tiles fill the width one under the other; three or more go in two columns, a focused one first
+     and across both. */
+  .d-call-stage .d-call-stage__tiles[data-tiles="stage"][data-many], .d-call-stage[data-focused-stage] .d-call-stage__tiles[data-tiles="stage"][data-many] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="true"] { order: -1; grid-column: 1 / -1; }
   .d-call-stage[data-focused-stage] .d-call-stage__tile[data-stage][data-focused="false"] .d-call-tile__volume { display: grid; }
 }

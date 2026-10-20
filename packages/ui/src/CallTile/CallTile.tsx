@@ -134,7 +134,8 @@ export function CallTile({ view, own, volume, media, mirror = false, labels, onV
   const isScreen = source === 'screen';
   const showMedia = media !== null && view.state !== 'unverified' && source !== 'avatar';
   const words = isScreen ? [] : voiceStateWords(view, labels.state);
-  const canFullscreen = fullscreenLabel !== undefined && document.fullscreenEnabled === true;
+  // web3.8 FX m8: full screen only for a tile that shows media (never an avatar), and only where the document can do it.
+  const canFullscreen = fullscreenLabel !== undefined && showMedia && document.fullscreenEnabled === true;
   const toggleFullscreen = () => {
     const li = liRef.current;
     if (!li) return;

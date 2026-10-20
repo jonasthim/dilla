@@ -96,26 +96,14 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
   .dw-dm-call[data-view="messages"] { flex: 0 0 auto; }
   .dw-dm-call[data-view="messages"] .dw-voice-stage { display: none; }
   /* Compact tiles keep the call controls in reach at 360 (review m10); the pause action is a 44 px target (I4). */
-  .dw-voice-stage .d-call-stage__tiles { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
-  .dw-voice-stage .d-call-tile { min-height: 0; padding: 0.5rem; }
+  /* web3.8 FX: only the DM call's compact grid; the voice stage (data-tiles="stage") lays out its own phone tiles. */
+  .dw-voice-stage .d-call-stage__tiles:not([data-tiles="stage"]) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
+  .dw-voice-stage .d-call-tile:not([data-stage]) { min-height: 0; padding: 0.5rem; }
   /* Product walk I5: at 360 the stage is in normal flow, its controls under the tiles; nothing floats over a tile. */
   .dw-voice-stage .d-call-stage__controls { position: static; padding-block: 0.5rem; }
   .dw-dm-call .d-call-stage__controls { position: static; }
   .dw-voice-dock__paused .d-btn, .dw-voice-dock__audio .d-btn { min-height: 2.75rem; }
   .dw-voice-dock__mode .d-btn { min-height: 2.75rem; }
-  /* The desktop's narrow sidebar scrolls as one column (a phone shows one pane at a time, so these do not apply to it): the
-     list and the dock stack instead of overlapping. Product walk I4: the dock is pinned to the bottom of that column, so its
-     controls stay on screen while a text channel is read; it is compact there (where and meter on one line, the five
-     controls on the next, in one row: the voice toolbar's own flex layout, with leave set apart; review round 1 of the voice
-     icons, #1). */
-  .d-app-shell:not([data-layout="phone"]) .dw-sidebar { height: auto; }
-  .d-app-shell:not([data-layout="phone"]) .dw-sidebar > .d-channel-list { flex: none; height: auto; }
-  .d-app-shell:not([data-layout="phone"]) .dw-sidebar > .dw-voice-dock { position: sticky; bottom: 0; z-index: 1; border-top: 1px solid var(--hairline); }
-  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.375rem 0.75rem; padding: 0.5rem; border-radius: 0; }
-  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__where { align-self: center; }
-  /* With no meter beside it, the status takes the whole row; a name too long for it still ends in an ellipsis. */
-  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__where:not(:has(+ .d-voice-dock__meter)) { grid-column: 1 / -1; }
-  .d-app-shell:not([data-layout="phone"]) .dw-sidebar .d-voice-dock__controls { grid-column: 1 / -1; }
 }
 /* web3.8 (R9, pre-flight C-7): the container rules above cannot see the viewport, and a landscape phone's shell is wide, so each
    phone rule has a twin keyed on the shell's own data-layout, with identical declarations; layout.test.ts pins the pairs. */
@@ -128,8 +116,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 [data-layout="phone"] .d-app-shell__main:has(.dw-dm-call[data-view="stage"]) .d-composer { display: none; }
 [data-layout="phone"] .dw-dm-call[data-view="messages"] { flex: 0 0 auto; }
 [data-layout="phone"] .dw-dm-call[data-view="messages"] .dw-voice-stage { display: none; }
-[data-layout="phone"] .dw-voice-stage .d-call-stage__tiles { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
-[data-layout="phone"] .dw-voice-stage .d-call-tile { min-height: 0; padding: 0.5rem; }
+[data-layout="phone"] .dw-voice-stage .d-call-stage__tiles:not([data-tiles="stage"]) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 9rem), 1fr)); }
+[data-layout="phone"] .dw-voice-stage .d-call-tile:not([data-stage]) { min-height: 0; padding: 0.5rem; }
 [data-layout="phone"] .dw-voice-stage .d-call-stage__controls { position: static; padding-block: 0.5rem; }
 [data-layout="phone"] .dw-dm-call .d-call-stage__controls { position: static; }
 [data-layout="phone"] .dw-voice-dock__paused .d-btn, [data-layout="phone"] .dw-voice-dock__audio .d-btn { min-height: 2.75rem; }
