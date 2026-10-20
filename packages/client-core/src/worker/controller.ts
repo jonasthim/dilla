@@ -478,6 +478,9 @@ export const RESIGN_LEAVE_MS = 2_000;
 export const VOICE_LOOKUPS_MAX = 256;
 /** web3.8 VM: how often per join of a call the own voice_self is sent again while the instance's voice_state lacks it. */
 export const VOICE_SELF_RESENDS = 3;
+/** web3.8 MUTE: how often a voice_self made while offline is sent by the reconnect itself (its own budget, apart from
+ *  VOICE_SELF_RESENDS). */
+export const VOICE_SELF_RECONNECT_SENDS = 1;
 const statsField = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= STATS_MAX;
 /** L-TS-53: six non-negative integers of at most 1,048,576; relayProtocol (element 1) may be null. */
 const validReport = (r: unknown): boolean => Array.isArray(r) && r.length === 6
@@ -799,6 +802,8 @@ export class Controller {
   private readonly ownInCall = new Set<string>();
   /** web3.8 VM: the re-sends of the own voice_self left in this join of the call (VOICE_SELF_RESENDS). */
   private selfResends: { callId: string; left: number } | null = null;
+  /** web3.8 MUTE: a voice_self the page made while offline, still owed to the instance: the reconnect sends it. */
+  private selfOffline: { callId: string; left: number } | null = null;
 
   constructor(private readonly deps: ControllerDeps) {
     this.parts = { ...REAL_PARTS, ...deps.parts };
@@ -842,6 +847,7 @@ export class Controller {
       callEnded: (call) => {
         if (this.lastVoiceSelf?.callId === call) this.lastVoiceSelf = null;
         if (this.selfResends?.callId === call) this.selfResends = null;
+        if (this.selfOffline?.callId === call) this.selfOffline = null;
         this.ownInCall.delete(call);
       },
       onCommitted: (g, result) => { this.onGroupChanged(g, result); },
@@ -1508,6 +1514,7 @@ export class Controller {
         ? { status, generation, reason: 'version' }
         : { status, generation };
       this.slices.set('connection', this.connectionState);
+      if (status === 'online') this.safely(() => { this.sendOfflineSelf(); });
       if (status === 'offline') for (const community of this.slices.get('communities') ?? []) {
         this.clearPresence(community.id);
         this.clearAFK(community.id);
@@ -3146,7 +3153,7 @@ export class Controller {
     this.slices.set('sendBlocks', {});
     this.slices.set('search', { requestId: 0, hits: [], cursor: null });
     this.calls.reset();
-    this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null;
+    this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null; this.selfOffline = null;
     this.setConnection({ status: 'offline', generation: null });
   }
 
@@ -3812,9 +3819,25 @@ export class Controller {
     // web3.8 MUTE: kept before the online check, so a mute made while offline is sent again once the own voice_state
     // after the reconnect lacks it (the re-send rule below), and the others never keep "unmuted" for a muted session.
     this.lastVoiceSelf = { callId, flags: flags as 0 | 1 | 2 | 3 };
-    if (this.connectionState.status !== 'online') throw new Refusal('E_NOT_READY', '');
+    if (this.connectionState.status !== 'online') {
+      // Owed to the instance: the reconnect sends it itself, whether or not an own voice_state follows.
+      this.selfOffline = { callId, left: VOICE_SELF_RECONNECT_SENDS };
+      throw new Refusal('E_NOT_READY', '');
+    }
+    this.selfOffline = null;
     this.gateway?.sendVoiceSelf(fromHex(callId), flags as 0 | 1 | 2 | 3);
     return Promise.resolve(null);
+  }
+
+  /** web3.8 MUTE: the reconnect sends a voice_self made while offline (the last one, for a call that has not ended), at most
+   *  VOICE_SELF_RECONNECT_SENDS times; the own voice_state re-send rule below keeps its own budget. */
+  private sendOfflineSelf(): void {
+    const owed = this.selfOffline;
+    const last = this.lastVoiceSelf;
+    if (owed === null || last === null || last.callId !== owed.callId || owed.left <= 0) { this.selfOffline = null; return; }
+    owed.left -= 1;
+    if (owed.left <= 0) this.selfOffline = null;
+    this.gateway?.sendVoiceSelf(fromHex(last.callId), last.flags);
   }
 
   /** Task 3 review (controller ruling): the instance keeps a device's own mute and deafen flags only once the device is in

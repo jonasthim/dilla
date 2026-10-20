@@ -1406,7 +1406,12 @@ describe('the product walk fixes', () => {
     const fresh={enabled:true,stop:vi.fn(),getSettings:()=>({noiseSuppression:false}),getConstraints:()=>({}),applyConstraints:async()=>{}} as unknown as MediaStreamTrack;
     mic.restartTrack=vi.fn(async()=>{mic.mediaStreamTrack=fresh;});
     await call.setNoise('off');
+    // web3.8 MUTE (R2): push to talk with the key up must not send, so the reopen waits for the key.
+    expect(mic.restartTrack).not.toHaveBeenCalled();
+    call.pushToTalk(true);
+    await flush();
     expect(mic.restartTrack).toHaveBeenCalledWith(expect.objectContaining({noiseSuppression:false,echoCancellation:true,autoGainControl:true}));
+    call.pushToTalk(false);
     expect(fresh.enabled).toBe(false);
   });
 
@@ -1546,7 +1551,45 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     expect(f.localTracks[0].muted).toBe(true);
   });
 
-  it('a mute pressed during the publish closes the published track before the noise processor loads', async () => {
+  /** The page's side of watchSelf: `press` sets what selfNow answers and pushes it to the starting session at once. */
+  const pressing = () => {
+    const page = { kept: null as 'muted' | 'deafened' | null, apply: null as (() => void) | null, registered: 0, unregistered: 0 };
+    const o: Partial<PageCallOptions> = {
+      selfNow: () => page.kept,
+      watchSelf: (apply) => { page.apply = apply; page.registered += 1; return () => { page.apply = null; page.unregistered += 1; }; },
+    };
+    const press = (v: 'muted' | 'deafened') => { page.kept = v; page.apply?.(); };
+    return { page, o, press };
+  };
+
+  it('a mute pressed during the publish closes the microphone at the press, and LiveKit cannot open it again', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const mic = micStream();
+    f.deps.media.getUserMedia = vi.fn(async () => mic.stream);
+    const publish = deferred<void>();
+    const seen = watch(f, { publish: publish.promise });
+    const { page, o, press } = pressing();
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', ...o });
+    await flush();
+    // The track went to the publish open: the person had not pressed anything yet.
+    expect(seen).toMatchObject({ publishing: true, enabled: true });
+    expect(page.registered).toBe(1);
+    press('muted');
+    // At the press, with the publish still pending: closed now, not at the next step of the start.
+    expect(mic.track.enabled).toBe(false);
+    // As LiveKit's LocalTrack does while it publishes: it enables the track it was handed.
+    (mic.track as { enabled: boolean }).enabled = true;
+    expect(mic.track.enabled).toBe(false);
+    publish.resolve();
+    const call = await started;
+    open.push(call);
+    expect(seen.mutedAtNoise).toBe(true);
+    expect(call.state).toMatchObject({ muted: true });
+    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+  });
+
+  it('without watchSelf, a mute pressed during the publish is read when the publish returns, before the noise processor loads', async () => {
     const f = fakes();
     f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
     const publish = deferred<void>();
@@ -1554,7 +1597,6 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     let kept: 'muted' | 'deafened' | null = null;
     const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', selfNow: () => kept });
     await flush();
-    // The track went to the publish open: the person had not pressed anything yet.
     expect(seen).toMatchObject({ publishing: true, enabled: true });
     kept = 'muted';
     publish.resolve();
@@ -1562,26 +1604,72 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     open.push(call);
     expect(seen.mutedAtNoise).toBe(true);
     expect(call.state).toMatchObject({ muted: true });
-    expect(f.localTracks[0].muted).toBe(true);
-    expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
   });
 
-  it('a mute pressed while the noise processor loads closes the microphone before the start resolves', async () => {
+  it('a mute pressed while the noise processor loads closes the microphone at the press, LiveKit mute included', async () => {
     const f = fakes();
     f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const mic = micStream();
+    f.deps.media.getUserMedia = vi.fn(async () => mic.stream);
     const noise = deferred<void>();
     const seen = watch(f, { noise: noise.promise });
-    let kept: 'muted' | 'deafened' | null = null;
-    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', selfNow: () => kept });
+    const { page, o, press } = pressing();
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', ...o });
     await flush();
     expect(seen.mutedAtNoise).toBe(false);
-    kept = 'muted';
+    expect(f.localTracks[0].muted).toBe(false);
+    press('muted');
+    // Still loading the processor: the published track is LiveKit-muted and the capture disabled already.
+    expect(f.localTracks[0].muted).toBe(true);
+    expect(mic.track.enabled).toBe(false);
     noise.resolve();
     const call = await started;
     open.push(call);
     expect(call.state).toMatchObject({ muted: true });
-    expect(f.localTracks[0].muted).toBe(true);
     expect(f.calls).toContainEqual({ m: 'voiceSelf', callId, flags: 1 });
+    // Connected: the start no longer listens; the page's attach reconcile and the session's own toggles take over.
+    expect(page.unregistered).toBe(1);
+    expect(page.apply).toBeNull();
+  });
+
+  it('a deafen pressed while the noise processor loads closes the microphone at the press, and an undeafen keeps it muted', async () => {
+    const f = fakes();
+    f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    const noise = deferred<void>();
+    watch(f, { noise: noise.promise });
+    const { o, press } = pressing();
+    const started = startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', ...o });
+    await flush();
+    press('deafened');
+    expect(f.localTracks[0].muted).toBe(true);
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true, deafened: true });
+    call.setDeafened(false);
+    expect(call.state).toMatchObject({ muted: true, deafened: false });
+  });
+
+  it('a press after a failed start, and an unmute pushed during the start, change nothing', async () => {
+    const f = fakes({ joinCallError: new Error('E_SFU') });
+    const { page, o, press } = pressing();
+    await expect(startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, ...o })).rejects.toBeTruthy();
+    expect(page.unregistered).toBe(page.registered);
+    press('muted');
+    const g = fakes();
+    const noise = deferred<void>();
+    g.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
+    watch(g, { noise: noise.promise });
+    const p2 = pressing();
+    const started = startPageCall(g.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'on', self: 'muted', ...p2.o });
+    await flush();
+    p2.page.kept = null;
+    p2.page.apply?.();
+    noise.resolve();
+    const call = await started;
+    open.push(call);
+    expect(call.state).toMatchObject({ muted: true });
+    expect(g.localTracks[0].muted).toBe(true);
   });
 
   it('a deafen pressed during the join, then an undeafen, leaves the microphone muted', async () => {
@@ -1603,7 +1691,7 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     expect(f.localTracks[0].muted).toBe(true);
   });
 
-  it('a deafen pressed while the noise processor loads, then an undeafen, leaves the microphone muted', async () => {
+  it('without watchSelf, a deafen while the noise processor loads is read at connected, and an undeafen leaves the microphone muted', async () => {
     const f = fakes();
     f.deps.createNoiseProcessor = () => ({ setPttActive: vi.fn() });
     const noise = deferred<void>();
@@ -1709,6 +1797,56 @@ describe('web3.8 MUTE: a mute pressed while the start runs is in force from the 
     open.push(vad);
     expect(open2.during).toBe(true);
     expect((g.room.localParticipant.publishTrack.mock.calls[0][0] as unknown as { enabled?: boolean }).enabled).toBe(true);
+  });
+
+  /** A published microphone whose capture cannot switch noise suppression live (the settings keep saying `on`), so the
+   *  browser path reopens it with restartTrack; the reopened track is `fresh`, a MediaStreamTrack-like object whose
+   *  `enabled` lives on its prototype, as a real track's does. */
+  const reopening = (f: ReturnType<typeof fakes>) => {
+    const fresh = Object.assign(Object.create({ enabled: true }) as { enabled: boolean }, {
+      kind: 'audio', stop: vi.fn(), getSettings: () => ({ noiseSuppression: false, deviceId: 'chosen' }), getConstraints: () => ({}),
+      applyConstraints: async () => undefined,
+    });
+    const restarts = { n: 0 };
+    const real = f.room.localParticipant.publishTrack.getMockImplementation()!;
+    f.room.localParticipant.publishTrack.mockImplementation(async (track, o) => {
+      const raw = track as unknown as Record<string, unknown>;
+      raw.getSettings = () => ({ noiseSuppression: true, deviceId: 'chosen' }); raw.getConstraints = () => ({}); raw.applyConstraints = async () => undefined;
+      const pub = await real(track, o);
+      const t = pub.track as unknown as { mediaStreamTrack: unknown; restartTrack: () => Promise<void> };
+      t.mediaStreamTrack = track;
+      // As LiveKit: the sender gets the new capture, which starts enabled.
+      t.restartTrack = async () => { restarts.n += 1; t.mediaStreamTrack = fresh; };
+      return pub;
+    });
+    return { fresh, restarts };
+  };
+
+  it('R2: a capture restart waits while the microphone must not send, and runs when it opens', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off', self: 'muted' });
+    open.push(call);
+    await flush();
+    // Muted: no new (enabled) capture goes onto the sender.
+    expect(restarts.n).toBe(0);
+    call.setMuted(false);
+    await flush();
+    expect(restarts.n).toBe(1);
+    expect(fresh.enabled).toBe(true);
+  });
+
+  it('R2: a reopened capture is guarded too: muted afterwards, LiveKit cannot enable it', async () => {
+    const f = fakes();
+    const { fresh, restarts } = reopening(f);
+    const call = await startPageCall(f.deps, { channelId: CH, vdec: 'vp8' }, { ...opts, noise: 'off' });
+    open.push(call);
+    await flush();
+    expect(restarts.n).toBe(1);
+    call.setMuted(true);
+    expect(fresh.enabled).toBe(false);
+    fresh.enabled = true;
+    expect(fresh.enabled).toBe(false);
   });
 
   it('a getter that throws changes nothing and fails no start', async () => {

@@ -1073,17 +1073,48 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     expect(w.voiceSelfSent).toEqual([]);
   });
 
-  it('a voice_self made while offline is kept, and sent once the own voice_state after the reconnect lacks it', async () => {
+  it('a voice_self made while offline is kept, and sent again when the own voice_state after the reconnect lacks it', async () => {
     const w = await joined();
     w.gateway.push(voiceFrame(ME, VOICE, 1));
     w.offline();
     await expect(w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 })).rejects.toMatchObject({ code: 'E_NOT_READY' });
     expect(w.voiceSelfSent).toEqual([]);
     w.online();
-    w.gateway.push(voiceFrame(ME, VOICE, 1));
     expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }]);
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toEqual([{ callId: w.voice, flags: 1 }, { callId: w.voice, flags: 1 }]);
     w.gateway.push(voiceFrame(ME, VOICE, 1 | 2));
-    expect(w.voiceSelfSent).toHaveLength(1);
+    expect(w.voiceSelfSent).toHaveLength(2);
+  });
+
+  it('a voice_self made while offline is sent by the reconnect itself, once, from its own budget', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    // The normal re-send budget is spent by a server that never takes an earlier voice_self.
+    await w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 });
+    for (let i = 0; i < 5; i++) w.gateway.push(voiceFrame(ME, VOICE, 1));
+    expect(w.voiceSelfSent).toHaveLength(1 + 3);
+    w.offline();
+    await expect(w.call({ m: 'voiceSelf', callId: w.voice, flags: 3 })).rejects.toMatchObject({ code: 'E_NOT_READY' });
+    w.online();
+    // No own voice_state arrives after the reconnect: the reconnect sends it anyway.
+    expect(w.voiceSelfSent).toHaveLength(5);
+    expect(w.voiceSelfSent[4]).toEqual({ callId: w.voice, flags: 3 });
+    // Once: another reconnect sends nothing more.
+    w.offline();
+    w.online();
+    expect(w.voiceSelfSent).toHaveLength(5);
+  });
+
+  it('a voice_self made while offline for a call that ended meanwhile is not sent on the reconnect', async () => {
+    const w = await joined();
+    w.gateway.push(voiceFrame(ME, VOICE, 1));
+    w.offline();
+    await expect(w.call({ m: 'voiceSelf', callId: w.voice, flags: 1 })).rejects.toMatchObject({ code: 'E_NOT_READY' });
+    await w.call({ m: 'callLeave', reason: 'user' }).catch(() => undefined);
+    for (let i = 0; i < 40; i++) await settle();
+    w.online();
+    expect(w.voiceSelfSent).toEqual([]);
   });
 });
 

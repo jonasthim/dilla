@@ -221,6 +221,19 @@ export function useCall(o: UseCallOptions): CallView {
     const value = written.current !== null ? written.current.value : (client.get('settings') ?? {})[SETTINGS.voiceSelf];
     return value === 'deafened' ? 'deafened' : value === 'muted' ? 'muted' : null;
   }, [client]);
+  /** web3.8 MUTE: push, not only pull. A starting session registers here (watchSelf) and is told of each press at once,
+   *  after `written` holds it, so selfNow already answers the new value. */
+  const selfWatchers = useRef(new Set<() => void>());
+  const watchSelf = useCallback((apply: () => void) => {
+    const entry = (): void => { apply(); };
+    selfWatchers.current.add(entry);
+    return () => { selfWatchers.current.delete(entry); };
+  }, []);
+  const pushSelf = useCallback(() => {
+    for (const apply of [...selfWatchers.current]) {
+      try { apply(); } catch { /* a session that throws keeps the pulls and the attach reconcile */ }
+    }
+  }, []);
 
   // WB a11y I3: the same text again (a second "You joined harbour.") is said again: the region is emptied first and the
   // text set a moment later, since setting identical text changes nothing a screen reader hears.
@@ -375,8 +388,10 @@ export function useCall(o: UseCallOptions): CallView {
           signal: abort.signal,
           // Product walk M5: the mute or deafen this browser kept (never a live microphone after a reload of a muted call).
           self: selfNow(),
-          // web3.8 MUTE: a press while the start runs is read again before the publish and at connected.
+          // web3.8 MUTE: a press while the start runs is pushed at once (watchSelf), and read again before the publish,
+          // after it and at connected.
           selfNow,
+          watchSelf,
           ...(ctx !== null ? { audioContext: ctx } : {}),
         };
         handed = true;
@@ -420,7 +435,7 @@ export function useCall(o: UseCallOptions): CallView {
         else closeContext(next?.ctx);
       }
     })();
-  }, [deps, client, attach, detach, selfNow]);
+  }, [deps, client, attach, detach, selfNow, watchSelf]);
   const joinRef = useRef(join);
   joinRef.current = join;
   /** The shell’s join: a channel only (a second argument from a caller never stands for a call context). */
@@ -471,11 +486,12 @@ export function useCall(o: UseCallOptions): CallView {
     // rejoin after a disconnect starts in the state the session was in.
     const mine: { seq: number; value: string | null; held?: true } = { seq: ++writeSeq.current, value };
     written.current = mine;
+    pushSelf();
     client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(
       () => { if (written.current === mine) written.current = null; },
       () => { if (written.current === mine) mine.held = true; },
     );
-  }, [client]);
+  }, [client, pushSelf]);
   const toggleMute = useCallback(() => {
     const s = sessionRef.current;
     if (s === null) return;
@@ -497,11 +513,12 @@ export function useCall(o: UseCallOptions): CallView {
     const value = pick(current);
     const mine = { seq: ++writeSeq.current, value };
     written.current = mine;
+    pushSelf();
     const done = () => { if (written.current === mine) written.current = null; };
     const key = value === 'deafened' ? 'voice.announce.deafened' : current === 'deafened' && value === 'muted' ? 'voice.announce.undeafened'
       : value === 'muted' ? 'voice.announce.muted' : 'voice.announce.unmuted';
     client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(() => { done(); live.current.announce?.(t(key)); }, done);
-  }, [client]);
+  }, [client, pushSelf]);
   const selfMute = useCallback(() => {
     if (sessionRef.current !== null) { toggleMute(); return; }
     // null -> muted -> null; from deafened, unmuting also undeafens (setMuted(false) in the session).

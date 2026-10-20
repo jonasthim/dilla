@@ -339,6 +339,38 @@ describe('fail closed (security round 1)', () => {
     answers.all();
   });
 
+  it('a press while the join is pending is pushed to the starting session at once, with selfNow already answering it', async () => {
+    const app = shell();
+    const join = await openVoiceChannel();
+    const release = app.holdStart();
+    await app.user.click(join);
+    await waitFor(() => expect(app.client.callsOf('callJoin')).toHaveLength(1));
+    const answers = holdWrites(app);
+    const heard: (string | null)[] = [];
+    const off = startOpts(app).watchSelf?.(() => { heard.push(startOpts(app).selfNow?.() ?? null); });
+    expect(off).toBeTypeOf('function');
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    // Pushed with the press, before the worker answered the write.
+    expect(heard).toEqual(['muted']);
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.deafen') }));
+    expect(heard).toEqual(['muted', 'deafened']);
+    off?.();
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.deafen') }));
+    expect(heard).toHaveLength(2);
+    answers.all();
+    release();
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+  });
+
+  it('an in-call toggle (keepSelf) is pushed too', async () => {
+    const app = shell();
+    await joinVoice(app);
+    const heard: (string | null)[] = [];
+    startOpts(app).watchSelf?.(() => { heard.push(startOpts(app).selfNow?.() ?? null); });
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    expect(heard).toEqual(['muted']);
+  });
+
   it('a setting less private than the session never opens it: unmute or undeafen pressed while the join is pending', async () => {
     const app = shell({ settings: { [SETTINGS.voiceSelf]: 'muted' } });
     const join = await openVoiceChannel();

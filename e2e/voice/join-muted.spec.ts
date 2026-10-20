@@ -70,15 +70,16 @@ async function watchAudio(alice: Person): Promise<void> {
   });
 }
 
-/** What alice's open peer connections send as audio now: each audio sender's track ('on', 'off', or 'none'), and the
- *  outbound audio packets and bytes summed over every connection. */
-async function audioOut(alice: Person): Promise<{ senders: string[]; packets: number; bytes: number; energy: number }> {
+/** What alice's open peer connections send as audio now: each audio sender's track ('on', 'off', or 'none'), the
+ *  outbound audio packets and bytes summed over every connection, and the media-source audio energy, or null where the
+ *  browser reports none (Firefox has no media-source `totalAudioEnergy`). */
+async function audioOut(alice: Person): Promise<{ senders: string[]; packets: number; bytes: number; energy: number | null }> {
   return alice.page.evaluate(async () => {
     const w = window as unknown as { __watch: Watch };
     const senders: string[] = [];
     let packets = 0;
     let bytes = 0;
-    let energy = 0;
+    let energy: number | null = null;
     for (const pc of w.__watch.pcs) {
       if (pc.connectionState === 'closed') continue;
       for (const t of pc.getTransceivers()) {
@@ -89,7 +90,7 @@ async function audioOut(alice: Person): Promise<{ senders: string[]; packets: nu
       const stats = await pc.getStats();
       stats.forEach((r: { type: string; kind?: string; packetsSent?: number; bytesSent?: number; totalAudioEnergy?: number }) => {
         if (r.type === 'outbound-rtp' && r.kind === 'audio') { packets += r.packetsSent ?? 0; bytes += r.bytesSent ?? 0; }
-        if (r.type === 'media-source' && r.kind === 'audio') energy += r.totalAudioEnergy ?? 0;
+        if (r.type === 'media-source' && r.kind === 'audio' && typeof r.totalAudioEnergy === 'number') energy = (energy ?? 0) + r.totalAudioEnergy;
       });
     }
     return { senders, packets, bytes, energy };
@@ -98,39 +99,51 @@ async function audioOut(alice: Person): Promise<{ senders: string[]; packets: nu
 
 /**
  * A muted microphone still lets Opus send its discontinuous-transmission frames: on chromium about ten a second of some
- * twenty bytes each (a disabled track is silence, and silence is what DTX sends). A live one with the fake microphone's
- * 1 kHz tone sends about 9 KB a second, with audio energy. So "nothing goes out" is: no audio energy ever reached her
- * sender, and the bytes stay at DTX size.
+ * twenty bytes each (a disabled track is silence, and silence is what DTX sends); the encoder's first second may send a
+ * little more. A live one with the fake microphone's 1 kHz tone sends about 9 KB a second, with audio energy. The proof
+ * that nothing went out is: every hand-off disabled, no captured track ever enabled (`opened`), no audio energy at the
+ * sender where the browser measures it, and only DTX-sized frames after a settle period.
  */
-const MUTED_BYTES_PER_S = 1_000;
 const DTX_BYTES_PER_PACKET = 40;
+const SETTLE_MS = 1_000;
+/** The unmuted control: a live tone sends far more than DTX in half a second. */
+const LIVE_BYTES_PER_HALF_S = 1_000;
 
-/** Every audio track she handed over was disabled when it was handed, each audio sender's track is disabled now, no audio
- *  energy has ever reached a sender, and over a second only DTX frames go out. */
+/** Every audio track she handed over was disabled when it was handed, no captured microphone track ever turned enabled,
+ *  each audio sender's track is disabled now, no audio energy has reached a sender, and once settled only DTX frames go
+ *  out. */
 async function sendsNoAudio(alice: Person): Promise<void> {
   await expect.poll(async () => (await audioOut(alice)).senders.join(','), { ...POLL, message: 'her audio senders' }).toMatch(/^(off|none)(,(off|none))*$/);
   const handed = await alice.page.evaluate(() => (window as unknown as { __watch: Watch }).__watch.handed);
   expect(handed.length, 'an audio track was handed to a peer connection').toBeGreaterThan(0);
   expect(handed.filter((h) => h.enabled), 'audio tracks handed over enabled').toEqual([]);
   expect(await alice.page.evaluate(() => (window as unknown as { __watch: Watch }).__watch.opened), 'times a microphone track turned enabled').toBe(0);
+  const first = await audioOut(alice);
+  if (first.energy === null) {
+    // No media-source energy in this browser (Firefox): the proof rests on the disabled hand-offs and `opened == 0`
+    // above, and the frame size below. Said in the report, never checked as a vacuous 0.
+    test.info().annotations.push({ type: 'audio-energy', description: 'not reported by this browser; hand-offs, opened and frame size are the proof' });
+  } else {
+    expect(first.energy, 'audio energy that ever reached her sender').toBe(0);
+  }
+  await alice.page.waitForTimeout(SETTLE_MS);
   const before = await audioOut(alice);
-  expect(before.energy, 'audio energy that ever reached her sender').toBe(0);
   await alice.page.waitForTimeout(1_000);
   const after = await audioOut(alice);
+  if (after.energy !== null) expect(after.energy, 'audio energy while muted').toBe(0);
   const bytes = after.bytes - before.bytes;
   const packets = after.packets - before.packets;
-  expect(after.energy, 'audio energy over a second while muted').toBe(0);
-  expect(bytes, 'audio bytes over a second while muted').toBeLessThan(MUTED_BYTES_PER_S);
-  expect(packets === 0 ? 0 : bytes / packets, 'bytes per audio packet while muted (DTX frames only)').toBeLessThanOrEqual(DTX_BYTES_PER_PACKET);
+  expect(packets === 0 ? 0 : bytes / packets, 'bytes per audio packet while muted, once settled (DTX frames only)').toBeLessThanOrEqual(DTX_BYTES_PER_PACKET);
 }
 
-/** The control for the measure above: once she unmutes, the tone goes out (energy and live-sized bytes). */
+/** The control for the measure above: once she unmutes, the tone goes out (live-sized bytes, and energy where reported). */
 async function sendsAudio(alice: Person): Promise<void> {
   await expect.poll(async () => {
     const a = await audioOut(alice);
     await alice.page.waitForTimeout(500);
     const b = await audioOut(alice);
-    return b.energy > a.energy && b.bytes - a.bytes > MUTED_BYTES_PER_S;
+    const louder = a.energy === null || b.energy === null || b.energy > a.energy;
+    return louder && b.bytes - a.bytes > LIVE_BYTES_PER_HALF_S;
   }, { ...POLL, message: 'her unmuted microphone sends the tone' }).toBe(true);
 }
 
@@ -193,16 +206,17 @@ test('mute pressed in the user panel before joining: alice joins muted, on her t
 
 // Fail closed (WS6 fix round 1, MUTE): a mute pressed while the join is still starting. The microphone prompt is held open
 // until the click has landed, so the press is provably inside the start; the track then goes to the publish disabled.
-// Noise suppression is off here, so the sender carries the capture track itself and the unmuted control hears the tone
-// (the first test keeps the default, where the sender carries the noise processor's output).
-test('mute pressed while the join is pending: the call starts muted and no audio sender is ever enabled', async ({ peerBrowser }) => {
+// It runs with noise suppression off (the sender carries the capture track itself, and the unmuted control hears the
+// tone) and on, the default (the sender carries the noise processor's output).
+for (const noise of ['off', 'on'] as const) test(`mute pressed while the join is pending (noise ${noise}): the call starts muted and no audio sender is ever enabled`, async ({ peerBrowser }) => {
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   try {
     await peer.setup();
     await onboard(alice, peer, 'alice');
     await peer.seat(1);
-    await noiseOff(alice.page);
+    // Noise off: the sender carries the capture track itself. Noise on (the default): it carries the processor's output.
+    if (noise === 'off') await noiseOff(alice.page);
     await watchAudio(alice);
     await holdMic(alice);
     await openVoice(alice.page, peer.communityName, peer.voiceName);
@@ -216,10 +230,13 @@ test('mute pressed while the join is pending: the call starts muted and no audio
     await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'true');
     await expect(stage(alice.page).locator('.d-call-tile[data-own] .d-call-tile__state[data-state="muted"]')).toBeVisible({ timeout: WAIT });
     await sendsNoAudio(alice);
-    // The measure tells the two apart: unmuted, her tone goes out (noise suppression is off, so it is not removed).
-    await panelMute(alice).click();
-    await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
-    await sendsAudio(alice);
+    // The measure tells the two apart: unmuted, her tone goes out. Only with noise suppression off: RNNoise removes the
+    // fake microphone's steady tone, so the noise-on path has no audible control.
+    if (noise === 'off') {
+      await panelMute(alice).click();
+      await expect(panelMute(alice)).toHaveAttribute('aria-pressed', 'false', { timeout: WAIT });
+      await sendsAudio(alice);
+    }
   } finally {
     await peerBrowser.close(alice);
     await peer.close();

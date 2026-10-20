@@ -168,6 +168,10 @@ export interface PageCallOptions {
    *  already closed) and again when the call connects. Only ever toward privacy: a value less private than the session's
    *  changes nothing. A getter that throws counts as no answer. */
   selfNow?: () => 'muted' | 'deafened' | null;
+  /** web3.8 MUTE: push, not only pull. The session registers `apply` while it starts and the page calls it after each
+   *  press (once `selfNow` answers the new value); the returned function unregisters it, which the session does at
+   *  connected or when the start fails. */
+  watchSelf?: (apply: () => void) => () => void;
   /** Fix round 2 (Minor 1): the call’s AudioContext, made by the shell synchronously inside the person’s press (useCall’s
    *  join, before its first await), so the browser lets it run. From here on the session owns it and closes it on every
    *  way out. Absent: the session makes its own (PageCallDeps.audioContext), a fallback that may start suspended. */
@@ -499,6 +503,8 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
   const joined = session;
   const { room, manager } = joined;
   const release = (): Promise<void> => joined.release();
+  /** web3.8 MUTE: stops listening for the page's presses (opts.watchSelf); at connected, or when the start fails. */
+  let unwatch: () => void = () => undefined;
   try {
     relay.attach(manager);
     const events = room as unknown as Events;
@@ -722,11 +728,16 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     let micTrack: MediaStreamTrack | null = null;
     let processor: NoiseProcessor | null = null;
     const reportStatus = (status: ProcessorStatus): void => { if (!ended && !aborted) reportProcessorStatus(statusOwner, status); };
+    /** web3.8 MUTE (R2): a capture restart wanted while the microphone must not send waits here; the next open runs it.
+     *  LiveKit puts the new capture on the sender before it disables it, so a restart while muted would send it briefly. */
+    let restartWaiting: { reason: ProcessorStatus['reason'] } | null = null;
     const browserStatus = async (reason: ProcessorStatus['reason'] = null): Promise<void> => {
       if (!micTrack) return;
       let browserNoise = await setBrowserSuppression(micTrack, state.noise !== 'off');
       const track = micPub?.track;
-      if (track?.restartTrack && browserNoise !== 'unsupported' && browserNoise !== (state.noise === 'off' ? 'off' : 'on')) {
+      const wanted = track?.restartTrack !== undefined && browserNoise !== 'unsupported' && browserNoise !== (state.noise === 'off' ? 'off' : 'on');
+      restartWaiting = wanted && !sendNow() ? { reason } : null;
+      if (track?.restartTrack && wanted && restartWaiting === null) {
         try {
           await track.restartTrack({ ...micTrack.getConstraints(), deviceId:{exact:micTrack.getSettings().deviceId || opts.input || 'default'}, noiseSuppression:state.noise !== 'off', echoCancellation:true, autoGainControl:true, channelCount:1, sampleRate:48000 });
           if (track.mediaStreamTrack) micTrack = track.mediaStreamTrack;
@@ -797,11 +808,18 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const applyMic = (): void => {
       guardMic(micTrack);
       const track = micPub?.track;
-      if (!track) return;
-      // Close the track and processor together, including fallback and initialization transitions.
+      // Close the track and processor together, including fallback and initialization transitions. The capture track is
+      // written even before the publish returned (web3.8 MUTE: a press during the publish closes it at once).
       const send = sendNow();
-      processor?.setCaptureAllowed?.(send);
       if (micTrack) micTrack.enabled = send;
+      if (!track) return;
+      processor?.setCaptureAllowed?.(send);
+      // R2: a capture restart that waited while the microphone could not send runs now that it can.
+      if (send && restartWaiting !== null && processor === null) {
+        const waited = restartWaiting;
+        restartWaiting = null;
+        void browserStatus(waited.reason).catch(() => undefined);
+      }
       if (send === micSending) return;
       micSending = send;
       void Promise.resolve(send ? track.unmute() : track.mute()).catch(() => undefined);
@@ -817,6 +835,12 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       if (!ended) ownMeter = makeMeter((micPub?.track as { mediaStreamTrack?: MediaStreamTrack } | undefined)?.mediaStreamTrack);
       armSample();
     };
+    // web3.8 MUTE: the page pushes each press while the start runs (watchSelf), so a mute or deafen is in force at the press:
+    // the capture track closes at once (guarded, so LiveKit cannot reopen it), and LiveKit's own mute follows once the
+    // track is published; before that the state is recorded and the publish starts disabled. Only toward privacy.
+    try {
+      unwatch = opts.watchSelf?.(() => { if (!ended && !aborted && catchUp()) applyMic(); }) ?? unwatch;
+    } catch { /* no push: the pulls before the publish, after it and at connected remain */ }
     if ('track' in mic) {
       micTrack = mic.track;
       // web3.8 MUTE: a mute or deafen pressed since the start read `self` (the microphone prompt, the connect) is in force
@@ -1178,6 +1202,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     // web3.8 MUTE: a mute or deafen pressed while the microphone was set up (the noise processor, the room) is in force
     // before the call counts as connected; the page's attach applies anything later.
     if (catchUp()) applyMic();
+    // From here the session is the page's: its own setMuted and setDeafened (and the attach reconcile) take the presses.
+    unwatch();
+    unwatch = () => undefined;
     sweepAudio();
     applyGains();
     state = { ...state, phase: 'connected', tiles: tiles(), audioBlocked: playbackBlocked() };
@@ -1316,6 +1343,7 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
       leave,
     };
   } catch (err) {
+    unwatch();
     // Anything that fails after joinCall resolved tears the call down: no install, media released, then callLeave.
     throw await abandon(err, true);
   }
