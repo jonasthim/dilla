@@ -337,7 +337,11 @@ returns `E_RATE_LIMITED`. A malicious member's invalid typing is dropped for tha
 does not disconnect an honest recipient. `voice_self` requires membership in the live call and
 its channel's current audience; otherwise it returns `E_NOT_FOUND` without revealing existence.
 Its flag bit 0 is self-mute and bit 1 is self-deaf; the server maps them to bits 1 and 2 of
-server-sourced `voice_state`, combined with the room state.
+server-sourced `voice_state`, combined with the room state. Membership in the live call means
+the instance's SFU lists the device in the call's room, which can be later than the client's own
+join; a `voice_self` sent before then is refused and not kept. A client therefore keeps its last
+`voice_self` per call and sends it again while its own `voice_state` for that call lacks those
+self bits, at most 3 times per join, and sends one made while offline once after it reconnects.
 
 `voice_state` is produced by the instance alone, from what its SFU reports about a call's room
 (`09` § Voice), and goes to every device of every user who may view the call's channel — for a DM
