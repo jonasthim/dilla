@@ -11,6 +11,8 @@ export type SearchPaletteProps = {
   labels: { search: string; empty: string; close: string; scope: { channel: string; community: string; all: string } };
   /** A status that replaces the empty text, such as a picked hit that is no longer available. */
   status?: string;
+  /** True: a desktop palette is a modal native dialog with a scrim, focus moves in on open and back to the opener on close (R-S4). Default: the inline section. */
+  modal?: boolean;
   onQuery(s: string): void;
   onScope(s: 'channel' | 'community' | 'all'): void;
   onPick(id: string): void;
@@ -27,28 +29,29 @@ function composing(event: KeyboardEvent): boolean {
  * results and Close. One polite status stays mounted and only its text changes (M-03). On a desktop it is a modal centred
  * overlay of at most 40rem (J1, a native dialog with a scrim; the shell stays mounted and goes inert); opening focuses the textbox and closing returns focus to the opener.
  */
-export function SearchPalette({ open, query, scope, hits, labels, status, onQuery, onScope, onPick, onClose }: SearchPaletteProps) {
+export function SearchPalette({ open, query, scope, hits, labels, status, modal = false, onQuery, onScope, onPick, onClose }: SearchPaletteProps) {
   const [active, setActive] = useState(0);
   const listId = useId();
   const phone = usePhoneLayout();
+  const asDialog = modal && !phone;
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const picked = useRef(false);
   // A desktop palette is a modal <dialog> (R-S1): the browser traps focus, makes the shell inert and draws the ::backdrop scrim.
   useEffect(() => {
     const el = dialogRef.current;
-    if (!open || phone || !el) return;
+    if (!open || !asDialog || !el) return;
     if (!el.open) el.showModal();
     return () => { if (el.open) el.close(); };
-  }, [open, phone]);
+  }, [open, asDialog]);
   // Focus goes to the textbox on open and back to whatever opened the palette when it closes (contract 2), unless a pick moved it on purpose.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !modal) return;
     picked.current = false;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     inputRef.current?.focus();
     return () => { if (!picked.current && opener?.isConnected) opener.focus(); };
-  }, [open]);
+  }, [open, modal]);
   const pick = (id: string) => { picked.current = true; onPick(id); };
   const options = hits.slice(0, 50);
   if (!open) return null;
@@ -75,7 +78,7 @@ export function SearchPalette({ open, query, scope, hits, labels, status, onQuer
     <div className="d-search-palette__status" role="status" aria-live="polite">{text}</div>
     <Button variant="ghost" keyHint="esc" className="d-search-palette__close" onClick={onClose}>{labels.close}</Button>
   </section>;
-  if (phone) return palette;
+  if (!asDialog) return palette;
   // Escape is handled on the section (it also covers IME composition); the native cancel is the fallback (a back gesture). A click on the scrim closes.
   return <dialog ref={dialogRef} className="d-search-palette-dialog" aria-label={labels.search}
     onCancel={event => { event.preventDefault(); onClose(); }}

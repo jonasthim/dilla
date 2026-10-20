@@ -100,20 +100,20 @@ describe('SearchPalette', () => {
     const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
     const props = { query: '', scope: 'all' as const, hits: [], labels, onQuery: vi.fn(), onScope: vi.fn(), onPick: vi.fn(), onClose: vi.fn() };
     const shell = <main data-testid="shell"><button type="button">channel</button></main>;
-    const view = render(<div>{shell}<SearchPalette open {...props} /></div>);
+    const view = render(<div>{shell}<SearchPalette modal open {...props} /></div>);
     expect(modal).toHaveBeenCalledTimes(1);
     const dialog = screen.getByRole('dialog', { name: labels.search });
     expect(dialog).toHaveClass('d-search-palette-dialog');
     expect(within(dialog).getByRole('search')).not.toHaveAttribute('data-layout');
     expect(screen.getByTestId('shell')).toBeInTheDocument();
-    view.rerender(<div>{shell}<SearchPalette open={false} {...props} /></div>);
+    view.rerender(<div>{shell}<SearchPalette modal open={false} {...props} /></div>);
     expect(screen.getByTestId('shell')).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).toBeNull();
     modal.mockRestore();
   });
   it('closes on the native cancel and on a click on the scrim, but not on a click inside', () => {
     const onClose = vi.fn();
-    render(<SearchPalette open query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={onClose} />);
+    render(<SearchPalette modal open query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={onClose} />);
     const dialog = screen.getByRole('dialog', { name: labels.search });
     fireEvent.click(screen.getByRole('search'));
     expect(onClose).not.toHaveBeenCalled();
@@ -127,7 +127,7 @@ describe('SearchPalette', () => {
     function Host() {
       const [open, setOpen] = useState(false);
       return <><button type="button" onClick={() => setOpen(true)}>open search</button><button type="button">message</button>
-        <SearchPalette open={open} query="" scope="all" hits={hits} labels={labels} onQuery={vi.fn()} onScope={vi.fn()}
+        <SearchPalette modal open={open} query="" scope="all" hits={hits} labels={labels} onQuery={vi.fn()} onScope={vi.fn()}
           onPick={() => { setOpen(false); setTimeout(() => screen.getByRole('button', { name: 'message' }).focus(), 0); }} onClose={() => setOpen(false)} /></>;
     }
     render(<Host />);
@@ -141,7 +141,7 @@ describe('SearchPalette', () => {
     function Host() {
       const [open, setOpen] = useState(false);
       return <><button type="button" onClick={() => setOpen(true)}>open search</button>
-        <SearchPalette open={open} query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={() => setOpen(false)} /></>;
+        <SearchPalette modal open={open} query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={() => setOpen(false)} /></>;
     }
     render(<Host />);
     const opener = screen.getByRole('button', { name: 'open search' });
@@ -150,6 +150,14 @@ describe('SearchPalette', () => {
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('search')).toBeNull();
     expect(opener).toHaveFocus();
+  });
+  it('without modal there is no dialog: the inline section, as before (R-S4)', () => {
+    const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
+    render(<SearchPalette open query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('search').parentElement?.tagName).not.toBe('DIALOG');
+    expect(modal).not.toHaveBeenCalled();
+    modal.mockRestore();
   });
   it('a phone layout keeps today’s inline palette (data-layout=phone)', () => {
     render(<PhoneLayoutProvider value><SearchPalette open query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={vi.fn()} /></PhoneLayoutProvider>);

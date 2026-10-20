@@ -13,7 +13,7 @@ export const Results: Story = { args };
 
 // J1: a centred overlay of at most 40rem over the app, which stays visible behind it.
 export const OverShell: Story = {
-  args,
+  args: { ...args, modal: true },
   parameters: { layout: 'fullscreen' },
   decorators: [Story => (
     <div style={{ minHeight: '100vh', padding: '1rem', background: 'var(--bg)', color: 'var(--fg-2)', fontFamily: 'var(--font-mono)' }}>
