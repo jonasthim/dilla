@@ -5,5 +5,7 @@
 .d-manage-list__title { font-size: var(--text-base); color: var(--fg); overflow-wrap: anywhere; }
 .d-manage-list__detail { font-size: var(--text-sm); color: var(--fg-3); overflow-wrap: anywhere; }
 .d-manage-list__empty { margin: 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg-3); }
+/* A narrow row wraps its name instead of pushing the icons out. */
+.d-manage-list__text { flex: 1 1 0; }
 /* The trailing area: the text action (one ghost button, I7), then the icon slots; its right edge is one line down the list. */
 .d-manage-list__trail { display: flex; align-items: center; justify-content: flex-end; flex: none; gap: 0.25rem; }

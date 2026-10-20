@@ -132,3 +132,19 @@ describe('ManageList', () => {
     });
   });
 });
+
+// M1: in a phone frame the icon buttons are the 44px primary tier and the slots are 44 wide. A CSS-text pin: jsdom has no layout.
+describe('ManageList in a phone frame', () => {
+  it('sizes the icon buttons and the trailing slot to 44px, and lets the name shrink', async () => {
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    const strip = (c: string) => c.replace(/\/\*[\s\S]*?\*\//g, '');
+    const base = strip(fs.readFileSync(`${cwd}/src/styles/base.css`, 'utf8'));
+    const list = strip(fs.readFileSync(`${cwd}/src/ManageList/ManageList.css`, 'utf8'));
+    const tier = /\.d-settings-frame\[data-layout="phone"\] :is\([^)]*\.d-icon-button[^)]*\) \{([^}]*)\}/.exec(base)?.[1] ?? '';
+    expect(tier).toMatch(/min-height: 2\.75rem;/);
+    expect(tier).toMatch(/min-width: 2\.75rem;/);
+    expect(/\.d-settings-frame\[data-layout="phone"\] \{([^}]*)\}/.exec(base)?.[1] ?? '').toMatch(/--slot-w: 44px;/);
+    expect(/\.d-manage-list__text \{ flex: 1 1 0;/.test(list)).toBe(true);
+  });
+});

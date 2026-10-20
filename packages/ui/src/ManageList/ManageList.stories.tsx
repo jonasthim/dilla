@@ -1,5 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ManageList } from './ManageList.tsx';
+import { SettingsFrame } from '../SettingsFrame/SettingsFrame.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 
 const meta = {
   title: 'Settings/ManageList', component: ManageList,
@@ -38,7 +40,13 @@ export const Privacy: Story = {
     ],
   },
 };
+// A phone frame: 44px icon buttons and 44px slots, the name wraps, nothing clips at 390.
 export const Phone: Story = {
   args: { label: 'channels', rows: channels, onEdit: () => {}, onDelete: () => {} },
-  decorators: [Story => <div data-phone style={{ width: '22.5rem' }}><Story /></div>],
+  parameters: { layout: 'fullscreen' },
+  decorators: [Story => (
+    <PhoneLayoutProvider value>
+      <SettingsFrame open modal={false} title="Settings" closeLabel="Close settings" onClose={() => {}} nav={<span />}><Story /></SettingsFrame>
+    </PhoneLayoutProvider>
+  )],
 };

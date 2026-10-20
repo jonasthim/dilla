@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { useState } from 'react';
@@ -95,17 +95,46 @@ describe('SearchPalette', () => {
     expect(status).toHaveTextContent(labels.empty);
   });
 
-  // J1: on a desktop the palette is a centred overlay of at most 40rem over the app, not a replacement: the shell stays in the DOM.
-  it('opens over the app: the shell behind it stays mounted and is not made inert', () => {
+  // J1, R-S1: on a desktop the palette is a modal native dialog (focus trapped by the browser, shell inert, ::backdrop scrim); the shell stays mounted.
+  it('opens as a modal dialog over the app: showModal is called and the shell stays mounted', () => {
+    const modal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
     const props = { query: '', scope: 'all' as const, hits: [], labels, onQuery: vi.fn(), onScope: vi.fn(), onPick: vi.fn(), onClose: vi.fn() };
     const shell = <main data-testid="shell"><button type="button">channel</button></main>;
     const view = render(<div>{shell}<SearchPalette open {...props} /></div>);
+    expect(modal).toHaveBeenCalledTimes(1);
+    const dialog = screen.getByRole('dialog', { name: labels.search });
+    expect(dialog).toHaveClass('d-search-palette-dialog');
+    expect(within(dialog).getByRole('search')).not.toHaveAttribute('data-layout');
     expect(screen.getByTestId('shell')).toBeInTheDocument();
-    expect(screen.getByTestId('shell')).not.toHaveAttribute('inert');
-    expect(screen.getByRole('search')).not.toHaveAttribute('data-layout');
     view.rerender(<div>{shell}<SearchPalette open={false} {...props} /></div>);
     expect(screen.getByTestId('shell')).toBeInTheDocument();
-    expect(screen.queryByRole('search')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    modal.mockRestore();
+  });
+  it('closes on the native cancel and on a click on the scrim, but not on a click inside', () => {
+    const onClose = vi.fn();
+    render(<SearchPalette open query="" scope="all" hits={[]} labels={labels} onQuery={vi.fn()} onScope={vi.fn()} onPick={vi.fn()} onClose={onClose} />);
+    const dialog = screen.getByRole('dialog', { name: labels.search });
+    fireEvent.click(screen.getByRole('search'));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(dialog);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent(dialog, new Event('cancel', { cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+  it('a pick that moves focus deliberately is not overridden by the restore (M4)', async () => {
+    const user = userEvent.setup();
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return <><button type="button" onClick={() => setOpen(true)}>open search</button><button type="button">message</button>
+        <SearchPalette open={open} query="" scope="all" hits={hits} labels={labels} onQuery={vi.fn()} onScope={vi.fn()}
+          onPick={() => { setOpen(false); setTimeout(() => screen.getByRole('button', { name: 'message' }).focus(), 0); }} onClose={() => setOpen(false)} /></>;
+    }
+    render(<Host />);
+    await user.click(screen.getByRole('button', { name: 'open search' }));
+    await user.keyboard('{Enter}');
+    await new Promise(r => setTimeout(r, 5));
+    expect(screen.getByRole('button', { name: 'message' })).toHaveFocus();
   });
   it('focuses the textbox on open, and Escape returns focus to the opener', async () => {
     const user = userEvent.setup();
@@ -133,11 +162,11 @@ describe('SearchPalette', () => {
       const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
       css = fs.readFileSync(`${cwd}/src/SearchPalette/SearchPalette.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     });
-    it('a desktop palette is fixed, centred and at most 40rem wide', () => {
-      const r = /\.d-search-palette:not\(\[data-layout="phone"\]\) \{([^}]*)\}/.exec(css)?.[1] ?? '';
-      expect(r).toMatch(/position: fixed;/);
+    it('a desktop palette is a modal dialog box: centred, at most 40rem wide, with a scrim', () => {
+      const r = /\.d-search-palette-dialog \{([^}]*)\}/.exec(css)?.[1] ?? '';
       expect(r).toMatch(/width: min\(calc\(100vw - 2rem\), 40rem\);/);
-      expect(r).toMatch(/left: 50%;/);
+      expect(r).toMatch(/margin: 12vh auto auto;/);
+      expect(css).toMatch(/\.d-search-palette-dialog::backdrop \{[^}]*background: color-mix/);
     });
   });
 });

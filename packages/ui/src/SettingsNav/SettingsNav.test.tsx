@@ -83,3 +83,15 @@ describe('SettingsNav glyph column', () => {
     expect(screen.getByRole('button', { name: 'general' })).toBeInTheDocument();
   });
 });
+
+// M4: the glyph column is 16px and never shrinks, which is what aligns the names (jsdom has no layout).
+describe('SettingsNav glyph column CSS', () => {
+  it('is 1rem wide with flex: none', async () => {
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    const css = fs.readFileSync(`${cwd}/src/SettingsNav/SettingsNav.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = /\.d-settings-nav__glyph \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/flex: none;/);
+    expect(rule).toMatch(/width: 1rem;/);
+  });
+});
