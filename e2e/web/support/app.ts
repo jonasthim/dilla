@@ -668,7 +668,7 @@ export async function signIn(page: Page, account: Account, instanceName: string,
   await finishWithKey(page, account, instanceName, typed);
 }
 
-export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'privacy' | 'keyboard' | 'diagnostics';
+export type SettingsSection = 'devices' | 'notifications' | 'appearance' | 'voice' | 'privacy' | 'keyboard' | 'diagnostics';
 export function settingsDialog(page: Page): Locator { return page.getByRole('dialog', { name: copy('settings.title'), exact: true }); }
 /** The desktop user panel (the bottom left, with mute and deafen). */
 export function userPanel(page: Page): Locator { return page.locator('.d-user-panel'); }

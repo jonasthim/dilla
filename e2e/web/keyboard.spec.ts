@@ -196,12 +196,11 @@ test('the messaging flow runs on the keyboard alone, in the fixed focus order', 
 
   // web3.8 (R4): node, link, generation and devices live in Settings → Diagnostics, each with a value.
   const settings = await openSettings(page, 'diagnostics');
-  const facts = settings.locator('dl');
   for (const [key, value] of [['diagnostics.connection', /^online$/], ['diagnostics.generation', /^\S+$/],
     ['diagnostics.instance', new RegExp(`^${escapeRegExp(instanceName)}$`)], ['diagnostics.devices', /^[0-9]+$/]] as const) {
-    const term = facts.locator('dt', { hasText: new RegExp(`^${escapeRegExp(copy(key))}$`) });
-    await expect(term).toBeVisible({ timeout: WAIT });
-    await expect(term.locator('xpath=following-sibling::dd[1]')).toHaveText(value, { timeout: WAIT });
+    const row = settings.locator('.d-settings-row').filter({ has: page.locator('.d-settings-row__label', { hasText: new RegExp(`^${escapeRegExp(copy(key))}$`) }) });
+    await expect(row).toBeVisible({ timeout: WAIT });
+    await expect(row.locator('.d-settings-row__control')).toHaveText(value, { timeout: WAIT });
   }
   await closeSettings(page);
 });

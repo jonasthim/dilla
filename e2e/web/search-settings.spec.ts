@@ -1,5 +1,5 @@
-import { expect } from '@playwright/test';
-import { advanceClock, composerBox, copy, expectAccessible, instanceInvite, joinCommunity, openChannel, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
+import { expect, type Locator } from '@playwright/test';
+import { advanceClock, composerBox, copy, expectAccessible, closeSettings, instanceInvite, joinCommunity, openChannel, openSettings, Peer, rowById, settingsDialog, signUp, WAIT } from './support/app';
 import { test } from './support/second';
 
 test('native edit is searched by prefix and deleted text disappears after a positive result', async ({ page, peer, instanceName }) => {
@@ -161,4 +161,39 @@ test('desktop, phone and reflow keep controls accessible in three themes', async
       expect(layout).toEqual({ overflow: false, small: 0 });
     }
   }
+});
+
+// I1, I2: the label is left and the controls share the 16rem column (one x, 256px wide); a long danger label grows its button, it never overprints.
+test('settings rows share one 16rem control column, and the sign-out button holds its text', async ({ page, peer, instanceName }) => {
+  const setup = await peer.setup({});
+  await peer.register();
+  await signUp(page, instanceInvite(), instanceName);
+  await joinCommunity(page, peer, setup);
+  await openChannel(page, peer.communityName, peer.channelName);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const columns = async (dialog: Locator) => dialog.locator('.d-settings-row__control').evaluateAll(els => els.map(el => {
+    const box = el.getBoundingClientRect();
+    return { x: Math.round(box.x), width: Math.round(box.width) };
+  }));
+  let dialog = await openSettings(page, 'devices');
+  await dialog.getByRole('navigation', { name: copy('settings.nav.label'), exact: true }).getByRole('button', { name: copy('factorSettings.nav'), exact: true }).click();
+  await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
+  const signin = await columns(dialog);
+  expect(signin.length).toBeGreaterThanOrEqual(4);
+  expect(new Set(signin.map(c => c.x)).size, 'one control x in Sign-in').toBe(1);
+  expect(signin[0].width).toBe(256);
+  await closeSettings(page);
+  dialog = await openSettings(page, 'devices');
+  const out = dialog.getByRole('button', { name: copy('devices.signOut'), exact: true });
+  await expect(out).toBeVisible({ timeout: WAIT });
+  const fits = await out.evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.getBoundingClientRect().right <= (el.closest('.d-settings-row__control')?.getBoundingClientRect().right ?? 0) + 1);
+  expect(fits, 'the sign-out label is inside its button and its column').toBe(true);
+  await closeSettings(page);
+  // M-3: every row keeps its own hairline, also two rows that are each the last child of their parent (Voice).
+  dialog = await openSettings(page, 'voice');
+  await expect(dialog.locator('.d-settings-row').first()).toBeVisible({ timeout: WAIT });
+  const hairlines = await dialog.locator('.d-settings-row').evaluateAll(els => els.map(el => getComputedStyle(el).borderBottomWidth));
+  expect(hairlines.length).toBeGreaterThan(1);
+  expect(new Set(hairlines)).toEqual(new Set(['1px']));
+  await closeSettings(page);
 });
