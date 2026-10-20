@@ -16,18 +16,27 @@ const base: CallControlsProps = {
 afterEach(() => { delete document.documentElement.dataset.theme; });
 
 describe('CallControls', () => {
-  it('muteInert makes mute aria-disabled with the same reason as camera, and presses do nothing', async () => {
+  it('listenReason makes mute, camera and share aria-disabled with that reason, not the paused one, and presses do nothing', async () => {
     const onMute = vi.fn();
-    render(<CallControls {...base} onMute={onMute} muteInert canCamera={false} canShare={false} paused
+    render(<CallControls {...base} onMute={onMute} listenReason="everyone is muted here"
       labels={{ ...labels, why: { paused: 'paused', joining: 'connecting', noShare: 'n/a' } }} />);
-    const mute = screen.getByRole('button', { name: 'mute' });
-    expect(mute).toHaveAttribute('aria-disabled', 'true');
-    await userEvent.click(mute);
+    for (const name of ['mute', 'camera', 'share screen']) {
+      const b = screen.getByRole('button', { name });
+      expect(b).toHaveAttribute('aria-disabled', 'true');
+      expect(b).toHaveAccessibleDescription(/everyone is muted here/);
+      expect(b).not.toHaveAccessibleDescription(/paused/);
+    }
+    await userEvent.click(screen.getByRole('button', { name: 'mute' }));
     expect(onMute).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'camera' })).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('mute is live without muteInert (control)', async () => {
+  it('a real hold still says paused (control)', () => {
+    render(<CallControls {...base} canCamera={false} canShare={false} paused
+      labels={{ ...labels, why: { paused: 'paused', joining: 'connecting', noShare: 'n/a' } }} />);
+    expect(screen.getByRole('button', { name: 'camera' })).toHaveAccessibleDescription(/paused/);
+  });
+
+  it('mute is live without listenReason (control)', async () => {
     const onMute = vi.fn();
     render(<CallControls {...base} onMute={onMute} />);
     const mute = screen.getByRole('button', { name: 'mute' });

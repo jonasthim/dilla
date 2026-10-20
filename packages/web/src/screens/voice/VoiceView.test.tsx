@@ -41,7 +41,6 @@ describe('voice in the shell', () => {
     const app = screen.getByRole('main');
     expect(await within(app).findByRole('button', { name: 'join voice' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: t('voice.afk.title') })).toBeNull();
-    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
   });
 
   it('in the AFK call every tile and row shows the muted glyph, the stage says so, and mic, camera and share are disabled', async () => {
@@ -53,9 +52,12 @@ describe('voice in the shell', () => {
     expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
     app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
     await main().findByRole('toolbar', { name: 'voice channel controls' });
-    expect(main().getByText(t('afk.stage.muted', { channel: 'music' }))).toBeInTheDocument();
+    expect(document.querySelector('.d-call-stage__outgoing')).toHaveTextContent(t('afk.stage.muted', { channel: 'music' }));
     for (const name of ['mute', 'camera', 'share screen']) {
-      expect(main().getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+      const control = main().getByRole('button', { name });
+      expect(control).toHaveAttribute('aria-disabled', 'true');
+      expect(control).toHaveAccessibleDescription(new RegExp(t('afk.stage.muted', { channel: 'music' })));
+      expect(control).not.toHaveAccessibleDescription(new RegExp(t('voice.why.paused')));
     }
     expect(main().getByRole('button', { name: 'leave' })).not.toHaveAttribute('aria-disabled', 'true');
     for (const tile of document.querySelectorAll('.dw-voice-stage .d-call-tile')) {
@@ -625,11 +627,36 @@ describe('web3.9 WEB-AFK: the AFK channel in the shell', () => {
     expect(row.querySelector('svg[data-icon="volume-2"]')).not.toBeNull();
     expect(row.querySelector('[aria-disabled="true"]')).toBeNull();
     expect(within(row).getByRole('button', { name: /join/i })).toBeInTheDocument();
-    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
     await app.user.click(within(row).getByRole('button', { name: /join/i }));
     await waitFor(() => expect(app.sessions).toHaveLength(1));
     expect(vi.mocked(app.module.startPageCall).mock.calls[0][2].listenOnly).toBe(true);
-    expect(app.client.callsOf('afkLeave' as never)).toEqual([]);
+  });
+
+  it('while in an ordinary call, the open AFK channel offers a join and no move or leave control', async () => {
+    const app = await inVoice();
+    app.client.publish(`afk:${A}`, afkSlice());
+    go(`/c/${A}/${MUSIC}`);
+    expect(await main().findByRole('button', { name: 'join voice' })).toBeInTheDocument();
+    expect(screen.queryByText(/move to afk|leave afk/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /move to afk|leave afk/i })).toBeNull();
+  });
+
+  it('Shell hands the slice’s seq to useCall: a second sweep’s read (a higher seq, no false read between) moves again', async () => {
+    const app = renderVoiceShell();
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 3 }));
+    await waitFor(() => expect(app.sessions).toHaveLength(1));
+    app.client.publish('call', callState({ phase: 'in', channelId: MUSIC, callId: MUSIC }));
+    // The person leaves the AFK call and joins general; later the sweep cuts that call and its read lands seq 4.
+    await app.user.click(await screen.findByRole('button', { name: 'leave' }));
+    await waitFor(() => expect(app.session.leave).toHaveBeenCalled());
+    await app.user.click(await main().findByRole('button', { name: 'join voice' }));
+    await waitFor(() => expect(app.sessions).toHaveLength(2));
+    app.client.publish('call', callState({ phase: 'in', channelId: GENV, callId: GENV }));
+    const real = Date.now.bind(Date);
+    vi.spyOn(Date, 'now').mockImplementation(() => real() + 120_000);
+    app.client.publish(`afk:${A}`, afkSlice({ pending: true, seq: 4 }));
+    await waitFor(() => expect(app.client.callsOf('callJoin').filter(c => c.channelId === MUSIC)).toHaveLength(2));
+    vi.restoreAllMocks();
   });
 
   it('a pending move joins the AFK channel once, and a republished read of it does not join again', async () => {

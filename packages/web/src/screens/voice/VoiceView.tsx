@@ -256,7 +256,7 @@ function StageLines({ v }: { v: VoiceContext }) {
   );
 }
 
-function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boolean }) {
+function Controls({ v, paused, dm, afkName }: { v: VoiceContext; paused: boolean; dm: boolean; afkName: string }) {
   const s = v.call.state;
   const canShare = canCapture();
   const phone = usePhoneLayout();
@@ -268,7 +268,7 @@ function Controls({ v, paused, dm }: { v: VoiceContext; paused: boolean; dm: boo
   return (
     <CallControls muted={s?.muted ?? false} deafened={s?.deafened ?? false} camera={s?.camera ?? false} sharing={s?.sharing ?? false}
       canCamera={!paused && !listen} canShare={!paused && !listen && canShare} hideShare={hideShare} busy={v.call.session === null}
-      paused={paused || listen} muteInert={listen} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
+      paused={paused} {...(listen ? { listenReason: t('afk.stage.muted', { channel: afkName }) } : {})} shortcuts={VOICE_SHORTCUT_TEXT} keyshortcuts={phone}
       labels={{ region: t(dm ? 'voice.controls.region' : 'voice.controls.voice'), mute: t('voice.mute'), deafen: t('voice.deafen'),
         camera: t('voice.cameraOn'), share: t('voice.shareOn'), leave: t('voice.leave'), why: VOICE_WHY() }}
       onMute={v.call.toggleMute} onDeafen={v.call.toggleDeafen} onCamera={v.call.toggleCamera} onShare={v.call.toggleShare}
@@ -345,7 +345,7 @@ function Stage({ v, channelId, title, name, outgoing, dm }: { v: VoiceContext; c
       data-call-phase={mine ? v.slice?.phase : joined ? 'joining' : 'idle'}>
       <CallStage title={title} tiles={tiles} {...(name !== undefined && !phone ? { header: <ChannelHeader kind="voice" name={name} /> } : {})} {...(dm ? {} : { focusedId, onFocus: setFocusedId })} code={code} notice={notice}
         outgoing={afk ? { text: t('afk.stage.muted', { channel: name ?? title }) } : joined ? outgoing : null}
-        controls={joined ? <><Controls v={v} paused={paused} dm={dm} /><StageLines v={v} /></>
+        controls={joined ? <><Controls v={v} paused={paused} dm={dm} afkName={name ?? title} /><StageLines v={v} /></>
           : held ? null : <Button variant="accent" className="dw-voice-join" onClick={() => v.onJoinVoice ? v.onJoinVoice(channelId) : v.call.join(channelId)}>{t('voice.join')}</Button>}
         labels={STAGE_LABELS()} />
     </div>
