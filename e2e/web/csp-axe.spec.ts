@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test';
 import { addServerVia,
-  COPY, HOST, TEST_TIMEOUT, WAIT, copy, expectAccessible, expectHeading, expectShell, instanceInvite,
+  COPY, HOST, TEST_TIMEOUT, WAIT, copy, escapeRegExp, expectAccessible, expectHeading, expectShell, instanceInvite,
   joinCommunity, messageRow, nextButton, openChannel, railNav, readManifest, readRecoveryKey, splash, submitButton,
   tag, test, completeFactorStep, newAccount,
 } from './support/app';
@@ -118,7 +118,7 @@ test('every state of the slice passes axe with target-size, in all three themes,
   // from its own script response, and every secret of the device lives in that worker.
   await expect.poll(() => page.workers().length, { timeout: WAIT }).toBeGreaterThan(0);
   const workerUrl = page.workers()[0].url();
-  expect(workerUrl).toMatch(/^http:\/\/127\.0\.0\.1:8463\/assets\/[^/?#]+\.js$/);
+  expect(workerUrl).toMatch(new RegExp(`^${escapeRegExp(`http://${HOST}`)}/assets/[^/?#]+\\.js$`));
   const workerScript = await context.request.get(workerUrl);
   expect(workerScript.status(), workerUrl).toBe(200);
   expect(workerScript.headers()['content-type'], workerUrl).toBe('text/javascript; charset=utf-8');

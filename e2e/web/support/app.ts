@@ -17,9 +17,12 @@ import { en } from '../../../packages/web/src/strings/en';
 import { t } from '../../../packages/web/src/strings/index';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-export const HOST = '127.0.0.1:8463';
+/** The suite's shared host. A lane that shares its machine with others moves it with DILLA_E2E_PORT and DILLA_E2E_PORT2 (playwright.web.config.ts reads the same two). */
+export const HOST_PORT = Number(process.env.DILLA_E2E_PORT ?? 8463);
+export const CONTROL_PORT = Number(process.env.DILLA_E2E_PORT2 ?? 8464);
+export const HOST = `127.0.0.1:${String(HOST_PORT)}`;
 export const PUBLIC_URL = `http://${HOST}`;
-export const CONTROL_URL = 'http://127.0.0.1:8464';
+export const CONTROL_URL = `http://127.0.0.1:${String(CONTROL_PORT)}`;
 /** One wait for one state. The CI runner has 4 vCPUs and is 3-5x slower than the dev machine. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
 export const TEST_TIMEOUT = process.env.CI === 'true' ? 480_000 : 180_000;
