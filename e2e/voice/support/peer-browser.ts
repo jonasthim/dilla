@@ -25,7 +25,11 @@ const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server responded 
  * and no `error` event the page could catch (measured in leave-reload, task 10), so it is the browser's, not the app's.
  */
 function firefoxUnloadLine(projectName: string, text: string, url: string): boolean {
-  return projectName === 'firefox-voice' && url === '' && text === '[JavaScript Error: "InvalidStateError: Navigated away from page"]';
+  return projectName === 'firefox-voice' && ((url === '' && text === '[JavaScript Error: "InvalidStateError: Navigated away from page"]')
+    // web3.9 ruling V-2 (on V-1, disconnectOnPageLeave off): on a Firefox reload the signal socket is already closed when the
+    // session's pagehide leave disconnects the room, so LiveKit logs this and drops the signal leave. Benign: the SFU sees
+    // the close, the worker's self-Remove goes out, and the peer sees the leave in time.
+    || text === 'cannot send signal request before connected, type: leave JSHandle@object');
 }
 
 export interface CspViolation { directive: string; blockedURI: string; sourceFile: string; sample: string }
