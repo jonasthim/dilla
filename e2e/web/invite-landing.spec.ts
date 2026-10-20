@@ -11,7 +11,7 @@ import { arr, decode } from '../../packages/client-core/src/cbor/index';
 
 const EMPTY: HostConfig = { port: 8517, control: 8518, webRoot: 'packages/web/dist' };
 const SERVER = 'Midgard Crew';
-const SHOTS = join(REPO_ROOT, 'target', 'ui-screens', 'web3.8');
+const SHOTS = join(REPO_ROOT, 'target', 'ui-screens', 'web3.9');
 
 let host: StartedHost | null = null;
 let instance = '';
@@ -70,7 +70,7 @@ test('the invite page names the community, keeps its limits and is shot in both 
     expect(headers['cache-control']).toBe('no-store');
     expect(headers['referrer-policy']).toBe('no-referrer');
     expect(headers['x-content-type-options']).toBe('nosniff');
-    expect(headers['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'");
+    expect(headers['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'; font-src 'self'");
 
     await expect(view.getByRole('heading', { level: 1, name: `You have been invited to ${SERVER}` })).toBeVisible();
     await expect(view.getByText(`on ${instance}`, { exact: true })).toBeVisible();

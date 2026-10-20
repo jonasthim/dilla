@@ -177,6 +177,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps := api.Deps{
 		Repo: o.Repo, Clock: o.Clock, Log: o.Log, Limiter: limiter, Metrics: o.Metrics,
 		Instance: instance, Domain: o.Config.Instance.Domain,
+		// The invite page's font: the web client dillad serves, found once (R43).
+		LandingFont:  api.LandingFont(tree),
 		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),

@@ -66,3 +66,24 @@ describe('a long chosen name never widens the page (product walk I2)', () => {
     expect(rule(css, '.dw-dm-picker__row > .d-btn')).toMatch(/flex-shrink:\s*0/);
   });
 });
+
+describe('web3.9 WEB-AUTH: the auth column edges (L2, L3)', () => {
+  it('L2: a ghost action inside the onboarding frame has no side padding, so its text sits on the column\'s x', () => {
+    expect(rule(css, '.d-onboarding-frame .d-btn[data-variant="ghost"]')).toMatch(/padding-inline:\s*0/);
+  });
+
+  it('L3: the setup key\'s Copy is a 36px suffix attached to the field, on one line', () => {
+    const field = rule(css, '.dw-factor-key__field');
+    expect(field).toMatch(/flex-wrap:\s*nowrap/);
+    expect(field).toMatch(/gap:\s*0/);
+    expect(rule(css, '.dw-factor-key__field > .d-btn')).toMatch(/height:\s*2\.25rem/);
+    expect(rule(css, '.dw-factor-key__field > .d-btn')).toMatch(/border-radius:\s*0 var\(--r-md\) var\(--r-md\) 0/);
+    expect(rule(css, '.dw-factor-key__field .d-text-field__input')).toMatch(/height:\s*2\.25rem/);
+  });
+
+  it('L3: the one checkbox is 24px and sits on the column\'s x (no UA margin)', () => {
+    const box = rule(css, '.dw-factor-ack > input');
+    expect(box).toMatch(/width:\s*24px;\s*height:\s*24px/);
+    expect(box).toMatch(/margin:\s*0/);
+  });
+});

@@ -3,6 +3,7 @@ package api_test
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -30,11 +32,11 @@ import (
 // Plan 1 shipped.
 func inviteEnv(t *testing.T) (*env, id.ID, string) {
 	t.Helper()
-	return inviteEnvFor(t, "dilla.example")
+	return inviteEnvFor(t, "dilla.example", "")
 }
 
 // inviteEnvFor is inviteEnv with the instance domain the landing page names.
-func inviteEnvFor(t *testing.T, domain string) (*env, id.ID, string) {
+func inviteEnvFor(t *testing.T, domain, font string) (*env, id.ID, string) {
 	t.Helper()
 	e := newEnv(t)
 	log := slog.New(slog.DiscardHandler)
@@ -45,7 +47,7 @@ func inviteEnvFor(t *testing.T, domain string) (*env, id.ID, string) {
 	api.NewInvites(e.Repo, e.Clk, "https://dilla.example", log).Register(e.Mux)
 	api.Deps{
 		Repo: e.Repo, Clock: e.Clk, Log: log, Limiter: limiter, Config: cfg,
-		Domain: domain,
+		Domain: domain, LandingFont: font,
 	}.RegisterPublicInvites(e.Mux)
 	_, tok := e.NewUser("owner")
 	return e, createCommunity(t, e, tok), tok
@@ -629,7 +631,13 @@ func TestTheLandingPageLinksIntoTheWebClient(t *testing.T) {
 // `dillad init` writes for the bootstrap invite.
 func landingEnv(t *testing.T, instance bool, maxUses, used uint64, expiresIn time.Duration) (*env, string) {
 	t.Helper()
-	e, cid, tok := inviteEnvFor(t, "dilla.test")
+	return landingEnvFont(t, "", instance, maxUses, used, expiresIn)
+}
+
+// landingEnvFont is landingEnv with Deps.LandingFont set (the path api.LandingFont found).
+func landingEnvFont(t *testing.T, font string, instance bool, maxUses, used uint64, expiresIn time.Duration) (*env, string) {
+	t.Helper()
+	e, cid, tok := inviteEnvFor(t, "dilla.test", font)
 	if status, _ := e.Do(http.MethodPatch, "/v1/communities/"+cid.String(), tok,
 		[]any{"Midgard Crew", nil, nil, nil}); status != http.StatusOK {
 		t.Fatal("PATCH name failed")
@@ -709,6 +717,10 @@ func TestLandingHasNoScriptNoFormOneLink(t *testing.T) {
 			t.Fatalf("the landing page contains %q:\n%s", absent, page)
 		}
 	}
+	// The only url( a page may hold is the same-origin font; this env's web client carries none.
+	if strings.Contains(page, "url(") {
+		t.Fatalf("a page with no font names a url(:\n%s", page)
+	}
 	if n := strings.Count(page, "href="); n != 1 {
 		t.Fatalf("the landing page has %d href=, want 1:\n%s", n, page)
 	}
@@ -717,18 +729,61 @@ func TestLandingHasNoScriptNoFormOneLink(t *testing.T) {
 	}
 }
 
-func TestLandingHeadersUnchanged(t *testing.T) {
+func TestLandingHeaders(t *testing.T) {
 	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
 	resp, _ := landingBody(t, e, code)
 	for k, want := range map[string]string{
 		"Cache-Control":           "no-store",
 		"Referrer-Policy":         "no-referrer",
 		"X-Content-Type-Options":  "nosniff",
-		"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+		"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'",
 	} {
 		if got := resp.Header.Get(k); got != want {
 			t.Fatalf("%s = %q, want %q", k, got, want)
 		}
+	}
+}
+
+// R43: the page names the JetBrains Mono latin woff2 of the served web client, found once, and nothing else.
+func TestLandingFont(t *testing.T) {
+	const font = "/assets/jetbrains-mono-latin-wght-normal-abc.woff2"
+	for _, tc := range []struct {
+		name string
+		tree fs.FS
+		want string
+	}{
+		{"a tree with the font", fstest.MapFS{
+			"assets/jetbrains-mono-latin-wght-normal-abc.woff2":    {Data: []byte("x")},
+			"assets/jetbrains-mono-cyrillic-wght-normal-def.woff2": {Data: []byte("x")},
+		}, font},
+		{"an empty tree", fstest.MapFS{}, ""},
+		{"no tree", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := api.LandingFont(tc.tree); got != tc.want {
+				t.Fatalf("LandingFont = %q, want %q", got, tc.want)
+			}
+			e, code := landingEnvFont(t, api.LandingFont(tc.tree), false, 5, 0, 24*time.Hour)
+			_, page := landingBody(t, e, code)
+			if tc.want == "" {
+				if strings.Contains(page, "@font-face") || strings.Contains(page, "url(") {
+					t.Fatalf("a page without a font names one:\n%s", page)
+				}
+				if !strings.Contains(page, "ui-monospace") {
+					t.Fatalf("the system stack is gone:\n%s", page)
+				}
+				return
+			}
+			if !strings.Contains(page, "@font-face") || !strings.Contains(page, `url("`+tc.want+`")`) {
+				t.Fatalf("the page does not name %s:\n%s", tc.want, page)
+			}
+			if n := strings.Count(page, "url("); n != 1 {
+				t.Fatalf("%d url( in the page, want 1", n)
+			}
+			if !strings.Contains(page, `"JetBrains Mono",ui-monospace`) {
+				t.Fatalf("the font is not first in the stack:\n%s", page)
+			}
+		})
 	}
 }
 
