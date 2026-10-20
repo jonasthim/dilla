@@ -88,6 +88,10 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await expect(asideSplitter(page)).toHaveCount(0);
   await expect(sidebarSplitter(page)).toBeVisible();
 
+  // 4b. FX-misc round 2 (I2): at a normal desktop width the header stays one row (the wrap is for a main under 28rem only).
+  await expect(sidebarSplitter(page)).toBeVisible();
+  expect(await page.locator('.d-channel-header').evaluate(el => el.getBoundingClientRect().height), 'the header at 900 px').toBeLessThanOrEqual(52);
+
   // 5. FX-misc m6: with the sidebar at its widest on an 800 px window main is 24rem (384 px), and the channel header still shows
   // every action whole inside main: they wrap onto a second row instead of being clipped or pushed off screen.
   await page.setViewportSize({ width: 800, height: 800 });
@@ -136,13 +140,13 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await page.keyboard.press('Enter');
 
   // 7. The status menu behind the user panel's avatar and name opens upward over the sidebar, whole and on screen, and takes a choice.
-  const who = page.locator('.d-user-panel').getByRole('button', { name: copy('panel.status', { status: copy('presence.online') }), exact: true });
+  const who = page.locator('.d-user-panel').getByRole('button', { name: new RegExp(`${copy('panel.status', { status: copy('presence.online') })}$`) });
   await who.click();
   const menu = page.getByRole('menu');
-  await expect(menu.getByRole('menuitem')).toHaveCount(4);
-  for (const item of await menu.getByRole('menuitem').all()) await expect(item).toBeInViewport({ ratio: 1 });
-  await menu.getByRole('menuitem', { name: copy('presence.idle'), exact: true }).click();
-  await expect(page.locator('.d-user-panel').getByRole('button', { name: copy('panel.status', { status: copy('presence.idle') }), exact: true })).toBeFocused({ timeout: WAIT });
+  await expect(menu.getByRole('menuitemradio')).toHaveCount(4);
+  for (const item of await menu.getByRole('menuitemradio').all()) await expect(item).toBeInViewport({ ratio: 1 });
+  await menu.getByRole('menuitemradio', { name: copy('presence.idle'), exact: true }).click();
+  await expect(page.locator('.d-user-panel').getByRole('button', { name: new RegExp(`${copy('panel.status', { status: copy('presence.idle') })}$`) })).toBeFocused({ timeout: WAIT });
   await expect(page.locator('.d-user-panel .d-avatar__presence')).toHaveAttribute('data-presence', 'idle');
 
   // 8. Accessible.

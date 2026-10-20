@@ -59,6 +59,14 @@ function carry(client: CoreClient, value: SelfValue): void {
   try { if (value === null) sessionStorage.removeItem(`${HELD_KEY}.${id}`); else sessionStorage.setItem(`${HELD_KEY}.${id}`, value); } catch { /* blocked storage: nothing carried */ }
 }
 
+/** Sign-out and wipe end in phase `cleared` (a revoked device in `revoked`): nothing of any account's held mute stays in the tab. */
+function dropAllCarried(): void {
+  try {
+    // eslint-disable-next-line no-restricted-globals -- see readCarried
+    for (const key of Object.keys(sessionStorage)) if (key.startsWith(HELD_KEY)) sessionStorage.removeItem(key);
+  } catch { /* blocked storage: nothing was carried */ }
+}
+
 let audio: AudioContext | null = null;
 /** One AudioContext for the sounds, made on first use; null where the browser has none. */
 function soundContext(): AudioContext | null {
@@ -242,6 +250,11 @@ export function useCall(o: UseCallOptions): CallView {
    *  a rejoin (after a disconnect) starts in it and the panel shows it, until a later write is answered. */
   const written = useRef<{ seq: number; value: string | null; held?: true } | null>(null);
   const writeSeq = useRef(0);
+  // A reload passes through `loading` with no user and must keep the held state, so only the end of an account clears it.
+  useEffect(() => client.subscribe('account', () => {
+    const phase = client.get('account')?.phase;
+    if (phase === 'cleared' || phase === 'revoked') dropAllCarried();
+  }), [client]);
   /** web3.8 MUTE: the own mute or deafen as it stands now: the last press not yet answered (or held), else the stored setting.
    *  The join starts in it, the session reads it again before it publishes and at connected, and the attach reconcile
    *  reads it last; all three apply it only toward privacy. */

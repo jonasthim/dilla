@@ -69,7 +69,7 @@ describe('UserPanel', () => {
 
   it('makes the avatar and name block one button named by the current status, with the name and @username inside', () => {
     render(<UserPanel {...panel()} />);
-    const who = screen.getByRole('button', { name: 'your status: Online' });
+    const who = screen.getByRole('button', { name: 'Ada Lovelace @ada, your status: Online' });
     expect(who).toHaveAttribute('aria-haspopup', 'menu');
     expect(who).toHaveTextContent('Ada Lovelace');
     expect(who).toHaveTextContent('@ada');
@@ -81,22 +81,22 @@ describe('UserPanel', () => {
   it('opens a status menu with the four statuses, and a choice calls onChoose with its id', async () => {
     const onChoose = vi.fn();
     render(<UserPanel {...panel({ status: { ...panel().status, onChoose } })} />);
-    await userEvent.click(screen.getByRole('button', { name: 'your status: Online' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Ada Lovelace @ada, your status: Online' }));
     const menu = screen.getByRole('menu', { name: 'your status: Online' });
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Online', 'Idle', 'Do Not Disturb', 'Invisible']);
-    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Do Not Disturb' }));
+    expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual(['Online', 'Idle', 'Do Not Disturb', 'Invisible']);
+    await userEvent.click(within(menu).getByRole('menuitemradio', { name: 'Do Not Disturb' }));
     expect(onChoose).toHaveBeenCalledWith('dnd');
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('is keyboard reachable: Enter opens it on the first item, Escape closes it and refocuses the name block', async () => {
     render(<UserPanel {...panel()} />);
-    const who = screen.getByRole('button', { name: 'your status: Online' });
+    const who = screen.getByRole('button', { name: 'Ada Lovelace @ada, your status: Online' });
     who.focus();
     await userEvent.keyboard('{Enter}');
-    expect(screen.getByRole('menuitem', { name: 'Online' })).toHaveFocus();
+    expect(screen.getByRole('menuitemradio', { name: 'Online' })).toHaveFocus();
     await userEvent.keyboard('{ArrowDown}');
-    expect(screen.getByRole('menuitem', { name: 'Idle' })).toHaveFocus();
+    expect(screen.getByRole('menuitemradio', { name: 'Idle' })).toHaveFocus();
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByRole('menu')).toBeNull();
     expect(who).toHaveFocus();
@@ -108,11 +108,19 @@ describe('UserPanel', () => {
       expect(container.querySelector('.d-user-panel .d-avatar__presence')).toHaveAttribute('data-presence', dot);
     });
 
+  it('names the status button by its visible text (WCAG 2.5.3): the name, the @username and the status', () => {
+    render(<UserPanel {...panel()} />);
+    const who = screen.getByRole('button', { name: /your status/ });
+    expect(who).toHaveAccessibleName('Ada Lovelace @ada, your status: Online');
+    for (const visible of ['Ada Lovelace', '@ada']) expect(who.textContent).toContain(visible);
+    expect(who.getAttribute('aria-label')).toBeNull();
+  });
+
   it('marks the current status in the menu', async () => {
     render(<UserPanel {...panel({ status: { ...panel().status, current: 'idle' } })} />);
-    await userEvent.click(screen.getByRole('button', { name: 'your status: Online' }));
-    expect(screen.getByRole('menuitem', { name: 'Idle' })).toHaveAttribute('aria-current', 'true');
-    expect(screen.getByRole('menuitem', { name: 'Online' })).not.toHaveAttribute('aria-current');
+    await userEvent.click(screen.getByRole('button', { name: 'Ada Lovelace @ada, your status: Online' }));
+    expect(screen.getByRole('menuitemradio', { name: 'Idle' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('menuitemradio', { name: 'Online' })).toHaveAttribute('aria-checked', 'false');
   });
 
   it('mute and deafen are at least 2rem square too (CSS pin)', () => {

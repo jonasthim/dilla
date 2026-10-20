@@ -111,6 +111,37 @@ describe('Controller', () => {
       await vi.waitFor(() => expect(w.account()?.user).toBeNull());
       expect(cache(w).knownDisplay(toHex(USER))).toEqual({});
     });
+    it('the setAccount clear: any state that sets user null, or revokes, drops the cache (m-d, kept as defence in depth)', async () => {
+      const set = (w: ReturnType<typeof world>, patch: object) => (w.controller as unknown as { setAccount(p: object): void }).setAccount(patch);
+      const a = await readyAs('Alice');
+      set(a, { user: null });
+      expect(cache(a).knownDisplay(toHex(USER))).toEqual({});
+      const b = await readyAs('Alice');
+      set(b, { phase: 'revoked' });
+      expect(cache(b).knownDisplay(toHex(USER))).toEqual({});
+      const c = await readyAs('Alice');
+      set(c, { phase: 'loading' });
+      expect(cache(c).knownDisplay(toHex(USER))).toEqual({ display: 'Alice' });
+    });
+    it('the status choice is reset with the account (wipe and dropStore), so the next account never sees the last one\'s status (m-a)', async () => {
+      const w = world();
+      w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 3 });
+      await toReady(w);
+      w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      w.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
+      (w.controller as unknown as { dropStore(): void }).dropStore();
+      expect(w.account()?.presenceChoice).toBeUndefined();
+      const x = world();
+      x.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Web', kind: 0, flags: 0n, presenceChoice: 3 });
+      await toReady(x);
+      x.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      x.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(x.account()?.presenceChoice).toBe('dnd'));
+      x.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(x.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+      expect(x.account()?.presenceChoice).toBeUndefined();
+    });
     it('a read that names another user is not applied to the current one', async () => {
       const w = world();
       w.routes.getAccountMe.mockResolvedValue({ userId: new Uint8Array(16).fill(0xbb), username: 'other', display: 'Mallory', kind: 0, flags: 0n, presenceChoice: 1 });

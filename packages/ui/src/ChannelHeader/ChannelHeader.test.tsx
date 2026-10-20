@@ -8,11 +8,14 @@ import { expectNoAxeViolations } from '../test/setup.ts';
 const css = readFileSync(`${process.cwd()}/src/ChannelHeader/ChannelHeader.css`, 'utf8');
 
 describe('ChannelHeader', () => {
-  it('wraps its actions onto their own row at any shell width, never clipping them (CSS pin, 24rem main)', () => {
-    expect(css).toMatch(/\.d-channel-header \{[^}]*flex-wrap: wrap;[^}]*min-height: var\(--channel-header-h\)/);
-    expect(css).not.toMatch(/\.d-channel-header \{[^}]*[^-]height: var\(--channel-header-h\)/);
-    expect(css).toMatch(/\.d-channel-header__actions \{[^}]*flex-wrap: wrap;[^}]*min-width: 0/);
-    expect(css).not.toMatch(/\.d-channel-header__actions \{[^}]*flex-shrink: 0/);
+  it('stays one row at normal widths and wraps only while main is narrow (CSS pins, I2)', () => {
+    // The base header never wraps, so a long topic or name is cut with its ellipsis (Product walk I2).
+    expect(css).not.toMatch(/^\.d-channel-header \{[^}]*flex-wrap/m);
+    expect(css).toMatch(/\.d-channel-header \{[^}]*[^-]height: var\(--channel-header-h\)/m);
+    expect(css).toMatch(/^\.d-channel-header__actions \{[^}]*flex-shrink: 0/m);
+    // The shell marks a main under 28rem; only then do the header and its actions wrap.
+    expect(css).toMatch(/\[data-main-narrow\] \.d-channel-header \{[^}]*flex-wrap: wrap;[^}]*height: auto;[^}]*min-height: var\(--channel-header-h\)/);
+    expect(css).toMatch(/\[data-main-narrow\] \.d-channel-header__actions \{[^}]*flex-wrap: wrap;[^}]*flex-shrink: 1;[^}]*min-width: 0/);
   });
 
   it('names the channel in a level-two heading without the decorative brackets', () => {

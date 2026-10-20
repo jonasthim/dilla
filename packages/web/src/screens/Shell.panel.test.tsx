@@ -123,13 +123,15 @@ describe('the desktop user panel', () => {
   it('the avatar and name block is a button named by the current status; it opens the four statuses and a choice sets the account presence', async () => {
     const app = shell();
     await screen.findByRole('main');
-    const who = inPanel().getByRole('button', { name: t('panel.status', { status: t('presence.online') }) });
+    const who = inPanel().getByRole('button', { name: new RegExp(`${t('panel.status', { status: t('presence.online') })}$`) });
     expect(who).toHaveTextContent('@ada');
+    // WCAG 2.5.3: the name holds the visible name and username.
+    expect(who).toHaveAccessibleName('ada @ada, your status: Online');
     await app.user.click(who);
     const menu = screen.getByRole('menu');
-    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual(
+    expect(within(menu).getAllByRole('menuitemradio').map(i => i.textContent)).toEqual(
       [t('presence.online'), t('presence.idle'), t('presence.dnd'), t('presence.invisible')]);
-    await app.user.click(within(menu).getByRole('menuitem', { name: t('presence.invisible') }));
+    await app.user.click(within(menu).getByRole('menuitemradio', { name: t('presence.invisible') }));
     expect(app.client.callsOf('setPresenceChoice')).toEqual([{ m: 'setPresenceChoice', choice: 'invisible' }]);
     expect(window.location.pathname).not.toBe('/settings/devices');
   });
@@ -139,7 +141,7 @@ describe('the desktop user panel', () => {
     await screen.findByRole('main');
     expect(screen.queryByRole('combobox', { name: t('presence.label') })).toBeNull();
     act(() => app.client.publish('account', account({ presenceChoice: 'dnd' })));
-    expect(await inPanel().findByRole('button', { name: t('panel.status', { status: t('presence.dnd') }) })).toBeInTheDocument();
+    expect(await inPanel().findByRole('button', { name: new RegExp(`${t('panel.status', { status: t('presence.dnd') })}$`) })).toBeInTheDocument();
     expect(panel()!.querySelector('.d-avatar__presence')).toHaveAttribute('data-presence', 'dnd');
   });
 
@@ -507,6 +509,23 @@ describe('fail closed (security round 1)', () => {
     const again = shell();
     await joinVoice(again);
     expect(startOpts(again).self).toBe('muted');
+  });
+
+  it('sign-out and wipe leave no held mute in the tab\'s sessionStorage (m-b)', async () => {
+    // eslint-disable-next-line no-restricted-properties -- reads back what the hook must have removed
+    const held = () => Object.keys(window.sessionStorage).filter(k => k.startsWith('dilla.voiceSelfHeld'));
+    const app = shell();
+    await joinVoice(app);
+    const inner = app.client.handler;
+    app.client.handler = (command: Command) => (command.m === 'setSetting' ? Promise.reject(new Error('E_STORE_BUSY')) : inner(command));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    await waitFor(() => expect(held()).toEqual([`dilla.voiceSelfHeld.${ME.id}`]));
+    // A reload passes through loading with no user: the held state must survive that.
+    act(() => app.client.publish('account', account({ phase: 'loading', user: null })));
+    expect(held()).toHaveLength(1);
+    // The sign-out or wipe ends in cleared.
+    act(() => app.client.publish('account', account({ phase: 'cleared', user: null })));
+    expect(held()).toEqual([]);
   });
 
   it('a mute the store did take is not carried across a reload, and an answered write drops a carried one', async () => {

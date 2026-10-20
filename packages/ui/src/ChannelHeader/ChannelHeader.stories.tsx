@@ -49,3 +49,27 @@ export const HundredBytesWide: Story = {
   decorators: [Story => <div style={{ width: 980 }}><Story /></div>],
   play: ({ canvasElement }) => { expectHeaderFits(canvasElement, 'HundredBytesWide'); },
 };
+
+// FX-misc round 2 (I2): at a normal desktop width a long topic is cut with its ellipsis and the header stays ONE row.
+const LONG_TOPIC = 'evening plans, screenshots, the weekly changelog thread, release notes and the odd argument about tabs and spaces that never ends'.repeat(2);
+const THREE_ACTIONS = <><Button variant="ghost">pinned</Button><Button variant="ghost">threads</Button><Button variant="ghost">members</Button></>;
+/** Throws unless every direct child of the header sits on one line and the header is its fixed height. */
+function expectOneRow(root: HTMLElement, story: string): void {
+  const header = root.querySelector<HTMLElement>('.d-channel-header');
+  if (header === null) throw new Error(`${story}: no header`);
+  const tops = Array.from(header.children).map(c => Math.round(c.getBoundingClientRect().top));
+  const h = header.getBoundingClientRect().height;
+  if (Math.max(...tops) - Math.min(...tops) > 4 || h > 52) throw new Error(`${story}: the header wraps (tops ${tops.join(', ')}, height ${String(h)})`);
+}
+// 1440 px less the rail (60) and the sidebar (240).
+export const LongTopicDesktop: Story = {
+  args: { name: 'general', topic: LONG_TOPIC, actions: THREE_ACTIONS },
+  decorators: [Story => <div style={{ width: 1140 }}><Story /></div>],
+  play: ({ canvasElement }) => { expectOneRow(canvasElement, 'LongTopicDesktop'); expectHeaderFits(canvasElement, 'LongTopicDesktop'); },
+};
+// Main at its 24rem floor (the shell marks data-main-narrow): the actions wrap and none is clipped.
+export const NarrowMain: Story = {
+  args: { name: 'general', topic: 'say hi', actions: THREE_ACTIONS },
+  decorators: [Story => <div data-main-narrow="true" style={{ width: 384 }}><Story /></div>],
+  play: ({ canvasElement }) => { expectHeaderFits(canvasElement, 'NarrowMain'); },
+};

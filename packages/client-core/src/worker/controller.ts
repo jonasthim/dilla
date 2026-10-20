@@ -1122,6 +1122,12 @@ export class Controller {
     if (patch.user === null || patch.phase === 'revoked') this.selfDisplay = null;
     if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
+    // The status choice belongs to the signed-in account too: with the user gone, the next account starts from the default
+    // until its own read lands, and a read still in flight for the old one is not applied.
+    if (patch.user === null && patch.presenceChoice === undefined) {
+      delete this.accountState.presenceChoice;
+      ++this.presenceChoiceReadSeq;
+    }
     this.phase = this.accountState.phase;
     this.slices.set('account', this.accountState);
   }

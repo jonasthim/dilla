@@ -284,6 +284,23 @@ describe('AppShell splitters', () => {
     expect(root).toHaveStyle({ '--d-sidebar-w': '240px' });
   });
 
+  it('sets data-main-narrow while main is under 28rem (the channel header then wraps), and not otherwise, never on a phone', () => {
+    const root = (w: number, over: Record<string, unknown> = {}) => {
+      shellW = w; stubWidths();
+      const view = render(<ComposedShell shell={shellProps({ asideOpen: false, ...over })} />);
+      const el = view.container.querySelector('.d-app-shell')!;
+      const narrow = el.hasAttribute('data-main-narrow');
+      view.unmount();
+      return narrow;
+    };
+    // main = shell - rail (60) - sidebar (the default 240 here); 28rem is 448.
+    expect(root(1280)).toBe(false);
+    expect(root(748)).toBe(false);      // 448: not under
+    expect(root(747)).toBe(true);       // 447
+    expect(root(700, { paneWidths: { sidebar: 384, aside: 240 } })).toBe(true);   // 256 clamps to the 24rem floor, 384 < 448
+    expect(root(700, { layout: 'phone' })).toBe(false);
+  });
+
   it('opening the aside column clamps what is shown and reports nothing', () => {
     shellW = 1024; stubWidths();
     const onPaneResize = vi.fn();

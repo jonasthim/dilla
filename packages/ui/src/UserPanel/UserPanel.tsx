@@ -2,7 +2,7 @@ import { ActionMenu, type ActionMenuItem } from '../ActionMenu/ActionMenu.tsx';
 import { Avatar, type Presence } from '../Avatar/Avatar.tsx';
 import { VOICE_ICONS, VOICE_SHORTCUTS, VoiceToolbar, type ToolbarControl } from '../CallControls/CallControls.tsx';
 import { Icon } from '../Icon/Icon.tsx';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import './UserPanel.css';
 
 export interface UserPanelProps {
@@ -35,6 +35,7 @@ const DOT: Record<UserPanelProps['status']['current'], Presence> = { online: 'on
  */
 export function UserPanel({ name, username, muted, deafened, shortcuts, labels, onMute, onDeafen, onSettings, status }: UserPanelProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const nameId = useId();
   const controls: ToolbarControl[] = [
     { id: 'mute', label: labels.mute, on: muted, keys: VOICE_SHORTCUTS.mute, shortcut: shortcuts?.mute, ...VOICE_ICONS.mute, onAction: onMute },
     { id: 'deafen', label: labels.deafen, on: deafened, keys: VOICE_SHORTCUTS.deafen, shortcut: shortcuts?.deafen, ...VOICE_ICONS.deafen, onAction: onDeafen },
@@ -42,8 +43,11 @@ export function UserPanel({ name, username, muted, deafened, shortcuts, labels, 
   return (
     <div className="d-user-panel">
       <ActionMenu label={status.label} className="d-user-panel__menu" triggerClassName="d-user-panel__who" open={menuOpen} onOpenChange={setMenuOpen}
-        items={status.items.map(item => ({ ...item, current: item.id === status.current }))} onSelect={status.onChoose}
+        labelledBy={nameId}
+        items={status.items.map(item => ({ ...item, checked: item.id === status.current }))} onSelect={status.onChoose}
         triggerContent={<>
+          {/* WCAG 2.5.3: the button's name holds its visible text, then the status. */}
+          <span id={nameId} className="d-sr-only">{`${name} @${username}, ${status.label}`}</span>
           <Avatar name={name} size="md" presence={DOT[status.current]} />
           <span className="d-user-panel__text">
             <span className="d-user-panel__name" title={name}>{name}</span>

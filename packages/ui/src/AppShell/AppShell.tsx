@@ -195,6 +195,9 @@ export function AppShell({
   };
   const widths = clampPanes(widthsIn);
   const ranges = { sidebar: paneRange('sidebar', widthsIn, widths.aside), aside: paneRange('aside', widthsIn, widths.sidebar) };
+  // Main under 28rem (the splitters keep it at 24rem or more): the channel header wraps its actions then (ChannelHeader.css).
+  const mainPx = shellPx - railPx - widths.sidebar - (columnAside ? widths.aside : 0);
+  const mainNarrow = layout !== 'phone' && shellPx > 0 && mainPx < 28 * remPx;
   const given = { sidebar: drag?.pane === 'sidebar' ? drag.px : paneWidths?.sidebar, aside: drag?.pane === 'aside' ? drag.px : paneWidths?.aside };
   const paneVars = resizable && (given.sidebar !== undefined || given.aside !== undefined) ? {
     ...(given.sidebar !== undefined ? { '--d-sidebar-w': `${widths.sidebar}px` } : {}),
@@ -389,7 +392,7 @@ export function AppShell({
     );
   }
   return (
-    <div ref={rootRef} className="d-app-shell" style={paneVars} data-resizing={drag !== null ? 'true' : undefined}>
+    <div ref={rootRef} className="d-app-shell" style={paneVars} data-resizing={drag !== null ? 'true' : undefined} data-main-narrow={mainNarrow ? 'true' : undefined}>
       <a className="d-app-shell__skip" href={`#${mainId}`} onClick={onSkip}>{skipLabel}</a>
       <div className={showAside ? 'd-app-shell__grid d-app-shell__grid--aside' : 'd-app-shell__grid'}>
         {hasBanner ? <div className="d-app-shell__banner" inert={overlay || undefined}>{banner}</div> : null}
