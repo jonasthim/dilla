@@ -810,6 +810,9 @@ test('the DM and the voice layout give each element its room', async ({ page, pl
     // N4: the AFK preview, one column at the top.
     await page.goto(afkPath);
     await expect(page.locator('.dw-voice-join')).toBeVisible({ timeout: WAIT });
+    // The reload left the call, but the room can still name this device until the boot sweep (R32) ends the call it left
+    // behind and the room says so; the preview is measured empty, as it settles.
+    await expect(page.locator('.dw-voice-stage .d-call-stage__tile'), 'N4 the reload left the call: the AFK preview is empty').toHaveCount(0, { timeout: WAIT });
     const join = (await boxes(page, '.dw-voice-join'))[0];
     const texts = await boxes(page, '.d-call-stage__outgoing, .d-call-stage__empty, .d-call-stage__title');
     expect.soft(texts.length, 'N4 the preview has its text').toBeGreaterThan(0);
