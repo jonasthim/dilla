@@ -489,6 +489,26 @@ describe('fail closed (security round 1)', () => {
     expect(reloaded.session.state.deafened).toBe(true);
   });
 
+  it('a held mute is carried per account: another account in the same tab starts from its own setting, not the first one\'s mute (security fix, fail open to the setting)', async () => {
+    const app = shell();
+    await joinVoice(app);
+    const inner = app.client.handler;
+    app.client.handler = (command: Command) => (command.m === 'setSetting' ? Promise.reject(new Error('E_STORE_BUSY')) : inner(command));
+    await app.user.click(inPanel().getByRole('button', { name: t('voice.mute') }));
+    expect(app.session.state.muted).toBe(true);
+    cleanup();
+    const other = shell();
+    act(() => other.client.publish('account', account({ user: { id: 'cc'.repeat(16), username: 'eve' } })));
+    await joinVoice(other);
+    expect(startOpts(other).self).toBe(null);
+    expect(other.session.state.muted).toBe(false);
+    // The first account, back in the tab, still finds its own held mute.
+    cleanup();
+    const again = shell();
+    await joinVoice(again);
+    expect(startOpts(again).self).toBe('muted');
+  });
+
   it('a mute the store did take is not carried across a reload, and an answered write drops a carried one', async () => {
     const app = shell();
     await joinVoice(app);

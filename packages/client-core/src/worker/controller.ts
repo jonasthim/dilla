@@ -1118,6 +1118,8 @@ export class Controller {
   // ---- slices ----
 
   private setAccount(patch: Partial<AccountState>): void {
+    // The cached display name belongs to one signed-in user: any state that clears or revokes the user drops it.
+    if (patch.user === null || patch.phase === 'revoked') this.selfDisplay = null;
     if (patch.error !== undefined && patch.error !== null) patch.error = sanitizePageError(patch.error);
     this.accountState = { ...this.accountState, ...patch };
     this.phase = this.accountState.phase;
@@ -1403,7 +1405,7 @@ export class Controller {
     if (this.revoked()) return;
     this.noticeFloor = this.serverNowS();
     this.setAccount({
-      phase: 'ready', user: { id: toHex(userId), username, ...this.knownDisplay() }, deviceId: toHex(deviceId),
+      phase: 'ready', user: { id: toHex(userId), username, ...this.knownDisplay(toHex(userId)) }, deviceId: toHex(deviceId),
       recoveryKey: null, error: null, signIn: null, factorSetup: null,
     });
     this.publishDms();
@@ -2728,9 +2730,10 @@ export class Controller {
   }
 
   /** The account's display name as last read, so the user entry written at ready carries it before the next read. */
-  private selfDisplay: string | undefined;
-  private knownDisplay(): { display?: string } {
-    return this.selfDisplay === undefined ? {} : { display: this.selfDisplay };
+  private selfDisplay: { userId: string; display: string } | null = null;
+  /** The cached display name, only for the user it was read for; another account never inherits it. */
+  private knownDisplay(userId: string): { display?: string } {
+    return this.selfDisplay !== null && this.selfDisplay.userId === userId ? { display: this.selfDisplay.display } : {};
   }
 
   private async refreshPresenceChoice(): Promise<void> {
@@ -2741,9 +2744,11 @@ export class Controller {
       if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
       const choice = Controller.PRESENCE_CHOICES[(me.presenceChoice ?? 1) - 1] ?? 'online';
       this.presenceChoiceAppliedRead = seq;
-      this.selfDisplay = me.display;
+      // Only the current user's own read counts: a read for another account (a switch while it was in flight) is not applied.
       const user = this.accountState.user;
-      this.setAccount({ presenceChoice: choice, ...(user !== null ? { user: { ...user, display: me.display } } : {}) });
+      const mine = user !== null && toHex(me.userId) === user.id;
+      if (mine) this.selfDisplay = { userId: user.id, display: me.display };
+      this.setAccount({ presenceChoice: choice, ...(mine ? { user: { ...user, display: me.display } } : {}) });
     } catch { /* the next ready retries */ }
   }
 
@@ -3108,6 +3113,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.selfDisplay = null;
     this.clearReauthTimer();
     for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
     this.communityReloads.clear();

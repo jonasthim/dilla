@@ -42,13 +42,21 @@ const morePrivate = (a: SelfValue, b: SelfValue): SelfValue => ((RANK[b ?? ''] ?
  * was in. It is read only toward privacy (`morePrivate`) and dropped as soon as a write is answered; a blocked storage
  * keeps nothing, and then the stored setting alone speaks, as before.
  */
-function readCarried(): SelfValue {
+function readCarried(client: CoreClient): SelfValue {
+  const id = client.get('account')?.user?.id;
+  if (id === undefined) return null;
   // eslint-disable-next-line no-restricted-globals -- the own mute is a per-tab privacy preference, not a key, token or secret
-  try { const v = sessionStorage.getItem(HELD_KEY); return v === 'muted' || v === 'deafened' ? v : null; } catch { return null; }
+  try { const v = sessionStorage.getItem(`${HELD_KEY}.${id}`); return v === 'muted' || v === 'deafened' ? v : null; } catch { return null; }
 }
-function carry(value: SelfValue): void {
+/**
+ * Keyed by the signed-in user's id: another account in the same tab never reads this one's held state (it reads none, so
+ * it starts from its own stored setting; no account known means nothing is carried or read, as before this fix).
+ */
+function carry(client: CoreClient, value: SelfValue): void {
+  const id = client.get('account')?.user?.id;
+  if (id === undefined) return;
   // eslint-disable-next-line no-restricted-globals -- see readCarried
-  try { if (value === null) sessionStorage.removeItem(HELD_KEY); else sessionStorage.setItem(HELD_KEY, value); } catch { /* blocked storage: nothing carried */ }
+  try { if (value === null) sessionStorage.removeItem(`${HELD_KEY}.${id}`); else sessionStorage.setItem(`${HELD_KEY}.${id}`, value); } catch { /* blocked storage: nothing carried */ }
 }
 
 let audio: AudioContext | null = null;
@@ -240,7 +248,7 @@ export function useCall(o: UseCallOptions): CallView {
   const selfNow = useCallback((): 'muted' | 'deafened' | null => {
     const value = written.current !== null ? written.current.value : (client.get('settings') ?? {})[SETTINGS.voiceSelf];
     const stored: SelfValue = value === 'deafened' ? 'deafened' : value === 'muted' ? 'muted' : null;
-    return written.current !== null ? stored : morePrivate(stored, readCarried());
+    return written.current !== null ? stored : morePrivate(stored, readCarried(client));
   }, [client]);
   /** web3.8 MUTE: push, not only pull. A starting session registers here (watchSelf) and is told of each press at once,
    *  after `written` holds it, so selfNow already answers the new value. */
@@ -509,8 +517,8 @@ export function useCall(o: UseCallOptions): CallView {
     written.current = mine;
     pushSelf();
     client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(
-      () => { if (written.current === mine) { written.current = null; carry(null); } },
-      () => { if (written.current === mine) { mine.held = true; carry(value); } },
+      () => { if (written.current === mine) { written.current = null; carry(client, null); } },
+      () => { if (written.current === mine) { mine.held = true; carry(client, value); } },
     );
   }, [client, pushSelf]);
   const toggleMute = useCallback(() => {
@@ -530,13 +538,13 @@ export function useCall(o: UseCallOptions): CallView {
     announce(t(on ? 'voice.announce.deafened' : 'voice.announce.undeafened'));
   }, [announce, keepSelf]);
   const writeSelf = useCallback((pick: (current: string | undefined) => 'muted' | 'deafened' | null) => {
-    const current = written.current !== null ? written.current.value ?? undefined : morePrivate(((client.get('settings') ?? {})[SETTINGS.voiceSelf] as SelfValue | undefined) ?? null, readCarried()) ?? undefined;
+    const current = written.current !== null ? written.current.value ?? undefined : morePrivate(((client.get('settings') ?? {})[SETTINGS.voiceSelf] as SelfValue | undefined) ?? null, readCarried(client)) ?? undefined;
     const value = pick(current);
     const mine = { seq: ++writeSeq.current, value };
     written.current = mine;
     pushSelf();
     const done = () => { if (written.current === mine) written.current = null; };
-    const answered = () => { if (written.current === mine) carry(null); done(); };
+    const answered = () => { if (written.current === mine) carry(client, null); done(); };
     const key = value === 'deafened' ? 'voice.announce.deafened' : current === 'deafened' && value === 'muted' ? 'voice.announce.undeafened'
       : value === 'muted' ? 'voice.announce.muted' : 'voice.announce.unmuted';
     client.call({ m: 'setSetting', key: SETTINGS.voiceSelf, value }).then(() => { answered(); live.current.announce?.(t(key)); }, done);
@@ -760,7 +768,7 @@ export function useCall(o: UseCallOptions): CallView {
   }, [session, selfShortcuts, selfMute, selfDeafen]);
   // web3.8 MUTE: an in-call toggle whose write was refused is what the next join starts in, so the panel shows it.
   const kept = written.current?.held === true ? (written.current.value ?? undefined)
-    : morePrivate((o.settings[SETTINGS.voiceSelf] as SelfValue | undefined) ?? null, readCarried()) ?? undefined;
+    : morePrivate((o.settings[SETTINGS.voiceSelf] as SelfValue | undefined) ?? null, readCarried(client)) ?? undefined;
   const selfMuted = state !== null && session !== null ? state.muted : kept === 'muted' || kept === 'deafened';
   const selfDeafened = state !== null && session !== null ? state.deafened : kept === 'deafened';
 

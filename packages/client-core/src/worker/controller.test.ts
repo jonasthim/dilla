@@ -79,6 +79,50 @@ describe('Controller', () => {
     await vi.waitFor(() => expect(w.account()?.user?.display).toBe('Alice'));
     expect(w.account()?.user?.username).toBe('web');
   });
+  describe('the cached display name never crosses accounts (security fix)', () => {
+    type Cache = { knownDisplay(userId: string): { display?: string } };
+    const cache = (w: ReturnType<typeof world>) => w.controller as unknown as Cache;
+    const B = 'b'.repeat(32);
+    async function readyAs(display: string) {
+      const w = world();
+      w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display, kind: 0, flags: 0n, presenceChoice: 1 });
+      await toReady(w);
+      w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      w.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(w.account()?.user?.display).toBe(display));
+      return w;
+    }
+    it('is returned only for the user it was read for', async () => {
+      const w = await readyAs('Alice');
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({ display: 'Alice' });
+      expect(cache(w).knownDisplay(B)).toEqual({});
+    });
+    it('is dropped by a sign-out wipe, so the next account never sees it, not even for the same id', async () => {
+      const w = await readyAs('Alice');
+      w.call(2, { m: 'signOutRevoke', recoveryKey: RECOVERY_KEY });
+      await vi.waitFor(() => expect(w.ret(2)).toEqual({ t: 'ret', id: 2, ok: true, value: null }));
+      expect(w.account()?.user).toBeNull();
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({});
+      expect(cache(w).knownDisplay(B)).toEqual({});
+    });
+    it('is dropped when the account state is cleared by a lost lock (dropStore)', async () => {
+      const w = await readyAs('Alice');
+      (w.controller as unknown as { dropStore(): void }).dropStore();
+      await vi.waitFor(() => expect(w.account()?.user).toBeNull());
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({});
+    });
+    it('a read that names another user is not applied to the current one', async () => {
+      const w = world();
+      w.routes.getAccountMe.mockResolvedValue({ userId: new Uint8Array(16).fill(0xbb), username: 'other', display: 'Mallory', kind: 0, flags: 0n, presenceChoice: 1 });
+      await toReady(w);
+      w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+      w.gateway.emit({ type: 'ready', info: READY_INFO });
+      await vi.waitFor(() => expect(w.routes.getAccountMe).toHaveBeenCalled());
+      await new Promise(r => setTimeout(r, 20));
+      expect(w.account()?.user?.display).toBeUndefined();
+      expect(cache(w).knownDisplay(toHex(USER))).toEqual({});
+    });
+  });
   it('keeps a successful choice save when the own frame refresh fails', async () => {
     const w = world();
     await toReady(w);
