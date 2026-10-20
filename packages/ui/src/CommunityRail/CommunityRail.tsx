@@ -13,11 +13,11 @@ export interface CommunityRailProps {
   onSelect(id: string): void;
   joinLabel: string;
   onJoin(): void;
-  /** @deprecated The captions are gone (R22). Accepted so callers compile; not rendered. */
+  /** @deprecated removed in WEB-LIST. The captions are gone from the new design (R22); drawn only on the two separate tiles (no `addLabel`). */
   joinCaption?: string;
   /** "new server" (flow 07): drawn after join when both are given. */
   createLabel?: string;
-  /** @deprecated The captions are gone (R22). Accepted so callers compile; not rendered. */
+  /** @deprecated removed in WEB-LIST. See `joinCaption`. */
   createCaption?: string;
   onCreate?(): void;
   /**
@@ -59,7 +59,7 @@ function pillState(selected: boolean, unread: number, mentions: number): 'select
  * button and the "+" menu's trigger included (Global Constraints keyboard map).
  */
 export function CommunityRail({
-  label, items, activeId, onSelect, joinLabel, onJoin, createLabel, onCreate, addLabel, home, settingsLabel, onSettings, itemLabel,
+  label, items, activeId, onSelect, joinLabel, onJoin, joinCaption, createLabel, createCaption, onCreate, addLabel, home, settingsLabel, onSettings, itemLabel,
 }: CommunityRailProps) {
   // The roving stops are the buttons in order: the `@` tile (when given), then the servers (the hairline has none).
   const itemIndex = items.findIndex(i => i.id === activeId);
@@ -125,19 +125,21 @@ export function CommunityRail({
         ) : (
           <>
             <li>
-              <button type="button" className="d-community-rail__join" aria-label={joinLabel} onClick={onJoin}>
+              <button type="button" className="d-community-rail__join" data-captioned={joinCaption !== undefined || undefined} aria-label={joinLabel} onClick={onJoin}>
                 <span className="d-community-rail__glyph" aria-hidden="true">
                   {/* An arrow into a bracket: join with an invite. "+" is kept for starting a server. */}
                   <svg className="d-community-rail__icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" focusable="false">
                     <path d="M9.5 2.5h3v11h-3M2.5 8h7M6.5 5l3 3-3 3" />
                   </svg>
                 </span>
+                {joinCaption !== undefined ? <span className="d-community-rail__caption" aria-hidden="true">{joinCaption}</span> : null}
               </button>
             </li>
             {canCreate ? (
               <li>
-                <button type="button" className="d-community-rail__join d-community-rail__create" aria-label={createLabel} onClick={onCreate}>
+                <button type="button" className="d-community-rail__join d-community-rail__create" data-captioned={createCaption !== undefined || undefined} aria-label={createLabel} onClick={onCreate}>
                   <span className="d-community-rail__glyph" aria-hidden="true">+</span>
+                  {createCaption !== undefined ? <span className="d-community-rail__caption" aria-hidden="true">{createCaption}</span> : null}
                 </button>
               </li>
             ) : null}

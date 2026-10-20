@@ -176,16 +176,16 @@ describe('CommunityRail', () => {
 
   // v0.1.0-web3.1, flow 07: a fresh instance starts here. "new server" ends the server list (after join, before settings).
   // web3.9 (R22): the captions are gone; the tiles are named by their labels alone.
-  it('ends the list with join, then new server, inside the one tab stop, with no caption text', async () => {
+  it('ends the list with join, then new server, inside the one tab stop; captions show only on these separate tiles (removed in WEB-LIST)', async () => {
     const user = userEvent.setup();
     const p = props({ createLabel: 'new server', joinCaption: 'join', createCaption: 'new', onCreate: vi.fn(),
       settingsLabel: 'settings', onSettings: vi.fn() });
     const { container } = render(wrapped(p));
     const all = within(screen.getByRole('navigation', { name: 'servers' })).getAllByRole('button');
     expect(all.slice(-3)).toEqual([btn('join a server'), btn('new server'), btn('settings')]);
-    expect(container.querySelector('.d-community-rail__caption')).toBeNull();
-    expect(btn('new server').textContent).toBe('+');
-    expect(btn('join a server').textContent).toBe('');
+    expect(within(btn('new server')).getByText('new')).toHaveAttribute('aria-hidden', 'true');
+    expect(within(btn('join a server')).getByText('join')).toHaveAttribute('aria-hidden', 'true');
+    expect(container.querySelectorAll('.d-community-rail__caption')).toHaveLength(2);
     await user.tab();
     await user.tab();
     await user.keyboard('{End}{ArrowUp}');

@@ -239,7 +239,7 @@ describe('ChannelList, one list with voice rooms in place', () => {
     { id: 'l', name: 'lfg', kind: 'text', readable: false },
   ];
   const voice = (over: Partial<NonNullable<ChannelListProps['voice']>> = {}): NonNullable<ChannelListProps['voice']> => ({
-    labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', state },
+    labels: { open: 'voice {name}', count: '{n} in voice', canHear: 'can hear', join: 'join voice', state }, iconJoin: true,
     rooms: { v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true })] } },
     onJoin: vi.fn(), ...over,
   });
@@ -292,10 +292,18 @@ describe('ChannelList, one list with voice rooms in place', () => {
     expect(screen.queryByRole('button', { name: 'join voice' })).toBeNull();
   });
 
-  it('has no list-header "+" row: a listAction is not rendered (A1)', () => {
-    const { container } = render(<ChannelList {...props({ channels: mixed, voice: voice(), tabs, listAction: <button type="button">new channel</button> })} />);
-    expect(screen.queryByRole('button', { name: 'new channel' })).toBeNull();
+  it('no listAction means no list-header "+" row; a legacy caller that passes one still gets it (removed in WEB-LIST)', () => {
+    const { container, rerender } = render(<ChannelList {...props({ channels: mixed, voice: voice(), tabs })} />);
     expect(container.querySelector('.d-channel-list__list-head')).toBeNull();
+    rerender(<ChannelList {...props({ channels: mixed, voice: voice(), tabs, listAction: <button type="button">new channel</button> })} />);
+    expect(screen.getByRole('button', { name: 'new channel' }).closest('.d-channel-list__list-head')).not.toBeNull();
+  });
+  it('without iconJoin the join is the legacy text button, described by the channel (removed in WEB-LIST)', () => {
+    render(<ChannelList {...props({ channels: mixed, voice: voice({ iconJoin: undefined }), activeId: 'v1' })} />);
+    const join = screen.getAllByRole('button', { name: 'join voice' })[0];
+    expect(join).not.toHaveAttribute('aria-label');
+    expect(join).toHaveAccessibleDescription('harbour');
+    expect(join.closest('.d-slot')).toBeNull();
   });
 });
 

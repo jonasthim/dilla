@@ -27,9 +27,8 @@ describe('the rail (CSS pin)', () => {
     expect(rule('.d-community-rail__pill[data-pill="selected"]')).toMatch(/height: 40px;/);
     expect(css).toMatch(/\.d-community-rail__item:hover \.d-community-rail__pill\[data-pill="hover"\][^{]*\{ height: 20px; \}/);
   });
-  it('the old 3px selected bar and the captions are gone', () => {
+  it('the old 3px selected bar is gone', () => {
     expect(css).not.toContain('width: 3px');
-    expect(css).not.toContain('__caption');
   });
   it('the add tile is a dashed square of the tile size', () => {
     const d = rule('.d-community-rail__glyph');

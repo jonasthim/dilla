@@ -73,14 +73,15 @@ export function VoiceChannelRow({ name, current, joined, participants, readable,
               <li key={p.deviceId} className="d-voice-row__person" data-row data-speaking={p.speaking ? 'true' : undefined}>
                 <span className="d-voice-row__avatar" aria-hidden="true"><Avatar name={p.name} size="xs" /></span>
                 <span className="d-voice-row__person-name">{p.name}</span>
-                {p.bot ? (
-                  <>
-                    {' '}<span className="d-tag" data-kind="bot">{labels.state.bot}</span>
-                    {' '}<span className="d-tag" data-kind="canHear">{labels.canHear}</span>
-                  </>
-                ) : null}
-                <VoiceStates words={words.filter(w => !SLOT_STATES.has(w.key))} prefix="d-voice-row" />
-                <span className="d-voice-row__spacer" />
+                <span className="d-voice-row__states">
+                  {p.bot ? (
+                    <>
+                      {' '}<span className="d-tag" data-kind="bot">{labels.state.bot}</span>
+                      {' '}<span className="d-tag" data-kind="canHear">{labels.canHear}</span>
+                    </>
+                  ) : null}
+                  <VoiceStates words={words.filter(w => !SLOT_STATES.has(w.key))} prefix="d-voice-row" />
+                </span>
                 <TrailingSlot>
                   <VoiceStates words={words.filter(w => SLOT_STATES.has(w.key))} prefix="d-voice-row" />
                 </TrailingSlot>

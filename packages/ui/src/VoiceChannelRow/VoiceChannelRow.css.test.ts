@@ -16,7 +16,6 @@ function rule(css: string, selector: string): string {
 // web3.8 (U3, R29): the name and its glyphs share one non-wrapping, centred line.
 describe('inline state glyph rows (CSS pin)', () => {
   it.each([
-    ['.d-voice-row__person', row, '0.5rem'],
     ['.d-call-tile__caption', tile, '0.375rem'],
   ])('%s is display: flex; align-items: center; flex-wrap: nowrap; with its gap', (selector, css, gap) => {
     const d = rule(css, selector);
@@ -54,10 +53,16 @@ describe('the voice row grammar (CSS pin)', () => {
     expect(d).toMatch(/flex: none;/);
     expect(d).toMatch(/width: 1rem/);
   });
-  it('a person row is --row-h-sub tall and indented to the name x (2rem: 8 + 16 + 8)', () => {
+  it('the people share one grid: a row is --row-h-sub tall, a subgrid of the list, and the list is indented to the name x (2rem: 8 + 16 + 8)', () => {
     const d = rule(row, '.d-voice-row__person');
     expect(d).toMatch(/height: var\(--row-h-sub\);/);
-    expect(d).toMatch(/padding: 0 0\.5rem 0 2rem;/);
+    expect(d).toMatch(/grid-template-columns: subgrid;/);
+    const l = rule(row, '.d-voice-row__people');
+    expect(l).toMatch(/grid-template-columns: 1\.5rem minmax\(2\.5rem, max-content\) minmax\(0, max-content\) 1fr var\(--slot-w\);/);
+    expect(l).toMatch(/padding: 0 0\.5rem 0 2rem;/);
+  });
+  it('the join icon ring is inset', () => {
+    expect(row).toMatch(/\.d-voice-row__join \.d-icon-button:focus-visible \{ outline-offset: -2px; \}/);
   });
   it('the speaking ring is a 2px accent box-shadow on the square avatar', () => {
     expect(row).toMatch(/\[data-speaking="true"\] \.d-avatar \{ box-shadow: 0 0 0 2px var\(--accent\); \}/);

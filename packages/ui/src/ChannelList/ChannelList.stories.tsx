@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChannelList } from './ChannelList.tsx';
 import { SidebarTabs } from '../SidebarTabs/SidebarTabs.tsx';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { Button } from '../Button/Button.tsx';
 import { expectGlyphLine } from '../VoiceChannelRow/VoiceChannelRow.stories.tsx';
 import type { VoiceParticipantView } from '../CallTile/CallTile.tsx';
@@ -109,7 +110,7 @@ export const OneListHighContrast: Story = { args: ONE_LIST_ARGS, globals: { them
 
 // web3.9 (UI-2): the row grammar. One name x and one trailing-slot right edge down the whole list.
 const MIXED_VOICE = {
-  ...VOICE,
+  ...VOICE, iconJoin: true,
   rooms: {
     v1: { joined: false, participants: [person('ada', { speaking: true }), person('bo', { muted: true, deafened: true }), person('cy')] },
     v2: { joined: true, participants: [person('you')] },
@@ -146,12 +147,22 @@ export function expectOneGrid(root: HTMLElement, story: string): void {
   if (list !== null && list.scrollWidth > list.clientWidth + 1) throw new Error(`${story}: the list overflows sideways`);
 }
 const mixedPlay = ({ canvasElement }: { canvasElement: HTMLElement }) => { expectOneGrid(canvasElement, 'Mixed'); };
-const tall = (width: number, phone = false) => (Story: () => React.JSX.Element) => <div data-layout={phone ? 'phone' : undefined} style={{ width, height: 640 }}><Story /></div>;
+// The phone layout the way the app sets it: the phone context and the layout hook that gives the rows their 44px (base.css),
+// filling the 390 x 844 viewport.
+const tall = (width: number, phone = false) => (Story: () => React.JSX.Element) => phone ? (
+  <PhoneLayoutProvider value><div data-layout="phone" data-phone style={{ width: '100%', height: 'calc(100vh - 32px)', maxWidth: 480 }}><Story /></div></PhoneLayoutProvider>
+) : <div style={{ width, height: 640 }}><Story /></div>;
+/** On a phone every channel row is at least 44px tall. */
+const phonePlay = (story: string) => ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  const rows = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-chrow, .d-voice-row, .d-channel-list__cat-head'));
+  if (rows.length === 0) throw new Error(`${story}: no rows`);
+  for (const r of rows) if (r.getBoundingClientRect().height < 44) throw new Error(`${story}: a row is ${String(r.getBoundingClientRect().height)} tall`);
+};
 
 export const Mixed: Story = { args: MIXED_ARGS, globals: { theme: 'mesh' }, decorators: [tall(240)], play: mixedPlay };
 export const MixedLight: Story = { args: MIXED_ARGS, globals: { theme: 'light' }, decorators: [tall(240)], play: mixedPlay };
 export const MixedHighContrast: Story = { args: MIXED_ARGS, globals: { theme: 'high-contrast' }, decorators: [tall(240)], play: mixedPlay };
-export const MixedPhone: Story = { args: MIXED_ARGS, globals: { theme: 'mesh' }, decorators: [tall(360, true)], play: mixedPlay };
+export const MixedPhone: Story = { args: MIXED_ARGS, globals: { theme: 'mesh' }, decorators: [tall(360, true)], play: ({ canvasElement }) => { mixedPlay({ canvasElement }); phonePlay('MixedPhone')({ canvasElement }); } };
 
 const COLLAPSED_ARGS = { ...MIXED_ARGS, categories: [{ id: 'lounge', name: 'lounge', collapsed: true }, { id: 'raids', name: 'raids', collapsed: true }] };
 /** Both collapsed: each keeps the rows that are current, unread, mentioned or joined (R23). */
@@ -172,4 +183,4 @@ const UNREAD_ARGS = { activeId: 'm', rowLabel: ROW_LABEL, channels: [
 export const UnreadAndMention: Story = { args: UNREAD_ARGS, globals: { theme: 'mesh' } };
 export const UnreadAndMentionLight: Story = { args: UNREAD_ARGS, globals: { theme: 'light' } };
 export const UnreadAndMentionHighContrast: Story = { args: UNREAD_ARGS, globals: { theme: 'high-contrast' } };
-export const UnreadAndMentionPhone: Story = { args: UNREAD_ARGS, globals: { theme: 'mesh' }, decorators: [tall(360, true)] };
+export const UnreadAndMentionPhone: Story = { args: UNREAD_ARGS, globals: { theme: 'mesh' }, decorators: [tall(360, true)], play: phonePlay('UnreadAndMentionPhone') };

@@ -74,7 +74,8 @@ describe('the header row (CSS pin)', () => {
     expect(rule(list, '.d-channel-list__title')).toMatch(/height: var\(--bar-h\);/);
     expect(rule(list, '.d-channel-list__head')).toMatch(/height: var\(--bar-h\);/);
   });
-  it('the old list-header "+" row is gone', () => {
-    expect(list).not.toContain('list-head');
+  it('the legacy list-header "+" row and text join keep their rules until WEB-LIST', () => {
+    expect(list).toContain('.d-channel-list__list-head');
+    expect(list).toContain('.d-channel-list__join');
   });
 });

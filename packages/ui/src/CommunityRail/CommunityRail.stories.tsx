@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
 import { CommunityRail } from './CommunityRail.tsx';
 
 const ITEMS = [{ id: 'a1', name: 'Midgard Crew' }, { id: 'b2', name: 'Night Owls', unread: 4 }, { id: 'c3', name: 'raid planning', unread: 120, mentions: 2 }, { id: 'd4', name: 'Quiet Corner' }];
@@ -36,4 +37,9 @@ export const AddMenuOpen: Story = { args: FULL, globals: { theme: 'mesh' },
   play: ({ canvasElement }) => { canvasElement.querySelector<HTMLElement>('.d-action-menu__trigger')?.click(); } };
 /** On a phone the settings tile is gone (the You tab is the way) and the tiles stay 48. */
 export const OnPhone: Story = { args: FULL, globals: { theme: 'mesh' },
-  decorators: [Story => <div data-layout="phone" style={{ width: 72, height: 420 }}><Story /></div>] };
+  decorators: [Story => <PhoneLayoutProvider value><div data-layout="phone" data-phone style={{ width: 72, height: 'calc(100vh - 32px)' }}><Story /></div></PhoneLayoutProvider>],
+  play: ({ canvasElement }) => {
+    const tiles = Array.from(canvasElement.querySelectorAll<HTMLElement>('.d-community-rail__item'));
+    for (const t of tiles) { const b = t.getBoundingClientRect(); if (b.width !== 48 || b.height !== 48) throw new Error(`OnPhone: a tile is ${String(b.width)} x ${String(b.height)}`); }
+    if (tiles.length === 0 || canvasElement.querySelector('.d-community-rail__settings') !== null) throw new Error('OnPhone: no tiles, or the settings tile shows');
+  } };
