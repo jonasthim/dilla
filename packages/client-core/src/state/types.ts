@@ -15,7 +15,8 @@ export interface AccountState {
   phase: BootPhase;
   /** passwordSignup, totp and passkeys: auth_methods holds 0, 1 and 2. */
   instance: { id: string; name: string; registrationMode: 0 | 1 | 2; passwordSignup: boolean; totp: boolean; passkeys: boolean } | null;
-  user: { id: string; username: string } | null;
+  /** `display` is the account's display name (read with the presence choice); a person with no server has no member row to name them by. */
+  user: { id: string; username: string; display?: string } | null;
   deviceId: string | null;
   recoveryKey: string[] | null;                 // 13 groups of 4; only while phase is 'signup-keys' or 'registering'
   error: WorkerError | null;                    // the last signup, sign-in or boot error

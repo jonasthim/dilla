@@ -747,7 +747,7 @@ The bottom left of the app is yours, across the rail and the channel list:
   ([Mute, deafen and push to talk](voice.md#mute-deafen-and-push-to-talk)). Control/⌘+Shift+M and Control/⌘+Shift+D
   press them, in a call or out of one;
 - **user settings**, behind the gear: Settings opens there, and closing it returns focus to the gear;
-- "Your status": Online, Idle, Do Not Disturb or Invisible. It follows your account to your other devices. Online
+- **your status**, behind your avatar and name: click it (or Tab to it and press Enter) to choose Online, Idle, Do Not Disturb or Invisible. A small dot on your avatar shows the current one. It follows your account to your other devices. Online
   becomes Idle after ten minutes without activity on any of your connected devices (a status you chose yourself
   stays). Do Not Disturb stops desktop notifications and the ring sound on every device; messages, badges and the
   in-app banner for a call still show. Invisible hides your status from other members, though not that you are typing

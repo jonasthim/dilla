@@ -70,6 +70,15 @@ describe('Controller', () => {
     w.gateway.emit({ type: 'frame', frame: { op: Op.presence, n: 0n, groupId: null, payload: [USER, 3n, 1n, ''] } });
     await vi.waitFor(() => expect(w.account()?.presenceChoice).toBe('dnd'));
   });
+  it('carries the account display name on the user, for a person who has joined no server yet', async () => {
+    const w = world();
+    w.routes.getAccountMe.mockResolvedValue({ userId: USER, username: 'web', display: 'Alice', kind: 0, flags: 0n, presenceChoice: 1 });
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.account()?.user?.display).toBe('Alice'));
+    expect(w.account()?.user?.username).toBe('web');
+  });
   it('keeps a successful choice save when the own frame refresh fails', async () => {
     const w = world();
     await toReady(w);

@@ -26,7 +26,12 @@ const meta = {
     name: 'Ada Lovelace', username: 'ada', muted: false, deafened: false,
     shortcuts: { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' },
     labels: { region: 'your account', mute: 'mute', deafen: 'deafen', settings: 'settings' },
-    onMute: () => {}, onDeafen: () => {}, onSettings: () => {}, onOpenSelf: () => {},
+    status: {
+      current: 'online', label: 'your status: Online',
+      items: [{ id: 'online', label: 'Online' }, { id: 'idle', label: 'Idle' }, { id: 'dnd', label: 'Do Not Disturb' }, { id: 'invisible', label: 'Invisible' }],
+      onChoose: () => {},
+    },
+    onMute: () => {}, onDeafen: () => {}, onSettings: () => {},
   },
   // The sidebar's default width.
   decorators: [Story => <div style={{ width: 240 }}><Story /></div>],

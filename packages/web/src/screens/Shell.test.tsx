@@ -1352,11 +1352,11 @@ describe('keyboard', () => {
     // Web3.8 (item 12): the voice rows are in the one roving list; its one stop is the active row, so no second stop follows.
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /^general/ }));
     await user.tab();
-    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Your status' }));
     // web3.8: the sidebar splitter is its own stop between the channel list and the header.
-    await user.tab();
     expect(document.activeElement).toBe(screen.getByRole('separator', { name: en['pane.resize.sidebar'] }));
-    // web3.8 (item 13): the user panel follows the splitter: its toolbar is one stop (mute, deafen), then the gear; the name block is none.
+    // web3.8 (item 13): the user panel follows the splitter: the name block (the status menu), its toolbar (one stop: mute, deafen), then the gear.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'your status: Online' }));
     await user.tab();
     expect(document.activeElement).toBe(within(screen.getByRole('toolbar', { name: 'your account' })).getByRole('button', { name: 'mute' }));
     await user.tab();

@@ -4,7 +4,7 @@ import { formatDay, formatTime } from '../strings/index.ts';
 import {
   authorName, badgeLabel, bodyParts, composerBlock, defaultChannel, devicesChunk, dmCandidates, editableText, excerpt, formatSize, isUnsupported,
   mentionCandidates, mentionMembers, mentionOptions, mentionRoles, offeredRoles, mergeMembers, messageTime, nameBook, orderChannels, plainBody, railLabel, rowBadge,
-  stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, userName, joinFailureKey, micNoticeKey, isVoice,
+  stepChannel, sumBadges, unsupportedBody, visibleChannel, participantView, selfName, userName, joinFailureKey, micNoticeKey, isVoice,
 } from './shell-model.ts';
 
 const A = 'a1'.repeat(16);
@@ -338,5 +338,17 @@ describe('role mentions (flow 09)', () => {
       role('a4'.repeat(16), 'Staff', { position: 6 }), role('a5'.repeat(16), 'staff', { position: 5 })];
     expect(mentionOptions('', [bob], false, rs).map(o => o.id)).toEqual([`m-${bob.userId}`, `r-${'a4'.repeat(16)}`]);
     expect(mentionRoles(rs, [bob]).map(r => r.roleId)).toEqual(['a4'.repeat(16)]);
+  });
+});
+
+describe('selfName', () => {
+  const me = { id: 'bb'.repeat(16), username: 'ada' };
+  const member = (display: string): MemberSummary => ({ userId: me.id, username: 'ada', display, kind: 0, roleIds: [] });
+  it('names the person by the member row, then by the account display name, then by the username', () => {
+    expect(selfName({ ...me, display: 'Account Ada' }, [member('Server Ada')])).toBe('Server Ada');
+    expect(selfName({ ...me, display: 'Account Ada' }, [])).toBe('Account Ada');
+    expect(selfName({ ...me, display: '' }, [member('')])).toBe('ada');
+    expect(selfName(me, [])).toBe('ada');
+    expect(selfName(null, [])).toBe('–');
   });
 });

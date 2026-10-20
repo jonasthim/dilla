@@ -1403,7 +1403,7 @@ export class Controller {
     if (this.revoked()) return;
     this.noticeFloor = this.serverNowS();
     this.setAccount({
-      phase: 'ready', user: { id: toHex(userId), username }, deviceId: toHex(deviceId),
+      phase: 'ready', user: { id: toHex(userId), username, ...this.knownDisplay() }, deviceId: toHex(deviceId),
       recoveryKey: null, error: null, signIn: null, factorSetup: null,
     });
     this.publishDms();
@@ -2727,6 +2727,12 @@ export class Controller {
     this.slices.set(`presence:${communityId}`, null);
   }
 
+  /** The account's display name as last read, so the user entry written at ready carries it before the next read. */
+  private selfDisplay: string | undefined;
+  private knownDisplay(): { display?: string } {
+    return this.selfDisplay === undefined ? {} : { display: this.selfDisplay };
+  }
+
   private async refreshPresenceChoice(): Promise<void> {
     const seq = ++this.presenceChoiceReadSeq;
     const write = this.presenceChoiceWriteSeq;
@@ -2735,7 +2741,9 @@ export class Controller {
       if (this.revoked() || this.presenceChoiceReadSeq !== seq || this.presenceChoiceWriteSeq !== write) return;
       const choice = Controller.PRESENCE_CHOICES[(me.presenceChoice ?? 1) - 1] ?? 'online';
       this.presenceChoiceAppliedRead = seq;
-      this.setAccount({ presenceChoice: choice });
+      this.selfDisplay = me.display;
+      const user = this.accountState.user;
+      this.setAccount({ presenceChoice: choice, ...(user !== null ? { user: { ...user, display: me.display } } : {}) });
     } catch { /* the next ready retries */ }
   }
 

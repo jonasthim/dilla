@@ -21,6 +21,7 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 | 13. Stage grid with separate camera and screen tiles | Camera and screen shown as separate tiles with labels like `stage.screen`. | `stage.screen` |
 | 14. A focused tile with the filmstrip | The focused tile fills the stage and the other tiles sit in the filmstrip; each tile's focus button carries `aria-pressed`, true on the focused tile. | — |
 | 15. A tile in full screen | The tile fills the screen; the full screen button (`stage.fullscreen`) carries `aria-pressed` true, and Escape leaves it. | `stage.fullscreen` |
+| 16. User panel, status menu | The avatar and name block is a button named `panel.status`; it opens a menu of `presence.online`, `presence.idle`, `presence.dnd` and `presence.invisible` (a controller ruling that supersedes R24), and the avatar carries the current status as a dot (invisible as the off ring). The old sidebar select is gone on the desktop. | `panel.status`, `presence.online`, `presence.idle`, `presence.dnd`, `presence.invisible` |
 
 ## Keyboard map
 
@@ -35,8 +36,9 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 | Enter or Space | Tile focus button | Focuses the tile |
 | Enter or Space | Focused tile | Returns to the grid |
 | Escape | Inside the stage outside full screen | Returns to the grid |
-| Tab | Desktop | Rail → sidebar → sidebar splitter → bottom panel (call panel, then user panel) → main |
-| (none) | `.d-user-panel` | The wrapper has no accessible name and is located by that class; only its toolbar is named, `panel.region`, so "your account" is not named twice |
+| Tab | Desktop | Rail → sidebar → sidebar splitter → bottom panel (call panel, then user panel: name block, mute/deafen toolbar, gear) → main |
+| Enter, Space or ArrowDown | User panel name block | Opens the status menu on its first item (ArrowUp on the last); arrows move, Escape closes and refocuses the name block |
+| (none) | `.d-user-panel` | The wrapper has no accessible name and is located by that class; its toolbar is named `panel.region`, so "your account" is not named twice, and its name block is the status button, `panel.status` |
 
 ## Focus rules
 
@@ -59,5 +61,6 @@ Desktop layout with the call panel at the bottom left above the user panel, stag
 - `pane.resize.aside='resize the side panel'`
 - `panel.region='your account'`
 - `panel.settings='user settings'`
+- `panel.status='your status: {status}'` (`{status}` is `presence.online`, `presence.idle`, `presence.dnd` or `presence.invisible`)
 - `stage.screen='{name}’s screen'`
 - `stage.fullscreen='full screen'`

@@ -214,10 +214,12 @@ export function mergeMembers(lists: readonly (readonly MemberSummary[] | undefin
  * The own name as the user panel and the You tab show it: the display name in the merged member lists, else the username,
  * else the unknown-account word.
  */
-export function selfName(self: { id: string; username: string } | null, members: readonly MemberSummary[]): string {
+export function selfName(self: { id: string; username: string; display?: string } | null, members: readonly MemberSummary[]): string {
   if (self === null) return t('shell.status.unknown');
+  // A member row names the person in a server; the account's own display name covers a person who has joined none yet.
   const display = members.find(m => m.userId === self.id)?.display;
-  return display === undefined || display === '' ? self.username : display;
+  if (display !== undefined && display !== '') return display;
+  return self.display !== undefined && self.display !== '' ? self.display : self.username;
 }
 
 /**

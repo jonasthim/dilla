@@ -13,7 +13,12 @@ const panel = (over: Partial<UserPanelProps> = {}): UserPanelProps => ({
   name: 'Ada Lovelace', username: 'ada', muted: false, deafened: false,
   shortcuts: { mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' },
   labels: { region: 'your account', mute: 'mute', deafen: 'deafen', settings: 'settings' },
-  onMute: () => {}, onDeafen: () => {}, onSettings: () => {}, onOpenSelf: () => {}, ...over,
+  status: {
+    current: 'online', label: 'your status: Online',
+    items: [{ id: 'online', label: 'Online' }, { id: 'idle', label: 'Idle' }, { id: 'dnd', label: 'Do Not Disturb' }, { id: 'invisible', label: 'Invisible' }],
+    onChoose: () => {},
+  },
+  onMute: () => {}, onDeafen: () => {}, onSettings: () => {}, ...over,
 });
 
 afterEach(() => { delete document.documentElement.dataset.theme; });
@@ -62,17 +67,52 @@ describe('UserPanel', () => {
     expect(onSettings).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the name and @username; a click on that block calls onOpenSelf, and it is no tab stop', async () => {
-    const onOpenSelf = vi.fn();
-    render(<UserPanel {...panel({ onOpenSelf })} />);
-    const who = screen.getByText('Ada Lovelace').closest('.d-user-panel__who')!;
+  it('makes the avatar and name block one button named by the current status, with the name and @username inside', () => {
+    render(<UserPanel {...panel()} />);
+    const who = screen.getByRole('button', { name: 'your status: Online' });
+    expect(who).toHaveAttribute('aria-haspopup', 'menu');
+    expect(who).toHaveTextContent('Ada Lovelace');
     expect(who).toHaveTextContent('@ada');
-    expect(who).not.toHaveAttribute('role');
-    expect(who).not.toHaveAttribute('tabindex');
-    await userEvent.click(screen.getByText('@ada'));
-    expect(onOpenSelf).toHaveBeenCalledTimes(1);
-    // The toolbar is one tab stop and the gear is the other.
-    expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(2);
+    expect(who.querySelector('.d-avatar')).not.toBeNull();
+    // The name block, the toolbar and the gear are the three tab stops.
+    expect(screen.getAllByRole('button').filter(b => b.tabIndex === 0)).toHaveLength(3);
+  });
+
+  it('opens a status menu with the four statuses, and a choice calls onChoose with its id', async () => {
+    const onChoose = vi.fn();
+    render(<UserPanel {...panel({ status: { ...panel().status, onChoose } })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'your status: Online' }));
+    const menu = screen.getByRole('menu', { name: 'your status: Online' });
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Online', 'Idle', 'Do Not Disturb', 'Invisible']);
+    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Do Not Disturb' }));
+    expect(onChoose).toHaveBeenCalledWith('dnd');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('is keyboard reachable: Enter opens it on the first item, Escape closes it and refocuses the name block', async () => {
+    render(<UserPanel {...panel()} />);
+    const who = screen.getByRole('button', { name: 'your status: Online' });
+    who.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('menuitem', { name: 'Online' })).toHaveFocus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(screen.getByRole('menuitem', { name: 'Idle' })).toHaveFocus();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(who).toHaveFocus();
+  });
+
+  it.each([['online', 'online'], ['idle', 'idle'], ['dnd', 'dnd'], ['invisible', 'offline']] as const)(
+    'shows %s as a small dot on the avatar (%s)', (current, dot) => {
+      const { container } = render(<UserPanel {...panel({ status: { ...panel().status, current } })} />);
+      expect(container.querySelector('.d-user-panel .d-avatar__presence')).toHaveAttribute('data-presence', dot);
+    });
+
+  it('marks the current status in the menu', async () => {
+    render(<UserPanel {...panel({ status: { ...panel().status, current: 'idle' } })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'your status: Online' }));
+    expect(screen.getByRole('menuitem', { name: 'Idle' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('menuitem', { name: 'Online' })).not.toHaveAttribute('aria-current');
   });
 
   it('mute and deafen are at least 2rem square too (CSS pin)', () => {

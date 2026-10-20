@@ -1,8 +1,8 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Icon, type IconName } from '../Icon/Icon.tsx';
 import './ActionMenu.css';
 
-export interface ActionMenuItem { id: string; label: string; danger?: boolean }
+export interface ActionMenuItem { id: string; label: string; danger?: boolean; /** The item that is the current choice (`aria-current`). */ current?: boolean }
 
 export interface ActionMenuProps {
   /** The trigger's accessible name and the menu's (`actions for Astrid`). */
@@ -20,6 +20,11 @@ export interface ActionMenuProps {
   focusKey?: string;
   /** A monoline icon on the trigger in place of the "⋯" glyph. */
   icon?: IconName;
+  /** The trigger's content in place of the icon or glyph (the user panel's avatar and name block). The trigger is still one button named by `label`. */
+  triggerContent?: ReactNode;
+  /** Extra classes on the wrapper and on the trigger, for a caller that lays the trigger out itself. */
+  className?: string;
+  triggerClassName?: string;
 }
 
 /**
@@ -27,7 +32,7 @@ export interface ActionMenuProps {
  * on the last. Arrows wrap, Home and End jump. Escape closes and refocuses the trigger, Tab closes and moves on, and a
  * pointerdown outside closes. `open` is the caller's, so a row can also open the menu from a context menu (`at`).
  */
-export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey, icon }: ActionMenuProps) {
+export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, focusKey, icon, triggerContent, className, triggerClassName }: ActionMenuProps) {
   const base = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -124,18 +129,18 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
     : undefined;
 
   return (
-    <span ref={rootRef} className="d-action-menu">
-      <button ref={triggerRef} type="button" className="d-action-menu__trigger" aria-label={label} aria-haspopup="menu" data-focus-key={focusKey}
+    <span ref={rootRef} className={className === undefined ? 'd-action-menu' : `d-action-menu ${className}`}>
+      <button ref={triggerRef} type="button" className={triggerClassName === undefined ? 'd-action-menu__trigger' : `d-action-menu__trigger ${triggerClassName}`} aria-label={label} aria-haspopup="menu" data-focus-key={focusKey}
         aria-expanded={open} aria-controls={open ? `${base}-menu` : undefined}
         onClick={() => onOpenChange(!open)} onKeyDown={onTriggerKey}>
-        {icon !== undefined ? <Icon name={icon} size={22} /> : <span aria-hidden="true">⋯</span>}
+        {triggerContent ?? (icon !== undefined ? <Icon name={icon} size={22} /> : <span aria-hidden="true">⋯</span>)}
       </button>
       {open ? (
         <div ref={menuRef} id={`${base}-menu`} role="menu" aria-label={label} className="d-action-menu__popup" style={style} data-placement={at ? undefined : placement}
           onKeyDown={onMenuKey}>
           {items.map(item => (
             <button key={item.id} type="button" role="menuitem" tabIndex={-1} className="d-action-menu__item"
-              data-danger={item.danger ? 'true' : undefined} onClick={() => select(item.id)}>
+              data-danger={item.danger ? 'true' : undefined} aria-current={item.current ? 'true' : undefined} onClick={() => select(item.id)}>
               {item.label}
             </button>
           ))}

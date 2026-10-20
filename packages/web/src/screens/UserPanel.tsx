@@ -1,19 +1,37 @@
 // The desktop user panel at the bottom left (web3.8, item 13; R23-R25): composition only. The ui UserPanel draws it;
 // the mute and deafen are the call's `selfMute`/`selfDeafen` (the session's in a call, the `voice.self` setting outside one).
+// The avatar and name block opens the status menu (the account-wide presence choice), Discord-style; the gear opens settings.
+import { useState } from 'react';
+import type { PresenceChoice } from '@dilla/client-core';
 import { UserPanel as UiUserPanel } from '@dilla/ui';
+import { useCore } from '../core/context.tsx';
 import { t } from '../strings/index.ts';
 import { voiceShortcutText } from './voice/shortcuts.ts';
 import type { CallView } from './voice/useCall.tsx';
 
 /** The mute and deafen shortcuts as the tooltips write them; the platform cannot change during a session. */
 const SHORTCUTS = voiceShortcutText();
+const CHOICES: readonly PresenceChoice[] = ['online', 'idle', 'dnd', 'invisible'];
 
-export function UserPanel({ name, username, call, onSettings }: {
-  name: string; username: string; call: Pick<CallView, 'selfMute' | 'selfDeafen' | 'selfMuted' | 'selfDeafened'>; onSettings: () => void;
+export function UserPanel({ name, username, choice, call, onSettings }: {
+  name: string; username: string; choice: PresenceChoice; call: Pick<CallView, 'selfMute' | 'selfDeafen' | 'selfMuted' | 'selfDeafened'>; onSettings: () => void;
 }): React.JSX.Element {
+  const client = useCore();
+  const [error, setError] = useState(false);
   return (
-    <UiUserPanel name={name} username={username} muted={call.selfMuted} deafened={call.selfDeafened} shortcuts={SHORTCUTS}
-      labels={{ region: t('panel.region'), mute: t('voice.mute'), deafen: t('voice.deafen'), settings: t('panel.settings') }}
-      onMute={call.selfMute} onDeafen={call.selfDeafen} onSettings={onSettings} onOpenSelf={onSettings} />
+    <>
+      <UiUserPanel name={name} username={username} muted={call.selfMuted} deafened={call.selfDeafened} shortcuts={SHORTCUTS}
+        labels={{ region: t('panel.region'), mute: t('voice.mute'), deafen: t('voice.deafen'), settings: t('panel.settings') }}
+        status={{
+          current: choice, label: t('panel.status', { status: t(`presence.${choice}`) }),
+          items: CHOICES.map(id => ({ id, label: t(`presence.${id}`) })),
+          onChoose: id => {
+            setError(false);
+            void client.call({ m: 'setPresenceChoice', choice: id as PresenceChoice }).catch(() => setError(true));
+          },
+        }}
+        onMute={call.selfMute} onDeafen={call.selfDeafen} onSettings={onSettings} />
+      {error ? <p className="dw-panel-error" role="alert">{t('presence.error')}</p> : null}
+    </>
   );
 }

@@ -47,9 +47,10 @@ function setup(opts: { acc?: Partial<CommunityAccess>; base?: number; overwrites
   render(<div className="d-root"><CoreProvider client={fake}><Shell /></CoreProvider></div>);
   return { fake, user };
 }
-it('keeps account presence in the desktop sidebar and no connection state in a status bar', () => {
+it('keeps account presence in the user panel, no select in the sidebar, and no connection state in a status bar', () => {
   setup();
-  expect(screen.getByRole('combobox', { name: 'Your status' }).closest('.dw-account-area')).not.toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Your status' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'your status: Online' }).closest('.d-user-panel')).not.toBeNull();
   expect(screen.queryByText('online', { selector: '.d-chunk__v' })).toBeNull();
   expect(screen.queryByRole('region', { name: 'connection' })).toBeNull();
 });

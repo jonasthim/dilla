@@ -55,7 +55,8 @@ export const Splitters: Story = {
 const userPanel = (
   <UserPanel name="Ada Lovelace" username="ada" muted={false} deafened={false} shortcuts={{ mute: 'Ctrl+Shift+M', deafen: 'Ctrl+Shift+D' }}
     labels={{ region: 'your account', mute: 'mute', deafen: 'deafen', settings: 'settings' }}
-    onMute={() => {}} onDeafen={() => {}} onSettings={() => {}} onOpenSelf={() => {}} />
+    onMute={() => {}} onDeafen={() => {}} onSettings={() => {}}
+    status={{ current: 'online', label: 'your status: Online', items: [{ id: 'online', label: 'Online' }, { id: 'invisible', label: 'Invisible' }], onChoose: () => {} }} />
 );
 const dock = (
   <VoiceDock phase="connected" where="longhouse" muted={false} deafened={false} announcement="" onCamera={() => {}} onShare={() => {}} onLeave={() => {}}

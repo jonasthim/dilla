@@ -12,7 +12,7 @@ describe('flow 13 (v0.1.0-web3.8, desktop call, shell and sign-in order)', () =>
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-13 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(9); // web3.8 SIGNIN-W fix round 1: signin.key.body joins the list.
+    expect(pairs.length).toBe(10); // web3.8 SIGNIN-W fix round 1: signin.key.body joins the list; FX-misc: panel.status.
     for (const [key, value] of pairs) expect(table[key], key).toBe(value);
     // The curly apostrophe U+2019, pinned by code point so a straight one goes red in en.ts and in the flow.
     expect(table['stage.screen'].codePointAt(6)).toBe(0x2019);
@@ -49,11 +49,12 @@ describe('flow 13 (v0.1.0-web3.8, desktop call, shell and sign-in order)', () =>
     'pane.resize.aside',
     'panel.region',
     'panel.settings',
+    'panel.status',
     'stage.fullscreen',
   ];
   it('chrome: the lower-case chrome keys are lower case', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(LOWER.length).toBe(6);
+    expect(LOWER.length).toBe(7);
     for (const key of LOWER) expect(table[key], key).toBe(table[key].toLowerCase());
   });
 });

@@ -37,7 +37,6 @@ import { useSounds } from './voice/useSounds.tsx';
 import { Activity } from './Activity.tsx';
 import { takeThreadRequest, useThreadRequest } from '../thread-request.ts';
 import { You } from './You.tsx';
-import { PresencePicker } from './PresencePicker.tsx';
 import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
@@ -1064,7 +1063,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
           }}>{t('shell.dms.new')}</Button>;
           return phone ? <div className="dw-phone-footer">{newDm}</div> : newDm;
         })() : undefined} />
-      {phone ? null : <div className="dw-account-area"><PresencePicker /></div>}
     </div>);
   }
 
@@ -1644,7 +1642,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode } = {}
         bottom={phone || self === null ? undefined : <>
           <Dock v={voiceCtx} where={call.channelId === null ? '' : callWhere(call.channelId)}
             stageShown={call.channelId !== null && call.channelId === (voiceChannel?.id ?? dm?.id)} />
-          <UserPanel name={selfName(self, allMembers)} username={self.username} call={call}
+          <UserPanel name={selfName(self, allMembers)} username={self.username} choice={account?.presenceChoice ?? 'online'} call={call}
             onSettings={() => navigate({ name: 'settings', section: 'devices', from: null })} />
         </>}
         ring={rings !== undefined && rings.length > 0 ? ringFlow : undefined}

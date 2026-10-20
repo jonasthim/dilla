@@ -5,7 +5,7 @@ import type { Command } from '@dilla/client-core';
 import { PHONE_QUERY } from '../layout.ts';
 import { t } from '../strings/index.ts';
 import { A, callState, GENV, MEMBERS, renderVoiceShell, TEXT, type VoiceHarnessOptions } from '../test/fake-client.ts';
-import { ME } from '../test/fixtures.ts';
+import { account, ME } from '../test/fixtures.ts';
 import { focusUserSettings } from './Shell.tsx';
 
 // web3.8 WS6: the desktop user panel at the bottom left (R23-R25), the call panel above it, settings behind the gear.
@@ -120,14 +120,38 @@ describe('the desktop user panel', () => {
     expect(window.location.pathname).toBe('/settings/devices');
   });
 
-  it('the name block opens Settings with the mouse and is no tab stop', async () => {
+  it('the avatar and name block is a button named by the current status; it opens the four statuses and a choice sets the account presence', async () => {
     const app = shell();
     await screen.findByRole('main');
-    const who = inPanel().getByText('@ada').closest('.d-user-panel__who') as HTMLElement;
-    expect(who).not.toHaveAttribute('role');
-    expect(who).not.toHaveAttribute('tabindex');
+    const who = inPanel().getByRole('button', { name: t('panel.status', { status: t('presence.online') }) });
+    expect(who).toHaveTextContent('@ada');
     await app.user.click(who);
-    expect(window.location.pathname).toBe('/settings/devices');
+    const menu = screen.getByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map(i => i.textContent)).toEqual(
+      [t('presence.online'), t('presence.idle'), t('presence.dnd'), t('presence.invisible')]);
+    await app.user.click(within(menu).getByRole('menuitem', { name: t('presence.invisible') }));
+    expect(app.client.callsOf('setPresenceChoice')).toEqual([{ m: 'setPresenceChoice', choice: 'invisible' }]);
+    expect(window.location.pathname).not.toBe('/settings/devices');
+  });
+
+  it('the status button is named by the stored choice and has no old sidebar select beside it', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    expect(screen.queryByRole('combobox', { name: t('presence.label') })).toBeNull();
+    act(() => app.client.publish('account', account({ presenceChoice: 'dnd' })));
+    expect(await inPanel().findByRole('button', { name: t('panel.status', { status: t('presence.dnd') }) })).toBeInTheDocument();
+    expect(panel()!.querySelector('.d-avatar__presence')).toHaveAttribute('data-presence', 'dnd');
+  });
+
+  it('names the person by their display name before they have joined any server', async () => {
+    const app = shell();
+    await screen.findByRole('main');
+    act(() => {
+      app.client.publish(`members:${A}`, []);
+      app.client.publish('account', account({ user: { ...ME, display: 'Ada Lovelace' } }));
+    });
+    await waitFor(() => expect(panel()).toHaveTextContent('Ada Lovelace'));
+    expect(inPanel().getByText('@ada')).toBeInTheDocument();
   });
 
   it('focusUserSettings focuses the gear, where focus returns when Settings closes', async () => {
