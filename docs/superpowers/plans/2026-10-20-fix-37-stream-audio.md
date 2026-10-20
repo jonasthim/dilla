@@ -4,7 +4,8 @@
 
 **Goal:**
 - **Say when a share has no sound.** The sharer learns at once that the browser gave no audio for the surface they picked, and how to get sound. Viewers see a "no sound" mark on that screen tile, so a silent stream is never a mystery.
-- **Never re-send the call.** When the browser captures system audio (Windows and ChromeOS, and macOS 14.2+ on Chrome 141+), the call's own playback is excluded (`restrictOwnAudio`), so viewers do not hear their own voices come back through the share.
+- **Never re-send the call.** When the browser captures system audio (Windows and ChromeOS, and macOS 14.2+ on Chrome 141+), the share asks for the call's own playback to be left out (`restrictOwnAudio`), so viewers do not hear their own voices come back through it. A browser that ignores the constraint (Chrome and Edge before 141) is not detected. Per D5, that is a documented limit.
+- **A volume and a mute for each stream** (D2): a viewer sets a person's stream volume apart from their voice volume, and mutes a stream from its tile.
 - **Ask the browser for every sound it can give.** The `getDisplayMedia` call states its audio hints explicitly (`systemAudio: 'include'`, `windowAudio: 'system'`) instead of relying on defaults that have changed between releases (Edge before 142 defaulted `windowAudio` to `exclude`).
 - **The docs say what is true per browser and OS.** `docs/user/voice.md` and the README now say a whole screen or window is shared without sound, which is wrong on Windows and ChromeOS.
 
@@ -13,7 +14,11 @@
 **Architecture:**
 - **packages/media:** `SCREEN_AUDIO_CAPTURE` (presets.ts:44-49) gains `restrictOwnAudio: true`. A new exported `SCREEN_DISPLAY_HINTS` holds `{ systemAudio: 'include', windowAudio: 'system', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude' }`.
 - **web, call/devices.ts:** `acquireScreen` spreads the hints into the `getDisplayMedia` options. It returns `audio`, plus `audioKind: 'tab' | 'system' | 'none'`, read from the video track's `displaySurface` and whether an audio track came back.
-- **web, call/session.ts:** `PageCallState` gains `shareAudio: 'tab' | 'system' | 'none' | null`, the sharer's own outcome (null while not sharing). `PageCallTile` gains `screenAudio: boolean`, true while that remote device has a `screen_share_audio` publication. No change to the publish path, the E2EE manager, attach, gains or grants.
+- **web, call/session.ts:**
+  - `PageCallState` gains `shareAudio: 'tab' | 'system' | 'none' | null`, the sharer's own outcome (null while not sharing).
+  - `PageCallTile` gains `screenAudio: boolean`, true while that remote device has a `screen_share_audio` publication.
+  - T2 changes nothing in the publish path, the E2EE manager, attach, gains or grants.
+  - T5 (D2) splits the gain of `screen_share_audio` from the microphone's: a stream volume and a stream mute per person. Deafen and pause still hold both back.
 - **packages/ui:** `CallTile` with `source="screen"` takes `silent?: boolean` and renders a glyph-only `volume-x` state named by the `stage.noSound` label. The Lucide `volume-x` icon is vendored.
 - **web, screens/voice:** the stage passes `silent={!tile.screenAudio}` on remote screen tiles. The sharer gets one polite live-region notice when `shareAudio` turns `'none'`.
 - **Docs:** `docs/user/voice.md`, the README limits line, and flow 06 rows.
@@ -48,9 +53,26 @@
 
 **Conclusion:** the sharer's browser gave no audio for the surface they picked, and dilla said nothing. There are two contributing defects: (a) no in-app signal for a share without sound, for the sharer or the viewers; (b) no `restrictOwnAudio`, so a system-audio share echoes the call. There is also one docs defect: (c) "a whole screen or window is shared without sound" is false on Windows and ChromeOS.
 
-## Open questions for Jonas (answer before T3)
+## Decisions (answered 2026-10-20)
 
-Each question lists options; the recommendation is marked **(rec)**. T1 and T2 do not depend on the answers. T3 and T4 do.
+Jonas answered the open questions below. These answers are binding, and the tasks are written to them.
+
+- **D1 (Q1 = a).** Always ask for share audio. The browser picker's own toggle is the consent. dilla adds no toggle of its own.
+- **D2 (Q2 = b).** A separate stream volume per person, plus a mute on the screen tile. **T5 is in scope.**
+- **D3 (Q3 = c).** Tell both sides. The sharer gets a notice that explains how to get sound, and viewers get a "no sound" mark on the screen tile.
+- **D4 (Q4 = a).** No guidance before the picker, only after a silent share.
+- **D5 (Q5): "Don't care about older versions."**
+  - Always set `restrictOwnAudio: true`, and publish whatever audio the browser returns.
+  - Do not detect or drop audio from a browser that ignores the constraint. There is no `unrestricted` flag, no `shareAudioUnrestricted` state and no "update your browser" notice.
+  - T6 records a known limit in the docs: on Windows, Chrome and Edge before 141 may send the call's own sound back through a system-audio share (an echo).
+- **D6 (Q6 = a).**
+  - Ship the in-app signal and the per-browser guidance. Game and app sound comes with the desktop app (W10).
+  - T6 drafts the reply to #37 for Jonas to post himself. **Nothing is posted by us**: no issue comment, label or close.
+- **Timing.** Building starts only after web3.9 is deployed. This plan is not executed before then.
+
+## Open questions for Jonas (answered: see Decisions)
+
+Kept as asked, for the record. Each question lists its options; the recommendation is marked **(rec)**.
 
 1. **Share audio on by default?**
    - a. Ask whenever the browser offers it, as today. The picker's own "share tab/system audio" toggle is the consent. **(rec)**
@@ -87,12 +109,12 @@ Each question lists options; the recommendation is marked **(rec)**. T1 and T2 d
   | T2 session state (shareAudio, tile screenAudio) | opus | **opus** |
   | T3 UI mark and notice | sonnet | sonnet |
   | T4 e2e | opus | **opus** |
-  | T5 stream volume (only if Q2 = b) | sonnet | **opus** |
+  | T5 stream volume and mute (D2) | sonnet | **opus** |
   | T6 docs and reply | haiku | sonnet |
 
   T1, T2 and T4 are opus because they sit on the capture and publish path beside the E2EE manager and the AFK listen-only rules. They change neither, and their reviews must confirm that.
 - **Reservations:** no server change (`internal/`, `cmd/` untouched); no migration (schema 20), client store 5, wire 2, browser ABI 11, no gateway op, no permission bit, no voice_state bit, no new error code.
-- **Strings:** new keys only, under `voice.shareAudio.*` and `stage.noSound`, in `packages/web/src/strings/en.ts`. Flow doc 06 (`docs/design/flows/06-voice.md`) gets the rows. Copy is lowercase-first as the surrounding `voice.*` keys are.
+- **Strings:** new keys only: `voice.shareAudio.none`, `stage.noSound`, and T5's `stage.streamMute`, `stage.streamUnmute` and `stage.streamVolume`, in `packages/web/src/strings/en.ts`. Flow doc 06 (`docs/design/flows/06-voice.md`) gets the rows. Copy is lowercase-first as the surrounding `voice.*` keys are.
 - **Icon:** vendor Lucide **1.57.0** `volume-x` into `packages/ui/src/Icon/icons.ts` (the file header's version), and nothing else.
 - **E2EE invariant:** no file under `packages/media/src/manager.ts`, `packages/media/src/worker/`, `packages/media/src/slots.ts`, `internal/` or `core/` changes. `git diff --stat` in every task proves it.
 - **Lane:** `/home/thim/.cache/dilla-w3/i37`, branch `fix/37-stream-audio`; one lane, tasks sequential. Gate script env: `CARGO_TARGET_DIR=/home/thim/.cache/dilla-w3/i37-target`, `GOCACHE=/home/thim/.cache/dilla-w3/i37-gocache`. The lane has no `node_modules`: run `npm ci` once.
@@ -101,7 +123,7 @@ Each question lists options; the recommendation is marked **(rec)**. T1 and T2 d
 
 ## Review Focus
 
-1. **The call never hears itself through a share.** A system-audio share must carry `restrictOwnAudio: true`. Where the browser ignores it, the outcome is Q5's answer (rec: no audio published). Pinned in T1 (`devices.test.ts` `the share asks the browser to leave out the call's own sound`, `a system share whose browser ignores restrictOwnAudio publishes no audio`) and T2 (`session.test.ts` `an unrestricted system audio track is stopped, not published`).
+1. **The call never hears itself through a share, on current browsers.** Every `getDisplayMedia` call carries `restrictOwnAudio: true`, and whatever audio comes back is published (D5: no detection for older browsers; the echo there is a documented limit). Pinned in T1 (`devices.test.ts` `the share asks the browser to leave out the call's own sound, and for every audio it offers`, `a system share is published whatever the browser did with restrictOwnAudio`) and T4 (the recorded `__dmOpts`).
 2. **A silent share is never silent about it.** For video-only, `shareAudio === 'none'`, and on the viewer the tile's `screenAudio === false`. When the sharer stops, both clear. A late `screen_share_audio` publication turns the mark off. Pinned in T2 (`session.test.ts` `a tile says whether its screen carries sound` and `…follows a late audio publication`) and T4 (`share.spec.ts` "a share without sound says so on both sides").
 3. **Nothing new can publish in AFK.** The listen-only call still refuses share before `getDisplayMedia`, and the new code adds no publish path. Pinned in T2 (`session.test.ts` `a listen-only call refuses share before the picker`, with `getDisplayMedia` never called), and by the existing `TestAFKShareIsRefused`, which stays green.
 4. **Deafen and volume still govern share audio.** Deafened → the share audio is not attached, and the mark is about the stream, not about the viewer's deafen. Pinned by the existing `session.test.ts:573` and `:1184` cases (they must stay green), plus T2 `the mark does not change when the viewer deafens`.
@@ -130,11 +152,11 @@ export const SCREEN_DISPLAY_HINTS: {
 };
 // packages/web/src/call/devices.ts
 export type ShareAudioKind = 'tab' | 'system' | 'none';
-export async function acquireScreen(media: DisplayMedia):
-  Promise<{ video: MediaStreamTrack; audio: MediaStreamTrack | null; audioKind: ShareAudioKind }>;
+export interface ScreenCapture { video: MediaStreamTrack; audio: MediaStreamTrack | null; audioKind: ShareAudioKind }
+export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>;
 ```
 - `audioKind`: `'none'` when no audio track came back. Otherwise `'tab'` when `video.getSettings().displaySurface === 'browser'`, else `'system'`.
-- Q5 (rec b): when `audioKind === 'system'` and `audio.getSettings().restrictOwnAudio !== true`, the audio track is stopped, and the result is `{ audio: null, audioKind: 'none', unrestricted: true }`. Add `unrestricted?: true` to the return type, so T2 can say "update your browser". If Jonas answers a or c, drop this branch and the test, and keep the flag for c.
+- D5: `restrictOwnAudio` is always asked for, and never read back. Whatever audio the browser returns is returned and published, with no check, no drop and no flag.
 
 - [ ] **Step 1: write the failing tests** (`devices.test.ts`; extend the `track` double with `getSettings`):
 ```ts
@@ -158,11 +180,12 @@ it('a restricted screen share with sound is system audio', async () => {
   const a = atrack(true);
   expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('monitor'), a) })).toMatchObject({ audio: a, audioKind: 'system' });
 });
-it('a system share whose browser ignores restrictOwnAudio publishes no audio', async () => {
-  const a = atrack();
+it('a system share is published whatever the browser did with restrictOwnAudio', async () => {
+  // D5: no detection for browsers that ignore the constraint (Chrome/Edge < 141); the echo there is a documented limit.
+  const a = atrack(); // getSettings() has no restrictOwnAudio
   const r = await acquireScreen({ getDisplayMedia: async () => stream(vtrack('window'), a) });
-  expect(r).toMatchObject({ audio: null, audioKind: 'none', unrestricted: true });
-  expect(a.stop).toHaveBeenCalled();
+  expect(r).toEqual({ video: expect.anything(), audio: a, audioKind: 'system' });
+  expect(a.stop).not.toHaveBeenCalled();
 });
 it('a screen without audio is none', async () => {
   expect(await acquireScreen({ getDisplayMedia: async () => stream(vtrack('monitor')) })).toMatchObject({ audio: null, audioKind: 'none' });
@@ -172,18 +195,15 @@ it('a screen without audio is none', async () => {
 - [ ] **Step 2: run, expect FAIL.** `npm test -w @dilla/web -- devices`; `npm test -w @dilla/media -- audio-presets`.
 - [ ] **Step 3: implement.**
 ```ts
+export type ShareAudioKind = 'tab' | 'system' | 'none';
+export interface ScreenCapture { video: MediaStreamTrack; audio: MediaStreamTrack | null; audioKind: ShareAudioKind }
 export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture> {
   const stream = await media.getDisplayMedia({ video: true, audio: { ...SCREEN_AUDIO_CAPTURE }, ...SCREEN_DISPLAY_HINTS } as DisplayMediaStreamOptions);
   const video = stream.getVideoTracks()[0];
   if (video === undefined) { stopAll(stream); throw Object.assign(new Error('E_UNAVAILABLE: no screen track'), { name: 'NotFoundError' }); }
   const audio = stream.getAudioTracks()[0] ?? null;
   if (audio === null) return { video, audio: null, audioKind: 'none' };
-  if (video.getSettings().displaySurface === 'browser') return { video, audio, audioKind: 'tab' };
-  if ((audio.getSettings() as { restrictOwnAudio?: boolean }).restrictOwnAudio !== true) {
-    audio.stop();
-    return { video, audio: null, audioKind: 'none', unrestricted: true };
-  }
-  return { video, audio, audioKind: 'system' };
+  return { video, audio, audioKind: video.getSettings().displaySurface === 'browser' ? 'tab' : 'system' };
 }
 ```
   The comment above it replaces "Chromium only, decision 10" with the per-OS facts and links of the Root cause, item 2.
@@ -197,7 +217,7 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
 **Files:**
 - Modify: `packages/web/src/call/session.ts`:
   - `PageCallTile` (:29-37) gains `screenAudio: boolean`;
-  - `PageCallState` (:38-75) gains `shareAudio: 'tab' | 'system' | 'none' | null` and `shareAudioUnrestricted: boolean`;
+  - `PageCallState` (:38-75) gains `shareAudio: 'tab' | 'system' | 'none' | null`;
   - `tiles()` (:613-629);
   - `setSharing` (:1066-1107);
   - `stopScreen` (:1013-1023);
@@ -206,30 +226,30 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
 - Test: `packages/web/src/call/session.test.ts` (fixture: `f.subscribeTrack(p, 'screen_share_audio')` at :2329 and :2694 shows the helper; add a `f.publishOnly(p, source)` double if the fixture has none).
 
 **Interfaces:**
-- Consumes: `acquireScreen` → `{ video, audio, audioKind, unrestricted? }` (T1).
-- Produces: `PageCallState.shareAudio`, `PageCallState.shareAudioUnrestricted`, `PageCallTile.screenAudio`, all read by T3.
+- Consumes: `acquireScreen` → `ScreenCapture` = `{ video, audio, audioKind }` (T1).
+- Produces: `PageCallState.shareAudio` and `PageCallTile.screenAudio`, both read by T3 and T5.
 - `screenAudio` is true when `p.getTrackPublication('screen_share_audio')` exists. It is computed only when `show` is true (an 'ok' tile, not paused), like `screen`, and is false otherwise.
 
 - [ ] **Step 1: write the failing tests:**
-  - `a share without sound says so` (getDisplayMedia double returns video only): after `setSharing(true)`, `state.shareAudio === 'none'`, one `publishTrack` (video), and `shareAudioUnrestricted === false`.
+  - `a share without sound says so` (getDisplayMedia double returns video only): after `setSharing(true)`, `state.shareAudio === 'none'` and one `publishTrack` (video).
   - `a tab share with sound publishes it as screen_share_audio`: `shareAudio === 'tab'`, and the second `publishTrack` has `source: 'screen_share_audio'` and the `screenAudioOptions(caps)` bitrate.
-  - `an unrestricted system audio track is stopped, not published`: T1's `unrestricted` result gives `shareAudioUnrestricted === true`, `shareAudio === 'none'`, and no audio `publishTrack`.
-  - `stopping the share clears shareAudio`: back to `null` and `false`.
+  - `a system share with sound is published as is`: `audioKind: 'system'` gives `shareAudio === 'system'` and the audio `publishTrack` (D5: no restrictOwnAudio check).
+  - `stopping the share clears shareAudio`: back to `null`.
   - `a tile says whether its screen carries sound`: remote bob with `screen_share` only → `tiles[0].screenAudio === false`; add the `screen_share_audio` publication → `true`.
   - `the tile mark follows a late audio publication and an unpublish`.
   - `the mark does not change when the viewer deafens` (deafen → `screenAudio` stays true; the track is not attached: the existing `:573` and `:1184` assertions).
   - `a listen-only call refuses share before the picker`: `listenOnly: true`, `setSharing(true)` rejects `E_FORBIDDEN`, and `getDisplayMedia` is not called. Check whether a test of that name exists from VOICE-AFK; if so, extend it with the `getDisplayMedia` assertion.
   - Run `npm test -w @dilla/web -- session`; record the failures.
-- [ ] **Step 2: implement.** In `setSharing`, take `tracks.audioKind` and `tracks.unrestricted`. Publish exactly as today (:1085-1086). Then:
-  - `set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio: published ? tracks.audioKind : 'none', shareAudioUnrestricted: tracks.unrestricted === true })`, where `published` is false when `permitted('screenAudio')` was false.
-  - In `stopScreen`, `set({ sharing: false, localScreen: null, shareAudio: null, shareAudioUnrestricted: false })`.
+- [ ] **Step 2: implement.** In `setSharing`, take `tracks.audioKind`. Publish exactly as today (:1085-1086). Then:
+  - `set({ sharing: true, localScreen: viewOf(tracks.video), shareAudio: published ? tracks.audioKind : 'none' })`, where `published` is false when `permitted('screenAudio')` was false.
+  - In `stopScreen`, `set({ sharing: false, localScreen: null, shareAudio: null })`.
   - In `tiles()`, `screenAudio: show && p.getTrackPublication?.(SOURCE.screenAudio) !== undefined`. Extend `RemoteView`'s type with `getTrackPublication?(source: Source): unknown` where it is declared (near :300-312).
 - [ ] **Step 3: gates.** G-web; `npx eslint --max-warnings 0 packages/web/src/call`; G-voice(share.spec.ts join-muted.spec.ts controls.spec.ts) chromium and firefox. `git diff --stat -- packages/web/src/call packages/media` lists only `session.ts` and `session.test.ts`.
 - [ ] **Commit:** `feat(web): a call knows whether a share carries sound, on both sides (#37)`.
 
 ### Task T3: The mark on the screen tile and the sharer's notice
 
-**Model:** sonnet; reviewer sonnet. **Depends on:** T2, and Jonas's answers to Q3 and Q4 (the defaults below are the recommendations).
+**Model:** sonnet; reviewer sonnet. **Depends on:** T2. Built to D3 (tell both sides) and D4 (nothing before the picker).
 
 **Files:**
 - Modify: `packages/ui/src/Icon/icons.ts`: vendor Lucide 1.57.0 `volume-x` after `volume-2` (:209). Copy the SVG body from the Lucide 1.57.0 package, the same way as `volume-2`.
@@ -239,14 +259,13 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
   - `statesOf` (:62-76) pushes `{ key: 'no-sound', glyph: <Icon name="volume-x" size={14} />, text: labels.noSound, glyphOnly: true }` after `screen` when `source === 'screen' && silent`.
 - Modify: `packages/ui/src/CallTile/CallTile.test.tsx` and its stories (a "screen without sound" story).
 - Modify: the stage in `packages/web/src/screens/voice/VoiceView.tsx`: find where screen tiles render `CallTile source="screen"`, and pass `silent={!tile.screenAudio}` for remote tiles only, never the own `localScreen` tile.
-- Modify: `packages/web/src/screens/voice/useCall.tsx` or VoiceView: when `state.shareAudio` turns `'none'` from `null`, announce `voice.shareAudio.none` once through the existing polite `announce`. When `shareAudioUnrestricted`, announce `voice.shareAudio.update` instead.
+- Modify: `packages/web/src/screens/voice/useCall.tsx` or VoiceView: when `state.shareAudio` turns `'none'` from `null`, announce `voice.shareAudio.none` once through the existing polite `announce`. Nothing is shown before the picker (D4).
 - Modify: `packages/web/src/strings/en.ts` (after :498):
 ```ts
   'stage.noSound': 'no sound',
   'voice.shareAudio.none': 'Your screen is shared without sound. To share sound, share a browser tab, or on Windows tick "Also share system audio".',
-  'voice.shareAudio.update': 'Your screen is shared without sound: update your browser to share system sound without echo.',
 ```
-- Modify: `docs/design/flows/06-voice.md`: the two notices and the tile state, in that doc's table form.
+- Modify: `docs/design/flows/06-voice.md`: the notice and the tile state, in that doc's table form.
 - Test: `VoiceView.test.tsx` (`a remote screen without sound shows the mark; with sound it does not; the own screen never does`) and `useCall.test.tsx` or `VoiceView.test.tsx` (`a share without sound is announced once`).
 
 - [ ] **Step 1: red tests** (CallTile: `data-state="no-sound"` present only for `source="screen" silent`; VoiceView and useCall as listed). Run `npm test -w packages/ui -- CallTile` and `npm test -w @dilla/web -- VoiceView useCall`.
@@ -272,11 +291,11 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
 - [ ] **Step 4: gates.** G-voice(share.spec.ts) chromium; then the whole voice project chromium and firefox (G-voice). `npm run typecheck:e2e`.
 - [ ] **Commit:** `test(e2e): a share without sound says so to the sharer and the viewer (#37)`.
 
-## Phase 3: optional, by answer
+## Phase 3: the stream's own volume (D2)
 
-### Task T5 (only if Q2 = b): A stream volume and mute per person
+### Task T5: A stream volume and mute per person
 
-**Model:** sonnet; reviewer opus (it changes the gain path that deafen relies on).
+**Model:** sonnet; reviewer opus (it changes the gain path that deafen relies on). **Depends on:** T3 (the screen tile's states and labels); T4 is extended after it (below).
 
 **Files:**
 - `packages/web/src/call/volume.ts`: `gainOf` gains `source: 'voice' | 'stream'`, and the stream reads `voice.streamVolume.<user>`, default 100.
@@ -289,7 +308,11 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
 **Tests:**
 - `deafen still silences the stream at any stream volume`;
 - `a stream volume of 0 holds the share audio back and leaves the voice playing`;
-- `the voice volume does not move the stream`.
+- `the voice volume does not move the stream`;
+- `the stream mute is local and per person` (it holds bob's share audio back for this viewer only, writes no setting for other people, and is not sent anywhere);
+- `a muted stream keeps the no-sound mark off` (the mark is about the stream, not about the viewer's choice).
+
+The mute is the stream volume at 0 with the last value kept for unmute, so there is one gain path. The mute control renders only on a remote screen tile whose `screenAudio` is true. The e2e step: extend `share.spec.ts:82`, so that bob mutes alice's stream from the tile, then bob's audible level of alice falls below `AUDIBLE_RMS` (alice's microphone is muted in that test), and unmuting brings it back.
 
 **Gates:** G-web, G-ui, G-voice(share.spec.ts controls.spec.ts). **Commit:** `feat(web,ui): a volume and a mute for each person's stream`.
 
@@ -297,7 +320,7 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
 
 ### Task T6: Docs and the issue reply
 
-**Model:** haiku; reviewer sonnet. **Depends on:** T3 (T5 if built).
+**Model:** haiku; reviewer sonnet. **Depends on:** T3, T5.
 
 **Files:**
 - `docs/user/voice.md:190-191`: replace "The only sound a share carries is a tab's, … a whole screen or window is shared without sound" with the per-browser facts:
@@ -306,10 +329,15 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
   - Linux shares only tab sound;
   - Firefox and Safari share no sound;
   - a game or app's own sound needs the desktop app (planned);
-  - the call's own sound is never shared.
-- `docs/user/voice.md:346`, `README.md:57` (limits) and the README web-client row ("screen sound from a Chromium tab only") likewise, in one sentence each.
+  - dilla asks the browser to leave the call's own sound out of a shared screen;
+  - a share without sound shows "no sound" on its tile, and the sharer is told how to get sound;
+  - each person's stream has its own volume and mute (T5).
+- **Known limit (D5)**, in voice.md's limits list (:346) and README.md:57: "On Windows, Chrome and Edge before version 141 may send the call's own sound back through a shared screen or window (an echo); update the browser."
+- `README.md:57` and the README web-client row ("screen sound from a Chromium tab only") get the same per-browser facts, one sentence each.
 - Re-shoot the stage screenshot in docs/user if it shows a screen tile (jonas-user-docs rule).
-- Write the reply to #37 into the PR description: the cause, what changed, and the native-app path (Q6). The controller posts it after merge.
+- **Draft the #37 reply** (D6) in the PR description under the heading "Reply to #37 (for Jonas to post)". **Nothing is posted by us**: no issue comment, label or close. The draft:
+
+  > Thanks for the report! Valheim is a game window rather than a browser tab, and browsers can only capture certain kinds of audio: a tab's sound in Chrome and Edge; system sound on Windows and ChromeOS (and macOS 14.2+ with Chrome 141+) when you tick "Also share system audio" in the picker; nothing at all in Firefox or Safari. On Linux, only a tab's sound can be shared. So your share went out without sound, and dilla didn't tell anyone. That's the part we fixed. From <release>, a share without sound says so to the person sharing (with how to get sound) and shows "no sound" on the stream for everyone watching. Each person's stream also gets its own volume and mute. Sharing a game's or app's own sound needs the desktop app, which is on the roadmap.
 
 **Gates:** `npm run check:docs`; `npm run check:copy`. **Commit:** `docs(user): what sound a screen share carries, per browser (#37)`.
 
@@ -317,7 +345,7 @@ export async function acquireScreen(media: DisplayMedia): Promise<ScreenCapture>
 
 - A whole-branch review (opus), with the E2EE invariant check: `git diff main...HEAD --stat` touches nothing under `packages/media/src/manager.ts`, `packages/media/src/worker/`, `packages/media/src/slots.ts`, `internal/`, `cmd/` or `core/`.
 - A manual check on Windows (Chrome 141+, Jonas or a tester): share "Entire screen" with "Also share system audio" while bob speaks. Alice's share must not carry bob's voice back (`restrictOwnAudio`). Share a window: the system audio toggle is offered (`windowAudio: 'system'`).
-- Release as a patch on the web3.9 line. Tell the Homelab session to upgrade CT 144 (jonas-homelab-deploys-releases).
+- Start only after web3.9 is deployed (Decisions, Timing). Release as a patch on the web3.9 line. Hand Jonas the drafted #37 reply; he posts it. Tell the Homelab session to upgrade CT 144 (jonas-homelab-deploys-releases).
 
 ### Critical Files for Implementation
 - `packages/web/src/call/devices.ts:68-77`
