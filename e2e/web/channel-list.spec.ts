@@ -107,8 +107,13 @@ test('voice channels stand in order in the one channel list, with their people n
     if (row === null || name === null) throw new Error('lounge or its person has no box');
     expect(name.x, 'the person is indented under the row').toBeGreaterThan(row.x);
     expect(name.y, 'the person is below the row').toBeGreaterThan(row.y);
+    // web3.9 (WEB-DOCK, FA3): speaking is the person's ring, not a dot or a visible state; its word stays for assistive technology
+    // only, in the row's states span. A mute or deafen glyph is a `.d-voice-row__state` (Ada is neither here), checked on the name's line.
+    await expect(person.locator('.d-state-dot')).toHaveCount(0);
+    const speakingWord = person.locator('.d-voice-row__states .d-sr-only').filter({ hasText: copy('voice.state.speaking') });
+    await expect(speakingWord).toHaveCount(1);
+    await expect(speakingWord).toBeAttached();
     const glyphs = person.locator('.d-voice-row__state');
-    await expect(glyphs.first()).toBeVisible({ timeout: WAIT });
     for (const box of await glyphs.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { y: r.y, h: r.height }; }))) {
       expect(Math.abs((box.y + box.h / 2) - (name.y + name.height / 2)), 'a glyph shares the name’s line').toBeLessThan(name.height);
     }
