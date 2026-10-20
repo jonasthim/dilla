@@ -33,7 +33,7 @@ describe('renderCss', () => {
   });
   it('emits structural tokens', () => {
     expect(css).toContain('--r-md: 2px;');
-    expect(css).toContain('--rail-w: 60px;');
+    expect(css).toContain('--rail-w: 72px;');
     expect(css).toContain('--focus-ring: 2px solid var(--accent);');
     expect(css).toContain('--font-mono: "JetBrains Mono Variable"');
   });
@@ -47,6 +47,13 @@ describe('renderCss', () => {
     expect(css).toContain('--topbar-h: 2rem;');
     expect(css).toContain('--bottombar-h: 1.625rem;');
     expect(css).toContain('--channel-header-h: 3rem;');
+    expect(css).toContain('--bar-h: 3rem;');
+    expect(css).toContain('--row-h: 2rem;');
+    expect(css).toContain('--row-h-sub: 2rem;');
+    expect(css).toContain('--row-h-2: 2.75rem;');
+    expect(css).toContain('--list-gap: 0.125rem;');
+    expect(css).toContain('--rail-tile: 48px;');
+    expect(css).toContain('--slot-w: 32px;');
     expect(css).toMatch(/\[data-density="cozy"\]\s*{[^}]*--avatar-size:\s*2\.25rem;/);
     expect(css).toContain('--sidebar-w: 240px;');
     expect(css).toContain('--thread-w: 380px;');

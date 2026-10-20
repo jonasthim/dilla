@@ -1,5 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
 import { Button } from './Button.tsx';
 import { PhoneLayoutProvider } from '../internal/phoneLayout.ts';
@@ -69,5 +71,12 @@ describe('Button', () => {
       </div>,
     );
     await expectNoAxeViolations(container);
+  });
+});
+const read = (name: string) => readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+describe('Button disabled accent (I5)', () => {
+  it('is an outline, not a fill', () => {
+    expect(read('./Button.css')).toContain('.d-btn[data-variant="accent"]:disabled { background: transparent; color: var(--fg-3); box-shadow: inset 0 0 0 1px var(--hairline); }');
   });
 });

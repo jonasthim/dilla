@@ -8,6 +8,7 @@ const NAMES = ['mic', 'mic-off', 'headphones', 'headphone-off', 'video', 'video-
 const SHELL_NAMES = [
   'server', 'message-square', 'activity', 'user', 'chevron-left', 'chevron-right', 'chevron-down', 'x', 'check',
   'triangle-alert', 'pause', 'ellipsis-vertical', 'hash', 'volume-2', 'megaphone', 'messages-square', 'file', 'play', 'eye', 'settings', 'plus', 'maximize', 'minimize', 'search',
+  'lock', 'log-out', 'shield', 'keyboard', 'monitor-smartphone', 'phone', 'square-pen', 'at-sign', 'pin', 'users', 'ellipsis',
 ] as const;
 
 describe('Icon', () => {

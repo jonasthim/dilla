@@ -22,6 +22,8 @@
   box-shadow: inset 0 -3px 0 0 currentColor;
 }
 .d-btn:disabled, .d-btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+/* web3.9 (I5): a disabled accent button is an outline, not a filled green block that reads as the primary action. */
+.d-btn[data-variant="accent"]:disabled { background: transparent; color: var(--fg-3); box-shadow: inset 0 0 0 1px var(--hairline); }
 .d-btn__pressed-mark { font: inherit; letter-spacing: -1px; opacity: 0.9; }
 .d-btn__kbd { font: inherit; font-size: var(--text-micro); padding: 0 4px; border: 1px solid currentColor; border-radius: var(--r-md); opacity: 0.8; }
 /* A touch screen has no Escape or shortcut keys: a hint would be noise. */

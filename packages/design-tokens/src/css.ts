@@ -1,7 +1,7 @@
 import { themes, structural, densities, type ColorTokens } from './tokens.ts';
 
 export function kebab(key: string): string {
-  return key.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/([a-zA-Z])(\d)/g, '$1-$2').toLowerCase();
+  return key.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/([A-Z])([A-Z][a-z])/g, '$1-$2').replace(/([a-zA-Z])(\d)/g, '$1-$2').toLowerCase();
 }
 
 function colorDecls(t: ColorTokens): string {
