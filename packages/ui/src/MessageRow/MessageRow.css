@@ -38,9 +38,9 @@
 .d-message-row__reply-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .d-message-row__reply-state { font-style: italic; color: var(--fg-3); }
 .d-message-row__attachments { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-/* FB2: a file or media card takes what the row has and drops under the images when less than 14rem is left (or the
-   row is narrower), so its name always has room and is cut with an ellipsis, never hidden. */
-.d-message-row__attachments > .d-attachment-card:not([data-kind="image"]) { flex: 1 1 14rem; min-width: min(14rem, 100%); max-width: 100%; }
+/* A file or media card takes what the row has and drops under the images when less than 18rem is left (or the row is
+   narrower). The wrap follows the row's own width at any viewport, so the name, size and save button always fit. */
+.d-message-row__attachments > .d-attachment-card:not([data-kind="image"]) { flex: 1 1 18rem; min-width: min(18rem, 100%); max-width: 100%; }
 .d-message-row__attachments > .d-attachment-card:not([data-kind="image"]) :is(.d-attachment-card__file, .d-attachment-card__media) { max-width: 100%; }
 .d-message-row__pending { margin: 0; font-size: var(--text-xs); color: var(--fg-3); display: flex; gap: 0.5rem; align-items: center; }
 /* A failed action: the danger tone and a glyph, so the state is never colour alone; the glyph has empty alt text. */

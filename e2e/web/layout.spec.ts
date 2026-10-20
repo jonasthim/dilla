@@ -1047,3 +1047,51 @@ test('FB1, FB2: the desktop Home title is not the server name; a file card stack
   const ellipsed = await page.locator('.d-attachment-card__file .d-attachment-card__name').first().evaluate(e => getComputedStyle(e).textOverflow);
   expect.soft(ellipsed, 'FB2 a long name is cut with an ellipsis').toBe('ellipsis');
 });
+
+// FC: "each visual element has its room". A file card beside an image keeps its save button's text whole at 1280 and at 1024
+// with the members aside open, and the card stays inside the log; the button's accessible name still carries the file name.
+test('FC: the save button of a file card beside an image is not clipped at 1280 and at 1024 with the members open', async ({ page }) => {
+  const h = started();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await signUp(page, h.invite.split(',')[0], instance, 'Fia', h.control);
+  await addServerVia(page, 'create');
+  const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
+  await start.getByRole('textbox', { name: copy('create.server.name'), exact: true }).fill('Vanaheim');
+  await page.keyboard.press('Enter');
+  await expect(start).toBeHidden({ timeout: WAIT });
+  await expectComposerReady(page, 'general');
+  const drawn = await drawImage(page, { width: 320, height: 240, type: 'image/png', seed: 5 });
+  await attachInput(page).setInputFiles([
+    { name: 'saturday-map.png', mimeType: 'image/png', buffer: drawn.bytes },
+    { name: 'loot-list.txt', mimeType: 'text/plain', buffer: Buffer.from('rope\ntorches\nshields\n') },
+  ]);
+  await expect(trayEntries(page)).toHaveCount(2, { timeout: WAIT });
+  for (let i = 0; i < 2; i++) await expect(trayEntries(page).nth(i)).toHaveAttribute('data-phase', 'ready', { timeout: WAIT });
+  const text = `loot ${String(Date.now())}`;
+  await sendText(page, 'general', text);
+  await expect(messageRow(page, 'general', text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+
+  const measure = async (tag: string): Promise<void> => {
+    const row = messageRow(page, 'general', text);
+    const save = row.getByRole('button', { name: copy('shell.attachment.save', { name: 'loot-list.txt' }), exact: true });
+    await expect(save, `${tag} the save button is named for the file`).toBeVisible({ timeout: WAIT });
+    await expect.soft(save, `${tag} its visible text is just the save word`).toHaveText(copy('media.save'));
+    const clip = await save.evaluate(e => ({ sw: e.scrollWidth, cw: e.clientWidth }));
+    expect.soft(clip.sw, `${tag} the save text is not clipped (scrollWidth ${String(clip.sw)} > clientWidth ${String(clip.cw)})`).toBeLessThanOrEqual(clip.cw);
+    const log = (await boxes(page, '[role="log"]'))[0];
+    const card = (await boxes(page, '.d-attachment-card[data-kind="file"]'))[0];
+    const btn = (await boxes(page, '.d-attachment-card__file .d-attachment-card__save'))[0];
+    expect(log !== undefined && card !== undefined && btn !== undefined, `${tag} the log, the file card and its save are drawn`).toBe(true);
+    if (log === undefined || card === undefined || btn === undefined) return;
+    expect.soft(card.r, `${tag} the card is not wider than the log`).toBeLessThanOrEqual(log.r + TOL);
+    expect.soft(card.x, `${tag} the card starts inside the log`).toBeGreaterThanOrEqual(log.x - TOL);
+    expect.soft(btn.r, `${tag} the save button ends inside its card`).toBeLessThanOrEqual(card.r + TOL);
+  };
+  await measure('1280');
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const toggle = page.locator('.d-channel-header').getByRole('button', { name: copy('members.toggle'), exact: true });
+  if (await page.locator('.d-app-shell__aside').count() === 0 && await toggle.count() > 0) await toggle.click();
+  await expect(page.locator('.d-app-shell__aside')).toBeVisible({ timeout: WAIT });
+  await measure('1024 with the members aside');
+});
