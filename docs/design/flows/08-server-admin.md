@@ -179,7 +179,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.invites.ttl.halfDay='12 hours'`, `admin.invites.ttl.day='1 day'`, `admin.invites.ttl.week='7 days'`
 - `admin.invites.ttl.month='30 days'`, `admin.invites.uses='Max uses'`, `admin.invites.uses.one='1 use'`
 - `admin.invites.uses.n='{n} uses'`, `admin.invites.limitsNote='An invite lasts at most 30 days and admits at most 1000 people.'`
-- `admin.invites.create='Make link'`, `admin.invites.creating='Making an invite link…'`, `admin.invites.empty='No live invite links.'`
+- `admin.invites.create='make link'`, `admin.invites.creating='Making an invite link…'`, `admin.invites.empty='No live invite links.'`
 - `admin.invites.row='by {name}, {used} of {max} uses, expires {date}'`
 - `admin.invites.codeHidden='The server keeps only a fingerprint of each link, so a link cannot be shown again. Make a new one to share.'`
 - `admin.invites.revoke='revoke'`, `admin.invites.revokeLabel='revoke the link by {name} that expires {date}'`

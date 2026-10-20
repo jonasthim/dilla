@@ -257,7 +257,7 @@ describe('a server’s actions (flow 07)', () => {
     act(() => fake.set(`permissions:${A}`, { top: 0, owner: false, manageCommunity: false, manageChannels: false, kickMembers: false, banMembers: false,
       createInvite: true, manageRoles: false, loaded: true, overwritesLoaded: true, everyoneId: 'ef'.repeat(16) }));
     await user.click(screen.getByRole('button', { name: 'server settings' }));
-    await user.click(await screen.findByRole('button', { name: 'Make link' }));
+    await user.click(await screen.findByRole('button', { name: 'make link' }));
     const dialog = screen.getByRole('dialog', { name: 'Invite people to Midgard' });
     await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Invite link copied.'));
     expect(within(dialog).getByRole('textbox', { name: 'Invite link' })).toHaveValue('https://dilla.test/i/7KQ2');

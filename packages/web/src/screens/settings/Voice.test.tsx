@@ -51,7 +51,7 @@ describe('Settings → Voice', () => {
     await user.keyboard('{Escape}');
     expect(settingCalls(fake)).toHaveLength(2);
     expect(screen.queryByText(/Press the key to use/)).toBeNull();
-    await user.click(screen.getByRole('radio', { name: 'Off' }));
+    await user.click(screen.getByRole('radio', { name: 'off' }));
     expect(settingCalls(fake).at(-1)).toEqual(['voice.noise', 'off']);
   });
 
@@ -142,8 +142,8 @@ describe('Settings → Voice: the output device (web3.3 fix round 1, I1)', () =>
 
 it('keeps legacy On on Lightweight and offers Automatic explicitly', async () => {
   const {fake,user}=setup({'voice.noise':'on'});
-  expect(screen.getByRole('radio',{name:'Lightweight'})).toHaveAttribute('aria-checked','true');
+  expect(screen.getByRole('radio',{name:'lightweight'})).toHaveAttribute('aria-checked','true');
   expect(settingCalls(fake)).toHaveLength(0);
-  await user.click(screen.getByRole('radio',{name:'Automatic'}));
+  await user.click(screen.getByRole('radio',{name:'automatic'}));
   expect(settingCalls(fake).at(-1)).toEqual(['voice.noise','automatic']);
 });
