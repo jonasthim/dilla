@@ -111,6 +111,30 @@ test('the sidebar splitter drags and takes keys, the width survives a reload, an
   await sidebarSplitter(page).focus();
   await page.keyboard.press('Enter');
 
-  // 6. Accessible.
+  // 6. FX-misc (DOCS concern 2): after the window goes phone -> desktop in one session the sidebar is at its own width, not
+  // stuck at the 192 px minimum, and a drag of its splitter widens it as before the flip.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect.poll(() => sidebarWidth(page), { message: 'the default width before the flip' }).toBeCloseTo(240, 0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(sidebarSplitter(page)).toHaveCount(0);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(sidebarSplitter(page)).toBeVisible({ timeout: WAIT });
+  await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after phone -> desktop' }).toBeCloseTo(240, 0);
+  const flipped = await sidebarWidth(page);
+  const flipBox = await sidebarSplitter(page).boundingBox();
+  if (flipBox === null) throw new Error('the sidebar splitter has no box after the flip');
+  const fx = flipBox.x + flipBox.width / 2;
+  const fy = flipBox.y + flipBox.height / 2;
+  await page.mouse.move(fx, fy);
+  await page.mouse.down();
+  await page.mouse.move(fx + 48, fy, { steps: 5 });
+  await page.mouse.move(fx + 96, fy, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => sidebarWidth(page), { message: 'the sidebar after a drag following the flip' }).toBeGreaterThanOrEqual(flipped + 95);
+  expect(await sidebarWidth(page)).toBeLessThanOrEqual(flipped + 97);
+  await sidebarSplitter(page).focus();
+  await page.keyboard.press('Enter');
+
+  // 7. Accessible.
   await expectAccessible(page, 'the panes with their splitters');
 });

@@ -255,6 +255,35 @@ describe('AppShell splitters', () => {
     expect(onPaneResize).not.toHaveBeenCalled();
   });
 
+  it('after the layout flips desktop -> phone -> desktop the new root is measured and observed, so the splitter range is the desktop one again (FX-misc)', () => {
+    shellW = 1280;
+    const observed: Element[] = [];
+    let notify: () => void = () => {};
+    stubWidths();
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { notify = cb; }
+      observe(el: Element) { observed.push(el); }
+      unobserve() {}
+      disconnect() {}
+    });
+    const props = shellProps({ asideOpen: false });
+    const { container, rerender } = render(<ComposedShell shell={props} />);
+    expect(sep(labels.sidebar)).toHaveAttribute('aria-valuemax', '384');
+    // The window becomes a phone: another root element, the old observer fires for the shell it still watches.
+    shellW = 390;
+    rerender(<ComposedShell shell={{ ...props, layout: 'phone' }} />);
+    act(() => notify());
+    expect(screen.queryAllByRole('separator')).toHaveLength(0);
+    // And back: the desktop root is a new element, which a stale observer never sees.
+    shellW = 1280;
+    rerender(<ComposedShell shell={props} />);
+    const root = container.querySelector('.d-app-shell');
+    expect(observed).toContain(root);
+    expect(sep(labels.sidebar)).toHaveAttribute('aria-valuemin', '192');
+    expect(sep(labels.sidebar)).toHaveAttribute('aria-valuemax', '384');
+    expect(root).toHaveStyle({ '--d-sidebar-w': '240px' });
+  });
+
   it('opening the aside column clamps what is shown and reports nothing', () => {
     shellW = 1024; stubWidths();
     const onPaneResize = vi.fn();

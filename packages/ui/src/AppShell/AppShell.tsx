@@ -168,6 +168,9 @@ export function AppShell({
     return next;
   };
   // Live: the shell's own size decides, so a resize or a rotation while open switches column and drawer at once.
+  // The phone and the desktop layouts render different root elements, so a flip mounts a new root that the previous
+  // effect's observer never sees: the effect runs again for the layout, measuring and observing the root it now has.
+  const phoneLayout = layout === 'phone';
   useLayoutEffect(() => {
     const root = rootRef.current;
     measure();
@@ -175,7 +178,7 @@ export function AppShell({
     const observer = new ResizeObserver(() => { measure(); });
     observer.observe(root);
     return () => observer.disconnect();
-  }, []);
+  }, [phoneLayout]);
   const overlay = showAside && narrow;
 
   // web3.8 splitters: desktop only, and only when the app named them.
